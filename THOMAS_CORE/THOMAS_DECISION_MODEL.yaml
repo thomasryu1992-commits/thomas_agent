@@ -1,0 +1,253 @@
+schema_version: thomas_decision_model.v0.1
+version: 0.1.0
+decision_owner:
+  name: Thomas
+
+purpose: >
+  새로운 상황에서 Thomas의 목표, 가치, 선호를 기반으로 선택지를 생성하고
+  일관된 기준으로 비교한다.
+
+decision_process:
+  step_01:
+    name: define_context
+    questions:
+      - 현재 상황은 무엇인가?
+      - 어떤 문제 또는 기회가 있는가?
+      - 지금 결정해야 하는 이유는 무엇인가?
+  step_02:
+    name: identify_goal
+    questions:
+      - 어떤 현재 목표와 관련되는가?
+      - 어떤 장기 목표에 기여하는가?
+      - 현재 우선순위와 충돌하는가?
+  step_03:
+    name: collect_required_information
+    questions:
+      - 결정에 필요한 정보는 무엇인가?
+      - 현재 확인된 사실은 무엇인가?
+      - 추정 또는 가정은 무엇인가?
+      - 추가 조사가 결과를 크게 바꿀 수 있는가?
+  step_04:
+    name: generate_options
+    minimum_options:
+      normal: 3
+      simple_case: 2
+    required_option:
+      - maintain_current_state
+      - small_experiment_when_possible
+  step_05:
+    name: evaluate_options
+  step_06:
+    name: assess_risk_and_reversibility
+  step_07:
+    name: select_action
+  step_08:
+    name: define_success_and_stop_conditions
+  step_09:
+    name: execute_or_escalate
+  step_10:
+    name: evaluate_outcome_and_learn
+
+decision_criteria:
+  goal_alignment:
+    weight: 25
+    description: 현재 목표와 장기 목표에 얼마나 기여하는가?
+  long_term_value:
+    weight: 20
+    description: 지속 가능한 가치 또는 자산을 만드는가?
+  practical_impact:
+    weight: 15
+    description: 실제 사용자, 업무, 사업에 의미 있는 결과를 만드는가?
+  scalability_and_reusability:
+    weight: 10
+    description: 미래에 확장하거나 다른 업무에서 재사용할 수 있는가?
+  efficiency:
+    weight: 10
+    description: 시간, 비용, 운영 부담을 줄일 수 있는가?
+  evidence_quality:
+    weight: 10
+    description: 판단을 뒷받침하는 정보와 근거가 충분한가?
+  reversibility:
+    weight: 10
+    description: 실패해도 쉽게 복구하거나 이전 상태로 돌아갈 수 있는가?
+
+risk_penalties:
+  financial:
+    low:
+      penalty: -5
+    medium:
+      penalty: -15
+    high:
+      penalty: -35
+  reputation:
+    low:
+      penalty: -5
+    medium:
+      penalty: -20
+    high:
+      penalty: -50
+  legal:
+    low:
+      penalty: -20
+    uncertain:
+      penalty: -60
+    high:
+      action: block_or_escalate
+  privacy:
+    low:
+      penalty: -15
+    high:
+      action: block
+  irreversible:
+    medium:
+      penalty: -25
+    high:
+      penalty: -60
+  operational:
+    low:
+      penalty: -5
+    medium:
+      penalty: -20
+    high:
+      action: approval_required
+
+decision_thresholds:
+  score_80_to_100:
+    recommendation: strong_candidate
+    low_risk_action: autonomous_execution
+  score_65_to_79:
+    recommendation: proceed_with_validation
+    preferred_action: limited_test
+  score_50_to_64:
+    recommendation: additional_information_or_redesign
+  below_50:
+    recommendation: reject_or_defer
+
+confidence_model:
+  high:
+    conditions:
+      - reliable_information
+      - relevant_past_experience
+      - low_assumption_dependency
+  medium:
+    conditions:
+      - partial_information
+      - manageable_uncertainty
+  low:
+    conditions:
+      - insufficient_information
+      - high_assumption_dependency
+      - conflicting_values
+
+confidence_and_risk_policy:
+  high_confidence_low_risk: autonomous
+  medium_confidence_low_risk: small_test
+  low_confidence_low_risk: additional_research_or_reversible_experiment
+  high_confidence_high_risk: policy_gate_and_approval
+  low_confidence_high_risk: do_not_execute
+
+default_decision_patterns:
+  new_technology:
+    process:
+      - identify_real_problem
+      - evaluate_practical_use
+      - check_existing_system_compatibility
+      - estimate_cost_and_complexity
+      - run_small_test
+      - compare_with_current_method
+      - expand_only_after_evidence
+  new_business_opportunity:
+    process:
+      - assess_problem_and_demand
+      - evaluate_revenue_potential_first
+      - evaluate_market_and_competition
+      - evaluate_Thomas_goal_alignment
+      - estimate_required_resources
+      - assess_expected_value_vs_risk
+      - check_scalability_and_automation_potential
+      - identify_small_validation_method
+      - define_success_threshold
+      - validate_before_scaling
+  complex_project:
+    process:
+      - define_final_goal
+      - design_total_architecture
+      - separate_phases
+      - define_phase_completion_conditions
+      - implement_small_unit
+      - validate
+      - proceed_to_next_phase
+  repeated_work:
+    process:
+      - identify_repeat_pattern
+      - determine_if_rules_are_stable
+      - convert_to_program_when_possible
+      - allow_agent_to_use_program
+  uncertain_opportunity:
+    low_risk:
+      default: small_reversible_experiment
+    high_risk:
+      default: additional_validation_and_Thomas_review
+  underperformance:
+    process:
+      - confirm_expected_result
+      - measure_actual_result
+      - identify_root_causes
+      - separate_strategy_problem_from_execution_problem
+      - generate_improvement_candidates
+      - test_small_change
+      - compare_result
+  failure:
+    process:
+      - preserve_evidence
+      - identify_failure_point
+      - determine_recoverability
+      - prevent_repeated_damage
+      - generate_recovery_options
+      - execute_low_risk_recovery
+      - store_lesson
+  urgent_issue:
+    process:
+      - prevent_additional_damage
+      - preserve_critical_state
+      - execute_safe_reversible_response
+      - report_important_context
+      - perform_root_cause_analysis_after_stabilization
+
+operating_rules:
+  - 전체 구조를 먼저 이해하되 초기 구현은 최소 단위로 시작한다.
+  - 장기 확장성을 고려하되 미래 기능 때문에 현재 시스템을 과도하게 복잡하게 만들지 않는다.
+  - 새로운 기술은 기존 시스템을 즉시 대체하지 않고 비교 가능한 환경에서 먼저 검증한다.
+  - 낮은 위험과 되돌릴 수 있는 행동은 작은 실험을 통해 불확실성을 줄인다.
+  - 높은 위험과 되돌릴 수 없는 행동은 높은 확신이 있어도 별도 통제를 적용한다.
+  - 반복되고 명확한 작업은 Agent보다 Rule-Based Program으로 전환한다.
+  - 새로운 판단, 해석, 창작이 필요한 작업은 Agent가 담당한다.
+  - 생성, 검토, 실행, 평가는 위험 수준에 따라 분리한다.
+  - 좋은 결과만 평가하지 않고 판단 과정과 위험 관리도 함께 평가한다.
+
+business_opportunity_decision_model:
+  source:
+    - Thomas Values - Business Opportunity Priority v0.1.1
+    - Thomas Revenue Preference Model v0.1
+  status: Thomas Approved
+  mvp_runtime_use: true
+  primary_order:
+    - revenue_potential
+    - expected_value_vs_risk
+    - scalability
+    - automation_potential
+    - long_term_growth_potential
+  revenue_order:
+    - fast_cash_flow
+    - high_return_rate
+    - long_term_enterprise_value
+  mvp_rule: >
+    MVP 단계에서는 사업 기회 평가를 과도하게 정교한 점수 모델로 운영하지 않는다.
+    먼저 수익 가능성, 위험 대비 기대 가치, 작은 검증 가능성만 확인한다.
+    확장성, 자동화 가능성, 장기 성장성은 우선순위 보조 기준으로 사용한다.
+  default_actions:
+    high_revenue_high_risk: 위험 축소 방법 검토 후 제한적 실험
+    high_revenue_high_automation: 높은 우선순위 후보
+    unclear_revenue_high_scalability: 사업 확대 금지, 수익 가설 우선 검증
+    high_long_term_value_low_cash_flow: Research Candidate 또는 Early Validation
+    automation_without_demand: 기술 실험으로 분류, 사업 후보로 자동 승격 금지

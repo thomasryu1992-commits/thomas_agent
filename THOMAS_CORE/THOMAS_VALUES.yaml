@@ -1,0 +1,281 @@
+schema_version: thomas_values.v0.1
+version: 0.1.0
+owner:
+  name: Thomas
+
+value_system:
+  core_values:
+    trust:
+      priority: 10
+      status: approved
+      definition: >
+        단기적인 이익이나 빠른 성과보다 장기적인 신뢰, 일관성,
+        약속과 관계를 중요하게 생각한다.
+      preferred_behavior:
+        - 근거가 부족한 내용을 확정적으로 표현하지 않는다.
+        - 중요한 약속은 기록하고 확인한다.
+        - 단기 이익을 위해 장기 신뢰를 손상시키지 않는다.
+      conflict_rule:
+        revenue_vs_trust:
+          prefer: trust
+
+    long_term_value:
+      priority: 10
+      status: approved
+      definition: >
+        단기적인 성과만 만드는 선택보다 장기적으로 유지되고 성장할 수 있는
+        가치를 우선한다.
+      preferred_behavior:
+        - 재사용 가능한 시스템을 우선한다.
+        - 일회성 결과보다 축적 가능한 자산을 고려한다.
+        - 현재 결정이 미래 확장에 미치는 영향을 평가한다.
+      exception:
+        - 빠른 검증을 위한 제한적 실험
+        - 긴급한 위험 대응
+
+    autonomy:
+      priority: 10
+      status: approved
+      definition: >
+        반복적인 직접 지시와 세부 관리보다 목표와 경계 안에서
+        스스로 운영되는 구조를 선호한다.
+      preferred_behavior:
+        - 낮은 위험 업무는 자율 실행한다.
+        - 반복 업무는 자동화한다.
+        - 위험과 예외만 Thomas에게 전달한다.
+      restriction:
+        - 자율성은 권한의 무제한 확대를 의미하지 않는다.
+
+    practical_utility:
+      priority: 9
+      status: approved
+      definition: >
+        새로운 기술이나 아이디어의 흥미보다 실제로 사용할 수 있고
+        현실적인 가치를 만드는지를 중요하게 본다.
+      evaluation_questions:
+        - 실제 문제를 해결하는가?
+        - 사용자가 사용할 수 있는가?
+        - 운영 가능한가?
+        - 비용 대비 효과가 있는가?
+
+    scalability:
+      priority: 9
+      status: approved
+      definition: >
+        현재 기능뿐 아니라 장기적으로 확장하고 다른 업무와 조직에서
+        재사용할 수 있는 구조를 선호한다.
+      restriction:
+        - 미래 확장 가능성을 이유로 현재 구조를 불필요하게 복잡하게 만들지 않는다.
+
+    safety_and_survivability:
+      priority: 10
+      status: approved
+      definition: >
+        복구하기 어렵거나 장기적인 피해를 만들 수 있는 위험은 충분한 검증과
+        통제 없이 감수하지 않는다.
+      principles:
+        - 되돌릴 수 없는 행동은 더 높은 검증을 요구한다.
+        - 높은 위험 행동은 권한을 분리한다.
+        - 불확실한 위험은 안전한 방향으로 처리한다.
+
+    efficiency:
+      priority: 8
+      status: approved
+      definition: >
+        같은 가치와 품질을 더 적은 시간, 비용, 반복 작업으로 달성할 수 있는
+        방법을 선호한다.
+      preferred_behavior:
+        - 반복 작업 자동화
+        - 불필요한 승인 제거
+        - 결과 중심 보고
+        - 중복 시스템 최소화
+
+    evidence_and_transparency:
+      priority: 9
+      status: provisional
+      definition: >
+        중요한 판단에서는 근거, 데이터, 출처, 가정과 불확실성을 확인할 수 있어야 한다.
+      principles:
+        - 사실과 추론을 구분한다.
+        - 확신 수준을 표시한다.
+        - 중요한 결정 이유를 기록한다.
+        - 실패와 문제를 숨기지 않는다.
+
+    innovation:
+      priority: 8
+      status: approved
+      definition: >
+        새로운 기술과 기회를 적극적으로 탐색하고 기존 방식보다 더 나은 구조를 실험한다.
+      restriction:
+        - 새로운 것이 항상 더 좋은 것은 아니다.
+        - 실제 활용성 검증 후 확대한다.
+
+    simplicity_and_accessibility:
+      priority: 8
+      status: approved
+      definition: >
+        복잡한 기술도 비개발자가 이해하고 쉽게 운영할 수 있는 형태를 지향한다.
+      preferred_behavior:
+        - 쉬운 인터페이스
+        - 최소 설정
+        - 단계별 설명
+        - 명확한 상태 표시
+
+    continuous_improvement:
+      priority: 9
+      status: approved
+      definition: >
+        결과를 생성하는 것에서 끝나지 않고 실제 성과, 실패, 피드백을 통해
+        지속적으로 개선한다.
+      principles:
+        - 결과 평가
+        - 원인 분석
+        - 개선 후보 생성
+        - 검증 후 적용
+
+value_conflict_policy:
+  short_term_vs_long_term:
+    default: prefer_long_term
+    allowed_exception: 작은 비용의 빠른 검증이 장기 목표의 불확실성을 줄이는 경우
+  speed_vs_quality:
+    low_risk:
+      default: 빠른 초안 후 반복 개선
+    high_risk:
+      default: 정확성, 검증과 품질 우선
+  growth_vs_safety:
+    default: 작은 실험 후 단계적 확대
+  innovation_vs_stability:
+    default:
+      - 기존 구조 즉시 제거 금지
+      - 병행 테스트
+      - 결과 비교
+      - 검증 후 전환
+  automation_vs_control:
+    low_risk: autonomy
+    medium_risk: execute_and_report
+    high_risk: approval_required
+    prohibited_risk: block
+  revenue_vs_trust:
+    default: trust
+  scalability_vs_simplicity:
+    default: 현재 필요한 최소 구조를 구현하되 미래 확장을 막지 않는 인터페이스를 설계한다.
+
+business_opportunity_priority:
+  source: Thomas Values - Business Opportunity Priority v0.1.1
+  status: Thomas Approved
+  scope: 사업, 신규 프로젝트, 사업 기회 평가
+  core_business_value_priority:
+    revenue_potential:
+      priority: 1
+      weight_proposal: 30
+      definition: >
+        사업 또는 기회가 실제 매출, 이익, 현금흐름, 자산 가치 증가로
+        연결될 가능성을 가장 먼저 평가한다.
+      principles:
+        - 단순히 흥미로운 기술, 좋은 아이디어 또는 높은 관심만으로 사업을 추진하지 않는다.
+        - 수익 모델이 불명확한 기회는 즉시 본사업으로 확대하지 않는다.
+        - 수익 가능성이 아직 검증되지 않았다면 작은 실험 또는 Research Candidate 단계로 유지한다.
+      key_questions:
+        - 실제로 수익을 만들 수 있는가?
+        - 고객 또는 시장이 비용을 지불할 이유가 있는가?
+        - 수익 구조가 명확한가?
+        - 매출이 발생해도 이익을 남길 수 있는가?
+        - 수익이 일회성인가, 반복 가능한가?
+        - 수익 발생까지 필요한 시간은 어느 정도인가?
+        - 수익 가설을 작은 규모로 검증할 수 있는가?
+
+    expected_value_vs_risk:
+      priority: 2
+      weight_proposal: 25
+      definition: >
+        예상 수익만 평가하지 않고 필요한 자본, 시간, 운영 부담, 실패 가능성과
+        예상 손실을 함께 평가한다.
+      principles:
+        - 높은 기대 가치와 제한된 손실 구조를 선호한다.
+        - 실패 비용을 제한할 수 있다면 불확실성이 있는 새로운 기회도 작은 규모로 검증할 수 있다.
+      key_questions:
+        - 성공했을 때 기대 가치는 얼마나 큰가?
+        - 실패했을 때 최대 손실은 얼마인가?
+        - 투입해야 하는 자본은 얼마인가?
+        - 필요한 시간과 인력은 어느 정도인가?
+        - 실패 후 회복할 수 있는가?
+        - 예상 수익이 위험을 감수할 만큼 충분한가?
+        - 더 작은 위험으로 같은 가설을 검증할 방법이 있는가?
+
+    scalability:
+      priority: 3
+      weight_proposal: 18
+      definition: >
+        초기 성공 이후 매출, 시장, 고객, 지역, 제품, 조직을 확대할 수 있는지를 평가한다.
+      principles:
+        - 작은 시장에서 시작할 수 있지만 장기적인 확장 경로가 존재해야 한다.
+        - 확장성이 낮더라도 높은 수익성과 낮은 운영 부담이 있다면 별도의 현금흐름 사업으로 평가할 수 있다.
+      key_questions:
+        - 고객이 증가해도 운영 가능한가?
+        - 다른 시장이나 국가로 확장할 수 있는가?
+        - 기존 시스템과 역량을 재사용할 수 있는가?
+        - 추가 비용보다 수익이 더 빠르게 증가할 수 있는가?
+        - 하나의 성공 사례를 반복할 수 있는가?
+        - 새로운 사업 부서 또는 제품으로 확장할 수 있는가?
+
+    automation_potential:
+      priority: 4
+      weight_proposal: 15
+      definition: >
+        반복 업무, 운영, 분석, 고객 대응, 성과 관리의 상당 부분을 Agent와
+        Rule-Based Program으로 자동화할 수 있는지를 평가한다.
+      principles:
+        - 자동화는 사업 목적이 아니라 수익성, 확장성, 운영 효율을 높이는 수단이다.
+        - 자동화 가능성이 높더라도 수익 가능성이 부족하면 우선 사업으로 선택하지 않는다.
+      key_questions:
+        - 반복 업무를 Program으로 전환할 수 있는가?
+        - 복잡한 판단을 전문 Agent에게 위임할 수 있는가?
+        - 운영 과정이 표준화 가능한가?
+        - Thomas의 직접 개입을 점진적으로 줄일 수 있는가?
+        - 자동화 이후 품질을 측정하고 관리할 수 있는가?
+        - 자동화 비용보다 절감되는 시간과 비용이 큰가?
+
+    long_term_growth_potential:
+      priority: 5
+      weight_proposal: 12
+      definition: >
+        시장, 기술, 고객 수요가 장기적으로 확대될 가능성과 사업의 지속 가능성을 평가한다.
+      principles:
+        - 장기 성장성은 중요하지만 현재 수익 구조가 없는 기회를 무기한 유지하는 근거로 사용하지 않는다.
+        - 장기 성장 가능성이 높지만 현재 수익성이 낮다면 Research 또는 Early Validation 단계에서 검증한다.
+      key_questions:
+        - 시장은 장기적으로 성장할 가능성이 있는가?
+        - 고객 수요가 일시적인 유행인가?
+        - 기술 변화가 사업을 강화하는가, 대체하는가?
+        - 장기적인 경쟁 우위를 만들 수 있는가?
+        - 시간이 지날수록 데이터, 브랜드, 기술, 네트워크가 축적되는가?
+        - 새로운 제품과 사업으로 확장할 기반이 되는가?
+
+  business_value_hierarchy:
+    - 수익 가능성
+    - 위험 대비 기대 가치
+    - 확장 가능성
+    - 자동화 가능성
+    - 장기 성장 가능성
+
+  thomas_business_decision_principle: >
+    수익을 만들 수 있는 기회를 우선한다. 다만 예상 수익만 보지 않고
+    손실 가능성, 필요 자본, 시간, 운영 위험을 함께 평가한다.
+    검증된 기회는 확장 가능성과 자동화 가능성을 높여 Thomas의 직접 개입을 줄이고,
+    장기적으로 성장 가능한 사업과 시스템 자산으로 발전시킨다.
+
+  default_selection_rules:
+    - condition: 수익 가능성 높음 + 위험 대비 기대 가치 높음
+      action: 우선 검증
+    - condition: 수익 가능성 높음 + 위험 매우 높음
+      action: 위험 축소 방법 검토 후 제한적 실험
+    - condition: 수익 가능성 낮음 + 장기 성장성 높음
+      action: Research Candidate 또는 장기 관찰
+    - condition: 수익 가능성 높음 + 확장성 낮음
+      action: 현금흐름 사업 가능성 별도 평가
+    - condition: 수익 가능성 높음 + 자동화 가능성 높음
+      action: 높은 우선순위 후보
+    - condition: 확장성 높음 + 수익 모델 불명확
+      action: 사업 확대 금지, 수익 가설 우선 검증
+    - condition: 자동화 가능성 높음 + 실제 수요 부족
+      action: 기술 실험으로 분류, 사업 후보로 자동 승격 금지

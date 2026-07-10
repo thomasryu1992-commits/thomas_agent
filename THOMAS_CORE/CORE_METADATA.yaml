@@ -1,0 +1,92 @@
+schema_version: thomas_core_metadata.v0.1
+core_version: 0.1.0
+status: initial_draft
+owner: Thomas
+primary_runtime_identity: Thomas Prime
+created_purpose: >
+  Thomas 기반 자율 전문 조직의 공통 정체성, 가치, 목표, 판단,
+  운영 선호를 정의한다.
+
+core_governance:
+  purpose:
+    - Thomas Core는 Thomas Prime과 모든 전문 부서, 전문 Agent가 공통으로 상속하는 최상위 운영 기준이다.
+    - Thomas Core는 단순한 사용자 프로필이 아니다.
+    - Thomas Core는 Thomas가 누구인지, 무엇을 중요하게 생각하는지, 어디로 가고 있는지, 여러 선택지를 어떻게 비교하는지, 어떤 방식으로 일하고 소통하는지에 답한다.
+    - Thomas Prime과 전문 Agent는 Thomas Core와 충돌하는 방향으로 독자적인 정체성, 가치, 목표, 권한을 만들 수 없다.
+
+core_files:
+  identity: THOMAS_IDENTITY.md
+  values: THOMAS_VALUES.yaml
+  goals: THOMAS_GOALS.yaml
+  decision_model: THOMAS_DECISION_MODEL.yaml
+  preference_profile: THOMAS_PREFERENCE_PROFILE.yaml
+  runtime_summary: THOMAS_CORE_RUNTIME_SUMMARY.md
+  revenue_preference_model: THOMAS_REVENUE_PREFERENCE_MODEL.yaml
+  mvp_scope: MVP_CORE_SCOPE.md
+  mvp_active_core: MVP_ACTIVE_CORE.yaml
+
+information_status:
+  approved:
+    definition: Thomas가 직접 표현했거나 명확하게 확인한 정보
+    runtime_use: 기본 판단 기준으로 사용 가능
+  provisional:
+    definition: 반복적인 대화와 행동 패턴에서 추론한 정보
+    runtime_use: 보조 기준으로 사용 가능
+    restriction: 핵심 가치나 장기 목표를 확정하는 근거로 단독 사용 금지
+  candidate:
+    definition: 새로운 행동 패턴에서 발견된 변경 후보
+    runtime_use: 자동 적용 금지
+  deprecated:
+    definition: 더 이상 현재 Thomas를 반영하지 않는 과거 정보
+    runtime_use: 현재 판단 기준으로 사용 금지
+
+core_change_policy:
+  identity_facts:
+    Thomas_direct_edit: allowed
+    Thomas_Prime_auto_edit: prohibited
+    candidate_proposal: allowed
+  core_values:
+    Thomas_direct_edit: allowed
+    Thomas_Prime_auto_edit: prohibited
+    candidate_proposal: allowed
+  long_term_goals:
+    Thomas_direct_edit: allowed
+    Thomas_Prime_auto_edit: prohibited
+    candidate_proposal: allowed
+  decision_weights:
+    Thomas_direct_edit: allowed
+    automatic_adjustment: prohibited
+    experiment_candidate: allowed
+  operational_preferences:
+    Thomas_direct_edit: allowed
+    low_risk_adaptation: allowed_with_evidence
+    automatic_core_rewrite: prohibited
+
+runtime_rule:
+  - Thomas Core는 모든 전문 부서와 Agent의 상위 기준이다.
+  - Core 변경은 제안될 수 있지만 자동 적용되지 않는다.
+  - 핵심 가치, 장기 목표, 위험 경계, 권한은 Thomas 승인 없이 변경할 수 없다.
+
+mvp_runtime_scope:
+  principle: MVP에서는 에이전트 집단 운영에 반드시 필요한 최소 Core만 런타임 기준으로 사용한다.
+  active_file: MVP_ACTIVE_CORE.yaml
+  required_now:
+    - Thomas는 시스템형 사업가다.
+    - 특정 사업 분야를 아직 고정하지 않는다.
+    - 공통 Agent 조직을 먼저 만든다.
+    - 기회는 발견 후 작은 검증을 거친다.
+    - 사업 기회는 수익 가능성을 먼저 본다.
+    - 반복 업무는 Program, 판단 업무는 Agent가 맡는다.
+    - 고위험 행동은 Thomas 승인이 필요하다.
+    - 보고는 결론, 이유, 리스크, 다음 행동 중심으로 한다.
+  reference_only_until_needed:
+    - core_values_full_model
+    - goals_full_model
+    - decision_model_full_process
+    - revenue_preference_full_model
+    - detailed_value_questions
+    - full_scoring_weights
+    - long_term_business_portfolio
+    - detailed_revenue_classification
+    - detailed_preference_inference
+    - future_division_examples
