@@ -1,0 +1,93 @@
+schema_version: role_registry.v0.1
+status: active_mvp
+owner: Thomas
+router_source_of_truth: true
+
+non_dynamic_roles:
+  - role_id: thomas.prime
+    role_type: chief_autonomous_coordinator
+    contract_path: THOMAS_PRIME_CHARTER.md
+    inherits_dynamic_role_contract: false
+
+active_roles:
+  - role_id: general.specialist
+    role_name: General Specialist Role
+    role_version: 0.1.0
+    role_type: dynamic_specialist
+    status: active
+    routable: true
+    contract_path: ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
+    capabilities:
+      - research
+      - analysis
+      - planning
+      - drafting
+      - comparison
+    permission_ceiling: P3
+    budget_policy: role_assignment_required
+
+  - role_id: validation.independent
+    role_name: Independent Validation Role
+    role_version: 0.1.0
+    role_type: independent_validator
+    status: active
+    routable: true
+    contract_path: ROLES/ACTIVE/VALIDATION_ROLE.md
+    capabilities:
+      - objective_alignment_check
+      - evidence_check
+      - logic_check
+      - omission_check
+      - risk_check
+      - output_contract_check
+    permission_ceiling: P2
+    budget_policy: role_assignment_required
+
+candidate_roles:
+  - role_id: research.general
+    role_name: Research Role
+    role_version: 0.1.0
+    status: candidate
+    routable: false
+    contract_path: ROLES/CANDIDATES/RESEARCH_ROLE.md
+
+  - role_id: translation.general
+    role_name: Translation Role
+    role_version: 0.1.0
+    status: candidate
+    routable: false
+    contract_path: ROLES/CANDIDATES/TRANSLATION_ROLE.md
+
+  - role_id: content.general
+    role_name: Content Role
+    role_version: 0.1.0
+    status: candidate
+    routable: false
+    contract_path: ROLES/CANDIDATES/CONTENT_ROLE.md
+
+  - role_id: business.analysis
+    role_name: Business Analysis Role
+    role_version: 0.1.0
+    status: candidate
+    routable: false
+    contract_path: ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md
+
+  - role_id: development.general
+    role_name: Development Role
+    role_version: 0.1.0
+    status: candidate
+    routable: false
+    contract_path: ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
+    activation_blockers:
+      - program_and_tool_registry
+      - isolated_execution_environment
+      - code_change_validation
+      - explicit_file_and_deployment_permissions
+
+routing_rules:
+  - only_active_and_routable_roles_can_be_selected
+  - program_first_when_deterministic
+  - choose_minimum_sufficient_capability
+  - choose_lowest_sufficient_permission
+  - role_assignment_required_before_execution
+  - candidate_roles_require_thomas_activation_approval

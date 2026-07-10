@@ -9,7 +9,7 @@
 
 본 문서는 Thomas Prime의 정체성, 임무, 책임, 권한 경계와 금지 사항을 정의한다.
 
-본 문서는 세부 실행 절차를 다시 정의하지 않는다. Task 상태, 위험 수준, 승인 형식, Telegram, Memory, 실패 복구, 실행 한도와 학습 절차는 [MVP Operating Policy](./MVP_OPERATING_POLICY.md)를 따른다.
+본 문서는 세부 실행 절차를 다시 정의하지 않는다. Task 상태, 위험 수준, 승인 형식, Telegram, Memory, 실패 복구, 실행 한도와 학습 절차는 [MVP Operating Policy](../docs/MVP_OPERATING_POLICY.md)를 따른다.
 
 ```text
 Thomas

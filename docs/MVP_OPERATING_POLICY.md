@@ -5,6 +5,8 @@
 **Owner:** `Thomas`
 **Applies To:** Thomas Prime, MVP Specialist Roles, Validation Agent, Programs, Tools, Memory System
 
+**Role Contracts:** [`03_ROLE_CONTRACTS`](../03_ROLE_CONTRACTS/README.md)
+
 ## Document Position and Authority
 
 본 문서는 다음 문서 구조 안에서 해석한다.

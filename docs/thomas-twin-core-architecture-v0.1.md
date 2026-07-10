@@ -733,8 +733,13 @@ The five contracts above are the foundation. The next contracts should be:
 4. `Validation Result`: how independent review is represented.
 5. `Audit Event`: how every meaningful step is logged.
 6. `Department Definition`: how departments are registered without hard-coding them.
-7. `Agent Definition`: how agents are registered, limited, and evaluated.
-8. `Program Definition`: how deterministic programs are registered and versioned.
+7. `Program Definition`: how deterministic programs are registered and versioned.
+
+Implemented companion contracts:
+
+- [MVP Dynamic Role Contract](../03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md): how Dynamic Roles are limited and evaluated.
+- [Role Assignment Contract](../03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md): how a Role receives Task-specific Context, permission, tools, and budget.
+- [Role Registry](../03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml): which Roles are active, candidate, disabled, or routable.
 
 ## 12. Initial Non-Implementation Decisions
 

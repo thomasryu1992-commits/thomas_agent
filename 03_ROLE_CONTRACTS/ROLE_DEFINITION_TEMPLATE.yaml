@@ -1,0 +1,100 @@
+schema_version: role_definition.v0.1
+document_type: role_definition_template
+template_only: true
+
+role_id: "<required_domain.function>"
+role_name: "<required_human_readable_name>"
+role_version: "0.1.0"
+status: draft
+routable: false
+role_type: dynamic_specialist
+purpose: "<required_one_sentence_purpose>"
+
+capabilities: []
+
+activation:
+  conditions: []
+  non_activation_conditions: []
+  deactivation_conditions: []
+
+active_core:
+  assignment_required: true
+  allowed_rule_ids:
+    - MVP_RULE_001
+    - MVP_RULE_002
+    - MVP_RULE_003
+    - MVP_RULE_004
+    - MVP_RULE_005
+    - MVP_RULE_006
+    - MVP_RULE_007
+    - MVP_RULE_008
+  reference_only_access: assignment_allowlist_only
+
+authority:
+  default_permission: P2
+  permission_ceiling: P3
+  external_action_allowed: false
+  can_modify_core: false
+  can_modify_policy: false
+  can_change_permissions: false
+  can_modify_validated_memory: false
+
+resources:
+  allowed_program_ids: []
+  allowed_tool_ids: []
+  prohibited_actions:
+    - modify_active_core
+    - modify_operating_policy
+    - expand_own_permission
+    - bypass_approval
+    - delete_or_modify_audit_record
+    - expose_secret
+    - perform_unapproved_external_action
+
+memory:
+  readable_scopes: []
+  prohibited_scopes:
+    - unrelated_private_memory
+    - inactive_core_candidates
+  direct_validated_write_allowed: false
+  candidate_creation_allowed: true
+  allowed_candidate_types: []
+
+output:
+  base_contract: agent_output.v0.1
+  role_specific_output_schema: {}
+
+validation:
+  default_mode: automatic
+  independent_required_conditions: []
+  acceptance_criteria: []
+  cannot_lower_policy_or_task_requirement: true
+
+budget_caps:
+  mode: cap_only
+  values: {}
+  required_runtime_budget_fields:
+    - model_calls
+    - tool_calls
+    - revision_cycles
+    - validation_cycles
+    - retries
+    - parallel_workers
+    - runtime_seconds
+    - token_budget
+    - cost_budget
+    - cost_currency
+
+stop_conditions: []
+completion_criteria: []
+quality_criteria: []
+
+escalation:
+  target: thomas_prime
+  direct_to_thomas_allowed: false
+
+change_control:
+  owner: Thomas
+  direct_self_modification_allowed: false
+  change_proposal_allowed: true
+  activation_requires_thomas_approval: true

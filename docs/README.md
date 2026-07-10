@@ -33,13 +33,16 @@ Thomas
 | Organization Architecture | `thomas-autonomous-organization-architecture-v0.1.md` | Target, MVP, Dynamic Team 구조 |
 | Operating Policy | `MVP_OPERATING_POLICY.md` | 실행, 권한, Telegram, Memory, 실패, 학습 규칙 |
 | Common I/O Contracts | `thomas-twin-core-architecture-v0.1.md` | Task, Agent Output, Program Result, Permission Decision, Memory Record |
-| Prime Charter | `THOMAS_PRIME_CHARTER.md` | Thomas Prime의 역할, 책임, 권한과 금지 경계 |
+| Prime Charter | `../03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md` | Thomas Prime의 역할, 책임, 권한과 금지 경계 |
+| Dynamic Role Contract | `../03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md` | Dynamic Role 공통 규칙 |
+| Role Assignment | `../03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md` | Task별 실제 Role 권한, Context와 예산 |
+| Role Registry | `../03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` | 활성·후보 역할과 라우팅 상태 |
 | Prime Foundation Reference | `thomas-prime-foundation-settings-v0.1.md` | 초기 상세 설정 참고 자료. Active Core와 Charter가 우선 |
 
 ## 3. Planned Documents
 
 - `OPERATING_CONSTITUTION.md`: 장기 Governance가 필요해질 때 활성화한다.
-- Role Definition: 전문 역할이 반복적으로 필요해질 때 추가한다.
+- Candidate Role Activation: 전문 역할의 반복 필요와 분리 가치가 검증될 때 Registry에서 활성화한다.
 - Program Definition: 실제 Program 구현 전에 추가한다.
 - Tool Definition: 실제 Tool 연결 전에 추가한다.
 - Runtime schemas: 구현 단계에서 I/O 계약을 기계 검증 형식으로 고정한다.
