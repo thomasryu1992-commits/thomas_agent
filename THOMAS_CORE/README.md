@@ -32,6 +32,10 @@ It defines:
 | `MVP_CORE_SCOPE.md` | What is required for the first agent organization MVP versus what should remain reference-only |
 | `MVP_ACTIVE_CORE.yaml` | The only active Core rules for the first MVP runtime |
 
+Related architecture document:
+
+- `docs/thomas-autonomous-organization-architecture-v0.1.md`
+
 ## Runtime Rule
 
 Thomas Core is protected. Agents may suggest changes, but they cannot directly change Thomas identity, core values, long-term goals, risk boundaries, permissions, or approval rules.
