@@ -33,7 +33,8 @@ Thomas
 | Organization Architecture | `thomas-autonomous-organization-architecture-v0.1.md` | Target, MVP, Dynamic Team 구조 |
 | Operating Policy | `MVP_OPERATING_POLICY.md` | 실행, 권한, Telegram, Memory, 실패, 학습 규칙 |
 | Common I/O Contracts | `thomas-twin-core-architecture-v0.1.md` | Task, Agent Output, Program Result, Permission Decision, Memory Record |
-| Prime Foundation | `thomas-prime-foundation-settings-v0.1.md` | Thomas Prime의 초기 역할과 경계 |
+| Prime Charter | `THOMAS_PRIME_CHARTER.md` | Thomas Prime의 역할, 책임, 권한과 금지 경계 |
+| Prime Foundation Reference | `thomas-prime-foundation-settings-v0.1.md` | 초기 상세 설정 참고 자료. Active Core와 Charter가 우선 |
 
 ## 3. Planned Documents
 

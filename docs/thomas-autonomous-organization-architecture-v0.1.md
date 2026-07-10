@@ -7,6 +7,7 @@ Applies To: Thomas Prime, departments, Agents, Programs, Tools, future business 
 
 Document Map: [Thomas Autonomous Organization Document Map](./README.md)
 MVP Operating Rules: [MVP Operating Policy v0.1.1](./MVP_OPERATING_POLICY.md)
+Prime Role and Authority: [Thomas Prime Charter v0.1.1](./THOMAS_PRIME_CHARTER.md)
 
 ## 1. Document Purpose
 
