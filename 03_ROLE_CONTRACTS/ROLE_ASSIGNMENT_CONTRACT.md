@@ -117,8 +117,8 @@ trace_id: trace_01HX_example
 task_id: task_01HX_example
 parent_task_id: null
 role_id: general.specialist
-role_version: 0.1.0
-role_definition_ref: role_registry:general.specialist@0.1.0
+role_version: 0.2.0
+role_definition_ref: role_registry:general.specialist@0.2.0
 actor_instance_id: agent_instance_01HX_example
 assigned_by: thomas_prime
 assignment_status: ASSIGNED

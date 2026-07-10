@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.1
 role_id: research.general
 role_name: Research Role
-role_version: 0.1.0
+role_version: 0.2.0
 status: candidate
 routable: false
 role_type: dynamic_specialist
@@ -18,6 +18,13 @@ activation_conditions:
 non_activation_conditions:
   - internal_information_is_sufficient
   - deterministic_extraction_is_sufficient
+input_contract:
+  task_contract: task.v0.2
+  assignment_contract: role_assignment.v0.1
+  role_assignment_required: true
+active_core:
+  assignment_rule_ids_required: true
+  reference_only_access: assignment_allowlist_only
 permission_ceiling: P3
 allowed_program_ids: []
 allowed_tool_ids: []

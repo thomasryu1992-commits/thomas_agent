@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.1
 role_id: development.general
 role_name: Development Role
-role_version: 0.1.0
+role_version: 0.2.0
 status: candidate
 routable: false
 role_type: dynamic_specialist
@@ -20,6 +20,13 @@ non_activation_conditions:
   - production_deployment_is_required
   - unrestricted_file_or_shell_access_is_required
   - tool_or_sandbox_contract_is_missing
+input_contract:
+  task_contract: task.v0.2
+  assignment_contract: role_assignment.v0.1
+  role_assignment_required: true
+active_core:
+  assignment_rule_ids_required: true
+  reference_only_access: assignment_allowlist_only
 permission_ceiling: P3
 allowed_program_ids: []
 allowed_tool_ids: []

@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.1
 role_id: general.specialist
 role_name: General Specialist Role
-role_version: 0.1.0
+role_version: 0.2.0
 status: active
 routable: true
 role_type: dynamic_specialist
@@ -22,6 +22,13 @@ non_activation_conditions:
   - independent_validation_is_the_primary_task
   - external_action_is_required
   - permission_above_p3_is_required
+input_contract:
+  task_contract: task.v0.2
+  assignment_contract: role_assignment.v0.1
+  role_assignment_required: true
+active_core:
+  assignment_rule_ids_required: true
+  reference_only_access: assignment_allowlist_only
 permission_ceiling: P3
 allowed_program_ids: []
 allowed_tool_ids: []

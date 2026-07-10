@@ -1,6 +1,6 @@
 # Role Contracts
 
-Status: MVP Role Structure v0.1
+Status: MVP Role Structure v0.2
 
 Owner: Thomas
 
