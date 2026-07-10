@@ -7,6 +7,8 @@ Runtime target: Server-hosted autonomous agent organization
 
 Architecture Note: The official organization architecture is now maintained in [Thomas Autonomous Organization Architecture v0.1](./thomas-autonomous-organization-architecture-v0.1.md). This document remains useful for shared runtime components and I/O contracts.
 
+Operating Note: Runtime behavior, Telegram control, approval, memory promotion, execution limits, and learning conditions are governed by [MVP Operating Policy v0.1.1](./MVP_OPERATING_POLICY.md).
+
 ## 1. Document Position
 
 This document fixes the shared backbone of Thomas Twin before deciding the final department structure.
@@ -211,7 +213,7 @@ Every major record should include:
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | Contract version, such as `task.v0.1` |
+| `schema_version` | Contract version, such as `task.v0.2` |
 | `id` | Unique record ID |
 | `trace_id` | End-to-end flow ID |
 | `task_id` | Root or current Task ID |
@@ -279,7 +281,7 @@ A Task is the universal work unit. Every request, scheduled job, agent-created s
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | `task.v0.1` |
+| `schema_version` | string | `task.v0.2` |
 | `task_id` | string | Unique task ID |
 | `trace_id` | string | End-to-end trace ID |
 | `parent_task_id` | string or null | Parent task if this is a subtask |
@@ -288,10 +290,13 @@ A Task is the universal work unit. Every request, scheduled job, agent-created s
 | `raw_request` | string | Original request text |
 | `normalized_goal` | string | System-interpreted goal |
 | `task_type` | string | Request category |
+| `execution_mode` | string | `PROGRAM`, `AGENT`, or `HYBRID` |
+| `complexity` | string | `SIMPLE`, `NORMAL`, or `COMPLEX` |
 | `status` | string | Current task state |
 | `priority` | string | `low`, `normal`, `high`, or `urgent` |
-| `risk_level` | string | Initial risk estimate |
-| `autonomy_level` | string | Maximum allowed autonomy |
+| `risk_level` | string | `GREEN`, `YELLOW`, `ORANGE`, or `RED` |
+| `permission_decision` | string | `ALLOW`, `EXECUTE_AND_REPORT`, `APPROVAL_REQUIRED`, or `BLOCK` |
+| `execution_budget` | object | Agent calls, retries, revisions, runtime, token, and cost limits |
 | `context_refs` | array | Related memory, files, links, messages, or prior tasks |
 | `constraints` | array | Hard limits or user instructions |
 | `expected_outputs` | array | Desired result formats |
@@ -304,23 +309,45 @@ A Task is the universal work unit. Every request, scheduled job, agent-created s
 ### 6.2 Status Values
 
 ```text
-created
-triaged
-routed
-in_progress
-waiting_for_approval
-waiting_for_input
-blocked
-completed
-failed
-cancelled
+RECEIVED
+CLASSIFIED
+PLANNED
+AUTHORIZING
+WAITING_APPROVAL
+QUEUED
+RUNNING
+VALIDATING
+REVISING
+RETRYING
+PAUSED
+BLOCKED
+FAILED
+CANCELED
+COMPLETED
+MEMORY_REVIEW
+CLOSED
 ```
 
-### 6.3 Example
+The canonical lifecycle and transition rules are defined in `MVP_OPERATING_POLICY.md`.
+
+### 6.3 Approval State Values
+
+```text
+NOT_REQUIRED
+PENDING
+APPROVED
+REJECTED
+EXPIRED
+CONSUMED
+```
+
+`APPROVED` does not mean execution succeeded. After Restricted Execution Service uses the action-bound approval, the state becomes `CONSUMED` and the execution result is recorded separately.
+
+### 6.4 Example
 
 ```json
 {
-  "schema_version": "task.v0.1",
+  "schema_version": "task.v0.2",
   "task_id": "task_01HX...",
   "trace_id": "trace_01HX...",
   "parent_task_id": null,
@@ -336,16 +363,28 @@ cancelled
   "raw_request": "이번 자료를 요약하고 핵심 리스크를 알려줘",
   "normalized_goal": "Summarize the provided material and identify key risks.",
   "task_type": "research_summary",
-  "status": "created",
+  "execution_mode": "AGENT",
+  "complexity": "NORMAL",
+  "status": "RECEIVED",
   "priority": "normal",
-  "risk_level": "low",
-  "autonomy_level": "L2_internal_execute",
+  "risk_level": "GREEN",
+  "permission_decision": "ALLOW",
+  "execution_budget": {
+    "max_total_agent_calls": 12,
+    "max_revision_cycles": 2,
+    "max_validation_cycles": 2,
+    "max_retry_count_per_step": 3,
+    "max_task_runtime_minutes": 30,
+    "token_budget": 50000,
+    "cost_budget": 5.0,
+    "cost_currency": "USD"
+  },
   "context_refs": [],
   "constraints": ["Do not send externally."],
   "expected_outputs": ["telegram_summary", "memory_candidates"],
   "assigned_department_id": null,
   "assigned_actor_ids": [],
-  "approval_state": "not_required",
+  "approval_state": "NOT_REQUIRED",
   "created_at": "2026-07-10T03:00:00Z",
   "updated_at": "2026-07-10T03:00:00Z"
 }
@@ -525,23 +564,25 @@ Permission Decision records whether a requested action may proceed.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | `permission_decision.v0.1` |
+| `schema_version` | string | `permission_decision.v0.2` |
 | `permission_decision_id` | string | Unique decision ID |
 | `task_id` | string | Related Task |
 | `trace_id` | string | End-to-end trace ID |
 | `requested_by` | object | Agent, Department, Program, or system component |
 | `requested_action` | object | Exact action requested |
+| `action_fingerprint` | string | Hash of normalized target, content, amount, Tool, and scope |
 | `tool_class` | string | Read, Analysis, Creation, Modification, External Action, Destructive, Privileged |
 | `action_scope` | string | Private, internal, external, financial, operational, etc. |
 | `external_impact` | string | None, reversible, public, financial, operational, irreversible |
 | `reversibility` | string | `reversible`, `partially_reversible`, or `irreversible` |
-| `risk_level` | string | Risk classification |
-| `autonomy_level` | string | Allowed autonomy level |
+| `risk_level` | string | `GREEN`, `YELLOW`, `ORANGE`, or `RED` |
 | `rules_evaluated` | array | Policy rules checked |
-| `decision` | string | Allow, report, require approval, deny, or escalate |
+| `decision` | string | `ALLOW`, `EXECUTE_AND_REPORT`, `APPROVAL_REQUIRED`, or `BLOCK` |
 | `decision_reasons` | array | Reasons for the decision |
 | `required_approver` | string or null | Usually Thomas for high-risk actions |
 | `approval_prompt` | string or null | Telegram message to request approval |
+| `approval_id` | string or null | Unique approval request bound to this exact action |
+| `one_time_use` | boolean | Whether an approval can be consumed only once |
 | `constraints` | array | Conditions attached to approval |
 | `expires_at` | string or null | Expiration timestamp |
 | `created_at` | string | UTC timestamp |
@@ -558,11 +599,21 @@ Permission Decision records whether a requested action may proceed.
 | `destructive` | high | Require approval or deny |
 | `privileged` | critical | Thomas approval or forbidden |
 
-### 9.3 Example
+### 9.3 Approval Binding Rule
+
+When `decision` is `APPROVAL_REQUIRED`:
+
+1. `approval_id`, `action_fingerprint`, exact target, action summary, expected cost, reversibility, and expiration must be present.
+2. Any change to target, content, amount, Tool, or permission scope invalidates the approval request.
+3. Thomas approval creates an immutable Audit Event containing approver ID, decision, action fingerprint, and decision time.
+4. Restricted Execution Service consumes the approval once and records a separate execution event.
+5. Duplicate execution with the same `approval_id` and `action_fingerprint` must be rejected.
+
+### 9.4 Example
 
 ```json
 {
-  "schema_version": "permission_decision.v0.1",
+  "schema_version": "permission_decision.v0.2",
   "permission_decision_id": "perm_01HX...",
   "task_id": "task_01HX...",
   "trace_id": "trace_01HX...",
@@ -572,21 +623,25 @@ Permission Decision records whether a requested action may proceed.
   },
   "requested_action": {
     "type": "send_message",
-    "target": "telegram",
-    "summary": "Send a draft summary to Thomas"
+    "target_ref": "contact:external_partner_001",
+    "channel": "email",
+    "content_hash": "sha256:message_example",
+    "summary": "Send a proposal draft to an external partner"
   },
+  "action_fingerprint": "sha256:normalized_action_example",
   "tool_class": "external_action",
-  "action_scope": "private_telegram",
+  "action_scope": "external_communication",
   "external_impact": "reversible",
   "reversibility": "reversible",
-  "risk_level": "low",
-  "autonomy_level": "L3_external_reversible",
-  "rules_evaluated": ["telegram_private_message_allowed", "no_public_posting"],
-  "decision": "allow",
-  "decision_reasons": ["Private Telegram response to the requester."],
-  "required_approver": null,
-  "approval_prompt": null,
-  "constraints": ["Do not send to any other recipient."],
+  "risk_level": "ORANGE",
+  "rules_evaluated": ["external_message_requires_approval"],
+  "decision": "APPROVAL_REQUIRED",
+  "decision_reasons": ["The recipient is outside the authenticated Thomas Control Channel."],
+  "required_approver": "thomas",
+  "approval_prompt": "외부 파트너에게 제안 초안을 전송할까요?",
+  "approval_id": "approval_01HX...",
+  "one_time_use": true,
+  "constraints": ["Send only to contact:external_partner_001."],
   "expires_at": "2026-07-10T03:15:00Z",
   "created_at": "2026-07-10T03:00:00Z"
 }
@@ -600,7 +655,7 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | `memory_record.v0.1` |
+| `schema_version` | string | `memory_record.v0.2` |
 | `memory_id` | string | Unique memory ID |
 | `trace_id` | string | Trace that created or updated memory |
 | `source_task_id` | string | Task that produced the memory |
@@ -610,6 +665,7 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
 | `title` | string | Short label |
 | `content` | string | Memory content |
 | `evidence_refs` | array | Supporting task, document, message, or output refs |
+| `validation_refs` | array | Validation outputs supporting promotion |
 | `confidence` | number | 0.0 to 1.0 |
 | `sensitivity` | string | `public`, `internal`, `private`, `sensitive`, or `restricted` |
 | `access_policy` | object | Who can read or use this memory |
@@ -618,6 +674,8 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
 | `supersedes` | array | Older memory IDs replaced by this one |
 | `review_required` | boolean | Whether Thomas or Prime review is needed |
 | `created_by` | string | Actor that proposed or wrote memory |
+| `promoted_by` | string or null | Prime, Thomas, or future Memory Curator that activated it |
+| `promoted_at` | string or null | Promotion timestamp |
 | `created_at` | string | UTC timestamp |
 | `updated_at` | string | UTC timestamp |
 | `status` | string | `candidate`, `active`, `deprecated`, `rejected`, or `archived` |
@@ -626,7 +684,7 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
 
 1. Family Memory updates require stronger validation than Department Memory.
 2. Core identity, values, long-term goals, risk policy, permissions, and approval rules cannot be auto-changed.
-3. Agent-created memories should start as `candidate` unless the memory type is low-risk and local.
+3. In the MVP, every Agent-created memory starts as `candidate`.
 4. Memory Records must preserve evidence references.
 5. Contradictory memories must be versioned, not silently overwritten.
 
@@ -634,7 +692,7 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
 
 ```json
 {
-  "schema_version": "memory_record.v0.1",
+  "schema_version": "memory_record.v0.2",
   "memory_id": "mem_01HX...",
   "trace_id": "trace_01HX...",
   "source_task_id": "task_01HX...",
@@ -644,6 +702,7 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
   "title": "Architecture before implementation",
   "content": "Thomas prefers to stabilize the common architecture before starting implementation.",
   "evidence_refs": ["telegram_message:12345"],
+  "validation_refs": ["agent_output:validation_01HX..."],
   "confidence": 0.95,
   "sensitivity": "private",
   "access_policy": {
@@ -655,7 +714,9 @@ Memory Record stores reusable knowledge, preferences, decisions, and lessons.
   "valid_until": null,
   "supersedes": [],
   "review_required": false,
-  "created_by": "thomas_prime",
+  "created_by": "specialist_agent",
+  "promoted_by": "thomas_prime",
+  "promoted_at": "2026-07-10T03:05:00Z",
   "created_at": "2026-07-10T03:00:00Z",
   "updated_at": "2026-07-10T03:00:00Z",
   "status": "active"
@@ -690,14 +751,19 @@ These decisions are intentionally fixed before code:
 9. External actions require Restricted Execution Service.
 10. Core Thomas identity, values, goals, risk policy, and permissions cannot be self-modified.
 
-## 13. Open Design Questions
+## 13. Design Decisions and Open Questions
 
-These should be resolved before implementation:
+Resolved for the MVP:
 
-1. Should Telegram support only one private chat at first, or also group chats?
-2. Should all Telegram messages be stored verbatim, summarized, or selectively stored?
-3. What is the first memory backend: file, SQLite, Postgres, or vector database plus relational store?
-4. What is the first queue model: simple database queue, Redis, or external job queue?
-5. Which actions require immediate Telegram approval in v0.1?
-6. Should Thomas Prime be a single agent, a deterministic coordinator plus agent, or a hybrid?
-7. What is the minimum dashboard or admin view beyond Telegram?
+1. Telegram uses one authenticated Thomas private chat as the Control Channel. Groups, channels, and other users are not autonomous targets.
+2. Control Channel responses, reports, and approval requests are autonomous. Third-party or public communications require action-bound approval.
+3. Agent-created memory starts as a candidate. Prime may promote low-risk operational memory; Thomas alone approves Core promotion.
+
+Still open before implementation:
+
+1. Should Telegram messages be stored verbatim, summarized, or selectively stored?
+2. What is the first memory backend: file, SQLite, Postgres, or vector database plus relational store?
+3. What is the first queue model: simple database queue, Redis, or external job queue?
+4. Should Thomas Prime be a single agent, a deterministic coordinator plus agent, or a hybrid?
+5. What is the minimum dashboard or admin view beyond Telegram?
+6. What numeric token and cost budgets should the first server runtime use?

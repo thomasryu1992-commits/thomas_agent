@@ -5,6 +5,9 @@ Source: Thomas Autonomous Organization Architecture.pdf
 Owner: Thomas  
 Applies To: Thomas Prime, departments, Agents, Programs, Tools, future business organizations
 
+Document Map: [Thomas Autonomous Organization Document Map](./README.md)
+MVP Operating Rules: [MVP Operating Policy v0.1.1](./MVP_OPERATING_POLICY.md)
+
 ## 1. Document Purpose
 
 This document defines the overall organization architecture for Thomas Autonomous Organization.
@@ -648,4 +651,3 @@ Task
   -> Memory
   -> Close
 ```
-
