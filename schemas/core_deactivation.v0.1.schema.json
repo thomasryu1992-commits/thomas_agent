@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "core_deactivation.v0.1.schema.json",
+  "title": "Core Deactivation v0.1 Lean",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "deactivation_id",
+    "status",
+    "effective_at_utc",
+    "deactivated_by",
+    "deactivation_ref",
+    "deactivation_reason",
+    "deactivation_source",
+    "previous_current",
+    "git_provenance",
+    "scope"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "core_deactivation.v0.1"
+    },
+    "deactivation_id": {
+      "type": "string",
+      "pattern": "^core-deactivation-[0-9a-f]{24}$"
+    },
+    "status": {
+      "const": "effective"
+    },
+    "deactivation_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deactivation_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deactivation_source": {
+      "type": "object"
+    },
+    "previous_current": {
+      "type": "object"
+    },
+    "scope": {
+      "type": "object"
+    },
+    "effective_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deactivated_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit_sha"
+      ],
+      "properties": {
+        "source_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  }
+}

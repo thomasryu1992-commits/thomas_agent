@@ -2,8 +2,8 @@
 
 Status Note: This document is a detailed foundation reference. Active MVP Core rules are defined in [`MVP_ACTIVE_CORE.yaml`](../THOMAS_CORE/MVP_ACTIVE_CORE.yaml), and Thomas Prime's official role and authority boundaries are defined in [`THOMAS_PRIME_CHARTER.md`](../03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md). If they conflict, the Active Core and Prime Charter take precedence.
 
-Status: Draft  
-Purpose: Define the core identity and judgment settings used by Thomas Prime  
+Status: Draft
+Purpose: Define the core identity and judgment settings used by Thomas Prime
 Scope: Thomas Identity, Values, Goals, Decision Model, Preference Profile
 
 Canonical Core Draft: `../THOMAS_CORE/`

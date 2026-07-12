@@ -1,0 +1,24 @@
+schema_version: programization_pattern.v0.1
+pattern_id: progpattern-001
+pattern_signature:
+  task_type: internal_document_analysis
+  role_id: general.specialist
+  input_schema_sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  ordered_step_signature_sha256: sha256:2222222222222222222222222222222222222222222222222222222222222222
+  output_schema_sha256: sha256:3333333333333333333333333333333333333333333333333333333333333333
+  environment_version: runtime-0.4
+valid_observation_ids:
+- progobs-001
+- progobs-002
+- progobs-003
+- progobs-004
+- progobs-005
+- progobs-006
+- progobs-007
+- progobs-008
+- progobs-009
+- progobs-010
+valid_repetition_count: 10
+review_trigger_count: 10
+review_status: NOT_TRIGGERED
+last_updated_at_utc: '2026-07-12T00:00:00Z'

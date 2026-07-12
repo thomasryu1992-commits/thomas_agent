@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution_budget.v0.1.schema.json",
+  "title": "Execution Budget v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "limits",
+    "usage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "execution_budget.v0.1"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_agent_invocations",
+        "max_model_calls",
+        "max_tool_calls",
+        "max_program_calls",
+        "max_revision_cycles",
+        "max_validation_cycles",
+        "max_retry_count",
+        "max_parallel_workers",
+        "max_runtime_seconds",
+        "token_budget",
+        "cost_budget",
+        "cost_currency"
+      ],
+      "properties": {
+        "max_agent_invocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_program_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_revision_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_validation_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_retry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_parallel_workers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "token_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_budget": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_invocations",
+        "model_calls",
+        "tool_calls",
+        "program_calls",
+        "revision_cycles",
+        "validation_cycles",
+        "retry_count",
+        "peak_parallel_workers",
+        "runtime_seconds",
+        "tokens_used",
+        "cost_used",
+        "cost_currency"
+      ],
+      "properties": {
+        "agent_invocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tool_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "program_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "revision_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "validation_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_parallel_workers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    }
+  }
+}

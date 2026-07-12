@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "core_revocation.v0.1.schema.json",
+  "title": "Core Revocation v0.1 Lean",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "revocation_id",
+    "status",
+    "effective_at_utc",
+    "revoked_by",
+    "revocation_ref",
+    "revocation_reason",
+    "revocation_source",
+    "target_approval_id",
+    "target_approval_path",
+    "target_approval_sha256",
+    "target_activation_id",
+    "target_activation_path",
+    "git_provenance",
+    "effect"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "core_revocation.v0.1"
+    },
+    "revocation_id": {
+      "type": "string",
+      "pattern": "^core-revocation-[0-9a-f]{24}$"
+    },
+    "status": {
+      "const": "effective"
+    },
+    "effective_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revoked_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revocation_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revocation_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revocation_source": {
+      "type": "object"
+    },
+    "target_approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_approval_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_approval_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target_activation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_activation_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "git_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit_sha"
+      ],
+      "properties": {
+        "source_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "effect": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "core_activation.v0.1.schema.json",
+  "title": "Core Activation v0.1 Lean",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "activation_id",
+    "activation_type",
+    "status",
+    "effective_at_utc",
+    "activated_by",
+    "activation_ref",
+    "activation_reason",
+    "activation_source",
+    "release_id",
+    "core_version",
+    "core_bundle_sha256",
+    "manifest_path",
+    "manifest_sha256",
+    "approval_id",
+    "approval_path",
+    "approval_sha256",
+    "previous_current",
+    "git_provenance",
+    "scope"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "core_activation.v0.1"
+    },
+    "activation_id": {
+      "type": "string",
+      "pattern": "^core-activation-[0-9a-f]{24}$"
+    },
+    "activation_type": {
+      "enum": [
+        "activate",
+        "rollback"
+      ]
+    },
+    "status": {
+      "const": "effective"
+    },
+    "activation_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "activation_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "activation_source": {
+      "type": "object"
+    },
+    "release_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "core_bundle_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "previous_current": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "git_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit_sha"
+      ],
+      "properties": {
+        "source_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "scope": {
+      "type": "object"
+    },
+    "effective_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "activated_by": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

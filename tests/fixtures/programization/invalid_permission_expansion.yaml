@@ -1,0 +1,32 @@
+schema_version: programization_candidate.v0.1
+candidate_id: progcandidate-001
+pattern_id: progpattern-001
+valid_repetition_count: 10
+deterministic_slice:
+- normalize_input
+- calculate_score
+- write_internal_report
+agent_retained_responsibilities:
+- interpretation
+- material_exception
+- strategy
+baseline_metrics:
+  latency_ms: 2000
+  token_count: 5000
+candidate_metrics:
+  latency_ms: 300
+  token_count: 500
+defined_exceptions:
+- unknown_input_schema
+- missing_required_field
+shadow_validation:
+  status: PASS
+  comparison_ref: shadow-comparison-001
+  result: Equivalent quality with lower latency and token use.
+rollback:
+  available: true
+  procedure_ref: rollback-procedure-001
+activation_eligibility: candidate_only_pending_program_registry_and_permission_policy
+permission_expansion: true
+status: REVIEW_READY
+created_at_utc: '2026-07-12T00:00:00Z'

@@ -1,0 +1,9 @@
+# Hash-addressed Runtime records must retain their exact bytes on every platform.
+THOMAS_CORE/releases/** -text
+THOMAS_CORE/approvals/** -text
+THOMAS_CORE/activations/** -text
+THOMAS_CORE/deactivations/** -text
+THOMAS_CORE/revocations/** -text
+THOMAS_CORE/CURRENT_CORE_RELEASE.yaml -text
+THOMAS_CORE/REVIEW_CORE_RELEASE.yaml -text
+build/release_gate/** -text

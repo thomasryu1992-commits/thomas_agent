@@ -1,0 +1,26 @@
+schema_version: programization_observation.v0.1
+observation_id: progobs-001
+task_id: task-001
+task_revision: 1
+trace_id: trace-001
+core_context_binding_id: ccb-example-001
+pattern_signature:
+  task_type: internal_document_analysis
+  role_id: general.specialist
+  input_schema_sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  ordered_step_signature_sha256: sha256:2222222222222222222222222222222222222222222222222222222222222222
+  output_schema_sha256: sha256:3333333333333333333333333333333333333333333333333333333333333333
+  environment_version: runtime-0.4
+result_status: COMPLETED
+validation_status: PASS
+counting_flags:
+  retry_of_same_task_revision: false
+  validation_revision_cycle: false
+  duplicate_replay: false
+  synthetic_test: false
+  fixture: false
+  manual_smoke_test: false
+  incomplete_task: false
+  same_input_without_independent_business_event: false
+valid_for_programization_count: true
+observed_at_utc: '2026-07-12T00:00:00Z'

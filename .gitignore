@@ -1,4 +1,6 @@
 tmp/
 .agents/
 .codex/
+__pycache__/
+*.py[cod]
 

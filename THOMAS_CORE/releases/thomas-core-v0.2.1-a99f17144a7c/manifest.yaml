@@ -1,0 +1,290 @@
+schema_version: thomas_core_release_manifest.v0.3
+manifest_version: 0.3.1
+release_id: thomas-core-v0.2.1-a99f17144a7c
+core_version: 0.2.1
+release_status: review_ready
+runtime_use_allowed_without_separate_approval: false
+owner: Thomas
+hash_algorithm: sha256
+core_bundle_sha256: sha256:a99f17144a7cc54e2586d8614b3b28b379bbc6ab4ab3fca2e858a06bf5549ff8
+historical_verification:
+  uses_release_snapshot: true
+  uses_current_worktree: false
+  artifact_snapshot_root: artifacts
+  toolchain_snapshot_root: validation_toolchain
+canonical_artifacts:
+  philosophy:
+    logical_path: THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+    snapshot_path: artifacts/THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+    sha256: sha256:af7c0a39cf76efeeb567e571601b904e372f48636ce0e64c254e3b62c9580de0
+  active_core:
+    logical_path: THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+    snapshot_path: artifacts/THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+    sha256: sha256:a9bdf1210f35e5520244e8eb55e3d995381e7f064d32950f799c24592db0ea52
+  runtime_policy_projection:
+    logical_path: THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+    snapshot_path: artifacts/THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+    sha256: sha256:66ddfb04d564236c070cf94386041e332d17bdf9c5368d10b7b6dc11e266ead6
+active_runtime:
+  active_rule_ids:
+  - MVP_RULE_001
+  - MVP_RULE_002
+  - MVP_RULE_003
+  - MVP_RULE_004
+  - MVP_RULE_005
+  - MVP_RULE_006
+  - MVP_RULE_007
+  - MVP_RULE_008
+  - MVP_RULE_009
+  - MVP_RULE_010
+  - MVP_RULE_011
+  - MVP_RULE_012
+  - MVP_RULE_013
+  active_rule_count: 13
+  projection_map_version: 0.3.1
+files:
+- logical_path: THOMAS_CORE/CORE_METADATA.yaml
+  snapshot_path: artifacts/THOMAS_CORE/CORE_METADATA.yaml
+  sha256: sha256:54c0b5a7e94a0a3113f18db987a9a9202cf264cddc49fc848554c92df8354c4d
+  size_bytes: 8662
+- logical_path: THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+  snapshot_path: artifacts/THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+  sha256: sha256:66ddfb04d564236c070cf94386041e332d17bdf9c5368d10b7b6dc11e266ead6
+  size_bytes: 2848
+- logical_path: THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+  snapshot_path: artifacts/THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+  sha256: sha256:a9bdf1210f35e5520244e8eb55e3d995381e7f064d32950f799c24592db0ea52
+  size_bytes: 6525
+- logical_path: THOMAS_CORE/MVP_CORE_SCOPE.md
+  snapshot_path: artifacts/THOMAS_CORE/MVP_CORE_SCOPE.md
+  sha256: sha256:3882eeab90259550eef6ee1e99fac6b24336618c9090fb2a47d18753074ae8a1
+  size_bytes: 6021
+- logical_path: THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+  sha256: sha256:af7c0a39cf76efeeb567e571601b904e372f48636ce0e64c254e3b62c9580de0
+  size_bytes: 30218
+- logical_path: THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+  sha256: sha256:6a8f3950160ede77f1582ecfbf131e39e718ddf0dd27130ff263460c12a71228
+  size_bytes: 8841
+- logical_path: THOMAS_CORE/THOMAS_GOALS.yaml
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_GOALS.yaml
+  sha256: sha256:4944886cf47b783f5d52755d955baf06643b897f0d463b05345b2774ee140a43
+  size_bytes: 6602
+- logical_path: THOMAS_CORE/THOMAS_IDENTITY.md
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_IDENTITY.md
+  sha256: sha256:da72109f727b945f432caed266aa2c24105f70f98f63ab6ccdf6e85927245d8c
+  size_bytes: 11152
+- logical_path: THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+  sha256: sha256:d896e376dec81e49cf4d50821557f4193a4fb425931772e4761ab3adaf9073a9
+  size_bytes: 8351
+- logical_path: THOMAS_CORE/THOMAS_REVENUE_PREFERENCE_MODEL.yaml
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_REVENUE_PREFERENCE_MODEL.yaml
+  sha256: sha256:c691f6d4bd7761906d5451f7c41b124d9c36979ecb726472d6d03ab23fea7fdd
+  size_bytes: 5477
+- logical_path: THOMAS_CORE/THOMAS_VALUES.yaml
+  snapshot_path: artifacts/THOMAS_CORE/THOMAS_VALUES.yaml
+  sha256: sha256:cb201cf936d7c98cf36f097ac8b7aad9695d070d18d576b62b5302d702b566a9
+  size_bytes: 13098
+build:
+  built_at_utc: '2026-07-12T14:20:12Z'
+  built_by: Codex Review Branch
+  validation_skipped: false
+  validation_evidence:
+  - check_id: static_integrity
+    label: Static Integrity
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_static_integrity.py
+    result: PASS
+    output_sha256: sha256:e6d7b91491f778382cf4eb3c1e5d0dc22bc8ad8c2806620768f4e83f7e255d4c
+  - check_id: i0.4.1_preconditions
+    label: I0.4.1 Preconditions
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_preconditions.py
+    result: PASS
+    output_sha256: sha256:9b175b4070bc8c385f2a93708946271519cb5c9d571d84519f5f3f05eb254267
+  - check_id: runtime_contract_consistency
+    label: Runtime Contract Consistency
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_consistency.py
+    result: PASS
+    output_sha256: sha256:861e9b1c5e4313429f2ebf9cddbf58dfae309876231ef8f88637e86391ad4e53
+  - check_id: task_contract
+    label: Task Contract
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_task_contracts.py
+    result: PASS
+    output_sha256: sha256:cf151bd0f060e55e8475d28616abd7a7f0798e7039698dec4e8e1cff6229cd68
+  - check_id: thomas_core
+    label: Thomas Core
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_thomas_core.py
+    result: PASS
+    output_sha256: sha256:84537851c589cfe3dc4687d3a30101850f2ac72bfdd472ff69846cd29f89438b
+  - check_id: core_projection_consistency
+    label: Core Projection Consistency
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_projection_consistency.py
+      --strict
+    result: PASS
+    output_sha256: sha256:f2dc1c2d212ae00f99f5a798e25fcbbd2e1a4ca37d920508795fafc624969362
+  - check_id: runtime_lineage_bundle
+    label: Runtime Lineage Bundle
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_runtime_lineage_bundle.py
+    result: PASS
+    output_sha256: sha256:cb82039a51fdf738153812457d5f5ab14092c1c34f3061e3f61a91563a12ac89
+  - check_id: programization_and_operational_knowledge
+    label: Programization and Operational Knowledge
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_programization_contracts.py
+    result: PASS
+    output_sha256: sha256:44496906cc14ecc7b88d809587e71a3de4afa5a1d0ddca25553a55784837d5fa
+  - check_id: core_lifecycle_schemas
+    label: Core Lifecycle Schemas
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_lifecycle_schemas.py
+    result: PASS
+    output_sha256: sha256:cb713ec95764b38485f134d0423f0f4c94d7112c56ad451ec7507c995e0b9f9a
+  - check_id: contract_schema_parity
+    label: Contract Schema Parity
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_schema_parity.py
+    result: PASS
+    output_sha256: sha256:14e8f67b073cb6913e1de3009587435803f6fac83367b193b91cfea0bf8f28f7
+  - check_id: security_hardening
+    label: Security Hardening
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_security_hardening.py
+    result: PASS
+    output_sha256: sha256:465c879e36b48eebba7acab44376526930ef7422df96b409416b445baa0fe419
+  - check_id: core_release_reproducibility
+    label: Core Release Reproducibility
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_release_reproducibility.py
+    result: PASS
+    output_sha256: sha256:8e5e7c900027a7f5518c8713f10336674741b0415f037741033da5ebf7243f0f
+  - check_id: git_working_diff_check
+    label: Git Working Diff Check
+    command: C:\Program Files\Git\cmd\git.exe diff --check
+    result: PASS
+    output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+  - check_id: git_staged_diff_check
+    label: Git Staged Diff Check
+    command: C:\Program Files\Git\cmd\git.exe diff --cached --check
+    result: PASS
+    output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  - check_id: git_head_diff_check
+    label: Git HEAD Diff Check
+    command: C:\Program Files\Git\cmd\git.exe diff HEAD --check
+    result: PASS
+    output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+  - check_id: core_apply_idempotency
+    label: Core Apply Idempotency
+    command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/test_apply_core_idempotency.py
+    result: PASS
+    output_sha256: sha256:f84930f97b454be70f0606232bc231de7a6aa02edf25d36f3a40e760795058db
+  validation_toolchain:
+    validator_files:
+    - logical_path: scripts/build_core_release_manifest.py
+      snapshot_path: validation_toolchain/files/scripts/build_core_release_manifest.py
+      sha256: sha256:ec5c2368d66a1e81cb0e96c0d5049954e20e312d336c4afd7b2cf3bedc4e4473
+      size_bytes: 13779
+    - logical_path: scripts/run_repository_release_gate.py
+      snapshot_path: validation_toolchain/files/scripts/run_repository_release_gate.py
+      sha256: sha256:7fe843037e28a5f4d7d4e407cc0054d9384a3ed968c068662a3c433f9a3ae71a
+      size_bytes: 7369
+    - logical_path: scripts/validate_core_release_reproducibility.py
+      snapshot_path: validation_toolchain/files/scripts/validate_core_release_reproducibility.py
+      sha256: sha256:d4b6d8b14f3ecf756caff311b66e7da1fe23961ddf48ed17193bd8f0c64784c7
+      size_bytes: 14117
+    - logical_path: scripts/validate_static_integrity.py
+      snapshot_path: validation_toolchain/files/scripts/validate_static_integrity.py
+      sha256: sha256:e89e9775ddc3b5c2a396092d033b9c3438fcc39e553be54eb5fa118d668ba0f2
+      size_bytes: 6109
+    - logical_path: scripts/validate_i0_preconditions.py
+      snapshot_path: validation_toolchain/files/scripts/validate_i0_preconditions.py
+      sha256: sha256:5195c9b10ac1dd54769b7d5ba53f6a02f0895b41aa62bd883888c797edc5b050
+      size_bytes: 3387
+    - logical_path: scripts/validate_contract_consistency.py
+      snapshot_path: validation_toolchain/files/scripts/validate_contract_consistency.py
+      sha256: sha256:dde17b037f86e9c84fb84d7ce6f3453d3599dfc4cc1b56e1095d99692523d9ba
+      size_bytes: 13290
+    - logical_path: scripts/validate_task_contracts.py
+      snapshot_path: validation_toolchain/files/scripts/validate_task_contracts.py
+      sha256: sha256:501db2abc94e26842332d44e885a30d15d298c42104d24c46e37f7041064f105
+      size_bytes: 9086
+    - logical_path: scripts/validate_thomas_core.py
+      snapshot_path: validation_toolchain/files/scripts/validate_thomas_core.py
+      sha256: sha256:2e22c15a1992eddf53aac6a36d5566f31eba9056a83cc8d08f85652d43edc7d8
+      size_bytes: 14418
+    - logical_path: scripts/validate_core_projection_consistency.py
+      snapshot_path: validation_toolchain/files/scripts/validate_core_projection_consistency.py
+      sha256: sha256:4d02c107c110dd239d7709e53af24b3ff4e3c922b74a8efaf6392b74268cc179
+      size_bytes: 16025
+    - logical_path: scripts/validate_runtime_lineage_bundle.py
+      snapshot_path: validation_toolchain/files/scripts/validate_runtime_lineage_bundle.py
+      sha256: sha256:89e8785cc5a8c0c113c26cdfc664fc44351102030066424609fcc20a7ddd61b8
+      size_bytes: 10832
+    - logical_path: scripts/validate_programization_contracts.py
+      snapshot_path: validation_toolchain/files/scripts/validate_programization_contracts.py
+      sha256: sha256:3544fe394b8859c9b5562b34a71a971121c07fbde4fa793d789613309c2961bc
+      size_bytes: 3717
+    - logical_path: scripts/validate_core_lifecycle_schemas.py
+      snapshot_path: validation_toolchain/files/scripts/validate_core_lifecycle_schemas.py
+      sha256: sha256:ee29de8d87ee02e955b5e3711aa0dc123a8797572f048ac52aeeea5e90eb93c3
+      size_bytes: 2282
+    - logical_path: scripts/validate_contract_schema_parity.py
+      snapshot_path: validation_toolchain/files/scripts/validate_contract_schema_parity.py
+      sha256: sha256:881955dad0fed5babfa8108bb6467c84f7c8251d1015b4abc458065b6e9b2023
+      size_bytes: 4116
+    - logical_path: scripts/validate_security_hardening.py
+      snapshot_path: validation_toolchain/files/scripts/validate_security_hardening.py
+      sha256: sha256:6516335fc297837a0badc1789290da4adbe173eca860deb1d2ae2ab82fb731e4
+      size_bytes: 4079
+    - logical_path: scripts/test_apply_core_idempotency.py
+      snapshot_path: validation_toolchain/files/scripts/test_apply_core_idempotency.py
+      sha256: sha256:ea00f8fa2bbf819fba2507f06f0a6c9e4c7bb962018a6eb5ce19c00ade15bc89
+      size_bytes: 2768
+    - logical_path: scripts/lib/core_release_verifier.py
+      snapshot_path: validation_toolchain/files/scripts/lib/core_release_verifier.py
+      sha256: sha256:1e57078dc699df2799f19c6d73b1a777009e50cefe0121861d69190a19b8e2b3
+      size_bytes: 24729
+    - logical_path: scripts/lib/release_gate_evidence.py
+      snapshot_path: validation_toolchain/files/scripts/lib/release_gate_evidence.py
+      sha256: sha256:b8c07459f1876910b47c081dfdd3e489a2454ace63e49dfaded70f5736f44760
+      size_bytes: 3993
+    - logical_path: scripts/lib/safe_io.py
+      snapshot_path: validation_toolchain/files/scripts/lib/safe_io.py
+      sha256: sha256:d8309eda255679483eff5f951b700e7d4673588b17104162e4e244e7b1862ab2
+      size_bytes: 4648
+    - logical_path: scripts/lib/git_provenance.py
+      snapshot_path: validation_toolchain/files/scripts/lib/git_provenance.py
+      sha256: sha256:e55a0bb17f2c6668703524d46bb0c898497314fcf8639c750daeee9b4f1b1052
+      size_bytes: 3002
+    dependency_lock:
+      logical_path: requirements-validation.lock
+      snapshot_path: validation_toolchain/requirements-validation.lock
+      sha256: sha256:6f00000d5f34076c6d9538bd29ca18ba2563c87f4dd42abb65c5bd3b725ca230
+    release_gate_evidence:
+      logical_path: build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+      snapshot_path: validation_toolchain/release_gate_evidence.yaml
+      sha256: sha256:0e29c64153b3054abb2d56e61424922b8eff1063a7a88a0942aa6f51e0e77c2f
+      repository_source_fingerprint: sha256:04a8e09701005d760b2d80e6e931f86e5997d3a42ed582fcb449ec054a13781a
+    environment:
+      python_implementation: CPython
+      python_version: 3.12.10
+      operating_system: Windows-10-10.0.19045-SP0
+      dependency_versions:
+        PyYAML: 6.0.3
+        jsonschema: 4.26.0
+        referencing: 0.37.0
+        rpds-py: 2026.5.1
+        attrs: 26.1.0
+      snapshot_path: validation_toolchain/validation_environment.yaml
+      sha256: sha256:93c40fd4c71370a20ab158ab1d57a667998b576a74ed2d264f4ad884acef71b5
+approval_requirement:
+  required_for_runtime_use: true
+  externally_verified_approval_evidence_required: true
+  approval_directory: THOMAS_CORE/approvals
+immutability:
+  artifact_snapshots_are_immutable: true
+  validation_toolchain_snapshot_is_immutable: true
+  semantic_change_requires_new_release: true
+  approved_release_edit_in_place_allowed: false
+runtime_binding:
+  contract: core_context_binding.v0.3
+  root_task_binding_required: true
+  binding_must_be_created_from_task_record: true
+  loaded_rules_must_be_explicit: true
+  loaded_rules_resolve_against_snapshotted_active_core: true
+  silent_mid_task_rebind_allowed: false

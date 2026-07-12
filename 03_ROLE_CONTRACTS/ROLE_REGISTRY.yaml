@@ -1,29 +1,51 @@
-schema_version: role_registry.v0.1
-document_version: 0.2.0
+schema_version: role_registry.v0.2
+document_version: 0.4.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
 router_source_of_truth: true
 role_definition_is_capability_source_of_truth: true
-last_updated_at: "2026-07-10"
-
+last_updated_at: '2026-07-10'
+runtime_contracts:
+  authority_model: ../docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
+  role_assignment: ROLE_ASSIGNMENT_CONTRACT.md
+  agent_output: ../docs/runtime-contracts/AGENT_OUTPUT_CONTRACT_V0.2.md
+  execution_budget: ../docs/runtime-contracts/EXECUTION_BUDGET_SCHEMA.yaml
+  program_registry: ../05_REGISTRIES/PROGRAM_REGISTRY.yaml
+  tool_registry: ../05_REGISTRIES/TOOL_REGISTRY.yaml
+  core_context_binding: ../docs/runtime-contracts/CORE_CONTEXT_BINDING_V0.3.md
 governance:
   allowed_role_statuses:
-    - draft
-    - candidate
-    - active
-    - disabled
-    - deprecated
-    - archived
-
+  - draft
+  - candidate
+  - active
+  - disabled
+  - deprecated
+  - archived
   runtime_assignment:
-    require_active_status: true
-    require_routable_true: true
-    candidate_assignment_allowed: false
+    normal_assignment_requires_active_status: true
+    normal_assignment_requires_routable_true: true
+    candidate_normal_assignment_allowed: false
     disabled_assignment_allowed: false
     deprecated_assignment_allowed: false
     role_assignment_contract_required: true
-
+    minimum_task_contract: task.v0.3
+    core_context_binding_required: true
+  candidate_trial:
+    normal_runtime_routing_allowed: false
+    explicit_trial_assignment_allowed: true
+    requirements:
+    - explicit_thomas_approval
+    - exact_candidate_role_version
+    - candidate_trial_assignment_mode
+    - isolated_trial_context
+    - no_external_action
+    - no_persistent_runtime_change
+    - numeric_execution_budget
+    - independent_validation
+    - audit_required
+    trial_does_not_activate_role: true
+    trial_does_not_change_routable: true
   activation:
     candidate_auto_promotion_allowed: false
     explicit_thomas_approval_required: true
@@ -31,60 +53,57 @@ governance:
     measurable_improvement_required: true
     limited_trial_required: true
     contract_review_required: true
-    permission_and_budget_review_required: true
-    registry_update_required: true
-
+    authority_and_budget_review_required: true
+    registry_version_update_required: true
   consistency:
     applies_to_dynamic_roles_only: true
     dynamic_role_fields_that_must_match_definition:
-      - role_id
-      - role_version
-      - status
-      - routable
-      - role_type
-      - permission_ceiling
+    - role_id
+    - role_version
+    - status
+    - routable
+    - role_type
+    - capabilities
+    - permission_ceiling
+    definition_sha256_required: true
+    capability_set_sha256_required: true
     mismatch_action: block_routing_and_report
     contract_path_must_exist: true
-
-  permission:
-    actual_runtime_permission_is_intersection: true
-    required_intersection_inputs:
-      - system_policy_decision
-      - task_permission
-      - role_permission_ceiling
-      - assignment_granted_permission
-      - tool_or_program_scope
-    p0_to_p4_are_cumulative_only_within_assigned_scope: true
+  authority:
+    authority_model: docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
+    required_permission_level_must_be_within_role_ceiling: true
+    assignment_granted_permission_must_be_within_role_ceiling: true
+    permission_decision_is_separate_axis: true
     p5_and_p6_require_separate_policy_gate: true
     role_self_permission_change_allowed: false
-
   change_control:
     change_authority: Thomas
     agent_direct_modification_allowed: false
     agent_change_proposal_allowed: true
     preserve_change_history: true
-    status_or_permission_change_requires_audit: true
-
+    status_permission_capability_or_hash_change_requires_audit: true
 selection_policy:
   required_checks:
-    - role_status_is_active
-    - role_is_routable
-    - role_definition_matches_registry
-    - capability_match
-    - contract_path_exists
-    - task_permission_within_role_ceiling
-    - task_budget_is_numeric_and_available
-    - required_tool_and_program_scope_available
-    - validation_requirement_resolved
-
+  - task_contract_is_v0.3_and_core_context_binding_present
+  - program_first_when_deterministic
+  - role_status_is_active
+  - role_is_routable
+  - role_definition_hash_matches_registry
+  - capability_set_matches_definition
+  - capability_match
+  - contract_path_exists
+  - required_permission_level_within_role_ceiling
+  - task_permission_decision_allows_assignment
+  - task_and_assignment_budget_are_numeric_and_available
+  - required_tool_and_program_scope_available
+  - validation_requirement_resolved
   selection_order:
-    - program_first_when_deterministic
-    - minimum_sufficient_capability
-    - lowest_sufficient_permission
-    - lowest_sufficient_cost
-    - minimum_required_role_count
-    - best_context_fit
-
+  - program_first_when_deterministic
+  - minimum_sufficient_capability
+  - lowest_sufficient_permission
+  - lowest_sufficient_cost
+  - minimum_required_role_count
+  - best_context_fit
   fallback:
     enabled: true
     fallback_role_id: general.specialist
@@ -92,202 +111,235 @@ selection_policy:
     permission_ceiling_must_be_respected: true
     task_budget_must_be_respected: true
     fallback_cannot_replace_independent_validation: true
-
 non_dynamic_roles:
-  - role_id: thomas.prime
-    role_name: Thomas Prime
-    role_type: chief_autonomous_coordinator
-    status: active
-    routable: false
-    contract_path: THOMAS_PRIME_CHARTER.md
-    inherits_dynamic_role_contract: false
-
+- role_id: thomas.prime
+  role_name: Thomas Prime
+  role_type: chief_autonomous_coordinator
+  status: active
+  routable: false
+  contract_path: THOMAS_PRIME_CHARTER.md
+  inherits_dynamic_role_contract: false
 active_roles:
-  - role_id: general.specialist
-    role_name: General Specialist Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: active
-    routable: true
-    contract_path: ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
-    capabilities:
-      - research
-      - analysis
-      - planning
-      - comparison
-      - drafting
-    permission_ceiling: P3
-    cost_class: STANDARD
-    cost_class_is_authorization: false
-    active_core_scope: role_assignment_rule_ids_only
-    validation_default: automatic
-    budget_policy: role_assignment_required
-    restrictions:
-      external_action_allowed: false
-      direct_validated_memory_write_allowed: false
-      core_modification_allowed: false
-      permission_change_allowed: false
-
-  - role_id: validation.independent
-    role_name: Independent Validation Role
-    role_version: 0.2.0
-    role_type: independent_validator
-    status: active
-    routable: true
-    contract_path: ROLES/ACTIVE/VALIDATION_ROLE.md
-    capabilities:
-      - objective_alignment_check
-      - evidence_check
-      - logic_check
-      - omission_check
-      - uncertainty_check
-      - risk_check
-      - active_core_alignment_check
-      - output_contract_check
-    permission_ceiling: P2
-    cost_class: LOW
-    cost_class_is_authorization: false
-    active_core_scope: role_assignment_rule_ids_only
-    validation_default: independent
-    budget_policy: role_assignment_required
-    restrictions:
-      external_action_allowed: false
-      original_task_execution_allowed: false
-      final_high_risk_approval_allowed: false
-      direct_validated_memory_write_allowed: false
-      core_modification_allowed: false
-      permission_change_allowed: false
-
+- role_id: general.specialist
+  role_name: General Specialist Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: active
+  routable: true
+  contract_path: ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
+  definition_sha256: 772cdefebe343e4f3a7b5d8f4f026fb7a4442517d72bd6c976e4688507ae7405
+  capabilities:
+  - research
+  - analysis
+  - planning
+  - comparison
+  - drafting
+  capability_set_sha256: 0ecccf81b65b8dd2e5cdab90b8310c7a5c999e29b6b18347199e23568d27abb2
+  permission_ceiling: P3
+  cost_class: STANDARD
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  validation_default: automatic
+- role_id: validation.independent
+  role_name: Independent Validation Role
+  role_version: 0.3.0
+  role_type: independent_validator
+  status: active
+  routable: true
+  contract_path: ROLES/ACTIVE/VALIDATION_ROLE.md
+  definition_sha256: ee6e627e7d4a8e3c4fb80b65659681708f71e81a2c5626b42cee9c3b75df887f
+  capabilities:
+  - objective_alignment_check
+  - evidence_check
+  - logic_check
+  - omission_check
+  - uncertainty_check
+  - risk_check
+  - active_core_alignment_check
+  - output_contract_check
+  capability_set_sha256: a8f0ec21c2d32b75e564076055df3227f9f8cec62d4c55acccf2a19f18664efe
+  permission_ceiling: P2
+  cost_class: LOW
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  validation_default: independent
 candidate_roles:
-  - role_id: research.general
-    role_name: Research Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: candidate
-    routable: false
-    contract_path: ROLES/CANDIDATES/RESEARCH_ROLE.md
-    capabilities:
-      - evidence_collection
-      - source_comparison
-      - source_quality_assessment
-      - research_gap_identification
-    permission_ceiling: P3
-    cost_class: STANDARD
-    cost_class_is_authorization: false
-    promotion_requirements:
-      - minimum_three_similar_completed_tasks
-      - measurable_improvement_over_general_specialist
-      - capability_and_output_tests_passed
-      - permission_and_budget_tests_passed
-      - limited_trial_passed
-      - thomas_approval
-
-  - role_id: translation.general
-    role_name: Translation Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: candidate
-    routable: false
-    contract_path: ROLES/CANDIDATES/TRANSLATION_ROLE.md
-    capabilities:
-      - translation
-      - terminology_consistency
-      - tone_adaptation
-      - ambiguity_disclosure
-    permission_ceiling: P3
-    cost_class: LOW
-    cost_class_is_authorization: false
-    promotion_requirements:
-      - minimum_three_similar_completed_tasks
-      - measurable_improvement_over_general_specialist
-      - multilingual_quality_tests_passed
-      - permission_and_budget_tests_passed
-      - limited_trial_passed
-      - thomas_approval
-
-  - role_id: content.general
-    role_name: Content Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: candidate
-    routable: false
-    contract_path: ROLES/CANDIDATES/CONTENT_ROLE.md
-    capabilities:
-      - content_planning
-      - drafting
-      - audience_adaptation
-      - brand_alignment
-      - content_risk_identification
-    permission_ceiling: P3
-    cost_class: STANDARD
-    cost_class_is_authorization: false
-    promotion_requirements:
-      - minimum_three_similar_completed_tasks
-      - measurable_improvement_over_general_specialist
-      - content_quality_tests_passed
-      - publishing_boundary_tests_passed
-      - limited_trial_passed
-      - thomas_approval
-
-  - role_id: business.analysis
-    role_name: Business Analysis Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: candidate
-    routable: false
-    contract_path: ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md
-    capabilities:
-      - opportunity_analysis
-      - option_comparison
-      - revenue_potential_assessment
-      - downside_risk_assessment
-      - small_validation_design
-    permission_ceiling: P3
-    cost_class: STANDARD
-    cost_class_is_authorization: false
-    promotion_requirements:
-      - minimum_three_similar_completed_tasks
-      - measurable_improvement_over_general_specialist
-      - business_case_tests_passed
-      - uncertainty_and_downside_tests_passed
-      - independent_validation_passed
-      - thomas_approval
-
-  - role_id: development.general
-    role_name: Development Role
-    role_version: 0.2.0
-    role_type: dynamic_specialist
-    status: candidate
-    routable: false
-    contract_path: ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
-    capabilities:
-      - technical_analysis
-      - implementation_planning
-      - code_review
-      - code_draft_generation
-    permission_ceiling: P3
-    cost_class: STANDARD
-    cost_class_is_authorization: false
-    activation_blockers:
-      - program_and_tool_registry
-      - isolated_execution_environment
-      - code_change_validation
-      - explicit_file_and_deployment_permissions
-    promotion_requirements:
-      - minimum_three_similar_completed_tasks
-      - measurable_improvement_over_general_specialist
-      - code_quality_tests_passed
-      - sandbox_boundary_tests_passed
-      - runtime_and_permission_boundary_tests_passed
-      - thomas_approval
-
+- role_id: research.general
+  role_name: Research Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: candidate
+  routable: false
+  contract_path: ROLES/CANDIDATES/RESEARCH_ROLE.md
+  definition_sha256: 6ad74e7924d0f00f528b07d2cf4cadcfbd155286fb6e821225a40027ae740847
+  capabilities:
+  - evidence_collection
+  - source_comparison
+  - source_quality_assessment
+  - research_gap_identification
+  capability_set_sha256: b4dd4cb28a4e0ee5a595617913ac99636be608236cf8580a3395e00c18e678cc
+  permission_ceiling: P3
+  cost_class: STANDARD
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  promotion_requirements:
+  - minimum_three_similar_completed_tasks
+  - measurable_improvement_over_general_specialist
+  - candidate_trial_passed
+  - capability_output_authority_and_budget_tests_passed
+  - independent_validation_passed
+  - thomas_approval
+- role_id: translation.general
+  role_name: Translation Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: candidate
+  routable: false
+  contract_path: ROLES/CANDIDATES/TRANSLATION_ROLE.md
+  definition_sha256: 820d59755abe5d7dae7b6387dd91bd2d4c19d69590177aca43a4883a24753c27
+  capabilities:
+  - translation
+  - terminology_consistency
+  - tone_adaptation
+  - ambiguity_disclosure
+  capability_set_sha256: b95408201c25c1e0db550893d44dbf0fdafdbb9a01320a75014d083df59607c4
+  permission_ceiling: P3
+  cost_class: LOW
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  promotion_requirements:
+  - minimum_three_similar_completed_tasks
+  - measurable_improvement_over_general_specialist
+  - candidate_trial_passed
+  - capability_output_authority_and_budget_tests_passed
+  - independent_validation_passed
+  - thomas_approval
+- role_id: content.general
+  role_name: Content Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: candidate
+  routable: false
+  contract_path: ROLES/CANDIDATES/CONTENT_ROLE.md
+  definition_sha256: 3387d708fe0909921bc860d05ccfd511a1e8a811ddebf93fdd04e73dce06ba23
+  capabilities:
+  - content_planning
+  - drafting
+  - audience_adaptation
+  - brand_alignment
+  - content_risk_identification
+  capability_set_sha256: 4b1fffa9d04566b83c59f7794632c54dc7836d2be9cb739859272755a959fcab
+  permission_ceiling: P3
+  cost_class: STANDARD
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  promotion_requirements:
+  - minimum_three_similar_completed_tasks
+  - measurable_improvement_over_general_specialist
+  - candidate_trial_passed
+  - capability_output_authority_and_budget_tests_passed
+  - independent_validation_passed
+  - thomas_approval
+- role_id: business.analysis
+  role_name: Business Analysis Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: candidate
+  routable: false
+  contract_path: ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md
+  definition_sha256: c841d4513f14867419ff89276ae651b8a51b7f082a98478431d019037ffaf4cc
+  capabilities:
+  - opportunity_analysis
+  - option_comparison
+  - revenue_potential_assessment
+  - downside_risk_assessment
+  - small_validation_design
+  capability_set_sha256: 7c522e1babd788f6f18f9a9efd15357ff893ff81cacce275b7662e8afcbc23d9
+  permission_ceiling: P3
+  cost_class: STANDARD
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  promotion_requirements:
+  - minimum_three_similar_completed_tasks
+  - measurable_improvement_over_general_specialist
+  - candidate_trial_passed
+  - capability_output_authority_and_budget_tests_passed
+  - independent_validation_passed
+  - thomas_approval
+- role_id: development.general
+  role_name: Development Role
+  role_version: 0.3.0
+  role_type: dynamic_specialist
+  status: candidate
+  routable: false
+  contract_path: ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
+  definition_sha256: 56f1201387638ae78bc10714b3c7471277abb50776c343b9ef2985eb5c596ae2
+  capabilities:
+  - technical_analysis
+  - implementation_planning
+  - code_review
+  - code_draft_generation
+  capability_set_sha256: a84e0b8f291ef293762f19387e92463b2e3e579013a335d71a6a483028832361
+  permission_ceiling: P3
+  cost_class: STANDARD
+  cost_class_is_authorization: false
+  active_core_scope: role_assignment_rule_ids_only
+  budget_policy: role_assignment_required
+  restrictions:
+    external_action_allowed: false
+    direct_validated_memory_write_allowed: false
+    core_modification_allowed: false
+    permission_change_allowed: false
+  promotion_requirements:
+  - minimum_three_similar_completed_tasks
+  - measurable_improvement_over_general_specialist
+  - candidate_trial_passed
+  - capability_output_authority_and_budget_tests_passed
+  - independent_validation_passed
+  - thomas_approval
 role_status_definitions:
   draft:
     routable: false
     description: Definition is incomplete or not reviewed.
   candidate:
     routable: false
-    description: Review and limited-trial only; not available for normal routing.
+    description: Normal routing is prohibited; explicit isolated trial only.
   active:
     routable: true
     description: Approved Dynamic Role available for normal routing when all checks pass.
@@ -296,35 +348,40 @@ role_status_definitions:
     description: Temporarily blocked while preserving history and references.
   deprecated:
     routable: false
-    description: Replaced role; no new assignments.
+    description: Replaced Role; no new normal assignments.
   archived:
     routable: false
-    description: Preserved only for historical Task and Audit compatibility.
-
+    description: Historical Task and Audit compatibility only.
 cost_classes:
   authorization_rule: metadata_only_never_grants_permission
   LOW:
     description: Expected low relative cost.
   STANDARD:
-    description: Normal cost that must fit the numeric Task budget.
+    description: Normal cost that must fit the numeric Task and Assignment budget.
   HIGH_APPROVAL_REQUIRED:
     description: High expected cost requiring explicit numeric budget approval.
-
 audit:
   record_registry_version_used: true
   record_role_selection: true
   record_role_rejection_reason: true
-  record_definition_consistency_check: true
-  record_permission_intersection_check: true
+  record_definition_hash_check: true
+  record_capability_set_check: true
+  record_authority_check: true
+  record_permission_decision_ref: true
   record_numeric_budget_check: true
+  record_candidate_trial_authorization: true
   preserve_disabled_deprecated_and_archived_roles: true
-
 change_history:
-  - document_version: 0.1.0
-    date: "2026-07-10"
-    change: Initial MVP registry with two active and five candidate roles.
-    approved_by: Thomas
-  - document_version: 0.2.0
-    date: "2026-07-10"
-    change: Added governance, consistency, promotion, selection, permission, cost, and audit rules.
-    approved_by: Thomas
+- document_version: 0.1.0
+  date: '2026-07-10'
+  change: Initial MVP Registry.
+  approved_by: Thomas
+- document_version: 0.2.0
+  date: '2026-07-10'
+  change: Added governance, consistency, promotion, selection, permission, cost, and audit rules.
+  approved_by: Thomas
+- document_version: 0.3.0
+  date: '2026-07-10'
+  change: Separated authority from Permission Decision; added definition and capability hashes, Candidate trial policy, Role
+    Assignment v0.2, Agent Output v0.2, Execution Budget v0.1, and resource Registry references.
+  approved_by: Thomas

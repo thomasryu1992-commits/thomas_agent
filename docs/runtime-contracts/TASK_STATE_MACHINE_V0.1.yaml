@@ -1,0 +1,158 @@
+schema_version: task_state_machine.v0.1
+document_version: 0.1.0
+status: active_mvp_contract
+owner: Thomas
+terminal_states:
+- FAILED
+- CANCELED
+- CLOSED
+states:
+  RECEIVED:
+    allowed_next:
+    - CLASSIFIED
+    - CANCELED
+    required_guards: []
+  CLASSIFIED:
+    allowed_next:
+    - PLANNED
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - classification_complete
+  PLANNED:
+    allowed_next:
+    - AUTHORIZING
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - primary_objective_present
+    - success_conditions_present
+    - required_permission_level_resolved
+    - numeric_task_budget_present
+  AUTHORIZING:
+    allowed_next:
+    - WAITING_APPROVAL
+    - QUEUED
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - authority_requirement_resolved
+    - permission_evaluation_completed_or_pending_approval
+  WAITING_APPROVAL:
+    allowed_next:
+    - QUEUED
+    - PLANNED
+    - CANCELED
+    - BLOCKED
+    required_guards:
+    - permission_decision_is_approval_required
+    - approval_id_present
+    - action_fingerprint_present
+  QUEUED:
+    allowed_next:
+    - RUNNING
+    - PAUSED
+    - CANCELED
+    - BLOCKED
+    required_guards:
+    - permission_is_executable
+    - route_is_resolved
+    - budget_available
+  RUNNING:
+    allowed_next:
+    - VALIDATING
+    - RETRYING
+    - PAUSED
+    - FAILED
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - permission_is_executable
+    - authority_is_sufficient
+    - budget_available
+  VALIDATING:
+    allowed_next:
+    - REVISING
+    - COMPLETED
+    - FAILED
+    - BLOCKED
+    - PAUSED
+    required_guards:
+    - validation_requirement_resolved
+  REVISING:
+    allowed_next:
+    - VALIDATING
+    - RETRYING
+    - PAUSED
+    - FAILED
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - revision_budget_available
+  RETRYING:
+    allowed_next:
+    - RUNNING
+    - FAILED
+    - BLOCKED
+    - PAUSED
+    - CANCELED
+    required_guards:
+    - retry_is_allowed_for_failure_type
+    - retry_budget_available
+  PAUSED:
+    allowed_next:
+    - CLASSIFIED
+    - PLANNED
+    - AUTHORIZING
+    - WAITING_APPROVAL
+    - QUEUED
+    - RUNNING
+    - VALIDATING
+    - REVISING
+    - RETRYING
+    - BLOCKED
+    - CANCELED
+    required_guards:
+    - previous_status_present
+    - pause_resume_target_present
+    - resume_target_matches_recorded_pre_pause_state_or_approved_replan
+  BLOCKED:
+    allowed_next:
+    - PLANNED
+    - AUTHORIZING
+    - FAILED
+    - CANCELED
+    required_guards:
+    - blocked_reason_present
+    - unblock_condition_or_thomas_decision_present_for_resume
+  FAILED:
+    allowed_next: []
+    required_guards:
+    - failure_recorded
+  CANCELED:
+    allowed_next: []
+    required_guards:
+    - cancellation_recorded
+  COMPLETED:
+    allowed_next:
+    - MEMORY_REVIEW
+    required_guards:
+    - final_or_partial_result_present
+    - completion_criteria_evaluated
+  MEMORY_REVIEW:
+    allowed_next:
+    - CLOSED
+    required_guards:
+    - memory_review_recorded
+  CLOSED:
+    allowed_next: []
+    required_guards:
+    - final_result_recorded
+    - memory_result_recorded
+    - audit_complete
+global_transition_rules:
+- every_transition_requires_audit_event
+- material_scope_change_returns_to_planned_or_authorizing
+- permission_or_approval_change_invalidates_affected_assignments
+- terminal_task_reexecution_requires_new_task_id
+- subtask_cannot_expand_parent_authority_or_budget

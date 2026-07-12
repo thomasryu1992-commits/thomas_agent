@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "programization_observation.v0.1.schema.json",
+  "title": "Programization Observation v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "task_id",
+    "task_revision",
+    "trace_id",
+    "core_context_binding_id",
+    "pattern_signature",
+    "result_status",
+    "validation_status",
+    "counting_flags",
+    "valid_for_programization_count",
+    "observed_at_utc"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "programization_observation.v0.1"
+    },
+    "observation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_context_binding_id": {
+      "type": "string",
+      "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+    },
+    "pattern_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_type",
+        "role_id",
+        "input_schema_sha256",
+        "ordered_step_signature_sha256",
+        "output_schema_sha256",
+        "environment_version"
+      ],
+      "properties": {
+        "task_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input_schema_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ordered_step_signature_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "output_schema_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "environment_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "result_status": {
+      "const": "COMPLETED"
+    },
+    "validation_status": {
+      "const": "PASS"
+    },
+    "counting_flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retry_of_same_task_revision",
+        "validation_revision_cycle",
+        "duplicate_replay",
+        "synthetic_test",
+        "fixture",
+        "manual_smoke_test",
+        "incomplete_task",
+        "same_input_without_independent_business_event"
+      ],
+      "properties": {
+        "retry_of_same_task_revision": {
+          "type": "boolean"
+        },
+        "validation_revision_cycle": {
+          "type": "boolean"
+        },
+        "duplicate_replay": {
+          "type": "boolean"
+        },
+        "synthetic_test": {
+          "type": "boolean"
+        },
+        "fixture": {
+          "type": "boolean"
+        },
+        "manual_smoke_test": {
+          "type": "boolean"
+        },
+        "incomplete_task": {
+          "type": "boolean"
+        },
+        "same_input_without_independent_business_event": {
+          "type": "boolean"
+        }
+      }
+    },
+    "valid_for_programization_count": {
+      "type": "boolean"
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "valid_for_programization_count": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "counting_flags": {
+            "properties": {
+              "retry_of_same_task_revision": {
+                "const": false
+              },
+              "validation_revision_cycle": {
+                "const": false
+              },
+              "duplicate_replay": {
+                "const": false
+              },
+              "synthetic_test": {
+                "const": false
+              },
+              "fixture": {
+                "const": false
+              },
+              "manual_smoke_test": {
+                "const": false
+              },
+              "incomplete_task": {
+                "const": false
+              },
+              "same_input_without_independent_business_event": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

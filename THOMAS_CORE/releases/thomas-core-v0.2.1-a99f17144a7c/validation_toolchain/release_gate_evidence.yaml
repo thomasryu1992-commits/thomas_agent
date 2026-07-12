@@ -1,0 +1,93 @@
+schema_version: thomas_release_gate_evidence.v0.1
+result: PASS
+generated_at_utc: '2026-07-12T14:19:49Z'
+generated_by: scripts/run_repository_release_gate.py
+repository_source_fingerprint: sha256:04a8e09701005d760b2d80e6e931f86e5997d3a42ed582fcb449ec054a13781a
+source_file_count: 119
+checks:
+- check_id: static_integrity
+  label: Static Integrity
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_static_integrity.py
+  result: PASS
+  output_sha256: sha256:e6d7b91491f778382cf4eb3c1e5d0dc22bc8ad8c2806620768f4e83f7e255d4c
+- check_id: i0.4.1_preconditions
+  label: I0.4.1 Preconditions
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_preconditions.py
+  result: PASS
+  output_sha256: sha256:9b175b4070bc8c385f2a93708946271519cb5c9d571d84519f5f3f05eb254267
+- check_id: runtime_contract_consistency
+  label: Runtime Contract Consistency
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_consistency.py
+  result: PASS
+  output_sha256: sha256:861e9b1c5e4313429f2ebf9cddbf58dfae309876231ef8f88637e86391ad4e53
+- check_id: task_contract
+  label: Task Contract
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_task_contracts.py
+  result: PASS
+  output_sha256: sha256:cf151bd0f060e55e8475d28616abd7a7f0798e7039698dec4e8e1cff6229cd68
+- check_id: thomas_core
+  label: Thomas Core
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_thomas_core.py
+  result: PASS
+  output_sha256: sha256:84537851c589cfe3dc4687d3a30101850f2ac72bfdd472ff69846cd29f89438b
+- check_id: core_projection_consistency
+  label: Core Projection Consistency
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_projection_consistency.py
+    --strict
+  result: PASS
+  output_sha256: sha256:f2dc1c2d212ae00f99f5a798e25fcbbd2e1a4ca37d920508795fafc624969362
+- check_id: runtime_lineage_bundle
+  label: Runtime Lineage Bundle
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_runtime_lineage_bundle.py
+  result: PASS
+  output_sha256: sha256:cb82039a51fdf738153812457d5f5ab14092c1c34f3061e3f61a91563a12ac89
+- check_id: programization_and_operational_knowledge
+  label: Programization and Operational Knowledge
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_programization_contracts.py
+  result: PASS
+  output_sha256: sha256:44496906cc14ecc7b88d809587e71a3de4afa5a1d0ddca25553a55784837d5fa
+- check_id: core_lifecycle_schemas
+  label: Core Lifecycle Schemas
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_lifecycle_schemas.py
+  result: PASS
+  output_sha256: sha256:cb713ec95764b38485f134d0423f0f4c94d7112c56ad451ec7507c995e0b9f9a
+- check_id: contract_schema_parity
+  label: Contract Schema Parity
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_schema_parity.py
+  result: PASS
+  output_sha256: sha256:14e8f67b073cb6913e1de3009587435803f6fac83367b193b91cfea0bf8f28f7
+- check_id: security_hardening
+  label: Security Hardening
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_security_hardening.py
+  result: PASS
+  output_sha256: sha256:465c879e36b48eebba7acab44376526930ef7422df96b409416b445baa0fe419
+- check_id: core_release_reproducibility
+  label: Core Release Reproducibility
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_release_reproducibility.py
+  result: PASS
+  output_sha256: sha256:8e5e7c900027a7f5518c8713f10336674741b0415f037741033da5ebf7243f0f
+- check_id: git_working_diff_check
+  label: Git Working Diff Check
+  command: C:\Program Files\Git\cmd\git.exe diff --check
+  result: PASS
+  output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+- check_id: git_staged_diff_check
+  label: Git Staged Diff Check
+  command: C:\Program Files\Git\cmd\git.exe diff --cached --check
+  result: PASS
+  output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+- check_id: git_head_diff_check
+  label: Git HEAD Diff Check
+  command: C:\Program Files\Git\cmd\git.exe diff HEAD --check
+  result: PASS
+  output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+- check_id: core_apply_idempotency
+  label: Core Apply Idempotency
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/test_apply_core_idempotency.py
+  result: PASS
+  output_sha256: sha256:f84930f97b454be70f0606232bc231de7a6aa02edf25d36f3a40e760795058db
+scope:
+  authorizes_release_build_for_unchanged_source: true
+  grants_core_approval: false
+  grants_core_activation: false
+  grants_execution_permission: false

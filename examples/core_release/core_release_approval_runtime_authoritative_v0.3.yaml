@@ -1,0 +1,31 @@
+schema_version: thomas_core_release_approval.v0.3
+approval_id: core-approval-222222222222222222222222
+status: approved
+approved_by: Thomas
+approved_at_utc: '2026-07-12T00:00:00Z'
+approval_ref: example-review
+approval_reason: Review evidence only.
+approval_source:
+  source_type: signed_git_commit
+  source_id: example-review
+  source_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  identity_verification_method: manual_record
+  verification_status: verified_by_signature
+  note: Example only.
+release_id: thomas-core-v0.2.1-bbbbbbbbbbbb
+core_version: 0.2.1
+core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+core_release_manifest_sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+manifest_path: THOMAS_CORE/releases/example/manifest.yaml
+git_provenance:
+  approved_commit_sha: '1111111111111111111111111111111111111111'
+scope:
+  authorizes_core_runtime_reference: true
+  grants_execution_permission: false
+  grants_external_action_permission: false
+  grants_financial_authority: false
+  changes_agent_permission_ceiling: false
+  changes_tool_or_program_scope: false
+immutability:
+  approval_record_edit_in_place_allowed: false
+  revocation_or_supersession_requires_new_record: true

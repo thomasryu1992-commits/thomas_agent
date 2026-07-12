@@ -1,42 +1,37 @@
-schema_version: role_definition.v0.1
-document_version: 0.2.0
+schema_version: role_definition.v0.3
+document_version: 0.4.0
 document_type: role_definition_template
 template_only: true
 owner: Thomas
-
-role_id: "<required_domain.function>"
-role_name: "<required_human_readable_name>"
-role_version: "0.1.0"
+role_id: <required_domain.function>
+role_name: <required_human_readable_name>
+role_version: 0.3.0
 status: draft
 routable: false
 role_type: dynamic_specialist
-purpose: "<required_one_sentence_purpose>"
-
+purpose: <required_one_sentence_purpose>
 allowed_role_types:
-  - dynamic_specialist
-  - independent_validator
-  - risk_reviewer
-
+- dynamic_specialist
+- independent_validator
+- risk_reviewer
 capabilities: []
 unsupported_capabilities: []
-
 activation_conditions: []
 non_activation_conditions:
-  - deterministic_program_is_sufficient
-  - permission_requirement_exceeds_ceiling
-  - prohibited_action_is_required
+- deterministic_program_is_sufficient
+- permission_requirement_exceeds_ceiling
+- prohibited_action_is_required
 deactivation_conditions:
-  - task_completed
-  - task_canceled
-  - role_no_longer_required
-  - assignment_expired
-  - execution_budget_exhausted
-  - permission_boundary_reached
-  - escalation_required
-
+- task_completed
+- task_canceled
+- role_no_longer_required
+- assignment_expired
+- execution_budget_exhausted
+- permission_boundary_reached
+- escalation_required
 input_contract:
-  task_contract: task.v0.2
-  assignment_contract: role_assignment.v0.1
+  task_contract: task.v0.3
+  assignment_contract: role_assignment.v0.2
   role_assignment_required: true
   task_fields_are_not_redefined: true
   custom_input_refs: []
@@ -44,163 +39,165 @@ input_contract:
     low_impact: use_safe_assumption_and_disclose
     material_impact: stop_and_request_input_from_prime
     high_risk: stop_and_escalate_to_prime
-
+  task_contract_minimum: task.v0.3
+  supported_task_contracts:
+  - task.v0.3
+  core_context_binding_required: true
 active_core:
   assignment_rule_ids_required: true
   allowed_rule_ids:
-    - MVP_RULE_001
-    - MVP_RULE_002
-    - MVP_RULE_003
-    - MVP_RULE_004
-    - MVP_RULE_005
-    - MVP_RULE_006
-    - MVP_RULE_007
-    - MVP_RULE_008
+  - MVP_RULE_001
+  - MVP_RULE_002
+  - MVP_RULE_003
+  - MVP_RULE_004
+  - MVP_RULE_005
+  - MVP_RULE_006
+  - MVP_RULE_007
+  - MVP_RULE_008
+  - MVP_RULE_009
+  - MVP_RULE_010
+  - MVP_RULE_011
+  - MVP_RULE_012
+  - MVP_RULE_013
   reference_only_access: assignment_allowlist_only
   inactive_core_candidate_access: prohibited
   full_core_load_by_default: false
-
 permission_ceiling: P3
 external_action_allowed: false
-
-permission_rules:
-  actual_runtime_permission_is_intersection: true
-  required_intersection_inputs:
-    - system_policy_decision
-    - task_permission
-    - role_permission_ceiling
-    - assignment_granted_permission
-    - tool_or_program_scope
+authority_rules:
+  authority_model: ../docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
+  assignment_granted_permission_required: true
+  effective_permission_required: true
+  permission_decision_is_separate_axis: true
   cannot_self_elevate: true
   p5_and_p6_require_separate_policy_gate: true
-
 allowed_program_ids: []
 allowed_tool_ids: []
 prohibited_actions:
-  - modify_active_core
-  - modify_operating_policy
-  - modify_permission_or_risk_policy
-  - expand_own_permission
-  - bypass_approval
-  - delete_or_modify_audit_record
-  - expose_secret
-  - perform_unapproved_external_action
-  - activate_candidate_role
-  - modify_own_definition
-
+- modify_active_core
+- modify_operating_policy
+- modify_permission_or_risk_policy
+- expand_own_permission
+- bypass_approval
+- delete_or_modify_audit_record
+- expose_secret
+- perform_unapproved_external_action
+- activate_candidate_role
+- modify_own_definition
 resource_rules:
   registry_required: true
   role_definition_allowlist_required: true
   role_assignment_allowlist_required: true
   disabled_resource_use_prohibited: true
   resource_cannot_expand_role_permission: true
-
 memory_policy:
   assignment_scoped_read_only: true
   readable_scopes: []
   prohibited_scopes:
-    - unrelated_private_memory
-    - inactive_core_candidates
-    - restricted_memory
+  - unrelated_private_memory
+  - inactive_core_candidates
+  - restricted_memory
   candidate_creation_allowed: true
   allowed_candidate_types: []
   direct_validated_write_allowed: false
   direct_core_write_allowed: false
   secret_candidate_creation_allowed: false
-
 output_contract:
-  base_contract: agent_output.v0.1
-  common_status_is_not_redefined: true
+  base_contract: agent_output.v0.2
+  common_fields_and_status_are_not_redefined: true
   role_specific_output: {}
   evidence_requirements:
-    separate_fact_inference_assumption: true
+    separate_fact_evidence_inference_assumption: true
     disclose_conflicting_evidence: true
     disclose_missing_evidence: true
     disclose_staleness_when_known: true
   uncertainty_disclosure_required: true
-
 validation_policy:
   default_mode: automatic
   independent_required_conditions: []
   acceptance_criteria:
-    - objective_met
-    - required_output_present
-    - output_contract_valid
-    - material_uncertainty_disclosed
-    - active_core_scope_respected
-    - no_permission_violation
-    - execution_budget_respected
+  - objective_met
+  - required_output_present
+  - output_contract_valid
+  - material_uncertainty_disclosed
+  - active_core_scope_respected
+  - no_authority_or_permission_violation
+  - execution_budget_respected
   cannot_lower_policy_or_task_requirement: true
   effective_validation_uses_highest_requirement: true
-
 budget_caps:
+  schema_version: execution_budget.v0.1
   mode: cap_only
-  values: {}
-  role_cap_does_not_create_new_budget: true
-  effective_budget_uses_minimum_of:
-    - operating_policy_limit
-    - parent_task_remaining_budget
-    - role_definition_cap
-    - role_assignment_allocation
-  required_runtime_budget_fields:
-    - model_calls
-    - tool_calls
-    - revision_cycles
-    - validation_cycles
-    - retries
-    - parallel_workers
-    - runtime_seconds
-    - token_budget
-    - cost_budget
-    - cost_currency
-  null_runtime_budget_allowed: false
-  budget_override_requires_thomas_approval: true
-
+  null_cap_means_no_additional_role_limit: true
+  limits:
+    max_agent_invocations: 1
+    max_model_calls: null
+    max_tool_calls: null
+    max_program_calls: null
+    max_revision_cycles: null
+    max_validation_cycles: null
+    max_retry_count: null
+    max_parallel_workers: null
+    max_runtime_seconds: null
+    token_budget: null
+    cost_budget: null
+    cost_currency: null
+candidate_trial_policy:
+  normal_runtime_routing_allowed: false
+  explicit_trial_assignment_allowed: true
+  requirements:
+  - explicit_thomas_approval
+  - exact_candidate_role_version
+  - candidate_trial_assignment_mode
+  - isolated_trial_context
+  - no_external_action
+  - no_persistent_runtime_change
+  - numeric_execution_budget
+  - independent_validation
+  - audit_required
 stop_conditions:
-  - permission_ceiling_exceeded
-  - assignment_scope_exceeded
-  - prohibited_tool_or_program_required
-  - security_or_secret_exposure_risk
-  - critical_input_corruption
-  - execution_budget_exhausted
-  - policy_conflict_detected
-
+- permission_ceiling_exceeded
+- assignment_scope_exceeded
+- prohibited_or_unregistered_resource_required
+- security_or_secret_exposure_risk
+- critical_input_corruption
+- execution_budget_exhausted
+- policy_or_active_core_conflict
+- approval_scope_violation
 retry_policy:
   allowed_conditions:
-    - transient_connection_error
-    - recoverable_program_error
-    - low_risk_tool_error
-    - output_format_error
-    - recoverable_omission
+  - transient_connection_error
+  - recoverable_program_error
+  - low_risk_tool_error
+  - output_format_error
+  - recoverable_omission
   prohibited_conditions:
-    - permission_error
-    - security_error
-    - data_corruption_risk
-    - high_risk_external_action_failure
-    - approval_scope_violation
-
+  - permission_error
+  - security_error
+  - data_corruption_risk
+  - high_risk_external_action_failure
+  - approval_scope_violation
 completion_criteria: []
 quality_criteria: []
 partial_completion:
   allowed: true
   requirements:
-    - disclose_missing_items
-    - disclose_impact
-    - provide_next_action
-
+  - disclose_completed_scope
+  - disclose_missing_scope
+  - disclose_impact
+  - provide_next_action
 escalation:
   target: thomas_prime
   direct_to_thomas_allowed: false
   conditions:
-    - objective_conflict
-    - role_scope_exceeded
-    - additional_role_required
-    - new_permission_required
-    - higher_budget_required
-    - material_input_missing
-    - major_result_conflict
-    - partial_completion_decision_required
-
+  - objective_conflict
+  - role_scope_exceeded
+  - additional_role_required
+  - new_permission_required
+  - higher_budget_required
+  - material_input_missing
+  - major_result_conflict
+  - partial_completion_decision_required
 change_control:
   owner: Thomas
   direct_self_modification_allowed: false
@@ -209,11 +206,17 @@ change_control:
   registry_update_required_for_activation: true
   semantic_versioning_required: true
   preserve_prior_versions: true
-
 change_history:
-  - document_version: 0.1.0
-    date: "2026-07-10"
-    change: Initial flat Role Definition template.
-  - document_version: 0.2.0
-    date: "2026-07-10"
-    change: Aligned Task, Assignment, Core, permission, output, validation, budget, and escalation rules.
+- document_version: 0.1.0
+  date: '2026-07-10'
+  change: Initial Role Definition template.
+- document_version: 0.2.0
+  date: '2026-07-10'
+  change: Aligned Task, Assignment, Core, permission, output, validation, budget, and escalation rules.
+- document_version: 0.3.0
+  date: '2026-07-10'
+  change: Separated authority from Permission Decision and aligned Role Assignment v0.2, Agent Output v0.2, Execution
+    Budget v0.1, Memory scope, and Candidate trial rules.
+- document_version: 0.4.0
+  date: '2026-07-12'
+  change: Requires Task v0.3 and Core Context Binding; removes Task v0.2 compatibility.

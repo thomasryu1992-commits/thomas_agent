@@ -1,0 +1,45 @@
+schema_version: agent_output.v0.2
+agent_output_id: agentout_01HX_internal_analysis
+trace_id: trace_01HX_internal_analysis
+task_id: task_01HX_internal_analysis
+core_context_binding_id: ccb-task-internal-analysis-001
+assignment_id: assignment_01HX_internal_analysis
+actor_instance_id: agent_instance_01HX_internal_analysis
+role_id: general.specialist
+role_version: 9.9.9
+status: needs_validation
+goal: Analyze the supplied material and identify material risks.
+summary: The material is directionally coherent, but two assumptions require verification.
+facts:
+- statement: The requested output is for internal review.
+  evidence_refs:
+  - task.request.raw_request
+evidence:
+- ref: task.request.raw_request
+  type: task_input
+inferences:
+- statement: Independent validation is appropriate because the recommendation may affect a strategic decision.
+assumptions:
+- The supplied document is complete.
+uncertainty:
+- No external source verification was assigned.
+risks:
+- The recommendation may overstate confidence if the missing evidence is material.
+recommendation:
+  action: validate_before_use
+  reason: Material assumptions remain.
+limitations:
+- Analysis is limited to assigned context.
+validation_recommended: true
+permission_request_refs: []
+next_actions:
+- Run independent validation.
+memory_candidates: []
+escalation_required: false
+role_specific_output:
+  key_findings:
+  - Two assumptions need verification.
+  evidence_quality: medium
+  unresolved_questions:
+  - Is the supplied document complete?
+created_at: '2026-07-10T09:00:00Z'

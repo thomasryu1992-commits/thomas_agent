@@ -1,0 +1,35 @@
+schema_version: core_context_binding.v0.3
+identity:
+  core_context_binding_id: ccb-example-001
+  task_id: task-example-001
+  task_revision: 2
+  trace_id: trace-example-001
+release:
+  release_id: thomas-core-v0.2.1-example
+  core_version: 0.2.1
+  manifest_path: THOMAS_CORE/releases/thomas-core-v0.2.1-example/manifest.yaml
+  manifest_sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  approval_id: core-approval-example
+  activation_id: core-activation-example
+rules:
+  loaded_rule_ids:
+  - MVP_RULE_001
+  - MVP_RULE_009
+binding:
+  bound_at_utc: '2026-07-12T00:00:00Z'
+  bound_by: Thomas Prime Runtime
+  binding_reason: Bind root Task to exact approved Core Release.
+inheritance:
+  child_tasks_inherit_binding: true
+  assignments_reference_binding: true
+  outputs_reference_binding: true
+lineage:
+  previous_binding_id: null
+  change_type: core_rebind
+  change_reason: null
+  material_change_ref: null
+rebind_policy:
+  silent_mid_task_rebind_allowed: false
+  explicit_task_revision_required: true
+  replan_required: true
+  reauthorization_required: true

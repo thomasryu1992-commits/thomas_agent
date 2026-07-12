@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "thomas_core_release_approval.v0.3.schema.json",
+  "title": "Thomas Core Runtime Approval v0.3.1 Lean",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "status",
+    "approved_by",
+    "approved_at_utc",
+    "approval_ref",
+    "approval_reason",
+    "approval_source",
+    "release_id",
+    "core_version",
+    "core_bundle_sha256",
+    "core_release_manifest_sha256",
+    "manifest_path",
+    "git_provenance",
+    "scope",
+    "immutability"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "thomas_core_release_approval.v0.3"
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^core-approval-[0-9a-f]{24}$"
+    },
+    "status": {
+      "const": "approved"
+    },
+    "approved_by": {
+      "const": "Thomas"
+    },
+    "approved_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_source": {
+      "type": "object",
+      "required": [
+        "source_type",
+        "source_id",
+        "source_hash",
+        "identity_verification_method",
+        "verification_status",
+        "note"
+      ],
+      "properties": {
+        "source_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "identity_verification_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification_status": {
+          "enum": [
+            "verified_by_control_channel",
+            "verified_by_protected_review",
+            "verified_by_signature"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "release_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "core_bundle_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "core_release_manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approved_commit_sha"
+      ],
+      "properties": {
+        "approved_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "scope": {
+      "type": "object"
+    },
+    "immutability": {
+      "type": "object"
+    }
+  },
+  "allOf": []
+}

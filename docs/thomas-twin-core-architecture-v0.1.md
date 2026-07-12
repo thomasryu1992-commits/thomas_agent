@@ -1,8 +1,8 @@
 # Thomas Twin Core Architecture v0.1
 
-Status: Draft  
-Purpose: Common architecture and I/O contracts before implementation  
-Primary interface: Telegram  
+Status: Draft
+Purpose: Common architecture and I/O contracts before implementation
+Primary interface: Telegram
 Runtime target: Server-hosted autonomous agent organization
 
 Architecture Note: The official organization architecture is now maintained in [Thomas Autonomous Organization Architecture v0.1](./thomas-autonomous-organization-architecture-v0.1.md). This document remains useful for shared runtime components and I/O contracts.
