@@ -28,6 +28,7 @@ def save_yaml(path: Path, data: dict) -> None:
     path.write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=110),
         encoding="utf-8",
+        newline="\n",
     )
 
 
@@ -69,7 +70,7 @@ def update_identity() -> None:
 
 Information Status: approved
 """
-    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    path.write_text(text.rstrip() + "\n", encoding="utf-8", newline="\n")
 
 
 def update_values() -> None:
@@ -652,7 +653,7 @@ Programization은 Permission 또는 Authority를 확대하지 않는다.
     if not pattern.search(text):
         raise RuntimeError("MVP_OPERATING_POLICY.md: Learning Policy section not found")
     text = pattern.sub(new_section, text, count=1)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def update_core_readme() -> None:
@@ -726,7 +727,7 @@ Keep detailed scoring""",
         text,
         flags=re.S,
     )
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def update_role_template_core_ids() -> None:

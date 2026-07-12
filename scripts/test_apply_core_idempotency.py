@@ -64,6 +64,7 @@ def main() -> int:
 
         module = load_apply_module(target)
         captured = io.StringIO()
+        initial_hashes = digest(target)
 
         try:
             with contextlib.redirect_stdout(captured):
@@ -76,6 +77,17 @@ def main() -> int:
         except Exception as exc:
             print(captured.getvalue())
             print(f"FAIL: Core apply execution failed: {exc}")
+            return 1
+
+        first_pass_changed = [
+            rel
+            for rel in FILES
+            if initial_hashes[rel] != first_hashes[rel]
+        ]
+        if first_pass_changed:
+            print("FAIL: integrated Repository is not an apply fixed point")
+            for rel in first_pass_changed:
+                print(f" - {rel}")
             return 1
 
         changed = [
@@ -91,7 +103,7 @@ def main() -> int:
             return 1
 
     print("PASS: Core apply idempotency test completed")
-    print("Applying the Core projection twice produces identical output hashes")
+    print("Integrated source is unchanged by apply, and repeated apply produces identical output hashes")
     return 0
 
 

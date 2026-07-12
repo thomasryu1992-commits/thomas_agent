@@ -1,8 +1,8 @@
 schema_version: thomas_release_gate_evidence.v0.1
 result: PASS
-generated_at_utc: '2026-07-12T14:19:49Z'
+generated_at_utc: '2026-07-12T14:32:57Z'
 generated_by: scripts/run_repository_release_gate.py
-repository_source_fingerprint: sha256:04a8e09701005d760b2d80e6e931f86e5997d3a42ed582fcb449ec054a13781a
+repository_source_fingerprint: sha256:2044d013f89e579c66ca234c441d9fc0489277c54fea7b9110f1777e5dd37675
 source_file_count: 119
 checks:
 - check_id: static_integrity
@@ -70,7 +70,7 @@ checks:
   label: Git Working Diff Check
   command: C:\Program Files\Git\cmd\git.exe diff --check
   result: PASS
-  output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+  output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 - check_id: git_staged_diff_check
   label: Git Staged Diff Check
   command: C:\Program Files\Git\cmd\git.exe diff --cached --check
@@ -80,12 +80,12 @@ checks:
   label: Git HEAD Diff Check
   command: C:\Program Files\Git\cmd\git.exe diff HEAD --check
   result: PASS
-  output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+  output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 - check_id: core_apply_idempotency
   label: Core Apply Idempotency
   command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/test_apply_core_idempotency.py
   result: PASS
-  output_sha256: sha256:f84930f97b454be70f0606232bc231de7a6aa02edf25d36f3a40e760795058db
+  output_sha256: sha256:d0fedce070165d7fe25564b540e45b1b7d524b6bf6be6ae7d1506b15284c5086
 scope:
   authorizes_release_build_for_unchanged_source: true
   grants_core_approval: false

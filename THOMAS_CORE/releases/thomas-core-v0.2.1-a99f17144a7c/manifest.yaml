@@ -88,7 +88,7 @@ files:
   sha256: sha256:cb201cf936d7c98cf36f097ac8b7aad9695d070d18d576b62b5302d702b566a9
   size_bytes: 13098
 build:
-  built_at_utc: '2026-07-12T14:20:12Z'
+  built_at_utc: '2026-07-12T14:33:20Z'
   built_by: Codex Review Branch
   validation_skipped: false
   validation_evidence:
@@ -157,7 +157,7 @@ build:
     label: Git Working Diff Check
     command: C:\Program Files\Git\cmd\git.exe diff --check
     result: PASS
-    output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+    output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
   - check_id: git_staged_diff_check
     label: Git Staged Diff Check
     command: C:\Program Files\Git\cmd\git.exe diff --cached --check
@@ -167,12 +167,12 @@ build:
     label: Git HEAD Diff Check
     command: C:\Program Files\Git\cmd\git.exe diff HEAD --check
     result: PASS
-    output_sha256: sha256:83ebcf477e9da6f630ac98f4b9372d63271926e7c4d1a75da9973ab9dbc67f82
+    output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
   - check_id: core_apply_idempotency
     label: Core Apply Idempotency
     command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/test_apply_core_idempotency.py
     result: PASS
-    output_sha256: sha256:f84930f97b454be70f0606232bc231de7a6aa02edf25d36f3a40e760795058db
+    output_sha256: sha256:d0fedce070165d7fe25564b540e45b1b7d524b6bf6be6ae7d1506b15284c5086
   validation_toolchain:
     validator_files:
     - logical_path: scripts/build_core_release_manifest.py
@@ -233,8 +233,8 @@ build:
       size_bytes: 4079
     - logical_path: scripts/test_apply_core_idempotency.py
       snapshot_path: validation_toolchain/files/scripts/test_apply_core_idempotency.py
-      sha256: sha256:ea00f8fa2bbf819fba2507f06f0a6c9e4c7bb962018a6eb5ce19c00ade15bc89
-      size_bytes: 2768
+      sha256: sha256:017def6037c9b5bc2e528659a21873826d470cdc8e6756de41d49e37659de908
+      size_bytes: 3183
     - logical_path: scripts/lib/core_release_verifier.py
       snapshot_path: validation_toolchain/files/scripts/lib/core_release_verifier.py
       sha256: sha256:1e57078dc699df2799f19c6d73b1a777009e50cefe0121861d69190a19b8e2b3
@@ -258,8 +258,8 @@ build:
     release_gate_evidence:
       logical_path: build/release_gate/RELEASE_GATE_EVIDENCE.yaml
       snapshot_path: validation_toolchain/release_gate_evidence.yaml
-      sha256: sha256:0e29c64153b3054abb2d56e61424922b8eff1063a7a88a0942aa6f51e0e77c2f
-      repository_source_fingerprint: sha256:04a8e09701005d760b2d80e6e931f86e5997d3a42ed582fcb449ec054a13781a
+      sha256: sha256:4eda0bfb3e7ef084077c372a807075ba0f2113c05b2b1030a60d557e856c8270
+      repository_source_fingerprint: sha256:2044d013f89e579c66ca234c441d9fc0489277c54fea7b9110f1777e5dd37675
     environment:
       python_implementation: CPython
       python_version: 3.12.10
