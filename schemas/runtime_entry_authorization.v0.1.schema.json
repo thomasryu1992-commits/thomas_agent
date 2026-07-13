@@ -1,0 +1,690 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_entry_authorization.v0.1.schema.json",
+  "title": "Runtime Entry Authorization v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "authorization_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "entry_plan",
+    "design_decision",
+    "exact_bindings",
+    "component_bindings",
+    "one_time_boundary",
+    "resource_limits",
+    "allowed_read_paths",
+    "expected_output_schemas",
+    "action_fingerprint",
+    "action_approval",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_entry_authorization.v0.1"
+    },
+    "authorization_id": {
+      "type": "string",
+      "pattern": "^reauth_[0-9a-f]{20}$"
+    },
+    "phase": {
+      "const": "I0.5.3"
+    },
+    "status": {
+      "enum": [
+        "BLOCKED_NOT_READY",
+        "READY_FOR_THOMAS_ACTION_APPROVAL_REVIEW",
+        "APPROVED_NOT_CONSUMED_REVIEW_ONLY"
+      ]
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "entry_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_plan_id",
+        "entry_plan_ref",
+        "entry_plan_sha256",
+        "entry_plan_status",
+        "ready_for_thomas_entry_approval_design"
+      ],
+      "properties": {
+        "entry_plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entry_plan_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entry_plan_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "entry_plan_status": {
+          "const": "READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN"
+        },
+        "ready_for_thomas_entry_approval_design": {
+          "const": true
+        }
+      }
+    },
+    "design_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "decision_ref",
+        "status",
+        "approved_by",
+        "verification_status",
+        "verification_ref",
+        "approves_read_only_runtime_foundation",
+        "approves_single_attempt",
+        "approves_exact_hash_binding",
+        "keeps_prohibited_effects_disabled",
+        "grants_runtime_activation",
+        "grants_runtime_entry_permission",
+        "hash_schema",
+        "decision_fingerprint_payload",
+        "decision_sha256"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "PENDING_THOMAS_DECISION",
+            "THOMAS_APPROVED"
+          ]
+        },
+        "approved_by": {
+          "enum": [
+            "Thomas",
+            null
+          ]
+        },
+        "verification_status": {
+          "enum": [
+            "NOT_VERIFIED",
+            "VERIFIED_BY_PROTECTED_REVIEW"
+          ]
+        },
+        "verification_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approves_read_only_runtime_foundation": {
+          "type": "boolean"
+        },
+        "approves_single_attempt": {
+          "type": "boolean"
+        },
+        "approves_exact_hash_binding": {
+          "type": "boolean"
+        },
+        "keeps_prohibited_effects_disabled": {
+          "type": "boolean"
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_runtime_entry_permission": {
+          "const": false
+        },
+        "hash_schema": {
+          "const": "runtime_design_decision_fingerprint_payload.v0.1"
+        },
+        "decision_fingerprint_payload": {
+          "type": "object"
+        },
+        "decision_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "exact_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "input_bundle",
+        "current_core",
+        "core_context_binding"
+      ],
+      "properties": {
+        "task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "task_revision",
+            "sha256"
+          ],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "task_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "input_bundle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_bundle_id",
+            "sha256"
+          ],
+          "properties": {
+            "input_bundle_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "current_core": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "release_id",
+            "core_bundle_sha256"
+          ],
+          "properties": {
+            "release_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "core_bundle_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "core_context_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "core_context_binding_id",
+            "sha256"
+          ],
+          "properties": {
+            "core_context_binding_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "component_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kernel",
+        "entry_planner",
+        "entry_adapter"
+      ],
+      "properties": {
+        "kernel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version",
+            "implementation_sha256"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "entry_planner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version",
+            "implementation_sha256"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "entry_adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version",
+            "implementation_sha256"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "one_time_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_semantics",
+        "max_attempts",
+        "nonce_sha256",
+        "plaintext_nonce_stored",
+        "nonce_reuse_allowed",
+        "consume_before_session_start",
+        "reuse_after_any_terminal_outcome_allowed"
+      ],
+      "properties": {
+        "attempt_semantics": {
+          "const": "AT_MOST_ONCE_ATTEMPT"
+        },
+        "max_attempts": {
+          "const": 1
+        },
+        "nonce_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "plaintext_nonce_stored": {
+          "const": false
+        },
+        "nonce_reuse_allowed": {
+          "const": false
+        },
+        "consume_before_session_start": {
+          "const": true
+        },
+        "reuse_after_any_terminal_outcome_allowed": {
+          "const": false
+        }
+      }
+    },
+    "resource_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issued_at",
+        "expires_at",
+        "ttl_seconds",
+        "max_runtime_seconds",
+        "max_files_read",
+        "max_total_bytes_read"
+      ],
+      "properties": {
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "max_files_read": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_total_bytes_read": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        }
+      }
+    },
+    "allowed_read_paths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "expected_output_schemas": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "read_only_runtime_run.v0.1",
+          "agent_output.v0.2",
+          "validation_result.v0.1",
+          "audit_event.v0.1"
+        ]
+      }
+    },
+    "action_fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "fingerprint_payload",
+        "sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_entry_action_fingerprint_payload.v0.1"
+        },
+        "fingerprint_payload": {
+          "type": "object"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "action_approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_ref",
+        "permission_scope",
+        "approval_id",
+        "approval_ref",
+        "approval_sha256",
+        "approval_status",
+        "approval_verified",
+        "consumption_state",
+        "current_contract_real_consumption_supported",
+        "i0_5_3_atomic_transition_required"
+      ],
+      "properties": {
+        "contract_ref": {
+          "const": "docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md"
+        },
+        "permission_scope": {
+          "const": "RUNTIME_GOVERNANCE"
+        },
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "approval_status": {
+          "enum": [
+            "NOT_PRESENT",
+            "APPROVED_NOT_CONSUMED",
+            "EXPIRED",
+            "REVOKED",
+            "SUPERSEDED"
+          ]
+        },
+        "approval_verified": {
+          "type": "boolean"
+        },
+        "consumption_state": {
+          "enum": [
+            "NOT_CONSUMED",
+            "UNUSED",
+            "CONSUMED",
+            "CONSUMED_OR_UNKNOWN_FAIL_CLOSED"
+          ]
+        },
+        "current_contract_real_consumption_supported": {
+          "const": false
+        },
+        "i0_5_3_atomic_transition_required": {
+          "const": true
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "ready_for_thomas_action_approval_review",
+        "ready_for_atomic_transition_review",
+        "usable_for_runtime_entry",
+        "runtime_entry_performed"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "BLOCKED_NOT_READY",
+            "READY_FOR_THOMAS_ACTION_APPROVAL_REVIEW",
+            "APPROVED_NOT_CONSUMED_REVIEW_ONLY"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "ready_for_thomas_action_approval_review": {
+          "type": "boolean"
+        },
+        "ready_for_atomic_transition_review": {
+          "type": "boolean"
+        },
+        "usable_for_runtime_entry": {
+          "const": false
+        },
+        "runtime_entry_performed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "grants_core_activation",
+        "consumes_approval",
+        "performs_compare_and_set",
+        "reserves_runtime_session",
+        "starts_runtime_session",
+        "calls_kernel",
+        "model_invocation",
+        "tool_execution",
+        "program_execution",
+        "network_access",
+        "governance_state_write",
+        "domain_write",
+        "workspace_write",
+        "core_write",
+        "external_action",
+        "financial_action",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY_EXACT_ENTRY_AUTHORIZATION_DESIGN"
+        },
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_core_activation": {
+          "const": false
+        },
+        "consumes_approval": {
+          "const": false
+        },
+        "performs_compare_and_set": {
+          "const": false
+        },
+        "reserves_runtime_session": {
+          "const": false
+        },
+        "starts_runtime_session": {
+          "const": false
+        },
+        "calls_kernel": {
+          "const": false
+        },
+        "model_invocation": {
+          "const": false
+        },
+        "tool_execution": {
+          "const": false
+        },
+        "program_execution": {
+          "const": false
+        },
+        "network_access": {
+          "const": false
+        },
+        "governance_state_write": {
+          "const": false
+        },
+        "domain_write": {
+          "const": false
+        },
+        "workspace_write": {
+          "const": false
+        },
+        "core_write": {
+          "const": false
+        },
+        "external_action": {
+          "const": false
+        },
+        "financial_action": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "record_fingerprint_payload",
+        "record_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_entry_authorization_fingerprint_payload.v0.1"
+        },
+        "record_fingerprint_payload": {
+          "type": "object"
+        },
+        "record_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_scope": {
+      "enum": [
+        "REAL_REVIEW_RECORD",
+        "SYNTHETIC_TEST_ONLY"
+      ]
+    }
+  }
+}

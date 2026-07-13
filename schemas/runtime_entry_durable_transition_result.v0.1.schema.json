@@ -1,0 +1,479 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_entry_durable_transition_result.v0.1.schema.json",
+  "title": "Runtime Entry Durable Transition Result v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "transition_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "store_binding",
+    "authorization_state",
+    "session",
+    "compare_and_set",
+    "durability",
+    "state_projections",
+    "audit",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_entry_durable_transition_result.v0.1"
+    },
+    "transition_id": {
+      "type": "string",
+      "pattern": "^transition_[A-Za-z0-9._:-]+$"
+    },
+    "phase": {
+      "const": "I0.5.4"
+    },
+    "status": {
+      "enum": [
+        "COMMITTED_SYNTHETIC_TEST_ONLY",
+        "BLOCKED_FAIL_CLOSED"
+      ]
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "record_scope": {
+      "const": "SYNTHETIC_TEST_ONLY"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "store_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "component_id",
+        "component_version",
+        "transition_component_id",
+        "transition_component_version",
+        "backend",
+        "schema_version"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string"
+        },
+        "component_id": {
+          "const": "thomas.protected_governance_state.sqlite_candidate"
+        },
+        "component_version": {
+          "const": "0.1.0"
+        },
+        "transition_component_id": {
+          "const": "thomas.runtime_entry.durable_cas.sqlite_candidate"
+        },
+        "transition_component_version": {
+          "const": "0.1.0"
+        },
+        "backend": {
+          "const": "SQLITE"
+        },
+        "schema_version": {
+          "const": "protected_governance_state.sqlite.v0.1"
+        }
+      }
+    },
+    "authorization_state": {
+      "type": "object",
+      "required": [
+        "authorization_id",
+        "authorization_sha256",
+        "real_action_approval_consumed",
+        "synthetic_authorization_state_transitioned"
+      ],
+      "properties": {
+        "authorization_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorization_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "nonce_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "expected_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "before_state": {
+          "const": "UNUSED"
+        },
+        "after_state": {
+          "const": "CONSUMED"
+        },
+        "real_action_approval_consumed": {
+          "const": false
+        },
+        "synthetic_authorization_state_transitioned": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "session": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "runtime_session_started",
+        "kernel_called"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "before_state": {
+          "const": "NOT_RESERVED"
+        },
+        "after_state": {
+          "const": "RESERVED"
+        },
+        "runtime_session_started": {
+          "const": false
+        },
+        "kernel_called": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "compare_and_set": {
+      "type": "object",
+      "required": [
+        "transaction_mode",
+        "atomic_all_or_none",
+        "committed",
+        "attempt_semantics"
+      ],
+      "properties": {
+        "transaction_mode": {
+          "const": "BEGIN_IMMEDIATE"
+        },
+        "atomic_all_or_none": {
+          "const": true
+        },
+        "authorization_rows_updated": {
+          "const": 1
+        },
+        "session_rows_inserted": {
+          "const": 1
+        },
+        "committed": {
+          "type": "boolean"
+        },
+        "attempt_semantics": {
+          "const": "AT_MOST_ONCE_ATTEMPT"
+        }
+      },
+      "additionalProperties": false
+    },
+    "durability": {
+      "type": "object",
+      "required": [
+        "backend",
+        "journal_mode",
+        "synchronous",
+        "foreign_keys",
+        "process_restart_persistence_required"
+      ],
+      "properties": {
+        "backend": {
+          "const": "SQLITE"
+        },
+        "journal_mode": {
+          "const": "DELETE"
+        },
+        "synchronous": {
+          "const": "FULL"
+        },
+        "foreign_keys": {
+          "const": true
+        },
+        "process_restart_persistence_required": {
+          "const": true
+        },
+        "reopen_verification_performed_by_this_result": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "state_projections": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "before_sha256",
+            "after_sha256"
+          ],
+          "properties": {
+            "before_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "after_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_ref",
+        "append_only",
+        "hash_chain",
+        "events"
+      ],
+      "properties": {
+        "contract_ref": {
+          "const": "docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md"
+        },
+        "append_only": {
+          "const": true
+        },
+        "hash_chain": {
+          "const": true
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "eligible_for_runtime_entry",
+        "requires_recovery_inspection_before_any_future_action"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "COMMITTED_SYNTHETIC_TEST_ONLY",
+            "BLOCKED_FAIL_CLOSED"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eligible_for_runtime_entry": {
+          "const": false
+        },
+        "requires_recovery_inspection_before_any_future_action": {
+          "const": true
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "test_only_local_governance_state_write_performed",
+        "runtime_authoritative_state_write_performed",
+        "real_action_approval_consumed",
+        "runtime_session_started",
+        "kernel_called",
+        "model_invocation",
+        "tool_execution",
+        "program_execution",
+        "network_access",
+        "domain_write",
+        "workspace_write",
+        "core_write",
+        "external_action",
+        "financial_action"
+      ],
+      "properties": {
+        "mode": {
+          "const": "SYNTHETIC_TEST_ONLY_PROTECTED_STATE_WRITE"
+        },
+        "test_only_local_governance_state_write_performed": {
+          "type": "boolean"
+        },
+        "runtime_authoritative_state_write_performed": {
+          "const": false
+        },
+        "real_action_approval_consumed": {
+          "const": false
+        },
+        "runtime_session_started": {
+          "const": false
+        },
+        "kernel_called": {
+          "const": false
+        },
+        "model_invocation": {
+          "const": false
+        },
+        "tool_execution": {
+          "const": false
+        },
+        "program_execution": {
+          "const": false
+        },
+        "network_access": {
+          "const": false
+        },
+        "domain_write": {
+          "const": false
+        },
+        "workspace_write": {
+          "const": false
+        },
+        "core_write": {
+          "const": false
+        },
+        "external_action": {
+          "const": false
+        },
+        "financial_action": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "result_fingerprint_payload",
+        "result_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_entry_durable_transition_result_fingerprint_payload.v0.1"
+        },
+        "result_fingerprint_payload": {
+          "type": "object"
+        },
+        "result_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "COMMITTED_SYNTHETIC_TEST_ONLY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "authorization_state": {
+            "required": [
+              "action_fingerprint_sha256",
+              "nonce_sha256",
+              "expected_version",
+              "before_state",
+              "after_state"
+            ]
+          },
+          "session": {
+            "required": [
+              "before_state",
+              "after_state"
+            ]
+          },
+          "compare_and_set": {
+            "required": [
+              "authorization_rows_updated",
+              "session_rows_inserted"
+            ]
+          },
+          "durability": {
+            "required": [
+              "reopen_verification_performed_by_this_result"
+            ]
+          },
+          "state_projections": {
+            "type": "object"
+          },
+          "runtime_effect": {
+            "properties": {
+              "test_only_local_governance_state_write_performed": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "BLOCKED_FAIL_CLOSED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state_projections": {
+            "type": "null"
+          },
+          "runtime_effect": {
+            "properties": {
+              "test_only_local_governance_state_write_performed": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

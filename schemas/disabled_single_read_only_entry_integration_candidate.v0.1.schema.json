@@ -1,0 +1,651 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "disabled_single_read_only_entry_integration_candidate.v0.1.schema.json",
+  "title": "Disabled Single Read-only Entry Integration Candidate v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "authorization_evidence",
+    "durable_transition_evidence",
+    "exact_bindings",
+    "component_bindings",
+    "integration_checks",
+    "protected_state_boundary",
+    "disabled_adapter_boundary",
+    "kernel_invocation_candidate",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "disabled_single_read_only_entry_integration_candidate.v0.1"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^entryint_[A-Za-z0-9]+$"
+    },
+    "phase": {
+      "const": "I0.5.5"
+    },
+    "status": {
+      "const": "BLOCKED_DISABLED_INTEGRATION_CANDIDATE"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "record_scope": {
+      "enum": [
+        "REAL_REVIEW_RECORD",
+        "SYNTHETIC_TEST_ONLY"
+      ]
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "authorization_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorization_id",
+        "authorization_ref",
+        "authorization_sha256",
+        "authorization_status",
+        "record_scope",
+        "approval_verified",
+        "approval_status",
+        "consumption_state",
+        "current_contract_real_consumption_supported",
+        "usable_for_runtime_entry"
+      ],
+      "properties": {
+        "authorization_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "authorization_status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_scope": {
+          "enum": [
+            "REAL_REVIEW_RECORD",
+            "SYNTHETIC_TEST_ONLY"
+          ]
+        },
+        "approval_verified": {
+          "type": "boolean"
+        },
+        "approval_status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumption_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "current_contract_real_consumption_supported": {
+          "const": false
+        },
+        "usable_for_runtime_entry": {
+          "const": false
+        }
+      }
+    },
+    "durable_transition_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "present",
+        "transition_id",
+        "transition_ref",
+        "transition_sha256",
+        "transition_status",
+        "record_scope",
+        "synthetic_commit_observed",
+        "session_id",
+        "session_state",
+        "real_action_approval_consumed",
+        "runtime_session_started",
+        "kernel_called"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "transition_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "transition_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "transition_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "transition_status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "synthetic_commit_observed": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "session_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "real_action_approval_consumed": {
+          "const": false
+        },
+        "runtime_session_started": {
+          "const": false
+        },
+        "kernel_called": {
+          "const": false
+        }
+      }
+    },
+    "exact_bindings": {
+      "type": "object",
+      "minProperties": 4
+    },
+    "component_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "integration_candidate",
+        "kernel",
+        "entry_adapter",
+        "protected_state_store",
+        "durable_transition"
+      ],
+      "properties": {
+        "integration_candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "kernel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "entry_adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "protected_state_store": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "durable_transition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version"
+          ],
+          "properties": {
+            "component_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "implementation_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "integration_checks": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "result",
+          "notes"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "BLOCK"
+            ]
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "protected_state_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "synthetic_transition_commit_observed",
+        "session_state_observed",
+        "recovery_inspection_required_before_any_future_action",
+        "real_action_approval_consumption_observed",
+        "runtime_authoritative_state_write_allowed",
+        "automatic_retry_allowed",
+        "automatic_resume_allowed"
+      ],
+      "properties": {
+        "synthetic_transition_commit_observed": {
+          "type": "boolean"
+        },
+        "session_state_observed": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recovery_inspection_required_before_any_future_action": {
+          "type": "boolean"
+        },
+        "real_action_approval_consumption_observed": {
+          "const": false
+        },
+        "runtime_authoritative_state_write_allowed": {
+          "const": false
+        },
+        "automatic_retry_allowed": {
+          "const": false
+        },
+        "automatic_resume_allowed": {
+          "const": false
+        }
+      }
+    },
+    "disabled_adapter_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "adapter_version",
+        "implementation_available",
+        "enabled",
+        "runtime_source_of_truth",
+        "entry_call_allowed",
+        "executor_handoff_allowed"
+      ],
+      "properties": {
+        "adapter_id": {
+          "const": "thomas.runtime_authoritative_read_only_entry.disabled"
+        },
+        "adapter_version": {
+          "const": "0.1.0"
+        },
+        "implementation_available": {
+          "const": true
+        },
+        "enabled": {
+          "const": false
+        },
+        "runtime_source_of_truth": {
+          "const": false
+        },
+        "entry_call_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        }
+      }
+    },
+    "kernel_invocation_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_mode",
+        "requested_run_count",
+        "exact_task_binding",
+        "exact_input_bundle_binding",
+        "exact_current_core_binding",
+        "exact_core_context_binding",
+        "allowed_read_paths",
+        "resource_limits",
+        "expected_output_schemas",
+        "candidate_envelope_created",
+        "runtime_handoff_allowed",
+        "kernel_call_allowed",
+        "kernel_called"
+      ],
+      "properties": {
+        "requested_mode": {
+          "const": "RUNTIME_AUTHORITATIVE_READ_ONLY"
+        },
+        "requested_run_count": {
+          "const": 1
+        },
+        "exact_task_binding": {
+          "type": "object"
+        },
+        "exact_input_bundle_binding": {
+          "type": "object"
+        },
+        "exact_current_core_binding": {
+          "type": "object"
+        },
+        "exact_core_context_binding": {
+          "type": "object"
+        },
+        "allowed_read_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "resource_limits": {
+          "type": "object"
+        },
+        "expected_output_schemas": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "candidate_envelope_created": {
+          "const": true
+        },
+        "runtime_handoff_allowed": {
+          "const": false
+        },
+        "kernel_call_allowed": {
+          "const": false
+        },
+        "kernel_called": {
+          "const": false
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "integration_chain_structurally_consistent",
+        "eligible_for_disabled_adapter_review",
+        "ready_for_runtime_entry",
+        "runtime_handoff_performed",
+        "runtime_session_started",
+        "kernel_called",
+        "runtime_entry_performed"
+      ],
+      "properties": {
+        "result": {
+          "const": "BLOCKED_DISABLED_INTEGRATION_CANDIDATE"
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "integration_chain_structurally_consistent": {
+          "const": true
+        },
+        "eligible_for_disabled_adapter_review": {
+          "const": true
+        },
+        "ready_for_runtime_entry": {
+          "const": false
+        },
+        "runtime_handoff_performed": {
+          "const": false
+        },
+        "runtime_session_started": {
+          "const": false
+        },
+        "kernel_called": {
+          "const": false
+        },
+        "runtime_entry_performed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "consumes_real_approval",
+        "performs_real_compare_and_set",
+        "writes_runtime_governance_state",
+        "starts_runtime_session",
+        "performs_runtime_handoff",
+        "calls_kernel",
+        "model_invocation",
+        "tool_execution",
+        "program_execution",
+        "network_access",
+        "domain_write",
+        "workspace_write",
+        "core_write",
+        "external_action",
+        "financial_action",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "mode": {
+          "const": "DISABLED_INTEGRATION_EVIDENCE_ONLY"
+        },
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "consumes_real_approval": {
+          "const": false
+        },
+        "performs_real_compare_and_set": {
+          "const": false
+        },
+        "writes_runtime_governance_state": {
+          "const": false
+        },
+        "starts_runtime_session": {
+          "const": false
+        },
+        "performs_runtime_handoff": {
+          "const": false
+        },
+        "calls_kernel": {
+          "const": false
+        },
+        "model_invocation": {
+          "const": false
+        },
+        "tool_execution": {
+          "const": false
+        },
+        "program_execution": {
+          "const": false
+        },
+        "network_access": {
+          "const": false
+        },
+        "domain_write": {
+          "const": false
+        },
+        "workspace_write": {
+          "const": false
+        },
+        "core_write": {
+          "const": false
+        },
+        "external_action": {
+          "const": false
+        },
+        "financial_action": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "candidate_fingerprint_payload",
+        "candidate_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "disabled_single_read_only_entry_integration_candidate_fingerprint_payload.v0.1"
+        },
+        "candidate_fingerprint_payload": {
+          "type": "object"
+        },
+        "candidate_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

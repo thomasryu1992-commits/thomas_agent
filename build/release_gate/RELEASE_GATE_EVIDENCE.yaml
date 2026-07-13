@@ -1,139 +1,154 @@
 schema_version: thomas_release_gate_evidence.v0.1
 result: PASS
-generated_at_utc: '2026-07-13T08:22:33Z'
+generated_at_utc: '2026-07-13T14:22:48Z'
 generated_by: scripts/run_repository_release_gate.py
-repository_source_fingerprint: sha256:380f5f59e4f7c84c048fb787aab80b4b0272751434b2ea49e5931f38b84e573d
-source_file_count: 593
+repository_source_fingerprint: sha256:bec381182c20eeda90f63163b81e2beae00d3866926f78af1036a39747f01224
+source_file_count: 643
 checks:
 - check_id: static_integrity
   label: Static Integrity
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_static_integrity.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_static_integrity.py
   result: PASS
   output_sha256: sha256:e6d7b91491f778382cf4eb3c1e5d0dc22bc8ad8c2806620768f4e83f7e255d4c
 - check_id: i0.4.1_preconditions
   label: I0.4.1 Preconditions
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_preconditions.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_preconditions.py
   result: PASS
   output_sha256: sha256:9b175b4070bc8c385f2a93708946271519cb5c9d571d84519f5f3f05eb254267
 - check_id: runtime_contract_consistency
   label: Runtime Contract Consistency
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_contract_consistency.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_consistency.py
   result: PASS
   output_sha256: sha256:861e9b1c5e4313429f2ebf9cddbf58dfae309876231ef8f88637e86391ad4e53
 - check_id: task_contract
   label: Task Contract
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_task_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_task_contracts.py
   result: PASS
   output_sha256: sha256:cf151bd0f060e55e8475d28616abd7a7f0798e7039698dec4e8e1cff6229cd68
 - check_id: permission_and_approval_foundation
   label: Permission and Approval Foundation
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_permission_approval_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_permission_approval_contracts.py
   result: PASS
   output_sha256: sha256:3a4705c0b5b3f12e103095eec4a10b9c6877dc7f6b84a852f6bd53762e6bab60
 - check_id: tool_and_program_request_foundation
   label: Tool and Program Request Foundation
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_tool_program_request_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_tool_program_request_contracts.py
   result: PASS
   output_sha256: sha256:2d4f93a15fd47c1b5df90137564c96708b8b9b91567ac2af573545fc4963255b
 - check_id: execution_validation_and_audit_foundation
   label: Execution Validation and Audit Foundation
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_execution_validation_audit_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_execution_validation_audit_contracts.py
   result: PASS
   output_sha256: sha256:d34e794f5c961c2eef45dd83e7cf4f51fe18626961241976322ff7201d16bd3b
 - check_id: executor_foundation_review-only
   label: Executor Foundation Review-Only
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_executor_foundation_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_executor_foundation_contracts.py
   result: PASS
   output_sha256: sha256:292f90a918221c098debdc121611e4ebd603d4bb9dc734d92ec06cdbdf7e9818
 - check_id: operations_evidence_and_executor_candidate_intake_review-only
   label: Operations Evidence and Executor Candidate Intake Review-Only
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_operations_evidence_executor_intake.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_operations_evidence_executor_intake.py
   result: PASS
   output_sha256: sha256:9deb741c04cfe67f838779d11fd446f3ec5e035d9ed78c56d31a330afc593f9d
 - check_id: control,_supervision,_threshold,_and_sandbox_review-only
   label: Control, Supervision, Threshold, and Sandbox Review-Only
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_control_supervision_threshold_sandbox.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_control_supervision_threshold_sandbox.py
   result: PASS
   output_sha256: sha256:22ee31afcb8637bd2f168774269fb45e8fd25f86b064a5ea34ca75e830a6aefc
 - check_id: i0.4_consolidated_contract_set
   label: I0.4 Consolidated Contract Set
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_4_consolidated_contract_set.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_4_consolidated_contract_set.py
   result: PASS
   output_sha256: sha256:436719f3935a6f7a0d944e296544b4205229b9fa9c053690cb8bede873320f63
 - check_id: i0.5_read-only_runtime_kernel
   label: I0.5 Read-only Runtime Kernel
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_read_only_runtime.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_read_only_runtime.py
   result: PASS
   output_sha256: sha256:93783597d25ca126b785dbc85e20901876a86ac24365a3af9d76be2f8a509888
 - check_id: i0.5.1_runtime_promotion_readiness
   label: I0.5.1 Runtime Promotion Readiness
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_1_runtime_promotion_readiness.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_1_runtime_promotion_readiness.py
   result: PASS
   output_sha256: sha256:19985b9326eb4482cd9218e62d0fd32abfb390308623339c83b913d340efb631
 - check_id: i0.5.2_runtime-authoritative_read-only_entry_design
   label: I0.5.2 Runtime-Authoritative Read-only Entry Design
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
   result: PASS
   output_sha256: sha256:ba4bd7724937acc56e4d81a5e59d420c4802d53f6ebe455514b93363a8f07686
+- check_id: i0.5.3_exact_entry_authorization_and_at-most-once_transition_design
+  label: I0.5.3 Exact Entry Authorization and At-Most-Once Transition Design
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_3_runtime_entry_authorization.py
+  result: PASS
+  output_sha256: sha256:e833913259b4cdab0735ccc1d80fa9a7b27934c09255555d21cb7cf7eb7dcc52
+- check_id: i0.5.4_protected_local_governance_state_and_durable_cas_candidate
+  label: I0.5.4 Protected Local Governance State and Durable CAS Candidate
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_4_protected_governance_state.py
+  result: PASS
+  output_sha256: sha256:4f8fef26606a49079c7699565233150dd74a18cb369746cc840227154df8cfa0
+- check_id: i0.5.5_disabled_single_read-only_entry_integration_candidate
+  label: I0.5.5 Disabled Single Read-only Entry Integration Candidate
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py
+  result: PASS
+  output_sha256: sha256:2d4a1be06ec686591560290c6e63d14bf0a1133daec90f6715e49ca9f2b82566
 - check_id: thomas_core
   label: Thomas Core
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_thomas_core.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_thomas_core.py
   result: PASS
   output_sha256: sha256:84537851c589cfe3dc4687d3a30101850f2ac72bfdd472ff69846cd29f89438b
 - check_id: core_projection_consistency
   label: Core Projection Consistency
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_core_projection_consistency.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_projection_consistency.py
     --strict
   result: PASS
   output_sha256: sha256:f2dc1c2d212ae00f99f5a798e25fcbbd2e1a4ca37d920508795fafc624969362
 - check_id: runtime_lineage_bundle
   label: Runtime Lineage Bundle
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_runtime_lineage_bundle.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_runtime_lineage_bundle.py
   result: PASS
   output_sha256: sha256:cb82039a51fdf738153812457d5f5ab14092c1c34f3061e3f61a91563a12ac89
 - check_id: programization_and_operational_knowledge
   label: Programization and Operational Knowledge
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_programization_contracts.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_programization_contracts.py
   result: PASS
   output_sha256: sha256:44496906cc14ecc7b88d809587e71a3de4afa5a1d0ddca25553a55784837d5fa
 - check_id: core_lifecycle_schemas
   label: Core Lifecycle Schemas
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_core_lifecycle_schemas.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_lifecycle_schemas.py
   result: PASS
   output_sha256: sha256:cb713ec95764b38485f134d0423f0f4c94d7112c56ad451ec7507c995e0b9f9a
 - check_id: contract_schema_parity
   label: Contract Schema Parity
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_contract_schema_parity.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_contract_schema_parity.py
   result: PASS
   output_sha256: sha256:9fe404d68afcc172dd727d7a6f99ef9ca7e838649926668828f60d22ff7cba16
 - check_id: security_hardening
   label: Security Hardening
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_security_hardening.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_security_hardening.py
   result: PASS
   output_sha256: sha256:465c879e36b48eebba7acab44376526930ef7422df96b409416b445baa0fe419
 - check_id: core_release_reproducibility
   label: Core Release Reproducibility
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_core_release_reproducibility.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/validate_core_release_reproducibility.py
   result: PASS
   output_sha256: sha256:e502e2fea5d6ce04f4950ffcf37b376160cbfc415708ed5476be1bd21e4feff9
 - check_id: git_working_diff_check
   label: Git Working Diff Check
-  command: C:\Program Files\Git\cmd\git.EXE diff --check
+  command: C:\Program Files\Git\cmd\git.exe diff --check
   result: PASS
   output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 - check_id: git_staged_diff_check
   label: Git Staged Diff Check
-  command: C:\Program Files\Git\cmd\git.EXE diff --cached --check
+  command: C:\Program Files\Git\cmd\git.exe diff --cached --check
   result: PASS
   output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 - check_id: git_head_diff_check
   label: Git HEAD Diff Check
-  command: C:\Program Files\Git\cmd\git.EXE diff HEAD --check
+  command: C:\Program Files\Git\cmd\git.exe diff HEAD --check
   result: PASS
   output_sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 - check_id: core_apply_idempotency
   label: Core Apply Idempotency
-  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/test_apply_core_idempotency.py
+  command: C:\Users\thomas\Documents\AI_Agent\review_venv\Scripts\python.exe scripts/test_apply_core_idempotency.py
   result: PASS
   output_sha256: sha256:d0fedce070165d7fe25564b540e45b1b7d524b6bf6be6ae7d1506b15284c5086
 scope:

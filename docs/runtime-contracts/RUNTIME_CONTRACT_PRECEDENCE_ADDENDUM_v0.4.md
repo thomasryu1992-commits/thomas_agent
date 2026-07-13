@@ -359,3 +359,15 @@ The development replay result is executable integration evidence only. It does n
 ## I0.5.2 Entry Design Addendum
 
 The I0.5.2 Entry Plan and Disabled Entry Adapter may only block or prepare an exact future Thomas review. `READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN` is not Runtime permission, Runtime activation, entry authorization, Approval consumption, or Executor handoff.
+
+## I0.5.3 Exact Entry Authorization Addendum
+
+The I0.5.3 Entry Authorization and Atomic Transition Preview are subordinate to Thomas Core, Task, Authority, Permission, Approval, I0.5.1 Readiness, and the I0.5.2 Entry Plan. They may narrow one future entry attempt but cannot grant Authority, Permission, Runtime activation, Approval, Approval consumption, Session start, Kernel execution, Tool/Program/Executor enablement, external action, financial action, or state mutation.
+
+## I0.5.4 Protected Governance State Addendum
+
+I0.5.4 is subordinate to Thomas Core, Task, Authority, Permission, Approval, I0.5.1 Readiness, I0.5.2 Entry Plan, and I0.5.3 Exact Entry Authorization. It owns only the protected local storage transaction and read-only recovery implementation candidate. Approval semantics remain owned by `approval.v0.1`; exact entry scope remains owned by `runtime_entry_authorization.v0.1`; audit semantics remain owned by `audit_event.v0.1`.
+
+## I0.5.5 Disabled Integration Addendum
+
+I0.5.5 is subordinate to Thomas Core, Task, Authority, Permission, Approval v0.1, I0.5.1 Readiness, I0.5.2 Entry Plan/disabled Adapter, I0.5.3 Exact Authorization, I0.5.4 protected state, and Audit Event v0.1. It owns only the pure integration-coordination record and non-executable Kernel invocation candidate envelope. It creates no new Permission, Approval, Audit, Session runtime, or executor model.

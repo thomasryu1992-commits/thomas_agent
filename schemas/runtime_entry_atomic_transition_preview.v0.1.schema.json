@@ -1,0 +1,522 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_entry_atomic_transition_preview.v0.1.schema.json",
+  "title": "Runtime Entry Atomic Transition Preview v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "transition_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "authorization_binding",
+    "preconditions",
+    "compare_and_set",
+    "protected_state_boundary",
+    "session_reservation",
+    "audit_boundary",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_entry_atomic_transition_preview.v0.1"
+    },
+    "transition_id": {
+      "type": "string",
+      "pattern": "^reatx_[0-9a-f]{20}$"
+    },
+    "phase": {
+      "const": "I0.5.3"
+    },
+    "status": {
+      "enum": [
+        "BLOCKED_NOT_ELIGIBLE",
+        "ELIGIBLE_FOR_I0_5_4_IMPLEMENTATION_REVIEW"
+      ]
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "authorization_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorization_id",
+        "authorization_ref",
+        "authorization_sha256",
+        "authorization_status",
+        "action_fingerprint_sha256",
+        "approval_id",
+        "approval_sha256"
+      ],
+      "properties": {
+        "authorization_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "authorization_status": {
+          "const": "APPROVED_NOT_CONSUMED_REVIEW_ONLY"
+        },
+        "action_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "approval_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exact_bindings_verified",
+        "component_bindings_verified",
+        "action_fingerprint_verified",
+        "approval_verified",
+        "approval_not_expired",
+        "approval_not_revoked",
+        "authorization_unused",
+        "nonce_unseen",
+        "ttl_valid",
+        "resource_limits_within_task_budget",
+        "kill_switch_allows_entry",
+        "runtime_boundary_still_read_only"
+      ],
+      "properties": {
+        "exact_bindings_verified": {
+          "type": "boolean"
+        },
+        "component_bindings_verified": {
+          "type": "boolean"
+        },
+        "action_fingerprint_verified": {
+          "type": "boolean"
+        },
+        "approval_verified": {
+          "type": "boolean"
+        },
+        "approval_not_expired": {
+          "type": "boolean"
+        },
+        "approval_not_revoked": {
+          "type": "boolean"
+        },
+        "authorization_unused": {
+          "type": "boolean"
+        },
+        "nonce_unseen": {
+          "type": "boolean"
+        },
+        "ttl_valid": {
+          "type": "boolean"
+        },
+        "kill_switch_allows_entry": {
+          "type": "boolean"
+        },
+        "runtime_boundary_still_read_only": {
+          "type": "boolean"
+        },
+        "resource_limits_within_task_budget": {
+          "type": "boolean"
+        }
+      }
+    },
+    "compare_and_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_authorization_state",
+        "target_authorization_state",
+        "expected_session_state",
+        "target_session_state",
+        "atomic_all_or_none",
+        "durable_state_required",
+        "process_restart_persistence_required",
+        "consume_before_kernel_call",
+        "reuse_after_any_attempt_allowed",
+        "ambiguous_outcome_policy"
+      ],
+      "properties": {
+        "expected_authorization_state": {
+          "const": "UNUSED"
+        },
+        "target_authorization_state": {
+          "const": "CONSUMED"
+        },
+        "expected_session_state": {
+          "const": "NOT_RESERVED"
+        },
+        "target_session_state": {
+          "const": "RESERVED"
+        },
+        "atomic_all_or_none": {
+          "const": true
+        },
+        "durable_state_required": {
+          "const": true
+        },
+        "process_restart_persistence_required": {
+          "const": true
+        },
+        "consume_before_kernel_call": {
+          "const": true
+        },
+        "reuse_after_any_attempt_allowed": {
+          "const": false
+        },
+        "ambiguous_outcome_policy": {
+          "const": "CONSUMED_OR_UNKNOWN_FAIL_CLOSED"
+        }
+      }
+    },
+    "protected_state_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_class",
+        "currently_implemented",
+        "currently_enabled",
+        "actual_compare_and_set_allowed",
+        "actual_governance_state_write_allowed",
+        "future_authorization_consumption_write_required",
+        "future_session_reservation_write_required",
+        "future_append_only_audit_write_required",
+        "domain_write_allowed",
+        "workspace_write_allowed",
+        "task_source_write_allowed",
+        "input_bundle_write_allowed",
+        "core_write_allowed",
+        "tool_program_state_write_allowed",
+        "external_system_write_allowed",
+        "financial_write_allowed"
+      ],
+      "properties": {
+        "store_class": {
+          "const": "PROTECTED_LOCAL_GOVERNANCE_STATE"
+        },
+        "currently_implemented": {
+          "const": false
+        },
+        "currently_enabled": {
+          "const": false
+        },
+        "actual_compare_and_set_allowed": {
+          "const": false
+        },
+        "actual_governance_state_write_allowed": {
+          "const": false
+        },
+        "future_authorization_consumption_write_required": {
+          "const": true
+        },
+        "future_session_reservation_write_required": {
+          "const": true
+        },
+        "future_append_only_audit_write_required": {
+          "const": true
+        },
+        "domain_write_allowed": {
+          "const": false
+        },
+        "workspace_write_allowed": {
+          "const": false
+        },
+        "task_source_write_allowed": {
+          "const": false
+        },
+        "input_bundle_write_allowed": {
+          "const": false
+        },
+        "core_write_allowed": {
+          "const": false
+        },
+        "tool_program_state_write_allowed": {
+          "const": false
+        },
+        "external_system_write_allowed": {
+          "const": false
+        },
+        "financial_write_allowed": {
+          "const": false
+        }
+      }
+    },
+    "session_reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "session_id",
+        "planned_state",
+        "start_after_atomic_commit_only",
+        "max_runtime_seconds",
+        "max_files_read",
+        "max_total_bytes_read",
+        "actual_reservation_created",
+        "actual_session_started"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^reservation_[0-9a-f]{20}$"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^session_[0-9a-f]{20}$"
+        },
+        "planned_state": {
+          "const": "RESERVED"
+        },
+        "start_after_atomic_commit_only": {
+          "const": true
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "max_files_read": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_total_bytes_read": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "actual_reservation_created": {
+          "const": false
+        },
+        "actual_session_started": {
+          "const": false
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "attempt_semantics",
+        "eligible_for_i0_5_4_implementation_review",
+        "actual_compare_and_set_performed",
+        "approval_consumed",
+        "session_reserved",
+        "runtime_entry_performed"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "BLOCKED_NOT_ELIGIBLE",
+            "ELIGIBLE_FOR_I0_5_4_IMPLEMENTATION_REVIEW"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "attempt_semantics": {
+          "const": "AT_MOST_ONCE_ATTEMPT"
+        },
+        "eligible_for_i0_5_4_implementation_review": {
+          "type": "boolean"
+        },
+        "actual_compare_and_set_performed": {
+          "const": false
+        },
+        "approval_consumed": {
+          "const": false
+        },
+        "session_reserved": {
+          "const": false
+        },
+        "runtime_entry_performed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "consumes_approval",
+        "performs_compare_and_set",
+        "writes_governance_state",
+        "reserves_runtime_session",
+        "starts_runtime_session",
+        "calls_kernel",
+        "model_invocation",
+        "tool_execution",
+        "program_execution",
+        "network_access",
+        "domain_write",
+        "workspace_write",
+        "core_write",
+        "external_action",
+        "financial_action",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY_ATOMIC_TRANSITION_PREVIEW"
+        },
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "consumes_approval": {
+          "const": false
+        },
+        "performs_compare_and_set": {
+          "const": false
+        },
+        "writes_governance_state": {
+          "const": false
+        },
+        "reserves_runtime_session": {
+          "const": false
+        },
+        "starts_runtime_session": {
+          "const": false
+        },
+        "calls_kernel": {
+          "const": false
+        },
+        "model_invocation": {
+          "const": false
+        },
+        "tool_execution": {
+          "const": false
+        },
+        "program_execution": {
+          "const": false
+        },
+        "network_access": {
+          "const": false
+        },
+        "domain_write": {
+          "const": false
+        },
+        "workspace_write": {
+          "const": false
+        },
+        "core_write": {
+          "const": false
+        },
+        "external_action": {
+          "const": false
+        },
+        "financial_action": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "transition_fingerprint_payload",
+        "transition_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_entry_atomic_transition_preview_fingerprint_payload.v0.1"
+        },
+        "transition_fingerprint_payload": {
+          "type": "object"
+        },
+        "transition_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_scope": {
+      "const": "SYNTHETIC_TEST_ONLY"
+    },
+    "audit_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audit_contract_ref",
+        "append_only_required",
+        "hash_chain_required",
+        "required_event_types",
+        "future_audit_write_required",
+        "actual_audit_write_performed"
+      ],
+      "properties": {
+        "audit_contract_ref": {
+          "const": "docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md"
+        },
+        "append_only_required": {
+          "const": true
+        },
+        "hash_chain_required": {
+          "const": true
+        },
+        "required_event_types": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "RUNTIME_ENTRY_AUTHORIZATION_CHECKED",
+              "AUTHORIZATION_CONSUMPTION_COMMITTED",
+              "RUNTIME_SESSION_RESERVED",
+              "RUNTIME_ENTRY_ATTEMPT_TERMINATED"
+            ]
+          }
+        },
+        "future_audit_write_required": {
+          "const": true
+        },
+        "actual_audit_write_performed": {
+          "const": false
+        }
+      }
+    }
+  }
+}

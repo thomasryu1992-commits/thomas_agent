@@ -1,0 +1,48 @@
+schema_version: i0_5_3_runtime_entry_authorization_components.v0.1
+document_version: 0.1.0
+status: REVIEW_ONLY_CONTRACT_AND_PREVIEW
+owner: Thomas
+runtime_source_of_truth: false
+runtime_authoritative_mode_enabled: false
+components:
+- component_id: thomas.runtime_entry.authorization_builder
+  version: 0.1.0
+  component_type: deterministic_review_only_builder
+  implementation_ref: runtime/read_only_entry/authorization.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  approval_creation_allowed: false
+  approval_verification_allowed: false
+  runtime_entry_allowed: false
+  state_write_allowed: false
+- component_id: thomas.runtime_entry.atomic_transition_preview
+  version: 0.1.0
+  component_type: deterministic_review_only_transition_planner
+  implementation_ref: runtime/read_only_entry/atomic_transition.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  actual_compare_and_set_allowed: false
+  approval_consumption_allowed: false
+  session_reservation_allowed: false
+  runtime_session_start_allowed: false
+  state_write_allowed: false
+review_only_effects:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  creates_approval: false
+  verifies_real_approval: false
+  consumes_approval: false
+  performs_compare_and_set: false
+  writes_governance_state: false
+  reserves_runtime_session: false
+  starts_runtime_session: false
+  calls_kernel: false
+  enables_tool: false
+  enables_program: false
+  enables_executor: false
+  external_execution: false
+  financial_execution: false
+  permission_expansion: false
+  authority_expansion: false

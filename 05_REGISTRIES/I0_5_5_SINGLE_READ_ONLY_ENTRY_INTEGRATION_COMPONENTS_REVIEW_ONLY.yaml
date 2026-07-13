@@ -1,0 +1,51 @@
+schema_version: i0_5_5_single_read_only_entry_integration_components.v0.1
+document_version: 0.1.0
+status: REVIEW_ONLY_DISABLED_INTEGRATION_CANDIDATE
+owner: Thomas
+runtime_source_of_truth: false
+runtime_authoritative_mode_enabled: false
+components:
+- component_id: thomas.runtime_entry.single_read_only_integration_candidate
+  version: 0.1.0
+  component_type: disabled_single_entry_integration_coordinator
+  implementation_ref: runtime/read_only_entry/integration_candidate.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  uses_existing_entry_plan: true
+  uses_existing_action_approval_contract: true
+  uses_existing_exact_entry_authorization: true
+  uses_existing_protected_state_candidate: true
+  uses_existing_disabled_entry_adapter: true
+  uses_existing_audit_contract: true
+  creates_new_permission_model: false
+  creates_new_approval_model: false
+  creates_new_audit_model: false
+  real_approval_consumption_allowed: false
+  runtime_governance_state_write_allowed: false
+  runtime_session_start_allowed: false
+  runtime_handoff_allowed: false
+  kernel_call_allowed: false
+  model_invocation_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  network_allowed: false
+  domain_write_allowed: false
+  workspace_write_allowed: false
+  core_write_allowed: false
+  external_action_allowed: false
+  financial_action_allowed: false
+review_only_effects:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  consumes_real_approval: false
+  writes_runtime_governance_state: false
+  starts_runtime_session: false
+  performs_runtime_handoff: false
+  calls_kernel: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  mutates_runtime: false

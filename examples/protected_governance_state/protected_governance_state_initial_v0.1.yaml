@@ -1,0 +1,45 @@
+schema_version: protected_governance_state_snapshot.v0.1
+store_id: pgstore_c61a8f47dc84c19be66a
+phase: I0.5.4
+status: SYNTHETIC_TEST_ONLY_STATE
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+backend:
+  type: SQLITE
+  schema_version: protected_governance_state.sqlite.v0.1
+  journal_mode: DELETE
+  synchronous: FULL
+  foreign_keys: true
+  integrity_check: PASS
+authorizations: []
+sessions: []
+transition_receipts: []
+audit_events: []
+counts:
+  authorizations: 0
+  sessions: 0
+  transition_receipts: 0
+  audit_events: 0
+runtime_effect:
+  mode: SYNTHETIC_TEST_ONLY_LOCAL_GOVERNANCE_STATE
+  runtime_authoritative_state: false
+  runtime_entry_enabled: false
+  kernel_call_allowed: false
+  domain_write_allowed: false
+  workspace_write_allowed: false
+  core_write_allowed: false
+  external_write_allowed: false
+  financial_write_allowed: false
+integrity:
+  hash_schema: protected_governance_state_snapshot_fingerprint_payload.v0.1
+  snapshot_fingerprint_payload:
+    schema_version: protected_governance_state_snapshot_fingerprint_payload.v0.1
+    store_id: pgstore_c61a8f47dc84c19be66a
+    authorizations: []
+    sessions: []
+    receipts: []
+    audit: []
+    created_at: '2026-07-13T10:00:00Z'
+  snapshot_sha256: sha256:dd361e132573168b196b173878e361707a57e8e45b6c758164ba3f50f2f096b2
+created_at: '2026-07-13T10:00:00Z'

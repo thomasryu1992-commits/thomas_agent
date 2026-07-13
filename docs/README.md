@@ -275,3 +275,27 @@ Design Readiness is evaluated independently from Current Core. Activation Readin
 - `runtime-contracts/I0_5_2_RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_BOUNDARY_V0.1.md`
 
 I0.5.2 converts Rev3 Design/Activation Readiness into a single-run review-only Entry Plan and disabled evidence. It cannot start Runtime, consume Approval, or hand work to an Executor.
+
+## I0.5.3 Exact Entry Authorization and At-Most-Once Transition
+
+- `runtime-contracts/RUNTIME_ENTRY_AUTHORIZATION_CONTRACT_V0.1.md`
+- `runtime-contracts/RUNTIME_ENTRY_AT_MOST_ONCE_ATOMIC_TRANSITION_CONTRACT_V0.1.md`
+- `runtime-contracts/I0_5_3_EXACT_ENTRY_AUTHORIZATION_AT_MOST_ONCE_BOUNDARY_V0.1.md`
+
+I0.5.3 reuses Approval v0.1 and the I0.5.2 Entry Plan, adds exact Task/Input Bundle/Current Core/component hash binding, and defines one future all-or-none transition for Authorization consumption plus Session reservation. It performs no Approval consumption, CAS, state write, Session start, or Kernel call.
+
+## I0.5.4 Protected Local Governance State Candidate
+
+- `runtime-contracts/PROTECTED_LOCAL_GOVERNANCE_STATE_CONTRACT_V0.1.md`
+- `runtime-contracts/RUNTIME_ENTRY_DURABLE_CAS_CANDIDATE_CONTRACT_V0.1.md`
+- `runtime-contracts/RUNTIME_ENTRY_CRASH_RECOVERY_CONTRACT_V0.1.md`
+- `runtime-contracts/I0_5_4_PROTECTED_GOVERNANCE_STATE_BOUNDARY_V0.1.md`
+
+I0.5.4 implements a disabled, synthetic-test-only SQLite transaction and recovery candidate. It proves durable at-most-once Authorization-state transition plus Session reservation without real Approval consumption, Runtime Session start, Kernel call, or Data Plane write.
+
+## I0.5.5 Disabled Single Read-only Entry Integration Candidate
+
+- `runtime-contracts/DISABLED_SINGLE_READ_ONLY_ENTRY_INTEGRATION_CANDIDATE_CONTRACT_V0.1.md`
+- `runtime-contracts/I0_5_5_DISABLED_SINGLE_READ_ONLY_ENTRY_INTEGRATION_BOUNDARY_V0.1.md`
+
+I0.5.5 binds the existing Entry Plan, Exact Authorization, optional synthetic durable-transition evidence, disabled Entry Adapter, and exact Kernel invocation envelope. It always blocks before real Approval consumption, production state write, Runtime handoff, Session start, or Kernel invocation.

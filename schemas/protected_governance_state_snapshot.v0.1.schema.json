@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "protected_governance_state_snapshot.v0.1.schema.json",
+  "title": "Protected Governance State Snapshot v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "store_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "backend",
+    "authorizations",
+    "sessions",
+    "transition_receipts",
+    "audit_events",
+    "counts",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "protected_governance_state_snapshot.v0.1"
+    },
+    "store_id": {
+      "type": "string",
+      "pattern": "^pgstore_[0-9a-f]{20}$"
+    },
+    "phase": {
+      "const": "I0.5.4"
+    },
+    "status": {
+      "const": "SYNTHETIC_TEST_ONLY_STATE"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "record_scope": {
+      "const": "SYNTHETIC_TEST_ONLY"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "journal_mode",
+        "synchronous",
+        "foreign_keys",
+        "integrity_check"
+      ],
+      "properties": {
+        "type": {
+          "const": "SQLITE"
+        },
+        "schema_version": {
+          "const": "protected_governance_state.sqlite.v0.1"
+        },
+        "journal_mode": {
+          "const": "DELETE"
+        },
+        "synchronous": {
+          "const": "FULL"
+        },
+        "foreign_keys": {
+          "const": true
+        },
+        "integrity_check": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        }
+      }
+    },
+    "authorizations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authorization_id",
+          "authorization_sha256",
+          "action_fingerprint_sha256",
+          "nonce_sha256",
+          "state",
+          "version",
+          "session_id",
+          "expires_at",
+          "created_at",
+          "consumed_at"
+        ],
+        "properties": {
+          "authorization_id": {
+            "type": "string"
+          },
+          "authorization_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "action_fingerprint_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "nonce_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "state": {
+            "enum": [
+              "UNUSED",
+              "CONSUMED",
+              "CONSUMED_OR_UNKNOWN_FAIL_CLOSED"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consumed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "authorization_id",
+          "state",
+          "version",
+          "reserved_at",
+          "terminated_at",
+          "termination_result"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "authorization_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "RESERVED",
+              "TERMINATED",
+              "UNKNOWN_FAIL_CLOSED"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reserved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "terminated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "termination_result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "transition_receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transition_id",
+          "authorization_id",
+          "session_id",
+          "result",
+          "receipt_sha256",
+          "created_at"
+        ],
+        "properties": {
+          "transition_id": {
+            "type": "string"
+          },
+          "authorization_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "result": {
+            "const": "COMMITTED_SYNTHETIC_TEST_ONLY"
+          },
+          "receipt_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "audit_events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizations",
+        "sessions",
+        "transition_receipts",
+        "audit_events"
+      ],
+      "properties": {
+        "authorizations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transition_receipts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "audit_events": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "runtime_authoritative_state",
+        "runtime_entry_enabled",
+        "kernel_call_allowed",
+        "domain_write_allowed",
+        "workspace_write_allowed",
+        "core_write_allowed",
+        "external_write_allowed",
+        "financial_write_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "const": "SYNTHETIC_TEST_ONLY_LOCAL_GOVERNANCE_STATE"
+        },
+        "runtime_authoritative_state": {
+          "const": false
+        },
+        "runtime_entry_enabled": {
+          "const": false
+        },
+        "kernel_call_allowed": {
+          "const": false
+        },
+        "domain_write_allowed": {
+          "const": false
+        },
+        "workspace_write_allowed": {
+          "const": false
+        },
+        "core_write_allowed": {
+          "const": false
+        },
+        "external_write_allowed": {
+          "const": false
+        },
+        "financial_write_allowed": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "snapshot_fingerprint_payload",
+        "snapshot_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "protected_governance_state_snapshot_fingerprint_payload.v0.1"
+        },
+        "snapshot_fingerprint_payload": {
+          "type": "object"
+        },
+        "snapshot_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

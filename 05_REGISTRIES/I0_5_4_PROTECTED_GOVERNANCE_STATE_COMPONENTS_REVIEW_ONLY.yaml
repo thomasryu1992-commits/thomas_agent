@@ -1,0 +1,62 @@
+schema_version: i0_5_4_protected_governance_state_components.v0.1
+document_version: 0.1.0
+status: SYNTHETIC_TEST_ONLY_DISABLED_RUNTIME
+owner: Thomas
+runtime_source_of_truth: false
+runtime_authoritative_mode_enabled: false
+components:
+- component_id: thomas.protected_governance_state.sqlite_candidate
+  version: 0.1.0
+  component_type: protected_local_governance_state_candidate
+  implementation_ref: runtime/protected_governance_state/sqlite_store.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  record_scope:
+  - SYNTHETIC_TEST_ONLY
+  test_only_local_state_write_allowed: true
+  real_approval_consumption_allowed: false
+  runtime_session_start_allowed: false
+  kernel_call_allowed: false
+  network_allowed: false
+  domain_write_allowed: false
+  workspace_write_allowed: false
+  core_write_allowed: false
+  external_write_allowed: false
+  financial_write_allowed: false
+- component_id: thomas.runtime_entry.durable_cas.sqlite_candidate
+  version: 0.1.0
+  component_type: durable_atomic_transition_candidate
+  implementation_ref: runtime/protected_governance_state/sqlite_store.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  test_only_synthetic_transition_allowed: true
+  real_approval_consumption_allowed: false
+  runtime_session_start_allowed: false
+  kernel_call_allowed: false
+  executor_handoff_allowed: false
+- component_id: thomas.runtime_entry.crash_recovery.inspector
+  version: 0.1.0
+  component_type: read_only_recovery_inspector
+  implementation_ref: runtime/protected_governance_state/recovery.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  read_only_inspection: true
+  automatic_retry_allowed: false
+  automatic_resume_allowed: false
+  state_write_allowed: false
+review_only_effects:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  consumes_real_approval: false
+  starts_runtime_session: false
+  calls_kernel: false
+  mutates_runtime: false

@@ -1,0 +1,251 @@
+schema_version: disabled_single_read_only_entry_integration_candidate.v0.1
+candidate_id: entryint_b3a4da6b89cfd36a48f4
+phase: I0.5.5
+status: BLOCKED_DISABLED_INTEGRATION_CANDIDATE
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+authorization_evidence:
+  authorization_id: reauth_7b810327ea391d6bbea2
+  authorization_ref: examples/runtime_entry_authorization/SYNTHETIC_ONLY_runtime_entry_authorization_approved_not_consumed_v0.1.yaml
+  authorization_sha256: sha256:d337ac964c0b50b8d57476fd3b9e8ee816340826b048ff6fb8230e7f86edf3ac
+  authorization_status: APPROVED_NOT_CONSUMED_REVIEW_ONLY
+  record_scope: SYNTHETIC_TEST_ONLY
+  approval_verified: true
+  approval_status: APPROVED_NOT_CONSUMED
+  consumption_state: UNUSED
+  current_contract_real_consumption_supported: false
+  usable_for_runtime_entry: false
+durable_transition_evidence:
+  present: true
+  transition_id: transition_example_committed
+  transition_ref: examples/protected_governance_state/SYNTHETIC_ONLY_runtime_entry_durable_transition_committed_v0.1.yaml
+  transition_sha256: sha256:d2f4baa3f61d49cf158d3803d23310d247296e4e03434f76ff5aa4e7b24b1e45
+  transition_status: COMMITTED_SYNTHETIC_TEST_ONLY
+  record_scope: SYNTHETIC_TEST_ONLY
+  synthetic_commit_observed: true
+  session_id: session_example_committed
+  session_state: RESERVED
+  real_action_approval_consumed: false
+  runtime_session_started: false
+  kernel_called: false
+exact_bindings:
+  task:
+    task_id: task_i053
+    task_revision: 1
+    sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  input_bundle:
+    input_bundle_id: bundle_i053
+    sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  current_core:
+    release_id: thomas-core-v0.2.1-synthetic
+    core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  core_context_binding:
+    core_context_binding_id: ccb_i053
+    sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+component_bindings:
+  integration_candidate:
+    component_id: thomas.runtime_entry.single_read_only_integration_candidate
+    version: 0.1.0
+  kernel:
+    component_id: thomas.read_only_runtime_kernel
+    version: 0.1.1
+    implementation_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  entry_adapter:
+    component_id: thomas.runtime_authoritative_read_only_entry.disabled
+    version: 0.1.0
+    implementation_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  protected_state_store:
+    component_id: thomas.protected_governance_state.sqlite_candidate
+    version: 0.1.0
+  durable_transition:
+    component_id: thomas.runtime_entry.durable_cas.sqlite_candidate
+    version: 0.1.0
+integration_checks:
+- check_id: entry_authorization_semantics
+  result: PASS
+  notes: Exact Entry Authorization passed I0.5.3 semantic validation.
+- check_id: action_approval_boundary
+  result: PASS
+  notes: Only the synthetic fixture carries review-only approval evidence; no real Approval verifier or consumer is available.
+- check_id: durable_transition_binding
+  result: PASS
+  notes: A matching synthetic I0.5.4 durable transition may be observed for integration testing only.
+- check_id: disabled_entry_adapter
+  result: PASS
+  notes: The existing I0.5.2 adapter is present but remains disabled and cannot accept a Runtime handoff.
+- check_id: kernel_call_boundary
+  result: PASS
+  notes: The integration candidate creates only a hash-bound invocation envelope; Kernel invocation remains prohibited.
+- check_id: prohibited_effects
+  result: PASS
+  notes: No model, Tool, Program, network, Data Plane write, external action, or financial action is permitted.
+protected_state_boundary:
+  synthetic_transition_commit_observed: true
+  session_state_observed: RESERVED
+  recovery_inspection_required_before_any_future_action: true
+  real_action_approval_consumption_observed: false
+  runtime_authoritative_state_write_allowed: false
+  automatic_retry_allowed: false
+  automatic_resume_allowed: false
+disabled_adapter_boundary:
+  adapter_id: thomas.runtime_authoritative_read_only_entry.disabled
+  adapter_version: 0.1.0
+  implementation_available: true
+  enabled: false
+  runtime_source_of_truth: false
+  entry_call_allowed: false
+  executor_handoff_allowed: false
+kernel_invocation_candidate:
+  requested_mode: RUNTIME_AUTHORITATIVE_READ_ONLY
+  requested_run_count: 1
+  exact_task_binding:
+    task_id: task_i053
+    task_revision: 1
+    sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  exact_input_bundle_binding:
+    input_bundle_id: bundle_i053
+    sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  exact_current_core_binding:
+    release_id: thomas-core-v0.2.1-synthetic
+    core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  exact_core_context_binding:
+    core_context_binding_id: ccb_i053
+    sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  allowed_read_paths:
+  - examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
+  - examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
+  - THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+  - examples/read_only_runtime/input/core_context_binding_v0.3.yaml
+  resource_limits:
+    issued_at: '2026-07-13T10:00:00Z'
+    expires_at: '2026-07-13T10:10:00Z'
+    ttl_seconds: 600
+    max_runtime_seconds: 30
+    max_files_read: 12
+    max_total_bytes_read: 2000000
+  expected_output_schemas:
+  - read_only_runtime_run.v0.1
+  - agent_output.v0.2
+  - validation_result.v0.1
+  - audit_event.v0.1
+  candidate_envelope_created: true
+  runtime_handoff_allowed: false
+  kernel_call_allowed: false
+  kernel_called: false
+decision:
+  result: BLOCKED_DISABLED_INTEGRATION_CANDIDATE
+  blocking_reasons:
+  - SYNTHETIC_SCOPE_NOT_RUNTIME_ELIGIBLE
+  - RUNTIME_ENTRY_ADAPTER_DISABLED
+  - KERNEL_CALL_NOT_ALLOWED
+  integration_chain_structurally_consistent: true
+  eligible_for_disabled_adapter_review: true
+  ready_for_runtime_entry: false
+  runtime_handoff_performed: false
+  runtime_session_started: false
+  kernel_called: false
+  runtime_entry_performed: false
+runtime_effect:
+  mode: DISABLED_INTEGRATION_EVIDENCE_ONLY
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  consumes_real_approval: false
+  performs_real_compare_and_set: false
+  writes_runtime_governance_state: false
+  starts_runtime_session: false
+  performs_runtime_handoff: false
+  calls_kernel: false
+  model_invocation: false
+  tool_execution: false
+  program_execution: false
+  network_access: false
+  domain_write: false
+  workspace_write: false
+  core_write: false
+  external_action: false
+  financial_action: false
+  mutates_runtime: false
+integrity:
+  hash_schema: disabled_single_read_only_entry_integration_candidate_fingerprint_payload.v0.1
+  candidate_fingerprint_payload:
+    schema_version: disabled_single_read_only_entry_integration_candidate_fingerprint_payload.v0.1
+    candidate_id: entryint_b3a4da6b89cfd36a48f4
+    authorization_sha256: sha256:d337ac964c0b50b8d57476fd3b9e8ee816340826b048ff6fb8230e7f86edf3ac
+    transition_sha256: sha256:d2f4baa3f61d49cf158d3803d23310d247296e4e03434f76ff5aa4e7b24b1e45
+    exact_bindings:
+      task:
+        task_id: task_i053
+        task_revision: 1
+        sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      input_bundle:
+        input_bundle_id: bundle_i053
+        sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      current_core:
+        release_id: thomas-core-v0.2.1-synthetic
+        core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      core_context_binding:
+        core_context_binding_id: ccb_i053
+        sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    component_bindings:
+      integration_candidate:
+        component_id: thomas.runtime_entry.single_read_only_integration_candidate
+        version: 0.1.0
+      kernel:
+        component_id: thomas.read_only_runtime_kernel
+        version: 0.1.1
+        implementation_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      entry_adapter:
+        component_id: thomas.runtime_authoritative_read_only_entry.disabled
+        version: 0.1.0
+        implementation_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      protected_state_store:
+        component_id: thomas.protected_governance_state.sqlite_candidate
+        version: 0.1.0
+      durable_transition:
+        component_id: thomas.runtime_entry.durable_cas.sqlite_candidate
+        version: 0.1.0
+    kernel_invocation_candidate:
+      requested_mode: RUNTIME_AUTHORITATIVE_READ_ONLY
+      requested_run_count: 1
+      exact_task_binding:
+        task_id: task_i053
+        task_revision: 1
+        sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      exact_input_bundle_binding:
+        input_bundle_id: bundle_i053
+        sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      exact_current_core_binding:
+        release_id: thomas-core-v0.2.1-synthetic
+        core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      exact_core_context_binding:
+        core_context_binding_id: ccb_i053
+        sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      allowed_read_paths:
+      - examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
+      - examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
+      - THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+      - examples/read_only_runtime/input/core_context_binding_v0.3.yaml
+      resource_limits:
+        issued_at: '2026-07-13T10:00:00Z'
+        expires_at: '2026-07-13T10:10:00Z'
+        ttl_seconds: 600
+        max_runtime_seconds: 30
+        max_files_read: 12
+        max_total_bytes_read: 2000000
+      expected_output_schemas:
+      - read_only_runtime_run.v0.1
+      - agent_output.v0.2
+      - validation_result.v0.1
+      - audit_event.v0.1
+      candidate_envelope_created: true
+      runtime_handoff_allowed: false
+      kernel_call_allowed: false
+      kernel_called: false
+    blocking_reasons:
+    - SYNTHETIC_SCOPE_NOT_RUNTIME_ELIGIBLE
+    - RUNTIME_ENTRY_ADAPTER_DISABLED
+    - KERNEL_CALL_NOT_ALLOWED
+    created_at: '2026-07-13T11:00:00Z'
+  candidate_sha256: sha256:a554c1de15e58983e04f3a729e06353033420eefcd54a492c84599d567d24604
+created_at: '2026-07-13T11:00:00Z'

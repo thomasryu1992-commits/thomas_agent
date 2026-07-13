@@ -1,0 +1,202 @@
+schema_version: runtime_entry_authorization.v0.1
+authorization_id: reauth_7b810327ea391d6bbea2
+phase: I0.5.3
+status: APPROVED_NOT_CONSUMED_REVIEW_ONLY
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+entry_plan:
+  entry_plan_id: entryplan_0277dc9fd7841ae7335a
+  entry_plan_ref: synthetic:entry-plan
+  entry_plan_sha256: sha256:eb1b5a0c3ed8c062c9000e1ce631337cf94355e24bbc0d8282d9d22a5dbaa571
+  entry_plan_status: READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN
+  ready_for_thomas_entry_approval_design: true
+design_decision:
+  decision_id: design_i053_synthetic
+  decision_ref: synthetic:design-decision
+  status: THOMAS_APPROVED
+  approved_by: Thomas
+  verification_status: VERIFIED_BY_PROTECTED_REVIEW
+  verification_ref: synthetic:protected-review
+  approves_read_only_runtime_foundation: true
+  approves_single_attempt: true
+  approves_exact_hash_binding: true
+  keeps_prohibited_effects_disabled: true
+  grants_runtime_activation: false
+  grants_runtime_entry_permission: false
+  hash_schema: runtime_design_decision_fingerprint_payload.v0.1
+  decision_fingerprint_payload:
+    schema_version: runtime_design_decision_fingerprint_payload.v0.1
+    decision_id: design_i053_synthetic
+    decision_ref: synthetic:design-decision
+    status: THOMAS_APPROVED
+    approved_by: Thomas
+    verification_status: VERIFIED_BY_PROTECTED_REVIEW
+    verification_ref: synthetic:protected-review
+    approves_read_only_runtime_foundation: true
+    approves_single_attempt: true
+    approves_exact_hash_binding: true
+    keeps_prohibited_effects_disabled: true
+    grants_runtime_activation: false
+    grants_runtime_entry_permission: false
+  decision_sha256: sha256:2cb051d6f1a241acfc329a8462e306e20a32c974fdfd732c0f8ff34127641a0a
+exact_bindings:
+  task:
+    task_id: task_i053
+    task_revision: 1
+    sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  input_bundle:
+    input_bundle_id: bundle_i053
+    sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  current_core:
+    release_id: thomas-core-v0.2.1-synthetic
+    core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  core_context_binding:
+    core_context_binding_id: ccb_i053
+    sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+component_bindings:
+  kernel:
+    component_id: thomas.read_only_runtime_kernel
+    version: 0.1.1
+    implementation_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  entry_planner:
+    component_id: thomas.runtime_authoritative_read_only_entry.planner
+    version: 0.1.0
+    implementation_sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  entry_adapter:
+    component_id: thomas.runtime_authoritative_read_only_entry.disabled
+    version: 0.1.0
+    implementation_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+one_time_boundary:
+  attempt_semantics: AT_MOST_ONCE_ATTEMPT
+  max_attempts: 1
+  nonce_sha256: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  plaintext_nonce_stored: false
+  nonce_reuse_allowed: false
+  consume_before_session_start: true
+  reuse_after_any_terminal_outcome_allowed: false
+resource_limits:
+  issued_at: '2026-07-13T10:00:00Z'
+  expires_at: '2026-07-13T10:10:00Z'
+  ttl_seconds: 600
+  max_runtime_seconds: 30
+  max_files_read: 12
+  max_total_bytes_read: 2000000
+allowed_read_paths:
+- examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
+- examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
+- THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+- examples/read_only_runtime/input/core_context_binding_v0.3.yaml
+expected_output_schemas:
+- read_only_runtime_run.v0.1
+- agent_output.v0.2
+- validation_result.v0.1
+- audit_event.v0.1
+action_fingerprint:
+  hash_schema: runtime_entry_action_fingerprint_payload.v0.1
+  fingerprint_payload:
+    schema_version: runtime_entry_action_fingerprint_payload.v0.1
+    exact_bindings:
+      task:
+        task_id: task_i053
+        task_revision: 1
+        sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      input_bundle:
+        input_bundle_id: bundle_i053
+        sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      current_core:
+        release_id: thomas-core-v0.2.1-synthetic
+        core_bundle_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      core_context_binding:
+        core_context_binding_id: ccb_i053
+        sha256: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    component_bindings:
+      kernel:
+        component_id: thomas.read_only_runtime_kernel
+        version: 0.1.1
+        implementation_sha256: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      entry_planner:
+        component_id: thomas.runtime_authoritative_read_only_entry.planner
+        version: 0.1.0
+        implementation_sha256: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      entry_adapter:
+        component_id: thomas.runtime_authoritative_read_only_entry.disabled
+        version: 0.1.0
+        implementation_sha256: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    one_time_boundary:
+      attempt_semantics: AT_MOST_ONCE_ATTEMPT
+      max_attempts: 1
+      nonce_sha256: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      plaintext_nonce_stored: false
+      nonce_reuse_allowed: false
+      consume_before_session_start: true
+      reuse_after_any_terminal_outcome_allowed: false
+    resource_limits:
+      issued_at: '2026-07-13T10:00:00Z'
+      expires_at: '2026-07-13T10:10:00Z'
+      ttl_seconds: 600
+      max_runtime_seconds: 30
+      max_files_read: 12
+      max_total_bytes_read: 2000000
+    allowed_read_paths:
+    - examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
+    - examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
+    - THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+    - examples/read_only_runtime/input/core_context_binding_v0.3.yaml
+    expected_output_schemas:
+    - read_only_runtime_run.v0.1
+    - agent_output.v0.2
+    - validation_result.v0.1
+    - audit_event.v0.1
+  sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+action_approval:
+  contract_ref: docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md
+  permission_scope: RUNTIME_GOVERNANCE
+  approval_id: approval_i053_synthetic
+  approval_ref: synthetic:approval
+  approval_sha256: sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  approval_status: APPROVED_NOT_CONSUMED
+  approval_verified: true
+  consumption_state: UNUSED
+  current_contract_real_consumption_supported: false
+  i0_5_3_atomic_transition_required: true
+decision:
+  result: APPROVED_NOT_CONSUMED_REVIEW_ONLY
+  blocking_reasons: []
+  ready_for_thomas_action_approval_review: true
+  ready_for_atomic_transition_review: true
+  usable_for_runtime_entry: false
+  runtime_entry_performed: false
+runtime_effect:
+  mode: REVIEW_ONLY_EXACT_ENTRY_AUTHORIZATION_DESIGN
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  consumes_approval: false
+  performs_compare_and_set: false
+  reserves_runtime_session: false
+  starts_runtime_session: false
+  calls_kernel: false
+  model_invocation: false
+  tool_execution: false
+  program_execution: false
+  network_access: false
+  governance_state_write: false
+  domain_write: false
+  workspace_write: false
+  core_write: false
+  external_action: false
+  financial_action: false
+  mutates_runtime: false
+integrity:
+  hash_schema: runtime_entry_authorization_fingerprint_payload.v0.1
+  record_fingerprint_payload:
+    schema_version: runtime_entry_authorization_fingerprint_payload.v0.1
+    authorization_id: reauth_7b810327ea391d6bbea2
+    entry_plan_sha256: sha256:eb1b5a0c3ed8c062c9000e1ce631337cf94355e24bbc0d8282d9d22a5dbaa571
+    design_decision_sha256: sha256:2cb051d6f1a241acfc329a8462e306e20a32c974fdfd732c0f8ff34127641a0a
+    action_fingerprint_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+    status: APPROVED_NOT_CONSUMED_REVIEW_ONLY
+    created_at: '2026-07-13T10:00:00Z'
+  record_sha256: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+created_at: '2026-07-13T10:00:00Z'
