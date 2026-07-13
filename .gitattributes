@@ -1,0 +1,23 @@
+# Gate-owned source must use identical bytes on Windows, Linux, and macOS.
+.gitattributes text eol=lf
+.gitignore text eol=lf
+03_ROLE_CONTRACTS/** text eol=lf
+05_REGISTRIES/** text eol=lf
+THOMAS_CORE/** text eol=lf
+docs/** text eol=lf
+examples/** text eol=lf
+schemas/** text eol=lf
+scripts/** text eol=lf
+tests/** text eol=lf
+requirements-validation.in text eol=lf
+requirements-validation.lock text eol=lf
+
+# Hash-addressed Runtime records must retain their exact bytes on every platform.
+THOMAS_CORE/releases/** -text
+THOMAS_CORE/approvals/** -text
+THOMAS_CORE/activations/** -text
+THOMAS_CORE/deactivations/** -text
+THOMAS_CORE/revocations/** -text
+THOMAS_CORE/CURRENT_CORE_RELEASE.yaml -text
+THOMAS_CORE/REVIEW_CORE_RELEASE.yaml -text
+build/release_gate/** -text

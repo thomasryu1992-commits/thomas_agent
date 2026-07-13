@@ -1,0 +1,58 @@
+schema_version: health_snapshot.v0.1
+health_snapshot_id: health_i046_review_001
+subject:
+  subject_type: SYSTEM
+  subject_id: thomas_agent_review_source
+checks:
+- check_id: contracts_present
+  status: PASS
+  evidence_refs:
+  - docs/runtime-contracts/EXECUTOR_FOUNDATION_REVIEW_ONLY_BOUNDARY_V0.1.md
+  notes: Review-only contracts are present.
+- check_id: runtime_executor_available
+  status: FAIL
+  evidence_refs:
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  notes: No Runtime Executor exists.
+- check_id: runtime_kill_switch_connected
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: No Runtime control connection exists.
+summary:
+  result: UNHEALTHY
+  healthy_check_count: 1
+  unhealthy_check_count: 1
+  unavailable_check_count: 1
+  runtime_health_ready: true
+  health_daemon_active: false
+remediation:
+  recommended_actions:
+  - implement_runtime_monitoring_after_separate_approval
+  - validate_kill_switch_in_isolated_environment
+  automatic_remediation_allowed: false
+  remediation_performed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/health_snapshot.v0.1.schema.json

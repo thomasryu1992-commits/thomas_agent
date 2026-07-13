@@ -1,0 +1,57 @@
+schema_version: alert_event.v0.1
+alert_event_id: alert_i046_executor_registry_not_runtime
+monitoring_snapshot_ref: monsnap_i046_offline_001
+severity: WARN
+alert_type: EXECUTOR_REGISTRY_NOT_RUNTIME
+condition:
+  metric_id: executor_registry_state
+  observed_status: WARN
+  threshold_ref: runtime_executor_registry_required
+  evidence_refs:
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+deduplication_key: executor_registry:not_runtime
+delivery:
+  mode: REVIEW_ONLY
+  channels_requested:
+  - THOMAS_TELEGRAM_PRIVATE
+  delivery_status: SENT
+  notification_sent: false
+  external_delivery_performed: false
+  delivery_attempt_count: 0
+acknowledgement:
+  required: true
+  status: PENDING_REVIEW
+  acknowledged_by: null
+  acknowledged_at: null
+event_fingerprint_payload:
+  alert_event_id: alert_i046_executor_registry_not_runtime
+  monitoring_snapshot_ref: monsnap_i046_offline_001
+  severity: WARN
+  alert_type: EXECUTOR_REGISTRY_NOT_RUNTIME
+  deduplication_key: executor_registry:not_runtime
+event_fingerprint: sha256:8669ae178fa46737c2d3aa6ada5019261a50664a049b12eea125f22fec1f6ece
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/alert_event.v0.1.schema.json

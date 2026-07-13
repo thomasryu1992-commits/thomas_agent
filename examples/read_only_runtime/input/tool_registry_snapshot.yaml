@@ -1,0 +1,18 @@
+schema_version: tool_registry.v0.1
+document_version: 0.1.0
+status: active_registry_no_active_tools
+owner: Thomas
+source_of_truth: true
+governance:
+  active_and_enabled_required_for_runtime: true
+  tool_cannot_expand_authority: true
+tools:
+- tool_id: document.reader
+  version: 0.1.0
+  status: candidate
+  enabled: false
+  tool_class: read
+  purpose: Read explicitly assigned document references.
+  required_permission_level: P1
+  external_action: false
+  runtime_implementation_available: false

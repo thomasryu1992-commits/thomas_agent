@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "alert_event.v0.1.schema.json",
+  "title": "alert_event.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "alert_event_id",
+    "monitoring_snapshot_ref",
+    "severity",
+    "alert_type",
+    "condition",
+    "deduplication_key",
+    "delivery",
+    "acknowledgement",
+    "event_fingerprint_payload",
+    "event_fingerprint",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "alert_event.v0.1"
+    },
+    "alert_event_id": {
+      "type": "string",
+      "pattern": "^alert_[A-Za-z0-9._:-]+$"
+    },
+    "monitoring_snapshot_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "enum": [
+        "INFO",
+        "WARN",
+        "ERROR",
+        "CRITICAL"
+      ]
+    },
+    "alert_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_id",
+        "observed_status",
+        "threshold_ref",
+        "evidence_refs"
+      ],
+      "properties": {
+        "metric_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_status": {
+          "enum": [
+            "WARN",
+            "FAIL",
+            "NOT_AVAILABLE"
+          ]
+        },
+        "threshold_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "deduplication_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "channels_requested",
+        "delivery_status",
+        "notification_sent",
+        "external_delivery_performed",
+        "delivery_attempt_count"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY"
+        },
+        "channels_requested": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "THOMAS_TELEGRAM_PRIVATE",
+              "EMAIL",
+              "WEBHOOK",
+              "LOCAL_CONSOLE"
+            ]
+          }
+        },
+        "delivery_status": {
+          "const": "NOT_SENT_REVIEW_ONLY"
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_delivery_performed": {
+          "const": false
+        },
+        "delivery_attempt_count": {
+          "const": 0
+        }
+      }
+    },
+    "acknowledgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "acknowledged_by",
+        "acknowledged_at"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "NOT_APPLICABLE",
+            "PENDING_REVIEW"
+          ]
+        },
+        "acknowledged_by": {
+          "type": "null"
+        },
+        "acknowledged_at": {
+          "type": "null"
+        }
+      }
+    },
+    "event_fingerprint_payload": {
+      "type": "object"
+    },
+    "event_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

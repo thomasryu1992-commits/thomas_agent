@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "read_only_runtime_input_bundle.v0.1.schema.json",
+  "title": "Thomas I0.5 Read-only Runtime Input Bundle v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "run_mode",
+    "refs",
+    "sha256",
+    "constraints",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "read_only_runtime_input_bundle.v0.1"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^rorbundle_[A-Za-z0-9._:-]+$"
+    },
+    "run_mode": {
+      "const": "DEVELOPMENT_REPLAY"
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "core_context_binding",
+        "role_assignment",
+        "role_definition",
+        "role_registry",
+        "tool_registry",
+        "program_registry",
+        "i0_4_contract_set_index"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "core_context_binding": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "role_assignment": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "role_definition": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "role_registry": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "tool_registry": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "program_registry": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "i0_4_contract_set_index": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        }
+      }
+    },
+    "sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "core_context_binding",
+        "role_assignment",
+        "role_definition",
+        "role_registry",
+        "tool_registry",
+        "program_registry",
+        "i0_4_contract_set_index"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "core_context_binding": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_assignment": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_definition": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_registry": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "tool_registry": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "program_registry": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "i0_4_contract_set_index": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filesystem_read_only",
+        "external_network_allowed",
+        "tool_execution_allowed",
+        "program_execution_allowed",
+        "model_invocation_allowed",
+        "external_action_allowed",
+        "runtime_mutation_allowed",
+        "filesystem_write_allowed",
+        "secrets_allowed"
+      ],
+      "properties": {
+        "filesystem_read_only": {
+          "const": true
+        },
+        "external_network_allowed": {
+          "const": false
+        },
+        "tool_execution_allowed": {
+          "const": false
+        },
+        "program_execution_allowed": {
+          "const": false
+        },
+        "model_invocation_allowed": {
+          "const": false
+        },
+        "external_action_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "filesystem_write_allowed": {
+          "const": false
+        },
+        "secrets_allowed": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "bundle_fingerprint_payload",
+        "bundle_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "read_only_runtime_input_bundle_fingerprint_payload.v0.1"
+        },
+        "bundle_fingerprint_payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "bundle_id",
+            "run_mode",
+            "refs",
+            "sha256",
+            "constraints",
+            "created_at"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "read_only_runtime_input_bundle_fingerprint_payload.v0.1"
+            },
+            "bundle_id": {
+              "type": "string",
+              "pattern": "^rorbundle_[A-Za-z0-9._:-]+$"
+            },
+            "run_mode": {
+              "const": "DEVELOPMENT_REPLAY"
+            },
+            "refs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "task",
+                "core_context_binding",
+                "role_assignment",
+                "role_definition",
+                "role_registry",
+                "tool_registry",
+                "program_registry",
+                "i0_4_contract_set_index"
+              ],
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "core_context_binding": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "role_assignment": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "role_definition": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "role_registry": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "tool_registry": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "program_registry": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "i0_4_contract_set_index": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                }
+              }
+            },
+            "sha256": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "task",
+                "core_context_binding",
+                "role_assignment",
+                "role_definition",
+                "role_registry",
+                "tool_registry",
+                "program_registry",
+                "i0_4_contract_set_index"
+              ],
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "core_context_binding": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "role_assignment": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "role_definition": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "role_registry": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "tool_registry": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "program_registry": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "i0_4_contract_set_index": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            },
+            "constraints": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filesystem_read_only",
+                "external_network_allowed",
+                "tool_execution_allowed",
+                "program_execution_allowed",
+                "model_invocation_allowed",
+                "external_action_allowed",
+                "runtime_mutation_allowed",
+                "filesystem_write_allowed",
+                "secrets_allowed"
+              ],
+              "properties": {
+                "filesystem_read_only": {
+                  "const": true
+                },
+                "external_network_allowed": {
+                  "const": false
+                },
+                "tool_execution_allowed": {
+                  "const": false
+                },
+                "program_execution_allowed": {
+                  "const": false
+                },
+                "model_invocation_allowed": {
+                  "const": false
+                },
+                "external_action_allowed": {
+                  "const": false
+                },
+                "runtime_mutation_allowed": {
+                  "const": false
+                },
+                "filesystem_write_allowed": {
+                  "const": false
+                },
+                "secrets_allowed": {
+                  "const": false
+                }
+              }
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "bundle_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

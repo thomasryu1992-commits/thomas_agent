@@ -1,0 +1,143 @@
+schema_version: execution_request.v0.1
+execution_request_id: execreq_tool_document_reader_candidate_001
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_01HX_internal_analysis
+upstream:
+  request_type: TOOL_REQUEST
+  request_id: toolreq_document_reader_candidate_001
+  request_ref: examples/tool_requests/tool_request_document_reader_candidate_blocked_v0.1.yaml
+  request_fingerprint: sha256:84368e08bff36ab3b66fbba7fb0b205b5016cbc7f25e66b629a82c95a67ef0cc
+  action_fingerprint: sha256:a7fd3506bcf5764ecacab62fa2f945ed07fb5ad07f9562a10a8a26e066250814
+  resource_id: document.reader
+  resource_version: 0.1.0
+  requested_operation: tool.document.read
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  target_ref: document:assigned:example
+  data_scope: &id001
+  - assigned.document
+authority:
+  required_permission_level: P1
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P2
+  effective_permission_level: P1
+  authority_sufficient: true
+  authority_reasons:
+  - The actor has sufficient read-level Authority for the requested operation type.
+permission:
+  permission_decision_ref: examples/permission/permission_block_tool_document_reader_candidate_v0.3.yaml
+  permission_decision_id: permdec_tool_document_reader_candidate_block_001
+  permission_decision: BLOCK
+  action_fingerprint: sha256:a7fd3506bcf5764ecacab62fa2f945ed07fb5ad07f9562a10a8a26e066250814
+  binding_verified: true
+approval:
+  approval_required: false
+  approval_ref: null
+  approval_id: null
+  approval_status: NOT_REQUIRED
+  binding_verified: true
+  approval_consumed: false
+execution_plan:
+  execution_mode: PREVIEW_ONLY
+  executor_id: null
+  executor_version: null
+  executor_registry_ref: null
+  executor_registered: false
+  executor_enabled: false
+  executor_implementation_available: false
+  executor_handoff_allowed: false
+  target_ref: document:assigned:example
+  data_scope: *id001
+  normalized_parameters: &id002
+    mode: read_only
+  expected_effects:
+  - No effect. Review-only execution plan evidence.
+  rollback_plan: null
+  preconditions:
+  - valid_upstream_request
+  - authority_sufficient
+  - permission_binding_valid
+  - approval_binding_valid_when_required
+  - budget_available
+  - registered_enabled_executor_with_implementation
+  - hot_path_revalidation
+  expected_output_contract: execution_result.v0.1
+idempotency:
+  idempotency_key: idem_execreq_tool_document_reader_candidate_001
+  one_time_use: true
+  duplicate_execution_allowed: false
+budget:
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  requested_runtime_seconds: 30
+  remaining_runtime_seconds: 600
+  requested_cost_decimal: '0'
+  remaining_cost_decimal: '1.0'
+  cost_currency: USD
+  within_assignment_budget: true
+validation:
+  lineage_complete: true
+  upstream_binding_match: true
+  permission_binding_match: true
+  approval_binding_match: true
+  authority_match: true
+  budget_within_limit: true
+  executor_ready: false
+  request_review_result: BLOCK
+  block_reasons:
+  - executor_handoff_disabled
+  - no_executor_implementation
+  - no_executor_registered
+  - no_executor_registry
+  - permission_decision_block
+  - upstream_request_blocked
+request_fingerprint_payload:
+  schema_version: execution_request_fingerprint_payload.v0.1
+  task_id: task_resource_request_tool_document_reader_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+  requester_ref: role:general.specialist
+  upstream_request_type: TOOL_REQUEST
+  upstream_request_id: toolreq_document_reader_candidate_001
+  upstream_request_ref: examples/tool_requests/tool_request_document_reader_candidate_blocked_v0.1.yaml
+  upstream_request_fingerprint: sha256:84368e08bff36ab3b66fbba7fb0b205b5016cbc7f25e66b629a82c95a67ef0cc
+  action_fingerprint: sha256:a7fd3506bcf5764ecacab62fa2f945ed07fb5ad07f9562a10a8a26e066250814
+  permission_decision_id: permdec_tool_document_reader_candidate_block_001
+  approval_id: null
+  executor_id: null
+  target_ref: document:assigned:example
+  data_scope: *id001
+  normalized_parameters: *id002
+  idempotency_key: idem_execreq_tool_document_reader_candidate_001
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  expires_at: '2026-07-14T14:00:00Z'
+request_fingerprint: sha256:44cfa5657055d367649e863f614cd6a064145c720731722b0b692fc082a7122b
+runtime_effect:
+  mode: REVIEW_ONLY
+  request_can_execute: true
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  review_status: BLOCKED
+  created_at: '2026-07-14T13:10:00Z'
+  expires_at: '2026-07-14T14:00:00Z'
+  supersedes: []
+audit_refs:
+- audit:execution_request:execreq_tool_document_reader_candidate_001

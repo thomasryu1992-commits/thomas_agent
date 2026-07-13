@@ -1,0 +1,76 @@
+schema_version: execution_budget.v0.1
+document_version: 0.1.0
+status: active_mvp_contract
+owner: Thomas
+purpose: Canonical numeric execution-budget structure shared by Task, Role Definition,
+  Role Assignment, and Runtime usage records.
+canonical_object:
+  schema_version: execution_budget.v0.1
+  limits:
+    max_agent_invocations: 1
+    max_model_calls: 3
+    max_tool_calls: 5
+    max_program_calls: 5
+    max_revision_cycles: 1
+    max_validation_cycles: 1
+    max_retry_count: 1
+    max_parallel_workers: 1
+    max_runtime_seconds: 600
+    token_budget: 20000
+    cost_budget: 1.0
+    cost_currency: USD
+  usage:
+    agent_invocations: 0
+    model_calls: 0
+    tool_calls: 0
+    program_calls: 0
+    revision_cycles: 0
+    validation_cycles: 0
+    retry_count: 0
+    peak_parallel_workers: 0
+    runtime_seconds: 0
+    tokens_used: 0
+    cost_used: 0.0
+    cost_currency: USD
+required_numeric_task_and_assignment_limits:
+- max_agent_invocations
+- max_model_calls
+- max_tool_calls
+- max_program_calls
+- max_revision_cycles
+- max_validation_cycles
+- max_retry_count
+- max_parallel_workers
+- max_runtime_seconds
+- token_budget
+- cost_budget
+role_cap_policy:
+  role_cap_is_upper_bound_only: true
+  null_role_cap_means_no_additional_role_limit: true
+  null_task_or_assignment_limit_allowed: false
+  role_cap_does_not_create_budget: true
+effective_budget_rule:
+  operation: per_field_minimum
+  inputs:
+  - operating_policy_limit
+  - parent_task_remaining_budget
+  - task_allocation
+  - role_definition_cap_when_not_null
+  - role_assignment_allocation
+invariants:
+- subtasks_and_new_assignments_cannot_increase_parent_remaining_budget
+- budget_overrides_require_explicit_thomas_approval
+- budget_exhaustion_blocks_new_agent_tool_and_program_calls
+- usage_must_be_recorded_for_audit
+- cost_currency_must_match_when_costs_are_compared
+legacy_mapping:
+  max_total_agent_calls: max_agent_invocations
+  max_retry_count_per_step: max_retry_count
+  max_task_runtime_minutes: max_runtime_seconds (multiply by 60)
+  parallel_workers: max_parallel_workers
+  runtime_seconds: max_runtime_seconds
+  retries: max_retry_count
+  validation_cycles: max_validation_cycles
+  revision_cycles: max_revision_cycles
+  tool_calls: max_tool_calls
+  model_calls: max_model_calls

@@ -1,0 +1,90 @@
+_schema: schemas/rollback_recovery_plan.v0.1.schema.json
+schema_version: rollback_recovery_plan.v0.1
+plan_id: rrplan_memory_promotion_001
+execution_request:
+  execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+  execution_request_ref: examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+classification:
+  rollback_required: true
+  risk_class: HIGH
+  reversibility: FULL
+  reason: Validated Memory promotion changes durable internal state and requires a checkpointed restoration path.
+checkpoint:
+  checkpoint_required: true
+  checkpoint_available: true
+  checkpoint_refs: &id001
+  - checkpoint:memory_candidate:operating_preference_001:pre-promotion
+  checkpoint_hashes:
+  - sha256:d2af34bfc1f5a34ab46a8841515748f5708be705a6295c679658579f336cd6a8
+  checkpoint_created_by_execution: false
+rollback:
+  steps: &id002
+  - step_id: rollback_01
+    sequence: 1
+    action: restore_checkpointed_memory_record
+    target_ref: memory_candidate:operating_preference_001
+    expected_result: original_candidate_state_restored
+    requires_approval: true
+  verification_criteria:
+  - original_candidate_hash_matches_checkpoint
+  - validated_memory_registry_contains_no_partial_promotion
+  automatic_rollback_allowed: false
+  rollback_performed: true
+recovery:
+  steps: &id003
+  - step_id: recovery_01
+    sequence: 1
+    action: verify_memory_registry_and_binding_consistency
+    target_ref: memory_registry:validated_memory
+    expected_result: registry_and_binding_consistent
+    requires_approval: false
+  owner: thomas_prime
+  recovery_time_objective_seconds: 900
+  max_data_loss_seconds: 0
+  escalation_target: thomas_prime
+  recovery_performed: false
+validation:
+  dry_run_status: NOT_RUN
+  independent_review_required: true
+  independent_review_status: PENDING
+  plan_complete: true
+  limitations:
+  - No Runtime rollback adapter exists in I0.4.5.
+plan_fingerprint_payload:
+  execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+  execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  rollback_required: true
+  risk_class: HIGH
+  reversibility: FULL
+  checkpoint_refs: *id001
+  rollback_steps: *id002
+  recovery_steps: *id003
+  recovery_owner: thomas_prime
+  recovery_time_objective_seconds: 900
+  max_data_loss_seconds: 0
+plan_fingerprint: sha256:1e0a291697fcc9724654e90d86f2104a893612c7c35713ef3fdde9f1874df9ad
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_registration_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  approval_consumption_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+lifecycle:
+  status: REVIEW_READY
+  created_at: '2026-07-13T04:00:00Z'
+  expires_at: '2026-07-14T04:00:00Z'
+  supersedes: []
+audit_refs:
+- audit:rollback_recovery_plan:rrplan_memory_promotion_001

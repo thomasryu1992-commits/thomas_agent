@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "core_context_binding.v0.3.schema.json",
+  "title": "Thomas Core Context Binding v0.3.1 Lean",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "identity",
+    "release",
+    "rules",
+    "binding",
+    "inheritance",
+    "lineage",
+    "rebind_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "core_context_binding.v0.3"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core_context_binding_id",
+        "task_id",
+        "task_revision",
+        "trace_id"
+      ],
+      "properties": {
+        "core_context_binding_id": {
+          "type": "string",
+          "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "trace_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_id",
+        "core_version",
+        "manifest_path",
+        "manifest_sha256",
+        "approval_id",
+        "activation_id"
+      ],
+      "properties": {
+        "release_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "core_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "manifest_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "approval_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "activation_id": {
+          "type": "string",
+          "pattern": "^core-activation-[A-Za-z0-9._:-]+$"
+        }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "loaded_rule_ids"
+      ],
+      "properties": {
+        "loaded_rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^MVP_RULE_[0-9]{3}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bound_at_utc",
+        "bound_by",
+        "binding_reason"
+      ],
+      "properties": {
+        "bound_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "bound_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "inheritance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "child_tasks_inherit_binding",
+        "assignments_reference_binding",
+        "outputs_reference_binding"
+      ],
+      "properties": {
+        "child_tasks_inherit_binding": {
+          "const": true
+        },
+        "assignments_reference_binding": {
+          "const": true
+        },
+        "outputs_reference_binding": {
+          "const": true
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previous_binding_id",
+        "change_type",
+        "change_reason",
+        "material_change_ref"
+      ],
+      "properties": {
+        "previous_binding_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+        },
+        "change_type": {
+          "enum": [
+            "root_binding",
+            "task_revision_same_core",
+            "core_rebind"
+          ]
+        },
+        "change_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "material_change_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "rebind_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "silent_mid_task_rebind_allowed",
+        "explicit_task_revision_required",
+        "replan_required",
+        "reauthorization_required"
+      ],
+      "properties": {
+        "silent_mid_task_rebind_allowed": {
+          "const": false
+        },
+        "explicit_task_revision_required": {
+          "const": true
+        },
+        "replan_required": {
+          "const": true
+        },
+        "reauthorization_required": {
+          "const": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lineage": {
+            "properties": {
+              "change_type": {
+                "const": "root_binding"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "identity": {
+            "properties": {
+              "task_revision": {
+                "const": 1
+              }
+            }
+          },
+          "lineage": {
+            "properties": {
+              "previous_binding_id": {
+                "const": null
+              },
+              "change_reason": {
+                "const": null
+              },
+              "material_change_ref": {
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "lineage": {
+            "properties": {
+              "change_type": {
+                "enum": [
+                  "task_revision_same_core",
+                  "core_rebind"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "identity": {
+            "properties": {
+              "task_revision": {
+                "minimum": 2
+              }
+            }
+          },
+          "lineage": {
+            "properties": {
+              "previous_binding_id": {
+                "type": "string",
+                "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+              },
+              "change_reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "material_change_ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

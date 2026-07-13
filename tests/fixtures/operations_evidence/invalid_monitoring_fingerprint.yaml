@@ -1,0 +1,90 @@
+schema_version: monitoring_snapshot.v0.1
+monitoring_snapshot_id: monsnap_i046_offline_001
+scope:
+  system_id: thomas_agent
+  environment: LOCAL_REVIEW
+  observed_components:
+  - release_gate
+  - executor_registry_design
+  - kill_switch_design
+collection:
+  mode: OFFLINE_EVIDENCE_ONLY
+  started_at: '2026-07-13T03:00:00Z'
+  completed_at: '2026-07-13T03:00:05Z'
+  source_refs:
+  - build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  source_health: PARTIAL
+  missing_sources:
+  - runtime_monitoring_daemon
+  - runtime_health_endpoint
+  stale_sources: []
+metrics:
+- metric_id: release_gate_presence
+  status: PASS
+  value: true
+  unit: boolean
+  observed_at: '2026-07-13T03:00:05Z'
+  freshness_seconds: 0
+  threshold_ref: release_gate_evidence_required
+  evidence_refs:
+  - build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+- metric_id: executor_registry_state
+  status: WARN
+  value: REVIEW_ONLY_NO_ACTIVE_EXECUTORS
+  unit: state
+  observed_at: '2026-07-13T03:00:05Z'
+  freshness_seconds: 0
+  threshold_ref: runtime_executor_registry_required
+  evidence_refs:
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+- metric_id: kill_switch_runtime_binding
+  status: NOT_AVAILABLE
+  value: null
+  unit: state
+  observed_at: '2026-07-13T03:00:05Z'
+  freshness_seconds: 0
+  threshold_ref: runtime_kill_switch_binding_required
+  evidence_refs: []
+summary:
+  result: DEGRADED
+  passed_metric_count: 1
+  warning_metric_count: 1
+  failed_metric_count: 0
+  unavailable_metric_count: 1
+  runtime_monitoring_ready: false
+  continuous_monitoring_active: false
+snapshot_fingerprint_payload:
+  monitoring_snapshot_id: monsnap_i046_offline_001
+  scope_ref: thomas_agent:local_review
+  metric_ids:
+  - release_gate_presence
+  - executor_registry_state
+  - kill_switch_runtime_binding
+  completed_at: '2026-07-13T03:00:05Z'
+snapshot_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/monitoring_snapshot.v0.1.schema.json

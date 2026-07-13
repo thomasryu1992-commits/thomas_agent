@@ -1,0 +1,189 @@
+schema_version: core_projection_map.v0.3
+map_version: 0.3.1
+core_version: 0.2.1
+status: active_validation_map
+owner: Thomas
+purpose: Map each Thomas Core concept from the canonical human-readable philosophy to its machine-readable, runtime, and operating-policy
+  projections.
+governance_note: This is a validation map, not a new law, constitution, or authority layer.
+canonical_source:
+  path: THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+  type: human_readable_canonical_source
+  version: 0.2.1
+projection_layers:
+  detailed_projection:
+  - THOMAS_CORE/THOMAS_IDENTITY.md
+  - THOMAS_CORE/THOMAS_VALUES.yaml
+  - THOMAS_CORE/THOMAS_GOALS.yaml
+  - THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+  - THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+  active_runtime_projection:
+  - THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+  operating_policy_projection:
+  - docs/MVP_OPERATING_POLICY.md
+  role_contract_reference:
+  - 03_ROLE_CONTRACTS/ROLE_DEFINITION_TEMPLATE.yaml
+concept_ownership:
+  identity:
+    canonical_section: Identity
+    primary_projection: THOMAS_CORE/THOMAS_IDENTITY.md
+    runtime_projection:
+    - MVP_RULE_001
+  mission:
+    canonical_section: Mission
+    primary_projection: THOMAS_CORE/THOMAS_GOALS.yaml
+    runtime_projection: []
+  vision:
+    canonical_section: Vision
+    primary_projection: THOMAS_CORE/THOMAS_GOALS.yaml
+    runtime_projection: []
+  values:
+    canonical_section: Values
+    primary_projection: THOMAS_CORE/THOMAS_VALUES.yaml
+    runtime_projection:
+    - MVP_RULE_005
+    - MVP_RULE_012
+  thinking_model:
+    canonical_section: Thinking Model
+    primary_projection: THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+    runtime_projection:
+    - MVP_RULE_004
+  decision_model:
+    canonical_section: Decision Model
+    primary_projection: THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+    runtime_projection:
+    - MVP_RULE_005
+  operating_style:
+    canonical_section: Operating Style
+    primary_projection: THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+    runtime_projection: []
+  risk_philosophy:
+    canonical_section: Risk Philosophy
+    primary_projection: THOMAS_CORE/THOMAS_VALUES.yaml
+    operating_projection: docs/MVP_OPERATING_POLICY.md
+    runtime_projection:
+    - MVP_RULE_007
+  learning_philosophy:
+    canonical_section: Learning Philosophy
+    primary_projection: THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+    operating_projection: docs/MVP_OPERATING_POLICY.md
+    runtime_projection:
+    - MVP_RULE_009
+    - MVP_RULE_010
+    - MVP_RULE_011
+  programization:
+    canonical_section: Programization from Repeated Work
+    primary_projection:
+    - THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+    - THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+    operating_projection: docs/MVP_OPERATING_POLICY.md
+    runtime_projection:
+    - MVP_RULE_013
+  communication:
+    canonical_section: Communication Philosophy
+    primary_projection: THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+    runtime_projection:
+    - MVP_RULE_008
+  opportunity:
+    canonical_section: Opportunity Philosophy
+    primary_projection:
+    - THOMAS_CORE/THOMAS_VALUES.yaml
+    - THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+    runtime_projection:
+    - MVP_RULE_005
+active_rule_contract:
+  expected_ids:
+  - MVP_RULE_001
+  - MVP_RULE_002
+  - MVP_RULE_003
+  - MVP_RULE_004
+  - MVP_RULE_005
+  - MVP_RULE_006
+  - MVP_RULE_007
+  - MVP_RULE_008
+  - MVP_RULE_009
+  - MVP_RULE_010
+  - MVP_RULE_011
+  - MVP_RULE_012
+  - MVP_RULE_013
+  existing_compatible_ids:
+  - MVP_RULE_001
+  - MVP_RULE_002
+  - MVP_RULE_003
+  - MVP_RULE_004
+  - MVP_RULE_005
+  - MVP_RULE_006
+  - MVP_RULE_007
+  - MVP_RULE_008
+  additive_ids:
+  - MVP_RULE_009
+  - MVP_RULE_010
+  - MVP_RULE_011
+  - MVP_RULE_012
+  - MVP_RULE_013
+  expected_runtime_use:
+    MVP_RULE_001: identity_anchor
+    MVP_RULE_002: avoid_premature_business_lock_in
+    MVP_RULE_003: build_reusable_agent_foundation
+    MVP_RULE_004: opportunity_validation_and_feedback_loop
+    MVP_RULE_005: business_opportunity_filter
+    MVP_RULE_006: agent_program_boundary
+    MVP_RULE_007: safety_and_permission_boundary
+    MVP_RULE_008: reporting_style
+    MVP_RULE_009: learning_positive_default
+    MVP_RULE_010: feedback_to_operational_knowledge
+    MVP_RULE_011: learning_permission_and_protected_core_boundary
+    MVP_RULE_012: compounding_value
+    MVP_RULE_013: repeated_work_to_program_candidate_review
+protected_invariants:
+  learning_default: actively_encouraged
+  learning_is_permission_expansion: false
+  programization_review_trigger: 10
+  programization_is_automatic_conversion: false
+  programization_expands_permission: false
+  protected_core_auto_change: false
+  protected_domains_require_thomas_approval: true
+stale_text_patterns:
+- CORE_CONTEXT_BINDING_V0.2.md
+- New Rule IDs 009–012 add
+- Use only the eight rules in `MVP_ACTIVE_CORE.yaml`
+- Use only the twelve rules in `MVP_ACTIVE_CORE.yaml`
+- core_context_binding.v0.2
+- task.v0.2_or_later
+- 검증된 저위험 내부 Program은 명시된 Role, Task 유형, 입력 범위와 환경 안에서 자동 활성화할 수 있다.
+- Core Context Binding v0.2
+- approved_via_release_registry
+- 검증된 저위험 내부 Program은 명시된 범위에서 활성화할 수 있으나 Programization은 권한을 확대하지 않는다.
+- bundle hash, manifest hash, approval ID를 보존한다.
+release_reproducibility:
+  manifest_template: THOMAS_CORE/CORE_RELEASE_MANIFEST_TEMPLATE.yaml
+  release_directory: THOMAS_CORE/releases
+  approval_directory: THOMAS_CORE/approvals
+  review_pointer: THOMAS_CORE/REVIEW_CORE_RELEASE.yaml
+  current_runtime_pointer: THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+  context_binding_contract: docs/runtime-contracts/CORE_CONTEXT_BINDING_V0.3.md
+  context_binding_schema: schemas/core_context_binding.v0.3.schema.json
+  runtime_policy_projection: THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+  invariants:
+    manifest_self_approval: false
+    approved_release_edit_in_place: false
+    semantic_change_requires_new_release: true
+    root_task_binding_required: true
+    loaded_rules_explicit: true
+    silent_mid_task_rebind_allowed: false
+    core_approval_grants_execution_permission: false
+  artifact_snapshot_directory: THOMAS_CORE/releases/<release_id>/artifacts
+  validation_toolchain_snapshot_directory: THOMAS_CORE/releases/<release_id>/validation_toolchain
+  activation_directory: THOMAS_CORE/activations
+  revocation_directory: THOMAS_CORE/revocations
+  deactivation_directory: THOMAS_CORE/deactivations
+  historical_release_verification_uses_current_worktree: false
+exact_rule_meaning:
+  rule_id_alone_is_sufficient: false
+  required_context:
+  - release_id
+  - manifest_sha256
+  - rule_id
+  legacy_note: Historical records that contain only a Rule ID may identify the conceptual rule family, but not the exact text.
+    Exact replay requires a Core Release or legacy snapshot.
+document_role: build_and_validation_only_not_part_of_semantic_core_release

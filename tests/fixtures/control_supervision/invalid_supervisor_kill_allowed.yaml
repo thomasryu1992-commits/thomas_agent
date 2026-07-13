@@ -1,0 +1,76 @@
+_schema: schemas/process_supervisor_snapshot.v0.1.schema.json
+schema_version: process_supervisor_snapshot.v0.1
+snapshot_id: supersnap_i047_disabled_001
+status: REVIEW_ONLY_DISABLED
+interface:
+  connected: false
+  implementation_available: false
+  runtime_source_of_truth: false
+  process_observation_performed: false
+  process_control_enabled: false
+capabilities:
+  start_allowed: false
+  stop_allowed: false
+  restart_allowed: false
+  kill_allowed: true
+  signal_allowed: false
+  auto_restart_allowed: false
+configured_services:
+- service_id: thomas-agent-runtime
+  intended_purpose: Future local Thomas Agent Runtime service
+  expected_process_type: AGENT_RUNTIME
+  observed_status: NOT_OBSERVED
+  pid: null
+  health_ref: null
+- service_id: thomas-agent-scheduler
+  intended_purpose: Future local scheduler service
+  expected_process_type: SCHEDULER_SERVICE
+  observed_status: NOT_OBSERVED
+  pid: null
+  health_ref: null
+evidence:
+  mode: STATIC_DESIGN_ONLY
+  source_refs:
+  - DISABLED_PROCESS_SUPERVISOR_INTERFACE_V0.1.md
+  live_process_data_included: false
+  process_probe_performed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:05:00Z'
+audit_refs: []

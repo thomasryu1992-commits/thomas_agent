@@ -1,0 +1,129 @@
+schema_version: task.v0.3
+identity:
+  task_id: task_received_unbound_001
+  trace_id: trace_received_unbound_001
+  root_task_id: task_received_unbound_001
+  parent_task_id: null
+  task_revision: 1
+source:
+  channel: telegram
+  source_ref: telegram_message:12345
+  requester:
+    requester_type: real_thomas
+    requester_id: thomas
+    authenticated: true
+request:
+  raw_request: 이 자료를 분석하고 핵심 위험을 알려줘
+  normalized_goal: Analyze the supplied material and identify material risks.
+  received_at: '2026-07-10T09:00:00Z'
+scope:
+  primary_objective: Analyze the supplied material and identify material risks.
+  success_conditions:
+  - material_findings_present
+  - material_risks_disclosed
+  constraints:
+  - no_external_action
+  exclusions:
+  - external_source_verification_not_assigned
+  expected_outputs:
+  - structured_analysis
+  - risk_summary
+classification:
+  classification_status: UNCLASSIFIED
+  execution_mode: null
+  complexity: null
+  priority: NORMAL
+  risk_level: null
+  classification_reasons: []
+authority:
+  required_permission_level: P2
+  authority_reason: Analysis is required.
+permission:
+  evaluation_status: NOT_EVALUATED
+  permission_decision: null
+  permission_decision_ref: null
+  approval_state: NOT_REQUIRED
+  approval_id: null
+  action_fingerprint: null
+routing:
+  required_capabilities: []
+  selected_route: UNASSIGNED
+  assigned_role_ids: []
+  assigned_actor_ids: []
+  role_assignment_ids: []
+  program_request_ids: []
+  tool_request_ids: []
+context:
+  core_context_binding_id: null
+  input_refs:
+  - task.request.raw_request
+  context_refs: []
+  active_core_rule_ids:
+  - MVP_RULE_006
+  - MVP_RULE_008
+  memory_refs: []
+  data_sensitivity: INTERNAL
+validation:
+  mode: AUTOMATIC
+  status: NOT_STARTED
+  acceptance_criteria:
+  - objective_met
+  - output_contract_valid
+  - material_uncertainty_disclosed
+  rejection_criteria:
+  - material_evidence_misrepresentation
+  - authority_or_permission_violation
+  validation_output_refs: []
+execution_budget:
+  schema_version: execution_budget.v0.1
+  limits:
+    max_agent_invocations: 3
+    max_model_calls: 12
+    max_tool_calls: 20
+    max_program_calls: 10
+    max_revision_cycles: 2
+    max_validation_cycles: 2
+    max_retry_count: 3
+    max_parallel_workers: 3
+    max_runtime_seconds: 1800
+    token_budget: 50000
+    cost_budget: 5.0
+    cost_currency: USD
+  usage:
+    agent_invocations: 0
+    model_calls: 0
+    tool_calls: 0
+    program_calls: 0
+    revision_cycles: 0
+    validation_cycles: 0
+    retry_count: 0
+    peak_parallel_workers: 0
+    runtime_seconds: 0
+    tokens_used: 0
+    cost_used: 0.0
+    cost_currency: USD
+results:
+  agent_output_refs: []
+  program_result_refs: []
+  validation_output_refs: []
+  final_output_ref: null
+  partial_completion:
+    is_partial: false
+    completed_scope: []
+    missing_scope: []
+    impact: []
+    next_action: null
+lifecycle:
+  status: RECEIVED
+  previous_status: null
+  status_reason: Task received; Core Binding not created yet.
+  blocked_reason: null
+  pause_resume_target: null
+  transition_event_ref: audit_received_unbound_001
+  status_entered_at: '2026-07-12T00:00:00Z'
+audit:
+  created_by: telegram_gateway
+  created_at: '2026-07-10T09:00:00Z'
+  updated_at: '2026-07-10T09:02:00Z'
+  audit_refs:
+  - audit_received_unbound_001

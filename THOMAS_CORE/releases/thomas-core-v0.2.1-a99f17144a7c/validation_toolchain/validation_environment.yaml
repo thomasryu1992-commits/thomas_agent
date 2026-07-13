@@ -1,0 +1,9 @@
+python_implementation: CPython
+python_version: 3.12.10
+operating_system: Windows-10-10.0.19045-SP0
+dependency_versions:
+  PyYAML: 6.0.3
+  jsonschema: 4.26.0
+  referencing: 0.37.0
+  rpds-py: 2026.5.1
+  attrs: 26.1.0

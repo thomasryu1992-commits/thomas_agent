@@ -1,0 +1,51 @@
+_schema: schemas/disabled_executor_evidence.v0.1.schema.json
+schema_version: disabled_executor_evidence.v0.1
+evidence_id: disexevidence_memory_promotion_001
+execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+execution_request_ref: examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+service:
+  service_id: restricted.execution.service.disabled
+  service_version: 0.1.0
+  status: ENABLED
+  implementation_mode: EVIDENCE_ONLY
+  network_clients_present: false
+  external_adapters_present: false
+  secret_reader_present: false
+  subprocess_runner_present: false
+decision:
+  result: BLOCKED_DISABLED_SERVICE
+  reason_codes:
+  - executor_registry_not_runtime_authoritative
+  - no_registered_active_executor
+  - disabled_service_has_no_execution_adapter
+  message: Execution request was refused by the disabled evidence-only service.
+effects:
+  execution_performed: false
+  executor_called: false
+  tool_execution_performed: false
+  program_execution_performed: false
+  approval_consumed: false
+  external_side_effect_performed: false
+  financial_side_effect_performed: false
+  runtime_mutation_performed: false
+  files_mutated: []
+  network_calls: 0
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_registration_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  approval_consumption_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:00:10Z'
+audit_refs:
+- audit:disabled_executor:disexevidence_memory_promotion_001

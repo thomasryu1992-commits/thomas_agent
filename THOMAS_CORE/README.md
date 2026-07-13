@@ -1,8 +1,8 @@
 # THOMAS_CORE
 
-Status: Initial Draft  
-Core Version: 0.1.0  
-Owner: Thomas  
+Status: Thomas Approved Candidate
+Core Version: 0.2.1
+Owner: Thomas
 Primary Runtime Identity: Thomas Prime
 
 ## Purpose
@@ -21,6 +21,13 @@ It defines:
 
 | File | Purpose |
 | --- | --- |
+| `THOMAS_CORE_PHILOSOPHY.md` | Canonical human-readable Thomas philosophy |
+| `CORE_RUNTIME_POLICY_PROJECTION.yaml` | Compact machine-readable Core-derived Runtime invariants |
+| `docs/build/CORE_PROJECTION_MAP.yaml` | Build-time map for Core projection ownership and consistency validation |
+| `CORE_RELEASE_MANIFEST_TEMPLATE.yaml` | Defines the immutable semantic file set for a Core release |
+| `releases/<release_id>/manifest.yaml` | Immutable review-ready Release Manifest with exact file hashes |
+| `approvals/<approval_id>.yaml` | Separate Thomas approval record for one exact Release |
+| `CURRENT_CORE_RELEASE.yaml` | Pointer to the exact approved Release used by new Runtime Tasks |
 | `CORE_METADATA.yaml` | Core version, governance, information status, and change policy |
 | `THOMAS_IDENTITY.md` | Thomas identity, roles, strengths, limitations, and future identity |
 | `THOMAS_VALUES.yaml` | Core values and value conflict policy |
@@ -28,7 +35,6 @@ It defines:
 | `THOMAS_DECISION_MODEL.yaml` | Decision process, scoring criteria, risk penalties, and default patterns |
 | `THOMAS_PREFERENCE_PROFILE.yaml` | Communication, reporting, work style, automation, and notification preferences |
 | `THOMAS_REVENUE_PREFERENCE_MODEL.yaml` | Revenue preference model for business, project, and investment opportunity evaluation |
-| `THOMAS_CORE_RUNTIME_SUMMARY.md` | Runtime summary, Prime Directive, validation checklist, and version plan |
 | `MVP_CORE_SCOPE.md` | What is required for the first agent organization MVP versus what should remain reference-only |
 | `MVP_ACTIVE_CORE.yaml` | The only active Core rules for the first MVP runtime |
 
@@ -38,23 +44,26 @@ Related architecture document:
 
 ## Runtime Rule
 
-Thomas Core is protected. Agents may suggest changes, but they cannot directly change Thomas identity, core values, long-term goals, risk boundaries, permissions, or approval rules.
+Thomas Core separates learning from protected authority.
 
-All changes to protected Core settings require Thomas approval and versioned audit records.
+Agents are encouraged to learn from Task results, success, failure, and feedback.
+
+Validated low-risk operational knowledge may be used within an explicit scope with evidence, versioning, monitoring, and rollback.
+
+Learning does not expand permission.
+
+Agents may suggest protected Core changes, but they cannot directly change Identity, Mission, Vision, Core Values, long-term goals, risk boundaries, Permission Policy, Constitution, or authority.
+
+Protected Core changes require explicit Thomas approval and versioned Audit records.
 
 ## MVP Use
 
 For the first agent organization MVP, do not load every detailed rule as an active runtime rule.
 
-Use only the eight rules in `MVP_ACTIVE_CORE.yaml`:
+Use only the thirteen rules in `MVP_ACTIVE_CORE.yaml`.
 
-1. Thomas는 시스템형 사업가다.
-2. 특정 사업 분야를 아직 고정하지 않는다.
-3. 공통 Agent 조직을 먼저 만든다.
-4. 기회는 발견 후 작은 검증을 거친다.
-5. 사업 기회는 수익 가능성을 먼저 본다.
-6. 반복 업무는 Program, 판단 업무는 Agent가 맡는다.
-7. 고위험 행동은 Thomas 승인이 필요하다.
-8. 보고는 결론, 이유, 리스크, 다음 행동 중심으로 한다.
+Existing Rule IDs 001–008 retain compatible meaning.
+
+New Rule IDs 009–013 add learning-positive, feedback-to-knowledge, learning-permission boundary, compounding, and repeated-work programization principles.
 
 Keep detailed scoring, long-term portfolio examples, and full classification models as reference material until real decision cases accumulate.

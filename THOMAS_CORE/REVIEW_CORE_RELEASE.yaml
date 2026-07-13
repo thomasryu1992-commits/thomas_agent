@@ -1,0 +1,8 @@
+schema_version: review_core_release.v0.2
+release_id: thomas-core-v0.2.1-a99f17144a7c
+core_version: 0.2.1
+core_bundle_sha256: sha256:a99f17144a7cc54e2586d8614b3b28b379bbc6ab4ab3fca2e858a06bf5549ff8
+manifest_path: THOMAS_CORE/releases/thomas-core-v0.2.1-a99f17144a7c/manifest.yaml
+core_release_manifest_sha256: sha256:fc873a4c43825ab6cf5cee83e8f2beddeb1a96991e594622da4081acd81195cd
+review_status: review_ready_not_runtime_active
+updated_at_utc: '2026-07-12T14:33:20Z'

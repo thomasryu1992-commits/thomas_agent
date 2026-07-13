@@ -1,0 +1,40 @@
+schema_version: program_registry.v0.1
+document_version: 0.1.1
+status: active_registry_no_active_programs
+owner: Thomas
+source_of_truth: true
+governance:
+  allowed_statuses:
+  - draft
+  - candidate
+  - active
+  - disabled
+  - deprecated
+  - archived
+  active_and_enabled_required_for_runtime: true
+  program_cannot_expand_authority: true
+  program_request_contract: ../docs/runtime-contracts/PROGRAM_REQUEST_CONTRACT_V0.1.md
+  program_request_schema: ../schemas/program_request.v0.1.schema.json
+  review_only_request_evaluation_supported: true
+  request_record_never_enables_program: true
+  role_definition_allowlist_required: true
+  role_assignment_allowlist_required: true
+  numeric_budget_required: true
+  change_requires_version_and_audit: true
+programs:
+- program_id: schema.validator
+  version: 0.1.0
+  status: candidate
+  enabled: false
+  deterministic: true
+  purpose: Validate structured records against approved schemas.
+  required_permission_level: P1
+  runtime_implementation_available: false
+- program_id: document.parser
+  version: 0.1.0
+  status: candidate
+  enabled: false
+  deterministic: true
+  purpose: Parse assigned documents into structured text.
+  required_permission_level: P1
+  runtime_implementation_available: false

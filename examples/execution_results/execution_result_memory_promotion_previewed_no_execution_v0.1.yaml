@@ -1,0 +1,53 @@
+schema_version: execution_result.v0.1
+execution_result_id: execres_memory_promotion_previewed_no_execution_001
+execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+execution_request_ref: examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+trace_id: trace_memory_promotion_001
+task_id: task_memory_promotion_001
+task_revision: 2
+core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+result_status: PREVIEWED
+execution_evidence:
+  execution_performed: false
+  executor_called: false
+  execution_attempt_id: null
+  started_at: null
+  finished_at: null
+  tool_execution_performed: false
+  program_execution_performed: false
+  external_side_effect_performed: false
+  financial_side_effect_performed: false
+  runtime_mutation_performed: false
+  side_effect_summary: []
+output:
+  output_refs: []
+  output_sha256: []
+  preview_summary: The approved action was rendered as a Review-only execution preview. No Executor, Runtime mutation,
+    or memory promotion occurred.
+  block_reasons: []
+metrics:
+  runtime_seconds: 0
+  tool_calls: 0
+  program_calls: 0
+  external_calls: 0
+  cost_decimal: '0'
+  cost_currency: USD
+error:
+  error_code: null
+  error_message: null
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  executor_handoff_allowed: false
+  side_effects_allowed: false
+  runtime_mutation_allowed: false
+lifecycle:
+  created_at: '2026-07-14T11:57:00Z'
+  supersedes: []
+audit_refs:
+- audit:execution_result:execres_memory_promotion_previewed_no_execution_001

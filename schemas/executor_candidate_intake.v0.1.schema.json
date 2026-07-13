@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "executor_candidate_intake.v0.1.schema.json",
+  "title": "executor_candidate_intake.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intake_id",
+    "candidate",
+    "scope",
+    "authority",
+    "security",
+    "runtime_prerequisites",
+    "evidence",
+    "intake_decision",
+    "intake_fingerprint_payload",
+    "intake_fingerprint",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "executor_candidate_intake.v0.1"
+    },
+    "intake_id": {
+      "type": "string",
+      "pattern": "^execintake_[A-Za-z0-9._:-]+$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executor_candidate_id",
+        "name",
+        "version",
+        "executor_class",
+        "proposed_status",
+        "implementation_ref",
+        "implementation_sha256",
+        "implementation_available"
+      ],
+      "properties": {
+        "executor_candidate_id": {
+          "type": "string",
+          "pattern": "^exec_candidate_[A-Za-z0-9._:-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "executor_class": {
+          "enum": [
+            "LOCAL_INTERNAL_REVERSIBLE",
+            "EXTERNAL_WRITE",
+            "FINANCIAL",
+            "DEPLOYMENT",
+            "DESTRUCTIVE_PRIVILEGED"
+          ]
+        },
+        "proposed_status": {
+          "const": "CANDIDATE_REVIEW_ONLY"
+        },
+        "implementation_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "implementation_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "implementation_available": {
+          "type": "boolean"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported_action_types",
+        "target_scopes",
+        "data_scopes",
+        "external_action_capable",
+        "financial_action_capable",
+        "destructive_action_capable"
+      ],
+      "properties": {
+        "supported_action_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "target_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "data_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "external_action_capable": {
+          "type": "boolean"
+        },
+        "financial_action_capable": {
+          "type": "boolean"
+        },
+        "destructive_action_capable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_permission_level",
+        "max_supported_permission_level",
+        "cannot_expand_authority"
+      ],
+      "properties": {
+        "required_permission_level": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6"
+          ]
+        },
+        "max_supported_permission_level": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6"
+          ]
+        },
+        "cannot_expand_authority": {
+          "const": true
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secret_handling_mode",
+        "secret_values_included",
+        "network_access_required",
+        "filesystem_write_required",
+        "subprocess_required",
+        "privileged_access_required",
+        "forbidden_capabilities"
+      ],
+      "properties": {
+        "secret_handling_mode": {
+          "enum": [
+            "NO_SECRETS",
+            "METADATA_ONLY"
+          ]
+        },
+        "secret_values_included": {
+          "const": false
+        },
+        "network_access_required": {
+          "type": "boolean"
+        },
+        "filesystem_write_required": {
+          "type": "boolean"
+        },
+        "subprocess_required": {
+          "type": "boolean"
+        },
+        "privileged_access_required": {
+          "type": "boolean"
+        },
+        "forbidden_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "runtime_prerequisites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "monitoring_contract_ref",
+        "alert_contract_ref",
+        "health_contract_ref",
+        "clock_contract_ref",
+        "kill_switch_contract_ref",
+        "hot_path_contract_ref",
+        "approval_consumption_contract_ref",
+        "rollback_contract_ref",
+        "idempotency_required",
+        "independent_validation_required"
+      ],
+      "properties": {
+        "monitoring_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "alert_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "health_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clock_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kill_switch_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hot_path_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_consumption_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rollback_contract_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotency_required": {
+          "const": true
+        },
+        "independent_validation_required": {
+          "const": true
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test_report_refs",
+        "negative_fixture_refs",
+        "implementation_hash_verified",
+        "no_secret_evidence_refs",
+        "rollback_evidence_refs",
+        "monitoring_evidence_refs"
+      ],
+      "properties": {
+        "test_report_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "negative_fixture_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "implementation_hash_verified": {
+          "type": "boolean"
+        },
+        "no_secret_evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rollback_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "monitoring_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "intake_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "eligible_for_runtime_registry",
+        "eligible_for_activation",
+        "eligible_for_executor_handoff",
+        "missing_requirements"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "ACCEPTED_FOR_REVIEW",
+            "REJECTED"
+          ]
+        },
+        "eligible_for_runtime_registry": {
+          "const": false
+        },
+        "eligible_for_activation": {
+          "const": false
+        },
+        "eligible_for_executor_handoff": {
+          "const": false
+        },
+        "missing_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "intake_fingerprint_payload": {
+      "type": "object"
+    },
+    "intake_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

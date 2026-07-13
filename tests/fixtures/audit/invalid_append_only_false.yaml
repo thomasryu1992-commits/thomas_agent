@@ -1,0 +1,73 @@
+schema_version: audit_event.v0.1
+audit_event_id: audit_execution_request_tool_created_001
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+event_type: EXECUTION_REQUEST_CREATED
+actor:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_01HX_internal_analysis
+subject:
+  subject_type: EXECUTION_REQUEST
+  subject_id: execreq_tool_document_reader_candidate_001
+  subject_ref: examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+  subject_fingerprint: sha256:44cfa5657055d367649e863f614cd6a064145c720731722b0b692fc082a7122b
+event:
+  event_summary: Review-only Execution Request created and blocked before any Executor handoff.
+  outcome: BLOCKED
+  reason_codes: &id001
+  - no_executor_registry
+  - upstream_request_blocked
+  payload_ref: null
+  payload_sha256: null
+  evidence_refs:
+  - examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+  related_record_refs:
+  - examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+lineage:
+  parent_audit_event_ids: &id002 []
+  previous_event_sha256: null
+  sequence_number: 1
+integrity:
+  hash_schema: audit_event_fingerprint_payload.v0.1
+  event_fingerprint_payload:
+    schema_version: audit_event_fingerprint_payload.v0.1
+    audit_event_id: audit_execution_request_tool_created_001
+    trace_id: trace_resource_request_tool_document_reader_001
+    task_id: task_resource_request_tool_document_reader_001
+    task_revision: 1
+    core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+    event_type: EXECUTION_REQUEST_CREATED
+    actor_ref: role:general.specialist@general.specialist#assignment_01HX_internal_analysis
+    subject_ref: examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+    subject_fingerprint: sha256:44cfa5657055d367649e863f614cd6a064145c720731722b0b692fc082a7122b
+    event_summary: Review-only Execution Request created and blocked before any Executor handoff.
+    outcome: BLOCKED
+    reason_codes: *id001
+    payload_sha256: null
+    evidence_refs:
+    - examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+    related_record_refs:
+    - examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+    parent_audit_event_ids: *id002
+    previous_event_sha256: null
+    sequence_number: 1
+    created_at: '2026-07-14T13:10:30Z'
+  event_sha256: sha256:ad6ae21308145564dea76bdefa08b252aa415b6be618be7d6d55cdb0f05158dd
+  append_only: false
+  overwrite_allowed: false
+  delete_allowed: false
+sensitivity: INTERNAL
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  mutates_runtime: false
+created_at: '2026-07-14T13:10:30Z'

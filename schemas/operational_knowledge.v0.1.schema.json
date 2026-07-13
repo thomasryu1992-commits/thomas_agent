@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "operational_knowledge.v0.1.schema.json",
+  "title": "Validated Operational Knowledge v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "knowledge_id",
+    "scope",
+    "statement",
+    "evidence_refs",
+    "validated_at_utc",
+    "review_due_at_utc",
+    "last_confirmed_at_utc",
+    "environment_signature",
+    "confidence",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "operational_knowledge.v0.1"
+    },
+    "knowledge_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "validated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "review_due_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_confirmed_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "environment_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system_version",
+        "model_version",
+        "toolchain_version"
+      ],
+      "properties": {
+        "system_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolchain_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "status": {
+      "enum": [
+        "active",
+        "review_due",
+        "stale",
+        "deprecated"
+      ]
+    }
+  }
+}

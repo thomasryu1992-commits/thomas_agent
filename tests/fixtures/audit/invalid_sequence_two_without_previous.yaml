@@ -1,0 +1,74 @@
+schema_version: audit_event.v0.1
+audit_event_id: audit_validation_execution_request_tool_001
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+event_type: VALIDATION_COMPLETED
+actor:
+  actor_type: role
+  actor_id: validation.independent
+  role_id: validation.independent
+  role_version: 0.3.0
+  assignment_id: null
+subject:
+  subject_type: VALIDATION_RESULT
+  subject_id: valres_execution_request_tool_block_001
+  subject_ref: examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+  subject_fingerprint: sha256:78507570cc03ed6132830f25bd90277bfc61ff86554caec259c2e973207bd559
+event:
+  event_summary: Independent Validation confirmed the Execution Request must remain blocked.
+  outcome: BLOCKED
+  reason_codes: &id001
+  - candidate_tool_not_runtime_eligible
+  - executor_unavailable
+  payload_ref: null
+  payload_sha256: null
+  evidence_refs:
+  - examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+  related_record_refs:
+  - examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+lineage:
+  parent_audit_event_ids: &id002
+  - audit_execution_request_tool_created_001
+  previous_event_sha256: null
+  sequence_number: 2
+integrity:
+  hash_schema: audit_event_fingerprint_payload.v0.1
+  event_fingerprint_payload:
+    schema_version: audit_event_fingerprint_payload.v0.1
+    audit_event_id: audit_validation_execution_request_tool_001
+    trace_id: trace_resource_request_tool_document_reader_001
+    task_id: task_resource_request_tool_document_reader_001
+    task_revision: 1
+    core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+    event_type: VALIDATION_COMPLETED
+    actor_ref: role:validation.independent@validation.independent
+    subject_ref: examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+    subject_fingerprint: sha256:78507570cc03ed6132830f25bd90277bfc61ff86554caec259c2e973207bd559
+    event_summary: Independent Validation confirmed the Execution Request must remain blocked.
+    outcome: BLOCKED
+    reason_codes: *id001
+    payload_sha256: null
+    evidence_refs:
+    - examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+    related_record_refs:
+    - examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml
+    parent_audit_event_ids: *id002
+    previous_event_sha256: null
+    sequence_number: 2
+    created_at: '2026-07-14T13:15:30Z'
+  event_sha256: sha256:16d4af1667fa75d2246fef0574faf2fb627cba99aad1c53e76186fc254f4e5d2
+  append_only: true
+  overwrite_allowed: false
+  delete_allowed: false
+sensitivity: INTERNAL
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  mutates_runtime: false
+created_at: '2026-07-14T13:15:30Z'

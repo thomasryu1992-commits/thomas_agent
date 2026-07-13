@@ -1,0 +1,74 @@
+schema_version: validation_result.v0.1
+validation_result_id: valres_execution_result_no_effect_pass_001
+trace_id: trace_memory_promotion_001
+task_id: task_memory_promotion_001
+task_revision: 2
+core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+subject:
+  subject_type: EXECUTION_RESULT
+  subject_id: execres_memory_promotion_previewed_no_execution_001
+  subject_ref: examples/execution_results/execution_result_memory_promotion_previewed_no_execution_v0.1.yaml
+  subject_fingerprint: sha256:826d71f0558a661d62d03c506657d2534fdcc4a2f5b03c260e5e8dd698d7f70f
+  subject_created_by_actor_id: execution.review
+validator:
+  validator_type: SYSTEM
+  validator_actor_id: contract.validator
+  validator_role_id: null
+  validator_role_version: null
+  validator_execution_context_id: validation_context_execution_result_contract_001
+  independent_required: false
+  independence_verified: true
+validation:
+  validation_mode: CONTRACT
+  result: PASS
+  acceptance_criteria:
+  - subject_contract_valid
+  - lineage_consistent
+  - permission_boundary_preserved
+  rejection_criteria:
+  - subject_contract_invalid
+  - lineage_mismatch
+  - hidden_execution_or_permission_effect
+  checks:
+  - check_id: review_summary
+    result: PASS
+    evidence_refs:
+    - examples/execution_results/execution_result_memory_promotion_previewed_no_execution_v0.1.yaml
+    notes: All execution and side-effect evidence remains false.; The result does not grant Permission, Approval,
+      Authority, Activation, or execution.
+  result_reasons:
+  - All execution and side-effect evidence remains false.
+  - The result does not grant Permission, Approval, Authority, Activation, or execution.
+  recommended_next_state: null
+findings:
+  facts:
+  - Validation does not grant Permission or execution authority.
+  risks: []
+  omissions: []
+  assumptions: []
+  limitations:
+  - Review-only foundation; no Runtime execution was observed.
+evidence_refs:
+- examples/execution_results/execution_result_memory_promotion_previewed_no_execution_v0.1.yaml
+permission_boundary:
+  grants_permission: true
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  mutates_subject: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  executor_handoff_allowed: false
+  side_effects_allowed: false
+  runtime_mutation_allowed: false
+lifecycle:
+  created_at: '2026-07-14T12:00:00Z'
+  supersedes: []
+audit_refs:
+- audit:validation:valres_execution_result_no_effect_pass_001

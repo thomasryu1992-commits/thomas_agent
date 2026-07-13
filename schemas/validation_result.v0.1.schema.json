@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "validation_result.v0.1.schema.json",
+  "title": "Thomas Validation Result v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "validation_result_id",
+    "trace_id",
+    "task_id",
+    "task_revision",
+    "core_context_binding_id",
+    "subject",
+    "validator",
+    "validation",
+    "findings",
+    "evidence_refs",
+    "permission_boundary",
+    "runtime_effect",
+    "lifecycle",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "validation_result.v0.1"
+    },
+    "validation_result_id": {
+      "type": "string",
+      "pattern": "^valres_[A-Za-z0-9._:-]+$"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "core_context_binding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_type",
+        "subject_id",
+        "subject_ref",
+        "subject_fingerprint",
+        "subject_created_by_actor_id"
+      ],
+      "properties": {
+        "subject_type": {
+          "enum": [
+            "PERMISSION_DECISION",
+            "APPROVAL",
+            "TOOL_REQUEST",
+            "PROGRAM_REQUEST",
+            "EXECUTION_REQUEST",
+            "EXECUTION_RESULT",
+            "AGENT_OUTPUT",
+            "PROGRAM_RESULT",
+            "OTHER"
+          ]
+        },
+        "subject_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "subject_created_by_actor_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validator_type",
+        "validator_actor_id",
+        "validator_role_id",
+        "validator_role_version",
+        "validator_execution_context_id",
+        "independent_required",
+        "independence_verified"
+      ],
+      "properties": {
+        "validator_type": {
+          "enum": [
+            "AUTOMATIC",
+            "ROLE",
+            "SYSTEM"
+          ]
+        },
+        "validator_actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validator_role_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "validator_role_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "validator_execution_context_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "independent_required": {
+          "type": "boolean"
+        },
+        "independence_verified": {
+          "type": "boolean"
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validation_mode",
+        "result",
+        "acceptance_criteria",
+        "rejection_criteria",
+        "checks",
+        "result_reasons",
+        "recommended_next_state"
+      ],
+      "properties": {
+        "validation_mode": {
+          "enum": [
+            "AUTOMATIC",
+            "INDEPENDENT",
+            "RISK_REVIEW",
+            "CONTRACT",
+            "SECURITY"
+          ]
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "REVISE",
+            "BLOCK"
+          ]
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "rejection_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check_id",
+              "result",
+              "evidence_refs",
+              "notes"
+            ],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "REVISE",
+                  "BLOCK"
+                ]
+              },
+              "evidence_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "result_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "recommended_next_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "facts",
+        "risks",
+        "omissions",
+        "assumptions",
+        "limitations"
+      ],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "permission_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grants_permission",
+        "grants_approval",
+        "grants_authority",
+        "grants_execution",
+        "grants_activation",
+        "mutates_subject"
+      ],
+      "properties": {
+        "grants_permission": {
+          "const": false
+        },
+        "grants_approval": {
+          "const": false
+        },
+        "grants_authority": {
+          "const": false
+        },
+        "grants_execution": {
+          "const": false
+        },
+        "grants_activation": {
+          "const": false
+        },
+        "mutates_subject": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_permission",
+        "grants_approval",
+        "grants_authority",
+        "grants_execution",
+        "grants_activation",
+        "executor_handoff_allowed",
+        "side_effects_allowed",
+        "runtime_mutation_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY"
+        },
+        "grants_permission": {
+          "const": false
+        },
+        "grants_approval": {
+          "const": false
+        },
+        "grants_authority": {
+          "const": false
+        },
+        "grants_execution": {
+          "const": false
+        },
+        "grants_activation": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "created_at",
+        "supersedes"
+      ],
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "supersedes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  }
+}

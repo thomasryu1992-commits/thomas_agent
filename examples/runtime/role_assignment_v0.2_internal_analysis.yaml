@@ -1,0 +1,103 @@
+schema_version: role_assignment.v0.2
+assignment_id: assignment_01HX_internal_analysis
+assignment_mode: normal
+trace_id: trace_01HX_internal_analysis
+task_id: task_01HX_internal_analysis
+core_context_binding_id: ccb-task-internal-analysis-001
+parent_task_id: null
+role_id: general.specialist
+role_version: 0.3.0
+role_definition_ref: role_registry:general.specialist@0.3.0
+actor_instance_id: agent_instance_01HX_internal_analysis
+assigned_by: thomas_prime
+assignment_status: ASSIGNED
+role_scope:
+  role_objective: Analyze the supplied material and identify material risks.
+  assigned_capabilities:
+  - analysis
+  excluded_capabilities:
+  - external_execution
+  required_outputs:
+  - structured_analysis
+  - risk_summary
+  completion_criteria:
+  - requested_output_present
+  - limitations_disclosed
+  quality_criteria:
+  - evidence_and_inference_separated
+  - uncertainty_disclosed
+input_refs:
+- task.request.raw_request
+context_refs: []
+active_core_rule_ids:
+- MVP_RULE_006
+- MVP_RULE_008
+memory_scope:
+  readable_memory_refs: []
+  readable_scopes:
+  - task_working_memory
+  prohibited_scopes:
+  - unrelated_private_memory
+  - inactive_core_candidates
+  - restricted_memory
+  memory_candidate_creation_allowed: true
+  allowed_candidate_types:
+  - reusable_knowledge
+  - project_learning
+  validated_memory_write_allowed: false
+  core_memory_write_allowed: false
+authority:
+  required_permission_level: P2
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P2
+  effective_permission_level: P2
+permission:
+  permission_decision: ALLOW
+  permission_decision_ref: perm_01HX_internal_analysis
+  approval_id: null
+allowed_program_ids: []
+allowed_tool_ids: []
+validation:
+  mode: automatic
+  validator_role_id: null
+  acceptance_criteria:
+  - objective_met
+  - output_contract_valid
+  - no_authority_violation
+  rejection_criteria:
+  - material_evidence_misrepresentation
+  maximum_cycles: 1
+execution_budget:
+  schema_version: execution_budget.v0.1
+  limits:
+    max_agent_invocations: 1
+    max_model_calls: 3
+    max_tool_calls: 0
+    max_program_calls: 0
+    max_revision_cycles: 1
+    max_validation_cycles: 1
+    max_retry_count: 1
+    max_parallel_workers: 1
+    max_runtime_seconds: 600
+    token_budget: 20000
+    cost_budget: 1.0
+    cost_currency: USD
+  usage:
+    agent_invocations: 0
+    model_calls: 0
+    tool_calls: 0
+    program_calls: 0
+    revision_cycles: 0
+    validation_cycles: 0
+    retry_count: 0
+    peak_parallel_workers: 0
+    runtime_seconds: 0
+    tokens_used: 0
+    cost_used: 0.0
+    cost_currency: USD
+constraints:
+- no_external_action
+escalation_target: thomas_prime
+trial_authorization_ref: null
+expires_at: '2026-07-10T09:30:00Z'
+created_at: '2026-07-10T09:00:00Z'

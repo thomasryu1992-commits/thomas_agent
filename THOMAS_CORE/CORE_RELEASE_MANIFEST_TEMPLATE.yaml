@@ -1,0 +1,51 @@
+schema_version: thomas_core_release_manifest_template.v0.3
+template_version: 0.3.1
+core_version: 0.2.1
+definition_status: thomas_approved
+runtime_use_allowed: false
+owner: Thomas
+storage:
+  release_directory_pattern: THOMAS_CORE/releases/<release_id>
+  manifest_filename: manifest.yaml
+  artifact_snapshot_directory: artifacts
+  validation_toolchain_snapshot_directory: validation_toolchain
+  approval_directory: THOMAS_CORE/approvals
+  activation_directory: THOMAS_CORE/activations
+  revocation_directory: THOMAS_CORE/revocations
+  deactivation_directory: THOMAS_CORE/deactivations
+  review_pointer: THOMAS_CORE/REVIEW_CORE_RELEASE.yaml
+  current_runtime_pointer: THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+hash_algorithm: sha256
+release_file_set:
+- THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+- THOMAS_CORE/CORE_METADATA.yaml
+- THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml
+- THOMAS_CORE/THOMAS_IDENTITY.md
+- THOMAS_CORE/THOMAS_VALUES.yaml
+- THOMAS_CORE/THOMAS_GOALS.yaml
+- THOMAS_CORE/THOMAS_DECISION_MODEL.yaml
+- THOMAS_CORE/THOMAS_PREFERENCE_PROFILE.yaml
+- THOMAS_CORE/THOMAS_REVENUE_PREFERENCE_MODEL.yaml
+- THOMAS_CORE/MVP_CORE_SCOPE.md
+- THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+excluded_from_core_bundle:
+- path: docs/MVP_OPERATING_POLICY.md
+  reason: Operational policy changes must not force a new Thomas philosophy Release.
+- path: docs/build/CORE_PROJECTION_MAP.yaml
+  reason: Build/validation ownership map; not semantic Runtime Core.
+- path: docs/README.md
+  reason: Documentation index; not semantic Runtime Core.
+validation_lock_file: requirements-validation.lock
+release_invariants:
+- A Release stores immutable snapshots of every semantic Core artifact.
+- Historical verification reads the Release snapshot, not the current working tree.
+- A Release stores the exact validator and dependency evidence used at build time.
+- A review-ready Manifest never approves itself.
+- Runtime activation requires a runtime-authoritative Thomas Approval.
+- Activation, rollback, revocation, and deactivation use immutable event records.
+- A running Task never silently rebinds to a newer Core Release.
+- The repository-wide Release Gate runs once and writes source-fingerprinted evidence.
+- The Release Builder reuses Gate evidence only when the repository source fingerprint is unchanged.
+- Approval has one Runtime-authoritative meaning and requires externally verified evidence.
+- Activation or rollback writes its immutable event and Current pointer in one operation and one commit.
+release_gate_evidence: build/release_gate/RELEASE_GATE_EVIDENCE.yaml

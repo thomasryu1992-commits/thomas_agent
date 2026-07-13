@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "current_core_release.v0.2.schema.json",
+  "title": "Current Core Release Pointer v0.2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "runtime_activation_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "current_core_release.v0.2"
+    },
+    "runtime_activation_status": {
+      "enum": [
+        "approved_via_activation_registry",
+        "deactivated_fail_closed"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime_activation_status": {
+            "const": "approved_via_activation_registry"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "activation_id",
+          "activation_path",
+          "activation_sha256",
+          "release_id",
+          "core_version",
+          "core_bundle_sha256",
+          "approval_id",
+          "updated_at_utc",
+          "updated_by",
+          "update_ref",
+          "scope"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime_activation_status": {
+            "const": "deactivated_fail_closed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "deactivation_id",
+          "deactivation_path",
+          "deactivation_sha256",
+          "updated_at_utc",
+          "updated_by",
+          "update_ref",
+          "scope"
+        ]
+      }
+    }
+  ]
+}

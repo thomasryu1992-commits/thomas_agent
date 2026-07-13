@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "local_reversible_sandbox_candidate_test_plan.v0.1.schema.json",
+  "title": "local_reversible_sandbox_candidate_test_plan.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "test_plan_id",
+    "candidate_intake_ref",
+    "candidate_id",
+    "status",
+    "environment",
+    "allowed_operations",
+    "test_cases",
+    "rollback",
+    "activation_boundary",
+    "plan_fingerprint_payload",
+    "plan_fingerprint",
+    "runtime_effect",
+    "created_at",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "local_reversible_sandbox_candidate_test_plan.v0.1"
+    },
+    "test_plan_id": {
+      "type": "string",
+      "pattern": "^sandplan_[A-Za-z0-9._:-]+$"
+    },
+    "candidate_intake_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "const": "REVIEW_ONLY_NOT_RUN"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "root_ref",
+        "root_path_value_included",
+        "temporary_root_required",
+        "network_access_allowed",
+        "secret_access_allowed",
+        "subprocess_allowed",
+        "symlink_follow_allowed",
+        "outside_root_access_allowed",
+        "persistent_write_allowed",
+        "external_system_access_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "const": "LOCAL_TEMP_DIRECTORY_CANDIDATE"
+        },
+        "root_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root_path_value_included": {
+          "const": false
+        },
+        "temporary_root_required": {
+          "const": true
+        },
+        "network_access_allowed": {
+          "const": false
+        },
+        "secret_access_allowed": {
+          "const": false
+        },
+        "subprocess_allowed": {
+          "const": false
+        },
+        "symlink_follow_allowed": {
+          "const": false
+        },
+        "outside_root_access_allowed": {
+          "const": false
+        },
+        "persistent_write_allowed": {
+          "const": false
+        },
+        "external_system_access_allowed": {
+          "const": false
+        }
+      }
+    },
+    "allowed_operations": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "CREATE_FILE",
+          "MODIFY_FILE",
+          "DELETE_FILE",
+          "ROLLBACK",
+          "VERIFY_HASH",
+          "CLEANUP"
+        ]
+      }
+    },
+    "test_cases": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "test_id",
+          "category",
+          "objective",
+          "expected_result",
+          "execution_status"
+        ],
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "enum": [
+              "POSITIVE_REVERSIBLE",
+              "ROLLBACK",
+              "CLEANUP",
+              "PATH_TRAVERSAL",
+              "ABSOLUTE_PATH_ESCAPE",
+              "SYMLINK_ESCAPE",
+              "SECRET_ACCESS",
+              "NETWORK_ACCESS",
+              "SUBPROCESS_ACCESS",
+              "IDEMPOTENCY"
+            ]
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_result": {
+            "enum": [
+              "PASS",
+              "BLOCK"
+            ]
+          },
+          "execution_status": {
+            "const": "NOT_RUN"
+          }
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "checkpoint_required",
+        "restore_hash_required",
+        "cleanup_required",
+        "independent_verification_required"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "checkpoint_required": {
+          "const": true
+        },
+        "restore_hash_required": {
+          "const": true
+        },
+        "cleanup_required": {
+          "const": true
+        },
+        "independent_verification_required": {
+          "const": true
+        }
+      }
+    },
+    "activation_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test_authorization_granted",
+        "registry_mutation_allowed",
+        "activation_allowed",
+        "executor_handoff_allowed",
+        "production_use_allowed"
+      ],
+      "properties": {
+        "test_authorization_granted": {
+          "const": false
+        },
+        "registry_mutation_allowed": {
+          "const": false
+        },
+        "activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "production_use_allowed": {
+          "const": false
+        }
+      }
+    },
+    "plan_fingerprint_payload": {
+      "type": "object"
+    },
+    "plan_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "control_channel_connected",
+        "identity_binding_activated",
+        "challenge_issued",
+        "challenge_verified",
+        "command_dispatched",
+        "supervisor_connected",
+        "process_control_enabled",
+        "process_started",
+        "process_stopped",
+        "process_restarted",
+        "process_killed",
+        "scheduler_connected",
+        "scheduler_job_installed",
+        "scheduler_job_enabled",
+        "scheduler_dispatch_performed",
+        "task_created_by_scheduler",
+        "monitoring_policy_activated",
+        "alert_delivery_performed",
+        "automatic_remediation_performed",
+        "kill_switch_triggered",
+        "sandbox_created",
+        "sandbox_test_executed",
+        "filesystem_write_performed",
+        "network_call_performed",
+        "subprocess_performed",
+        "secret_access_performed",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "control_channel_connected": {
+          "const": false
+        },
+        "identity_binding_activated": {
+          "const": false
+        },
+        "challenge_issued": {
+          "const": false
+        },
+        "challenge_verified": {
+          "const": false
+        },
+        "command_dispatched": {
+          "const": false
+        },
+        "supervisor_connected": {
+          "const": false
+        },
+        "process_control_enabled": {
+          "const": false
+        },
+        "process_started": {
+          "const": false
+        },
+        "process_stopped": {
+          "const": false
+        },
+        "process_restarted": {
+          "const": false
+        },
+        "process_killed": {
+          "const": false
+        },
+        "scheduler_connected": {
+          "const": false
+        },
+        "scheduler_job_installed": {
+          "const": false
+        },
+        "scheduler_job_enabled": {
+          "const": false
+        },
+        "scheduler_dispatch_performed": {
+          "const": false
+        },
+        "task_created_by_scheduler": {
+          "const": false
+        },
+        "monitoring_policy_activated": {
+          "const": false
+        },
+        "alert_delivery_performed": {
+          "const": false
+        },
+        "automatic_remediation_performed": {
+          "const": false
+        },
+        "kill_switch_triggered": {
+          "const": false
+        },
+        "sandbox_created": {
+          "const": false
+        },
+        "sandbox_test_executed": {
+          "const": false
+        },
+        "filesystem_write_performed": {
+          "const": false
+        },
+        "network_call_performed": {
+          "const": false
+        },
+        "subprocess_performed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "audit_refs": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

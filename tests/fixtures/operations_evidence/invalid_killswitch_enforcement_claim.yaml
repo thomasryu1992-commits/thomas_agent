@@ -1,0 +1,53 @@
+schema_version: kill_switch_state.v0.1
+kill_switch_state_id: killsw_i046_unbound_001
+policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+control_channel:
+  channel_type: TELEGRAM_PRIVATE_1_TO_1
+  identity_binding_status: NOT_CONFIGURED
+  registered_user_id_ref: null
+  registered_chat_id_ref: null
+state:
+  record_type: REVIEW_ONLY_STATE_EVIDENCE
+  requested_state: NONE
+  effective_runtime_state: UNBOUND
+  runtime_control_connected: false
+  command_dispatch_enabled: false
+  automatic_resume_allowed: false
+  actor_self_resume_allowed: false
+commands:
+  pause_defined: true
+  stop_task_defined: true
+  kill_defined: true
+  resume_defined: true
+enforcement:
+  new_execution_blocked_by_runtime: true
+  pending_execution_blocked_by_runtime: false
+  write_tools_blocked_by_runtime: false
+  scheduler_blocked_by_runtime: false
+  read_only_status_available: false
+  fail_closed_when_unavailable: true
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/kill_switch_state.v0.1.schema.json

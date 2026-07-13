@@ -1,0 +1,113 @@
+schema_version: thomas_revenue_preference_model.v0.1
+version: 0.1.0
+status: Thomas Approved
+source: Thomas Revenue Preference Model v0.1
+scope: 신규 사업, 프로젝트, 투자 기회의 수익 가능성 평가
+owner:
+  name: Thomas
+
+revenue_priority:
+  fast_cash_flow:
+    priority: 1
+    definition: >
+      사업 또는 기회가 실제 매출과 현금 유입을 얼마나 빠르게 만들 수 있는지를
+      가장 먼저 평가한다.
+    principles:
+      - 빠른 현금흐름은 단기 수익만 추구한다는 의미가 아니다.
+      - 빠른 현금흐름은 시장 수요와 사업 가설을 실제 돈으로 조기에 검증하기 위한 기준이다.
+      - 아이디어에 대한 관심, 사용자 반응, 조회수보다 실제 지불 의사와 수익 발생을 더 강한 검증 신호로 본다.
+    key_questions:
+      - 첫 매출은 언제 발생할 수 있는가?
+      - 실제 고객이 비용을 지불할 가능성이 있는가?
+      - 최소한의 제품이나 서비스로 수익을 검증할 수 있는가?
+      - 초기 수익 검증에 필요한 비용과 시간은 얼마인가?
+      - 수익 가설을 작은 규모에서 빠르게 테스트할 수 있는가?
+      - 첫 매출 이후 추가 매출로 연결할 수 있는가?
+
+  high_return_rate:
+    priority: 2
+    definition: >
+      투입한 자본, 시간, 인력, 운영 비용에 비해 얼마나 높은 경제적 결과를
+      만들 수 있는지를 평가한다.
+    principles:
+      - 매출이 크더라도 자본, 시간, 인력 투입이 지나치게 크면 우선순위를 낮출 수 있다.
+      - 낮은 초기 비용으로 수익 가설을 검증할 수 있는 기회를 선호한다.
+      - 높은 수익률은 단순 재무 수익뿐 아니라 Thomas가 투입하는 시간의 효율도 포함한다.
+    key_questions:
+      - 필요한 초기 자본은 얼마인가?
+      - 예상 매출과 예상 이익은 얼마인가?
+      - Thomas가 직접 사용해야 하는 시간은 얼마인가?
+      - 동일한 자본으로 더 높은 수익을 만들 기회가 있는가?
+      - 운영 비용이 증가해도 수익성이 유지되는가?
+      - 사업 확장 후에도 자본 효율이 유지되는가?
+
+  long_term_enterprise_value:
+    priority: 3
+    definition: >
+      현재 발생하는 수익뿐 아니라 시간이 지날수록 사업, 브랜드, 기술, 데이터,
+      고객, 네트워크의 가치가 축적되는지를 평가한다.
+    principles:
+      - 초기 수익이 발생하더라도 장기적으로 자산이 축적되지 않는 사업은 현금흐름 사업으로 별도 평가한다.
+      - 현재 수익은 작더라도 장기 기업 가치가 매우 높을 가능성이 있다면 Research 또는 Validation 단계에서 유지할 수 있다.
+      - 장기 가치만을 이유로 수익 검증을 무기한 연기하지 않는다.
+    key_questions:
+      - 시간이 지나면서 사업 가치가 커질 수 있는가?
+      - 고객, 데이터, 브랜드, 기술이 자산으로 축적되는가?
+      - 반복 가능한 사업 구조를 만들 수 있는가?
+      - 새로운 제품 또는 시장으로 확장할 수 있는가?
+      - 장기적으로 독립적인 기업 또는 사업 자산이 될 수 있는가?
+      - 현재 수익이 미래 기업 가치 성장으로 연결되는가?
+
+revenue_evaluation_order:
+  - 실제 수익을 얼마나 빠르게 검증할 수 있는가?
+  - 투입한 자본, 시간, 비용 대비 수익성이 높은가?
+  - 시간이 지나면서 기업, 브랜드, 기술, 데이터 자산으로 성장하는가?
+
+provisional_evaluation_weight:
+  time_to_cash_flow:
+    weight: 45
+    status: provisional
+  return_on_capital_and_time:
+    weight: 35
+    status: provisional
+  long_term_enterprise_value:
+    weight: 20
+    status: provisional
+  note: 가중치는 실제 사업 판단 사례를 축적한 뒤 조정한다.
+
+business_opportunity_classification:
+  type_A:
+    fast_cash_flow: high
+    high_return_rate: high
+    long_term_enterprise_value: high
+    evaluation: 최우선 사업 검증 후보
+    action: 작은 수익 실험을 빠르게 설계하고 성공 시 단계적으로 확대
+  type_B:
+    fast_cash_flow: high
+    high_return_rate: high
+    long_term_enterprise_value: low
+    evaluation: 현금흐름 사업 후보
+    action: 운영 부담과 자동화 가능성을 평가한 뒤 수익 사업으로 검토
+  type_C:
+    fast_cash_flow: low
+    high_return_rate: high_potential
+    long_term_enterprise_value: high
+    evaluation: 장기 성장 사업 후보
+    action: 초기 투자 한도와 수익 검증 시점을 명확하게 설정
+  type_D:
+    fast_cash_flow: high
+    high_return_rate: low
+    long_term_enterprise_value: high
+    evaluation: 성장 가능성은 있으나 운영 효율 검토 필요
+    action: 비용 구조, 자동화, 가격 정책 개선 후 재평가
+  type_E:
+    fast_cash_flow: low
+    high_return_rate: unclear
+    long_term_enterprise_value: high_only
+    evaluation: Research Candidate
+    action: 즉시 대규모 사업화하지 않고 수익 가설부터 검증
+
+thomas_revenue_principle: >
+  나는 실제 수익을 빠르게 검증할 수 있는 기회를 우선한다.
+  이후 투입한 자본과 시간에 비해 충분히 높은 수익을 만들 수 있는지 평가하며,
+  검증된 수익 구조를 장기적인 기업, 브랜드, 기술, 데이터 자산으로 발전시키는 것을 지향한다.

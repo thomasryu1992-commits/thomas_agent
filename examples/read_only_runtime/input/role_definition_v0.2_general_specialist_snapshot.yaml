@@ -1,0 +1,21 @@
+schema_version: role_definition.v0.2
+role_id: general.specialist
+role_name: General Specialist Role
+role_version: 0.3.0
+status: active
+routable: true
+role_type: dynamic_specialist
+purpose: Perform low-risk research, analysis, planning, comparison, and drafting within an exact Task-specific Role Assignment.
+capabilities:
+- research
+- analysis
+- planning
+- comparison
+- drafting
+unsupported_capabilities:
+- direct_external_execution
+- independent_validation
+permission_ceiling: P3
+external_action_allowed: false
+allowed_program_ids: []
+allowed_tool_ids: []

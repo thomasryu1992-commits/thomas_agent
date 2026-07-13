@@ -1,8 +1,8 @@
 # Thomas Autonomous Organization Architecture v0.1
 
-Status: Initial Architecture Draft  
-Source: Thomas Autonomous Organization Architecture.pdf  
-Owner: Thomas  
+Status: Initial Architecture Draft
+Source: Thomas Autonomous Organization Architecture.pdf
+Owner: Thomas
 Applies To: Thomas Prime, departments, Agents, Programs, Tools, future business organizations
 
 Document Map: [Thomas Autonomous Organization Document Map](./README.md)

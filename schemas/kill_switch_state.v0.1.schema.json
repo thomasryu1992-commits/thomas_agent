@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kill_switch_state.v0.1.schema.json",
+  "title": "kill_switch_state.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kill_switch_state_id",
+    "policy_ref",
+    "control_channel",
+    "state",
+    "commands",
+    "enforcement",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kill_switch_state.v0.1"
+    },
+    "kill_switch_state_id": {
+      "type": "string",
+      "pattern": "^killsw_[A-Za-z0-9._:-]+$"
+    },
+    "policy_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "control_channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel_type",
+        "identity_binding_status",
+        "registered_user_id_ref",
+        "registered_chat_id_ref"
+      ],
+      "properties": {
+        "channel_type": {
+          "const": "TELEGRAM_PRIVATE_1_TO_1"
+        },
+        "identity_binding_status": {
+          "const": "NOT_CONFIGURED"
+        },
+        "registered_user_id_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registered_chat_id_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "requested_state",
+        "effective_runtime_state",
+        "runtime_control_connected",
+        "command_dispatch_enabled",
+        "automatic_resume_allowed",
+        "actor_self_resume_allowed"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "REVIEW_ONLY_STATE_EVIDENCE"
+        },
+        "requested_state": {
+          "enum": [
+            "PAUSE",
+            "STOP_TASK",
+            "KILL",
+            "RESUME",
+            "NONE"
+          ]
+        },
+        "effective_runtime_state": {
+          "const": "UNBOUND"
+        },
+        "runtime_control_connected": {
+          "const": false
+        },
+        "command_dispatch_enabled": {
+          "const": false
+        },
+        "automatic_resume_allowed": {
+          "const": false
+        },
+        "actor_self_resume_allowed": {
+          "const": false
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pause_defined",
+        "stop_task_defined",
+        "kill_defined",
+        "resume_defined"
+      ],
+      "properties": {
+        "pause_defined": {
+          "const": true
+        },
+        "stop_task_defined": {
+          "const": true
+        },
+        "kill_defined": {
+          "const": true
+        },
+        "resume_defined": {
+          "const": true
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "new_execution_blocked_by_runtime",
+        "pending_execution_blocked_by_runtime",
+        "write_tools_blocked_by_runtime",
+        "scheduler_blocked_by_runtime",
+        "read_only_status_available",
+        "fail_closed_when_unavailable"
+      ],
+      "properties": {
+        "new_execution_blocked_by_runtime": {
+          "const": false
+        },
+        "pending_execution_blocked_by_runtime": {
+          "const": false
+        },
+        "write_tools_blocked_by_runtime": {
+          "const": false
+        },
+        "scheduler_blocked_by_runtime": {
+          "const": false
+        },
+        "read_only_status_available": {
+          "const": false
+        },
+        "fail_closed_when_unavailable": {
+          "const": true
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

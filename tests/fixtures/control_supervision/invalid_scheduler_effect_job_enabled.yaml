@@ -1,0 +1,83 @@
+_schema: schemas/scheduler_plan_review.v0.1.schema.json
+schema_version: scheduler_plan_review.v0.1
+plan_id: schedplan_i047_daily_content_review_001
+status: REVIEW_ONLY_NOT_INSTALLED
+scheduler:
+  provider: LOCAL_SCHEDULER_CANDIDATE
+  connected: false
+  implementation_available: false
+  job_installed: false
+  job_enabled: false
+schedule:
+  schedule_type: CRON_REVIEW
+  expression: 0 12 * * *
+  timezone: Asia/Ho_Chi_Minh
+  next_run_calculated: false
+  next_run_at: null
+task:
+  task_template_ref: task-template:content-daily-review-v0.1
+  task_contract: task.v0.3
+  shell_command_included: false
+  task_creation_allowed: false
+  dispatch_allowed: false
+controls:
+  activation_requires_thomas_approval: true
+  kill_switch_binding_required: true
+  overlap_policy: BLOCK_OVERLAP
+  max_concurrency: 1
+  catch_up_allowed: false
+plan_fingerprint_payload:
+  plan_id: schedplan_i047_daily_content_review_001
+  provider: LOCAL_SCHEDULER_CANDIDATE
+  expression: 0 12 * * *
+  timezone: Asia/Ho_Chi_Minh
+  task_template_ref: task-template:content-daily-review-v0.1
+  max_concurrency: 1
+plan_fingerprint: sha256:952dff045ab7ce5e2537d53882903abd26f92fe8deaba96556a740e3f426ab59
+effects:
+  job_installed: false
+  job_enabled: true
+  schedule_registered: false
+  dispatch_performed: false
+  task_created: false
+  background_process_started: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:10:00Z'
+audit_refs: []

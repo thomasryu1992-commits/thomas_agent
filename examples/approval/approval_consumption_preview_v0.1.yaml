@@ -1,0 +1,66 @@
+schema_version: approval.v0.1
+approval_id: approval_memory_promotion_001
+permission_decision_id: permdec_memory_promotion_001
+permission_decision_ref: examples/permission/permission_approval_required_v0.3.yaml
+trace_id: trace_memory_promotion_001
+task_id: task_memory_promotion_001
+task_revision: 2
+core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+approved_action_snapshot:
+  schema_version: action_fingerprint_payload.v0.1
+  task_id: task_memory_promotion_001
+  task_revision: 2
+  core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+  requester_ref: thomas_prime:thomas_prime
+  permission_scope: SENSITIVE_MEMORY_GOVERNANCE
+  action_type: memory.validated.promote
+  target_ref: memory_candidate:operating_preference_001
+  tool_id: null
+  program_id: null
+  data_scope:
+  - memory.candidate.operating_preference_001
+  - task.evidence
+  content_sha256: sha256:8d393d44cc99cc6202e5db5124ae1e9b31e04bdeaf85eb7090e67f0a040425e3
+  amount_decimal: null
+  currency: null
+  normalized_parameters:
+    target_scope: validated_memory
+    promotion_mode: manual_review
+  expires_at: '2026-07-14T12:15:00Z'
+approval_scope: REVIEW_ONLY
+status: CONSUMPTION_PREVIEWED
+approver:
+  required_approver: Thomas
+  approved_by: Thomas
+  verification_status: VERIFIED
+  identity_verification_method: telegram_private_control_channel
+  verification_ref: telegram:private_chat:registered-thomas:approval_memory_promotion_001
+decision:
+  decision_reason: Approval consumption guard was previewed without producing an execution token.
+  decided_at: '2026-07-14T11:50:00Z'
+consumption:
+  one_time_use: true
+  consumption_status: PREVIEWED_ONLY
+  previewed_at: '2026-07-14T11:55:00Z'
+  preview_ref: preview:approval-consumption:memory-promotion-001
+validity:
+  issued_at: '2026-07-14T11:35:00Z'
+  expires_at: '2026-07-14T12:05:00Z'
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+audit_refs:
+- audit:approval_request:approval_memory_promotion_001
+- audit:approval_decision:approval_memory_promotion_001
+- audit:approval_consumption_preview:approval_memory_promotion_001

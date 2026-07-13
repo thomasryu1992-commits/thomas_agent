@@ -1,0 +1,79 @@
+schema_version: core_runtime_policy_projection.v0.1
+projection_version: 0.2.0
+core_version: 0.2.1
+owner: Thomas
+purpose: Project only Thomas Core-derived Runtime invariants into a compact machine-readable file. This file is part of the
+  Core release. The full MVP Operating Policy is not.
+source: THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md
+invariants:
+  risk:
+    experimentation_encouraged: true
+    irrecoverable_risk_allowed: false
+    failure_cost_must_be_bounded: true
+  learning:
+    default: actively_encouraged
+    validated_low_risk_operational_knowledge_use: allowed_with_explicit_scope
+    learning_expands_permission: false
+    learning_rewrites_approved_core_release: false
+  programization:
+    review_trigger:
+      minimum_independent_valid_repetitions: 10
+      meaning: review_trigger_not_automatic_conversion
+    pattern_signature_fields:
+    - task_type
+    - role_id
+    - input_schema_sha256
+    - ordered_step_signature_sha256
+    - output_schema_sha256
+    - environment_version
+    valid_repetition_requires:
+    - independent_completed_task
+    - quality_or_validation_pass
+    - same_or_compatible_input_contract
+    - same_or_compatible_process_signature
+    - same_or_compatible_output_contract
+    - non_duplicate_observation
+    - non_synthetic_observation
+    excluded_from_count:
+    - retry_of_same_task_revision
+    - validation_revision_cycle
+    - duplicate_replay
+    - synthetic_test
+    - fixture
+    - manual_smoke_test
+    - incomplete_task
+    - same_input_replayed_without_independent_business_event
+    conversion_scope: repeated_deterministic_slice_only
+    automatic_conversion: false
+    permission_expansion: false
+    validated_low_risk_internal_program: candidate_only_until_program_registry_and_permission_policy_approve_scoped_activation
+  core_release:
+    approved_release_required: true
+    release_manifest_self_approval: false
+    semantic_change_requires_new_release: true
+    approved_release_edit_in_place: false
+    running_task_silent_rebind_allowed: false
+    artifact_snapshot_required: true
+    validation_toolchain_snapshot_required: true
+    runtime_authoritative_approval_required: true
+    unverified_manual_approval_runtime_activation_allowed: false
+    activation_history_required: true
+    revocation_and_rollback_required: true
+  core_binding:
+    contract: core_context_binding.v0.3
+    root_task_binding_required: true
+    loaded_rules_must_be_explicit: true
+    loaded_rules_must_be_subset_of_active_rules: true
+    core_binding_grants_execution_permission: false
+    binding_must_be_created_from_task_record: true
+    runtime_rule_membership_resolves_through_bound_release: true
+  communication:
+    priority_order:
+    - conclusion
+    - current_status
+    - key_reason
+    - evidence
+    - risk
+    - required_decision
+    - next_action
+definition_status: thomas_approved
