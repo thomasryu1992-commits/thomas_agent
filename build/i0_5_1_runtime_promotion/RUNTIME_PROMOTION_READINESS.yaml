@@ -1,0 +1,144 @@
+schema_version: runtime_promotion_readiness.v0.1
+readiness_id: rpr_e9c919bb13d7f8615063
+phase: I0.5.1_REV3
+status: REVIEW_ONLY_NOT_RUNTIME_ACTIVE
+component_attestation:
+  attestation_id: rcatt_d38c872684da15c27ab3
+  attestation_sha256: sha256:b1cd500e85708dc8157812b13484bd7858a349d9753b9683e59bd66f98698caf
+  result: PASS
+requirements: &id002
+  component_attestation_pass: true
+  i0_4_contract_lock_present: true
+  release_gate_evidence_present: true
+  release_gate_evidence_pass: true
+  release_gate_fingerprint_current: true
+  release_gate_required_checks_pass: true
+  github_workflow_present: true
+  github_ci_evidence_present: false
+  github_ci_evidence_verified: false
+  github_ci_head_matches: false
+  github_ci_workflow_matches: false
+  github_ci_repository_matches: false
+  github_ci_ubuntu_pass: false
+  github_ci_windows_pass: false
+  github_ci_evidence_ref: null
+  review_core_release_present: true
+  current_core_release_present: false
+  current_core_release_verified: false
+  current_core_release_committed: false
+  tool_registry_no_enabled_tools: true
+  program_registry_no_enabled_programs: true
+  runtime_registry_source_of_truth: false
+  runtime_authoritative_mode_enabled: false
+checks: &id003
+- check_id: component_attestation
+  result: PASS
+  evidence_refs:
+  - in_memory:rcatt_d38c872684da15c27ab3
+  notes: Registry component IDs and versions must match literal implementation constants.
+- check_id: i0_4_contract_lock
+  result: PASS
+  evidence_refs:
+  - build/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml
+  notes: I0.4 contract lock must be present.
+- check_id: release_gate_evidence
+  result: PASS
+  evidence_refs:
+  - build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+  notes: Repository Release Gate evidence must report PASS.
+- check_id: release_gate_fingerprint
+  result: PASS
+  evidence_refs:
+  - build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+  notes: Gate evidence fingerprint must match current Gate-owned source.
+- check_id: release_gate_required_checks
+  result: PASS
+  evidence_refs:
+  - build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+  notes: Gate evidence must contain the required I0.4, I0.5, I0.5.1, parity, security, and reproducibility checks exactly
+    once and PASS.
+- check_id: github_workflow
+  result: PASS
+  evidence_refs:
+  - .github/workflows/thomas-agent-runtime-validation.yml
+  notes: Cross-platform GitHub Actions validation workflow must exist.
+- check_id: github_ci_evidence
+  result: UNVERIFIED
+  evidence_refs:
+  - github_actions:unverified
+  notes: GitHub CI evidence must be collected from the live GitHub API and bind the local HEAD, origin repository, workflow
+    hash, and successful Ubuntu/Windows jobs.
+- check_id: review_core_release
+  result: PASS
+  evidence_refs:
+  - THOMAS_CORE/REVIEW_CORE_RELEASE.yaml
+  notes: A review-ready Core Release record must exist.
+- check_id: current_core_release
+  result: BLOCK
+  evidence_refs:
+  - THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+  notes: Activation review requires an explicit verified Current Core Release pointer.
+- check_id: current_core_verification
+  result: UNVERIFIED
+  evidence_refs:
+  - THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+  notes: Activation review requires Current Core to pass the existing Manifest, Approval, Activation, Revocation, hash, and
+    committed-at-HEAD verification chain.
+- check_id: tool_registry
+  result: PASS
+  evidence_refs:
+  - 05_REGISTRIES/TOOL_REGISTRY.yaml
+  notes: I0.5.1 requires no enabled Tools.
+- check_id: program_registry
+  result: PASS
+  evidence_refs:
+  - 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+  notes: I0.5.1 requires no enabled Programs.
+- check_id: runtime_registry_mode
+  result: PASS
+  evidence_refs:
+  - 05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml
+  notes: I0.5.1 remains candidate-only and must not become a Runtime source of truth.
+summary:
+  result: BLOCKED_NOT_READY
+  blocking_reasons: &id001
+  - GITHUB_CI_EVIDENCE_MISSING
+  design_readiness:
+    result: BLOCKED_NOT_READY
+    blocking_reasons: *id001
+    ready_for_runtime_authoritative_design: false
+  activation_readiness:
+    result: BLOCKED_NOT_READY
+    blocking_reasons: &id004
+    - GITHUB_CI_EVIDENCE_MISSING
+    - CURRENT_CORE_RELEASE_MISSING
+    ready_for_runtime_activation_review: false
+  ready_for_runtime_authoritative_design: false
+  ready_for_runtime_activation_review: false
+  ready_for_runtime_activation: false
+  ready_for_external_execution: false
+  ready_for_financial_execution: false
+runtime_effect:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  consumes_approval: false
+  mutates_runtime: false
+integrity:
+  hash_schema: runtime_promotion_readiness_fingerprint_payload.v0.1
+  readiness_fingerprint_payload:
+    schema_version: runtime_promotion_readiness_fingerprint_payload.v0.1
+    readiness_id: rpr_e9c919bb13d7f8615063
+    component_attestation_sha256: sha256:b1cd500e85708dc8157812b13484bd7858a349d9753b9683e59bd66f98698caf
+    requirements: *id002
+    checks: *id003
+    design_blocking_reasons: *id001
+    activation_blocking_reasons: *id004
+    created_at: '2026-07-13T08:19:43Z'
+  readiness_sha256: sha256:7fcff657c40bdb6cd262ffc79c465701b2902c4efe815b256009b8a5c741cf25
+created_at: '2026-07-13T08:19:43Z'

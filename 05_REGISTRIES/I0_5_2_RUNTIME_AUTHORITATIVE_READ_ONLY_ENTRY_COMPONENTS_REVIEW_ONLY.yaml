@@ -1,0 +1,40 @@
+schema_version: i0_5_2_runtime_authoritative_read_only_entry_components.v0.1
+document_version: 0.1.0
+status: REVIEW_ONLY_DISABLED_ENTRY
+owner: Thomas
+runtime_source_of_truth: false
+runtime_authoritative_mode_enabled: false
+components:
+- component_id: thomas.runtime_authoritative_read_only_entry.planner
+  version: 0.1.0
+  component_type: review_only_entry_planner
+  implementation_ref: runtime/read_only_entry/planner.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  entry_execution_allowed: false
+  approval_consumption_allowed: false
+  executor_handoff_allowed: false
+- component_id: thomas.runtime_authoritative_read_only_entry.disabled
+  version: 0.1.0
+  component_type: disabled_entry_adapter
+  implementation_ref: runtime/read_only_entry/disabled_adapter.py
+  implementation_available: true
+  enabled: false
+  runtime_authoritative: false
+  entry_execution_allowed: false
+  runtime_session_start_allowed: false
+  approval_consumption_allowed: false
+  executor_handoff_allowed: false
+review_only_effects:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  consumes_approval: false
+  starts_runtime_session: false
+  mutates_runtime: false

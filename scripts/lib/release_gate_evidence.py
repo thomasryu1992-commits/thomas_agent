@@ -30,6 +30,8 @@ OWNED_ROOTS = [
     "scripts",
     "examples",
     "tests",
+    "runtime",
+    ".github/workflows",
 ]
 
 ROOT_FILES = [

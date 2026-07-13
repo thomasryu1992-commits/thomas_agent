@@ -247,3 +247,31 @@ Still disabled:
 - Core activation.
 
 The I0.5 Candidate must be applied to the real Repository and pass the real focused and Full Repository Gates before any later Runtime-authoritative design is considered.
+
+## I0.5.1 Runtime Promotion Readiness
+
+- `runtime-contracts/RUNTIME_COMPONENT_ATTESTATION_CONTRACT_V0.1.md`
+- `runtime-contracts/RUNTIME_PROMOTION_READINESS_CONTRACT_V0.1.md`
+- `runtime-contracts/I0_5_1_CI_VALIDATION_BOUNDARY_V0.1.md`
+- `runtime-contracts/I0_5_1_RUNTIME_PROMOTION_REVIEW_ONLY_BOUNDARY_V0.1.md`
+
+These contracts validate component identity/version parity, CI structure, Gate evidence freshness, and Current Core prerequisites. They do not activate Runtime.
+
+## I0.5.1 Rev2 Verified Evidence
+
+- `runtime-contracts/GITHUB_CI_EVIDENCE_CONTRACT_V0.1.md`
+- `runtime-contracts/I0_5_1_REV2_VERIFIED_EVIDENCE_BOUNDARY_V0.1.md`
+
+Rev2 removes manual CI/Core verification booleans, binds CI evidence to live GitHub API metadata and local Git/workflow state, invokes the existing Current Core verifier, requires the critical Gate Check Set, and keeps Runtime non-authoritative.
+
+## I0.5.1 Rev3 Readiness Split
+
+Design Readiness is evaluated independently from Current Core. Activation Readiness requires Design Readiness plus verified and committed Current Core lineage. Both remain review-only and grant no Runtime activation or execution capability.
+
+## I0.5.2 Runtime-Authoritative Read-only Entry Design
+
+- `runtime-contracts/RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_PLAN_CONTRACT_V0.1.md`
+- `runtime-contracts/DISABLED_RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_ADAPTER_V0.1.md`
+- `runtime-contracts/I0_5_2_RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_BOUNDARY_V0.1.md`
+
+I0.5.2 converts Rev3 Design/Activation Readiness into a single-run review-only Entry Plan and disabled evidence. It cannot start Runtime, consume Approval, or hand work to an Executor.

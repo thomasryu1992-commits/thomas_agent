@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "github_ci_evidence.v0.1.schema.json",
+  "title": "GitHub CI Evidence v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "repository_full_name",
+    "workflow",
+    "run",
+    "jobs",
+    "source",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": {"const": "github_ci_evidence.v0.1"},
+    "evidence_id": {"type": "string", "pattern": "^gcie_[0-9a-f]{20}$"},
+    "repository_full_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "sha256"],
+      "properties": {
+        "name": {"const": "Thomas Agent Runtime Validation"},
+        "path": {"const": ".github/workflows/thomas-agent-runtime-validation.yml"},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "event",
+        "head_sha",
+        "status",
+        "conclusion",
+        "html_url",
+        "created_at",
+        "completed_at"
+      ],
+      "properties": {
+        "run_id": {"type": "integer", "minimum": 1},
+        "run_attempt": {"type": "integer", "minimum": 1},
+        "event": {"enum": ["pull_request", "push"]},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "status": {"const": "completed"},
+        "conclusion": {"const": "success"},
+        "html_url": {"type": "string", "pattern": "^https://github\\.com/.+/actions/runs/[0-9]+$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "completed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ubuntu", "windows"],
+      "properties": {
+        "ubuntu": {"$ref": "#/$defs/ubuntuJob"},
+        "windows": {"$ref": "#/$defs/windowsJob"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_type", "collected_by", "live_api_verified", "collected_at"],
+      "properties": {
+        "source_type": {"const": "GITHUB_API_VIA_GH"},
+        "collected_by": {"const": "scripts/collect_github_ci_evidence.py"},
+        "live_api_verified": {"const": true},
+        "collected_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hash_schema", "evidence_fingerprint_payload", "evidence_sha256"],
+      "properties": {
+        "hash_schema": {"const": "github_ci_evidence_fingerprint_payload.v0.1"},
+        "evidence_fingerprint_payload": {"type": "object"},
+        "evidence_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "$defs": {
+    "ubuntuJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "name", "runner_os", "status", "conclusion", "completed_at"],
+      "properties": {
+        "job_id": {"type": "integer", "minimum": 1},
+        "name": {"const": "Full validation (ubuntu-latest)"},
+        "runner_os": {"const": "ubuntu-latest"},
+        "status": {"const": "completed"},
+        "conclusion": {"const": "success"},
+        "completed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "windowsJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "name", "runner_os", "status", "conclusion", "completed_at"],
+      "properties": {
+        "job_id": {"type": "integer", "minimum": 1},
+        "name": {"const": "Full validation (windows-latest)"},
+        "runner_os": {"const": "windows-latest"},
+        "status": {"const": "completed"},
+        "conclusion": {"const": "success"},
+        "completed_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

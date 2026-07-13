@@ -1,0 +1,55 @@
+schema_version: i0_5_1_rev3_readiness_split_mutation_cases.v0.1
+expected_fail_closed_cases: 46
+groups:
+  component_attestation:
+  - invalid_kernel_registry_version
+  - invalid_worker_registry_version
+  - invalid_kernel_component_id
+  - invalid_worker_component_id
+  - invalid_kernel_implementation_ref
+  - invalid_registry_runtime_source_true
+  - invalid_registry_authoritative_enabled
+  - invalid_kernel_status_active
+  - invalid_kernel_network_allowed
+  - invalid_kernel_filesystem_write_allowed
+  - invalid_worker_network_call_budget
+  - invalid_registry_review_effect_true
+  github_ci_evidence:
+  - invalid_ci_head_sha
+  - invalid_ci_workflow_sha256
+  - invalid_ci_repository
+  - invalid_ci_run_conclusion
+  - invalid_ci_ubuntu_conclusion
+  - invalid_ci_windows_conclusion
+  - invalid_ci_ubuntu_name
+  - invalid_ci_windows_name
+  - invalid_ci_duplicate_job_id
+  - invalid_ci_live_api_verified_false
+  - invalid_ci_source_type
+  - invalid_ci_fingerprint
+  release_gate_evidence:
+  - valid_required_gate_check_set
+  - missing_required_gate_check
+  current_core:
+  - fake_current_core_pointer
+  readiness_semantics:
+  - invalid_readiness_grants_activation
+  - invalid_top_level_design_result
+  - invalid_top_level_design_blockers
+  - invalid_nested_design_result
+  - invalid_nested_design_blockers
+  - invalid_activation_review_result
+  - invalid_activation_review_blockers
+  - invalid_activation_review_ready_flag
+  - invalid_readiness_attestation_result_mismatch
+  - invalid_readiness_ci_verified_without_bound_checks
+  - invalid_readiness_ci_present_without_evidence
+  - invalid_readiness_current_core_verified_without_committed_lineage
+  - invalid_readiness_current_core_committed_without_verified_lineage
+  - invalid_readiness_runtime_source_true
+  - invalid_readiness_claims_runtime_activation
+  readiness_split:
+  - design_readiness_excludes_current_core
+  - activation_readiness_requires_current_core
+  - verified_ci_can_unlock_design_review
+  - verified_current_core_can_unlock_activation_review

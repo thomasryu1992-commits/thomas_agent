@@ -1,15 +1,18 @@
 schema_version: i0_5_read_only_runtime_components.v0.1
-document_version: 0.1.0
+document_version: 0.1.1
 status: CANDIDATE_DEVELOPMENT_REPLAY_ONLY
 owner: Thomas
 runtime_source_of_truth: false
 runtime_authoritative_mode_enabled: false
 components:
 - component_id: thomas.read_only_runtime_kernel
-  version: 0.1.0
+  version: 0.1.1
   component_type: orchestration_kernel
   status: candidate
   implementation_ref: runtime/read_only_kernel/kernel.py
+  implementation_identity:
+    id_constant: KERNEL_ID
+    version_constant: KERNEL_VERSION
   run_mode:
   - DEVELOPMENT_REPLAY
   runtime_authoritative: false
@@ -25,6 +28,9 @@ components:
   component_type: deterministic_in_process_worker
   status: candidate
   implementation_ref: runtime/read_only_kernel/worker.py
+  implementation_identity:
+    id_constant: WORKER_ID
+    version_constant: WORKER_VERSION
   runtime_authoritative: false
   model_calls: 0
   tool_calls: 0
@@ -36,11 +42,15 @@ entry_prerequisites:
 - i0_4_cumulative_bundle_applied_to_real_repository
 - i0_4_consolidation_gate_pass
 - i0_5_focused_gate_pass
+- i0_5_1_component_attestation_pass
 - full_repository_gate_pass
 - new_source_fingerprint
 - new_gate_evidence
-- new_self_contained_review_release
-- separate_runtime_authoritative_core_lifecycle_when_runtime_mode_is_considered
+- github_actions_runtime_validation_pass
+- runtime_source_in_release_gate_fingerprint
+- review_core_release_present
+- current_core_release_present_and_verified
+- separate_thomas_runtime_authoritative_design_decision
 review_only_effects:
   grants_runtime_permission: false
   grants_runtime_activation: false

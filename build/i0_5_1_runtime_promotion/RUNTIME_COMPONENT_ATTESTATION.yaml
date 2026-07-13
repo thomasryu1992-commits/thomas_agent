@@ -1,0 +1,58 @@
+schema_version: runtime_component_attestation.v0.1
+attestation_id: rcatt_d38c872684da15c27ab3
+phase: I0.5.1
+registry:
+  ref: 05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml
+  sha256: sha256:cdf2f272742e30e282befd93bfc654f3022c2d95ebfb96b012910fe0fc70b2fa
+  schema_version: i0_5_read_only_runtime_components.v0.1
+  document_version: 0.1.1
+components: &id001
+- component_id: thomas.read_only_runtime_kernel
+  registry_version: 0.1.1
+  implementation_ref: runtime/read_only_kernel/kernel.py
+  implementation_sha256: sha256:e30b14434a02ece83211b634148b1ed6ccfcc7312a6dbd532f2c8d374410b558
+  implementation_id_constant: KERNEL_ID
+  implementation_version_constant: KERNEL_VERSION
+  implementation_id: thomas.read_only_runtime_kernel
+  implementation_version: 0.1.1
+  id_match: true
+  version_match: true
+  boundary_match: true
+  implementation_exists: true
+  result: PASS
+- component_id: kernel.contract_inspection.readonly
+  registry_version: 0.1.0
+  implementation_ref: runtime/read_only_kernel/worker.py
+  implementation_sha256: sha256:65328d09a1cd11c44166ec2d7242c13706091fdc8b71cf747bf61816733c4066
+  implementation_id_constant: WORKER_ID
+  implementation_version_constant: WORKER_VERSION
+  implementation_id: kernel.contract_inspection.readonly
+  implementation_version: 0.1.0
+  id_match: true
+  version_match: true
+  boundary_match: true
+  implementation_exists: true
+  result: PASS
+summary:
+  result: PASS
+  registry_boundary_match: true
+  component_count: 2
+  pass_count: 2
+  block_count: 0
+  runtime_authoritative: false
+runtime_effect:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  changes_registry: false
+  changes_implementation: false
+  executes_component: false
+integrity:
+  hash_schema: runtime_component_attestation_fingerprint_payload.v0.1
+  attestation_fingerprint_payload:
+    schema_version: runtime_component_attestation_fingerprint_payload.v0.1
+    attestation_id: rcatt_d38c872684da15c27ab3
+    registry_sha256: sha256:cdf2f272742e30e282befd93bfc654f3022c2d95ebfb96b012910fe0fc70b2fa
+    components: *id001
+    created_at: '2026-07-13T08:19:43Z'
+  attestation_sha256: sha256:b1cd500e85708dc8157812b13484bd7858a349d9753b9683e59bd66f98698caf
+created_at: '2026-07-13T08:19:43Z'

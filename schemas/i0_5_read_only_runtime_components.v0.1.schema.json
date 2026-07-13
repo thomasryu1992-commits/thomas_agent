@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "i0_5_read_only_runtime_components.v0.1.schema.json",
+  "title": "I0.5 Read-only Runtime Components Review-only Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_version",
+    "status",
+    "owner",
+    "runtime_source_of_truth",
+    "runtime_authoritative_mode_enabled",
+    "components",
+    "entry_prerequisites",
+    "review_only_effects"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "i0_5_read_only_runtime_components.v0.1"
+    },
+    "document_version": {
+      "const": "0.1.1"
+    },
+    "status": {
+      "const": "CANDIDATE_DEVELOPMENT_REPLAY_ONLY"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "runtime_authoritative_mode_enabled": {
+      "const": false
+    },
+    "components": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version",
+            "component_type",
+            "status",
+            "implementation_ref",
+            "implementation_identity",
+            "run_mode",
+            "runtime_authoritative",
+            "network_allowed",
+            "filesystem_write_allowed",
+            "model_invocation_allowed",
+            "tool_execution_allowed",
+            "program_execution_allowed",
+            "external_action_allowed",
+            "runtime_mutation_allowed"
+          ],
+          "properties": {
+            "component_id": {
+              "const": "thomas.read_only_runtime_kernel"
+            },
+            "version": {
+              "const": "0.1.1"
+            },
+            "component_type": {
+              "const": "orchestration_kernel"
+            },
+            "status": {
+              "const": "candidate"
+            },
+            "implementation_ref": {
+              "const": "runtime/read_only_kernel/kernel.py"
+            },
+            "implementation_identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id_constant",
+                "version_constant"
+              ],
+              "properties": {
+                "id_constant": {
+                  "const": "KERNEL_ID"
+                },
+                "version_constant": {
+                  "const": "KERNEL_VERSION"
+                }
+              }
+            },
+            "run_mode": {
+              "const": [
+                "DEVELOPMENT_REPLAY"
+              ]
+            },
+            "runtime_authoritative": {
+              "const": false
+            },
+            "network_allowed": {
+              "const": false
+            },
+            "filesystem_write_allowed": {
+              "const": false
+            },
+            "model_invocation_allowed": {
+              "const": false
+            },
+            "tool_execution_allowed": {
+              "const": false
+            },
+            "program_execution_allowed": {
+              "const": false
+            },
+            "external_action_allowed": {
+              "const": false
+            },
+            "runtime_mutation_allowed": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component_id",
+            "version",
+            "component_type",
+            "status",
+            "implementation_ref",
+            "implementation_identity",
+            "runtime_authoritative",
+            "model_calls",
+            "tool_calls",
+            "program_calls",
+            "network_calls",
+            "filesystem_writes",
+            "external_actions"
+          ],
+          "properties": {
+            "component_id": {
+              "const": "kernel.contract_inspection.readonly"
+            },
+            "version": {
+              "const": "0.1.0"
+            },
+            "component_type": {
+              "const": "deterministic_in_process_worker"
+            },
+            "status": {
+              "const": "candidate"
+            },
+            "implementation_ref": {
+              "const": "runtime/read_only_kernel/worker.py"
+            },
+            "implementation_identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id_constant",
+                "version_constant"
+              ],
+              "properties": {
+                "id_constant": {
+                  "const": "WORKER_ID"
+                },
+                "version_constant": {
+                  "const": "WORKER_VERSION"
+                }
+              }
+            },
+            "runtime_authoritative": {
+              "const": false
+            },
+            "model_calls": {
+              "const": 0
+            },
+            "tool_calls": {
+              "const": 0
+            },
+            "program_calls": {
+              "const": 0
+            },
+            "network_calls": {
+              "const": 0
+            },
+            "filesystem_writes": {
+              "const": 0
+            },
+            "external_actions": {
+              "const": 0
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "entry_prerequisites": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "github_actions_runtime_validation_pass"
+      }
+    },
+    "review_only_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "grants_core_activation",
+        "grants_tool_enablement",
+        "grants_program_enablement",
+        "grants_executor_enablement",
+        "grants_external_execution",
+        "grants_financial_execution",
+        "grants_permission_expansion",
+        "grants_authority_expansion"
+      ],
+      "properties": {
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_core_activation": {
+          "const": false
+        },
+        "grants_tool_enablement": {
+          "const": false
+        },
+        "grants_program_enablement": {
+          "const": false
+        },
+        "grants_executor_enablement": {
+          "const": false
+        },
+        "grants_external_execution": {
+          "const": false
+        },
+        "grants_financial_execution": {
+          "const": false
+        },
+        "grants_permission_expansion": {
+          "const": false
+        },
+        "grants_authority_expansion": {
+          "const": false
+        }
+      }
+    }
+  }
+}

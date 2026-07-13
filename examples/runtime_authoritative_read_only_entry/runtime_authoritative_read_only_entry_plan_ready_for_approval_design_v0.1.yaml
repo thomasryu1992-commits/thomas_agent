@@ -1,0 +1,92 @@
+schema_version: runtime_authoritative_read_only_entry_plan.v0.1
+entry_plan_id: entryplan_b5c232a6f53f385ea30a
+phase: I0.5.2
+status: READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN
+owner: Thomas
+runtime_source_of_truth: false
+kernel:
+  kernel_id: thomas.read_only_runtime_kernel
+  kernel_version: 0.1.1
+  requested_mode: RUNTIME_AUTHORITATIVE_READ_ONLY
+  requested_run_count: 1
+  runtime_authoritative_mode_enabled: false
+readiness:
+  readiness_id: rpr_i052_synthetic
+  readiness_ref: synthetic:test:activation-ready
+  readiness_sha256: sha256:bb7d18085cd5f078fc30a3b71a08a0b23740ef1ca2d24fa6ed6ae38509becae5
+  design_result: READY_FOR_THOMAS_DESIGN_DECISION
+  activation_result: READY_FOR_RUNTIME_ACTIVATION_REVIEW
+  design_ready: true
+  activation_ready: true
+entry_scope:
+  single_run_only: true
+  max_runs: 1
+  exact_task_binding_required: true
+  exact_input_bundle_binding_required: true
+  current_core_binding_required: true
+  filesystem_read_only: true
+  filesystem_write_allowed: false
+  model_invocation_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  network_access_allowed: false
+  external_action_allowed: false
+  financial_action_allowed: false
+  runtime_mutation_allowed: false
+approval_boundary:
+  separate_action_approval_required: true
+  action_approval_contract_ref: docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md
+  permission_scope: RUNTIME_GOVERNANCE
+  approval_present: false
+  approval_verified: false
+  approval_consumption_supported_by_current_contract: false
+  future_atomic_consumption_required: true
+  executor_handoff_allowed: false
+checks:
+- check_id: design_readiness
+  result: PASS
+  notes: Design Readiness must be READY_FOR_THOMAS_DESIGN_DECISION.
+- check_id: activation_readiness
+  result: PASS
+  notes: Activation Readiness must be READY_FOR_RUNTIME_ACTIVATION_REVIEW.
+- check_id: separate_action_approval_boundary
+  result: PASS
+  notes: A separate exact Action Approval remains required before any future Runtime entry.
+- check_id: current_approval_contract_no_consumption
+  result: PASS
+  notes: Approval v0.1 is review-only and cannot be consumed or handed to Runtime by this phase.
+- check_id: disabled_entry_adapter
+  result: PASS
+  notes: The I0.5.2 adapter is disabled and cannot start a Runtime-authoritative session.
+decision:
+  result: READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN
+  blocking_reasons: &id001 []
+  ready_for_thomas_entry_approval_design: true
+  ready_for_runtime_entry: false
+  entry_performed: false
+runtime_effect:
+  mode: REVIEW_ONLY_ENTRY_DESIGN
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  consumes_approval: false
+  starts_runtime_session: false
+  mutates_runtime: false
+integrity:
+  hash_schema: runtime_authoritative_read_only_entry_plan_fingerprint_payload.v0.1
+  entry_plan_fingerprint_payload:
+    schema_version: runtime_authoritative_read_only_entry_plan_fingerprint_payload.v0.1
+    entry_plan_id: entryplan_b5c232a6f53f385ea30a
+    readiness_sha256: sha256:bb7d18085cd5f078fc30a3b71a08a0b23740ef1ca2d24fa6ed6ae38509becae5
+    kernel_id: thomas.read_only_runtime_kernel
+    kernel_version: 0.1.1
+    entry_mode: RUNTIME_AUTHORITATIVE_READ_ONLY
+    blocking_reasons: *id001
+    created_at: '2026-07-13T08:30:00Z'
+  entry_plan_sha256: sha256:835e4418214fcd3f53a46c264316611486131f27ea0a488745ed153faf437593
+created_at: '2026-07-13T08:30:00Z'

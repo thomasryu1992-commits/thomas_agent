@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_authoritative_read_only_entry_plan.v0.1.schema.json",
+  "title": "Runtime-Authoritative Read-only Entry Plan v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entry_plan_id",
+    "phase",
+    "status",
+    "owner",
+    "runtime_source_of_truth",
+    "kernel",
+    "readiness",
+    "entry_scope",
+    "approval_boundary",
+    "checks",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_authoritative_read_only_entry_plan.v0.1"
+    },
+    "entry_plan_id": {
+      "type": "string",
+      "pattern": "^entryplan_[A-Za-z0-9._:-]+$"
+    },
+    "phase": {
+      "const": "I0.5.2"
+    },
+    "status": {
+      "enum": [
+        "REVIEW_ONLY_BLOCKED",
+        "READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN"
+      ]
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kernel_id",
+        "kernel_version",
+        "requested_mode",
+        "requested_run_count",
+        "runtime_authoritative_mode_enabled"
+      ],
+      "properties": {
+        "kernel_id": {
+          "const": "thomas.read_only_runtime_kernel"
+        },
+        "kernel_version": {
+          "const": "0.1.1"
+        },
+        "requested_mode": {
+          "const": "RUNTIME_AUTHORITATIVE_READ_ONLY"
+        },
+        "requested_run_count": {
+          "const": 1
+        },
+        "runtime_authoritative_mode_enabled": {
+          "const": false
+        }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "readiness_id",
+        "readiness_ref",
+        "readiness_sha256",
+        "design_result",
+        "activation_result",
+        "design_ready",
+        "activation_ready"
+      ],
+      "properties": {
+        "readiness_id": {
+          "type": "string",
+          "pattern": "^rpr_[A-Za-z0-9._:-]+$"
+        },
+        "readiness_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "readiness_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "design_result": {
+          "enum": [
+            "BLOCKED_NOT_READY",
+            "READY_FOR_THOMAS_DESIGN_DECISION"
+          ]
+        },
+        "activation_result": {
+          "enum": [
+            "BLOCKED_NOT_READY",
+            "READY_FOR_RUNTIME_ACTIVATION_REVIEW"
+          ]
+        },
+        "design_ready": {
+          "type": "boolean"
+        },
+        "activation_ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    "entry_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "single_run_only",
+        "max_runs",
+        "exact_task_binding_required",
+        "exact_input_bundle_binding_required",
+        "current_core_binding_required",
+        "filesystem_read_only",
+        "filesystem_write_allowed",
+        "model_invocation_allowed",
+        "tool_execution_allowed",
+        "program_execution_allowed",
+        "network_access_allowed",
+        "external_action_allowed",
+        "financial_action_allowed",
+        "runtime_mutation_allowed"
+      ],
+      "properties": {
+        "single_run_only": {
+          "const": true
+        },
+        "max_runs": {
+          "const": 1
+        },
+        "exact_task_binding_required": {
+          "const": true
+        },
+        "exact_input_bundle_binding_required": {
+          "const": true
+        },
+        "current_core_binding_required": {
+          "const": true
+        },
+        "filesystem_read_only": {
+          "const": true
+        },
+        "filesystem_write_allowed": {
+          "const": false
+        },
+        "model_invocation_allowed": {
+          "const": false
+        },
+        "tool_execution_allowed": {
+          "const": false
+        },
+        "program_execution_allowed": {
+          "const": false
+        },
+        "network_access_allowed": {
+          "const": false
+        },
+        "external_action_allowed": {
+          "const": false
+        },
+        "financial_action_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        }
+      }
+    },
+    "approval_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "separate_action_approval_required",
+        "action_approval_contract_ref",
+        "permission_scope",
+        "approval_present",
+        "approval_verified",
+        "approval_consumption_supported_by_current_contract",
+        "future_atomic_consumption_required",
+        "executor_handoff_allowed"
+      ],
+      "properties": {
+        "separate_action_approval_required": {
+          "const": true
+        },
+        "action_approval_contract_ref": {
+          "const": "docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md"
+        },
+        "permission_scope": {
+          "const": "RUNTIME_GOVERNANCE"
+        },
+        "approval_present": {
+          "const": false
+        },
+        "approval_verified": {
+          "const": false
+        },
+        "approval_consumption_supported_by_current_contract": {
+          "const": false
+        },
+        "future_atomic_consumption_required": {
+          "const": true
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "result",
+          "notes"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "BLOCK"
+            ]
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "ready_for_thomas_entry_approval_design",
+        "ready_for_runtime_entry",
+        "entry_performed"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "BLOCKED_NOT_READY",
+            "READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "ready_for_thomas_entry_approval_design": {
+          "type": "boolean"
+        },
+        "ready_for_runtime_entry": {
+          "const": false
+        },
+        "entry_performed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "grants_core_activation",
+        "grants_tool_enablement",
+        "grants_program_enablement",
+        "grants_executor_enablement",
+        "grants_external_execution",
+        "grants_financial_execution",
+        "consumes_approval",
+        "starts_runtime_session",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY_ENTRY_DESIGN"
+        },
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_core_activation": {
+          "const": false
+        },
+        "grants_tool_enablement": {
+          "const": false
+        },
+        "grants_program_enablement": {
+          "const": false
+        },
+        "grants_executor_enablement": {
+          "const": false
+        },
+        "grants_external_execution": {
+          "const": false
+        },
+        "grants_financial_execution": {
+          "const": false
+        },
+        "consumes_approval": {
+          "const": false
+        },
+        "starts_runtime_session": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "entry_plan_fingerprint_payload",
+        "entry_plan_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_authoritative_read_only_entry_plan_fingerprint_payload.v0.1"
+        },
+        "entry_plan_fingerprint_payload": {
+          "type": "object"
+        },
+        "entry_plan_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

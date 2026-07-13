@@ -1,9 +1,9 @@
 schema_version: thomas_release_gate_evidence.v0.1
 result: PASS
-generated_at_utc: '2026-07-13T06:13:19Z'
+generated_at_utc: '2026-07-13T08:22:33Z'
 generated_by: scripts/run_repository_release_gate.py
-repository_source_fingerprint: sha256:ade21f30422e856f3451e45aacf7f4e771be0bc892a587b1c9b94595f1a5f650
-source_file_count: 554
+repository_source_fingerprint: sha256:380f5f59e4f7c84c048fb787aab80b4b0272751434b2ea49e5931f38b84e573d
+source_file_count: 593
 checks:
 - check_id: static_integrity
   label: Static Integrity
@@ -65,6 +65,16 @@ checks:
   command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_read_only_runtime.py
   result: PASS
   output_sha256: sha256:93783597d25ca126b785dbc85e20901876a86ac24365a3af9d76be2f8a509888
+- check_id: i0.5.1_runtime_promotion_readiness
+  label: I0.5.1 Runtime Promotion Readiness
+  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_1_runtime_promotion_readiness.py
+  result: PASS
+  output_sha256: sha256:19985b9326eb4482cd9218e62d0fd32abfb390308623339c83b913d340efb631
+- check_id: i0.5.2_runtime-authoritative_read-only_entry_design
+  label: I0.5.2 Runtime-Authoritative Read-only Entry Design
+  command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
+  result: PASS
+  output_sha256: sha256:ba4bd7724937acc56e4d81a5e59d420c4802d53f6ebe455514b93363a8f07686
 - check_id: thomas_core
   label: Thomas Core
   command: C:\Users\thomas\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe scripts/validate_thomas_core.py
