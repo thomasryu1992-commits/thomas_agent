@@ -1,0 +1,77 @@
+schema_version: permission_decision.v0.3
+permission_decision_id: permdec_internal_analysis_001
+trace_id: trace_permission_internal_001
+task_id: task_permission_internal_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_permission_internal_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.2.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assign_internal_analysis_001
+fingerprint_payload:
+  schema_version: action_fingerprint_payload.v0.1
+  task_id: task_permission_internal_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_permission_internal_001:r1
+  requester_ref: role:general.specialist
+  permission_scope: INTERNAL_ANALYSIS
+  action_type: internal.analysis.create
+  target_ref: internal:task_permission_internal_001:analysis
+  tool_id: null
+  program_id: null
+  data_scope:
+  - task.request
+  - assigned.context
+  content_sha256: sha256:54156bc464801ca062359fddcf572b2acad90078f4bff528e82930ee6ebe6956
+  amount_decimal: null
+  currency: null
+  normalized_parameters:
+    output_format: structured_markdown
+    visibility: internal
+  expires_at: '2026-07-14T12:00:00Z'
+action_fingerprint: sha256:30ce66a31376ec58c1fc070eb11da37ce59d33f43cb1f57c1b535d6b69b43f37
+authority:
+  required_permission_level: P2
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P3
+  effective_permission_level: P2
+  authority_sufficient: true
+  authority_reasons:
+  - The action is internal analysis within the assigned Task scope.
+risk:
+  risk_level: GREEN
+  risk_reasons:
+  - Internal-only analysis with no external effect.
+  policy_disposition: ALLOW
+decision:
+  permission_decision: ALLOW
+  decision_reasons:
+  - Authority is sufficient and the exact action is internal and reversible.
+  constraints:
+  - No external publication or Runtime mutation.
+approval:
+  approval_required: false
+  approval_id: null
+  approval_status: NOT_REQUIRED
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  decision_status: ACTIVE
+  created_at: '2026-07-14T11:00:00Z'
+  expires_at: '2026-07-14T12:00:00Z'
+  supersedes: []
+audit_refs:
+- audit:permission:permdec_internal_analysis_001

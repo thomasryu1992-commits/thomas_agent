@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scheduler_plan_review.v0.1.schema.json",
+  "title": "scheduler_plan_review.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "status",
+    "scheduler",
+    "schedule",
+    "task",
+    "controls",
+    "plan_fingerprint_payload",
+    "plan_fingerprint",
+    "effects",
+    "runtime_effect",
+    "created_at",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "scheduler_plan_review.v0.1"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^schedplan_[A-Za-z0-9._:-]+$"
+    },
+    "status": {
+      "const": "REVIEW_ONLY_NOT_INSTALLED"
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "connected",
+        "implementation_available",
+        "job_installed",
+        "job_enabled"
+      ],
+      "properties": {
+        "provider": {
+          "const": "LOCAL_SCHEDULER_CANDIDATE"
+        },
+        "connected": {
+          "const": false
+        },
+        "implementation_available": {
+          "const": false
+        },
+        "job_installed": {
+          "const": false
+        },
+        "job_enabled": {
+          "const": false
+        }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedule_type",
+        "expression",
+        "timezone",
+        "next_run_calculated",
+        "next_run_at"
+      ],
+      "properties": {
+        "schedule_type": {
+          "const": "CRON_REVIEW"
+        },
+        "expression": {
+          "type": "string",
+          "pattern": "^[^\\r\\n]{1,100}$"
+        },
+        "timezone": {
+          "const": "Asia/Ho_Chi_Minh"
+        },
+        "next_run_calculated": {
+          "const": false
+        },
+        "next_run_at": {
+          "type": "null"
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_template_ref",
+        "task_contract",
+        "shell_command_included",
+        "task_creation_allowed",
+        "dispatch_allowed"
+      ],
+      "properties": {
+        "task_template_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_contract": {
+          "const": "task.v0.3"
+        },
+        "shell_command_included": {
+          "const": false
+        },
+        "task_creation_allowed": {
+          "const": false
+        },
+        "dispatch_allowed": {
+          "const": false
+        }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activation_requires_thomas_approval",
+        "kill_switch_binding_required",
+        "overlap_policy",
+        "max_concurrency",
+        "catch_up_allowed"
+      ],
+      "properties": {
+        "activation_requires_thomas_approval": {
+          "const": true
+        },
+        "kill_switch_binding_required": {
+          "const": true
+        },
+        "overlap_policy": {
+          "const": "BLOCK_OVERLAP"
+        },
+        "max_concurrency": {
+          "const": 1
+        },
+        "catch_up_allowed": {
+          "const": false
+        }
+      }
+    },
+    "plan_fingerprint_payload": {
+      "type": "object"
+    },
+    "plan_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_installed",
+        "job_enabled",
+        "schedule_registered",
+        "dispatch_performed",
+        "task_created",
+        "background_process_started"
+      ],
+      "properties": {
+        "job_installed": {
+          "const": false
+        },
+        "job_enabled": {
+          "const": false
+        },
+        "schedule_registered": {
+          "const": false
+        },
+        "dispatch_performed": {
+          "const": false
+        },
+        "task_created": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "control_channel_connected",
+        "identity_binding_activated",
+        "challenge_issued",
+        "challenge_verified",
+        "command_dispatched",
+        "supervisor_connected",
+        "process_control_enabled",
+        "process_started",
+        "process_stopped",
+        "process_restarted",
+        "process_killed",
+        "scheduler_connected",
+        "scheduler_job_installed",
+        "scheduler_job_enabled",
+        "scheduler_dispatch_performed",
+        "task_created_by_scheduler",
+        "monitoring_policy_activated",
+        "alert_delivery_performed",
+        "automatic_remediation_performed",
+        "kill_switch_triggered",
+        "sandbox_created",
+        "sandbox_test_executed",
+        "filesystem_write_performed",
+        "network_call_performed",
+        "subprocess_performed",
+        "secret_access_performed",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "control_channel_connected": {
+          "const": false
+        },
+        "identity_binding_activated": {
+          "const": false
+        },
+        "challenge_issued": {
+          "const": false
+        },
+        "challenge_verified": {
+          "const": false
+        },
+        "command_dispatched": {
+          "const": false
+        },
+        "supervisor_connected": {
+          "const": false
+        },
+        "process_control_enabled": {
+          "const": false
+        },
+        "process_started": {
+          "const": false
+        },
+        "process_stopped": {
+          "const": false
+        },
+        "process_restarted": {
+          "const": false
+        },
+        "process_killed": {
+          "const": false
+        },
+        "scheduler_connected": {
+          "const": false
+        },
+        "scheduler_job_installed": {
+          "const": false
+        },
+        "scheduler_job_enabled": {
+          "const": false
+        },
+        "scheduler_dispatch_performed": {
+          "const": false
+        },
+        "task_created_by_scheduler": {
+          "const": false
+        },
+        "monitoring_policy_activated": {
+          "const": false
+        },
+        "alert_delivery_performed": {
+          "const": false
+        },
+        "automatic_remediation_performed": {
+          "const": false
+        },
+        "kill_switch_triggered": {
+          "const": false
+        },
+        "sandbox_created": {
+          "const": false
+        },
+        "sandbox_test_executed": {
+          "const": false
+        },
+        "filesystem_write_performed": {
+          "const": false
+        },
+        "network_call_performed": {
+          "const": false
+        },
+        "subprocess_performed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "audit_refs": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

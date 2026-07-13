@@ -1,0 +1,145 @@
+schema_version: executor_candidate_intake_review.v0.1
+review_id: execintakereview_i046_local_sandbox_001
+intake_ref: execintake_i046_local_sandbox_001
+candidate_ref: exec_candidate_local_reversible_sandbox@0.1.0
+checks:
+- check_id: intake_schema_valid
+  status: PASS
+  evidence_refs:
+  - execintake_i046_local_sandbox_001
+  notes: Review evidence present.
+- check_id: candidate_identity_unique
+  status: PASS
+  evidence_refs:
+  - execintake_i046_local_sandbox_001
+  notes: Review evidence present.
+- check_id: implementation_available
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: implementation_hash_verified
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: no_secret_values
+  status: PASS
+  evidence_refs:
+  - execintake_i046_local_sandbox_001
+  notes: Review evidence present.
+- check_id: authority_bound
+  status: PASS
+  evidence_refs:
+  - execintake_i046_local_sandbox_001
+  notes: Review evidence present.
+- check_id: scope_explicit
+  status: PASS
+  evidence_refs:
+  - execintake_i046_local_sandbox_001
+  notes: Review evidence present.
+- check_id: monitoring_runtime_ready
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: alert_delivery_ready
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: health_runtime_ready
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: clock_runtime_ready
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: kill_switch_runtime_connected
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: hot_path_implemented
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: atomic_approval_consumption_implemented
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: rollback_validated
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: idempotency_validated
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: independent_validation_passed
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: negative_fixtures_passed
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: runtime_registry_exists
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+- check_id: executor_activation_approved
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  notes: Prerequisite is not implemented or not validated.
+summary:
+  result: NOT_READY
+  accepted_for_review_backlog: true
+  ready_for_registry_candidate_record: false
+  ready_for_activation_review: false
+  ready_for_executor_handoff: false
+  passed_check_count: 5
+  failed_check_count: 0
+  unavailable_check_count: 15
+  missing_prerequisites:
+  - implementation_available
+  - implementation_hash_verified
+  - monitoring_runtime_ready
+  - alert_delivery_ready
+  - health_runtime_ready
+  - clock_runtime_ready
+  - kill_switch_runtime_connected
+  - hot_path_implemented
+  - atomic_approval_consumption_implemented
+  - rollback_validated
+  - idempotency_validated
+  - independent_validation_passed
+  - negative_fixtures_passed
+  - runtime_registry_exists
+  - executor_activation_approved
+decision:
+  decision: REVIEW_BACKLOG_ONLY
+  registration_performed: false
+  registry_mutation_performed: false
+  activation_performed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: true
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/executor_candidate_intake_review.v0.1.schema.json

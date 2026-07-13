@@ -1,0 +1,128 @@
+_schema: schemas/approval_consumption_preview.v0.1.schema.json
+schema_version: approval_consumption_preview.v0.1
+preview_id: apcons_preview_memory_promotion_001
+approval:
+  approval_id: approval_memory_promotion_001
+  approval_ref: examples/approval/approval_approved_review_only_v0.1.yaml
+  approval_status: APPROVED
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  task_id: task_memory_promotion_001
+  task_revision: 2
+  core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+  one_time_use: true
+  consumption_status: NOT_CONSUMED
+  expires_at: '2026-07-14T12:05:00Z'
+execution_request:
+  execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+  execution_request_ref: examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  task_id: task_memory_promotion_001
+  task_revision: 2
+  core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+checks:
+- check_id: approval_status_approved
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: thomas_identity_verified
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: one_time_use_required
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: approval_not_consumed
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: approval_not_revoked
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: approval_not_expired
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: task_id_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: task_revision_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: core_binding_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: action_fingerprint_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: execution_request_fingerprint_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+- check_id: permission_scope_match
+  result: PASS
+  evidence_refs:
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  reason: Exact Review-only Approval and Execution Request fields match.
+decision:
+  result: ELIGIBLE_FOR_FUTURE_ATOMIC_CONSUMPTION
+  eligible_for_future_atomic_consumption: true
+  consumption_performed: false
+  execution_token_issued: false
+  reason_codes:
+  - static_approval_binding_valid
+  - runtime_consumption_not_implemented
+mutation_evidence:
+  approval_status_changed: false
+  approval_record_written: false
+  consumption_marker_written: false
+  execution_token: null
+  compare_and_set_performed: true
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_registration_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  approval_consumption_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:00:15Z'
+expires_at: '2026-07-13T04:00:45Z'
+audit_refs:
+- audit:approval_consumption_preview:apcons_preview_memory_promotion_001

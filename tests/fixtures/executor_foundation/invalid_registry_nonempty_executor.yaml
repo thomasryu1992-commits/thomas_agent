@@ -1,0 +1,38 @@
+_schema: schemas/executor_registry.v0.1.schema.json
+schema_version: executor_registry.v0.1
+registry_id: thomas_executor_registry_review_only
+document_version: 0.1.0
+status: REVIEW_ONLY_NO_ACTIVE_EXECUTORS
+owner: Thomas
+runtime_source_of_truth: false
+governance:
+  registration_allowed: false
+  activation_allowed: false
+  auto_activation_allowed: false
+  active_executor_requires_separate_thomas_approval: true
+  implementation_hash_required: true
+  secret_values_allowed: false
+  hot_path_revalidation_required: true
+  approval_atomic_consumption_required: true
+  rollback_recovery_required: true
+  monitoring_and_kill_switch_required: true
+  audit_required: true
+executors:
+- executor_id: bad
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_registration_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  approval_consumption_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs:
+- audit:executor_registry:design-review-001

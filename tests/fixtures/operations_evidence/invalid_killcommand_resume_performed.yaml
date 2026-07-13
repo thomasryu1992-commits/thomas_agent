@@ -1,0 +1,54 @@
+schema_version: kill_switch_command_review.v0.1
+command_review_id: killreview_i046_kill_001
+kill_switch_state_ref: killsw_i046_unbound_001
+requested_command: KILL
+requested_by:
+  actor_type: real_thomas
+  actor_id: Thomas
+  identity_verification_status: NOT_RUNTIME_VERIFIED
+target_task_id: null
+request_fingerprint_payload:
+  command_review_id: killreview_i046_kill_001
+  kill_switch_state_ref: killsw_i046_unbound_001
+  requested_command: KILL
+  requested_by: Thomas
+  target_task_id: null
+request_fingerprint: sha256:7210b6b43d02c77734f079710c35bc352a96675f700c2c320eb6b28e068e536b
+review:
+  result: NOT_DISPATCHED_REVIEW_ONLY
+  command_allowed_for_future_runtime: false
+  reasons:
+  - runtime_control_channel_not_configured
+  - runtime_kill_switch_not_connected
+effects:
+  command_dispatched: false
+  state_changed: false
+  process_terminated: false
+  scheduler_changed: false
+  execution_blocked: false
+  resume_performed: true
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/kill_switch_command_review.v0.1.schema.json

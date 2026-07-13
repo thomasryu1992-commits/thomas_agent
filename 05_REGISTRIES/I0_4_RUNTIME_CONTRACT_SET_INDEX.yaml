@@ -1,0 +1,370 @@
+schema_version: i0_4_runtime_contract_set_index.v0.1
+document_version: 0.1.0
+status: REVIEW_ONLY_CONSOLIDATED_NOT_RUNTIME_ACTIVE
+owner: Thomas
+phase: I0.4_CONSOLIDATION
+runtime_source_of_truth: false
+contract_set:
+  freeze_status: FROZEN_FOR_I0_5_READ_ONLY_RUNTIME_DESIGN
+  freeze_scope: I0.4.2-I0.4.7 review-only foundation
+  new_i0_4_contracts_allowed: false
+  exception_policy: Only defect correction, security hardening, compatibility repair,
+    or Thomas-approved governance correction may change the frozen set.
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_executor_activation: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  grants_permission_expansion: false
+  grants_authority_expansion: false
+baseline_dependencies:
+- subject: Core Release Lifecycle
+  path: docs/runtime-contracts/CORE_RELEASE_LIFECYCLE_V0.3.md
+  required_in_repository: true
+- subject: Core Context Binding
+  path: docs/runtime-contracts/CORE_CONTEXT_BINDING_V0.3.md
+  required_in_repository: true
+- subject: Task Contract
+  path: docs/runtime-contracts/TASK_CONTRACT_V0.3.md
+  required_in_repository: true
+- subject: Task State Machine
+  path: docs/runtime-contracts/TASK_STATE_MACHINE_V0.1.yaml
+  required_in_repository: true
+- subject: Authority and Permission Model
+  path: docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
+  required_in_repository: true
+- subject: Agent Output
+  path: docs/runtime-contracts/AGENT_OUTPUT_CONTRACT_V0.2.md
+  required_in_repository: true
+- subject: Execution Budget
+  path: docs/runtime-contracts/EXECUTION_BUDGET_SCHEMA.yaml
+  required_in_repository: true
+- subject: Thomas Prime Charter
+  path: 03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md
+  required_in_repository: true
+- subject: Dynamic Role Common Contract
+  path: 03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md
+  required_in_repository: true
+- subject: Role Assignment
+  path: 03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md
+  required_in_repository: true
+- subject: Role Registry
+  path: 03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml
+  required_in_repository: true
+- subject: Tool Registry
+  path: 05_REGISTRIES/TOOL_REGISTRY.yaml
+  required_in_repository: true
+- subject: Program Registry
+  path: 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+  required_in_repository: true
+record_contracts:
+- phase: I0.4.2
+  subject: Thomas Permission and Approval Operating Policy
+  contract_path: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+  schema_path: schemas/thomas_permission_approval_operating_policy.v0.1.schema.json
+  record_schema: thomas_permission_approval_operating_policy.v0.1
+  status_class: THOMAS_APPROVED_POLICY_REVIEW_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.2
+  subject: Permission Decision
+  contract_path: docs/runtime-contracts/PERMISSION_DECISION_CONTRACT_V0.3.md
+  schema_path: schemas/permission_decision.v0.3.schema.json
+  record_schema: permission_decision.v0.3
+  status_class: REVIEW_ONLY_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.2
+  subject: Action Approval
+  contract_path: docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md
+  schema_path: schemas/approval.v0.1.schema.json
+  record_schema: approval.v0.1
+  status_class: REVIEW_ONLY_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.3
+  subject: Tool Request
+  contract_path: docs/runtime-contracts/TOOL_REQUEST_CONTRACT_V0.1.md
+  schema_path: schemas/tool_request.v0.1.schema.json
+  record_schema: tool_request.v0.1
+  status_class: REVIEW_ONLY_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.3
+  subject: Program Request
+  contract_path: docs/runtime-contracts/PROGRAM_REQUEST_CONTRACT_V0.1.md
+  schema_path: schemas/program_request.v0.1.schema.json
+  record_schema: program_request.v0.1
+  status_class: REVIEW_ONLY_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.4
+  subject: Execution Request
+  contract_path: docs/runtime-contracts/EXECUTION_REQUEST_CONTRACT_V0.1.md
+  schema_path: schemas/execution_request.v0.1.schema.json
+  record_schema: execution_request.v0.1
+  status_class: PREVIEW_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.4
+  subject: Execution Result
+  contract_path: docs/runtime-contracts/EXECUTION_RESULT_CONTRACT_V0.1.md
+  schema_path: schemas/execution_result.v0.1.schema.json
+  record_schema: execution_result.v0.1
+  status_class: NO_EXECUTION_EVIDENCE_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.4
+  subject: Validation Result
+  contract_path: docs/runtime-contracts/VALIDATION_RESULT_CONTRACT_V0.1.md
+  schema_path: schemas/validation_result.v0.1.schema.json
+  record_schema: validation_result.v0.1
+  status_class: REVIEW_ONLY_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.4
+  subject: Audit Event
+  contract_path: docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md
+  schema_path: schemas/audit_event.v0.1.schema.json
+  record_schema: audit_event.v0.1
+  status_class: APPEND_ONLY_EVIDENCE_FOUNDATION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Executor Registry Review
+  contract_path: docs/runtime-contracts/EXECUTOR_REGISTRY_CONTRACT_V0.1.md
+  schema_path: schemas/executor_registry.v0.1.schema.json
+  record_schema: executor_registry.v0.1
+  status_class: REVIEW_ONLY_NO_ACTIVE_EXECUTORS
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Executor Readiness Review
+  contract_path: docs/runtime-contracts/EXECUTOR_READINESS_REVIEW_CONTRACT_V0.1.md
+  schema_path: schemas/executor_readiness_review.v0.1.schema.json
+  record_schema: executor_readiness_review.v0.1
+  status_class: REVIEW_ONLY_NOT_READY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Disabled Executor Evidence
+  contract_path: docs/runtime-contracts/DISABLED_RESTRICTED_EXECUTION_SERVICE_INTERFACE_V0.1.md
+  schema_path: schemas/disabled_executor_evidence.v0.1.schema.json
+  record_schema: disabled_executor_evidence.v0.1
+  status_class: DISABLED_INTERFACE_EVIDENCE
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Hot-Path Pre-Execution Revalidation
+  contract_path: docs/runtime-contracts/HOT_PATH_PRE_EXECUTION_REVALIDATION_CONTRACT_V0.1.md
+  schema_path: schemas/pre_execution_revalidation.v0.1.schema.json
+  record_schema: pre_execution_revalidation.v0.1
+  status_class: PREVIEW_ONLY_BLOCKED
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Approval Consumption Preview
+  contract_path: docs/runtime-contracts/APPROVAL_CONSUMPTION_CONTRACT_V0.1.md
+  schema_path: schemas/approval_consumption_preview.v0.1.schema.json
+  record_schema: approval_consumption_preview.v0.1
+  status_class: PREVIEW_ONLY_NO_CONSUMPTION
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.5
+  subject: Rollback and Recovery Plan
+  contract_path: docs/runtime-contracts/ROLLBACK_RECOVERY_CONTRACT_V0.1.md
+  schema_path: schemas/rollback_recovery_plan.v0.1.schema.json
+  record_schema: rollback_recovery_plan.v0.1
+  status_class: PLAN_ONLY_NOT_EXECUTED
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Monitoring Snapshot
+  contract_path: docs/runtime-contracts/MONITORING_SNAPSHOT_CONTRACT_V0.1.md
+  schema_path: schemas/monitoring_snapshot.v0.1.schema.json
+  record_schema: monitoring_snapshot.v0.1
+  status_class: OFFLINE_EVIDENCE_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Alert Event
+  contract_path: docs/runtime-contracts/ALERT_EVENT_CONTRACT_V0.1.md
+  schema_path: schemas/alert_event.v0.1.schema.json
+  record_schema: alert_event.v0.1
+  status_class: NOT_SENT_REVIEW_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Health Snapshot
+  contract_path: docs/runtime-contracts/HEALTH_SNAPSHOT_CONTRACT_V0.1.md
+  schema_path: schemas/health_snapshot.v0.1.schema.json
+  record_schema: health_snapshot.v0.1
+  status_class: OFFLINE_EVIDENCE_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Clock Sync Evidence
+  contract_path: docs/runtime-contracts/CLOCK_SYNC_EVIDENCE_CONTRACT_V0.1.md
+  schema_path: schemas/clock_sync_evidence.v0.1.schema.json
+  record_schema: clock_sync_evidence.v0.1
+  status_class: OBSERVATION_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Kill Switch State
+  contract_path: docs/runtime-contracts/KILL_SWITCH_STATE_CONTRACT_V0.1.md
+  schema_path: schemas/kill_switch_state.v0.1.schema.json
+  record_schema: kill_switch_state.v0.1
+  status_class: REVIEW_ONLY_UNBOUND
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Kill Switch Command Review
+  contract_path: docs/runtime-contracts/KILL_SWITCH_COMMAND_REVIEW_CONTRACT_V0.1.md
+  schema_path: schemas/kill_switch_command_review.v0.1.schema.json
+  record_schema: kill_switch_command_review.v0.1
+  status_class: NOT_DISPATCHED_REVIEW_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Executor Candidate Intake
+  contract_path: docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_CONTRACT_V0.1.md
+  schema_path: schemas/executor_candidate_intake.v0.1.schema.json
+  record_schema: executor_candidate_intake.v0.1
+  status_class: REVIEW_BACKLOG_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.6
+  subject: Executor Candidate Intake Review
+  contract_path: docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_REVIEW_CONTRACT_V0.1.md
+  schema_path: schemas/executor_candidate_intake_review.v0.1.schema.json
+  record_schema: executor_candidate_intake_review.v0.1
+  status_class: NOT_READY_REVIEW_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Control Channel Identity Binding
+  contract_path: docs/runtime-contracts/CONTROL_CHANNEL_IDENTITY_BINDING_CONTRACT_V0.1.md
+  schema_path: schemas/control_channel_identity_binding.v0.1.schema.json
+  record_schema: control_channel_identity_binding.v0.1
+  status_class: REVIEW_ONLY_UNBOUND
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Control Channel Command Envelope Review
+  contract_path: docs/runtime-contracts/CONTROL_CHANNEL_COMMAND_ENVELOPE_REVIEW_CONTRACT_V0.1.md
+  schema_path: schemas/control_channel_command_envelope_review.v0.1.schema.json
+  record_schema: control_channel_command_envelope_review.v0.1
+  status_class: NOT_RUNTIME_VERIFIED
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Disabled Process Supervisor Snapshot
+  contract_path: docs/runtime-contracts/DISABLED_PROCESS_SUPERVISOR_INTERFACE_V0.1.md
+  schema_path: schemas/process_supervisor_snapshot.v0.1.schema.json
+  record_schema: process_supervisor_snapshot.v0.1
+  status_class: DISABLED_INTERFACE_EVIDENCE
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Disabled Scheduler Plan Review
+  contract_path: docs/runtime-contracts/DISABLED_SCHEDULER_INTERFACE_V0.1.md
+  schema_path: schemas/scheduler_plan_review.v0.1.schema.json
+  record_schema: scheduler_plan_review.v0.1
+  status_class: DISABLED_INTERFACE_EVIDENCE
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Monitoring and Alert Threshold Policy
+  contract_path: docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_POLICY_V0.1.md
+  schema_path: schemas/monitoring_alert_threshold_policy.v0.1.schema.json
+  record_schema: monitoring_alert_threshold_policy.v0.1
+  status_class: REVIEW_DRAFT_NOT_RUNTIME_ACTIVE
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Monitoring and Alert Threshold Evaluation
+  contract_path: docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_EVALUATION_CONTRACT_V0.1.md
+  schema_path: schemas/monitoring_alert_threshold_evaluation.v0.1.schema.json
+  record_schema: monitoring_alert_threshold_evaluation.v0.1
+  status_class: OFFLINE_EVALUATION_ONLY
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Local Reversible Sandbox Candidate Test Plan
+  contract_path: docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_PLAN_V0.1.md
+  schema_path: schemas/local_reversible_sandbox_candidate_test_plan.v0.1.schema.json
+  record_schema: local_reversible_sandbox_candidate_test_plan.v0.1
+  status_class: NOT_RUN_TEST_PLAN
+  runtime_effect: NONE_REVIEW_ONLY
+- phase: I0.4.7
+  subject: Local Reversible Sandbox Candidate Test Review
+  contract_path: docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_REVIEW_CONTRACT_V0.1.md
+  schema_path: schemas/local_reversible_sandbox_candidate_test_review.v0.1.schema.json
+  record_schema: local_reversible_sandbox_candidate_test_review.v0.1
+  status_class: NOT_RUN_NOT_READY
+  runtime_effect: NONE_REVIEW_ONLY
+non_schema_documents:
+- phase: I0.4.2
+  subject: Action Fingerprint Policy
+  path: docs/runtime-contracts/ACTION_FINGERPRINT_POLICY_V0.1.md
+  classification: POLICY_HELPER
+  runtime_effect: NONE
+- phase: I0.4.2
+  subject: Thomas Permission and Approval Operating Principles
+  path: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_PRINCIPLES_V0.1.md
+  classification: THOMAS_APPROVED_PRINCIPLES
+  runtime_effect: NONE
+- phase: I0.4.3
+  subject: Resource Request Review-Only Boundary
+  path: docs/runtime-contracts/RESOURCE_REQUEST_REVIEW_ONLY_BOUNDARY_V0.1.md
+  classification: PHASE_BOUNDARY_EVIDENCE
+  runtime_effect: NONE
+- phase: I0.4.4
+  subject: Execution Validation Audit Review-Only Boundary
+  path: docs/runtime-contracts/EXECUTION_VALIDATION_AUDIT_REVIEW_ONLY_BOUNDARY_V0.1.md
+  classification: PHASE_BOUNDARY_EVIDENCE
+  runtime_effect: NONE
+- phase: I0.4.5
+  subject: Executor Foundation Review-Only Boundary
+  path: docs/runtime-contracts/EXECUTOR_FOUNDATION_REVIEW_ONLY_BOUNDARY_V0.1.md
+  classification: PHASE_BOUNDARY_EVIDENCE
+  runtime_effect: NONE
+- phase: I0.4.6
+  subject: Operations Evidence and Executor Intake Review-Only Boundary
+  path: docs/runtime-contracts/OPERATIONS_EVIDENCE_EXECUTOR_INTAKE_REVIEW_ONLY_BOUNDARY_V0.1.md
+  classification: PHASE_BOUNDARY_EVIDENCE
+  runtime_effect: NONE
+- phase: I0.4.7
+  subject: Control Supervision Threshold Sandbox Review-Only Boundary
+  path: docs/runtime-contracts/CONTROL_SUPERVISION_THRESHOLD_SANDBOX_REVIEW_ONLY_BOUNDARY_V0.1.md
+  classification: PHASE_BOUNDARY_EVIDENCE
+  runtime_effect: NONE
+focused_validators:
+- phase: I0.4.2
+  path: scripts/validate_permission_approval_contracts.py
+  minimum_negative_fixture_count: 18
+- phase: I0.4.3
+  path: scripts/validate_tool_program_request_contracts.py
+  minimum_negative_fixture_count: 16
+- phase: I0.4.4
+  path: scripts/validate_execution_validation_audit_contracts.py
+  minimum_negative_fixture_count: 39
+- phase: I0.4.5
+  path: scripts/validate_executor_foundation_contracts.py
+  minimum_negative_fixture_count: 30
+- phase: I0.4.6
+  path: scripts/validate_operations_evidence_executor_intake.py
+  minimum_negative_fixture_count: 67
+- phase: I0.4.7
+  path: scripts/validate_control_supervision_threshold_sandbox.py
+  minimum_negative_fixture_count: 85
+consolidation_assertions:
+  record_schema_ids_unique: true
+  contract_paths_unique: true
+  schema_paths_unique: true
+  all_i0_4_owned_contract_docs_indexed: true
+  all_i0_4_owned_record_schemas_indexed: true
+  phase_boundary_documents_are_evidence_not_runtime_authority: true
+  threshold_policy_remains_review_draft: true
+  executor_registry_remains_review_only_and_empty: true
+  tool_and_program_registries_remain_candidate_only: true
+  full_repository_gate_required_after_apply: true
+  new_review_release_required_after_apply: true
+next_stage:
+  phase: I0.5
+  title: Read-only Runtime Kernel
+  entry_gate: I0.4 cumulative bundle applied to the real Repository, focused validators
+    PASS, full Repository Gate PASS, new Source Fingerprint and new Review Release
+    generated.
+  allowed_runtime_effects:
+  - read approved Core release
+  - validate Core Context Binding
+  - create Task records
+  - route to active read-only-capable roles
+  - calculate Authority and Permission
+  - create Review-only requests
+  - create Validation and Audit records
+  still_prohibited:
+  - external API write
+  - Tool write
+  - Program write
+  - Executor handoff
+  - Approval consumption
+  - Control Channel command dispatch
+  - process control
+  - scheduler dispatch
+  - filesystem mutation by Executor
+  - external execution
+  - financial execution

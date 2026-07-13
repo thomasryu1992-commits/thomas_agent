@@ -5,7 +5,13 @@ Purpose: Common architecture and I/O contracts before implementation
 Primary interface: Telegram
 Runtime target: Server-hosted autonomous agent organization
 
-Architecture Note: The official organization architecture is now maintained in [Thomas Autonomous Organization Architecture v0.1](./thomas-autonomous-organization-architecture-v0.1.md). This document remains useful for shared runtime components and I/O contracts.
+> **LEGACY ARCHITECTURE AND I/O REFERENCE**
+>
+> This document preserves early architecture context and historical v0.1/v0.2 examples. It is not the source of truth for new Runtime records.
+>
+> New Runtime records must follow [`RUNTIME_CONTRACT_PRECEDENCE_ADDENDUM_v0.4.md`](./runtime-contracts/RUNTIME_CONTRACT_PRECEDENCE_ADDENDUM_v0.4.md) and the canonical contracts referenced there.
+
+Architecture Note: The official organization architecture is now maintained in [Thomas Autonomous Organization Architecture v0.1](./thomas-autonomous-organization-architecture-v0.1.md). This document remains useful only as historical architecture and I/O context.
 
 Operating Note: Runtime behavior, Telegram control, approval, memory promotion, execution limits, and learning conditions are governed by [MVP Operating Policy v0.1.1](./MVP_OPERATING_POLICY.md).
 
@@ -34,16 +40,17 @@ Real Thomas
 
 ## 2. Core Principles
 
-1. Thomas Prime owns the common identity, values, long-term goals, decision model, and risk boundaries.
-2. Departments are replaceable organizational units, not hard-coded foundations.
-3. Agents handle judgment, interpretation, planning, option generation, and complex review.
-4. Rule-based Programs handle repeatable, deterministic, testable processing.
-5. Validation is independent from creation whenever risk or ambiguity is meaningful.
-6. Agents do not directly perform external actions.
-7. External actions are executed only by Restricted Execution Service after policy checks.
-8. Telegram is the main human interface for requests, approvals, status updates, and final responses.
-9. Memory is split into shared Family Memory and specialized Department Memory.
-10. Every meaningful decision, execution, and memory update must be auditable.
+1. Thomas Core owns the canonical identity, values, long-term goals, decision model, and risk boundaries.
+2. Thomas Prime interprets and applies the exact approved Core Release within its assigned Authority and cannot independently change or own protected Core state.
+3. Departments are replaceable organizational units, not hard-coded foundations.
+4. Agents handle judgment, interpretation, planning, option generation, and complex review.
+5. Rule-based Programs handle repeatable, deterministic, testable processing.
+6. Validation is independent from creation whenever risk or ambiguity is meaningful.
+7. Agents do not directly perform external actions.
+8. External actions are executed only by Restricted Execution Service after policy checks.
+9. Telegram is the main human interface for requests, approvals, status updates, and final responses.
+10. Memory is split into shared Family Memory and specialized Department Memory.
+11. Every meaningful decision, execution, and memory update must be auditable.
 
 ## 3. Runtime Components
 

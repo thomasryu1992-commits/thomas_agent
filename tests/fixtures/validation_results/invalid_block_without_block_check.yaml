@@ -1,0 +1,73 @@
+schema_version: validation_result.v0.1
+validation_result_id: valres_execution_request_tool_block_001
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+subject:
+  subject_type: EXECUTION_REQUEST
+  subject_id: execreq_tool_document_reader_candidate_001
+  subject_ref: examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+  subject_fingerprint: sha256:44cfa5657055d367649e863f614cd6a064145c720731722b0b692fc082a7122b
+  subject_created_by_actor_id: general.specialist
+validator:
+  validator_type: ROLE
+  validator_actor_id: validation.independent
+  validator_role_id: validation.independent
+  validator_role_version: 0.3.0
+  validator_execution_context_id: validation_context_execution_request_tool_001
+  independent_required: true
+  independence_verified: true
+validation:
+  validation_mode: INDEPENDENT
+  result: BLOCK
+  acceptance_criteria:
+  - subject_contract_valid
+  - lineage_consistent
+  - permission_boundary_preserved
+  rejection_criteria:
+  - subject_contract_invalid
+  - lineage_mismatch
+  - hidden_execution_or_permission_effect
+  checks:
+  - check_id: review_summary
+    result: PASS
+    evidence_refs:
+    - examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+    notes: Candidate Tool is not active or enabled.; No Executor is registered or implemented.
+  result_reasons: &id001
+  - Candidate Tool is not active or enabled.
+  - No Executor is registered or implemented.
+  recommended_next_state: BLOCKED
+findings:
+  facts:
+  - Validation does not grant Permission or execution authority.
+  risks: *id001
+  omissions: []
+  assumptions: []
+  limitations:
+  - Review-only foundation; no Runtime execution was observed.
+evidence_refs:
+- examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+permission_boundary:
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  mutates_subject: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: false
+  grants_activation: false
+  executor_handoff_allowed: false
+  side_effects_allowed: false
+  runtime_mutation_allowed: false
+lifecycle:
+  created_at: '2026-07-14T13:15:00Z'
+  supersedes: []
+audit_refs:
+- audit:validation:valres_execution_request_tool_block_001

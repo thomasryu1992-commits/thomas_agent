@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "monitoring_alert_threshold_evaluation.v0.1.schema.json",
+  "title": "monitoring_alert_threshold_evaluation.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_id",
+    "policy_ref",
+    "policy_fingerprint",
+    "metric",
+    "result",
+    "decision",
+    "evaluation_fingerprint_payload",
+    "evaluation_fingerprint",
+    "effects",
+    "runtime_effect",
+    "created_at",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "monitoring_alert_threshold_evaluation.v0.1"
+    },
+    "evaluation_id": {
+      "type": "string",
+      "pattern": "^threval_[A-Za-z0-9._:-]+$"
+    },
+    "policy_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_id",
+        "observed_value",
+        "unit",
+        "data_status",
+        "age_seconds"
+      ],
+      "properties": {
+        "metric_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data_status": {
+          "enum": [
+            "AVAILABLE",
+            "MISSING",
+            "INVALID"
+          ]
+        },
+        "age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "severity",
+        "matched_rule_id",
+        "reasons"
+      ],
+      "properties": {
+        "severity": {
+          "enum": [
+            "PASS",
+            "WARN",
+            "CRITICAL",
+            "STALE",
+            "NOT_AVAILABLE"
+          ]
+        },
+        "matched_rule_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alert_event_candidate_recommended",
+        "alert_delivery_allowed",
+        "automatic_remediation_allowed",
+        "kill_switch_trigger_allowed"
+      ],
+      "properties": {
+        "alert_event_candidate_recommended": {
+          "type": "boolean"
+        },
+        "alert_delivery_allowed": {
+          "const": false
+        },
+        "automatic_remediation_allowed": {
+          "const": false
+        },
+        "kill_switch_trigger_allowed": {
+          "const": false
+        }
+      }
+    },
+    "evaluation_fingerprint_payload": {
+      "type": "object"
+    },
+    "evaluation_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alert_event_created",
+        "notification_sent",
+        "remediation_performed",
+        "kill_switch_triggered",
+        "runtime_state_changed"
+      ],
+      "properties": {
+        "alert_event_created": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "remediation_performed": {
+          "const": false
+        },
+        "kill_switch_triggered": {
+          "const": false
+        },
+        "runtime_state_changed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "control_channel_connected",
+        "identity_binding_activated",
+        "challenge_issued",
+        "challenge_verified",
+        "command_dispatched",
+        "supervisor_connected",
+        "process_control_enabled",
+        "process_started",
+        "process_stopped",
+        "process_restarted",
+        "process_killed",
+        "scheduler_connected",
+        "scheduler_job_installed",
+        "scheduler_job_enabled",
+        "scheduler_dispatch_performed",
+        "task_created_by_scheduler",
+        "monitoring_policy_activated",
+        "alert_delivery_performed",
+        "automatic_remediation_performed",
+        "kill_switch_triggered",
+        "sandbox_created",
+        "sandbox_test_executed",
+        "filesystem_write_performed",
+        "network_call_performed",
+        "subprocess_performed",
+        "secret_access_performed",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "control_channel_connected": {
+          "const": false
+        },
+        "identity_binding_activated": {
+          "const": false
+        },
+        "challenge_issued": {
+          "const": false
+        },
+        "challenge_verified": {
+          "const": false
+        },
+        "command_dispatched": {
+          "const": false
+        },
+        "supervisor_connected": {
+          "const": false
+        },
+        "process_control_enabled": {
+          "const": false
+        },
+        "process_started": {
+          "const": false
+        },
+        "process_stopped": {
+          "const": false
+        },
+        "process_restarted": {
+          "const": false
+        },
+        "process_killed": {
+          "const": false
+        },
+        "scheduler_connected": {
+          "const": false
+        },
+        "scheduler_job_installed": {
+          "const": false
+        },
+        "scheduler_job_enabled": {
+          "const": false
+        },
+        "scheduler_dispatch_performed": {
+          "const": false
+        },
+        "task_created_by_scheduler": {
+          "const": false
+        },
+        "monitoring_policy_activated": {
+          "const": false
+        },
+        "alert_delivery_performed": {
+          "const": false
+        },
+        "automatic_remediation_performed": {
+          "const": false
+        },
+        "kill_switch_triggered": {
+          "const": false
+        },
+        "sandbox_created": {
+          "const": false
+        },
+        "sandbox_test_executed": {
+          "const": false
+        },
+        "filesystem_write_performed": {
+          "const": false
+        },
+        "network_call_performed": {
+          "const": false
+        },
+        "subprocess_performed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "audit_refs": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

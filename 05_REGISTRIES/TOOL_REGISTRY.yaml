@@ -1,5 +1,5 @@
 schema_version: tool_registry.v0.1
-document_version: 0.1.0
+document_version: 0.1.1
 status: active_registry_no_active_tools
 owner: Thomas
 source_of_truth: true
@@ -13,6 +13,10 @@ governance:
   - archived
   active_and_enabled_required_for_runtime: true
   tool_cannot_expand_authority: true
+  tool_request_contract: ../docs/runtime-contracts/TOOL_REQUEST_CONTRACT_V0.1.md
+  tool_request_schema: ../schemas/tool_request.v0.1.schema.json
+  review_only_request_evaluation_supported: true
+  request_record_never_enables_tool: true
   role_definition_allowlist_required: true
   role_assignment_allowlist_required: true
   target_and_data_scope_required: true

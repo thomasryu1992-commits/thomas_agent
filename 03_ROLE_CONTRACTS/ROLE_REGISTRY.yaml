@@ -5,7 +5,7 @@ status: active_mvp
 owner: Thomas
 router_source_of_truth: true
 role_definition_is_capability_source_of_truth: true
-last_updated_at: '2026-07-10'
+last_updated_at: '2026-07-13'
 runtime_contracts:
   authority_model: ../docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
   role_assignment: ROLE_ASSIGNMENT_CONTRACT.md

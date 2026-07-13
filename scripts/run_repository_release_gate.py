@@ -104,7 +104,7 @@ def git_diff_checks() -> list[dict[str, str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the Thomas Agent I0.4.1 Lean repository Release Gate once and write reusable Gate evidence."
+        description="Run the Thomas Agent I0.4 Consolidation review-only repository Release Gate once and write reusable Gate evidence."
     )
     parser.add_argument("--manifest")
     parser.add_argument("--approval")
@@ -124,6 +124,23 @@ def main() -> int:
         ("I0.4.1 Preconditions", [python, "scripts/validate_i0_preconditions.py"]),
         ("Runtime Contract Consistency", [python, "scripts/validate_contract_consistency.py"]),
         ("Task Contract", [python, "scripts/validate_task_contracts.py"]),
+        (
+            "Permission and Approval Foundation",
+            [python, "scripts/validate_permission_approval_contracts.py"],
+        ),
+        (
+            "Tool and Program Request Foundation",
+            [python, "scripts/validate_tool_program_request_contracts.py"],
+        ),
+        (
+            "Execution Validation and Audit Foundation",
+            [python, "scripts/validate_execution_validation_audit_contracts.py"],
+        ),
+        ("Executor Foundation Review-Only", [python, "scripts/validate_executor_foundation_contracts.py"]),
+        ("Operations Evidence and Executor Candidate Intake Review-Only", [python, "scripts/validate_operations_evidence_executor_intake.py"]),
+        ("Control, Supervision, Threshold, and Sandbox Review-Only", [python, "scripts/validate_control_supervision_threshold_sandbox.py"]),
+        ("I0.4 Consolidated Contract Set", [python, "scripts/validate_i0_4_consolidated_contract_set.py"]),
+        ("I0.5 Read-only Runtime Kernel", [python, "scripts/validate_i0_5_read_only_runtime.py"]),
         ("Thomas Core", [python, "scripts/validate_thomas_core.py"]),
         (
             "Core Projection Consistency",
@@ -186,7 +203,7 @@ def main() -> int:
     }
     evidence_path = write_gate_evidence(ROOT, EVIDENCE_REL, evidence)
 
-    print("\nPASS: Thomas Agent I0.4.1 Lean repository-wide Release Gate completed")
+    print("\nPASS: Thomas Agent I0.4 Consolidation review-only repository-wide Release Gate completed")
     print("Gate evidence: " + evidence_path.relative_to(ROOT).as_posix())
     print("The Release Builder will reuse this evidence only while the repository source fingerprint is unchanged.")
 

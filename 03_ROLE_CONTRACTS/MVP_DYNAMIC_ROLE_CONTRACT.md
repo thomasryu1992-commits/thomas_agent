@@ -1,6 +1,6 @@
 # MVP Dynamic Role Contract
 
-**Document Version:** `0.3.0`
+**Document Version:** `0.3.1`
 **Document Status:** `Reviewed MVP Contract`
 **Owner:** `Thomas`
 **Applies To:** Dynamic Specialist, Independent Validator, Risk Reviewer
@@ -108,6 +108,8 @@ independent_validator
 risk_reviewer
 ```
 
+Role Definition schema version and Role version are separate values. Existing `role_definition.v0.2` definitions may remain valid when their Registry hash, capability set, and canonical required fields pass validation. New or materially modified Role Definitions must follow the canonical `role_definition.v0.3` template.
+
 ## 5. Role Status
 
 ```text
@@ -135,10 +137,14 @@ Candidate trial Assignments may be issued only under the explicit Candidate Tria
 Common inputs are:
 
 ```text
-Task v0.2 or later
+Task v0.3
++
+Core Context Binding v0.3
 +
 Role Assignment v0.2
 ```
+
+New Runtime Role Assignments do not accept Task v0.2. Historical Task v0.2 records remain valid only under their original schema and must not be silently rewritten or used to create new Runtime Assignments.
 
 Role Definitions do not redefine Task fields.
 

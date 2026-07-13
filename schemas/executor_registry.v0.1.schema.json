@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "executor_registry.v0.1.schema.json",
+  "title": "Executor Registry v0.1 Review-Only",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "registry_id",
+    "document_version",
+    "status",
+    "owner",
+    "runtime_source_of_truth",
+    "governance",
+    "executors",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "executor_registry.v0.1"
+    },
+    "registry_id": {
+      "const": "thomas_executor_registry_review_only"
+    },
+    "document_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "type": "string"
+    },
+    "status": {
+      "const": "REVIEW_ONLY_NO_ACTIVE_EXECUTORS"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration_allowed",
+        "activation_allowed",
+        "auto_activation_allowed",
+        "active_executor_requires_separate_thomas_approval",
+        "implementation_hash_required",
+        "secret_values_allowed",
+        "hot_path_revalidation_required",
+        "approval_atomic_consumption_required",
+        "rollback_recovery_required",
+        "monitoring_and_kill_switch_required",
+        "audit_required"
+      ],
+      "properties": {
+        "registration_allowed": {
+          "const": false
+        },
+        "activation_allowed": {
+          "const": false
+        },
+        "auto_activation_allowed": {
+          "const": false
+        },
+        "active_executor_requires_separate_thomas_approval": {
+          "const": true
+        },
+        "implementation_hash_required": {
+          "const": true
+        },
+        "secret_values_allowed": {
+          "const": false
+        },
+        "hot_path_revalidation_required": {
+          "const": true
+        },
+        "approval_atomic_consumption_required": {
+          "const": true
+        },
+        "rollback_recovery_required": {
+          "const": true
+        },
+        "monitoring_and_kill_switch_required": {
+          "const": true
+        },
+        "audit_required": {
+          "const": true
+        }
+      }
+    },
+    "executors": {
+      "type": "array",
+      "maxItems": 0
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "executor_registration_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "executor_call_allowed",
+        "tool_execution_allowed",
+        "program_execution_allowed",
+        "approval_consumption_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "runtime_mutation_allowed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "executor_registration_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "executor_call_allowed": {
+          "const": false
+        },
+        "tool_execution_allowed": {
+          "const": false
+        },
+        "program_execution_allowed": {
+          "const": false
+        },
+        "approval_consumption_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

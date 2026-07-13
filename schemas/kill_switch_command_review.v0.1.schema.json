@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kill_switch_command_review.v0.1.schema.json",
+  "title": "kill_switch_command_review.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command_review_id",
+    "kill_switch_state_ref",
+    "requested_command",
+    "requested_by",
+    "target_task_id",
+    "request_fingerprint_payload",
+    "request_fingerprint",
+    "review",
+    "effects",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kill_switch_command_review.v0.1"
+    },
+    "command_review_id": {
+      "type": "string",
+      "pattern": "^killreview_[A-Za-z0-9._:-]+$"
+    },
+    "kill_switch_state_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requested_command": {
+      "enum": [
+        "PAUSE",
+        "STOP_TASK",
+        "KILL",
+        "RESUME"
+      ]
+    },
+    "requested_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_type",
+        "actor_id",
+        "identity_verification_status"
+      ],
+      "properties": {
+        "actor_type": {
+          "const": "real_thomas"
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity_verification_status": {
+          "const": "NOT_RUNTIME_VERIFIED"
+        }
+      }
+    },
+    "target_task_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_fingerprint_payload": {
+      "type": "object"
+    },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "command_allowed_for_future_runtime",
+        "reasons"
+      ],
+      "properties": {
+        "result": {
+          "const": "NOT_DISPATCHED_REVIEW_ONLY"
+        },
+        "command_allowed_for_future_runtime": {
+          "const": false
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command_dispatched",
+        "state_changed",
+        "process_terminated",
+        "scheduler_changed",
+        "execution_blocked",
+        "resume_performed"
+      ],
+      "properties": {
+        "command_dispatched": {
+          "const": false
+        },
+        "state_changed": {
+          "const": false
+        },
+        "process_terminated": {
+          "const": false
+        },
+        "scheduler_changed": {
+          "const": false
+        },
+        "execution_blocked": {
+          "const": false
+        },
+        "resume_performed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

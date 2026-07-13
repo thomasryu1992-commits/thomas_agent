@@ -1,0 +1,145 @@
+_schema: schemas/local_reversible_sandbox_candidate_test_plan.v0.1.schema.json
+schema_version: local_reversible_sandbox_candidate_test_plan.v0.1
+test_plan_id: sandplan_i047_local_reversible_001
+candidate_intake_ref: execintake_i046_local_sandbox_001
+candidate_id: executor.local_reversible_sandbox.candidate
+status: REVIEW_ONLY_NOT_RUN
+environment:
+  mode: LOCAL_TEMP_DIRECTORY_CANDIDATE
+  root_ref: future-runtime-generated-temp-root
+  root_path_value_included: false
+  temporary_root_required: true
+  network_access_allowed: false
+  secret_access_allowed: false
+  subprocess_allowed: false
+  symlink_follow_allowed: false
+  outside_root_access_allowed: false
+  persistent_write_allowed: false
+  external_system_access_allowed: false
+allowed_operations:
+- CREATE_FILE
+- MODIFY_FILE
+- DELETE_FILE
+- ROLLBACK
+- VERIFY_HASH
+- CLEANUP
+test_cases:
+- test_id: create_modify_delete
+  category: POSITIVE_REVERSIBLE
+  objective: Create, modify, hash-verify, and delete a file only inside a future temporary root
+  expected_result: PASS
+  execution_status: NOT_RUN
+- test_id: checkpoint_rollback
+  category: ROLLBACK
+  objective: Restore the original checkpoint and exact content hash after reversible modification
+  expected_result: PASS
+  execution_status: NOT_RUN
+- test_id: cleanup_empty_root
+  category: CLEANUP
+  objective: Remove all test artifacts and verify the temporary root is clean
+  expected_result: PASS
+  execution_status: NOT_RUN
+- test_id: block_dotdot_escape
+  category: PATH_TRAVERSAL
+  objective: Block ../ path traversal outside the temporary root
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: block_absolute_escape
+  category: ABSOLUTE_PATH_ESCAPE
+  objective: Block absolute paths outside the temporary root
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: block_symlink_escape
+  category: SYMLINK_ESCAPE
+  objective: Block symlink or junction escape outside the temporary root
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: block_secret_access
+  category: SECRET_ACCESS
+  objective: Block secret, credential, key, token, and passphrase access
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: block_network_access
+  category: NETWORK_ACCESS
+  objective: Block all network access and endpoint calls
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: block_subprocess_access
+  category: SUBPROCESS_ACCESS
+  objective: Block shell, subprocess, PowerShell, cmd, and process execution
+  expected_result: BLOCK
+  execution_status: NOT_RUN
+- test_id: idempotency_duplicate
+  category: IDEMPOTENCY
+  objective: Prevent duplicate mutation under the same idempotency key
+  expected_result: PASS
+  execution_status: NOT_RUN
+rollback:
+  required: true
+  checkpoint_required: true
+  restore_hash_required: true
+  cleanup_required: true
+  independent_verification_required: true
+activation_boundary:
+  test_authorization_granted: false
+  registry_mutation_allowed: false
+  activation_allowed: true
+  executor_handoff_allowed: false
+  production_use_allowed: false
+plan_fingerprint_payload:
+  test_plan_id: sandplan_i047_local_reversible_001
+  candidate_intake_ref: execintake_i046_local_sandbox_001
+  candidate_id: executor.local_reversible_sandbox.candidate
+  environment_mode: LOCAL_TEMP_DIRECTORY_CANDIDATE
+  test_ids:
+  - create_modify_delete
+  - checkpoint_rollback
+  - cleanup_empty_root
+  - block_dotdot_escape
+  - block_absolute_escape
+  - block_symlink_escape
+  - block_secret_access
+  - block_network_access
+  - block_subprocess_access
+  - idempotency_duplicate
+plan_fingerprint: sha256:fdc304df07707088f0284b11850fd6c4fb27082a92c5ddb960ea9d2a28e2b557
+runtime_effect:
+  mode: REVIEW_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:20:00Z'
+audit_refs: []

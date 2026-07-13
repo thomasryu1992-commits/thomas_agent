@@ -1,0 +1,97 @@
+_schema: schemas/control_channel_identity_binding.v0.1.schema.json
+schema_version: control_channel_identity_binding.v0.1
+binding_id: ccbind_i047_thomas_telegram_private_001
+owner: Thomas
+status: REVIEW_ONLY_UNBOUND
+channel:
+  provider: telegram
+  channel_type: TELEGRAM_PRIVATE_CHAT
+  channel_ref_fingerprint: sha256:fe8b367b98565a02c367cd443724e1daa115af490dca2c3f189ed01cb012f668
+  raw_channel_id_included: false
+  bot_token_value_included: false
+  webhook_secret_value_included: false
+  private_chat_required: true
+  group_allowed: false
+  channel_allowed: false
+identity:
+  subject_type: real_thomas
+  subject_id: Thomas
+  user_ref_fingerprint: sha256:2aa67d0aebba50b1deed0ff0ae63df4a1d90667858df21d05a8db110aa87de32
+  raw_user_id_included: true
+  credential_values_included: false
+verification:
+  mode: REVIEW_ONLY_METADATA
+  status: NOT_RUNTIME_VERIFIED
+  evidence_refs:
+  - THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+  control_channel_connected: false
+  challenge_issued: false
+  challenge_verified: false
+command_policy:
+  allowed_commands:
+  - PAUSE
+  - STOP_TASK
+  - KILL
+  - RESUME
+  forwarded_message_allowed: false
+  reaction_only_allowed: false
+  ambiguous_text_allowed: false
+  exact_reference_required: true
+  resume_requires_fresh_runtime_verification: true
+binding_fingerprint_payload:
+  binding_id: ccbind_i047_thomas_telegram_private_001
+  owner: Thomas
+  channel_provider: telegram
+  channel_type: TELEGRAM_PRIVATE_CHAT
+  channel_ref_fingerprint: sha256:fe8b367b98565a02c367cd443724e1daa115af490dca2c3f189ed01cb012f668
+  subject_type: real_thomas
+  subject_id: Thomas
+  user_ref_fingerprint: sha256:2aa67d0aebba50b1deed0ff0ae63df4a1d90667858df21d05a8db110aa87de32
+  allowed_commands:
+  - PAUSE
+  - STOP_TASK
+  - KILL
+  - RESUME
+  expires_at: '2026-07-14T04:00:00Z'
+binding_fingerprint: sha256:64e948ebd96e1340a1a4a6f23f4a0cfa8ef5283ef938e37be907aaf7bc37b8aa
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:00:00Z'
+expires_at: '2026-07-14T04:00:00Z'
+audit_refs: []

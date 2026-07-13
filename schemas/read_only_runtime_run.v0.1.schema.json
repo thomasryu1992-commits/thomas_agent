@@ -1,0 +1,897 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "read_only_runtime_run.v0.1.schema.json",
+  "title": "Thomas I0.5 Read-only Runtime Run v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "run_mode",
+    "input_bundle",
+    "lineage",
+    "kernel",
+    "preflight",
+    "authority",
+    "permission",
+    "governance",
+    "routing",
+    "worker",
+    "outputs",
+    "lifecycle",
+    "effects",
+    "summary",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "read_only_runtime_run.v0.1"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^rorun_[A-Za-z0-9._:-]+$"
+    },
+    "run_mode": {
+      "const": "DEVELOPMENT_REPLAY"
+    },
+    "input_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "bundle_ref",
+        "bundle_sha256",
+        "record_sha256"
+      ],
+      "properties": {
+        "bundle_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundle_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bundle_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "record_sha256": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "task_id",
+        "task_revision",
+        "core_context_binding_id",
+        "assignment_id",
+        "role_id",
+        "role_version"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "core_context_binding_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assignment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      }
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kernel_id",
+        "kernel_version",
+        "worker_id",
+        "worker_version",
+        "runtime_authoritative"
+      ],
+      "properties": {
+        "kernel_id": {
+          "const": "thomas.read_only_runtime_kernel"
+        },
+        "kernel_version": {
+          "const": "0.1.1"
+        },
+        "worker_id": {
+          "const": "kernel.contract_inspection.readonly"
+        },
+        "worker_version": {
+          "const": "0.1.0"
+        },
+        "runtime_authoritative": {
+          "const": false
+        }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "checks",
+        "reason_codes"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "PASS",
+            "BLOCK"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check_id",
+              "result",
+              "notes"
+            ],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "BLOCK"
+                ]
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_permission_level",
+        "effective_permission_level",
+        "assignment_granted_permission_level",
+        "role_permission_ceiling",
+        "sufficient"
+      ],
+      "properties": {
+        "required_permission_level": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6",
+            null
+          ]
+        },
+        "effective_permission_level": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6",
+            null
+          ]
+        },
+        "assignment_granted_permission_level": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6",
+            null
+          ]
+        },
+        "role_permission_ceiling": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6",
+            null
+          ]
+        },
+        "sufficient": {
+          "type": "boolean"
+        }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluation_status",
+        "permission_decision",
+        "permission_decision_ref",
+        "approval_required",
+        "development_replay_allowed"
+      ],
+      "properties": {
+        "evaluation_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "DECIDED",
+            "NOT_EVALUATED",
+            "SUPERSEDED",
+            null
+          ]
+        },
+        "permission_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ALLOW",
+            "EXECUTE_AND_REPORT",
+            "APPROVAL_REQUIRED",
+            "BLOCK",
+            null
+          ]
+        },
+        "permission_decision_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_required": {
+          "type": "boolean"
+        },
+        "development_replay_allowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "activation_id",
+        "verification_status",
+        "authoritative_governance_claimed"
+      ],
+      "properties": {
+        "approval_id": {"type": ["string", "null"]},
+        "activation_id": {"type": ["string", "null"]},
+        "verification_status": {
+          "enum": ["REFERENCES_PRESENT_NOT_VERIFIED", "NOT_EVALUATED"]
+        },
+        "authoritative_governance_claimed": {"const": false}
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_route",
+        "role_id",
+        "role_version",
+        "assignment_id",
+        "actor_instance_id",
+        "tool_request_ids",
+        "program_request_ids"
+      ],
+      "properties": {
+        "selected_route": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ROLE",
+            null
+          ]
+        },
+        "role_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "assignment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actor_instance_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_request_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "program_request_ids": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invoked",
+        "result",
+        "agent_invocations",
+        "model_calls",
+        "tool_calls",
+        "program_calls",
+        "network_calls",
+        "filesystem_writes",
+        "external_actions"
+      ],
+      "properties": {
+        "invoked": {
+          "type": "boolean"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "NOT_INVOKED"
+          ]
+        },
+        "agent_invocations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "model_calls": {
+          "const": 0
+        },
+        "tool_calls": {
+          "const": 0
+        },
+        "program_calls": {
+          "const": 0
+        },
+        "network_calls": {
+          "const": 0
+        },
+        "filesystem_writes": {
+          "const": 0
+        },
+        "external_actions": {
+          "const": 0
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_output",
+        "agent_output_sha256",
+        "validation_result",
+        "validation_result_sha256",
+        "final_task",
+        "final_task_sha256",
+        "audit_events"
+      ],
+      "properties": {
+        "agent_output": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "agent_output_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "validation_result": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "validation_result_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "final_task": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "final_task_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "audit_events": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial_state",
+        "transitions",
+        "final_state",
+        "source_task_state_unchanged"
+      ],
+      "properties": {
+        "initial_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to",
+              "audit_event_id",
+              "audit_event_sha256"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "audit_event_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "audit_event_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "final_state": {
+          "enum": [
+            "REPLAY_COMPLETED",
+            "BLOCKED"
+          ]
+        },
+        "source_task_state_unchanged": {
+          "const": true
+        }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "filesystem_read_performed",
+        "filesystem_read_count",
+        "filesystem_write_performed",
+        "model_invocation_performed",
+        "tool_execution_performed",
+        "program_execution_performed",
+        "network_call_performed",
+        "external_action_performed",
+        "financial_action_performed",
+        "runtime_mutation_performed",
+        "approval_consumed",
+        "executor_handoff_performed",
+        "scheduler_dispatch_performed",
+        "control_command_dispatched",
+        "permission_expanded",
+        "authority_expanded",
+        "core_activation_created"
+      ],
+      "properties": {
+        "mode": {
+          "const": "DEVELOPMENT_REPLAY_READ_ONLY"
+        },
+        "filesystem_read_performed": {
+          "type": "boolean"
+        },
+        "filesystem_read_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filesystem_write_performed": {
+          "const": false
+        },
+        "model_invocation_performed": {
+          "const": false
+        },
+        "tool_execution_performed": {
+          "const": false
+        },
+        "program_execution_performed": {
+          "const": false
+        },
+        "network_call_performed": {
+          "const": false
+        },
+        "external_action_performed": {
+          "const": false
+        },
+        "financial_action_performed": {
+          "const": false
+        },
+        "runtime_mutation_performed": {
+          "const": false
+        },
+        "approval_consumed": {
+          "const": false
+        },
+        "executor_handoff_performed": {
+          "const": false
+        },
+        "scheduler_dispatch_performed": {
+          "const": false
+        },
+        "control_command_dispatched": {
+          "const": false
+        },
+        "permission_expanded": {
+          "const": false
+        },
+        "authority_expanded": {
+          "const": false
+        },
+        "core_activation_created": {
+          "const": false
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "message",
+        "runtime_activation_created",
+        "runtime_permission_created"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "COMPLETED_READ_ONLY_REPLAY",
+            "BLOCKED"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtime_activation_created": {
+          "const": false
+        },
+        "runtime_permission_created": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "run_fingerprint_payload",
+        "run_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "read_only_runtime_run_fingerprint_payload.v0.1"
+        },
+        "run_fingerprint_payload": {
+          "type": "object"
+        },
+        "run_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "summary": {
+            "properties": {
+              "result": {
+                "const": "COMPLETED_READ_ONLY_REPLAY"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "preflight": {
+            "properties": {
+              "result": {
+                "const": "PASS"
+              },
+              "reason_codes": {
+                "maxItems": 0
+              }
+            }
+          },
+          "worker": {
+            "properties": {
+              "invoked": {
+                "const": true
+              },
+              "result": {
+                "const": "PASS"
+              },
+              "agent_invocations": {
+                "const": 1
+              }
+            }
+          },
+          "lifecycle": {
+            "properties": {
+              "initial_state": {
+                "const": "REPLAY_QUEUED"
+              },
+              "final_state": {
+                "const": "REPLAY_COMPLETED"
+              },
+              "transitions": {
+                "minItems": 5,
+                "maxItems": 5
+              }
+            }
+          },
+          "outputs": {
+            "properties": {
+              "agent_output": {
+                "type": "object"
+              },
+              "agent_output_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "validation_result": {
+                "type": "object"
+              },
+              "validation_result_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "final_task": {
+                "type": "object"
+              },
+              "final_task_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "audit_events": {
+                "minItems": 6
+              }
+            }
+          },
+          "authority": {
+            "properties": {
+              "sufficient": {
+                "const": true
+              }
+            }
+          },
+          "permission": {
+            "properties": {
+              "approval_required": {
+                "const": false
+              },
+              "development_replay_allowed": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "summary": {
+            "properties": {
+              "result": {
+                "const": "BLOCKED"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "preflight": {
+            "properties": {
+              "result": {
+                "const": "BLOCK"
+              },
+              "reason_codes": {
+                "minItems": 1
+              }
+            }
+          },
+          "worker": {
+            "properties": {
+              "invoked": {
+                "const": false
+              },
+              "result": {
+                "const": "NOT_INVOKED"
+              },
+              "agent_invocations": {
+                "const": 0
+              }
+            }
+          },
+          "lifecycle": {
+            "properties": {
+              "final_state": {
+                "const": "BLOCKED"
+              },
+              "transitions": {
+                "maxItems": 0
+              }
+            }
+          },
+          "outputs": {
+            "properties": {
+              "agent_output": {
+                "const": null
+              },
+              "agent_output_sha256": {
+                "const": null
+              },
+              "validation_result": {
+                "const": null
+              },
+              "validation_result_sha256": {
+                "const": null
+              },
+              "final_task": {
+                "const": null
+              },
+              "final_task_sha256": {
+                "const": null
+              },
+              "audit_events": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

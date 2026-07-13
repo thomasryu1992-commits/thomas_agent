@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "monitoring_snapshot.v0.1.schema.json",
+  "title": "monitoring_snapshot.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "monitoring_snapshot_id",
+    "scope",
+    "collection",
+    "metrics",
+    "summary",
+    "snapshot_fingerprint_payload",
+    "snapshot_fingerprint",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "monitoring_snapshot.v0.1"
+    },
+    "monitoring_snapshot_id": {
+      "type": "string",
+      "pattern": "^monsnap_[A-Za-z0-9._:-]+$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system_id",
+        "environment",
+        "observed_components"
+      ],
+      "properties": {
+        "system_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "environment": {
+          "enum": [
+            "LOCAL_REVIEW",
+            "TEST_REVIEW",
+            "STAGING_REVIEW",
+            "PRODUCTION_REVIEW"
+          ]
+        },
+        "observed_components": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "started_at",
+        "completed_at",
+        "source_refs",
+        "source_health",
+        "missing_sources",
+        "stale_sources"
+      ],
+      "properties": {
+        "mode": {
+          "const": "OFFLINE_EVIDENCE_ONLY"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source_health": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "UNAVAILABLE"
+          ]
+        },
+        "missing_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "stale_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "metric_id",
+          "status",
+          "value",
+          "unit",
+          "observed_at",
+          "freshness_seconds",
+          "threshold_ref",
+          "evidence_refs"
+        ],
+        "properties": {
+          "metric_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARN",
+              "FAIL",
+              "NOT_AVAILABLE"
+            ]
+          },
+          "value": {},
+          "unit": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "freshness_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "threshold_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "passed_metric_count",
+        "warning_metric_count",
+        "failed_metric_count",
+        "unavailable_metric_count",
+        "runtime_monitoring_ready",
+        "continuous_monitoring_active"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "EVIDENCE_ONLY_NOT_RUNTIME",
+            "DEGRADED",
+            "UNAVAILABLE"
+          ]
+        },
+        "passed_metric_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warning_metric_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_metric_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailable_metric_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime_monitoring_ready": {
+          "const": false
+        },
+        "continuous_monitoring_active": {
+          "const": false
+        }
+      }
+    },
+    "snapshot_fingerprint_payload": {
+      "type": "object"
+    },
+    "snapshot_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

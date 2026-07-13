@@ -1,0 +1,54 @@
+schema_version: i0_5_read_only_runtime_components.v0.1
+document_version: 0.1.0
+status: CANDIDATE_DEVELOPMENT_REPLAY_ONLY
+owner: Thomas
+runtime_source_of_truth: false
+runtime_authoritative_mode_enabled: false
+components:
+- component_id: thomas.read_only_runtime_kernel
+  version: 0.1.0
+  component_type: orchestration_kernel
+  status: candidate
+  implementation_ref: runtime/read_only_kernel/kernel.py
+  run_mode:
+  - DEVELOPMENT_REPLAY
+  runtime_authoritative: false
+  network_allowed: false
+  filesystem_write_allowed: false
+  model_invocation_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  external_action_allowed: false
+  runtime_mutation_allowed: false
+- component_id: kernel.contract_inspection.readonly
+  version: 0.1.0
+  component_type: deterministic_in_process_worker
+  status: candidate
+  implementation_ref: runtime/read_only_kernel/worker.py
+  runtime_authoritative: false
+  model_calls: 0
+  tool_calls: 0
+  program_calls: 0
+  network_calls: 0
+  filesystem_writes: 0
+  external_actions: 0
+entry_prerequisites:
+- i0_4_cumulative_bundle_applied_to_real_repository
+- i0_4_consolidation_gate_pass
+- i0_5_focused_gate_pass
+- full_repository_gate_pass
+- new_source_fingerprint
+- new_gate_evidence
+- new_self_contained_review_release
+- separate_runtime_authoritative_core_lifecycle_when_runtime_mode_is_considered
+review_only_effects:
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  grants_core_activation: false
+  grants_tool_enablement: false
+  grants_program_enablement: false
+  grants_executor_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  grants_permission_expansion: false
+  grants_authority_expansion: false

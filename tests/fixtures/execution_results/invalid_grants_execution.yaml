@@ -1,0 +1,59 @@
+schema_version: execution_result.v0.1
+execution_result_id: execres_tool_document_reader_blocked_001
+execution_request_id: execreq_tool_document_reader_candidate_001
+execution_request_ref: examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml
+execution_request_fingerprint: sha256:44cfa5657055d367649e863f614cd6a064145c720731722b0b692fc082a7122b
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+result_status: BLOCKED
+execution_evidence:
+  execution_performed: false
+  executor_called: false
+  execution_attempt_id: null
+  started_at: null
+  finished_at: null
+  tool_execution_performed: false
+  program_execution_performed: false
+  external_side_effect_performed: false
+  financial_side_effect_performed: false
+  runtime_mutation_performed: false
+  side_effect_summary: []
+output:
+  output_refs: []
+  output_sha256: []
+  preview_summary: Execution did not occur because the Tool is Candidate, disabled, unavailable, not allowlisted,
+    and no Executor exists.
+  block_reasons:
+  - executor_handoff_disabled
+  - no_executor_implementation
+  - no_executor_registered
+  - no_executor_registry
+  - permission_decision_block
+  - upstream_request_blocked
+metrics:
+  runtime_seconds: 0
+  tool_calls: 0
+  program_calls: 0
+  external_calls: 0
+  cost_decimal: '0'
+  cost_currency: USD
+error:
+  error_code: null
+  error_message: null
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_permission: false
+  grants_approval: false
+  grants_authority: false
+  grants_execution: true
+  grants_activation: false
+  executor_handoff_allowed: false
+  side_effects_allowed: false
+  runtime_mutation_allowed: false
+lifecycle:
+  created_at: '2026-07-14T13:11:00Z'
+  supersedes: []
+audit_refs:
+- audit:execution_result:execres_tool_document_reader_blocked_001

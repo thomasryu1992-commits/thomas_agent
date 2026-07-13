@@ -820,7 +820,11 @@ CLOSED
 
 # 9. Permission Policy
 
-## 9.1 Permission Levels
+## 9.1 Authority Levels
+
+P0-P6 are Authority Levels. They define the maximum action class available within assigned scope and must not be treated as Permission Decision values.
+
+The exact action still requires a separate `ALLOW | EXECUTE_AND_REPORT | APPROVAL_REQUIRED | BLOCK` Permission Decision after Authority sufficiency is confirmed.
 
 P0부터 P4까지는 명시적으로 할당된 범위 안에서 누적 권한으로 해석한다.
 
@@ -919,8 +923,8 @@ Thomas Only
 
 ```yaml
 Thomas_Prime:
-  default_permission: P3
-  conditional_permission:
+  default_authority_level: P3
+  conditional_authority:
     level: P4
     scope: approved_internal_workspace_only
     requirements:
@@ -928,10 +932,10 @@ Thomas_Prime:
       - not_core_policy_or_validated_memory
 
 Specialist_Role:
-  default_permission: P3
+  default_authority_ceiling: P3
 
 Validation_Agent:
-  default_permission: P2
+  default_authority_ceiling: P2
 
 Program:
   permission: registered_scope_only
@@ -959,6 +963,10 @@ External_Execution:
 ---
 
 # 10. Risk Policy
+
+Risk level provides a default Policy disposition only.
+
+Risk does not independently prove Authority sufficiency, grant Permission, activate a Tool or Program, or broaden an Approval. Runtime must first satisfy the Authority chain and then evaluate the exact action through the canonical Permission Decision model.
 
 위험은 다음 관점별로 평가하고 가장 높은 수준을 최종 위험도로 사용한다.
 

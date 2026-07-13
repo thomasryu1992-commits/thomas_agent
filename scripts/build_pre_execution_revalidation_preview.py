@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, yaml
+from pathlib import Path
+
+ROOT=Path(__file__).resolve().parents[1]
+
+def main()->int:
+    p=argparse.ArgumentParser(); p.add_argument('--execution-request', required=True); p.add_argument('--output', required=True); a=p.parse_args()
+    req_path=Path(a.execution_request); req=yaml.safe_load(req_path.read_text(encoding='utf-8'))
+    check_ids=['task_revision_current','core_binding_current','permission_decision_current','action_fingerprint_match','execution_request_fingerprint_match','approval_exact_and_valid','resource_registry_eligible','role_definition_allowlist_match','role_assignment_allowlist_match','authority_sufficient','budget_available','idempotency_key_unused','kill_switch_inactive','task_not_paused_or_stopped','target_scope_unchanged','input_hashes_unchanged','validation_pass_and_fresh','rollback_plan_present_when_required','executor_registered_active_enabled','executor_health_ready','clock_within_tolerance','no_secret_values_present']
+    fails={'resource_registry_eligible','executor_registered_active_enabled','executor_health_ready'}
+    checks=[{'check_id':x,'result':'FAIL' if x in fails else 'PASS','required':True,'evidence_refs':[req_path.as_posix(),'05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml'],'reason':'Unavailable because no Runtime Executor exists.' if x in fails else 'Static Review-only evidence matches.'} for x in check_ids]
+    rec={'schema_version':'pre_execution_revalidation.v0.1','revalidation_id':'prereval_'+req['execution_request_id'],'execution_request':{'execution_request_id':req['execution_request_id'],'execution_request_ref':req_path.as_posix(),'execution_request_fingerprint':req['request_fingerprint']},'lineage':{'task_id':req['task_id'],'task_revision':req['task_revision'],'core_context_binding_id':req['core_context_binding_id'],'permission_decision_id':req['permission']['permission_decision_id'],'action_fingerprint':req['upstream']['action_fingerprint'],'approval_id':req['approval']['approval_id']},'clock':{'server_time':'2026-07-13T04:00:20Z','client_time':'2026-07-13T04:00:20Z','clock_skew_ms':0,'max_clock_skew_ms':1000,'clock_within_tolerance':True},'checks':checks,'decision':{'result':'BLOCKED','ready_to_execute':False,'hot_path_token_issued':False,'executor_handoff_allowed':False,'failed_checks':sorted(fails),'validity_seconds':30},'runtime_effect':{'mode':'PREVIEW_ONLY','executor_registration_allowed':False,'executor_activation_allowed':False,'executor_handoff_allowed':False,'executor_call_allowed':False,'tool_execution_allowed':False,'program_execution_allowed':False,'approval_consumption_allowed':False,'external_execution_allowed':False,'financial_execution_allowed':False,'runtime_mutation_allowed':False,'side_effects_allowed':False,'permission_expansion_allowed':False,'authority_expansion_allowed':False},'created_at':'2026-07-13T04:00:20Z','expires_at':'2026-07-13T04:00:50Z','audit_refs':['audit:pre_execution_revalidation:'+req['execution_request_id']]}
+    out=Path(a.output); out.parent.mkdir(parents=True, exist_ok=True); out.write_text(yaml.safe_dump(rec, sort_keys=False), encoding='utf-8'); print(out); return 0
+if __name__=='__main__': raise SystemExit(main())

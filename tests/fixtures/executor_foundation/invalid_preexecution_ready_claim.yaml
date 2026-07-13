@@ -1,0 +1,226 @@
+_schema: schemas/pre_execution_revalidation.v0.1.schema.json
+schema_version: pre_execution_revalidation.v0.1
+revalidation_id: prereval_memory_promotion_no_executor_001
+execution_request:
+  execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+  execution_request_ref: examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  execution_request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+lineage:
+  task_id: task_memory_promotion_001
+  task_revision: 2
+  core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+  permission_decision_id: permdec_memory_promotion_001
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  approval_id: approval_memory_promotion_001
+clock:
+  server_time: '2026-07-13T04:00:20Z'
+  client_time: '2026-07-13T04:00:20Z'
+  clock_skew_ms: 0
+  max_clock_skew_ms: 1000
+  clock_within_tolerance: true
+checks:
+- check_id: task_revision_current
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: core_binding_current
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: permission_decision_current
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: action_fingerprint_match
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: execution_request_fingerprint_match
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: approval_exact_and_valid
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: resource_registry_eligible
+  result: FAIL
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Unavailable because no Runtime Executor exists.
+- check_id: role_definition_allowlist_match
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: role_assignment_allowlist_match
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: authority_sufficient
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: budget_available
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: idempotency_key_unused
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: kill_switch_inactive
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: task_not_paused_or_stopped
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: target_scope_unchanged
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: input_hashes_unchanged
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: validation_pass_and_fresh
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: rollback_plan_present_when_required
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: executor_registered_active_enabled
+  result: FAIL
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Unavailable because no Runtime Executor exists.
+- check_id: executor_health_ready
+  result: FAIL
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Unavailable because no Runtime Executor exists.
+- check_id: clock_within_tolerance
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+- check_id: no_secret_values_present
+  result: PASS
+  required: true
+  evidence_refs:
+  - examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml
+  - examples/approval/approval_approved_review_only_v0.1.yaml
+  - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+  reason: Static Review-only evidence matches.
+decision:
+  result: BLOCKED
+  ready_to_execute: true
+  hot_path_token_issued: false
+  executor_handoff_allowed: false
+  failed_checks:
+  - executor_health_ready
+  - executor_registered_active_enabled
+  - resource_registry_eligible
+  validity_seconds: 30
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_registration_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  approval_consumption_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:00:20Z'
+expires_at: '2026-07-13T04:00:50Z'
+audit_refs:
+- audit:pre_execution_revalidation:prereval_memory_promotion_no_executor_001

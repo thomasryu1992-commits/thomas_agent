@@ -1,0 +1,1021 @@
+schema_version: read_only_runtime_run.v0.1
+run_id: rorun_bc7f04f8eda1a3db8e64
+run_mode: DEVELOPMENT_REPLAY
+input_bundle:
+  bundle_id: rorbundle_i0_5_contract_inspection_001
+  bundle_ref: examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
+  bundle_sha256: sha256:55b6f3d3473f059f0175fb97c8f4bf1e826a016b120c87ede21937335fac619e
+  record_sha256:
+    task: sha256:4ffe4c16ddcf70d46a733da5f476c504c6e5ebe7e3d1df07eba8f8b36e4275d3
+    core_context_binding: sha256:279577a19860790e0042b40c7fb7bf5e0fb38a6230ff5dab48580ce9e52b30f1
+    role_assignment: sha256:abbd12732a597a70f3f59e6add231c8da8af101b95250ee8ba2678444a9331dd
+    role_definition: sha256:cc599d54e758cfb9c68ca7c61f7af19b2c0f486c23ee69e270a273939d7b467d
+    role_registry: sha256:5bcd113a61f6b2c5b70302d6d51c93e2595920af65ee4b87ad73298599c597f6
+    tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
+    program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
+    i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
+lineage:
+  trace_id: trace_i0_5_contract_inspection_001
+  task_id: task_i0_5_contract_inspection_001
+  task_revision: 1
+  core_context_binding_id: ccb-i0-5-contract-inspection-001
+  assignment_id: assignment_i0_5_readonly_001
+  role_id: general.specialist
+  role_version: 0.3.0
+kernel:
+  kernel_id: thomas.read_only_runtime_kernel
+  kernel_version: 0.1.1
+  worker_id: kernel.contract_inspection.readonly
+  worker_version: 0.1.0
+  runtime_authoritative: false
+preflight:
+  result: PASS
+  checks:
+  - check_id: bundle_schema
+    result: PASS
+    notes: Input bundle schema_version must be read_only_runtime_input_bundle.v0.1.
+  - check_id: run_mode
+    result: PASS
+    notes: I0.5 v0.1 permits DEVELOPMENT_REPLAY only.
+  - check_id: bundle_integrity
+    result: PASS
+    notes: Input bundle fingerprint payload and SHA-256 must match the exact refs,
+      hashes, constraints, and timestamp.
+  - check_id: bundle_read_only_constraints
+    result: PASS
+    notes: Input bundle must preserve all I0.5 read-only and no-effect constraints.
+  - check_id: input_bundle_schema_validation
+    result: PASS
+    notes: Input Bundle passed the repository Draft 2020-12 schema.
+  - check_id: required_records
+    result: PASS
+    notes: Input bundle must include every required Task, Core, Role, Registry, and
+      I0.4 index record.
+  - check_id: runtime_record_schema_validation
+    result: PASS
+    notes: 'Validated available schemas for [''i0_4_contract_set_index'']; semantic
+      fail-closed checks cover records without repository schemas: [''core_context_binding'',
+      ''program_registry'', ''role_assignment'', ''role_definition'', ''role_registry'',
+      ''task'', ''tool_registry''].'
+  - check_id: task_schema
+    result: PASS
+    notes: Task schema_version must be task.v0.3.
+  - check_id: task_authenticated
+    result: PASS
+    notes: The development replay Task requester must be marked authenticated in the
+      explicit input snapshot.
+  - check_id: task_lifecycle_queued
+    result: PASS
+    notes: Read-only kernel accepts a QUEUED Task snapshot only.
+  - check_id: task_no_external_action
+    result: PASS
+    notes: Task scope must explicitly include no_external_action.
+  - check_id: task_no_tool_or_program_requests
+    result: PASS
+    notes: I0.5 v0.1 does not execute or consume Tool or Program Requests.
+  - check_id: task_role_route
+    result: PASS
+    notes: I0.5 v0.1 supports one explicit ROLE route only.
+  - check_id: task_single_assignment
+    result: PASS
+    notes: I0.5 v0.1 supports exactly one Role Assignment and one Actor.
+  - check_id: binding_schema
+    result: PASS
+    notes: Core Context Binding schema_version must be core_context_binding.v0.3.
+  - check_id: binding_lineage
+    result: PASS
+    notes: Task and Core Context Binding lineage must match exactly.
+  - check_id: binding_rule_subset
+    result: PASS
+    notes: Task active_core_rule_ids must be a non-empty subset of the bound Core
+      rules.
+  - check_id: binding_has_release_governance_references
+    result: PASS
+    notes: Development replay requires approval_id and activation_id references; presence
+      does not verify the referenced governance records.
+  - check_id: assignment_schema
+    result: PASS
+    notes: Role Assignment schema_version must be role_assignment.v0.2.
+  - check_id: assignment_lineage
+    result: PASS
+    notes: Task and Role Assignment lineage must match exactly.
+  - check_id: assignment_route_identity
+    result: PASS
+    notes: Task route and Role Assignment identity must match exactly.
+  - check_id: assignment_resource_boundary
+    result: PASS
+    notes: I0.5 v0.1 requires empty Tool and Program allowlists in the exact Assignment.
+  - check_id: assignment_zero_external_budgets
+    result: PASS
+    notes: I0.5 v0.1 Assignment budgets must allow zero Tool, Program, and model calls.
+  - check_id: role_schema
+    result: PASS
+    notes: Role Definition schema_version must be role_definition.v0.2.
+  - check_id: role_identity
+    result: PASS
+    notes: Role Definition and Assignment role identity must match.
+  - check_id: role_active_routable
+    result: PASS
+    notes: Read-only development replay requires an active, routable Role snapshot.
+  - check_id: role_no_external_action
+    result: PASS
+    notes: Role Definition must prohibit external action.
+  - check_id: capability_chain
+    result: PASS
+    notes: Task required capabilities must be within Assignment and Role capability
+      scopes.
+  - check_id: authority_chain
+    result: PASS
+    notes: Authority must satisfy Task == Assignment required <= effective <= granted
+      <= Role ceiling <= P3.
+  - check_id: permission_executable
+    result: PASS
+    notes: I0.5 v0.1 permits only DECIDED ALLOW/EXECUTE_AND_REPORT with no Approval
+      requirement.
+  - check_id: assignment_permission_match
+    result: PASS
+    notes: Task and Assignment Permission records must match and require no Approval.
+  - check_id: role_registry_entry
+    result: PASS
+    notes: Role Registry must contain one matching active and routable Role entry.
+  - check_id: tool_registry_disabled
+    result: PASS
+    notes: Tool Registry must contain no enabled Tools for I0.5 v0.1.
+  - check_id: program_registry_disabled
+    result: PASS
+    notes: Program Registry must contain no enabled Programs for I0.5 v0.1.
+  - check_id: i0_4_contract_set_frozen
+    result: PASS
+    notes: I0.4 canonical contract set must be consolidated, non-active, and frozen
+      for I0.5 design.
+  reason_codes: []
+authority:
+  required_permission_level: P2
+  effective_permission_level: P2
+  assignment_granted_permission_level: P2
+  role_permission_ceiling: P3
+  sufficient: true
+permission:
+  evaluation_status: DECIDED
+  permission_decision: ALLOW
+  permission_decision_ref: perm_i0_5_contract_inspection_001
+  approval_required: false
+  development_replay_allowed: true
+governance:
+  approval_id: core-approval-development-replay-reference
+  activation_id: core-activation-development-replay-reference
+  verification_status: REFERENCES_PRESENT_NOT_VERIFIED
+  authoritative_governance_claimed: false
+routing:
+  selected_route: ROLE
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_i0_5_readonly_001
+  actor_instance_id: agent_instance_i0_5_readonly_001
+  tool_request_ids: []
+  program_request_ids: []
+worker:
+  invoked: true
+  result: PASS
+  agent_invocations: 1
+  model_calls: 0
+  tool_calls: 0
+  program_calls: 0
+  network_calls: 0
+  filesystem_writes: 0
+  external_actions: 0
+outputs:
+  agent_output:
+    schema_version: agent_output.v0.2
+    agent_output_id: agentout_9e3422bd836b4c8603e6
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    assignment_id: assignment_i0_5_readonly_001
+    actor_instance_id: agent_instance_i0_5_readonly_001
+    role_id: general.specialist
+    role_version: 0.3.0
+    status: final
+    goal: Inspect the supplied runtime contract bundle and summarize its execution
+      boundaries.
+    summary: The I0.5 deterministic read-only worker inspected the supplied Task,
+      Core Binding, Role, Assignment, Registry, Authority, Permission, Budget, and
+      boundary records. No model, Tool, Program, network, external action, or filesystem
+      mutation was performed.
+    facts:
+    - statement: The Task risk level is GREEN and the selected route is ROLE.
+      evidence_refs:
+      - task.classification
+      - task.routing
+    - statement: 'The Role objective is: Inspect explicit runtime contract snapshots
+        and summarize their boundaries without external or mutating effects.'
+      evidence_refs:
+      - role_assignment.role_scope.role_objective
+    - statement: 'Expected outputs are: structured_contract_inspection, read_only_boundary_summary'
+      evidence_refs:
+      - task.scope.expected_outputs
+    evidence:
+    - ref: task.request.raw_request
+      type: task_input
+    - ref: task.scope
+      type: task_contract_scope
+    - ref: role_assignment
+      type: role_assignment_snapshot
+    inferences:
+    - statement: The bundle is eligible for non-authoritative read-only development
+        replay because lineage, role status, authority, permission, routing, budget,
+        and no-effect checks passed.
+    assumptions:
+    - The supplied input bundle contains the intended immutable development snapshots.
+    uncertainty:
+    - No external evidence, live Runtime state, model reasoning, Tool output, or Program
+      output was evaluated.
+    risks:
+    - Development replay must not be interpreted as Runtime activation, Tool/Program
+      enablement, or execution permission.
+    recommendation:
+      action: review_read_only_replay_output
+      reason: The output is suitable for contract integration testing only and has
+        no Runtime authority.
+    limitations:
+    - The worker only summarizes explicit input records.
+    - The worker performs no domain research and invokes no external capability.
+    validation_recommended: true
+    permission_request_refs: []
+    next_actions:
+    - Run automatic contract and lineage validation.
+    - Do not promote this replay result to Runtime authority without the separate
+      approved lifecycle.
+    memory_candidates: []
+    escalation_required: false
+    role_specific_output:
+      key_findings:
+      - Task route is ROLE under general.specialist@0.3.0.
+      - Required authority is P2; effective assignment authority is P2.
+      - Execution remained inside the deterministic in-process read-only worker boundary.
+      - 'Task constraints: no_external_action, no_tool_execution, no_program_execution,
+        no_model_invocation, no_filesystem_write.'
+      evidence_quality: explicit_input_records_only
+      unresolved_questions:
+      - Has the cumulative I0.4 package been applied and passed the real Repository
+        Full Gate?
+      - Is there a separately approved and activated Current Core Release for Runtime-authoritative
+        use?
+    created_at: '2026-07-13T04:02:00Z'
+  agent_output_sha256: sha256:9898960e273ce55284420a9a69f8e66095f258f618747c9ad6df875dd27d3889
+  validation_result:
+    schema_version: validation_result.v0.1
+    validation_result_id: valres_9c9892cf61d2bf00d2ca
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    subject:
+      subject_type: AGENT_OUTPUT
+      subject_id: agentout_9e3422bd836b4c8603e6
+      subject_ref: in_memory:agentout_9e3422bd836b4c8603e6
+      subject_fingerprint: sha256:9898960e273ce55284420a9a69f8e66095f258f618747c9ad6df875dd27d3889
+      subject_created_by_actor_id: agent_instance_i0_5_readonly_001
+    validator:
+      validator_type: SYSTEM
+      validator_actor_id: i0_5.read_only_runtime.contract_validator
+      validator_role_id: null
+      validator_role_version: null
+      validator_execution_context_id: valctx_9c9892cf61d2bf00d2ca
+      independent_required: false
+      independence_verified: false
+    validation:
+      validation_mode: CONTRACT
+      result: PASS
+      acceptance_criteria:
+      - agent_output_lineage_consistent
+      - read_only_boundary_preserved
+      - no_hidden_capability_invocation
+      rejection_criteria:
+      - lineage_mismatch
+      - secret_exposure
+      - hidden_model_tool_program_network_or_write_effect
+      checks:
+      - check_id: agent_output_lineage
+        result: PASS
+        evidence_refs:
+        - in_memory:agentout_9e3422bd836b4c8603e6
+        notes: Agent Output matches Task, Binding, Assignment, Role, and Actor lineage.
+      - check_id: read_only_effects
+        result: PASS
+        evidence_refs:
+        - runtime:read_only_kernel.effects
+        notes: No model, Tool, Program, network, filesystem write, external action,
+          or Runtime mutation occurred.
+      result_reasons:
+      - The deterministic worker returned a schema-shaped Agent Output with exact
+        lineage.
+      - All prohibited capability counters remained zero.
+      recommended_next_state: REPLAY_COMPLETED
+    findings:
+      facts:
+      - The Agent Output was generated from explicit input records only.
+      risks:
+      - Development replay is non-authoritative and must not be treated as Runtime
+        activation.
+      omissions:
+      - No live Runtime state or external evidence was evaluated.
+      assumptions:
+      - The provided snapshots are the intended development inputs.
+      limitations:
+      - Automatic contract validation is not independent domain validation.
+    evidence_refs:
+    - in_memory:agentout_9e3422bd836b4c8603e6
+    - runtime:read_only_kernel.preflight
+    permission_boundary:
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_subject: false
+    runtime_effect:
+      mode: REVIEW_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      executor_handoff_allowed: false
+      side_effects_allowed: false
+      runtime_mutation_allowed: false
+    lifecycle:
+      created_at: '2026-07-13T04:02:00Z'
+      supersedes: []
+    audit_refs: []
+  validation_result_sha256: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+  final_task:
+    schema_version: task.v0.3
+    identity:
+      task_id: task_i0_5_contract_inspection_001
+      trace_id: trace_i0_5_contract_inspection_001
+      root_task_id: task_i0_5_contract_inspection_001
+      parent_task_id: null
+      task_revision: 1
+    source:
+      channel: manual
+      source_ref: manual:i0_5_self_test
+      requester:
+        requester_type: real_thomas
+        requester_id: Thomas
+        authenticated: true
+    request:
+      raw_request: Inspect the supplied runtime contract bundle and summarize its
+        execution boundaries.
+      normalized_goal: Inspect the supplied runtime contract bundle and summarize
+        its execution boundaries.
+      received_at: '2026-07-13T04:00:00Z'
+    scope:
+      primary_objective: Inspect the supplied runtime contract bundle and summarize
+        its execution boundaries.
+      success_conditions:
+      - lineage_checks_pass
+      - authority_and_permission_boundaries_are_explicit
+      - no_external_or_mutating_effect_occurs
+      constraints:
+      - no_external_action
+      - no_tool_execution
+      - no_program_execution
+      - no_model_invocation
+      - no_filesystem_write
+      exclusions:
+      - external_source_verification
+      - live_runtime_state
+      expected_outputs:
+      - structured_contract_inspection
+      - read_only_boundary_summary
+    classification:
+      classification_status: CLASSIFIED
+      execution_mode: AGENT
+      complexity: SIMPLE
+      priority: NORMAL
+      risk_level: GREEN
+      classification_reasons:
+      - deterministic_contract_inspection_worker_is_sufficient
+      - output_is_internal_and_non_authoritative
+    authority:
+      required_permission_level: P2
+      authority_reason: Analysis of explicit contract snapshots is required.
+    permission:
+      evaluation_status: DECIDED
+      permission_decision: ALLOW
+      permission_decision_ref: perm_i0_5_contract_inspection_001
+      approval_state: NOT_REQUIRED
+      approval_id: null
+      action_fingerprint: null
+    routing:
+      required_capabilities:
+      - analysis
+      selected_route: ROLE
+      assigned_role_ids:
+      - general.specialist
+      assigned_actor_ids:
+      - agent_instance_i0_5_readonly_001
+      role_assignment_ids:
+      - assignment_i0_5_readonly_001
+      program_request_ids: []
+      tool_request_ids: []
+    context:
+      core_context_binding_id: ccb-i0-5-contract-inspection-001
+      input_refs:
+      - task.request.raw_request
+      context_refs:
+      - examples/read_only_runtime/input/core_context_binding_v0.3_contract_inspection.yaml
+      - examples/read_only_runtime/input/role_assignment_v0.2_contract_inspection.yaml
+      active_core_rule_ids:
+      - MVP_RULE_006
+      - MVP_RULE_008
+      memory_refs: []
+      data_sensitivity: INTERNAL
+    validation:
+      mode: AUTOMATIC
+      status: NOT_STARTED
+      acceptance_criteria:
+      - objective_met
+      - output_contract_valid
+      - lineage_consistent
+      - no_effect_boundary_preserved
+      rejection_criteria:
+      - lineage_mismatch
+      - authority_or_permission_violation
+      - hidden_capability_invocation
+      validation_output_refs: []
+    execution_budget:
+      schema_version: execution_budget.v0.1
+      limits:
+        max_agent_invocations: 1
+        max_model_calls: 0
+        max_tool_calls: 0
+        max_program_calls: 0
+        max_revision_cycles: 0
+        max_validation_cycles: 1
+        max_retry_count: 0
+        max_parallel_workers: 1
+        max_runtime_seconds: 60
+        token_budget: 0
+        cost_budget: 0.0
+        cost_currency: USD
+      usage:
+        agent_invocations: 0
+        model_calls: 0
+        tool_calls: 0
+        program_calls: 0
+        revision_cycles: 0
+        validation_cycles: 0
+        retry_count: 0
+        peak_parallel_workers: 0
+        runtime_seconds: 0
+        tokens_used: 0
+        cost_used: 0.0
+        cost_currency: USD
+    results:
+      agent_output_refs: []
+      program_result_refs: []
+      validation_output_refs: []
+      final_output_ref: null
+      partial_completion:
+        is_partial: false
+        completed_scope: []
+        missing_scope: []
+        impact: []
+        next_action: null
+    lifecycle:
+      status: QUEUED
+      previous_status: AUTHORIZING
+      status_reason: Read-only development replay preflight passed in the example
+        snapshot.
+      blocked_reason: null
+      pause_resume_target: null
+      transition_event_ref: audit_i0_5_contract_inspection_queued
+      status_entered_at: '2026-07-13T04:00:10Z'
+    audit:
+      created_by: manual_fixture_builder
+      created_at: '2026-07-13T04:00:00Z'
+      updated_at: '2026-07-13T04:00:10Z'
+      audit_refs:
+      - audit_i0_5_contract_inspection_created
+      - audit_i0_5_contract_inspection_queued
+  final_task_sha256: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+  audit_events:
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_c2783b5c9ea12d312f55
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: TASK_STATE_CHANGED
+    actor:
+      actor_type: system
+      actor_id: thomas.read_only_runtime_kernel
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: TASK
+      subject_id: task_i0_5_contract_inspection_001
+      subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+      subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    event:
+      event_summary: Read-only in-memory Task transition REPLAY_QUEUED -> INPUT_VERIFIED.
+      outcome: RECORDED
+      reason_codes:
+      - READ_ONLY_DEVELOPMENT_REPLAY
+      payload_ref: null
+      payload_sha256: null
+      evidence_refs:
+      - runtime:read_only_kernel.preflight
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id001 []
+      previous_event_sha256: null
+      sequence_number: 1
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_c2783b5c9ea12d312f55
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: TASK_STATE_CHANGED
+        actor_ref: system:thomas.read_only_runtime_kernel
+        subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+        subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+        event_summary: Read-only in-memory Task transition REPLAY_QUEUED -> INPUT_VERIFIED.
+        outcome: RECORDED
+        reason_codes:
+        - READ_ONLY_DEVELOPMENT_REPLAY
+        payload_sha256: null
+        evidence_refs:
+        - runtime:read_only_kernel.preflight
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id001
+        previous_event_sha256: null
+        sequence_number: 1
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:948ded838c59d04f0c5025d6ad07ff5c5ec488fa0df4c9cb166985b2d42bbe66
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_4bf1df0ab7dfd93da2f7
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: TASK_STATE_CHANGED
+    actor:
+      actor_type: system
+      actor_id: thomas.read_only_runtime_kernel
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: TASK
+      subject_id: task_i0_5_contract_inspection_001
+      subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+      subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    event:
+      event_summary: Read-only in-memory Task transition INPUT_VERIFIED -> PREFLIGHT_PASSED.
+      outcome: RECORDED
+      reason_codes:
+      - READ_ONLY_DEVELOPMENT_REPLAY
+      payload_ref: null
+      payload_sha256: null
+      evidence_refs:
+      - runtime:read_only_kernel.preflight
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id002
+      - audit_c2783b5c9ea12d312f55
+      previous_event_sha256: sha256:948ded838c59d04f0c5025d6ad07ff5c5ec488fa0df4c9cb166985b2d42bbe66
+      sequence_number: 2
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_4bf1df0ab7dfd93da2f7
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: TASK_STATE_CHANGED
+        actor_ref: system:thomas.read_only_runtime_kernel
+        subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+        subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+        event_summary: Read-only in-memory Task transition INPUT_VERIFIED -> PREFLIGHT_PASSED.
+        outcome: RECORDED
+        reason_codes:
+        - READ_ONLY_DEVELOPMENT_REPLAY
+        payload_sha256: null
+        evidence_refs:
+        - runtime:read_only_kernel.preflight
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id002
+        previous_event_sha256: sha256:948ded838c59d04f0c5025d6ad07ff5c5ec488fa0df4c9cb166985b2d42bbe66
+        sequence_number: 2
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:ffc5d59217f8b538ebaf10b01f2fa3cfe2930e7d2c277360097f7d969eb4edfb
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_c8ae1f7bbf7188950ac4
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: TASK_STATE_CHANGED
+    actor:
+      actor_type: system
+      actor_id: thomas.read_only_runtime_kernel
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: TASK
+      subject_id: task_i0_5_contract_inspection_001
+      subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+      subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    event:
+      event_summary: Read-only in-memory Task transition PREFLIGHT_PASSED -> WORKER_COMPLETED.
+      outcome: RECORDED
+      reason_codes:
+      - READ_ONLY_DEVELOPMENT_REPLAY
+      payload_ref: null
+      payload_sha256: null
+      evidence_refs:
+      - runtime:read_only_kernel.preflight
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id003
+      - audit_4bf1df0ab7dfd93da2f7
+      previous_event_sha256: sha256:ffc5d59217f8b538ebaf10b01f2fa3cfe2930e7d2c277360097f7d969eb4edfb
+      sequence_number: 3
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_c8ae1f7bbf7188950ac4
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: TASK_STATE_CHANGED
+        actor_ref: system:thomas.read_only_runtime_kernel
+        subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+        subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+        event_summary: Read-only in-memory Task transition PREFLIGHT_PASSED -> WORKER_COMPLETED.
+        outcome: RECORDED
+        reason_codes:
+        - READ_ONLY_DEVELOPMENT_REPLAY
+        payload_sha256: null
+        evidence_refs:
+        - runtime:read_only_kernel.preflight
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id003
+        previous_event_sha256: sha256:ffc5d59217f8b538ebaf10b01f2fa3cfe2930e7d2c277360097f7d969eb4edfb
+        sequence_number: 3
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:6ba6173e378a98c8ae20076c06ca334bcc43d10dce52c7e4be638ab8da514092
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_dc56e994dee27120bc43
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: TASK_STATE_CHANGED
+    actor:
+      actor_type: system
+      actor_id: thomas.read_only_runtime_kernel
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: TASK
+      subject_id: task_i0_5_contract_inspection_001
+      subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+      subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    event:
+      event_summary: Read-only in-memory Task transition WORKER_COMPLETED -> CONTRACT_VALIDATED.
+      outcome: RECORDED
+      reason_codes:
+      - READ_ONLY_DEVELOPMENT_REPLAY
+      payload_ref: null
+      payload_sha256: null
+      evidence_refs:
+      - runtime:read_only_kernel.preflight
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id004
+      - audit_c8ae1f7bbf7188950ac4
+      previous_event_sha256: sha256:6ba6173e378a98c8ae20076c06ca334bcc43d10dce52c7e4be638ab8da514092
+      sequence_number: 4
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_dc56e994dee27120bc43
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: TASK_STATE_CHANGED
+        actor_ref: system:thomas.read_only_runtime_kernel
+        subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+        subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+        event_summary: Read-only in-memory Task transition WORKER_COMPLETED -> CONTRACT_VALIDATED.
+        outcome: RECORDED
+        reason_codes:
+        - READ_ONLY_DEVELOPMENT_REPLAY
+        payload_sha256: null
+        evidence_refs:
+        - runtime:read_only_kernel.preflight
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id004
+        previous_event_sha256: sha256:6ba6173e378a98c8ae20076c06ca334bcc43d10dce52c7e4be638ab8da514092
+        sequence_number: 4
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:e3a24b8086a664d6587ae7d99afdb034aaba79fefe3d7f5a12fba9604e49ff80
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_11a6f6f47dc87a2c1547
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: TASK_STATE_CHANGED
+    actor:
+      actor_type: system
+      actor_id: thomas.read_only_runtime_kernel
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: TASK
+      subject_id: task_i0_5_contract_inspection_001
+      subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+      subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    event:
+      event_summary: Read-only in-memory Task transition CONTRACT_VALIDATED -> REPLAY_COMPLETED.
+      outcome: RECORDED
+      reason_codes:
+      - READ_ONLY_DEVELOPMENT_REPLAY
+      payload_ref: null
+      payload_sha256: null
+      evidence_refs:
+      - runtime:read_only_kernel.preflight
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id005
+      - audit_dc56e994dee27120bc43
+      previous_event_sha256: sha256:e3a24b8086a664d6587ae7d99afdb034aaba79fefe3d7f5a12fba9604e49ff80
+      sequence_number: 5
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_11a6f6f47dc87a2c1547
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: TASK_STATE_CHANGED
+        actor_ref: system:thomas.read_only_runtime_kernel
+        subject_ref: in_memory:task:task_i0_5_contract_inspection_001:r1
+        subject_fingerprint: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+        event_summary: Read-only in-memory Task transition CONTRACT_VALIDATED -> REPLAY_COMPLETED.
+        outcome: RECORDED
+        reason_codes:
+        - READ_ONLY_DEVELOPMENT_REPLAY
+        payload_sha256: null
+        evidence_refs:
+        - runtime:read_only_kernel.preflight
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id005
+        previous_event_sha256: sha256:e3a24b8086a664d6587ae7d99afdb034aaba79fefe3d7f5a12fba9604e49ff80
+        sequence_number: 5
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+  - schema_version: audit_event.v0.1
+    audit_event_id: audit_6cb5ce9cb274151d1f4a
+    trace_id: trace_i0_5_contract_inspection_001
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    event_type: VALIDATION_COMPLETED
+    actor:
+      actor_type: system
+      actor_id: i0_5.read_only_runtime.contract_validator
+      role_id: null
+      role_version: null
+      assignment_id: null
+    subject:
+      subject_type: VALIDATION_RESULT
+      subject_id: valres_9c9892cf61d2bf00d2ca
+      subject_ref: in_memory:valres_9c9892cf61d2bf00d2ca
+      subject_fingerprint: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+    event:
+      event_summary: Automatic read-only contract and lineage validation passed.
+      outcome: PASS
+      reason_codes:
+      - READ_ONLY_VALIDATION_PASS
+      payload_ref: in_memory:valres_9c9892cf61d2bf00d2ca
+      payload_sha256: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+      evidence_refs:
+      - in_memory:valres_9c9892cf61d2bf00d2ca
+      related_record_refs:
+      - in_memory:assignment:assignment_i0_5_readonly_001
+    lineage:
+      parent_audit_event_ids: &id006
+      - audit_11a6f6f47dc87a2c1547
+      previous_event_sha256: sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
+      sequence_number: 6
+    integrity:
+      hash_schema: audit_event_fingerprint_payload.v0.1
+      event_fingerprint_payload:
+        schema_version: audit_event_fingerprint_payload.v0.1
+        audit_event_id: audit_6cb5ce9cb274151d1f4a
+        trace_id: trace_i0_5_contract_inspection_001
+        task_id: task_i0_5_contract_inspection_001
+        task_revision: 1
+        core_context_binding_id: ccb-i0-5-contract-inspection-001
+        event_type: VALIDATION_COMPLETED
+        actor_ref: system:i0_5.read_only_runtime.contract_validator
+        subject_ref: in_memory:valres_9c9892cf61d2bf00d2ca
+        subject_fingerprint: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+        event_summary: Automatic read-only contract and lineage validation passed.
+        outcome: PASS
+        reason_codes:
+        - READ_ONLY_VALIDATION_PASS
+        payload_sha256: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+        evidence_refs:
+        - in_memory:valres_9c9892cf61d2bf00d2ca
+        related_record_refs:
+        - in_memory:assignment:assignment_i0_5_readonly_001
+        parent_audit_event_ids: *id006
+        previous_event_sha256: sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
+        sequence_number: 6
+        created_at: '2026-07-13T04:02:00Z'
+      event_sha256: sha256:348556f4ae2c6cf82fd2f092c5b00e50c773fa4622b9577bd54aa033f821f4c0
+      append_only: true
+      overwrite_allowed: false
+      delete_allowed: false
+    sensitivity: INTERNAL
+    runtime_effect:
+      mode: EVIDENCE_ONLY
+      grants_permission: false
+      grants_approval: false
+      grants_authority: false
+      grants_execution: false
+      grants_activation: false
+      mutates_runtime: false
+    created_at: '2026-07-13T04:02:00Z'
+lifecycle:
+  initial_state: REPLAY_QUEUED
+  transitions:
+  - from: REPLAY_QUEUED
+    to: INPUT_VERIFIED
+    audit_event_id: audit_c2783b5c9ea12d312f55
+    audit_event_sha256: sha256:948ded838c59d04f0c5025d6ad07ff5c5ec488fa0df4c9cb166985b2d42bbe66
+  - from: INPUT_VERIFIED
+    to: PREFLIGHT_PASSED
+    audit_event_id: audit_4bf1df0ab7dfd93da2f7
+    audit_event_sha256: sha256:ffc5d59217f8b538ebaf10b01f2fa3cfe2930e7d2c277360097f7d969eb4edfb
+  - from: PREFLIGHT_PASSED
+    to: WORKER_COMPLETED
+    audit_event_id: audit_c8ae1f7bbf7188950ac4
+    audit_event_sha256: sha256:6ba6173e378a98c8ae20076c06ca334bcc43d10dce52c7e4be638ab8da514092
+  - from: WORKER_COMPLETED
+    to: CONTRACT_VALIDATED
+    audit_event_id: audit_dc56e994dee27120bc43
+    audit_event_sha256: sha256:e3a24b8086a664d6587ae7d99afdb034aaba79fefe3d7f5a12fba9604e49ff80
+  - from: CONTRACT_VALIDATED
+    to: REPLAY_COMPLETED
+    audit_event_id: audit_11a6f6f47dc87a2c1547
+    audit_event_sha256: sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
+  final_state: REPLAY_COMPLETED
+  source_task_state_unchanged: true
+effects:
+  mode: DEVELOPMENT_REPLAY_READ_ONLY
+  filesystem_read_performed: true
+  filesystem_read_count: 11
+  filesystem_write_performed: false
+  model_invocation_performed: false
+  tool_execution_performed: false
+  program_execution_performed: false
+  network_call_performed: false
+  external_action_performed: false
+  financial_action_performed: false
+  runtime_mutation_performed: false
+  approval_consumed: false
+  executor_handoff_performed: false
+  scheduler_dispatch_performed: false
+  control_command_dispatched: false
+  permission_expanded: false
+  authority_expanded: false
+  core_activation_created: false
+summary:
+  result: COMPLETED_READ_ONLY_REPLAY
+  message: Read-only development replay completed; the source Task lifecycle remained
+    unchanged.
+  runtime_activation_created: false
+  runtime_permission_created: false
+integrity:
+  hash_schema: read_only_runtime_run_fingerprint_payload.v0.1
+  run_fingerprint_payload:
+    schema_version: read_only_runtime_run_fingerprint_payload.v0.1
+    run_id: rorun_bc7f04f8eda1a3db8e64
+    bundle_id: rorbundle_i0_5_contract_inspection_001
+    bundle_sha256: sha256:55b6f3d3473f059f0175fb97c8f4bf1e826a016b120c87ede21937335fac619e
+    task_id: task_i0_5_contract_inspection_001
+    task_revision: 1
+    core_context_binding_id: ccb-i0-5-contract-inspection-001
+    assignment_id: assignment_i0_5_readonly_001
+    agent_output_sha256: sha256:9898960e273ce55284420a9a69f8e66095f258f618747c9ad6df875dd27d3889
+    validation_result_sha256: sha256:a81a4fe5f8af08cdf0566c04dfffa39ee6da1631e1ceb3e095d77ed119c0f8ea
+    final_task_sha256: sha256:718695e0669bfeb42e118bbb7313c2617444c5a0966043e1578cf0b2e88a93d1
+    audit_event_sha256s:
+    - sha256:948ded838c59d04f0c5025d6ad07ff5c5ec488fa0df4c9cb166985b2d42bbe66
+    - sha256:ffc5d59217f8b538ebaf10b01f2fa3cfe2930e7d2c277360097f7d969eb4edfb
+    - sha256:6ba6173e378a98c8ae20076c06ca334bcc43d10dce52c7e4be638ab8da514092
+    - sha256:e3a24b8086a664d6587ae7d99afdb034aaba79fefe3d7f5a12fba9604e49ff80
+    - sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
+    - sha256:348556f4ae2c6cf82fd2f092c5b00e50c773fa4622b9577bd54aa033f821f4c0
+    created_at: '2026-07-13T04:02:00Z'
+  run_sha256: sha256:931cf177ab6641b1b7c95e33c28cd2e673b5b5e452211ac8a5d9bbd51ad48508
+created_at: '2026-07-13T04:02:00Z'

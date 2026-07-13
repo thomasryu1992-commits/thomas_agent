@@ -1,6 +1,7 @@
 # Agent Output Contract v0.2
 
 **Schema Version:** `agent_output.v0.2`
+**Document Version:** `0.2.1`
 **Status:** `Active MVP Contract`
 **Owner:** `Thomas`
 
@@ -157,9 +158,9 @@ summary: The material is directionally coherent, but two assumptions require ver
 facts:
   - statement: The requested output is for internal review.
     evidence_refs:
-      - task.raw_request
+      - task.request.raw_request
 evidence:
-  - ref: task.raw_request
+  - ref: task.request.raw_request
     type: task_input
 inferences:
   - statement: Independent validation is appropriate because the recommendation may affect a strategic decision.

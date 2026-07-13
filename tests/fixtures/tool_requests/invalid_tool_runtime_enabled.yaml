@@ -1,0 +1,130 @@
+trace_id: trace_resource_request_tool_document_reader_001
+task_id: task_resource_request_tool_document_reader_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_01HX_internal_analysis
+role_scope:
+  role_definition_ref: 03_ROLE_CONTRACTS/ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
+  role_assignment_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml
+  role_definition_resource_allowlisted: false
+  assignment_resource_allowlisted: false
+authority:
+  request_required_permission_level: P1
+  resource_required_permission_level: P1
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P2
+  effective_permission_level: P1
+  authority_sufficient: true
+  authority_reasons:
+  - Authority is sufficient for the operation type, but Resource eligibility and allowlists fail.
+permission:
+  permission_decision_ref: examples/permission/permission_block_tool_document_reader_candidate_v0.3.yaml
+  permission_decision_id: permdec_tool_document_reader_candidate_block_001
+  permission_decision: BLOCK
+  action_fingerprint: sha256:a7fd3506bcf5764ecacab62fa2f945ed07fb5ad07f9562a10a8a26e066250814
+  approval_id: null
+  binding_verified: true
+budget:
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  requested_call_count: 1
+  remaining_call_count: 0
+  requested_runtime_seconds: 30
+  remaining_runtime_seconds: 600
+  requested_cost_decimal: '0'
+  remaining_cost_decimal: '1.0'
+  cost_currency: USD
+  within_assignment_budget: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  request_record_can_execute: true
+  executor_handoff_allowed: false
+  tool_execution_allowed: true
+  program_execution_allowed: false
+  resource_enablement_allowed: false
+  registry_mutation_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  review_status: BLOCKED
+  created_at: '2026-07-14T13:05:00Z'
+  expires_at: '2026-07-14T14:00:00Z'
+  supersedes: []
+schema_version: tool_request.v0.1
+tool_request_id: toolreq_document_reader_candidate_001
+resource:
+  tool_id: document.reader
+  tool_version: 0.1.0
+  registry_ref: 05_REGISTRIES/TOOL_REGISTRY.yaml
+  registry_status: candidate
+  registry_enabled: false
+  runtime_implementation_available: false
+  tool_class: read
+  external_action: false
+  required_permission_level: P1
+operation:
+  operation_type: tool.document.read
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  target_ref: document:assigned:example
+  data_scope:
+  - assigned.document
+  input_refs:
+  - task.request.raw_request
+  input_sha256: &id001
+  - sha256:193899826085da00016f677bc110df38b2c4bf9e14c0b2ab5cc63cd589c55464
+  content_sha256: null
+  normalized_parameters:
+    mode: read_only
+  purpose: Demonstrate fail-closed evaluation for a Candidate document reader Tool.
+  expected_result_contract: tool_result.v0.1.future
+validation:
+  registry_match: true
+  registry_runtime_eligible: false
+  role_definition_allowlist_match: false
+  assignment_allowlist_match: false
+  policy_scope_match: true
+  permission_binding_match: true
+  budget_within_limit: false
+  lineage_complete: true
+  review_result: BLOCK
+  block_reasons:
+  - tool_not_active_and_enabled
+  - runtime_implementation_unavailable
+  - role_definition_not_allowlisted
+  - assignment_not_allowlisted
+  - assignment_tool_call_budget_is_zero
+request_fingerprint_payload:
+  schema_version: resource_request_fingerprint_payload.v0.1
+  resource_type: TOOL
+  task_id: task_resource_request_tool_document_reader_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_resource_request_tool_document_reader_001:r1
+  requester_ref: role:general.specialist
+  resource_id: document.reader
+  resource_version: 0.1.0
+  operation_type: tool.document.read
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  target_ref: document:assigned:example
+  data_scope:
+  - assigned.document
+  input_refs:
+  - task.request.raw_request
+  input_sha256: *id001
+  content_sha256: null
+  normalized_parameters:
+    mode: read_only
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  expires_at: '2026-07-14T14:00:00Z'
+request_fingerprint: sha256:84368e08bff36ab3b66fbba7fb0b205b5016cbc7f25e66b629a82c95a67ef0cc
+audit_refs:
+- audit:tool_request:toolreq_document_reader_candidate_001

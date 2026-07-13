@@ -64,7 +64,7 @@ def copy_repository(source: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     owned = [
         "THOMAS_CORE", "03_ROLE_CONTRACTS", "05_REGISTRIES", "docs", "schemas",
-        "scripts", "examples", "tests", "requirements-validation.in", "requirements-validation.lock",
+        "scripts", "runtime", "examples", "tests", "requirements-validation.in", "requirements-validation.lock",
         ".gitattributes",
     ]
 
@@ -337,7 +337,8 @@ def main() -> int:
         # Runtime Task/Binding artifacts above are isolated test data. Remove them
         # before governance lifecycle operations, which correctly require a clean
         # committed Repository state.
-        shutil.rmtree(test_root / "runtime", ignore_errors=True)
+        shutil.rmtree(test_root / "runtime/tasks", ignore_errors=True)
+        shutil.rmtree(test_root / "runtime/core_context", ignore_errors=True)
 
         # Deactivate fail closed in one operation and one commit.
         deactivation_output = run(
@@ -374,7 +375,8 @@ def main() -> int:
             test_root,
             expect_success=False,
         )
-        shutil.rmtree(test_root / "runtime", ignore_errors=True)
+        shutil.rmtree(test_root / "runtime/tasks", ignore_errors=True)
+        shutil.rmtree(test_root / "runtime/core_context", ignore_errors=True)
 
         # Roll back through the same Activation command.
         rollback_output = run(

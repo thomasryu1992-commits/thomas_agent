@@ -1,0 +1,72 @@
+schema_version: monitoring_alert_threshold_evaluation.v0.1
+evaluation_id: threval_i047_error_rate_warn_001
+policy_ref: 05_REGISTRIES/MONITORING_ALERT_THRESHOLD_POLICY_REVIEW_ONLY.yaml
+policy_fingerprint: sha256:8fad967e7ed5433faac2d58ecfa54dff0c45a5532ecad995fd03c5a2bba5b8db
+metric: &id001
+  metric_id: error_rate_pct
+  observed_value: 3.4
+  unit: percent
+  data_status: AVAILABLE
+  age_seconds: 20
+result:
+  severity: WARN
+  matched_rule_id: error_rate_pct
+  reasons:
+  - observed_value_at_or_above_warning_threshold
+decision:
+  alert_event_candidate_recommended: true
+  alert_delivery_allowed: false
+  automatic_remediation_allowed: false
+  kill_switch_trigger_allowed: false
+evaluation_fingerprint_payload:
+  evaluation_id: threval_i047_error_rate_warn_001
+  policy_ref: 05_REGISTRIES/MONITORING_ALERT_THRESHOLD_POLICY_REVIEW_ONLY.yaml
+  policy_fingerprint: sha256:8fad967e7ed5433faac2d58ecfa54dff0c45a5532ecad995fd03c5a2bba5b8db
+  metric: *id001
+evaluation_fingerprint: sha256:fed913e6cd6d43a63c3ceff9d74da93608ec8357c62800134af9a40cea3bab5d
+effects:
+  alert_event_created: false
+  notification_sent: false
+  remediation_performed: false
+  kill_switch_triggered: false
+  runtime_state_changed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:16:00Z'
+audit_refs: []

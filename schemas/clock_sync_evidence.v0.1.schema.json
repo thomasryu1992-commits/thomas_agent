@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clock_sync_evidence.v0.1.schema.json",
+  "title": "clock_sync_evidence.v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "clock_sync_evidence_id",
+    "subject",
+    "observation",
+    "assessment",
+    "mutation_evidence",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "clock_sync_evidence.v0.1"
+    },
+    "clock_sync_evidence_id": {
+      "type": "string",
+      "pattern": "^clock_[A-Za-z0-9._:-]+$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_type",
+        "subject_id"
+      ],
+      "properties": {
+        "subject_type": {
+          "enum": [
+            "HOST",
+            "PROCESS",
+            "EXECUTOR_CANDIDATE"
+          ]
+        },
+        "subject_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observed_at_utc",
+        "local_clock_utc",
+        "reference_clock_utc",
+        "offset_ms",
+        "absolute_offset_ms",
+        "allowed_max_offset_ms",
+        "source_type",
+        "source_ref"
+      ],
+      "properties": {
+        "observed_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "local_clock_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reference_clock_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "offset_ms": {
+          "type": "integer"
+        },
+        "absolute_offset_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allowed_max_offset_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_type": {
+          "enum": [
+            "OFFLINE_FIXED_REFERENCE",
+            "RECORDED_EVIDENCE"
+          ]
+        },
+        "source_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "clock_sufficient_for_runtime",
+        "time_sync_required"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "WITHIN_LIMIT_EVIDENCE_ONLY",
+            "OUT_OF_LIMIT",
+            "NOT_AVAILABLE"
+          ]
+        },
+        "clock_sufficient_for_runtime": {
+          "const": false
+        },
+        "time_sync_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "mutation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system_clock_changed",
+        "time_sync_performed",
+        "clock_service_restarted"
+      ],
+      "properties": {
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "clock_service_restarted": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "monitoring_daemon_started",
+        "background_process_started",
+        "network_probe_performed",
+        "notification_sent",
+        "external_alert_delivery_performed",
+        "system_clock_changed",
+        "time_sync_performed",
+        "process_control_performed",
+        "kill_switch_command_dispatched",
+        "kill_switch_state_mutated",
+        "executor_candidate_registered",
+        "executor_registry_mutation_allowed",
+        "executor_activation_allowed",
+        "executor_handoff_allowed",
+        "runtime_mutation_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "secret_access_performed",
+        "side_effects_allowed",
+        "permission_expansion_allowed",
+        "authority_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "REVIEW_ONLY",
+            "EVIDENCE_ONLY",
+            "PREVIEW_ONLY"
+          ]
+        },
+        "monitoring_daemon_started": {
+          "const": false
+        },
+        "background_process_started": {
+          "const": false
+        },
+        "network_probe_performed": {
+          "const": false
+        },
+        "notification_sent": {
+          "const": false
+        },
+        "external_alert_delivery_performed": {
+          "const": false
+        },
+        "system_clock_changed": {
+          "const": false
+        },
+        "time_sync_performed": {
+          "const": false
+        },
+        "process_control_performed": {
+          "const": false
+        },
+        "kill_switch_command_dispatched": {
+          "const": false
+        },
+        "kill_switch_state_mutated": {
+          "const": false
+        },
+        "executor_candidate_registered": {
+          "const": false
+        },
+        "executor_registry_mutation_allowed": {
+          "const": false
+        },
+        "executor_activation_allowed": {
+          "const": false
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "secret_access_performed": {
+          "const": false
+        },
+        "side_effects_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        },
+        "authority_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

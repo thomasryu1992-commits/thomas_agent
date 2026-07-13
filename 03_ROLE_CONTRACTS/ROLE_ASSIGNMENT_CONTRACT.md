@@ -1,7 +1,7 @@
 # Role Assignment Contract
 
 **Schema Version:** `role_assignment.v0.2`
-**Document Version:** `0.2.1`
+**Document Version:** `0.2.2`
 **Status:** `MVP Reviewed Contract`
 **Owner:** `Thomas`
 
@@ -262,7 +262,7 @@ role_scope:
     - uncertainty_disclosed
 
 input_refs:
-  - task.raw_request
+  - task.request.raw_request
 context_refs: []
 
 active_core_rule_ids:

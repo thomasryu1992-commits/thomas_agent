@@ -1,0 +1,135 @@
+trace_id: trace_resource_request_program_schema_validator_001
+task_id: task_resource_request_program_schema_validator_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_program_schema_validator_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_01HX_internal_analysis
+role_scope:
+  role_definition_ref: 03_ROLE_CONTRACTS/ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
+  role_assignment_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml
+  role_definition_resource_allowlisted: false
+  assignment_resource_allowlisted: false
+authority:
+  request_required_permission_level: P1
+  resource_required_permission_level: P1
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P2
+  effective_permission_level: P1
+  authority_sufficient: true
+  authority_reasons:
+  - Authority is sufficient for the operation type, but Resource eligibility and allowlists fail.
+permission:
+  permission_decision_ref: examples/permission/permission_block_program_schema_validator_candidate_v0.3.yaml
+  permission_decision_id: permdec_program_schema_validator_candidate_block_001
+  permission_decision: BLOCK
+  action_fingerprint: sha256:3602971b75776014a5a06371e0cd86f21a58b159ceca40a04fc87a5eea698d49
+  approval_id: null
+  binding_verified: true
+budget:
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  requested_call_count: 1
+  remaining_call_count: 0
+  requested_runtime_seconds: 30
+  remaining_runtime_seconds: 600
+  requested_cost_decimal: '0'
+  remaining_cost_decimal: '1.0'
+  cost_currency: USD
+  within_assignment_budget: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  request_record_can_execute: false
+  executor_handoff_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  resource_enablement_allowed: false
+  registry_mutation_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  review_status: BLOCKED
+  created_at: '2026-07-14T13:05:00Z'
+  expires_at: '2026-07-14T14:00:00Z'
+  supersedes: []
+schema_version: program_request.v0.1
+program_request_id: progreq_schema_validator_candidate_001
+resource:
+  program_id: schema.validator
+  program_version: 0.1.0
+  registry_ref: 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+  registry_status: candidate
+  registry_enabled: false
+  runtime_implementation_available: false
+  deterministic: true
+  required_permission_level: P1
+invocation:
+  invocation_type: program.schema.validate
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  target_ref: record:assigned:example
+  data_scope:
+  - assigned.record
+  - schema:assigned
+  input_refs: &id001
+  - record:assigned:example
+  - schemas/task.v0.3.schema.json
+  input_sha256: &id002
+  - sha256:1231414d9b48c167b76974a569a3cb23f9b620688f4487fd8751744dd3435a04
+  - sha256:8587c3975b2ea9ad8d52ccbe8e3d9289be71b69bcabb96fe46a9772fd91bfe97
+  content_sha256: null
+  normalized_parameters:
+    schema_ref: schemas/task.v0.3.schema.json
+  purpose: Demonstrate fail-closed evaluation for a Candidate deterministic schema validator Program.
+  deterministic_required: true
+  expected_output_contract: program_result.v0.1.future
+  expected_output_ref: review://program/schema-validator/result
+validation:
+  registry_match: true
+  registry_runtime_eligible: false
+  role_definition_allowlist_match: false
+  assignment_allowlist_match: false
+  policy_scope_match: true
+  permission_binding_match: true
+  budget_within_limit: false
+  lineage_complete: true
+  determinism_match: true
+  review_result: BLOCK
+  block_reasons:
+  - program_not_active_and_enabled
+  - runtime_implementation_unavailable
+  - role_definition_not_allowlisted
+  - assignment_not_allowlisted
+  - assignment_program_call_budget_is_zero
+request_fingerprint_payload:
+  schema_version: resource_request_fingerprint_payload.v0.1
+  resource_type: PROGRAM
+  task_id: task_resource_request_program_schema_validator_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_resource_request_program_schema_validator_001:r1
+  requester_ref: role:general.specialist
+  resource_id: schema.validator
+  resource_version: 0.1.0
+  operation_type: program.schema.validate
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  target_ref: record:assigned:example
+  data_scope:
+  - assigned.record
+  - schema:assigned
+  input_refs: *id001
+  input_sha256: *id002
+  content_sha256: null
+  normalized_parameters:
+    schema_ref: schemas/task.v0.3.schema.json
+  assignment_budget_ref: examples/runtime/role_assignment_v0.2_internal_analysis.yaml#execution_budget
+  expires_at: '2026-07-14T14:00:00Z'
+request_fingerprint: sha256:16bd51f75282fc64e2621a4726038f050aeb1490cebd200d5927acea2dc0ce9e
+audit_refs:
+- audit:program_request:progreq_schema_validator_candidate_001

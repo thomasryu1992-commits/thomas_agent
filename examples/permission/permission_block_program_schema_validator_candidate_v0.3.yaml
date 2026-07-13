@@ -1,0 +1,76 @@
+schema_version: permission_decision.v0.3
+permission_decision_id: permdec_program_schema_validator_candidate_block_001
+trace_id: trace_resource_request_program_schema_validator_001
+task_id: task_resource_request_program_schema_validator_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_resource_request_program_schema_validator_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assignment_01HX_internal_analysis
+fingerprint_payload:
+  schema_version: action_fingerprint_payload.v0.1
+  task_id: task_resource_request_program_schema_validator_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_resource_request_program_schema_validator_001:r1
+  requester_ref: role:general.specialist
+  permission_scope: DISABLED_RESOURCE_EXECUTION
+  action_type: program.schema.validate
+  target_ref: record:assigned:example
+  tool_id: null
+  program_id: schema.validator
+  data_scope:
+  - assigned.record
+  - schema:assigned
+  content_sha256: null
+  amount_decimal: null
+  currency: null
+  normalized_parameters:
+    schema_ref: schemas/task.v0.3.schema.json
+  expires_at: '2026-07-14T14:00:00Z'
+action_fingerprint: sha256:3602971b75776014a5a06371e0cd86f21a58b159ceca40a04fc87a5eea698d49
+authority:
+  required_permission_level: P1
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P2
+  effective_permission_level: P1
+  authority_sufficient: true
+  authority_reasons:
+  - The actor has sufficient read-level Authority for the requested operation type.
+risk:
+  risk_level: RED
+  risk_reasons:
+  - The requested Resource is Candidate, disabled, and has no Runtime implementation.
+  policy_disposition: BLOCK
+decision:
+  permission_decision: BLOCK
+  decision_reasons:
+  - Disabled or unavailable Resource execution is blocked by Thomas Operating Policy.
+  constraints:
+  - Request evidence may be recorded, but no Resource execution or enablement is allowed.
+approval:
+  approval_required: false
+  approval_id: null
+  approval_status: NOT_REQUIRED
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  decision_status: ACTIVE
+  created_at: '2026-07-14T13:00:00Z'
+  expires_at: '2026-07-14T14:00:00Z'
+  supersedes: []
+audit_refs:
+- audit:permission:permdec_program_schema_validator_candidate_block_001

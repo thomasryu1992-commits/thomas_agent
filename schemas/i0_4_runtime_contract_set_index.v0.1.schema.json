@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "i0_4_runtime_contract_set_index.v0.1.schema.json",
+  "title": "I0.4 Runtime Contract Set Index v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_version",
+    "status",
+    "owner",
+    "phase",
+    "runtime_source_of_truth",
+    "contract_set",
+    "baseline_dependencies",
+    "record_contracts",
+    "non_schema_documents",
+    "focused_validators",
+    "consolidation_assertions",
+    "next_stage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "i0_4_runtime_contract_set_index.v0.1"
+    },
+    "document_version": {
+      "const": "0.1.0"
+    },
+    "status": {
+      "const": "REVIEW_ONLY_CONSOLIDATED_NOT_RUNTIME_ACTIVE"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "phase": {
+      "const": "I0.4_CONSOLIDATION"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "contract_set": {
+      "type": "object",
+      "required": [
+        "freeze_status",
+        "freeze_scope",
+        "new_i0_4_contracts_allowed",
+        "exception_policy",
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "grants_executor_activation",
+        "grants_external_execution",
+        "grants_financial_execution",
+        "grants_permission_expansion",
+        "grants_authority_expansion"
+      ],
+      "properties": {
+        "freeze_status": {
+          "const": "FROZEN_FOR_I0_5_READ_ONLY_RUNTIME_DESIGN"
+        },
+        "freeze_scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "new_i0_4_contracts_allowed": {
+          "const": false
+        },
+        "exception_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_executor_activation": {
+          "const": false
+        },
+        "grants_external_execution": {
+          "const": false
+        },
+        "grants_financial_execution": {
+          "const": false
+        },
+        "grants_permission_expansion": {
+          "const": false
+        },
+        "grants_authority_expansion": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "baseline_dependencies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "subject",
+          "path",
+          "required_in_repository"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "required_in_repository": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "record_contracts": {
+      "type": "array",
+      "minItems": 31,
+      "items": {
+        "type": "object",
+        "required": [
+          "phase",
+          "subject",
+          "contract_path",
+          "schema_path",
+          "record_schema",
+          "status_class",
+          "runtime_effect"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "contract_path": {
+            "type": "string"
+          },
+          "schema_path": {
+            "type": "string"
+          },
+          "record_schema": {
+            "type": "string"
+          },
+          "status_class": {
+            "type": "string"
+          },
+          "runtime_effect": {
+            "const": "NONE_REVIEW_ONLY"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "non_schema_documents": {
+      "type": "array",
+      "minItems": 7,
+      "items": {
+        "type": "object",
+        "required": [
+          "phase",
+          "subject",
+          "path",
+          "classification",
+          "runtime_effect"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "runtime_effect": {
+            "const": "NONE"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "focused_validators": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "phase",
+          "path",
+          "minimum_negative_fixture_count"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "minimum_negative_fixture_count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "consolidation_assertions": {
+      "type": "object",
+      "minProperties": 10,
+      "additionalProperties": {
+        "const": true
+      }
+    },
+    "next_stage": {
+      "type": "object",
+      "required": [
+        "phase",
+        "title",
+        "entry_gate",
+        "allowed_runtime_effects",
+        "still_prohibited"
+      ],
+      "properties": {
+        "phase": {
+          "const": "I0.5"
+        },
+        "title": {
+          "const": "Read-only Runtime Kernel"
+        },
+        "entry_gate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_runtime_effects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "still_prohibited": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

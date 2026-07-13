@@ -1,0 +1,76 @@
+schema_version: permission_decision.v0.3
+permission_decision_id: permdec_runtime_mutation_001
+trace_id: trace_runtime_mutation_001
+task_id: task_runtime_mutation_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_runtime_mutation_001:r1
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: role
+  actor_id: general.specialist
+  role_id: general.specialist
+  role_version: 0.3.0
+  assignment_id: assign_runtime_mutation_001
+fingerprint_payload:
+  schema_version: action_fingerprint_payload.v0.1
+  task_id: task_runtime_mutation_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_runtime_mutation_001:r1
+  requester_ref: role:general.specialist
+  permission_scope: AUTHORITY_ESCALATION
+  action_type: runtime.config.modify
+  target_ref: runtime:permission_policy
+  tool_id: runtime.config.writer
+  program_id: null
+  data_scope:
+  - runtime.permission_policy
+  content_sha256: sha256:7059da16c44aec1c710f78b545f6114fc8b51ea402a5cd39ea9f8f648ddf7c14
+  amount_decimal: null
+  currency: null
+  normalized_parameters:
+    requested_change: raise_role_ceiling
+    new_level: P5
+  expires_at: '2026-07-14T12:30:00Z'
+action_fingerprint: sha256:1ca864d2eecd60acabc4c69d7782a6bd7dab4714ccd6425459e8d2ccb1f5f508
+authority:
+  required_permission_level: P5
+  role_permission_ceiling: P3
+  assignment_granted_permission_level: P3
+  effective_permission_level: P3
+  authority_sufficient: false
+  authority_reasons:
+  - The requested Runtime policy mutation exceeds the Role ceiling.
+risk:
+  risk_level: RED
+  risk_reasons:
+  - The request attempts to raise a Runtime authority ceiling.
+  policy_disposition: BLOCK
+decision:
+  permission_decision: BLOCK
+  decision_reasons:
+  - Authority is insufficient and permission expansion is prohibited.
+  constraints:
+  - Do not create Approval; escalate only as a new governance proposal.
+approval:
+  approval_required: false
+  approval_id: null
+  approval_status: NOT_REQUIRED
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  decision_status: ACTIVE
+  created_at: '2026-07-14T11:45:00Z'
+  expires_at: '2026-07-14T12:30:00Z'
+  supersedes: []
+audit_refs:
+- audit:permission:permdec_runtime_mutation_001

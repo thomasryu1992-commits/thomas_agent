@@ -1,0 +1,110 @@
+schema_version: read_only_runtime_run.v0.1
+run_id: rorun_2803a7f374a9d2288805
+run_mode: DEVELOPMENT_REPLAY
+input_bundle:
+  bundle_id: null
+  bundle_ref: examples/read_only_runtime/input/read_only_runtime_input_bundle_tool_request_blocked_v0.1.yaml
+  bundle_sha256: null
+  record_sha256: {}
+lineage:
+  trace_id: null
+  task_id: null
+  task_revision: null
+  core_context_binding_id: null
+  assignment_id: null
+  role_id: null
+  role_version: null
+kernel:
+  kernel_id: thomas.read_only_runtime_kernel
+  kernel_version: 0.1.1
+  worker_id: kernel.contract_inspection.readonly
+  worker_version: 0.1.0
+  runtime_authoritative: false
+preflight:
+  result: BLOCK
+  checks: []
+  reason_codes:
+  - RESOURCE_REQUEST_PRESENT
+authority:
+  required_permission_level: null
+  effective_permission_level: null
+  assignment_granted_permission_level: null
+  role_permission_ceiling: null
+  sufficient: false
+permission:
+  evaluation_status: null
+  permission_decision: null
+  permission_decision_ref: null
+  approval_required: false
+  development_replay_allowed: false
+governance:
+  approval_id: null
+  activation_id: null
+  verification_status: NOT_EVALUATED
+  authoritative_governance_claimed: false
+routing:
+  selected_route: null
+  role_id: null
+  role_version: null
+  assignment_id: null
+  actor_instance_id: null
+  tool_request_ids: []
+  program_request_ids: []
+worker:
+  invoked: false
+  result: NOT_INVOKED
+  agent_invocations: 0
+  model_calls: 0
+  tool_calls: 0
+  program_calls: 0
+  network_calls: 0
+  filesystem_writes: 0
+  external_actions: 0
+outputs:
+  agent_output: null
+  agent_output_sha256: null
+  validation_result: null
+  validation_result_sha256: null
+  final_task: null
+  final_task_sha256: null
+  audit_events: []
+lifecycle:
+  initial_state: null
+  transitions: []
+  final_state: BLOCKED
+  source_task_state_unchanged: true
+effects:
+  mode: DEVELOPMENT_REPLAY_READ_ONLY
+  filesystem_read_performed: true
+  filesystem_read_count: 11
+  filesystem_write_performed: false
+  model_invocation_performed: false
+  tool_execution_performed: false
+  program_execution_performed: false
+  network_call_performed: false
+  external_action_performed: false
+  financial_action_performed: false
+  runtime_mutation_performed: false
+  approval_consumed: false
+  executor_handoff_performed: false
+  scheduler_dispatch_performed: false
+  control_command_dispatched: false
+  permission_expanded: false
+  authority_expanded: false
+  core_activation_created: false
+summary:
+  result: BLOCKED
+  message: I0.5 v0.1 does not execute or consume Tool or Program Requests.
+  runtime_activation_created: false
+  runtime_permission_created: false
+integrity:
+  hash_schema: read_only_runtime_run_fingerprint_payload.v0.1
+  run_fingerprint_payload:
+    schema_version: read_only_runtime_run_fingerprint_payload.v0.1
+    run_id: rorun_2803a7f374a9d2288805
+    result: BLOCKED
+    reason_code: RESOURCE_REQUEST_PRESENT
+    message: I0.5 v0.1 does not execute or consume Tool or Program Requests.
+    created_at: '2026-07-13T04:02:00Z'
+  run_sha256: sha256:a496ab192b87eefe6c7f26acb71eb41e727c80f5e3a401ea705a2821806a4626
+created_at: '2026-07-13T04:02:00Z'

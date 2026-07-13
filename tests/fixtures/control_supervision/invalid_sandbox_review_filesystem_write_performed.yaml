@@ -1,0 +1,126 @@
+_schema: schemas/local_reversible_sandbox_candidate_test_review.v0.1.schema.json
+schema_version: local_reversible_sandbox_candidate_test_review.v0.1
+review_id: sandreview_i047_not_run_001
+test_plan_ref: sandplan_i047_local_reversible_001
+test_plan_fingerprint: sha256:fdc304df07707088f0284b11850fd6c4fb27082a92c5ddb960ea9d2a28e2b557
+checks:
+- check_id: plan_schema_valid
+  status: PASS
+  evidence_refs: []
+  reason: Plan structure is schema-valid.
+- check_id: candidate_implementation_available
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Candidate implementation is not available.
+- check_id: implementation_hash_verified
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: No implementation hash can be verified.
+- check_id: isolated_temp_root_implementation
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: No Sandbox implementation exists.
+- check_id: network_denial_test
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: secret_denial_test
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: subprocess_denial_test
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: path_escape_denial_test
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: rollback_restore_hash_test
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: cleanup_verification
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: Test has not run.
+- check_id: independent_validation
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: No independent test result exists.
+- check_id: separate_thomas_test_authorization
+  status: NOT_AVAILABLE
+  evidence_refs: []
+  reason: No separate test authorization exists.
+summary:
+  result: NOT_RUN_NOT_READY
+  passed_check_count: 1
+  failed_check_count: 0
+  unavailable_check_count: 11
+  missing_prerequisites:
+  - candidate_implementation_available
+  - implementation_hash_verified
+  - isolated_temp_root_implementation
+  - network_denial_test
+  - secret_denial_test
+  - subprocess_denial_test
+  - path_escape_denial_test
+  - rollback_restore_hash_test
+  - cleanup_verification
+  - independent_validation
+  - separate_thomas_test_authorization
+  accepted_for_review_backlog: true
+  ready_for_test_authorization: false
+  ready_for_registry_candidate_record: false
+  ready_for_activation_review: false
+  ready_for_executor_handoff: false
+execution_evidence:
+  sandbox_created: false
+  test_execution_started: false
+  test_execution_completed: false
+  filesystem_write_performed: true
+  rollback_performed: false
+  cleanup_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+created_at: '2026-07-13T04:25:00Z'
+audit_refs: []

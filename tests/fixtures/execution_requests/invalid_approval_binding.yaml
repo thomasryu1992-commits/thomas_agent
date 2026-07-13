@@ -1,0 +1,143 @@
+schema_version: execution_request.v0.1
+execution_request_id: execreq_memory_promotion_approved_but_no_executor_001
+trace_id: trace_memory_promotion_001
+task_id: task_memory_promotion_001
+task_revision: 2
+core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+operating_policy:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+requested_by:
+  actor_type: thomas_prime
+  actor_id: thomas_prime
+  role_id: null
+  role_version: null
+  assignment_id: null
+upstream:
+  request_type: ACTION_PERMISSION
+  request_id: permdec_memory_promotion_001
+  request_ref: examples/permission/permission_approval_required_v0.3.yaml
+  request_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  resource_id: null
+  resource_version: null
+  requested_operation: memory.validated.promote
+  permission_scope: SENSITIVE_MEMORY_GOVERNANCE
+  target_ref: memory_candidate:operating_preference_001
+  data_scope: &id001
+  - memory.candidate.operating_preference_001
+  - task.evidence
+authority:
+  required_permission_level: P4
+  role_permission_ceiling: P4
+  assignment_granted_permission_level: P4
+  effective_permission_level: P4
+  authority_sufficient: true
+  authority_reasons:
+  - Prime may prepare a validated-memory promotion for Thomas review.
+permission:
+  permission_decision_ref: examples/permission/permission_approval_required_v0.3.yaml
+  permission_decision_id: permdec_memory_promotion_001
+  permission_decision: APPROVAL_REQUIRED
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  binding_verified: true
+approval:
+  approval_required: true
+  approval_ref: examples/approval/approval_approved_review_only_v0.1.yaml
+  approval_id: approval_wrong_001
+  approval_status: APPROVED
+  binding_verified: true
+  approval_consumed: false
+execution_plan:
+  execution_mode: PREVIEW_ONLY
+  executor_id: null
+  executor_version: null
+  executor_registry_ref: null
+  executor_registered: false
+  executor_enabled: false
+  executor_implementation_available: false
+  executor_handoff_allowed: false
+  target_ref: memory_candidate:operating_preference_001
+  data_scope: *id001
+  normalized_parameters: &id002
+    target_scope: validated_memory
+    promotion_mode: manual_review
+  expected_effects:
+  - No effect. Review-only execution plan evidence.
+  rollback_plan: null
+  preconditions:
+  - valid_upstream_request
+  - authority_sufficient
+  - permission_binding_valid
+  - approval_binding_valid_when_required
+  - budget_available
+  - registered_enabled_executor_with_implementation
+  - hot_path_revalidation
+  expected_output_contract: execution_result.v0.1
+idempotency:
+  idempotency_key: idem_execreq_memory_promotion_approved_but_no_executor_001
+  one_time_use: true
+  duplicate_execution_allowed: false
+budget:
+  assignment_budget_ref: policy:review_only:no_execution_budget
+  requested_runtime_seconds: 0
+  remaining_runtime_seconds: 0
+  requested_cost_decimal: '0'
+  remaining_cost_decimal: '0'
+  cost_currency: USD
+  within_assignment_budget: true
+validation:
+  lineage_complete: true
+  upstream_binding_match: true
+  permission_binding_match: true
+  approval_binding_match: true
+  authority_match: true
+  budget_within_limit: true
+  executor_ready: false
+  request_review_result: BLOCK
+  block_reasons:
+  - executor_handoff_disabled
+  - no_executor_implementation
+  - no_executor_registered
+  - no_executor_registry
+request_fingerprint_payload:
+  schema_version: execution_request_fingerprint_payload.v0.1
+  task_id: task_memory_promotion_001
+  task_revision: 2
+  core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
+  requester_ref: thomas_prime:thomas_prime
+  upstream_request_type: ACTION_PERMISSION
+  upstream_request_id: permdec_memory_promotion_001
+  upstream_request_ref: examples/permission/permission_approval_required_v0.3.yaml
+  upstream_request_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
+  permission_decision_id: permdec_memory_promotion_001
+  approval_id: approval_memory_promotion_001
+  executor_id: null
+  target_ref: memory_candidate:operating_preference_001
+  data_scope: *id001
+  normalized_parameters: *id002
+  idempotency_key: idem_execreq_memory_promotion_approved_but_no_executor_001
+  assignment_budget_ref: policy:review_only:no_execution_budget
+  expires_at: '2026-07-14T12:05:00Z'
+request_fingerprint: sha256:6cd4709364da760cf0a49279ff1d202fb761e99a78d30dd3a52cb2b052960689
+runtime_effect:
+  mode: REVIEW_ONLY
+  request_can_execute: false
+  executor_handoff_allowed: false
+  executor_call_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  review_status: BLOCKED
+  created_at: '2026-07-14T11:55:00Z'
+  expires_at: '2026-07-14T12:05:00Z'
+  supersedes: []
+audit_refs:
+- audit:execution_request:execreq_memory_promotion_approved_but_no_executor_001

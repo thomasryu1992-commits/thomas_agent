@@ -1,0 +1,617 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "thomas_permission_approval_operating_policy.v0.1.schema.json",
+  "title": "Thomas Permission and Approval Operating Policy v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "policy_version",
+    "status",
+    "owner",
+    "operating_model",
+    "approved_at_utc",
+    "approval_source",
+    "decision_order",
+    "policy_dispositions",
+    "authority",
+    "control_channel",
+    "approval_lifetime",
+    "github",
+    "financial",
+    "role_tool_program",
+    "memory_learning",
+    "validation",
+    "kill_switch",
+    "conflict_policy",
+    "runtime_effect"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "thomas_permission_approval_operating_policy.v0.1"
+    },
+    "policy_id": {
+      "const": "thomas.permission_approval.operating_policy"
+    },
+    "policy_version": {
+      "const": "0.1.0"
+    },
+    "status": {
+      "const": "THOMAS_APPROVED_FOR_IMPLEMENTATION"
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "operating_model": {
+      "const": "BOUNDED_MAXIMUM_AUTONOMY"
+    },
+    "approved_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_type",
+        "approved_by",
+        "scope",
+        "grants_runtime_execution",
+        "grants_tool_or_program_enablement",
+        "grants_external_or_financial_execution"
+      ],
+      "properties": {
+        "source_type": {
+          "const": "design_conversation_confirmation"
+        },
+        "approved_by": {
+          "const": "Thomas"
+        },
+        "scope": {
+          "const": "POLICY_DEFINITION_AND_IMPLEMENTATION_ONLY"
+        },
+        "grants_runtime_execution": {
+          "const": false
+        },
+        "grants_tool_or_program_enablement": {
+          "const": false
+        },
+        "grants_external_or_financial_execution": {
+          "const": false
+        }
+      }
+    },
+    "decision_order": {
+      "const": [
+        "ALLOW",
+        "EXECUTE_AND_REPORT",
+        "APPROVAL_REQUIRED",
+        "BLOCK"
+      ]
+    },
+    "policy_dispositions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ALLOW",
+        "EXECUTE_AND_REPORT",
+        "APPROVAL_REQUIRED",
+        "BLOCK"
+      ],
+      "properties": {
+        "ALLOW": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "INTERNAL_READ",
+              "INTERNAL_ANALYSIS",
+              "DRAFT_CREATION",
+              "SIMULATION_VALIDATION",
+              "REVIEW_PACKET_CREATION",
+              "CANDIDATE_CREATION",
+              "CONTROL_CHANNEL_RESPONSE"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 7,
+          "maxItems": 7
+        },
+        "EXECUTE_AND_REPORT": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "WORKSPACE_REVERSIBLE_WRITE",
+              "GIT_AGENT_BRANCH_CHANGE",
+              "LOCAL_BUILD_TEST",
+              "LOW_RISK_OPERATIONAL_KNOWLEDGE",
+              "FINANCIAL_APPROVED_BUDGET_USE"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "APPROVAL_REQUIRED": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "EXTERNAL_COMMUNICATION",
+              "PUBLICATION",
+              "PROTECTED_BRANCH_CHANGE",
+              "RELEASE_DEPLOYMENT",
+              "FINANCIAL_NEW_COMMITMENT",
+              "RUNTIME_GOVERNANCE",
+              "DESTRUCTIVE_CHANGE",
+              "ROLE_GOVERNANCE",
+              "TOOL_PROGRAM_GOVERNANCE",
+              "CANDIDATE_ROLE_TRIAL",
+              "SENSITIVE_MEMORY_GOVERNANCE",
+              "SECURITY_SENSITIVE_CHANGE"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 12,
+          "maxItems": 12
+        },
+        "BLOCK": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "AUTHORITY_ESCALATION",
+              "SELF_APPROVAL",
+              "APPROVAL_REUSE",
+              "SECRET_EXFILTRATION",
+              "AUDIT_TAMPERING",
+              "KILL_SWITCH_BYPASS",
+              "UNREGISTERED_RESOURCE_EXECUTION",
+              "DISABLED_RESOURCE_EXECUTION",
+              "PROTECTED_BRANCH_FORCE_PUSH"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 9,
+          "maxItems": 9
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_cannot_expand_authority",
+        "insufficient_authority_result",
+        "self_approval_allowed"
+      ],
+      "properties": {
+        "approval_cannot_expand_authority": {
+          "const": true
+        },
+        "insufficient_authority_result": {
+          "const": "BLOCK"
+        },
+        "self_approval_allowed": {
+          "const": false
+        }
+      }
+    },
+    "control_channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_channel",
+        "required_approver",
+        "registered_user_id_match_required",
+        "registered_private_chat_match_required",
+        "approval_id_or_fingerprint_code_required",
+        "explicit_approval_expression_required",
+        "allowed_identity_verification_methods",
+        "invalid_approval_sources",
+        "local_operator_console"
+      ],
+      "properties": {
+        "primary_channel": {
+          "const": "TELEGRAM_PRIVATE_1_TO_1"
+        },
+        "required_approver": {
+          "const": "Thomas"
+        },
+        "registered_user_id_match_required": {
+          "const": true
+        },
+        "registered_private_chat_match_required": {
+          "const": true
+        },
+        "approval_id_or_fingerprint_code_required": {
+          "const": true
+        },
+        "explicit_approval_expression_required": {
+          "const": true
+        },
+        "allowed_identity_verification_methods": {
+          "type": "array",
+          "const": [
+            "telegram_private_control_channel"
+          ]
+        },
+        "invalid_approval_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "local_operator_console": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "emergency_controls_allowed",
+            "new_high_risk_approval_creation_allowed"
+          ],
+          "properties": {
+            "emergency_controls_allowed": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "pause",
+                  "stop_task",
+                  "kill",
+                  "status",
+                  "audit",
+                  "recovery"
+                ]
+              },
+              "uniqueItems": true,
+              "minItems": 6,
+              "maxItems": 6
+            },
+            "new_high_risk_approval_creation_allowed": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "approval_lifetime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "one_time_use_required",
+        "default_approval_ttl_minutes",
+        "permission_decision_max_ttl_minutes",
+        "scope_max_ttl_minutes"
+      ],
+      "properties": {
+        "one_time_use_required": {
+          "const": true
+        },
+        "default_approval_ttl_minutes": {
+          "const": 30
+        },
+        "permission_decision_max_ttl_minutes": {
+          "const": 60
+        },
+        "scope_max_ttl_minutes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "EXTERNAL_COMMUNICATION",
+            "PUBLICATION",
+            "PROTECTED_BRANCH_CHANGE",
+            "RELEASE_DEPLOYMENT",
+            "FINANCIAL_NEW_COMMITMENT",
+            "RUNTIME_GOVERNANCE",
+            "DESTRUCTIVE_CHANGE",
+            "ROLE_GOVERNANCE",
+            "TOOL_PROGRAM_GOVERNANCE",
+            "CANDIDATE_ROLE_TRIAL",
+            "SENSITIVE_MEMORY_GOVERNANCE",
+            "SECURITY_SENSITIVE_CHANGE"
+          ],
+          "properties": {
+            "EXTERNAL_COMMUNICATION": {
+              "const": 5
+            },
+            "PUBLICATION": {
+              "const": 5
+            },
+            "PROTECTED_BRANCH_CHANGE": {
+              "const": 15
+            },
+            "RELEASE_DEPLOYMENT": {
+              "const": 15
+            },
+            "FINANCIAL_NEW_COMMITMENT": {
+              "const": 5
+            },
+            "RUNTIME_GOVERNANCE": {
+              "const": 15
+            },
+            "DESTRUCTIVE_CHANGE": {
+              "const": 5
+            },
+            "ROLE_GOVERNANCE": {
+              "const": 15
+            },
+            "TOOL_PROGRAM_GOVERNANCE": {
+              "const": 15
+            },
+            "CANDIDATE_ROLE_TRIAL": {
+              "const": 30
+            },
+            "SENSITIVE_MEMORY_GOVERNANCE": {
+              "const": 30
+            },
+            "SECURITY_SENSITIVE_CHANGE": {
+              "const": 5
+            }
+          }
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execute_and_report",
+        "approval_required",
+        "blocked"
+      ],
+      "properties": {
+        "execute_and_report": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "approval_required": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "blocked": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "financial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_and_budget_proposal",
+        "approved_provider_within_registered_budget",
+        "new_commitment_or_budget_overrun",
+        "autonomous_spend_without_registered_budget",
+        "financial_executor_enabled"
+      ],
+      "properties": {
+        "analysis_and_budget_proposal": {
+          "const": "ALLOW"
+        },
+        "approved_provider_within_registered_budget": {
+          "const": "EXECUTE_AND_REPORT"
+        },
+        "new_commitment_or_budget_overrun": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "autonomous_spend_without_registered_budget": {
+          "const": "0"
+        },
+        "financial_executor_enabled": {
+          "const": false
+        }
+      }
+    },
+    "role_tool_program": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_creation",
+        "candidate_role_trial",
+        "role_activation_or_promotion",
+        "tool_or_program_request_creation",
+        "tool_or_program_activation",
+        "unregistered_or_disabled_resource_execution"
+      ],
+      "properties": {
+        "candidate_creation": {
+          "const": "ALLOW"
+        },
+        "candidate_role_trial": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "role_activation_or_promotion": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "tool_or_program_request_creation": {
+          "const": "ALLOW"
+        },
+        "tool_or_program_activation": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "unregistered_or_disabled_resource_execution": {
+          "const": "BLOCK"
+        }
+      }
+    },
+    "memory_learning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "working_memory_and_candidate_creation",
+        "validated_low_risk_operational_knowledge",
+        "protected_identity_or_policy_change",
+        "secret_storage_in_memory_allowed",
+        "ten_valid_repetitions_result",
+        "automatic_runtime_promotion_allowed"
+      ],
+      "properties": {
+        "working_memory_and_candidate_creation": {
+          "const": "ALLOW"
+        },
+        "validated_low_risk_operational_knowledge": {
+          "const": "EXECUTE_AND_REPORT"
+        },
+        "protected_identity_or_policy_change": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "secret_storage_in_memory_allowed": {
+          "const": false
+        },
+        "ten_valid_repetitions_result": {
+          "const": "PROGRAMIZATION_REVIEW_TRIGGER_ONLY"
+        },
+        "automatic_runtime_promotion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "independent_validation_required_for",
+        "self_review_counts_as_independent",
+        "validation_grants_permission"
+      ],
+      "properties": {
+        "independent_validation_required_for": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "self_review_counts_as_independent": {
+          "const": false
+        },
+        "validation_grants_permission": {
+          "const": false
+        }
+      }
+    },
+    "kill_switch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "kill_blocks",
+        "kill_allows",
+        "resume_requires_thomas_authentication",
+        "agent_can_disable_or_bypass"
+      ],
+      "properties": {
+        "commands": {
+          "const": [
+            "/pause",
+            "/stop <task_id>",
+            "/kill",
+            "/resume"
+          ]
+        },
+        "kill_blocks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "kill_allows": {
+          "const": [
+            "read_only_status",
+            "audit_read"
+          ]
+        },
+        "resume_requires_thomas_authentication": {
+          "const": true
+        },
+        "agent_can_disable_or_bypass": {
+          "const": false
+        }
+      }
+    },
+    "conflict_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stricter_rule_wins",
+        "fail_closed_on_uncertainty",
+        "escalation_path"
+      ],
+      "properties": {
+        "stricter_rule_wins": {
+          "const": true
+        },
+        "fail_closed_on_uncertainty": {
+          "const": true
+        },
+        "escalation_path": {
+          "const": [
+            "PAUSE",
+            "THOMAS_PRIME_REVIEW",
+            "THOMAS_APPROVAL_IF_REQUIRED"
+          ]
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "executor_handoff_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "runtime_mutation_allowed",
+        "tool_enablement_allowed",
+        "program_enablement_allowed",
+        "permission_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY"
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "tool_enablement_allowed": {
+          "const": false
+        },
+        "program_enablement_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,90 @@
+_schema: schemas/control_channel_command_envelope_review.v0.1.schema.json
+schema_version: control_channel_command_envelope_review.v0.1
+command_envelope_review_id: cccmd_i047_kill_001
+identity_binding_ref: ccbind_i047_thomas_telegram_private_001
+identity_binding_fingerprint: sha256:64e948ebd96e1340a1a4a6f23f4a0cfa8ef5283ef938e37be907aaf7bc37b8aa
+message:
+  provider: telegram
+  private_chat_claimed: true
+  message_ref_fingerprint: sha256:ab26f4f54e433ad6d74a344ee3f43f64057373b4911c5e0a837ba98b80f4b9db
+  raw_message_content_included: false
+  raw_user_id_included: false
+  raw_chat_id_included: false
+  forwarded: false
+  reaction_only: false
+command:
+  name: KILL
+  target_task_id: null
+  approval_ref: null
+  action_fingerprint_short_code: null
+authentication_review:
+  result: NOT_RUNTIME_VERIFIED
+  binding_match: true
+  identity_verified: false
+  private_chat_verified: false
+  freshness_verified: false
+  replay_protection_verified: false
+  exact_reference_verified: false
+request_fingerprint_payload:
+  command_envelope_review_id: cccmd_i047_kill_001
+  identity_binding_ref: ccbind_i047_thomas_telegram_private_001
+  identity_binding_fingerprint: sha256:64e948ebd96e1340a1a4a6f23f4a0cfa8ef5283ef938e37be907aaf7bc37b8aa
+  message_ref_fingerprint: sha256:ab26f4f54e433ad6d74a344ee3f43f64057373b4911c5e0a837ba98b80f4b9db
+  command: KILL
+  target_task_id: null
+request_fingerprint: sha256:f1af1bce2339c1e234266d0db47d047f687d805043b00b2800737fa627657ed3
+decision:
+  result: NOT_DISPATCHED_REVIEW_ONLY
+  allowed_for_runtime: true
+  reasons:
+  - identity_not_runtime_verified
+  - control_channel_not_connected
+  - command_dispatch_disabled
+effects:
+  command_dispatched: false
+  kill_switch_state_changed: false
+  process_control_performed: false
+  scheduler_changed: false
+  approval_created: false
+  approval_consumed: false
+  execution_blocked: false
+  resume_performed: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  control_channel_connected: false
+  identity_binding_activated: false
+  challenge_issued: false
+  challenge_verified: false
+  command_dispatched: false
+  supervisor_connected: false
+  process_control_enabled: false
+  process_started: false
+  process_stopped: false
+  process_restarted: false
+  process_killed: false
+  scheduler_connected: false
+  scheduler_job_installed: false
+  scheduler_job_enabled: false
+  scheduler_dispatch_performed: false
+  task_created_by_scheduler: false
+  monitoring_policy_activated: false
+  alert_delivery_performed: false
+  automatic_remediation_performed: false
+  kill_switch_triggered: false
+  sandbox_created: false
+  sandbox_test_executed: false
+  filesystem_write_performed: false
+  network_call_performed: false
+  subprocess_performed: false
+  secret_access_performed: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []

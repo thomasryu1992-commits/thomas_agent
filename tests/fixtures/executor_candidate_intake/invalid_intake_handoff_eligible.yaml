@@ -1,0 +1,102 @@
+schema_version: executor_candidate_intake.v0.1
+intake_id: execintake_i046_local_sandbox_001
+candidate:
+  executor_candidate_id: exec_candidate_local_reversible_sandbox
+  name: Disabled Local Reversible Sandbox Candidate
+  version: 0.1.0
+  executor_class: LOCAL_INTERNAL_REVERSIBLE
+  proposed_status: CANDIDATE_REVIEW_ONLY
+  implementation_ref: future:executors/local_reversible_sandbox.py
+  implementation_sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  implementation_available: false
+scope:
+  supported_action_types:
+  - INTERNAL_REVERSIBLE_FILE_CHANGE
+  target_scopes:
+  - explicitly_assigned_workspace
+  data_scopes:
+  - task_assigned_internal_data
+  external_action_capable: false
+  financial_action_capable: false
+  destructive_action_capable: false
+authority:
+  required_permission_level: P4
+  max_supported_permission_level: P4
+  cannot_expand_authority: true
+security:
+  secret_handling_mode: NO_SECRETS
+  secret_values_included: false
+  network_access_required: false
+  filesystem_write_required: true
+  subprocess_required: false
+  privileged_access_required: false
+  forbidden_capabilities:
+  - network_access
+  - secret_access
+  - protected_branch_write
+  - production_deployment
+runtime_prerequisites:
+  monitoring_contract_ref: docs/runtime-contracts/MONITORING_SNAPSHOT_CONTRACT_V0.1.md
+  alert_contract_ref: docs/runtime-contracts/ALERT_EVENT_CONTRACT_V0.1.md
+  health_contract_ref: docs/runtime-contracts/HEALTH_SNAPSHOT_CONTRACT_V0.1.md
+  clock_contract_ref: docs/runtime-contracts/CLOCK_SYNC_EVIDENCE_CONTRACT_V0.1.md
+  kill_switch_contract_ref: docs/runtime-contracts/KILL_SWITCH_STATE_CONTRACT_V0.1.md
+  hot_path_contract_ref: docs/runtime-contracts/HOT_PATH_PRE_EXECUTION_REVALIDATION_CONTRACT_V0.1.md
+  approval_consumption_contract_ref: docs/runtime-contracts/APPROVAL_CONSUMPTION_CONTRACT_V0.1.md
+  rollback_contract_ref: docs/runtime-contracts/ROLLBACK_RECOVERY_CONTRACT_V0.1.md
+  idempotency_required: true
+  independent_validation_required: true
+evidence:
+  test_report_refs: []
+  negative_fixture_refs:
+  - tests/fixtures/executor_candidate_intake/
+  implementation_hash_verified: false
+  no_secret_evidence_refs:
+  - review:no_secret_values_in_intake
+  rollback_evidence_refs: []
+  monitoring_evidence_refs:
+  - examples/operations_evidence/monitoring_snapshot_offline_review_v0.1.yaml
+intake_decision:
+  result: ACCEPTED_FOR_REVIEW
+  eligible_for_runtime_registry: false
+  eligible_for_activation: false
+  eligible_for_executor_handoff: true
+  missing_requirements:
+  - implementation_not_available
+  - implementation_hash_not_verified
+  - runtime_monitoring_not_implemented
+  - runtime_kill_switch_not_connected
+  - atomic_approval_consumption_not_implemented
+  - isolated_sandbox_validation_not_completed
+intake_fingerprint_payload:
+  intake_id: execintake_i046_local_sandbox_001
+  executor_candidate_id: exec_candidate_local_reversible_sandbox
+  version: 0.1.0
+  implementation_sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  executor_class: LOCAL_INTERNAL_REVERSIBLE
+intake_fingerprint: sha256:11a3e73e7d330b3b660a267270d12b622113dd3043fcb3dd8d4e0046d596aebf
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/executor_candidate_intake.v0.1.schema.json

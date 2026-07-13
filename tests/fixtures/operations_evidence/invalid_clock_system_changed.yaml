@@ -1,0 +1,47 @@
+schema_version: clock_sync_evidence.v0.1
+clock_sync_evidence_id: clock_i046_recorded_001
+subject:
+  subject_type: HOST
+  subject_id: review_host
+observation:
+  observed_at_utc: '2026-07-13T03:00:00Z'
+  local_clock_utc: '2026-07-13T03:00:00.125Z'
+  reference_clock_utc: '2026-07-13T03:00:00.000Z'
+  offset_ms: 125
+  absolute_offset_ms: 125
+  allowed_max_offset_ms: 500
+  source_type: RECORDED_EVIDENCE
+  source_ref: review_fixture:clock_reference_001
+assessment:
+  result: WITHIN_LIMIT_EVIDENCE_ONLY
+  clock_sufficient_for_runtime: false
+  time_sync_required: false
+mutation_evidence:
+  system_clock_changed: true
+  time_sync_performed: false
+  clock_service_restarted: false
+runtime_effect:
+  mode: EVIDENCE_ONLY
+  monitoring_daemon_started: false
+  background_process_started: false
+  network_probe_performed: false
+  notification_sent: false
+  external_alert_delivery_performed: false
+  system_clock_changed: false
+  time_sync_performed: false
+  process_control_performed: false
+  kill_switch_command_dispatched: false
+  kill_switch_state_mutated: false
+  executor_candidate_registered: false
+  executor_registry_mutation_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  runtime_mutation_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  secret_access_performed: false
+  side_effects_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+audit_refs: []
+_schema: schemas/clock_sync_evidence.v0.1.schema.json
