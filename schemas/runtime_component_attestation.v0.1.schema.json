@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_component_attestation.v0.1.schema.json",
+  "title": "Runtime Component Attestation v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attestation_id",
+    "phase",
+    "registry",
+    "components",
+    "summary",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_component_attestation.v0.1"
+    },
+    "attestation_id": {
+      "type": "string",
+      "pattern": "^rcatt_[A-Za-z0-9._-]+$"
+    },
+    "phase": {
+      "const": "I0.5.1"
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "sha256",
+        "schema_version",
+        "document_version"
+      ],
+      "properties": {
+        "ref": {
+          "const": "05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "schema_version": {
+          "const": "i0_5_read_only_runtime_components.v0.1"
+        },
+        "document_version": {
+          "const": "0.1.1"
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "component_id",
+          "registry_version",
+          "implementation_ref",
+          "implementation_sha256",
+          "implementation_id_constant",
+          "implementation_version_constant",
+          "implementation_id",
+          "implementation_version",
+          "id_match",
+          "version_match",
+          "boundary_match",
+          "implementation_exists",
+          "result"
+        ],
+        "properties": {
+          "component_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "registry_version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "implementation_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "implementation_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "implementation_id_constant": {
+            "type": "string",
+            "minLength": 1
+          },
+          "implementation_version_constant": {
+            "type": "string",
+            "minLength": 1
+          },
+          "implementation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "implementation_version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "id_match": {
+            "type": "boolean"
+          },
+          "version_match": {
+            "type": "boolean"
+          },
+          "implementation_exists": {
+            "const": true
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "BLOCK"
+            ]
+          },
+          "boundary_match": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "registry_boundary_match",
+        "component_count",
+        "pass_count",
+        "block_count",
+        "runtime_authoritative"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "PASS",
+            "BLOCK"
+          ]
+        },
+        "component_count": {
+          "const": 2
+        },
+        "pass_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "block_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "runtime_authoritative": {
+          "const": false
+        },
+        "registry_boundary_match": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "changes_registry",
+        "changes_implementation",
+        "executes_component"
+      ],
+      "properties": {
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "changes_registry": {
+          "const": false
+        },
+        "changes_implementation": {
+          "const": false
+        },
+        "executes_component": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "attestation_fingerprint_payload",
+        "attestation_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_component_attestation_fingerprint_payload.v0.1"
+        },
+        "attestation_fingerprint_payload": {
+          "type": "object"
+        },
+        "attestation_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

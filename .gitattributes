@@ -9,6 +9,8 @@ examples/** text eol=lf
 schemas/** text eol=lf
 scripts/** text eol=lf
 tests/** text eol=lf
+runtime/** text eol=lf
+.github/workflows/** text eol=lf
 requirements-validation.in text eol=lf
 requirements-validation.lock text eol=lf
 

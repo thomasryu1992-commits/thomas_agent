@@ -1,0 +1,64 @@
+schema_version: disabled_runtime_authoritative_read_only_entry_evidence.v0.1
+evidence_id: entryev_773b5cfc643a3bd8e539
+phase: I0.5.2
+status: BLOCKED_DISABLED_ENTRY_ADAPTER
+entry_plan:
+  entry_plan_id: entryplan_b5c232a6f53f385ea30a
+  entry_plan_ref: examples/runtime_authoritative_read_only_entry/runtime_authoritative_read_only_entry_plan_ready_for_approval_design_v0.1.yaml
+  entry_plan_sha256: sha256:89b30c54535e843c4a51e6bcea8edeee04406a9109483fac11ea2f43c5ef1efa
+  entry_plan_decision: READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN
+adapter:
+  adapter_id: thomas.runtime_authoritative_read_only_entry.disabled
+  adapter_version: 0.1.0
+  implementation_available: true
+  enabled: false
+  runtime_source_of_truth: false
+  entry_call_allowed: false
+checks:
+- check_id: entry_plan_semantics
+  result: PASS
+  notes: Entry Plan passed review-only semantic validation.
+- check_id: adapter_disabled
+  result: PASS
+  notes: The adapter is implemented only to emit disabled evidence and remains disabled.
+- check_id: no_session_start
+  result: PASS
+  notes: No Runtime-authoritative session can be started in I0.5.2.
+decision:
+  result: BLOCKED_DISABLED_ENTRY_ADAPTER
+  reason_codes:
+  - RUNTIME_AUTHORITATIVE_ENTRY_ADAPTER_DISABLED
+  - SEPARATE_ACTION_APPROVAL_AND_FUTURE_CONSUMPTION_REQUIRED
+  entry_performed: false
+  runtime_authoritative_session_started: false
+  executor_handoff_performed: false
+  approval_consumed: false
+runtime_effect:
+  mode: DISABLED_EVIDENCE_ONLY
+  filesystem_write_performed: false
+  model_invocation_performed: false
+  tool_execution_performed: false
+  program_execution_performed: false
+  network_call_performed: false
+  external_action_performed: false
+  financial_action_performed: false
+  runtime_mutation_performed: false
+  approval_consumption_performed: false
+  runtime_session_started: false
+  executor_handoff_performed: false
+  permission_expansion_performed: false
+  authority_expansion_performed: false
+  core_activation_performed: false
+integrity:
+  hash_schema: disabled_runtime_authoritative_read_only_entry_evidence_fingerprint_payload.v0.1
+  evidence_fingerprint_payload:
+    schema_version: disabled_runtime_authoritative_read_only_entry_evidence_fingerprint_payload.v0.1
+    evidence_id: entryev_773b5cfc643a3bd8e539
+    entry_plan_id: entryplan_b5c232a6f53f385ea30a
+    entry_plan_sha256: sha256:89b30c54535e843c4a51e6bcea8edeee04406a9109483fac11ea2f43c5ef1efa
+    adapter_id: thomas.runtime_authoritative_read_only_entry.disabled
+    adapter_version: 0.1.0
+    result: BLOCKED_DISABLED_ENTRY_ADAPTER
+    created_at: '2026-07-13T08:30:00Z'
+  evidence_sha256: sha256:23e8b41b72ff8a0c2ab915a6eb99f864a5e3f7b109cb7d0a121460145fdaae02
+created_at: '2026-07-13T08:30:00Z'

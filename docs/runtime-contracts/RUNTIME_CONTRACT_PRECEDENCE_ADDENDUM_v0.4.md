@@ -347,3 +347,15 @@ I0.5 introduces a deterministic, non-authoritative `DEVELOPMENT_REPLAY` kernel t
 The I0.5 component registry is review-only and is not a Runtime source of truth. `RUNTIME_READ_ONLY`, external execution, filesystem mutation, model invocation, Tool/Program execution, Approval consumption, Executor handoff, Scheduler dispatch, Control Channel dispatch, Permission expansion, Authority expansion, and Core activation remain disabled.
 
 The development replay result is executable integration evidence only. It does not replace the separate Repository Gate, immutable Release, Runtime-authoritative Core lifecycle, or future Runtime enablement review.
+
+## I0.5.1 Promotion Readiness Addendum
+
+`RUNTIME_COMPONENT_ATTESTATION_CONTRACT_V0.1.md` and `RUNTIME_PROMOTION_READINESS_CONTRACT_V0.1.md` are review-only evidence contracts. They may block promotion readiness but cannot grant Permission, Authority, Core activation, Runtime activation, Tool/Program enablement, or execution capability.
+
+## I0.5.1 Rev2 Verified Evidence Addendum
+
+`GITHUB_CI_EVIDENCE_CONTRACT_V0.1.md` and `I0_5_1_REV2_VERIFIED_EVIDENCE_BOUNDARY_V0.1.md` provide review-only evidence constraints. They can only block or support a future Thomas design decision. They cannot create Current Core, grant Permission/Authority, activate Runtime, or enable execution capability.
+
+## I0.5.2 Entry Design Addendum
+
+The I0.5.2 Entry Plan and Disabled Entry Adapter may only block or prepare an exact future Thomas review. `READY_FOR_THOMAS_ENTRY_APPROVAL_DESIGN` is not Runtime permission, Runtime activation, entry authorization, Approval consumption, or Executor handoff.

@@ -65,7 +65,7 @@ def copy_repository(source: Path, target: Path) -> None:
     owned = [
         "THOMAS_CORE", "03_ROLE_CONTRACTS", "05_REGISTRIES", "docs", "schemas",
         "scripts", "runtime", "examples", "tests", "requirements-validation.in", "requirements-validation.lock",
-        ".gitattributes",
+        ".gitattributes", ".github",
     ]
 
     def ignore(_directory: str, names: list[str]) -> set[str]:

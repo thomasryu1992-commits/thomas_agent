@@ -1,0 +1,372 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_promotion_readiness.v0.1.schema.json",
+  "title": "Runtime Promotion Readiness v0.1 Rev3 Readiness Split",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "readiness_id",
+    "phase",
+    "status",
+    "component_attestation",
+    "requirements",
+    "checks",
+    "summary",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_promotion_readiness.v0.1"
+    },
+    "readiness_id": {
+      "type": "string",
+      "pattern": "^rpr_[A-Za-z0-9._-]+$"
+    },
+    "phase": {
+      "const": "I0.5.1_REV3"
+    },
+    "status": {
+      "const": "REVIEW_ONLY_NOT_RUNTIME_ACTIVE"
+    },
+    "component_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attestation_id",
+        "attestation_sha256",
+        "result"
+      ],
+      "properties": {
+        "attestation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attestation_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "BLOCK"
+          ]
+        }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_attestation_pass",
+        "i0_4_contract_lock_present",
+        "release_gate_evidence_present",
+        "release_gate_evidence_pass",
+        "release_gate_fingerprint_current",
+        "release_gate_required_checks_pass",
+        "github_workflow_present",
+        "github_ci_evidence_present",
+        "github_ci_evidence_verified",
+        "github_ci_head_matches",
+        "github_ci_workflow_matches",
+        "github_ci_repository_matches",
+        "github_ci_ubuntu_pass",
+        "github_ci_windows_pass",
+        "github_ci_evidence_ref",
+        "review_core_release_present",
+        "current_core_release_present",
+        "current_core_release_verified",
+        "current_core_release_committed",
+        "tool_registry_no_enabled_tools",
+        "program_registry_no_enabled_programs",
+        "runtime_registry_source_of_truth",
+        "runtime_authoritative_mode_enabled"
+      ],
+      "properties": {
+        "component_attestation_pass": {
+          "type": "boolean"
+        },
+        "i0_4_contract_lock_present": {
+          "type": "boolean"
+        },
+        "release_gate_evidence_present": {
+          "type": "boolean"
+        },
+        "release_gate_evidence_pass": {
+          "type": "boolean"
+        },
+        "release_gate_fingerprint_current": {
+          "type": "boolean"
+        },
+        "release_gate_required_checks_pass": {
+          "type": "boolean"
+        },
+        "github_workflow_present": {
+          "type": "boolean"
+        },
+        "github_ci_evidence_present": {
+          "type": "boolean"
+        },
+        "github_ci_evidence_verified": {
+          "type": "boolean"
+        },
+        "github_ci_head_matches": {
+          "type": "boolean"
+        },
+        "github_ci_workflow_matches": {
+          "type": "boolean"
+        },
+        "github_ci_repository_matches": {
+          "type": "boolean"
+        },
+        "github_ci_ubuntu_pass": {
+          "type": "boolean"
+        },
+        "github_ci_windows_pass": {
+          "type": "boolean"
+        },
+        "github_ci_evidence_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_core_release_present": {
+          "type": "boolean"
+        },
+        "current_core_release_present": {
+          "type": "boolean"
+        },
+        "current_core_release_verified": {
+          "type": "boolean"
+        },
+        "current_core_release_committed": {
+          "type": "boolean"
+        },
+        "tool_registry_no_enabled_tools": {
+          "type": "boolean"
+        },
+        "program_registry_no_enabled_programs": {
+          "type": "boolean"
+        },
+        "runtime_registry_source_of_truth": {
+          "const": false
+        },
+        "runtime_authoritative_mode_enabled": {
+          "const": false
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 13,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "result",
+          "evidence_refs",
+          "notes"
+        ],
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "BLOCK",
+              "UNVERIFIED"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "design_readiness",
+        "activation_readiness",
+        "ready_for_runtime_authoritative_design",
+        "ready_for_runtime_activation_review",
+        "ready_for_runtime_activation",
+        "ready_for_external_execution",
+        "ready_for_financial_execution"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "BLOCKED_NOT_READY",
+            "READY_FOR_THOMAS_DESIGN_DECISION"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "ready_for_runtime_authoritative_design": {
+          "type": "boolean"
+        },
+        "ready_for_runtime_activation": {
+          "const": false
+        },
+        "ready_for_external_execution": {
+          "const": false
+        },
+        "ready_for_financial_execution": {
+          "const": false
+        },
+        "design_readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "blocking_reasons",
+            "ready_for_runtime_authoritative_design"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "BLOCKED_NOT_READY",
+                "READY_FOR_THOMAS_DESIGN_DECISION"
+              ]
+            },
+            "blocking_reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "ready_for_runtime_authoritative_design": {
+              "type": "boolean"
+            }
+          }
+        },
+        "activation_readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "blocking_reasons",
+            "ready_for_runtime_activation_review"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "BLOCKED_NOT_READY",
+                "READY_FOR_RUNTIME_ACTIVATION_REVIEW"
+              ]
+            },
+            "blocking_reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "ready_for_runtime_activation_review": {
+              "type": "boolean"
+            }
+          }
+        },
+        "ready_for_runtime_activation_review": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grants_runtime_permission",
+        "grants_runtime_activation",
+        "grants_core_activation",
+        "grants_tool_enablement",
+        "grants_program_enablement",
+        "grants_executor_enablement",
+        "grants_external_execution",
+        "grants_financial_execution",
+        "consumes_approval",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "grants_runtime_permission": {
+          "const": false
+        },
+        "grants_runtime_activation": {
+          "const": false
+        },
+        "grants_core_activation": {
+          "const": false
+        },
+        "grants_tool_enablement": {
+          "const": false
+        },
+        "grants_program_enablement": {
+          "const": false
+        },
+        "grants_executor_enablement": {
+          "const": false
+        },
+        "grants_external_execution": {
+          "const": false
+        },
+        "grants_financial_execution": {
+          "const": false
+        },
+        "consumes_approval": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "readiness_fingerprint_payload",
+        "readiness_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_promotion_readiness_fingerprint_payload.v0.1"
+        },
+        "readiness_fingerprint_payload": {
+          "type": "object"
+        },
+        "readiness_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

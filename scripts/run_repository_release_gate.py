@@ -112,6 +112,11 @@ def main() -> int:
     parser.add_argument("--current-pointer")
     parser.add_argument("--require-current-committed", action="store_true")
     parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Run the full Gate without writing new Release Gate evidence. Intended for CI.",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="Also run the isolated end-to-end lifecycle self-test after writing normal Gate evidence.",
@@ -141,6 +146,14 @@ def main() -> int:
         ("Control, Supervision, Threshold, and Sandbox Review-Only", [python, "scripts/validate_control_supervision_threshold_sandbox.py"]),
         ("I0.4 Consolidated Contract Set", [python, "scripts/validate_i0_4_consolidated_contract_set.py"]),
         ("I0.5 Read-only Runtime Kernel", [python, "scripts/validate_i0_5_read_only_runtime.py"]),
+        (
+            "I0.5.1 Runtime Promotion Readiness",
+            [python, "scripts/validate_i0_5_1_runtime_promotion_readiness.py"],
+        ),
+        (
+            "I0.5.2 Runtime-Authoritative Read-only Entry Design",
+            [python, "scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py"],
+        ),
         ("Thomas Core", [python, "scripts/validate_thomas_core.py"]),
         (
             "Core Projection Consistency",
@@ -201,11 +214,14 @@ def main() -> int:
             "grants_execution_permission": False,
         },
     }
-    evidence_path = write_gate_evidence(ROOT, EVIDENCE_REL, evidence)
-
-    print("\nPASS: Thomas Agent I0.4 Consolidation review-only repository-wide Release Gate completed")
-    print("Gate evidence: " + evidence_path.relative_to(ROOT).as_posix())
-    print("The Release Builder will reuse this evidence only while the repository source fingerprint is unchanged.")
+    if args.check_only:
+        print("\nPASS: Thomas Agent repository-wide Release Gate completed in check-only mode")
+        print("No Release Gate evidence was written. This mode grants no Release, Core, Runtime, or execution authority.")
+    else:
+        evidence_path = write_gate_evidence(ROOT, EVIDENCE_REL, evidence)
+        print("\nPASS: Thomas Agent I0.5.1 repository-wide Release Gate completed")
+        print("Gate evidence: " + evidence_path.relative_to(ROOT).as_posix())
+        print("The Release Builder will reuse this evidence only while the repository source fingerprint is unchanged.")
 
     if args.full:
         run(
