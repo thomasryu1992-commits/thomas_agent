@@ -154,6 +154,18 @@ def main() -> int:
             "I0.5.2 Runtime-Authoritative Read-only Entry Design",
             [python, "scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py"],
         ),
+        (
+            "I0.5.3 Exact Entry Authorization and At-Most-Once Transition Design",
+            [python, "scripts/validate_i0_5_3_runtime_entry_authorization.py"],
+        ),
+        (
+            "I0.5.4 Protected Local Governance State and Durable CAS Candidate",
+            [python, "scripts/validate_i0_5_4_protected_governance_state.py"],
+        ),
+        (
+            "I0.5.5 Disabled Single Read-only Entry Integration Candidate",
+            [python, "scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py"],
+        ),
         ("Thomas Core", [python, "scripts/validate_thomas_core.py"]),
         (
             "Core Projection Consistency",

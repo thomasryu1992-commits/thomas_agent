@@ -1,0 +1,78 @@
+schema_version: runtime_entry_durable_transition_result.v0.1
+transition_id: transition_example_crash_before
+phase: I0.5.4
+status: BLOCKED_FAIL_CLOSED
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+store_binding:
+  store_id: pgstore_d0b3d2794aaeac41f38e
+  component_id: thomas.protected_governance_state.sqlite_candidate
+  component_version: 0.1.0
+  transition_component_id: thomas.runtime_entry.durable_cas.sqlite_candidate
+  transition_component_version: 0.1.0
+  backend: SQLITE
+  schema_version: protected_governance_state.sqlite.v0.1
+authorization_state:
+  authorization_id: reauth_7b810327ea391d6bbea2
+  authorization_sha256: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+  real_action_approval_consumed: false
+  synthetic_authorization_state_transitioned: false
+session:
+  session_id: session_example_crash_before
+  runtime_session_started: false
+  kernel_called: false
+compare_and_set:
+  transaction_mode: BEGIN_IMMEDIATE
+  atomic_all_or_none: true
+  committed: false
+  attempt_semantics: AT_MOST_ONCE_ATTEMPT
+durability:
+  backend: SQLITE
+  journal_mode: DELETE
+  synchronous: FULL
+  foreign_keys: true
+  process_restart_persistence_required: true
+state_projections: null
+audit:
+  contract_ref: docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md
+  append_only: true
+  hash_chain: true
+  events: []
+decision:
+  result: BLOCKED_FAIL_CLOSED
+  blocking_reasons:
+  - SIMULATED_CRASH_BEFORE_COMMIT_ROLLED_BACK
+  eligible_for_runtime_entry: false
+  requires_recovery_inspection_before_any_future_action: true
+runtime_effect:
+  mode: SYNTHETIC_TEST_ONLY_PROTECTED_STATE_WRITE
+  test_only_local_governance_state_write_performed: false
+  runtime_authoritative_state_write_performed: false
+  real_action_approval_consumed: false
+  runtime_session_started: false
+  kernel_called: false
+  model_invocation: false
+  tool_execution: false
+  program_execution: false
+  network_access: false
+  domain_write: false
+  workspace_write: false
+  core_write: false
+  external_action: false
+  financial_action: false
+integrity:
+  hash_schema: runtime_entry_durable_transition_result_fingerprint_payload.v0.1
+  result_fingerprint_payload:
+    schema_version: runtime_entry_durable_transition_result_fingerprint_payload.v0.1
+    transition_id: transition_example_crash_before
+    store_id: pgstore_d0b3d2794aaeac41f38e
+    authorization_id: reauth_7b810327ea391d6bbea2
+    authorization_sha256: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+    session_id: session_example_crash_before
+    result: BLOCKED_FAIL_CLOSED
+    blocking_reasons:
+    - SIMULATED_CRASH_BEFORE_COMMIT_ROLLED_BACK
+    created_at: '2026-07-13T10:00:02Z'
+  result_sha256: sha256:c43293b40549a4f20676c6a109bc31667b410b8bc36c22e64e1924b4c75c4476
+created_at: '2026-07-13T10:00:02Z'

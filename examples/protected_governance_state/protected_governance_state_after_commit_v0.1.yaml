@@ -1,0 +1,549 @@
+schema_version: protected_governance_state_snapshot.v0.1
+store_id: pgstore_c61a8f47dc84c19be66a
+phase: I0.5.4
+status: SYNTHETIC_TEST_ONLY_STATE
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+backend:
+  type: SQLITE
+  schema_version: protected_governance_state.sqlite.v0.1
+  journal_mode: DELETE
+  synchronous: FULL
+  foreign_keys: true
+  integrity_check: PASS
+authorizations:
+- authorization_id: reauth_7b810327ea391d6bbea2
+  authorization_sha256: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+  action_fingerprint_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+  nonce_sha256: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  state: CONSUMED
+  version: 1
+  session_id: session_example_committed
+  expires_at: '2026-07-13T10:10:00Z'
+  created_at: '2026-07-13T10:00:01Z'
+  consumed_at: '2026-07-13T10:00:02Z'
+sessions:
+- session_id: session_example_committed
+  authorization_id: reauth_7b810327ea391d6bbea2
+  state: RESERVED
+  version: 0
+  reserved_at: '2026-07-13T10:00:02Z'
+  terminated_at: null
+  termination_result: null
+transition_receipts:
+- transition_id: transition_example_committed
+  authorization_id: reauth_7b810327ea391d6bbea2
+  session_id: session_example_committed
+  result: COMMITTED_SYNTHETIC_TEST_ONLY
+  receipt_sha256: sha256:794fa060717e96d811871651c630c6a65b14f840da370e4ef683e4e2c15d2cb1
+  created_at: '2026-07-13T10:00:02Z'
+audit_events:
+- actor:
+    actor_id: thomas.protected_governance_state.sqlite_candidate
+    actor_type: system
+    assignment_id: null
+    role_id: null
+    role_version: null
+  audit_event_id: audit_f840a763a382531f6a27
+  core_context_binding_id: ccb_i053
+  created_at: '2026-07-13T10:00:02Z'
+  event:
+    event_summary: Runtime Entry Authorization Checked
+    evidence_refs:
+    - authorization:reauth_7b810327ea391d6bbea2
+    - transition:transition_example_committed
+    outcome: RECORDED
+    payload_ref: protected-state:transition/transition_example_committed
+    payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+    reason_codes:
+    - RUNTIME_ENTRY_AUTHORIZATION_CHECKED
+    related_record_refs:
+    - session:session_example_committed
+  event_type: OTHER
+  integrity:
+    append_only: true
+    delete_allowed: false
+    event_fingerprint_payload:
+      actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+      audit_event_id: audit_f840a763a382531f6a27
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event_summary: Runtime Entry Authorization Checked
+      event_type: OTHER
+      evidence_refs:
+      - authorization:reauth_7b810327ea391d6bbea2
+      - transition:transition_example_committed
+      outcome: RECORDED
+      parent_audit_event_ids: []
+      payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+      previous_event_sha256: null
+      reason_codes:
+      - RUNTIME_ENTRY_AUTHORIZATION_CHECKED
+      related_record_refs:
+      - session:session_example_committed
+      schema_version: audit_event_fingerprint_payload.v0.1
+      sequence_number: 1
+      subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+      subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+    hash_schema: audit_event_fingerprint_payload.v0.1
+    overwrite_allowed: false
+  lineage:
+    parent_audit_event_ids: []
+    previous_event_sha256: null
+    sequence_number: 1
+  runtime_effect:
+    grants_activation: false
+    grants_approval: false
+    grants_authority: false
+    grants_execution: false
+    grants_permission: false
+    mode: EVIDENCE_ONLY
+    mutates_runtime: false
+  schema_version: audit_event.v0.1
+  sensitivity: INTERNAL
+  subject:
+    subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+    subject_id: reauth_7b810327ea391d6bbea2
+    subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+    subject_type: runtime_entry_authorization
+  task_id: task_i053
+  task_revision: 1
+  trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+- actor:
+    actor_id: thomas.protected_governance_state.sqlite_candidate
+    actor_type: system
+    assignment_id: null
+    role_id: null
+    role_version: null
+  audit_event_id: audit_b9e426d542c8339a7f0b
+  core_context_binding_id: ccb_i053
+  created_at: '2026-07-13T10:00:02Z'
+  event:
+    event_summary: Authorization Consumption Committed
+    evidence_refs:
+    - authorization:reauth_7b810327ea391d6bbea2
+    - transition:transition_example_committed
+    outcome: RECORDED
+    payload_ref: protected-state:transition/transition_example_committed
+    payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+    reason_codes:
+    - AUTHORIZATION_CONSUMPTION_COMMITTED
+    related_record_refs:
+    - session:session_example_committed
+  event_type: OTHER
+  integrity:
+    append_only: true
+    delete_allowed: false
+    event_fingerprint_payload:
+      actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+      audit_event_id: audit_b9e426d542c8339a7f0b
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event_summary: Authorization Consumption Committed
+      event_type: OTHER
+      evidence_refs:
+      - authorization:reauth_7b810327ea391d6bbea2
+      - transition:transition_example_committed
+      outcome: RECORDED
+      parent_audit_event_ids:
+      - audit_f840a763a382531f6a27
+      payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+      previous_event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+      reason_codes:
+      - AUTHORIZATION_CONSUMPTION_COMMITTED
+      related_record_refs:
+      - session:session_example_committed
+      schema_version: audit_event_fingerprint_payload.v0.1
+      sequence_number: 2
+      subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+      subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+    hash_schema: audit_event_fingerprint_payload.v0.1
+    overwrite_allowed: false
+  lineage:
+    parent_audit_event_ids:
+    - audit_f840a763a382531f6a27
+    previous_event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+    sequence_number: 2
+  runtime_effect:
+    grants_activation: false
+    grants_approval: false
+    grants_authority: false
+    grants_execution: false
+    grants_permission: false
+    mode: EVIDENCE_ONLY
+    mutates_runtime: false
+  schema_version: audit_event.v0.1
+  sensitivity: INTERNAL
+  subject:
+    subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+    subject_id: reauth_7b810327ea391d6bbea2
+    subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+    subject_type: runtime_entry_authorization
+  task_id: task_i053
+  task_revision: 1
+  trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+- actor:
+    actor_id: thomas.protected_governance_state.sqlite_candidate
+    actor_type: system
+    assignment_id: null
+    role_id: null
+    role_version: null
+  audit_event_id: audit_32a6175d23dec58456b7
+  core_context_binding_id: ccb_i053
+  created_at: '2026-07-13T10:00:02Z'
+  event:
+    event_summary: Runtime Session Reserved
+    evidence_refs:
+    - authorization:reauth_7b810327ea391d6bbea2
+    - transition:transition_example_committed
+    outcome: RECORDED
+    payload_ref: protected-state:transition/transition_example_committed
+    payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+    reason_codes:
+    - RUNTIME_SESSION_RESERVED
+    related_record_refs:
+    - session:session_example_committed
+  event_type: OTHER
+  integrity:
+    append_only: true
+    delete_allowed: false
+    event_fingerprint_payload:
+      actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+      audit_event_id: audit_32a6175d23dec58456b7
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event_summary: Runtime Session Reserved
+      event_type: OTHER
+      evidence_refs:
+      - authorization:reauth_7b810327ea391d6bbea2
+      - transition:transition_example_committed
+      outcome: RECORDED
+      parent_audit_event_ids:
+      - audit_b9e426d542c8339a7f0b
+      payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+      previous_event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+      reason_codes:
+      - RUNTIME_SESSION_RESERVED
+      related_record_refs:
+      - session:session_example_committed
+      schema_version: audit_event_fingerprint_payload.v0.1
+      sequence_number: 3
+      subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+      subject_ref: protected-state:session/session_example_committed
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    event_sha256: sha256:5e70d778e88ac35228b8812c94a2bf48c9da4204a7b8e245207998acf9a61e6f
+    hash_schema: audit_event_fingerprint_payload.v0.1
+    overwrite_allowed: false
+  lineage:
+    parent_audit_event_ids:
+    - audit_b9e426d542c8339a7f0b
+    previous_event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+    sequence_number: 3
+  runtime_effect:
+    grants_activation: false
+    grants_approval: false
+    grants_authority: false
+    grants_execution: false
+    grants_permission: false
+    mode: EVIDENCE_ONLY
+    mutates_runtime: false
+  schema_version: audit_event.v0.1
+  sensitivity: INTERNAL
+  subject:
+    subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+    subject_id: session_example_committed
+    subject_ref: protected-state:session/session_example_committed
+    subject_type: runtime_entry_session
+  task_id: task_i053
+  task_revision: 1
+  trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+counts:
+  authorizations: 1
+  sessions: 1
+  transition_receipts: 1
+  audit_events: 3
+runtime_effect:
+  mode: SYNTHETIC_TEST_ONLY_LOCAL_GOVERNANCE_STATE
+  runtime_authoritative_state: false
+  runtime_entry_enabled: false
+  kernel_call_allowed: false
+  domain_write_allowed: false
+  workspace_write_allowed: false
+  core_write_allowed: false
+  external_write_allowed: false
+  financial_write_allowed: false
+integrity:
+  hash_schema: protected_governance_state_snapshot_fingerprint_payload.v0.1
+  snapshot_fingerprint_payload:
+    schema_version: protected_governance_state_snapshot_fingerprint_payload.v0.1
+    store_id: pgstore_c61a8f47dc84c19be66a
+    authorizations:
+    - authorization_id: reauth_7b810327ea391d6bbea2
+      authorization_sha256: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+      action_fingerprint_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+      nonce_sha256: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      state: CONSUMED
+      version: 1
+      session_id: session_example_committed
+      expires_at: '2026-07-13T10:10:00Z'
+      created_at: '2026-07-13T10:00:01Z'
+      consumed_at: '2026-07-13T10:00:02Z'
+    sessions:
+    - session_id: session_example_committed
+      authorization_id: reauth_7b810327ea391d6bbea2
+      state: RESERVED
+      version: 0
+      reserved_at: '2026-07-13T10:00:02Z'
+      terminated_at: null
+      termination_result: null
+    receipts:
+    - transition_id: transition_example_committed
+      authorization_id: reauth_7b810327ea391d6bbea2
+      session_id: session_example_committed
+      result: COMMITTED_SYNTHETIC_TEST_ONLY
+      receipt_sha256: sha256:794fa060717e96d811871651c630c6a65b14f840da370e4ef683e4e2c15d2cb1
+      created_at: '2026-07-13T10:00:02Z'
+    audit:
+    - actor:
+        actor_id: thomas.protected_governance_state.sqlite_candidate
+        actor_type: system
+        assignment_id: null
+        role_id: null
+        role_version: null
+      audit_event_id: audit_f840a763a382531f6a27
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event:
+        event_summary: Runtime Entry Authorization Checked
+        evidence_refs:
+        - authorization:reauth_7b810327ea391d6bbea2
+        - transition:transition_example_committed
+        outcome: RECORDED
+        payload_ref: protected-state:transition/transition_example_committed
+        payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+        reason_codes:
+        - RUNTIME_ENTRY_AUTHORIZATION_CHECKED
+        related_record_refs:
+        - session:session_example_committed
+      event_type: OTHER
+      integrity:
+        append_only: true
+        delete_allowed: false
+        event_fingerprint_payload:
+          actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+          audit_event_id: audit_f840a763a382531f6a27
+          core_context_binding_id: ccb_i053
+          created_at: '2026-07-13T10:00:02Z'
+          event_summary: Runtime Entry Authorization Checked
+          event_type: OTHER
+          evidence_refs:
+          - authorization:reauth_7b810327ea391d6bbea2
+          - transition:transition_example_committed
+          outcome: RECORDED
+          parent_audit_event_ids: []
+          payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+          previous_event_sha256: null
+          reason_codes:
+          - RUNTIME_ENTRY_AUTHORIZATION_CHECKED
+          related_record_refs:
+          - session:session_example_committed
+          schema_version: audit_event_fingerprint_payload.v0.1
+          sequence_number: 1
+          subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+          subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+          task_id: task_i053
+          task_revision: 1
+          trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+        event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+        hash_schema: audit_event_fingerprint_payload.v0.1
+        overwrite_allowed: false
+      lineage:
+        parent_audit_event_ids: []
+        previous_event_sha256: null
+        sequence_number: 1
+      runtime_effect:
+        grants_activation: false
+        grants_approval: false
+        grants_authority: false
+        grants_execution: false
+        grants_permission: false
+        mode: EVIDENCE_ONLY
+        mutates_runtime: false
+      schema_version: audit_event.v0.1
+      sensitivity: INTERNAL
+      subject:
+        subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+        subject_id: reauth_7b810327ea391d6bbea2
+        subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+        subject_type: runtime_entry_authorization
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    - actor:
+        actor_id: thomas.protected_governance_state.sqlite_candidate
+        actor_type: system
+        assignment_id: null
+        role_id: null
+        role_version: null
+      audit_event_id: audit_b9e426d542c8339a7f0b
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event:
+        event_summary: Authorization Consumption Committed
+        evidence_refs:
+        - authorization:reauth_7b810327ea391d6bbea2
+        - transition:transition_example_committed
+        outcome: RECORDED
+        payload_ref: protected-state:transition/transition_example_committed
+        payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+        reason_codes:
+        - AUTHORIZATION_CONSUMPTION_COMMITTED
+        related_record_refs:
+        - session:session_example_committed
+      event_type: OTHER
+      integrity:
+        append_only: true
+        delete_allowed: false
+        event_fingerprint_payload:
+          actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+          audit_event_id: audit_b9e426d542c8339a7f0b
+          core_context_binding_id: ccb_i053
+          created_at: '2026-07-13T10:00:02Z'
+          event_summary: Authorization Consumption Committed
+          event_type: OTHER
+          evidence_refs:
+          - authorization:reauth_7b810327ea391d6bbea2
+          - transition:transition_example_committed
+          outcome: RECORDED
+          parent_audit_event_ids:
+          - audit_f840a763a382531f6a27
+          payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+          previous_event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+          reason_codes:
+          - AUTHORIZATION_CONSUMPTION_COMMITTED
+          related_record_refs:
+          - session:session_example_committed
+          schema_version: audit_event_fingerprint_payload.v0.1
+          sequence_number: 2
+          subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+          subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+          task_id: task_i053
+          task_revision: 1
+          trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+        event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+        hash_schema: audit_event_fingerprint_payload.v0.1
+        overwrite_allowed: false
+      lineage:
+        parent_audit_event_ids:
+        - audit_f840a763a382531f6a27
+        previous_event_sha256: sha256:5b66433091a8c13267d00f42387d281c9db77a42a45b3e0f252df05b3c230c65
+        sequence_number: 2
+      runtime_effect:
+        grants_activation: false
+        grants_approval: false
+        grants_authority: false
+        grants_execution: false
+        grants_permission: false
+        mode: EVIDENCE_ONLY
+        mutates_runtime: false
+      schema_version: audit_event.v0.1
+      sensitivity: INTERNAL
+      subject:
+        subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+        subject_id: reauth_7b810327ea391d6bbea2
+        subject_ref: protected-state:authorization/reauth_7b810327ea391d6bbea2
+        subject_type: runtime_entry_authorization
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    - actor:
+        actor_id: thomas.protected_governance_state.sqlite_candidate
+        actor_type: system
+        assignment_id: null
+        role_id: null
+        role_version: null
+      audit_event_id: audit_32a6175d23dec58456b7
+      core_context_binding_id: ccb_i053
+      created_at: '2026-07-13T10:00:02Z'
+      event:
+        event_summary: Runtime Session Reserved
+        evidence_refs:
+        - authorization:reauth_7b810327ea391d6bbea2
+        - transition:transition_example_committed
+        outcome: RECORDED
+        payload_ref: protected-state:transition/transition_example_committed
+        payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+        reason_codes:
+        - RUNTIME_SESSION_RESERVED
+        related_record_refs:
+        - session:session_example_committed
+      event_type: OTHER
+      integrity:
+        append_only: true
+        delete_allowed: false
+        event_fingerprint_payload:
+          actor_ref: component:thomas.protected_governance_state.sqlite_candidate@0.1.0
+          audit_event_id: audit_32a6175d23dec58456b7
+          core_context_binding_id: ccb_i053
+          created_at: '2026-07-13T10:00:02Z'
+          event_summary: Runtime Session Reserved
+          event_type: OTHER
+          evidence_refs:
+          - authorization:reauth_7b810327ea391d6bbea2
+          - transition:transition_example_committed
+          outcome: RECORDED
+          parent_audit_event_ids:
+          - audit_b9e426d542c8339a7f0b
+          payload_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+          previous_event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+          reason_codes:
+          - RUNTIME_SESSION_RESERVED
+          related_record_refs:
+          - session:session_example_committed
+          schema_version: audit_event_fingerprint_payload.v0.1
+          sequence_number: 3
+          subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+          subject_ref: protected-state:session/session_example_committed
+          task_id: task_i053
+          task_revision: 1
+          trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+        event_sha256: sha256:5e70d778e88ac35228b8812c94a2bf48c9da4204a7b8e245207998acf9a61e6f
+        hash_schema: audit_event_fingerprint_payload.v0.1
+        overwrite_allowed: false
+      lineage:
+        parent_audit_event_ids:
+        - audit_b9e426d542c8339a7f0b
+        previous_event_sha256: sha256:8434a427aa40ca9719f9afb5c0145ff985e436f923a464ef519ff83699fe2438
+        sequence_number: 3
+      runtime_effect:
+        grants_activation: false
+        grants_approval: false
+        grants_authority: false
+        grants_execution: false
+        grants_permission: false
+        mode: EVIDENCE_ONLY
+        mutates_runtime: false
+      schema_version: audit_event.v0.1
+      sensitivity: INTERNAL
+      subject:
+        subject_fingerprint: sha256:5cdd7b712d0d3e4dafe623ab0dcadd5bcfa063454eb069d8054499e5275770be
+        subject_id: session_example_committed
+        subject_ref: protected-state:session/session_example_committed
+        subject_type: runtime_entry_session
+      task_id: task_i053
+      task_revision: 1
+      trace_id: trace_runtime_entry_reauth_7b810327ea391d6bbea2
+    created_at: '2026-07-13T10:00:05Z'
+  snapshot_sha256: sha256:a54fc0fd58689c983ed400bbbc44c9bcb42318314b303ae641e1877224adc8c3
+created_at: '2026-07-13T10:00:05Z'

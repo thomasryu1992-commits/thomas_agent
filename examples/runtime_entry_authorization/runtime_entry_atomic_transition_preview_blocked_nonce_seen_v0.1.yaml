@@ -1,0 +1,132 @@
+schema_version: runtime_entry_atomic_transition_preview.v0.1
+transition_id: reatx_1e6240f56bf3f21cfc20
+phase: I0.5.3
+status: BLOCKED_NOT_ELIGIBLE
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+authorization_binding:
+  authorization_id: reauth_7b810327ea391d6bbea2
+  authorization_ref: synthetic:approved-authorization
+  authorization_sha256: sha256:d337ac964c0b50b8d57476fd3b9e8ee816340826b048ff6fb8230e7f86edf3ac
+  authorization_status: APPROVED_NOT_CONSUMED_REVIEW_ONLY
+  action_fingerprint_sha256: sha256:55d98199334a9d27494329f65dd7070ed77fdca2ca7e137eaf3fa0a2ba16d60c
+  approval_id: approval_i053_synthetic
+  approval_sha256: sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+preconditions:
+  exact_bindings_verified: true
+  component_bindings_verified: true
+  action_fingerprint_verified: true
+  approval_verified: true
+  approval_not_expired: true
+  approval_not_revoked: true
+  authorization_unused: true
+  nonce_unseen: false
+  ttl_valid: true
+  resource_limits_within_task_budget: true
+  kill_switch_allows_entry: true
+  runtime_boundary_still_read_only: true
+compare_and_set:
+  expected_authorization_state: UNUSED
+  target_authorization_state: CONSUMED
+  expected_session_state: NOT_RESERVED
+  target_session_state: RESERVED
+  atomic_all_or_none: true
+  durable_state_required: true
+  process_restart_persistence_required: true
+  consume_before_kernel_call: true
+  reuse_after_any_attempt_allowed: false
+  ambiguous_outcome_policy: CONSUMED_OR_UNKNOWN_FAIL_CLOSED
+protected_state_boundary:
+  store_class: PROTECTED_LOCAL_GOVERNANCE_STATE
+  currently_implemented: false
+  currently_enabled: false
+  actual_compare_and_set_allowed: false
+  actual_governance_state_write_allowed: false
+  future_authorization_consumption_write_required: true
+  future_session_reservation_write_required: true
+  future_append_only_audit_write_required: true
+  domain_write_allowed: false
+  workspace_write_allowed: false
+  task_source_write_allowed: false
+  input_bundle_write_allowed: false
+  core_write_allowed: false
+  tool_program_state_write_allowed: false
+  external_system_write_allowed: false
+  financial_write_allowed: false
+session_reservation:
+  reservation_id: reservation_ea2cc3b0826568629921
+  session_id: session_af2ecd2d0d24073d7f0e
+  planned_state: RESERVED
+  start_after_atomic_commit_only: true
+  max_runtime_seconds: 30
+  max_files_read: 12
+  max_total_bytes_read: 2000000
+  actual_reservation_created: false
+  actual_session_started: false
+audit_boundary:
+  audit_contract_ref: docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md
+  append_only_required: true
+  hash_chain_required: true
+  required_event_types:
+  - RUNTIME_ENTRY_AUTHORIZATION_CHECKED
+  - AUTHORIZATION_CONSUMPTION_COMMITTED
+  - RUNTIME_SESSION_RESERVED
+  - RUNTIME_ENTRY_ATTEMPT_TERMINATED
+  future_audit_write_required: true
+  actual_audit_write_performed: false
+decision:
+  result: BLOCKED_NOT_ELIGIBLE
+  blocking_reasons: &id001
+  - NONCE_ALREADY_SEEN
+  attempt_semantics: AT_MOST_ONCE_ATTEMPT
+  eligible_for_i0_5_4_implementation_review: false
+  actual_compare_and_set_performed: false
+  approval_consumed: false
+  session_reserved: false
+  runtime_entry_performed: false
+runtime_effect:
+  mode: REVIEW_ONLY_ATOMIC_TRANSITION_PREVIEW
+  grants_runtime_permission: false
+  grants_runtime_activation: false
+  consumes_approval: false
+  performs_compare_and_set: false
+  writes_governance_state: false
+  reserves_runtime_session: false
+  starts_runtime_session: false
+  calls_kernel: false
+  model_invocation: false
+  tool_execution: false
+  program_execution: false
+  network_access: false
+  domain_write: false
+  workspace_write: false
+  core_write: false
+  external_action: false
+  financial_action: false
+  mutates_runtime: false
+integrity:
+  hash_schema: runtime_entry_atomic_transition_preview_fingerprint_payload.v0.1
+  transition_fingerprint_payload:
+    schema_version: runtime_entry_atomic_transition_preview_fingerprint_payload.v0.1
+    transition_id: reatx_1e6240f56bf3f21cfc20
+    authorization_sha256: sha256:d337ac964c0b50b8d57476fd3b9e8ee816340826b048ff6fb8230e7f86edf3ac
+    preconditions:
+      exact_bindings_verified: true
+      component_bindings_verified: true
+      action_fingerprint_verified: true
+      approval_verified: true
+      approval_not_expired: true
+      approval_not_revoked: true
+      authorization_unused: true
+      nonce_unseen: false
+      ttl_valid: true
+      resource_limits_within_task_budget: true
+      kill_switch_allows_entry: true
+      runtime_boundary_still_read_only: true
+    blocking_reasons: *id001
+    reservation_id: reservation_ea2cc3b0826568629921
+    session_id: session_af2ecd2d0d24073d7f0e
+    created_at: '2026-07-13T10:00:00Z'
+  transition_sha256: sha256:c53d2bf60180571428166df57c4cfc04fa2f881625dfb5a8692ddddf9cabc272
+created_at: '2026-07-13T10:00:00Z'

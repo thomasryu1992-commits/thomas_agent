@@ -13,6 +13,7 @@ EXCLUDED_PARTS = {
     "__pycache__",
     ".pytest_cache",
     ".runtime_locks",
+    ".runtime_governance_state",
     "releases",
     "approvals",
     "activations",

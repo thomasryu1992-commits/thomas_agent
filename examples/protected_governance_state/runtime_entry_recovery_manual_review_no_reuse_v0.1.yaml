@@ -1,0 +1,74 @@
+schema_version: runtime_entry_recovery_report.v0.1
+recovery_report_id: recovery_f2f549801b4eb1bd5c54
+phase: I0.5.4
+status: MANUAL_REVIEW_REQUIRED_NO_REUSE
+owner: Thomas
+record_scope: SYNTHETIC_TEST_ONLY
+runtime_source_of_truth: false
+store_binding:
+  store_id: pgstore_c61a8f47dc84c19be66a
+  backend: SQLITE
+  recovery_component_id: thomas.runtime_entry.crash_recovery.inspector
+  recovery_component_version: 0.1.0
+integrity_check:
+  sqlite_integrity_check: PASS
+  audit_hash_chain: PASS
+  authorization_session_linkage: PASS
+counts:
+  authorizations: 1
+  sessions: 1
+  transition_receipts: 1
+  audit_events: 3
+  anomalies: 0
+  manual_review_sessions: 1
+anomalies: []
+manual_review_sessions:
+- authorization_id: reauth_7b810327ea391d6bbea2
+  authorization_state: CONSUMED
+  session_id: session_example_committed
+  session_state: RESERVED
+  reuse_allowed: false
+  auto_resume_allowed: false
+decision:
+  result: MANUAL_REVIEW_REQUIRED_NO_REUSE
+  blocking_reasons: &id001
+  - CONSUMED_AUTHORIZATION_WITH_RESERVED_SESSION
+  authorization_reuse_allowed: false
+  automatic_session_resume_allowed: false
+  manual_review_required: true
+  new_thomas_approval_required_for_retry: true
+  runtime_entry_allowed: false
+runtime_effect:
+  mode: READ_ONLY_RECOVERY_INSPECTION
+  writes_protected_state: false
+  consumes_approval: false
+  reserves_session: false
+  starts_runtime_session: false
+  calls_kernel: false
+  model_invocation: false
+  tool_execution: false
+  program_execution: false
+  network_access: false
+  domain_write: false
+  workspace_write: false
+  core_write: false
+  external_action: false
+  financial_action: false
+integrity:
+  hash_schema: runtime_entry_recovery_report_fingerprint_payload.v0.1
+  recovery_fingerprint_payload:
+    schema_version: runtime_entry_recovery_report_fingerprint_payload.v0.1
+    store_id: pgstore_c61a8f47dc84c19be66a
+    status: MANUAL_REVIEW_REQUIRED_NO_REUSE
+    blocking_reasons: *id001
+    anomalies: []
+    manual_review_sessions:
+    - authorization_id: reauth_7b810327ea391d6bbea2
+      authorization_state: CONSUMED
+      session_id: session_example_committed
+      session_state: RESERVED
+      reuse_allowed: false
+      auto_resume_allowed: false
+    created_at: '2026-07-13T10:00:04Z'
+  recovery_sha256: sha256:f2f549801b4eb1bd5c54314463f51113a8522c2aaf926c9757812e098b2f0b27
+created_at: '2026-07-13T10:00:04Z'

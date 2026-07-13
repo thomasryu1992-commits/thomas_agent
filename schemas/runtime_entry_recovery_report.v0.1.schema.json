@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime_entry_recovery_report.v0.1.schema.json",
+  "title": "Runtime Entry Recovery Report v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "recovery_report_id",
+    "phase",
+    "status",
+    "owner",
+    "record_scope",
+    "runtime_source_of_truth",
+    "store_binding",
+    "integrity_check",
+    "counts",
+    "anomalies",
+    "manual_review_sessions",
+    "decision",
+    "runtime_effect",
+    "integrity",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_entry_recovery_report.v0.1"
+    },
+    "recovery_report_id": {
+      "type": "string",
+      "pattern": "^recovery_[0-9a-f]{20}$"
+    },
+    "phase": {
+      "const": "I0.5.4"
+    },
+    "status": {
+      "enum": [
+        "CLEAN_NO_PENDING_SESSION",
+        "MANUAL_REVIEW_REQUIRED_NO_REUSE",
+        "FAIL_CLOSED_INCONSISTENT_STATE"
+      ]
+    },
+    "owner": {
+      "const": "Thomas"
+    },
+    "record_scope": {
+      "const": "SYNTHETIC_TEST_ONLY"
+    },
+    "runtime_source_of_truth": {
+      "const": false
+    },
+    "store_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "backend",
+        "recovery_component_id",
+        "recovery_component_version"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string"
+        },
+        "backend": {
+          "const": "SQLITE"
+        },
+        "recovery_component_id": {
+          "const": "thomas.runtime_entry.crash_recovery.inspector"
+        },
+        "recovery_component_version": {
+          "const": "0.1.0"
+        }
+      }
+    },
+    "integrity_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sqlite_integrity_check",
+        "audit_hash_chain",
+        "authorization_session_linkage"
+      ],
+      "properties": {
+        "sqlite_integrity_check": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "audit_hash_chain": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "authorization_session_linkage": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizations",
+        "sessions",
+        "transition_receipts",
+        "audit_events",
+        "anomalies",
+        "manual_review_sessions"
+      ],
+      "properties": {
+        "authorizations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transition_receipts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "audit_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "anomalies": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "manual_review_sessions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "anomalies": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "manual_review_sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authorization_id",
+          "authorization_state",
+          "session_id",
+          "session_state",
+          "reuse_allowed",
+          "auto_resume_allowed"
+        ],
+        "properties": {
+          "authorization_id": {
+            "type": "string"
+          },
+          "authorization_state": {
+            "enum": [
+              "CONSUMED",
+              "CONSUMED_OR_UNKNOWN_FAIL_CLOSED"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_state": {
+            "enum": [
+              "RESERVED",
+              "UNKNOWN_FAIL_CLOSED"
+            ]
+          },
+          "reuse_allowed": {
+            "const": false
+          },
+          "auto_resume_allowed": {
+            "const": false
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "blocking_reasons",
+        "authorization_reuse_allowed",
+        "automatic_session_resume_allowed",
+        "manual_review_required",
+        "new_thomas_approval_required_for_retry",
+        "runtime_entry_allowed"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "CLEAN_NO_PENDING_SESSION",
+            "MANUAL_REVIEW_REQUIRED_NO_REUSE",
+            "FAIL_CLOSED_INCONSISTENT_STATE"
+          ]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authorization_reuse_allowed": {
+          "const": false
+        },
+        "automatic_session_resume_allowed": {
+          "const": false
+        },
+        "manual_review_required": {
+          "type": "boolean"
+        },
+        "new_thomas_approval_required_for_retry": {
+          "type": "boolean"
+        },
+        "runtime_entry_allowed": {
+          "const": false
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "writes_protected_state",
+        "consumes_approval",
+        "reserves_session",
+        "starts_runtime_session",
+        "calls_kernel",
+        "model_invocation",
+        "tool_execution",
+        "program_execution",
+        "network_access",
+        "domain_write",
+        "workspace_write",
+        "core_write",
+        "external_action",
+        "financial_action"
+      ],
+      "properties": {
+        "mode": {
+          "const": "READ_ONLY_RECOVERY_INSPECTION"
+        },
+        "writes_protected_state": {
+          "const": false
+        },
+        "consumes_approval": {
+          "const": false
+        },
+        "reserves_session": {
+          "const": false
+        },
+        "starts_runtime_session": {
+          "const": false
+        },
+        "calls_kernel": {
+          "const": false
+        },
+        "model_invocation": {
+          "const": false
+        },
+        "tool_execution": {
+          "const": false
+        },
+        "program_execution": {
+          "const": false
+        },
+        "network_access": {
+          "const": false
+        },
+        "domain_write": {
+          "const": false
+        },
+        "workspace_write": {
+          "const": false
+        },
+        "core_write": {
+          "const": false
+        },
+        "external_action": {
+          "const": false
+        },
+        "financial_action": {
+          "const": false
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "recovery_fingerprint_payload",
+        "recovery_sha256"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "runtime_entry_recovery_report_fingerprint_payload.v0.1"
+        },
+        "recovery_fingerprint_payload": {
+          "type": "object"
+        },
+        "recovery_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

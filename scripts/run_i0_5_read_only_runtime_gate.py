@@ -26,7 +26,19 @@ def main() -> int:
         "I0.5.2 Runtime-Authoritative Read-only Entry Design",
         [sys.executable, "scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py"],
     )
-    print("\nPASS: I0.5/I0.5.1/I0.5.2 read-only Runtime, readiness, and Entry Design Gate completed")
+    run(
+        "I0.5.3 Exact Entry Authorization and At-Most-Once Transition Design",
+        [sys.executable, "scripts/validate_i0_5_3_runtime_entry_authorization.py"],
+    )
+    run(
+        "I0.5.4 Protected Local Governance State and Durable CAS Candidate",
+        [sys.executable, "scripts/validate_i0_5_4_protected_governance_state.py"],
+    )
+    run(
+        "I0.5.5 Disabled Single Read-only Entry Integration Candidate",
+        [sys.executable, "scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py"],
+    )
+    print("\nPASS: I0.5/I0.5.1/I0.5.2/I0.5.3/I0.5.4/I0.5.5 read-only Runtime, readiness, Entry Design, exact-entry authorization, protected-state, and disabled integration Candidate Gate completed")
     print("This gate validates DEVELOPMENT_REPLAY only and grants no Runtime activation or execution authority.")
     return 0
 
