@@ -102,8 +102,8 @@ def assert_workflow() -> None:
         raise AssertionError("GitHub Actions runtime validation workflow is missing")
     text = path.read_text(encoding="utf-8")
     required = [
-        "actions/checkout@v4",
-        "actions/setup-python@v5",
+        "actions/checkout@v6",
+        "actions/setup-python@v6",
         "python -m pip install -r requirements-validation.lock",
         "python scripts/run_repository_release_gate.py --full --check-only",
         "ubuntu-latest",
