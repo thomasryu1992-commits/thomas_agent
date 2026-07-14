@@ -1,44 +1,40 @@
-schema_version: tool_registry.v0.1
-document_version: 0.1.1
+schema_version: tool_registry.v0.2
+document_version: 0.3.0
+registry_id: thomas_tool_registry
 status: active_registry_no_active_tools
 owner: Thomas
-source_of_truth: true
-governance:
-  allowed_statuses:
-  - draft
-  - candidate
-  - active
-  - disabled
-  - deprecated
-  - archived
-  active_and_enabled_required_for_runtime: true
-  tool_cannot_expand_authority: true
-  tool_request_contract: ../docs/runtime-contracts/TOOL_REQUEST_CONTRACT_V0.1.md
-  tool_request_schema: ../schemas/tool_request.v0.1.schema.json
-  review_only_request_evaluation_supported: true
-  request_record_never_enables_tool: true
-  role_definition_allowlist_required: true
-  role_assignment_allowlist_required: true
-  target_and_data_scope_required: true
-  numeric_budget_required: true
-  permission_decision_required: true
-  change_requires_version_and_audit: true
+authoritative: true
+source_of_truth_for:
+- tool_status
+- enablement
+- tool_class
+- canonical_definition_path
+- canonical_definition_hash
+- runtime_implementation_availability
+governance_refs:
+  canonical_governance_policy: governance/GOVERNANCE_POLICY.yaml
+  tool_request_contract: docs/runtime-contracts/TOOL_REQUEST_CONTRACT_V0.1.md
 tools:
 - tool_id: document.reader
   version: 0.1.0
   status: candidate
   enabled: false
   tool_class: read
-  purpose: Read explicitly assigned document references.
-  required_permission_level: P1
-  external_action: false
+  definition_path: tools/definitions/DOCUMENT_READER_TOOL.yaml
+  definition_sha256: c53b005a471296cbeea7eb7604f6702d05841b169634f8f6e3ad0077cb6109ef
   runtime_implementation_available: false
 - tool_id: search.readonly
   version: 0.1.0
   status: candidate
   enabled: false
   tool_class: read
-  purpose: Perform read-only search within an approved query and source scope.
-  required_permission_level: P1
-  external_action: false
+  definition_path: tools/definitions/SEARCH_READONLY_TOOL.yaml
+  definition_sha256: 7e42346e66cdf8731b02425fb869307b09b04719a18d9d2f218808ba5c937635
   runtime_implementation_available: false
+resolution:
+  resolver_module: runtime/registry_resolution.py
+  definition_fields_loaded_at_consumer_boundary: true
+  resolved_view_authoritative: false
+  persistent_resolved_view_allowed: false
+  fail_closed_on_missing_definition: true
+  fail_closed_on_hash_mismatch: true

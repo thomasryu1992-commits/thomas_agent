@@ -676,10 +676,10 @@ def update_core_readme() -> None:
             + target
         )
         text = text.replace(target, replacement)
-    if "| `docs/build/CORE_PROJECTION_MAP.yaml` |" not in text:
+    if "| `generated/docs/CORE_PROJECTION_MAP.yaml` |" not in text:
         target = "| `CORE_METADATA.yaml` | Core version, governance, information status, and change policy |"
         replacement = (
-            "| `docs/build/CORE_PROJECTION_MAP.yaml` | Build-time map for Core projection ownership and consistency validation |\n"
+            "| `generated/docs/CORE_PROJECTION_MAP.yaml` | Build-time map for Core projection ownership and consistency validation |\n"
             + target
         )
         text = text.replace(target, replacement)

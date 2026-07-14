@@ -52,24 +52,28 @@
       "pattern": "^ccb-[A-Za-z0-9._:-]+$"
     },
     "operating_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "policy_id",
-        "policy_version",
-        "policy_ref"
-      ],
-      "properties": {
-        "policy_id": {
-          "const": "thomas.permission_approval.operating_policy"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy_id", "policy_version", "policy_ref"],
+          "properties": {
+            "policy_id": {"const": "thomas.governance.policy"},
+            "policy_version": {"const": "1.1.0"},
+            "policy_ref": {"const": "governance/GOVERNANCE_POLICY.yaml"}
+          }
         },
-        "policy_version": {
-          "const": "0.1.0"
-        },
-        "policy_ref": {
-          "const": "docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy_id", "policy_version", "policy_ref"],
+          "properties": {
+            "policy_id": {"const": "thomas.permission_approval.operating_policy"},
+            "policy_version": {"const": "0.1.0"},
+            "policy_ref": {"const": "docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml"}
+          }
         }
-      }
+      ]
     },
     "requested_by": {
       "type": "object",

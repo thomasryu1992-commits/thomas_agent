@@ -1,0 +1,342 @@
+schema_version: thomas_deferred_architecture.v0.1
+document_version: 1.0.0
+architecture_id: thomas.deferred_architecture
+status: DEFERRED_REVIEW_ONLY
+owner: Thomas
+authoritative_for_deferred_design: true
+runtime_authoritative: false
+active_architecture_ref: docs/ACTIVE_ARCHITECTURE.md
+governance_policy_ref: governance/GOVERNANCE_POLICY.yaml
+purpose: One non-runtime-authoritative index for future Runtime Entry, Executor, Operations, Control Channel, and Sandbox
+  requirements.
+global_constraints:
+  runtime_authoritative_activation_allowed: false
+  production_state_mutation_allowed: false
+  real_approval_consumption_allowed: false
+  runtime_session_start_allowed: false
+  kernel_handoff_allowed: false
+  executor_activation_allowed: false
+  executor_handoff_allowed: false
+  tool_execution_allowed: false
+  program_execution_allowed: false
+  model_invocation_allowed: false
+  network_access_allowed: false
+  filesystem_write_allowed: false
+  scheduler_dispatch_allowed: false
+  control_channel_dispatch_allowed: false
+  external_action_allowed: false
+  financial_action_allowed: false
+  permission_expansion_allowed: false
+  authority_expansion_allowed: false
+  core_activation_allowed: false
+  passing_validation_grants_activation: false
+  generated_evidence_grants_activation: false
+  candidate_status_grants_activation: false
+  deferred_artifact_may_block_unrelated_active_work: false
+  explicit_separate_activation_required: true
+  fail_closed_on_missing_or_ambiguous_authority: true
+shared_activation_prerequisites:
+- explicit_thomas_approval_for_the_exact_capability_and_stage
+- canonical_governance_policy_allows_the_transition
+- active_runtime_architecture_review_completed
+- independent_validation_completed
+- security_and_secret_handling_review_completed
+- rollback_and_recovery_evidence_completed
+- observability_and_kill_switch_evidence_completed
+- no_stage_or_authority_boundary_skipped
+family_order:
+- runtime_entry
+- executor
+- operations
+- control_channel
+- sandbox
+families:
+  runtime_entry:
+    status: DEFERRED_DISABLED
+    boundary_ref: deferred/runtime_entry/BOUNDARY.md
+    phase_aliases:
+    - I0.5.1
+    - I0.5.2
+    - I0.5.3
+    - I0.5.4
+    - I0.5.5
+    purpose: Future promotion readiness, exact entry authorization, protected state, at-most-once transition, recovery, and
+      single read-only entry integration.
+    activation_target: runtime_authoritative_read_only_entry
+    family_constraints:
+      entry_execution_allowed: false
+      approval_consumption_allowed: false
+      protected_state_write_allowed: false
+      runtime_session_start_allowed: false
+      kernel_call_allowed: false
+    component_indexes:
+    - 05_REGISTRIES/I0_5_2_RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_COMPONENTS_REVIEW_ONLY.yaml
+    - 05_REGISTRIES/I0_5_3_RUNTIME_ENTRY_AUTHORIZATION_COMPONENTS_REVIEW_ONLY.yaml
+    - 05_REGISTRIES/I0_5_4_PROTECTED_GOVERNANCE_STATE_COMPONENTS_REVIEW_ONLY.yaml
+    - 05_REGISTRIES/I0_5_5_SINGLE_READ_ONLY_ENTRY_INTEGRATION_COMPONENTS_REVIEW_ONLY.yaml
+    implementation_candidates:
+    - runtime/read_only_entry/
+    - runtime/protected_governance_state/
+    contracts:
+    - contract_ref: docs/runtime-contracts/RUNTIME_COMPONENT_ATTESTATION_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_component_attestation.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/GITHUB_CI_EVIDENCE_CONTRACT_V0.1.md
+      schema_ref: schemas/github_ci_evidence.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_PROMOTION_READINESS_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_promotion_readiness.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_PLAN_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_authoritative_read_only_entry_plan.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/DISABLED_RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_ADAPTER_V0.1.md
+      schema_ref: schemas/disabled_runtime_authoritative_read_only_entry_evidence.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_ENTRY_AUTHORIZATION_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_entry_authorization.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_ENTRY_AT_MOST_ONCE_ATOMIC_TRANSITION_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_entry_atomic_transition_preview.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/PROTECTED_LOCAL_GOVERNANCE_STATE_CONTRACT_V0.1.md
+      schema_ref: schemas/protected_governance_state_snapshot.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_ENTRY_DURABLE_CAS_CANDIDATE_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_entry_durable_transition_result.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/RUNTIME_ENTRY_CRASH_RECOVERY_CONTRACT_V0.1.md
+      schema_ref: schemas/runtime_entry_recovery_report.v0.1.schema.json
+      required_field_parity: false
+    - contract_ref: docs/runtime-contracts/DISABLED_SINGLE_READ_ONLY_ENTRY_INTEGRATION_CANDIDATE_CONTRACT_V0.1.md
+      schema_ref: schemas/disabled_single_read_only_entry_integration_candidate.v0.1.schema.json
+      required_field_parity: false
+    detailed_validators:
+    - - scripts/validate_i0_5_1_runtime_promotion_readiness.py
+    - - scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
+    - - scripts/validate_i0_5_3_runtime_entry_authorization.py
+    - - scripts/validate_i0_5_4_protected_governance_state.py
+    - - scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py
+    threat_notes:
+    - approval_replay
+    - entry_replay
+    - split_brain_state
+    - crash_between_authorization_and_commit
+    - unauthorized_kernel_handoff
+    failure_modes:
+    - missing_verified_ci_evidence
+    - missing_current_core_release
+    - invalid_action_binding
+    - nonce_already_seen
+    - durable_cas_conflict
+    - recovery_requires_manual_review
+  executor:
+    status: DEFERRED_DISABLED
+    boundary_ref: deferred/executor/BOUNDARY.md
+    purpose: Future restricted execution, hot-path revalidation, approval consumption, executor registration/readiness, rollback,
+      and candidate intake.
+    activation_target: restricted_execution_service
+    family_constraints:
+      executor_registration_allowed: false
+      executor_enablement_allowed: false
+      execution_token_issuance_allowed: false
+      real_execution_allowed: false
+      approval_consumption_allowed: false
+    component_indexes:
+    - 05_REGISTRIES/EXECUTOR_REGISTRY_REVIEW_ONLY.yaml
+    implementation_candidates:
+    - scripts/disabled_restricted_execution_service.py
+    contracts:
+    - contract_ref: docs/runtime-contracts/EXECUTION_REQUEST_CONTRACT_V0.1.md
+      schema_ref: schemas/execution_request.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/EXECUTION_RESULT_CONTRACT_V0.1.md
+      schema_ref: schemas/execution_result.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/EXECUTOR_REGISTRY_CONTRACT_V0.1.md
+      schema_ref: schemas/executor_registry.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/EXECUTOR_READINESS_REVIEW_CONTRACT_V0.1.md
+      schema_ref: schemas/executor_readiness_review.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/DISABLED_RESTRICTED_EXECUTION_SERVICE_INTERFACE_V0.1.md
+      schema_ref: schemas/disabled_executor_evidence.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/HOT_PATH_PRE_EXECUTION_REVALIDATION_CONTRACT_V0.1.md
+      schema_ref: schemas/pre_execution_revalidation.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/APPROVAL_CONSUMPTION_CONTRACT_V0.1.md
+      schema_ref: schemas/approval_consumption_preview.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/ROLLBACK_RECOVERY_CONTRACT_V0.1.md
+      schema_ref: schemas/rollback_recovery_plan.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_CONTRACT_V0.1.md
+      schema_ref: schemas/executor_candidate_intake.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_REVIEW_CONTRACT_V0.1.md
+      schema_ref: schemas/executor_candidate_intake_review.v0.1.schema.json
+      required_field_parity: true
+    detailed_validators:
+    - - scripts/validate_execution_validation_audit_contracts.py
+      - --scope
+      - deferred
+    - - scripts/validate_executor_foundation_contracts.py
+    - - scripts/validate_operations_evidence_executor_intake.py
+    threat_notes:
+    - stale_preflight
+    - approval_reuse
+    - authority_expansion
+    - unregistered_executor
+    - partial_external_effect
+    failure_modes:
+    - executor_missing_or_disabled
+    - approval_not_exactly_bound
+    - hot_path_check_failed
+    - idempotency_missing
+    - rollback_not_proven
+  operations:
+    status: DEFERRED_DISABLED
+    boundary_ref: deferred/operations/BOUNDARY.md
+    purpose: Future monitoring, alerting, health, clock, threshold, supervisor, scheduler, and recovery operations.
+    activation_target: bounded_runtime_operations
+    family_constraints:
+      daemon_start_allowed: false
+      process_control_allowed: false
+      scheduler_install_allowed: false
+      alert_delivery_allowed: false
+      automatic_remediation_allowed: false
+      system_clock_mutation_allowed: false
+    component_indexes:
+    - 05_REGISTRIES/MONITORING_ALERT_THRESHOLD_POLICY_REVIEW_ONLY.yaml
+    implementation_candidates:
+    - scripts/build_operations_evidence_previews.py
+    - scripts/evaluate_monitoring_alert_threshold_review.py
+    contracts:
+    - contract_ref: docs/runtime-contracts/MONITORING_SNAPSHOT_CONTRACT_V0.1.md
+      schema_ref: schemas/monitoring_snapshot.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/ALERT_EVENT_CONTRACT_V0.1.md
+      schema_ref: schemas/alert_event.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/HEALTH_SNAPSHOT_CONTRACT_V0.1.md
+      schema_ref: schemas/health_snapshot.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/CLOCK_SYNC_EVIDENCE_CONTRACT_V0.1.md
+      schema_ref: schemas/clock_sync_evidence.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_POLICY_V0.1.md
+      schema_ref: schemas/monitoring_alert_threshold_policy.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_EVALUATION_CONTRACT_V0.1.md
+      schema_ref: schemas/monitoring_alert_threshold_evaluation.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/DISABLED_PROCESS_SUPERVISOR_INTERFACE_V0.1.md
+      schema_ref: schemas/process_supervisor_snapshot.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/DISABLED_SCHEDULER_INTERFACE_V0.1.md
+      schema_ref: schemas/scheduler_plan_review.v0.1.schema.json
+      required_field_parity: true
+    detailed_validators:
+    - - scripts/validate_operations_evidence_executor_intake.py
+    - - scripts/validate_control_supervision_threshold_sandbox.py
+    threat_notes:
+    - false_health_claim
+    - unbounded_restart_loop
+    - silent_alert_drop
+    - clock_drift
+    - scheduler_autostart
+    failure_modes:
+    - offline_evidence_only
+    - notification_not_sent
+    - remediation_not_performed
+    - process_control_disabled
+    - schedule_not_installed
+  control_channel:
+    status: DEFERRED_DISABLED
+    boundary_ref: deferred/control_channel/BOUNDARY.md
+    purpose: Future authenticated Thomas control channel, command envelope, and kill-switch enforcement.
+    activation_target: authenticated_control_and_kill_switch_runtime
+    family_constraints:
+      identity_binding_runtime_verified: false
+      command_dispatch_allowed: false
+      kill_switch_state_mutation_allowed: false
+      process_termination_allowed: false
+      automatic_resume_allowed: false
+    component_indexes: []
+    implementation_candidates:
+    - scripts/lib/control_supervision.py
+    contracts:
+    - contract_ref: docs/runtime-contracts/CONTROL_CHANNEL_IDENTITY_BINDING_CONTRACT_V0.1.md
+      schema_ref: schemas/control_channel_identity_binding.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/CONTROL_CHANNEL_COMMAND_ENVELOPE_REVIEW_CONTRACT_V0.1.md
+      schema_ref: schemas/control_channel_command_envelope_review.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/KILL_SWITCH_STATE_CONTRACT_V0.1.md
+      schema_ref: schemas/kill_switch_state.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/KILL_SWITCH_COMMAND_REVIEW_CONTRACT_V0.1.md
+      schema_ref: schemas/kill_switch_command_review.v0.1.schema.json
+      required_field_parity: true
+    detailed_validators:
+    - - scripts/validate_control_supervision_threshold_sandbox.py
+    threat_notes:
+    - forged_identity
+    - group_or_forwarded_approval
+    - ambiguous_command
+    - stale_command_reuse
+    - kill_switch_bypass
+    failure_modes:
+    - identity_unbound
+    - command_not_dispatched
+    - state_not_mutated
+    - process_not_terminated
+    - resume_requires_thomas_authentication
+  sandbox:
+    status: DEFERRED_DISABLED
+    boundary_ref: deferred/sandbox/BOUNDARY.md
+    purpose: Future reversible local sandbox validation before any broader Runtime or Executor capability.
+    activation_target: bounded_local_reversible_sandbox
+    family_constraints:
+      sandbox_creation_allowed: false
+      test_execution_allowed: false
+      subprocess_execution_allowed: false
+      network_access_allowed: false
+      persistent_write_allowed: false
+      production_use_allowed: false
+    component_indexes: []
+    implementation_candidates: []
+    contracts:
+    - contract_ref: docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_PLAN_V0.1.md
+      schema_ref: schemas/local_reversible_sandbox_candidate_test_plan.v0.1.schema.json
+      required_field_parity: true
+    - contract_ref: docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_REVIEW_CONTRACT_V0.1.md
+      schema_ref: schemas/local_reversible_sandbox_candidate_test_review.v0.1.schema.json
+      required_field_parity: true
+    detailed_validators:
+    - - scripts/validate_control_supervision_threshold_sandbox.py
+    threat_notes:
+    - path_escape
+    - symlink_escape
+    - secret_access
+    - network_escape
+    - persistent_side_effect
+    failure_modes:
+    - prerequisites_missing
+    - rollback_unproven
+    - sandbox_not_created
+    - test_not_started
+    - cleanup_not_performed
+legacy_compatibility:
+  phase_specific_contracts_remain_authoritative: false
+  phase_specific_component_indexes_remain_runtime_sources: false
+  phase_specific_validators_are_gate_owners: false
+  detailed_validators_are_subordinate_checks: true
+  physical_paths_preserved_until_pr11: true
+  retirement_requires_no_active_consumer: true
+pr11_handoff:
+  classify_generated_evidence: true
+  archive_historical_phase_material: true
+  remove_compatibility_artifacts_only_after_consumer_scan: true
+  publish_final_one_screen_reference: true

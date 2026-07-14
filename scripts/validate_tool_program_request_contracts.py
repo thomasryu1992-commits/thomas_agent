@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,15 @@ from lib.resource_request import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from runtime.registry_resolution import (
+    RegistryResolutionError,
+    load_resource_definitions,
+    resolve_resource_registry,
+)
+
 ERRORS: list[str] = []
 
 
@@ -117,7 +127,25 @@ def validate_registry(rel: str, record: dict[str, Any]) -> None:
     id_key = "tool_id" if is_tool else "program_id"
     version_key = "tool_version" if is_tool else "program_version"
     registry = load_yaml(ROOT / registry_rel)
-    entries = registry_index(registry, collection, id_key)
+    governance_policy = load_yaml(ROOT / "governance/GOVERNANCE_POLICY.yaml")
+    try:
+        definitions = load_resource_definitions(
+            repo_root=ROOT,
+            registry=registry,
+            collection_key=collection,
+        )
+        resolved_registry = resolve_resource_registry(
+            repo_root=ROOT,
+            registry=registry,
+            definitions=definitions,
+            governance_policy=governance_policy,
+            collection_key=collection,
+            id_key=id_key,
+        )
+    except RegistryResolutionError as exc:
+        error(f"{rel}: Registry resolution failed closed: {exc}")
+        resolved_registry = {collection: []}
+    entries = registry_index(resolved_registry, collection, id_key)
     resource = record["resource"]
     rid = resource[id_key]
     entry = entries.get(rid)

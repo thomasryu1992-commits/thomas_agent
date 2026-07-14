@@ -111,76 +111,21 @@ def yaml_path(
     return current
 
 
-registry_path = (
-    ROOT
-    / "03_ROLE_CONTRACTS/"
-    "ROLE_REGISTRY.yaml"
-)
-registry = load_yaml(
-    registry_path
-)
+registry_path = ROOT / "03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml"
+registry = load_yaml(registry_path)
 
 if not isinstance(registry, dict):
     raise SystemExit(1)
 
-if (
-    registry.get("schema_version")
-    != "role_registry.v0.2"
-):
-    error(
-        "ROLE_REGISTRY.yaml must use "
-        "role_registry.v0.2"
-    )
+if registry.get("schema_version") != "role_registry.v0.3":
+    error("ROLE_REGISTRY.yaml must use role_registry.v0.3")
 
-if (
-    yaml_path(
-        registry,
-        "governance.runtime_assignment.minimum_task_contract",
-    )
-    != "task.v0.3"
-):
-    error(
-        "Role Registry must require Task v0.3"
-    )
+if registry.get("authoritative") is not True:
+    error("ROLE_REGISTRY.yaml must be the active authoritative status/index source")
 
-if (
-    yaml_path(
-        registry,
-        "governance.runtime_assignment.core_context_binding_required",
-    )
-    is not True
-):
-    error(
-        "Role Registry must require "
-        "Core Context Binding"
-    )
-
-trial = (
-    registry.get("governance", {})
-    .get("candidate_trial", {})
-)
-
-if (
-    trial.get(
-        "normal_runtime_routing_allowed"
-    )
-    is not False
-):
-    error(
-        "Candidate normal Runtime routing "
-        "must be false"
-    )
-
-if (
-    trial.get(
-        "explicit_trial_assignment_allowed"
-    )
-    is not True
-):
-    error(
-        "Explicit Candidate trial Assignment "
-        "must be allowed"
-    )
+for prohibited_key in ("governance", "selection_policy", "activation", "rules"):
+    if prohibited_key in registry:
+        error(f"Role Registry must not own policy block: {prohibited_key}")
 
 required_role_fields = {
     "schema_version",
@@ -208,242 +153,95 @@ required_role_fields = {
     "change_control",
 }
 
-entries = (
-    list(
-        registry.get(
-            "active_roles",
-            [],
-        )
-    )
-    + list(
-        registry.get(
-            "candidate_roles",
-            [],
-        )
-    )
-)
+prohibited_registry_fields = {
+    "capabilities",
+    "capability_set_sha256",
+    "permission_ceiling",
+    "restrictions",
+    "validation_default",
+    "promotion_requirements",
+    "selection_policy",
+}
 
+entries = list(registry.get("roles", []))
 seen: set[str] = set()
 
 for entry in entries:
-    role_id = entry.get(
-        "role_id"
-    )
-
+    role_id = entry.get("role_id")
     if role_id in seen:
-        error(
-            f"Duplicate Role ID: {role_id}"
-        )
-
+        error(f"Duplicate Role ID: {role_id}")
     seen.add(role_id)
 
-    rel = entry.get(
-        "contract_path"
-    )
+    duplicated = sorted(prohibited_registry_fields.intersection(entry))
+    if duplicated:
+        error(f"{role_id}: Registry duplicates Definition-owned fields: {duplicated}")
 
+    rel = entry.get("definition_path")
     if not isinstance(rel, str):
-        error(
-            f"{role_id}: invalid contract_path"
-        )
+        error(f"{role_id}: invalid definition_path")
         continue
 
-    path = (
-        ROOT
-        / "03_ROLE_CONTRACTS"
-        / rel
-    )
-
+    path = ROOT / rel
     if not path.exists():
-        error(
-            f"{role_id}: Role Definition "
-            f"does not exist: {rel}"
-        )
+        error(f"{role_id}: Role Definition does not exist: {rel}")
         continue
 
-    data, full_text = parse_front_matter(
-        path
-    )
-
+    data, full_text = parse_front_matter(path)
     if not isinstance(data, dict):
         continue
 
-    missing = sorted(
-        required_role_fields
-        - set(data)
-    )
-
+    missing = sorted(required_role_fields - set(data))
     if missing:
-        error(
-            f"{role_id}: missing Role fields: "
-            f"{missing}"
-        )
+        error(f"{role_id}: missing Role fields: {missing}")
 
-    for field in [
-        "role_id",
-        "role_version",
-        "status",
-        "routable",
-        "role_type",
-        "capabilities",
-        "permission_ceiling",
-    ]:
-        if (
-            data.get(field)
-            != entry.get(field)
-        ):
+    registry_to_definition = {
+        "role_id": "role_id",
+        "version": "role_version",
+        "status": "status",
+        "routable": "routable",
+        "role_type": "role_type",
+    }
+    for registry_field, definition_field in registry_to_definition.items():
+        if data.get(definition_field) != entry.get(registry_field):
             error(
-                f"{role_id}: Registry/Definition "
-                f"mismatch for {field}"
+                f"{role_id}: Registry/Definition mismatch for "
+                f"{registry_field}->{definition_field}"
             )
 
-    if (
-        entry.get(
-            "definition_sha256"
-        )
-        != sha256_text(
-            full_text
-        )
-    ):
-        error(
-            f"{role_id}: definition_sha256 "
-            "mismatch"
-        )
+    if entry.get("definition_sha256") != sha256_text(full_text):
+        error(f"{role_id}: definition_sha256 mismatch")
 
-    capabilities = data.get(
-        "capabilities",
-        [],
-    )
+    input_contract = data.get("input_contract", {})
+    if input_contract.get("task_contract") != "task.v0.3":
+        error(f"{role_id}: task_contract must be task.v0.3")
+    if input_contract.get("task_contract_minimum") != "task.v0.3":
+        error(f"{role_id}: minimum Task Contract must be task.v0.3")
+    if input_contract.get("core_context_binding_required") is not True:
+        error(f"{role_id}: Core Context Binding must be required")
+    if input_contract.get("assignment_contract") != "role_assignment.v0.2":
+        error(f"{role_id}: Assignment Contract must be role_assignment.v0.2")
 
-    if (
-        entry.get(
-            "capability_set_sha256"
-        )
-        != capability_hash(
-            capabilities
-        )
-    ):
-        error(
-            f"{role_id}: capability_set_sha256 "
-            "mismatch"
-        )
+    if data.get("output_contract", {}).get("base_contract") != "agent_output.v0.2":
+        error(f"{role_id}: Output Contract must be agent_output.v0.2")
+    if data.get("budget_caps", {}).get("schema_version") != "execution_budget.v0.1":
+        error(f"{role_id}: budget schema must be execution_budget.v0.1")
 
-    input_contract = data.get(
-        "input_contract",
-        {},
-    )
+    if data.get("status") == "active" and data.get("routable") is not True:
+        error(f"{role_id}: active Role must be routable")
+    if data.get("status") == "candidate" and data.get("routable") is not False:
+        error(f"{role_id}: Candidate Role must not be routable")
 
-    if (
-        input_contract.get(
-            "task_contract"
-        )
-        != "task.v0.3"
-    ):
-        error(
-            f"{role_id}: task_contract "
-            "must be task.v0.3"
-        )
+    if data.get("allowed_program_ids", []):
+        error(f"{role_id}: Program allowlist must remain empty in I0.4.1 Lean")
+    if data.get("allowed_tool_ids", []):
+        error(f"{role_id}: Tool allowlist must remain empty in I0.4.1 Lean")
 
-    if (
-        input_contract.get(
-            "task_contract_minimum"
-        )
-        != "task.v0.3"
-    ):
-        error(
-            f"{role_id}: minimum Task Contract "
-            "must be task.v0.3"
-        )
-
-    if (
-        input_contract.get(
-            "core_context_binding_required"
-        )
-        is not True
-    ):
-        error(
-            f"{role_id}: Core Context Binding "
-            "must be required"
-        )
-
-    if (
-        input_contract.get(
-            "assignment_contract"
-        )
-        != "role_assignment.v0.2"
-    ):
-        error(
-            f"{role_id}: Assignment Contract "
-            "must be role_assignment.v0.2"
-        )
-
-    if (
-        data.get(
-            "output_contract",
-            {},
-        ).get(
-            "base_contract"
-        )
-        != "agent_output.v0.2"
-    ):
-        error(
-            f"{role_id}: Output Contract "
-            "must be agent_output.v0.2"
-        )
-
-    if (
-        data.get(
-            "budget_caps",
-            {},
-        ).get(
-            "schema_version"
-        )
-        != "execution_budget.v0.1"
-    ):
-        error(
-            f"{role_id}: budget schema "
-            "must be execution_budget.v0.1"
-        )
-
-    if (
-        data.get("status")
-        == "active"
-        and data.get("routable")
-        is not True
-    ):
-        error(
-            f"{role_id}: active Role "
-            "must be routable"
-        )
-
-    if (
-        data.get("status")
-        == "candidate"
-        and data.get("routable")
-        is not False
-    ):
-        error(
-            f"{role_id}: Candidate Role "
-            "must not be routable"
-        )
-
-    if data.get(
-        "allowed_program_ids",
-        [],
-    ):
-        error(
-            f"{role_id}: Program allowlist "
-            "must remain empty in I0.4.1 Lean"
-        )
-
-    if data.get(
-        "allowed_tool_ids",
-        [],
-    ):
-        error(
-            f"{role_id}: Tool allowlist "
-            "must remain empty in I0.4.1 Lean"
-        )
-
+for entry in registry.get("non_dynamic_roles", []):
+    rel = entry.get("definition_path")
+    if not isinstance(rel, str) or not (ROOT / rel).exists():
+        error(f"Non-dynamic Role definition is missing: {rel}")
+    if entry.get("role_id") == "thomas.prime" and entry.get("routable") is not False:
+        error("Thomas Prime must remain non-routable")
 
 for rel in [
     "schemas/task.v0.3.schema.json",

@@ -65,6 +65,7 @@ def copy_repository(source: Path, target: Path) -> None:
     owned = [
         "THOMAS_CORE", "03_ROLE_CONTRACTS", "05_REGISTRIES", "docs", "schemas",
         "scripts", "runtime", "governance", "programs", "tools", "examples", "tests",
+        "deferred", "generated", "historical",
         "requirements-validation.in", "requirements-validation.lock",
         ".gitattributes", ".github",
     ]

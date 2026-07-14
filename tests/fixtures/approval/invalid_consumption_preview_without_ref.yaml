@@ -7,9 +7,9 @@ task_id: task_memory_promotion_001
 task_revision: 2
 core_context_binding_id: ccb-release-demo:task_memory_promotion_001:r2
 operating_policy:
-  policy_id: thomas.permission_approval.operating_policy
-  policy_version: 0.1.0
-  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
 action_fingerprint: sha256:8304d316e0b25e185a5ba372e316aa714462e40bce4fbac507a7b7e3e5c00cbc
 approved_action_snapshot:
   schema_version: action_fingerprint_payload.v0.1

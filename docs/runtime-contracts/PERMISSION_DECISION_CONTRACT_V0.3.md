@@ -1,27 +1,30 @@
 # Permission Decision Contract v0.3
 
 **Schema Version:** `permission_decision.v0.3`
-**Document Version:** `0.3.1`
-**Status:** `Thomas-Approved Policy-Bound Review-Only Foundation`
+**Document Version:** `0.4.0`
+**Status:** `ACTIVE_RECORD_CONTRACT_POLICY_REFERENCED`
 **Owner:** `Thomas`
+**Canonical Policy:** [`governance/GOVERNANCE_POLICY.yaml`](../../governance/GOVERNANCE_POLICY.yaml)
 
 ## 1. Purpose
 
-Permission Decision is the immutable, action-specific policy result that answers whether an exact requested action may proceed.
+`PermissionDecision` is an immutable, action-specific result record. It stores the exact policy result, evidence, lineage, Authority calculation, action fingerprint, Approval requirement, lifecycle, and Review-only guards for one requested action.
+
+It does not define global Authority, Permission, Approval, effect, TTL, Control Channel, or conflict rules. Those rules belong only to the canonical Governance Policy.
 
 Authority does not equal Permission.
 
 ```text
-Authority chain
+Authority lineage
 ↓
 Exact action fingerprint
 ↓
-Risk and policy evaluation
+Canonical Governance Policy evaluation
 ↓
-Permission Decision
+Permission Decision record
 ```
 
-A sufficient Authority level is necessary but not sufficient. The exact action must still receive one of:
+A sufficient Authority chain is necessary but not sufficient. The exact action receives one of:
 
 ```text
 ALLOW
@@ -30,66 +33,46 @@ APPROVAL_REQUIRED
 BLOCK
 ```
 
-This v0.3 package is `REVIEW_ONLY`. It does not hand work to an executor and does not grant external execution, financial execution, Runtime mutation, Tool enablement, Program enablement, or Permission expansion.
+This contract remains `REVIEW_ONLY`. It does not create an executor token or grant external execution, financial execution, Runtime mutation, Tool enablement, Program enablement, Approval consumption, or Permission expansion.
 
 ## 2. Required Fields
 
 | Field | Meaning |
-| --- | --- |
-| `schema_version` | Exact schema identifier |
+|---|---|
+| `schema_version` | Exact record schema identifier |
 | `permission_decision_id` | Immutable Permission Decision ID |
 | `trace_id` | End-to-end trace lineage |
 | `task_id` | Bound Task ID |
 | `task_revision` | Exact Task revision |
 | `core_context_binding_id` | Exact Core Context Binding |
-| `operating_policy` | Exact Thomas-approved operating policy ID, version, and reference |
+| `operating_policy` | Exact canonical Governance Policy ID, version, and path |
 | `requested_by` | Actor, Role, and Assignment lineage |
 | `fingerprint_payload` | Canonical exact-action payload |
-| `action_fingerprint` | SHA-256 of canonical payload |
-| `authority` | Required, ceiling, granted, effective, and sufficiency result |
-| `risk` | Risk level, reasons, and default policy disposition |
-| `decision` | Exact Permission Decision and constraints |
+| `action_fingerprint` | SHA-256 over the canonical payload |
+| `authority` | Required, ceiling, granted, effective, and sufficiency evidence |
+| `risk` | Risk evidence and policy-disposition snapshot |
+| `decision` | Exact Permission result and constraints |
 | `approval` | Approval requirement and bound Approval ID |
 | `runtime_effect` | Review-only hard guards |
 | `lifecycle` | Active, superseded, or expired state |
-| `audit_refs` | Required audit lineage |
+| `audit_refs` | Audit lineage |
 
 ## 3. Thomas-Approved Operating Policy Binding
 
-Every new Permission Decision must bind the exact machine-readable policy:
+Every new Permission Decision must bind the canonical Governance Policy:
 
 ```yaml
 operating_policy:
-  policy_id: thomas.permission_approval.operating_policy
-  policy_version: 0.1.0
-  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
 ```
 
-The human-readable source is:
+Historical records bound to `thomas.permission_approval.operating_policy` v0.1.0 remain interpretable under their original schema and history. They are not silently rewritten. New records must use the canonical binding above.
 
-`THOMAS_PERMISSION_APPROVAL_OPERATING_PRINCIPLES_V0.1.md`
+The `operating_policy` field is a reference. This record cannot substitute, copy, or redefine policy rules.
 
-The policy uses the `BOUNDED_MAXIMUM_AUTONOMY` model:
-
-```text
-Safe and reversible internal work
-→ ALLOW
-
-Important but reversible internal work
-→ EXECUTE_AND_REPORT
-
-External, financial, production, governance, destructive, or security-sensitive work
-→ APPROVAL_REQUIRED
-
-Insufficient Authority, prohibited behavior, or unsafe uncertainty
-→ BLOCK
-```
-
-A Runtime component cannot substitute another policy ID or version without a versioned policy change, validation, and Thomas approval.
-
-`permission_scope` is part of the action fingerprint and must resolve to a minimum policy disposition in the approved policy. A Permission Decision may be more restrictive than the minimum disposition, but never less restrictive.
-
-## 4. Authority Invariant
+## 4. Authority invariant
 
 The canonical comparison is:
 
@@ -100,69 +83,23 @@ required_permission_level
 <= role_permission_ceiling
 ```
 
-When this chain is false:
+When this chain is false, `permission_decision = BLOCK`.
 
-```text
-permission_decision = BLOCK
-```
+Approval cannot expand Authority. Approval cannot convert an insufficient Authority chain into an executable action.
 
-Approval cannot expand Authority.
+## 5. Exact action binding
 
-An Approval record cannot convert an insufficient Authority chain into an executable action.
-
-## 5. Exact Action Binding
-
-The following values are part of `fingerprint_payload`:
-
-- Task ID
-- Task revision
-- Core Context Binding ID
-- Requester reference
-- Permission scope
-- Action type
-- Target reference
-- Tool ID
-- Program ID
-- Data scope
-- Content SHA-256
-- Amount and currency
-- Normalized parameters
-- Expiration
+The action fingerprint binds the exact Task revision, Core Context Binding, requester, Permission scope, action type, target, Tool, Program, data scope, content hash, amount, currency, normalized parameters, and expiration.
 
 Any material change requires a new `action_fingerprint` and a new Permission Decision.
 
-The following changes invalidate reuse:
+## 6. Risk is not Permission
 
-```text
-Target changed
-Content changed
-Amount changed
-Currency changed
-Tool changed
-Program changed
-Data scope changed
-Task revision changed
-Core Context Binding changed
-Expiration changed
-```
+`risk.policy_disposition` is an evidence snapshot of the canonical policy classification. Risk does not independently prove Authority, grant Permission, activate a Tool or Program, create Approval, authorize an Executor, or authorize an external or financial action.
 
-## 6. Risk Is Not Permission
+The final record result is `decision.permission_decision`.
 
-`risk.policy_disposition` is a default policy recommendation only.
-
-Risk does not independently:
-
-- prove Authority sufficiency;
-- grant Permission;
-- activate a Tool;
-- activate a Program;
-- create Approval;
-- authorize an executor;
-- authorize external or financial action.
-
-The final result is `decision.permission_decision`.
-
-## 7. Approval Rules
+## 7. Approval binding
 
 For `APPROVAL_REQUIRED`:
 
@@ -182,7 +119,7 @@ approval:
   approval_status: NOT_REQUIRED
 ```
 
-Approval must reference the same Task revision, Core Context Binding, Permission Decision, and action fingerprint.
+Approval must reference the same Task revision, Core Context Binding, Permission Decision, canonical policy binding, and action fingerprint.
 
 ## 8. Lifecycle
 
@@ -192,13 +129,11 @@ SUPERSEDED
 EXPIRED
 ```
 
-A material Task change, action change, Core rebind, or policy-relevant scope change creates a new record and supersedes the old record.
+A material Task, action, Core binding, policy binding, target, content, amount, resource, scope, or expiration change creates a new record and supersedes the old record. Historical records are not silently overwritten.
 
-Historical records are not silently rewritten.
+## 9. Review-only Runtime guards
 
-## 9. Review-Only Runtime Guards
-
-Every v0.3 record must contain:
+Every record must preserve:
 
 ```yaml
 runtime_effect:
@@ -212,32 +147,12 @@ runtime_effect:
   permission_expansion_allowed: false
 ```
 
-An `ALLOW` result in this package is a review result only. It is not an executor token.
+An `ALLOW` result is a policy result record, not an Executor token.
 
-## 10. Failure Rules
+## 10. Fail-closed conditions
 
-Fail closed when:
+Validation blocks when Authority lineage is incomplete, Authority is insufficient, Task or Core lineage differs, the canonical Governance binding differs, the action fingerprint is missing or invalid, material action fields changed, Approval binding is invalid, the record is expired or superseded, a Review-only guard is enabled, or a secret-bearing value appears in the fingerprint payload.
 
-- Authority lineage is incomplete;
-- Authority is insufficient;
-- Task revision does not match;
-- Core Context Binding does not match;
-- action fingerprint is missing or incorrect;
-- requested target or content changed;
-- Approval is required but not correctly bound;
-- record is expired or superseded;
-- any Review-only Runtime guard is enabled;
-- a secret-bearing value appears in the fingerprint payload.
+## 11. Non-goals
 
-## 11. Non-Goals
-
-This contract does not implement:
-
-- external execution;
-- financial execution;
-- Restricted Execution Service;
-- Tool or Program activation;
-- automatic Approval;
-- Telegram identity verification;
-- Approval consumption for real execution;
-- Authority escalation.
+This contract does not implement external execution, financial execution, a Restricted Execution Service, Tool or Program activation, automatic Approval, Telegram identity verification, real Approval consumption, Authority escalation, Runtime activation, or Core activation.

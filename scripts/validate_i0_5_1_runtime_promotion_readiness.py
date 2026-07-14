@@ -236,7 +236,7 @@ def validate_ci_evidence() -> int:
         evidence = _valid_ci_evidence(repo, head_sha=head_sha, repository=repository)
         validate_schema(evidence, ROOT / CI_SCHEMA_REL, "GitHub CI evidence")
         validate_github_ci_evidence_semantics(evidence)
-        evidence_path = repo / "build/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
+        evidence_path = repo / "generated/deferred/runtime_entry/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(yaml.safe_dump(evidence, sort_keys=False), encoding="utf-8")
         result = verify_github_ci_evidence(repo, evidence_path.relative_to(repo).as_posix())
@@ -357,7 +357,7 @@ def validate_readiness_split(base: dict[str, Any]) -> int:
         "program_registry_no_enabled_programs",
     ]:
         requirements[name] = True
-    requirements["github_ci_evidence_ref"] = "build/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
+    requirements["github_ci_evidence_ref"] = "generated/deferred/runtime_entry/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
     requirements["runtime_registry_source_of_truth"] = False
     requirements["runtime_authoritative_mode_enabled"] = False
     requirements["current_core_release_present"] = False
@@ -431,7 +431,12 @@ def validate_component_mutations() -> int:
     count = 0
     with tempfile.TemporaryDirectory(prefix="i0_5_1_component_") as tmp:
         repo = Path(tmp)
-        for rel in [REGISTRY_REL, "runtime/read_only_kernel/kernel.py", "runtime/read_only_kernel/worker.py"]:
+        for rel in [
+            REGISTRY_REL,
+            "runtime/read_only_kernel/kernel.py",
+            "runtime/read_only_kernel/constants.py",
+            "runtime/read_only_kernel/worker.py",
+        ]:
             source = ROOT / rel
             target = repo / rel
             target.parent.mkdir(parents=True, exist_ok=True)

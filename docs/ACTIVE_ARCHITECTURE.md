@@ -1,71 +1,161 @@
 # Thomas Agent Active Architecture
 
-**Status:** Architecture Slimming Migration
+**Status:** Architecture Slimming sequence completed through PR #11
 **Baseline:** I0.5.5
-**Runtime-authoritative execution:** Disabled
+**Runtime-authoritative execution: Disabled**
+**Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints
 
-## Current Active Authority
-
-The existing I0.5.5 authority sources remain active until explicit cutover.
-
-The new Constitution, Governance Policy, Memory Policy, slim Registries, Compatibility Projection, and decomposed Kernel are migration candidates. They do not replace current authority merely by existing, passing validation, or being merged.
-
-## Target Authority Chain
+## Architecture on One Screen
 
 ```text
 Thomas
-↓
+  ↓
 Thomas Core
-↓
+  ↓
 System Constitution
-↓
+(candidate; inactive)
+  ↓
 Governance Policy
-↓
+  ↓
 Thomas Prime
-↓
-Read-only Runtime Kernel
-↓
-General Specialist / Validation
-↓
-Memory Candidate / Audit
+  ↓
+Thin Read-only Runtime Kernel
+  ↓
+Router
+  ↓
+Role / Program / Tool Definitions
+  ↓
+Validation
+  ↓
+Memory Candidate / Append-only Audit
 ```
 
-## Active Development Gate
+Current execution path:
+
+```text
+Task
+  → Core Context Binding
+  → Governance / Permission Decision
+  → Prime Planning and Routing
+  → Deterministic Read-only Work
+  → Validation
+  → Result and Audit Evidence
+```
+
+The architecture is fail-closed when authority, lineage, source ownership, freshness, integrity, or policy interpretation is missing or ambiguous.
+
+## Current Source of Truth
+
+| Domain | Canonical owner |
+|---|---|
+| Identity, values, goals, Core rules | `THOMAS_CORE/` and Core lifecycle records |
+| Authority, Permission, Approval requirements, effects, action identity, conflict rules | `governance/GOVERNANCE_POLICY.yaml` |
+| Task and Runtime record boundaries | Active contracts under `docs/runtime-contracts/` and `schemas/` |
+| Role behavior | Role Definition Markdown YAML front matter |
+| Program behavior | `programs/definitions/*.yaml` |
+| Tool behavior | `tools/definitions/*.yaml` |
+| Role status and routability | `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` |
+| Program status and enablement | `05_REGISTRIES/PROGRAM_REGISTRY.yaml` |
+| Tool status and enablement | `05_REGISTRIES/TOOL_REGISTRY.yaml` |
+| Active Runtime implementation | `runtime/read_only_kernel/` |
+| Registry/Definition resolution | `runtime/registry_resolution.py` |
+| Deferred design | `deferred/DEFERRED_ARCHITECTURE.yaml` |
+| Generated classification | `generated/GENERATED_ARTIFACT_INDEX.yaml` |
+| Historical classification | `historical/HISTORICAL_ARTIFACT_INDEX.yaml` |
+
+A resolved Registry view is an in-memory consumer view. It is not persistent, authoritative, or permission-expanding.
+
+## Thin Runtime Kernel
+
+```text
+kernel facade
+  → loader
+  → preflight
+  → policy adapter
+  → router
+  → worker port
+  → validation
+  → audit
+  → assembler
+```
+
+`orchestrator.py` owns call order and data flow only. Governance owns policy. Definitions own capability behavior. Registries own status and location metadata only.
+
+## Repository Boundaries
+
+```text
+Active
+  governance/  THOMAS_CORE/  roles/registries
+  programs/  tools/  runtime/read_only_kernel/
+  active contracts/schemas  tests  scripts
+
+Deferred
+  deferred/
+  future Runtime Entry, Executor, Operations,
+  Control Channel, Scheduler/Supervisor, Sandbox requirements
+
+Generated
+  generated/
+  reproducible Gate evidence, fingerprints, locks, reports, projections
+
+Historical
+  historical/
+  superseded architecture, frozen phase evidence,
+  migration review records, retired compatibility implementations
+```
+
+**Generated evidence grants no authority.**
+
+**Historical evidence grants no authority.**
+
+Deferred design authority is not Runtime authority. Passing a Gate, producing a report, preserving a release snapshot, or retaining a candidate never activates a capability.
+
+Core release manifests and their copied source/toolchain snapshots remain in `THOMAS_CORE/releases/` because their paths and hashes are immutable release evidence. The Historical index classifies those copies as non-current source without rewriting them.
+
+## Canonical Gate Entrypoint
 
 ```bash
-python scripts/run_active_gate.py --check-only
+python scripts/run_architecture_gate.py --scope active --check-only
+python scripts/run_architecture_gate.py --scope deferred --check-only
+python scripts/run_architecture_gate.py --scope legacy --check-only
+python scripts/run_architecture_gate.py --scope all --check-only
 ```
 
-The Active Gate validates current Core, Contracts, deterministic read-only Runtime, Validation, Audit, Security, and Architecture Slimming invariants.
-
-## Deferred Architecture Gate
-
-```bash
-python scripts/run_deferred_architecture_gate.py --check-only
-```
-
-This validates future Runtime Entry, Executor, Operations, Control, Supervisor, Scheduler, Threshold, and Sandbox designs.
-
-Passing this Gate grants no Runtime permission or activation.
-
-## Legacy Compatibility Gate
-
-```bash
-python scripts/run_legacy_compatibility_gate.py --check-only
-```
-
-This protects frozen I0.4 and Core release compatibility.
-
-## Full Compatibility Gate
-
-The existing command remains available during migration:
+Repository-wide compatibility and release evidence:
 
 ```bash
 python scripts/run_repository_release_gate.py --full --check-only
 ```
 
-## Migration Rule
+Compatibility wrapper commands may remain for external callers, but `scripts/gate_matrix.py` and `scripts/run_architecture_gate.py` own Gate composition.
 
-> New Active MVP work uses the Active Gate.
-> Deferred design does not block ordinary Active MVP iteration unless the deferred scope itself changed.
-> Candidate Governance or Registry files require a separate explicit cutover before becoming authoritative.
+## Safety State
+
+The following remain disabled:
+
+```yaml
+runtime_authoritative_entry_enabled: false
+model_invocation_enabled: false
+tool_execution_enabled: false
+program_execution_enabled: false
+network_access_enabled: false
+filesystem_write_enabled: false
+approval_consumption_enabled: false
+executor_handoff_enabled: false
+scheduler_dispatch_enabled: false
+control_channel_dispatch_enabled: false
+runtime_mutation_enabled: false
+permission_expansion_enabled: false
+authority_expansion_enabled: false
+external_action_enabled: false
+financial_action_enabled: false
+core_activation_enabled: false
+```
+
+Policy authority, validation evidence, generated evidence, historical evidence, and Runtime execution authority are separate. None can silently grant another.
+
+## Change Rule
+
+Before creating a new Contract, Schema, Registry, Validator, Fixture, or Gate, determine whether the change is only a new condition within an existing canonical owner and shared harness.
+
+> One Concept = One Authority = One Source of Truth.

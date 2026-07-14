@@ -16,13 +16,13 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 REGISTRY_REL = "05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml"
 WORKFLOW_REL = ".github/workflows/thomas-agent-runtime-validation.yml"
-GATE_EVIDENCE_REL = "build/release_gate/RELEASE_GATE_EVIDENCE.yaml"
-I0_4_LOCK_REL = "build/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml"
+GATE_EVIDENCE_REL = "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml"
+I0_4_LOCK_REL = "generated/legacy/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml"
 REVIEW_CORE_REL = "THOMAS_CORE/REVIEW_CORE_RELEASE.yaml"
 CURRENT_CORE_REL = "THOMAS_CORE/CURRENT_CORE_RELEASE.yaml"
 TOOL_REGISTRY_REL = "05_REGISTRIES/TOOL_REGISTRY.yaml"
 PROGRAM_REGISTRY_REL = "05_REGISTRIES/PROGRAM_REGISTRY.yaml"
-DEFAULT_CI_EVIDENCE_REL = "build/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
+DEFAULT_CI_EVIDENCE_REL = "generated/deferred/runtime_entry/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml"
 
 REQUIRED_GATE_CHECKS = {
     "I0.4 Consolidated Contract Set": "i0.4_consolidated_contract_set",
@@ -118,6 +118,19 @@ def extract_string_constant(path: Path, constant_name: str) -> str:
         if not isinstance(value_node, ast.Constant) or not isinstance(value_node.value, str):
             raise ReadinessError(f"{path}: {constant_name} must be a literal string")
         matches.append(value_node.value)
+    if not matches:
+        imported_from: list[Path] = []
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom) or node.level != 1 or not node.module:
+                continue
+            if any(
+                alias.name == constant_name
+                and (alias.asname is None or alias.asname == constant_name)
+                for alias in node.names
+            ):
+                imported_from.append(path.parent / f"{node.module}.py")
+        if len(imported_from) == 1 and imported_from[0].is_file():
+            return extract_string_constant(imported_from[0], constant_name)
     if len(matches) != 1:
         raise ReadinessError(f"{path}: expected exactly one literal {constant_name}, found {len(matches)}")
     return matches[0]

@@ -1,0 +1,57 @@
+schema_version: thomas_historical_artifact_index.v0.1
+index_id: thomas.historical.artifacts
+status: ACTIVE_BOUNDARY_INDEX
+owner: Thomas
+authoritative: false
+runtime_use_allowed: false
+rules:
+  historical_artifacts_are_active_authority: false
+  historical_artifacts_participate_in_active_gate: false
+  history_is_rewritten_in_place: false
+  corrections_require_new_record_or_index_entry: true
+families:
+- family_id: legacy_architecture
+  path: historical/architecture/
+  classification: HISTORICAL_REFERENCE
+  active_authority: false
+- family_id: frozen_i0_4_contract_evidence
+  path: historical/runtime-contracts/i0_4/
+  classification: FROZEN_PHASE_EVIDENCE
+  active_authority: false
+- family_id: architecture_slimming_review_evidence
+  path: historical/architecture-slimming/
+  classification: MIGRATION_REVIEW_EVIDENCE
+  active_authority: false
+- family_id: retired_compatibility
+  path: historical/compatibility/
+  classification: RETIRED_COMPATIBILITY_IMPLEMENTATION
+  active_authority: false
+  retirement_conditions:
+    active_consumer_count: 0
+    canonical_registry_resolver: runtime/registry_resolution.py
+    canonical_kernel: runtime/read_only_kernel/
+    active_registry_cutover_complete: true
+core_release_integrity:
+  immutable_manifests:
+    path_pattern: THOMAS_CORE/releases/*/manifest.yaml
+    classification: IMMUTABLE_RELEASE_EVIDENCE
+    active_authority: false
+    move_or_rewrite_allowed: false
+  copied_source_snapshots:
+    path_patterns:
+    - THOMAS_CORE/releases/*/artifacts/**
+    - THOMAS_CORE/releases/*/validation_toolchain/**
+    classification: HISTORICAL_REPRODUCIBILITY_SNAPSHOT
+    active_authority: false
+    must_not_be_interpreted_as_current_source: true
+    move_or_rewrite_allowed: false
+retired_active_locations:
+- runtime/compat/
+- runtime/kernel_slim/
+- runtime/read_only_kernel/slim_candidate.py
+- 03_ROLE_CONTRACTS/ROLE_REGISTRY_SLIM_CANDIDATE.yaml
+- 05_REGISTRIES/PROGRAM_REGISTRY_SLIM_CANDIDATE.yaml
+- 05_REGISTRIES/TOOL_REGISTRY_SLIM_CANDIDATE.yaml
+- docs/thomas-twin-core-architecture-v0.1.md
+- docs/thomas-autonomous-organization-architecture-v0.1.md
+- docs/thomas-prime-foundation-settings-v0.1.md

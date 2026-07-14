@@ -1,40 +1,37 @@
-schema_version: program_registry.v0.1
-document_version: 0.1.1
+schema_version: program_registry.v0.2
+document_version: 0.3.0
+registry_id: thomas_program_registry
 status: active_registry_no_active_programs
 owner: Thomas
-source_of_truth: true
-governance:
-  allowed_statuses:
-  - draft
-  - candidate
-  - active
-  - disabled
-  - deprecated
-  - archived
-  active_and_enabled_required_for_runtime: true
-  program_cannot_expand_authority: true
-  program_request_contract: ../docs/runtime-contracts/PROGRAM_REQUEST_CONTRACT_V0.1.md
-  program_request_schema: ../schemas/program_request.v0.1.schema.json
-  review_only_request_evaluation_supported: true
-  request_record_never_enables_program: true
-  role_definition_allowlist_required: true
-  role_assignment_allowlist_required: true
-  numeric_budget_required: true
-  change_requires_version_and_audit: true
+authoritative: true
+source_of_truth_for:
+- program_status
+- enablement
+- canonical_definition_path
+- canonical_definition_hash
+- runtime_implementation_availability
+governance_refs:
+  canonical_governance_policy: governance/GOVERNANCE_POLICY.yaml
+  program_request_contract: docs/runtime-contracts/PROGRAM_REQUEST_CONTRACT_V0.1.md
 programs:
 - program_id: schema.validator
   version: 0.1.0
   status: candidate
   enabled: false
-  deterministic: true
-  purpose: Validate structured records against approved schemas.
-  required_permission_level: P1
+  definition_path: programs/definitions/SCHEMA_VALIDATOR_PROGRAM.yaml
+  definition_sha256: c2292375d7a8fcf918e5024a9d0fd6910d9dd4485a962fd0e7df9c24aafe49ab
   runtime_implementation_available: false
 - program_id: document.parser
   version: 0.1.0
   status: candidate
   enabled: false
-  deterministic: true
-  purpose: Parse assigned documents into structured text.
-  required_permission_level: P1
+  definition_path: programs/definitions/DOCUMENT_PARSER_PROGRAM.yaml
+  definition_sha256: e5284ee59615f9781ab7086ec5807cb6523bce64376c860559bd3e3efafca004
   runtime_implementation_available: false
+resolution:
+  resolver_module: runtime/registry_resolution.py
+  definition_fields_loaded_at_consumer_boundary: true
+  resolved_view_authoritative: false
+  persistent_resolved_view_allowed: false
+  fail_closed_on_missing_definition: true
+  fail_closed_on_hash_mismatch: true

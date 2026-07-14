@@ -5,9 +5,9 @@ task_id: task_permission_internal_001
 task_revision: 1
 core_context_binding_id: ccb-release-demo:task_permission_internal_001:r1
 operating_policy:
-  policy_id: thomas.permission_approval.operating_policy
-  policy_version: 0.1.0
-  policy_ref: docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
 requested_by:
   actor_type: role
   actor_id: general.specialist

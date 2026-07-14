@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import subprocess
@@ -8,34 +9,50 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(command: list[str]) -> None:
-    print("+", " ".join(command))
-    completed = subprocess.run(command, cwd=ROOT, check=False)
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
+def run(label: str, command: list[str], timeout: int = 900) -> None:
+    print(f"\n=== {label} ===")
+    proc = subprocess.run(command, cwd=ROOT, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
 
 
 def main() -> int:
-    run([sys.executable, "scripts/validate_slimming_package.py"])
-    run([sys.executable, "scripts/validate_gate_separation.py"])
-    run([
-        sys.executable,
-        "-m",
-        "unittest",
-        "tests.test_architecture_slimming",
-        "tests.test_gate_separation",
-        "-v",
-    ])
-    run([
-        sys.executable,
-        "-m",
-        "compileall",
-        "-q",
-        "runtime/compat",
-        "runtime/kernel_slim",
-        "runtime/read_only_kernel/slim_candidate.py",
-    ])
-    print("THOMAS_AGENT_SLIMMING_GATE: PASS")
+    python = sys.executable
+    run(
+        "Compile Active Slim Architecture",
+        [
+            python,
+            "-m",
+            "compileall",
+            "-q",
+            "runtime/read_only_kernel",
+            "runtime/registry_resolution.py",
+            "scripts",
+            "tests",
+        ],
+    )
+    run("Final Slimming Invariants", [python, "scripts/validate_slimming_package.py"])
+    run("Artifact Boundaries", [python, "scripts/validate_artifact_boundaries.py"])
+    run("Gate Separation", [python, "scripts/validate_gate_separation.py"])
+    run("Active Kernel Decomposition", [python, "scripts/validate_active_kernel_decomposition.py"])
+    run("Deferred Architecture Structure", [python, "scripts/validate_deferred_architecture.py", "--structure-only"])
+    run(
+        "Focused Architecture Tests",
+        [
+            python,
+            "-m",
+            "unittest",
+            "tests.test_architecture_slimming",
+            "tests.test_artifact_boundaries",
+            "tests.test_active_kernel_decomposition",
+            "tests.test_gate_separation",
+            "tests.test_deferred_architecture",
+            "-v",
+        ],
+        timeout=1200,
+    )
+    print("\nPASS: final Architecture Slimming Gate completed")
+    print("Generated, Historical, Deferred, compatibility, Runtime, and authority boundaries remain separate and fail closed.")
     return 0
 
 

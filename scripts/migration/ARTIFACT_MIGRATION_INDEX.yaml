@@ -1,72 +1,35 @@
-schema_version: thomas_artifact_migration_index.v0.1
-migration_id: architecture_slimming_pr4_hardening
-status: ACTIVE_MIGRATION_PLAN
+schema_version: thomas_artifact_migration_index.v0.3
+migration_id: architecture_slimming_pr11_final_cleanup
+status: COMPLETED
 owner: Thomas
-
 current_authority:
-  active_authority_replaced: false
-  existing_i0_5_5_sources_remain_active: true
-  candidate_merge_does_not_activate_authority: true
-
-migration_candidates:
-  governance:
-    - governance/SYSTEM_CONSTITUTION.md
-    - governance/GOVERNANCE_POLICY.yaml
-    - governance/MEMORY_POLICY.yaml
-  registries:
-    - 03_ROLE_CONTRACTS/ROLE_REGISTRY_SLIM_CANDIDATE.yaml
-    - 05_REGISTRIES/PROGRAM_REGISTRY_SLIM_CANDIDATE.yaml
-    - 05_REGISTRIES/TOOL_REGISTRY_SLIM_CANDIDATE.yaml
-  runtime:
-    - runtime/kernel_slim/
-    - runtime/compat/
-
-classifications:
-  ACTIVE_EXISTING:
-    - THOMAS_CORE/MVP_ACTIVE_CORE.yaml
-    - docs/runtime-contracts/TASK_CONTRACT_V0.3.md
-    - docs/runtime-contracts/CORE_CONTEXT_BINDING_V0.3.md
-    - 03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml
-    - 05_REGISTRIES/PROGRAM_REGISTRY.yaml
-    - 05_REGISTRIES/TOOL_REGISTRY.yaml
-    - runtime/read_only_kernel/
-  GENERATED:
-    - build/release_gate/
-    - generated/release_gate/
-    - docs/build/
-  DEFERRED:
-    - runtime/read_only_entry/
-    - runtime/protected_governance_state/
-    - docs/runtime-contracts/EXECUTOR_*
-    - docs/runtime-contracts/MONITORING_*
-    - docs/runtime-contracts/ALERT_*
-    - docs/runtime-contracts/HEALTH_*
-    - docs/runtime-contracts/CLOCK_SYNC_*
-    - docs/runtime-contracts/KILL_SWITCH_*
-    - docs/runtime-contracts/DISABLED_PROCESS_SUPERVISOR_*
-    - docs/runtime-contracts/DISABLED_SCHEDULER_*
-    - docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_*
-  HISTORICAL:
-    - docs/thomas-twin-core-architecture-v0.1.md
-    - docs/runtime-contracts/I0_4_*
-    - THOMAS_CORE/releases/*/validation_toolchain/
-
-phase1:
-  physical_moves_performed: false
-  active_gate_split: true
-  deferred_gate_split: true
-  legacy_gate_split: true
-  candidate_governance_added: true
-  compatibility_layer_added: true
-  kernel_candidate_added: true
-  existing_runtime_replaced: false
-  existing_files_deleted: false
-
-next_phases:
-  - parity_validate_old_and_slim_kernel
-  - explicitly_review_canonical_cutover
-  - update_runtime_loaders_to_canonical_definitions
-  - move_generated_evidence
-  - move_deferred_contract_families
-  - retire_duplicate_registry_fields
-  - retire_compatibility_projection
+  governance_policy: governance/GOVERNANCE_POLICY.yaml
+  role_registry: 03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml
+  program_registry: 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+  tool_registry: 05_REGISTRIES/TOOL_REGISTRY.yaml
+  registry_resolver: runtime/registry_resolution.py
+  active_kernel: runtime/read_only_kernel/
+  active_architecture_reference: docs/ACTIVE_ARCHITECTURE.md
+boundary_indexes:
+  deferred: deferred/DEFERRED_ARCHITECTURE.yaml
+  generated: generated/GENERATED_ARTIFACT_INDEX.yaml
+  historical: historical/HISTORICAL_ARTIFACT_INDEX.yaml
+completed_prs:
+  pr_6_documentation_and_gate_consolidation: true
+  pr_7_active_kernel_in_place_decomposition: true
+  pr_8_active_registry_direct_slimming: true
+  pr_9_governance_atomic_consolidation: true
+  pr_10_deferred_architecture_compression: true
+  pr_11_generated_historical_final_reference_cleanup: true
+retired_compatibility:
+  active_consumer_count: 0
+  archive_root: historical/compatibility/
+  canonical_registry_resolver: runtime/registry_resolution.py
+  canonical_kernel: runtime/read_only_kernel/
+safety:
+  runtime_behavior_changed: false
+  activation_authority_added: false
+  generated_evidence_grants_authority: false
+  historical_evidence_grants_authority: false
+  deferred_design_grants_runtime_authority: false
+  future_capability_enabled: false

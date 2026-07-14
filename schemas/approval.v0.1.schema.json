@@ -58,24 +58,49 @@
       "pattern": "^ccb-[A-Za-z0-9._:-]+$"
     },
     "operating_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "policy_id",
-        "policy_version",
-        "policy_ref"
-      ],
-      "properties": {
-        "policy_id": {
-          "const": "thomas.permission_approval.operating_policy"
+      "description": "Current records bind the canonical Governance Policy. The legacy binding is accepted only to preserve historical record compatibility.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_id",
+            "policy_version",
+            "policy_ref"
+          ],
+          "properties": {
+            "policy_id": {
+              "const": "thomas.governance.policy"
+            },
+            "policy_version": {
+              "const": "1.1.0"
+            },
+            "policy_ref": {
+              "const": "governance/GOVERNANCE_POLICY.yaml"
+            }
+          }
         },
-        "policy_version": {
-          "const": "0.1.0"
-        },
-        "policy_ref": {
-          "const": "docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_id",
+            "policy_version",
+            "policy_ref"
+          ],
+          "properties": {
+            "policy_id": {
+              "const": "thomas.permission_approval.operating_policy"
+            },
+            "policy_version": {
+              "const": "0.1.0"
+            },
+            "policy_ref": {
+              "const": "docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml"
+            }
+          }
         }
-      }
+      ]
     },
     "action_fingerprint": {
       "type": "string",
@@ -156,7 +181,8 @@
             "KILL_SWITCH_BYPASS",
             "UNREGISTERED_RESOURCE_EXECUTION",
             "DISABLED_RESOURCE_EXECUTION",
-            "PROTECTED_BRANCH_FORCE_PUSH"
+            "PROTECTED_BRANCH_FORCE_PUSH",
+            "UNAPPROVED_HISTORY_REWRITE"
           ]
         },
         "action_type": {

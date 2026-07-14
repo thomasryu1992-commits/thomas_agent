@@ -23,7 +23,7 @@ It defines:
 | --- | --- |
 | `THOMAS_CORE_PHILOSOPHY.md` | Canonical human-readable Thomas philosophy |
 | `CORE_RUNTIME_POLICY_PROJECTION.yaml` | Compact machine-readable Core-derived Runtime invariants |
-| `docs/build/CORE_PROJECTION_MAP.yaml` | Build-time map for Core projection ownership and consistency validation |
+| `generated/docs/CORE_PROJECTION_MAP.yaml` | Build-time map for Core projection ownership and consistency validation |
 | `CORE_RELEASE_MANIFEST_TEMPLATE.yaml` | Defines the immutable semantic file set for a Core release |
 | `releases/<release_id>/manifest.yaml` | Immutable review-ready Release Manifest with exact file hashes |
 | `approvals/<approval_id>.yaml` | Separate Thomas approval record for one exact Release |
@@ -40,7 +40,7 @@ It defines:
 
 Related architecture document:
 
-- `docs/thomas-autonomous-organization-architecture-v0.1.md`
+- `historical/architecture/thomas-autonomous-organization-architecture-v0.1.md`
 
 ## Runtime Rule
 

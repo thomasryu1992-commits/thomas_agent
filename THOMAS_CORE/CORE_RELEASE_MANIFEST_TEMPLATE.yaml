@@ -31,7 +31,7 @@ release_file_set:
 excluded_from_core_bundle:
 - path: docs/MVP_OPERATING_POLICY.md
   reason: Operational policy changes must not force a new Thomas philosophy Release.
-- path: docs/build/CORE_PROJECTION_MAP.yaml
+- path: generated/docs/CORE_PROJECTION_MAP.yaml
   reason: Build/validation ownership map; not semantic Runtime Core.
 - path: docs/README.md
   reason: Documentation index; not semantic Runtime Core.
@@ -48,4 +48,4 @@ release_invariants:
 - The Release Builder reuses Gate evidence only when the repository source fingerprint is unchanged.
 - Approval has one Runtime-authoritative meaning and requires externally verified evidence.
 - Activation or rollback writes its immutable event and Current pointer in one operation and one commit.
-release_gate_evidence: build/release_gate/RELEASE_GATE_EVIDENCE.yaml
+release_gate_evidence: generated/release_gate/RELEASE_GATE_EVIDENCE.yaml

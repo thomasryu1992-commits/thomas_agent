@@ -1,0 +1,44 @@
+schema_version: thomas_generated_artifact_index.v0.1
+index_id: thomas.generated.artifacts
+status: ACTIVE_BOUNDARY_INDEX
+owner: Thomas
+authoritative: false
+runtime_use_allowed: false
+rules:
+  generated_artifacts_are_source_of_truth: false
+  generated_artifacts_grant_activation: false
+  generated_artifacts_grant_permission: false
+  generated_artifacts_grant_authority: false
+  generated_artifacts_may_replace_source: false
+  regeneration_must_use_canonical_source_and_validator: true
+families:
+- family_id: release_gate_evidence
+  path: generated/release_gate/
+  classification: REGENERABLE_VALIDATION_EVIDENCE
+  builder: scripts/run_repository_release_gate.py
+  required_in_clean_checkout: false
+  active_authority: false
+- family_id: legacy_i0_4_lock
+  path: generated/legacy/i0_4_consolidation/
+  classification: REGENERABLE_LEGACY_EVIDENCE
+  builder: scripts/build_i0_4_contract_set_lock.py
+  required_in_clean_checkout: false
+  active_authority: false
+- family_id: deferred_runtime_entry_evidence
+  path: generated/deferred/runtime_entry/
+  classification: REGENERABLE_DEFERRED_EVIDENCE
+  builder: multiple review-only builders
+  required_in_clean_checkout: false
+  active_authority: false
+- family_id: documentation_projection
+  path: generated/docs/
+  classification: REGENERABLE_DOCUMENTATION_PROJECTION
+  builder: scripts/validate_core_projection_consistency.py
+  required_in_clean_checkout: false
+  active_authority: false
+retired_active_locations:
+- build/release_gate/
+- build/i0_4_consolidation/
+- build/i0_5_1_runtime_promotion/
+- build/runtime_authoritative_read_only_entry/
+- docs/build/

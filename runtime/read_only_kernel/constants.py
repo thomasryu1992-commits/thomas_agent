@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+KERNEL_ID = "thomas.read_only_runtime_kernel"
+KERNEL_VERSION = "0.1.1"
+AUTHORITY_ORDER = {f"P{index}": index for index in range(7)}
+ALLOWED_PERMISSION_DECISIONS = {"ALLOW", "EXECUTE_AND_REPORT"}
+REPLAY_TRANSITIONS = [
+    ("REPLAY_QUEUED", "INPUT_VERIFIED"),
+    ("INPUT_VERIFIED", "PREFLIGHT_PASSED"),
+    ("PREFLIGHT_PASSED", "WORKER_COMPLETED"),
+    ("WORKER_COMPLETED", "CONTRACT_VALIDATED"),
+    ("CONTRACT_VALIDATED", "REPLAY_COMPLETED"),
+]

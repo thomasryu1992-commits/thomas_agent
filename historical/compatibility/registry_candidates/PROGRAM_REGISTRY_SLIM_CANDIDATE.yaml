@@ -1,0 +1,10 @@
+schema_version: architecture_migration_reference.v0.1
+document_id: program_registry_slim_candidate
+status: SUPERSEDED_BY_ACTIVE_IN_PLACE_CUTOVER
+authoritative: false
+canonical_source: 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+cutover_change: PR_8_ACTIVE_REGISTRY_DIRECT_SLIMMING
+runtime_use_allowed: false
+notes:
+  - The former parallel candidate was promoted by replacing the active Registry in place.
+  - This reference remains temporarily for migration traceability and may be removed in PR #11.

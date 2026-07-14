@@ -23,7 +23,7 @@ def load_yaml(path: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build I0.5.3 exact-entry Authorization and atomic-transition previews.")
-    parser.add_argument("--entry-plan", default="build/runtime_authoritative_read_only_entry/RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_PLAN.yaml")
+    parser.add_argument("--entry-plan", default="generated/deferred/runtime_entry/runtime_authoritative_read_only_entry/RUNTIME_AUTHORITATIVE_READ_ONLY_ENTRY_PLAN.yaml")
     parser.add_argument("--input", required=True, help="Review-only YAML containing design_decision, exact_bindings, component_bindings, nonce_sha256, resource_limits, and allowed_read_paths.")
     parser.add_argument("--created-at", required=True)
     parser.add_argument("--output-dir", default="build/i0_5_3_runtime_entry_authorization")

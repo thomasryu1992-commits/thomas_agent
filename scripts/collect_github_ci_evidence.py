@@ -55,7 +55,7 @@ def main() -> int:
     parser.add_argument("--repo-root", default=str(ROOT))
     parser.add_argument("--repository", default=None, help="owner/repo; defaults to the local origin repository")
     parser.add_argument("--run-id", type=int, required=True)
-    parser.add_argument("--output", default="build/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml")
+    parser.add_argument("--output", default="generated/deferred/runtime_entry/i0_5_1_runtime_promotion/GITHUB_CI_EVIDENCE.yaml")
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve(strict=True)
