@@ -29,6 +29,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
         run: python -m pip install -r requirements-validation.lock
@@ -54,6 +55,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
         run: python -m pip install -r requirements-validation.lock
