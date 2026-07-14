@@ -167,8 +167,24 @@ cases:
   expected_reason: ASSIGNMENT_PERMISSION_MISMATCH
 - case_id: invalid_role_registry_missing_entry
   target: role_registry
-  path: active_roles
+  path: roles
   value: []
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_hash
+  target: role_registry
+  path: roles.0.definition_sha256
+  value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_field_duplication
+  target: role_registry
+  path: roles.0.capabilities
+  value:
+  - research
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_path
+  target: role_registry
+  path: roles.0.definition_path
+  value: examples/read_only_runtime/input/other_role_definition.yaml
   expected_reason: ROLE_REGISTRY_MISMATCH
 - case_id: invalid_tool_registry_enabled
   target: tool_registry

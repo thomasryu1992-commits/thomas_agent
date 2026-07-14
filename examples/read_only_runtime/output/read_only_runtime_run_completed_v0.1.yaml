@@ -4,13 +4,13 @@ run_mode: DEVELOPMENT_REPLAY
 input_bundle:
   bundle_id: rorbundle_i0_5_contract_inspection_001
   bundle_ref: examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
-  bundle_sha256: sha256:55b6f3d3473f059f0175fb97c8f4bf1e826a016b120c87ede21937335fac619e
+  bundle_sha256: sha256:5fc0a81f8f0db664dd8ccba3927b57f2ba0faff773a0acb20d70339ba7d2d4e2
   record_sha256:
     task: sha256:4ffe4c16ddcf70d46a733da5f476c504c6e5ebe7e3d1df07eba8f8b36e4275d3
     core_context_binding: sha256:279577a19860790e0042b40c7fb7bf5e0fb38a6230ff5dab48580ce9e52b30f1
     role_assignment: sha256:abbd12732a597a70f3f59e6add231c8da8af101b95250ee8ba2678444a9331dd
     role_definition: sha256:cc599d54e758cfb9c68ca7c61f7af19b2c0f486c23ee69e270a273939d7b467d
-    role_registry: sha256:5bcd113a61f6b2c5b70302d6d51c93e2595920af65ee4b87ad73298599c597f6
+    role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
     tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
     program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
     i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
@@ -53,10 +53,10 @@ preflight:
       I0.4 index record.
   - check_id: runtime_record_schema_validation
     result: PASS
-    notes: 'Validated available schemas for [''i0_4_contract_set_index'']; semantic
-      fail-closed checks cover records without repository schemas: [''core_context_binding'',
-      ''program_registry'', ''role_assignment'', ''role_definition'', ''role_registry'',
-      ''task'', ''tool_registry''].'
+    notes: 'Validated available schemas for [''core_context_binding'', ''i0_4_contract_set_index'',
+      ''role_assignment'', ''task'']; semantic fail-closed checks cover records without
+      repository schemas: [''program_registry'', ''role_definition'', ''role_registry'',
+      ''tool_registry''].'
   - check_id: task_schema
     result: PASS
     notes: Task schema_version must be task.v0.3.
@@ -113,7 +113,7 @@ preflight:
     notes: Role Definition schema_version must be role_definition.v0.2.
   - check_id: role_identity
     result: PASS
-    notes: Role Definition and Assignment role identity must match.
+    notes: Role Definition and Assignment role identity must match exactly.
   - check_id: role_active_routable
     result: PASS
     notes: Read-only development replay requires an active, routable Role snapshot.
@@ -135,9 +135,14 @@ preflight:
   - check_id: assignment_permission_match
     result: PASS
     notes: Task and Assignment Permission records must match and require no Approval.
+  - check_id: role_registry_snapshot_resolution
+    result: PASS
+    notes: Slim Role Registry v0.3 snapshot and the exact hash-bound Role Definition
+      snapshot resolved to a non-authoritative in-memory view.
   - check_id: role_registry_entry
     result: PASS
-    notes: Role Registry must contain one matching active and routable Role entry.
+    notes: Resolved slim Role Registry view must contain one matching active and routable
+      Role entry.
   - check_id: tool_registry_disabled
     result: PASS
     notes: Tool Registry must contain no enabled Tools for I0.5 v0.1.
@@ -973,7 +978,7 @@ lifecycle:
 effects:
   mode: DEVELOPMENT_REPLAY_READ_ONLY
   filesystem_read_performed: true
-  filesystem_read_count: 11
+  filesystem_read_count: 314
   filesystem_write_performed: false
   model_invocation_performed: false
   tool_execution_performed: false
@@ -1001,7 +1006,7 @@ integrity:
     schema_version: read_only_runtime_run_fingerprint_payload.v0.1
     run_id: rorun_bc7f04f8eda1a3db8e64
     bundle_id: rorbundle_i0_5_contract_inspection_001
-    bundle_sha256: sha256:55b6f3d3473f059f0175fb97c8f4bf1e826a016b120c87ede21937335fac619e
+    bundle_sha256: sha256:5fc0a81f8f0db664dd8ccba3927b57f2ba0faff773a0acb20d70339ba7d2d4e2
     task_id: task_i0_5_contract_inspection_001
     task_revision: 1
     core_context_binding_id: ccb-i0-5-contract-inspection-001
@@ -1017,5 +1022,5 @@ integrity:
     - sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
     - sha256:348556f4ae2c6cf82fd2f092c5b00e50c773fa4622b9577bd54aa033f821f4c0
     created_at: '2026-07-13T04:02:00Z'
-  run_sha256: sha256:931cf177ab6641b1b7c95e33c28cd2e673b5b5e452211ac8a5d9bbd51ad48508
+  run_sha256: sha256:65a646288cd92f4e005d48c8342553c046f423e93e2f2d300fed266c14f53712
 created_at: '2026-07-13T04:02:00Z'

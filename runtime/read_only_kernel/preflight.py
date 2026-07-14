@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..registry_resolution import RegistryResolutionError, resolve_role_registry_snapshot
 from .constants import ALLOWED_PERMISSION_DECISIONS, AUTHORITY_ORDER
 from .errors import KernelBlocked
 from .integrity import scan_for_secret_bearing_keys, sha256_value
@@ -267,7 +268,7 @@ def run_preflight(
         role.get("role_id") == assignment.get("role_id")
         and role.get("role_version") == assignment.get("role_version"),
         "ROLE_IDENTITY_MISMATCH",
-        "Role Definition and Assignment role identity must match.",
+        "Role Definition and Assignment role identity must match exactly.",
     )
     check(
         "role_active_routable",
@@ -329,10 +330,30 @@ def run_preflight(
         "Task and Assignment Permission records must match and require no Approval.",
     )
 
+    try:
+        resolved_role_registry = resolve_role_registry_snapshot(
+            registry=role_registry,
+            role_definition=role,
+            definition_ref=bundle.get("refs", {}).get("role_definition", ""),
+            definition_content_sha256=bundle.get("sha256", {}).get("role_definition", ""),
+        )
+    except RegistryResolutionError as exc:
+        raise KernelBlocked("ROLE_REGISTRY_MISMATCH", str(exc)) from exc
+    checks.append(
+        {
+            "check_id": "role_registry_snapshot_resolution",
+            "result": "PASS",
+            "notes": (
+                "Slim Role Registry v0.3 snapshot and the exact hash-bound Role "
+                "Definition snapshot resolved to a non-authoritative in-memory view."
+            ),
+        }
+    )
+
     role_entries = [
         item
-        for item in role_registry.get("active_roles", [])
-        if item.get("role_id") == role["role_id"] and item.get("role_version") == role["role_version"]
+        for item in resolved_role_registry.get("roles", [])
+        if item.get("role_id") == role["role_id"] and item.get("version") == role["role_version"]
     ]
     check(
         "role_registry_entry",
@@ -340,7 +361,7 @@ def run_preflight(
         and role_entries[0].get("status") == "active"
         and role_entries[0].get("routable") is True,
         "ROLE_REGISTRY_MISMATCH",
-        "Role Registry must contain one matching active and routable Role entry.",
+        "Resolved slim Role Registry view must contain one matching active and routable Role entry.",
     )
     check(
         "tool_registry_disabled",
