@@ -1,19 +1,18 @@
 # Thomas Agent Active Architecture
 
-**Status:** Architecture Slimming sequence completed through PR #11
+**Status:** Architecture Slimming sequence completed through PR #11; Post-Slimming Consistency Hardening through Fix #4
 **Baseline:** I0.5.5
 **Runtime-authoritative execution: Disabled**
 **Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints
 
 ## Architecture on One Screen
 
+Active authority and execution lane:
+
 ```text
 Thomas
   ↓
 Thomas Core
-  ↓
-System Constitution
-(candidate; inactive)
   ↓
 Governance Policy
   ↓
@@ -29,6 +28,19 @@ Validation
   ↓
 Memory Candidate / Append-only Audit
 ```
+
+Inactive candidate lane — not part of the active dependency chain:
+
+```text
+System Constitution
+  status: Migration Candidate
+  authoritative: No
+  active dependency: none
+  proposed future position: between Thomas Core and Governance Policy
+  cutover: separate review and explicit Thomas approval required
+```
+
+The active lane above is the only current authority and dependency chain. `governance/SYSTEM_CONSTITUTION.md` is not an active predecessor, policy source, or Runtime dependency. Its presence does not modify precedence, grant authority, or activate any capability.
 
 Current execution path:
 
@@ -65,6 +77,14 @@ The architecture is fail-closed when authority, lineage, source ownership, fresh
 
 A resolved Registry view is an in-memory consumer view. It is not persistent, authoritative, or permission-expanding.
 
+### Non-authoritative Candidate Reference
+
+| Candidate | Current status | Active dependency |
+|---|---|---|
+| `governance/SYSTEM_CONSTITUTION.md` | Migration Candidate; explicit cutover required | None |
+
+The candidate Constitution is intentionally excluded from the current Source-of-Truth map. A future cutover must be reviewed separately, explicitly approved by Thomas, and applied atomically across the active architecture reference and validation boundary.
+
 ## Thin Runtime Kernel
 
 ```text
@@ -85,9 +105,13 @@ kernel facade
 
 ```text
 Active
-  governance/  THOMAS_CORE/  roles/registries
+  governance/GOVERNANCE_POLICY.yaml  THOMAS_CORE/  roles/registries
   programs/  tools/  runtime/read_only_kernel/
   active contracts/schemas  tests  scripts
+
+Candidate Reference
+  governance/SYSTEM_CONSTITUTION.md
+  migration candidate; no active authority or dependency
 
 Deferred
   deferred/

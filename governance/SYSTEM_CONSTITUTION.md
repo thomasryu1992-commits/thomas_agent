@@ -3,6 +3,7 @@
 **Status:** Migration Candidate
 **Owner:** Thomas
 **Authoritative:** No — explicit cutover required
+**Active dependency:** None
 
 ## Purpose
 
@@ -28,7 +29,33 @@ It does not replace the currently active governance sources until a separate cut
 14. External, financial, destructive, protected, production, or authority-changing effects require the applicable Governance decision and Thomas approval.
 15. One concept must have one authoritative owner and one Source of Truth.
 
-## Target Authority Order
+## Current Active Authority Boundary
+
+The current active architecture does not depend on this candidate document. The active authority and execution lane remains:
+
+```text
+Thomas
+↓
+Thomas Core
+↓
+Governance Policy
+↓
+Thomas Prime
+↓
+Runtime Kernel
+↓
+Agent / Program / Tool
+↓
+Validation
+↓
+Memory / Audit
+```
+
+This section is descriptive only. Current authority remains with the active owners identified in `docs/ACTIVE_ARCHITECTURE.md` and `governance/GOVERNANCE_POLICY.yaml`.
+
+## Proposed Future Authority Order After Explicit Cutover
+
+The following order is a proposal only. It becomes active only after a separate architecture review, explicit Thomas approval, and an atomic cutover of the active reference and validation boundary.
 
 ```text
 Thomas
@@ -49,6 +76,21 @@ Validation
 ↓
 Memory / Audit
 ```
+
+## No Active Dependency Rule
+
+Until the explicit cutover is completed, no active Runtime, Registry, Gate, Policy, Role, Program, Tool, or generated artifact may treat this document as an authoritative predecessor, a required dependency, or a permission source.
+
+Validation may verify that this candidate remains inactive and clearly separated. Validation cannot activate it, grant authority from it, or silently insert it into the active dependency chain.
+
+## Cutover Preconditions
+
+A future cutover requires all of the following:
+
+1. separate architecture review;
+2. explicit Thomas approval;
+3. atomic update of the active architecture reference and the existing validation boundary;
+4. confirmation that no Runtime, Tool, Program, Executor, external, financial, Permission-expanding, or Authority-expanding capability is implicitly activated.
 
 ## Non-Activation Statement
 
