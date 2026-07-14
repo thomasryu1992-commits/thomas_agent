@@ -1,9 +1,14 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.0.0
-status: PROPOSED_CANONICAL
+policy_version: 1.0.1
+status: MIGRATION_CANDIDATE
 owner: Thomas
-source_of_truth: true
+authoritative: false
+
+target_authority:
+  planned_source_of_truth: true
+  activation_requires_explicit_cutover: true
+  active_source_replaced: false
 operating_model: BOUNDED_MAXIMUM_AUTONOMY
 
 scope:

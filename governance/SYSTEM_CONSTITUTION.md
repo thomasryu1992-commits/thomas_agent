@@ -1,12 +1,14 @@
 # Thomas Agent System Constitution
 
-**Status:** Proposed Canonical
+**Status:** Migration Candidate
 **Owner:** Thomas
-**Authority:** Thomas
+**Authoritative:** No — explicit cutover required
 
 ## Purpose
 
-This Constitution defines system-wide principles that apply regardless of Task, Role, Program, Tool, Runtime state, or implementation phase.
+This Constitution is the proposed target for system-wide principles that apply regardless of Task, Role, Program, Tool, Runtime state, or implementation phase.
+
+It does not replace the currently active governance sources until a separate cutover is reviewed and explicitly approved by Thomas.
 
 ## Constitutional Rules
 
@@ -26,7 +28,7 @@ This Constitution defines system-wide principles that apply regardless of Task, 
 14. External, financial, destructive, protected, production, or authority-changing effects require the applicable Governance decision and Thomas approval.
 15. One concept must have one authoritative owner and one Source of Truth.
 
-## Authority Order
+## Target Authority Order
 
 ```text
 Thomas

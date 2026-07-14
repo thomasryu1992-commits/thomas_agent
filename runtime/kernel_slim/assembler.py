@@ -36,5 +36,11 @@ def assemble_run(
         "audit_events": [dict(event) for event in audit_events],
         "blockers": list(blockers),
         "runtime_authoritative": False,
+        "runtime_state_mutated": False,
         "external_effect_performed": False,
+        "financial_effect_performed": False,
+        "tool_execution_performed": False,
+        "program_execution_performed": False,
+        "approval_consumed": False,
+        "executor_called": False,
     }

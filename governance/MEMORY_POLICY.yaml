@@ -1,9 +1,14 @@
 schema_version: thomas_memory_policy.v0.1
 policy_id: thomas.memory.policy
-policy_version: 0.1.0
-status: PROPOSED_CANONICAL
+policy_version: 0.1.1
+status: MIGRATION_CANDIDATE
 owner: Thomas
-source_of_truth: true
+authoritative: false
+
+target_authority:
+  planned_source_of_truth: true
+  activation_requires_explicit_cutover: true
+  active_source_replaced: false
 
 memory_classes:
   working:

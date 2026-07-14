@@ -1,0 +1,65 @@
+name: Architecture Slimming Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  active-gate:
+    name: Active Architecture Gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements-validation.lock
+
+      - name: Validate gate separation
+        run: python scripts/validate_gate_separation.py
+
+      - name: Run active architecture gate
+        run: python scripts/run_active_gate.py --check-only
+
+      - name: Run slimming unit tests
+        run: python -m unittest tests.test_architecture_slimming tests.test_gate_separation -v
+
+  deferred-gate:
+    name: Deferred Architecture Gate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements-validation.lock
+
+      - name: Run deferred architecture gate
+        run: python scripts/run_deferred_architecture_gate.py --check-only
+
+      - name: Run legacy compatibility gate
+        run: python scripts/run_legacy_compatibility_gate.py --check-only

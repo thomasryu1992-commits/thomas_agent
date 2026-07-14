@@ -17,11 +17,13 @@ def run(command: list[str]) -> None:
 
 def main() -> int:
     run([sys.executable, "scripts/validate_slimming_package.py"])
+    run([sys.executable, "scripts/validate_gate_separation.py"])
     run([
         sys.executable,
         "-m",
         "unittest",
         "tests.test_architecture_slimming",
+        "tests.test_gate_separation",
         "-v",
     ])
     run([

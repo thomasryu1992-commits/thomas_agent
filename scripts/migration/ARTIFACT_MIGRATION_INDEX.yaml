@@ -1,0 +1,72 @@
+schema_version: thomas_artifact_migration_index.v0.1
+migration_id: architecture_slimming_pr4_hardening
+status: ACTIVE_MIGRATION_PLAN
+owner: Thomas
+
+current_authority:
+  active_authority_replaced: false
+  existing_i0_5_5_sources_remain_active: true
+  candidate_merge_does_not_activate_authority: true
+
+migration_candidates:
+  governance:
+    - governance/SYSTEM_CONSTITUTION.md
+    - governance/GOVERNANCE_POLICY.yaml
+    - governance/MEMORY_POLICY.yaml
+  registries:
+    - 03_ROLE_CONTRACTS/ROLE_REGISTRY_SLIM_CANDIDATE.yaml
+    - 05_REGISTRIES/PROGRAM_REGISTRY_SLIM_CANDIDATE.yaml
+    - 05_REGISTRIES/TOOL_REGISTRY_SLIM_CANDIDATE.yaml
+  runtime:
+    - runtime/kernel_slim/
+    - runtime/compat/
+
+classifications:
+  ACTIVE_EXISTING:
+    - THOMAS_CORE/MVP_ACTIVE_CORE.yaml
+    - docs/runtime-contracts/TASK_CONTRACT_V0.3.md
+    - docs/runtime-contracts/CORE_CONTEXT_BINDING_V0.3.md
+    - 03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml
+    - 05_REGISTRIES/PROGRAM_REGISTRY.yaml
+    - 05_REGISTRIES/TOOL_REGISTRY.yaml
+    - runtime/read_only_kernel/
+  GENERATED:
+    - build/release_gate/
+    - generated/release_gate/
+    - docs/build/
+  DEFERRED:
+    - runtime/read_only_entry/
+    - runtime/protected_governance_state/
+    - docs/runtime-contracts/EXECUTOR_*
+    - docs/runtime-contracts/MONITORING_*
+    - docs/runtime-contracts/ALERT_*
+    - docs/runtime-contracts/HEALTH_*
+    - docs/runtime-contracts/CLOCK_SYNC_*
+    - docs/runtime-contracts/KILL_SWITCH_*
+    - docs/runtime-contracts/DISABLED_PROCESS_SUPERVISOR_*
+    - docs/runtime-contracts/DISABLED_SCHEDULER_*
+    - docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_*
+  HISTORICAL:
+    - docs/thomas-twin-core-architecture-v0.1.md
+    - docs/runtime-contracts/I0_4_*
+    - THOMAS_CORE/releases/*/validation_toolchain/
+
+phase1:
+  physical_moves_performed: false
+  active_gate_split: true
+  deferred_gate_split: true
+  legacy_gate_split: true
+  candidate_governance_added: true
+  compatibility_layer_added: true
+  kernel_candidate_added: true
+  existing_runtime_replaced: false
+  existing_files_deleted: false
+
+next_phases:
+  - parity_validate_old_and_slim_kernel
+  - explicitly_review_canonical_cutover
+  - update_runtime_loaders_to_canonical_definitions
+  - move_generated_evidence
+  - move_deferred_contract_families
+  - retire_duplicate_registry_fields
+  - retire_compatibility_projection

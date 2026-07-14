@@ -5,6 +5,15 @@ from typing import Any, Mapping
 from .types import PolicyDecision, PreflightResult
 
 
+REQUIRED_DISABLED_RUNTIME_EFFECTS = (
+    "grants_runtime_execution",
+    "grants_tool_or_program_enablement",
+    "grants_external_execution",
+    "grants_financial_execution",
+    "grants_permission_expansion",
+)
+
+
 def evaluate_policy(
     *,
     preflight: PreflightResult,
@@ -18,11 +27,18 @@ def evaluate_policy(
             evidence={"source": "preflight"},
         )
 
+    if governance_policy.get("authoritative") is not False:
+        return PolicyDecision(
+            disposition="BLOCK",
+            blockers=("GOVERNANCE_MIGRATION_AUTHORITY_INVALID",),
+            approval_required=False,
+            evidence={},
+        )
+
     task = preflight.resolved.get("task", {})
     requested_disposition = task.get("permission", {}).get("decision", "BLOCK")
 
-    allowed = {"ALLOW", "EXECUTE_AND_REPORT"}
-    if requested_disposition not in allowed:
+    if requested_disposition not in {"ALLOW", "EXECUTE_AND_REPORT"}:
         return PolicyDecision(
             disposition="BLOCK",
             blockers=("READ_ONLY_KERNEL_DISPOSITION_NOT_ALLOWED",),
@@ -31,12 +47,20 @@ def evaluate_policy(
         )
 
     runtime_effect = governance_policy.get("runtime_effect", {})
-    if runtime_effect.get("grants_runtime_execution") is not False:
+    invalid_fields = [
+        field
+        for field in REQUIRED_DISABLED_RUNTIME_EFFECTS
+        if runtime_effect.get(field) is not False
+    ]
+    if invalid_fields:
         return PolicyDecision(
             disposition="BLOCK",
-            blockers=("GOVERNANCE_RUNTIME_BOUNDARY_INVALID",),
+            blockers=tuple(
+                f"GOVERNANCE_RUNTIME_BOUNDARY_INVALID:{field}"
+                for field in invalid_fields
+            ),
             approval_required=False,
-            evidence={},
+            evidence={"invalid_runtime_effect_fields": invalid_fields},
         )
 
     return PolicyDecision(
@@ -46,5 +70,6 @@ def evaluate_policy(
         evidence={
             "policy_id": governance_policy.get("policy_id"),
             "policy_version": governance_policy.get("policy_version"),
+            "policy_authoritative": False,
         },
     )

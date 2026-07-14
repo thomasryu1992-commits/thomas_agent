@@ -1,14 +1,20 @@
 schema_version: program_registry.v0.2
-document_version: 0.2.0
+document_version: 0.2.1
 registry_id: thomas_program_registry
 status: migration_candidate_no_active_programs
 owner: Thomas
-source_of_truth_for:
+authoritative: false
+
+target_source_of_truth_for:
   - program_status
   - enablement
   - canonical_definition_path
   - canonical_definition_hash
   - runtime_implementation_availability
+
+activation:
+  requires_explicit_cutover: true
+  active_registry_replaced: false
 
 governance_policy_ref: governance/GOVERNANCE_POLICY.yaml
 
