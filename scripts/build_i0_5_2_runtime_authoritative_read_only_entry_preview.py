@@ -33,7 +33,7 @@ def write_yaml(path: Path, value: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build I0.5.2 review-only Entry Plan and disabled adapter evidence.")
-    parser.add_argument("--readiness", default="build/i0_5_1_runtime_promotion/RUNTIME_PROMOTION_READINESS.yaml")
+    parser.add_argument("--readiness", default="generated/deferred/runtime_entry/i0_5_1_runtime_promotion/RUNTIME_PROMOTION_READINESS.yaml")
     parser.add_argument("--output-dir", default="build/runtime_authoritative_read_only_entry")
     parser.add_argument("--now", default=None)
     args = parser.parse_args()

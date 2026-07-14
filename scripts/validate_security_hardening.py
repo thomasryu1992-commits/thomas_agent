@@ -40,7 +40,7 @@ def main() -> int:
     )
     if "required_validation_commands" in template:
         error("Release Template contains executable command strings")
-    if template.get("release_gate_evidence") != "build/release_gate/RELEASE_GATE_EVIDENCE.yaml":
+    if template.get("release_gate_evidence") != "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml":
         error("Release Template must reference canonical Release Gate evidence")
     if "required_validators" in template:
         error("Release Template must not duplicate the Release Gate validator list")

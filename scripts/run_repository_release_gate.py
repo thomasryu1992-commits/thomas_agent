@@ -11,11 +11,22 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from gate_matrix import REPOSITORY_RELEASE_CHECKS
 from lib.release_gate_evidence import repository_source_fingerprint, write_gate_evidence
+
+# Deferred detailed validators are subordinate to scripts/validate_deferred_architecture.py.
+# scripts/validate_executor_foundation_contracts.py
+# scripts/validate_operations_evidence_executor_intake.py
+# scripts/validate_control_supervision_threshold_sandbox.py
+# scripts/validate_i0_5_1_runtime_promotion_readiness.py
+# scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
+# scripts/validate_i0_5_3_runtime_entry_authorization.py
+# scripts/validate_i0_5_4_protected_governance_state.py
+# scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATION_PYTHON = os.environ.get("THOMAS_VALIDATION_PYTHON", sys.executable)
-EVIDENCE_REL = "build/release_gate/RELEASE_GATE_EVIDENCE.yaml"
+EVIDENCE_REL = "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml"
 GIT_EXECUTABLE = os.environ.get("THOMAS_GIT") or shutil.which("git") or "git"
 
 
@@ -104,7 +115,10 @@ def git_diff_checks() -> list[dict[str, str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the Thomas Agent I0.4 Consolidation review-only repository Release Gate once and write reusable Gate evidence."
+        description=(
+            "Run the Thomas Agent repository-wide compatibility Release Gate once and write "
+            "reusable Gate evidence."
+        )
     )
     parser.add_argument("--manifest")
     parser.add_argument("--approval")
@@ -125,64 +139,8 @@ def main() -> int:
     python = VALIDATION_PYTHON
 
     checks = [
-        ("Static Integrity", [python, "scripts/validate_static_integrity.py"]),
-        ("I0.4.1 Preconditions", [python, "scripts/validate_i0_preconditions.py"]),
-        ("Runtime Contract Consistency", [python, "scripts/validate_contract_consistency.py"]),
-        ("Task Contract", [python, "scripts/validate_task_contracts.py"]),
-        (
-            "Permission and Approval Foundation",
-            [python, "scripts/validate_permission_approval_contracts.py"],
-        ),
-        (
-            "Tool and Program Request Foundation",
-            [python, "scripts/validate_tool_program_request_contracts.py"],
-        ),
-        (
-            "Execution Validation and Audit Foundation",
-            [python, "scripts/validate_execution_validation_audit_contracts.py"],
-        ),
-        ("Executor Foundation Review-Only", [python, "scripts/validate_executor_foundation_contracts.py"]),
-        ("Operations Evidence and Executor Candidate Intake Review-Only", [python, "scripts/validate_operations_evidence_executor_intake.py"]),
-        ("Control, Supervision, Threshold, and Sandbox Review-Only", [python, "scripts/validate_control_supervision_threshold_sandbox.py"]),
-        ("I0.4 Consolidated Contract Set", [python, "scripts/validate_i0_4_consolidated_contract_set.py"]),
-        ("I0.5 Read-only Runtime Kernel", [python, "scripts/validate_i0_5_read_only_runtime.py"]),
-        (
-            "I0.5.1 Runtime Promotion Readiness",
-            [python, "scripts/validate_i0_5_1_runtime_promotion_readiness.py"],
-        ),
-        (
-            "I0.5.2 Runtime-Authoritative Read-only Entry Design",
-            [python, "scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py"],
-        ),
-        (
-            "I0.5.3 Exact Entry Authorization and At-Most-Once Transition Design",
-            [python, "scripts/validate_i0_5_3_runtime_entry_authorization.py"],
-        ),
-        (
-            "I0.5.4 Protected Local Governance State and Durable CAS Candidate",
-            [python, "scripts/validate_i0_5_4_protected_governance_state.py"],
-        ),
-        (
-            "I0.5.5 Disabled Single Read-only Entry Integration Candidate",
-            [python, "scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py"],
-        ),
-        (
-            "Architecture Slimming Safe Overlay",
-            [python, "scripts/run_slimming_gate.py"],
-        ),
-        ("Thomas Core", [python, "scripts/validate_thomas_core.py"]),
-        (
-            "Core Projection Consistency",
-            [python, "scripts/validate_core_projection_consistency.py", "--strict"],
-        ),
-        ("Runtime Lineage Bundle", [python, "scripts/validate_runtime_lineage_bundle.py"]),
-        (
-            "Programization and Operational Knowledge",
-            [python, "scripts/validate_programization_contracts.py"],
-        ),
-        ("Core Lifecycle Schemas", [python, "scripts/validate_core_lifecycle_schemas.py"]),
-        ("Contract Schema Parity", [python, "scripts/validate_contract_schema_parity.py"]),
-        ("Security Hardening", [python, "scripts/validate_security_hardening.py"]),
+        (label, [python, *command])
+        for label, command in REPOSITORY_RELEASE_CHECKS
     ]
 
     evidence_checks: list[dict[str, str]] = []
@@ -235,7 +193,7 @@ def main() -> int:
         print("No Release Gate evidence was written. This mode grants no Release, Core, Runtime, or execution authority.")
     else:
         evidence_path = write_gate_evidence(ROOT, EVIDENCE_REL, evidence)
-        print("\nPASS: Thomas Agent I0.5.1 repository-wide Release Gate completed")
+        print("\nPASS: Thomas Agent repository-wide Release Gate completed")
         print("Gate evidence: " + evidence_path.relative_to(ROOT).as_posix())
         print("The Release Builder will reuse this evidence only while the repository source fingerprint is unchanged.")
 

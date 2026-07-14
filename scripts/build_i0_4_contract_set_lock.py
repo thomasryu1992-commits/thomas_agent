@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 def sha(p): return 'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest()
 def main():
- ap=argparse.ArgumentParser(); ap.add_argument('--output',default='build/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml'); a=ap.parse_args()
+ ap=argparse.ArgumentParser(); ap.add_argument('--output',default='generated/legacy/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml'); a=ap.parse_args()
  idx=yaml.safe_load((ROOT/'05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml').read_text(encoding='utf-8'))
  paths=[]
  paths += [x['path'] for x in idx['baseline_dependencies']]
@@ -14,7 +14,7 @@ def main():
  paths += [x['schema_path'] for x in idx['record_contracts']]
  paths += [x['path'] for x in idx['non_schema_documents']]
  paths += [x['path'] for x in idx['focused_validators']]
- paths += ['05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml','schemas/i0_4_runtime_contract_set_index.v0.1.schema.json','docs/runtime-contracts/I0_4_RUNTIME_CONTRACT_SET_INDEX_V0.1.md','docs/runtime-contracts/I0_4_CONSOLIDATION_CHECKPOINT_V0.1.md','docs/runtime-contracts/I0_4_CONSOLIDATION_REVIEW_ONLY_BOUNDARY_V0.1.md']
+ paths += ['05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml','schemas/i0_4_runtime_contract_set_index.v0.1.schema.json','historical/runtime-contracts/i0_4/I0_4_RUNTIME_CONTRACT_SET_INDEX_V0.1.md','historical/runtime-contracts/i0_4/I0_4_CONSOLIDATION_CHECKPOINT_V0.1.md','historical/runtime-contracts/i0_4/I0_4_CONSOLIDATION_REVIEW_ONLY_BOUNDARY_V0.1.md']
  uniq=sorted(set(paths)); entries=[]
  for rel in uniq:
   p=ROOT/rel

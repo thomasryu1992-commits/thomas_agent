@@ -95,29 +95,31 @@ if registry_path.exists():
             registry.get(
                 "schema_version"
             )
-            != "role_registry.v0.2"
+            != "role_registry.v0.3"
         ):
             error(
                 "Role Registry must use "
-                "role_registry.v0.2"
+                "role_registry.v0.3"
             )
 
-        if (
-            registry.get(
-                "governance",
-                {},
-            ).get(
-                "runtime_assignment",
-                {},
-            ).get(
-                "minimum_task_contract"
+        for role in registry.get("roles", []):
+            if role.get("status") != "active":
+                continue
+            definition_path = ROOT / role["definition_path"]
+            lines = definition_path.read_text(encoding="utf-8").splitlines()
+            if not lines or lines[0].strip() != "---":
+                error(f"Active Role Definition lacks YAML front matter: {role['role_id']}")
+                continue
+            closing = next(
+                (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+                None,
             )
-            != "task.v0.3"
-        ):
-            error(
-                "Role Registry must require "
-                "Task v0.3"
-            )
+            if closing is None:
+                error(f"Active Role Definition has unterminated YAML front matter: {role['role_id']}")
+                continue
+            definition = yaml.safe_load("\n".join(lines[1:closing]))
+            if definition.get("input_contract", {}).get("task_contract_minimum") != "task.v0.3":
+                error(f"Active Role Definition must require Task v0.3: {role['role_id']}")
 
     except Exception as exc:
         error(
@@ -143,6 +145,6 @@ print(
     "Checked detailed Core sources, Runtime "
     "Contract v0.4 baseline, Task v0.3, Binding "
     "v0.3, Assignment/Output Schemas, Role "
-    "Registry v0.2, validation lock, and "
+    "Registry v0.3, validation lock, and "
     "deprecated Release paths"
 )

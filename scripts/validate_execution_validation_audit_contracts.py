@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -389,17 +390,53 @@ def validate_semantics(rel: str, record: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    positives = [
+    parser = argparse.ArgumentParser(description="Validate Active Validation/Audit or Deferred Execution preview records.")
+    parser.add_argument("--scope", choices=("active", "deferred", "all"), default="all")
+    args = parser.parse_args()
+
+    execution_positives = [
         ("examples/execution_requests/execution_request_tool_document_reader_candidate_blocked_v0.1.yaml", "schemas/execution_request.v0.1.schema.json"),
         ("examples/execution_requests/execution_request_program_schema_validator_candidate_blocked_v0.1.yaml", "schemas/execution_request.v0.1.schema.json"),
         ("examples/execution_requests/execution_request_memory_promotion_approved_but_no_executor_v0.1.yaml", "schemas/execution_request.v0.1.schema.json"),
         ("examples/execution_results/execution_result_tool_document_reader_blocked_v0.1.yaml", "schemas/execution_result.v0.1.schema.json"),
         ("examples/execution_results/execution_result_memory_promotion_previewed_no_execution_v0.1.yaml", "schemas/execution_result.v0.1.schema.json"),
+    ]
+    active_positives = [
         ("examples/validation_results/validation_result_execution_request_tool_block_v0.1.yaml", "schemas/validation_result.v0.1.schema.json"),
         ("examples/validation_results/validation_result_execution_result_no_effect_pass_v0.1.yaml", "schemas/validation_result.v0.1.schema.json"),
         ("examples/audit/audit_event_execution_request_tool_created_v0.1.yaml", "schemas/audit_event.v0.1.schema.json"),
         ("examples/audit/audit_event_validation_execution_request_tool_v0.1.yaml", "schemas/audit_event.v0.1.schema.json"),
     ]
+    execution_negative_sets = [
+        ("tests/fixtures/execution_requests", "schemas/execution_request.v0.1.schema.json"),
+        ("tests/fixtures/execution_results", "schemas/execution_result.v0.1.schema.json"),
+    ]
+    active_negative_sets = [
+        ("tests/fixtures/validation_results", "schemas/validation_result.v0.1.schema.json"),
+        ("tests/fixtures/audit", "schemas/audit_event.v0.1.schema.json"),
+    ]
+    execution_docs = {
+        "docs/runtime-contracts/EXECUTION_REQUEST_CONTRACT_V0.1.md": ["PREVIEW_ONLY", "does not execute", "Approval cannot repair insufficient Authority"],
+        "docs/runtime-contracts/EXECUTION_RESULT_CONTRACT_V0.1.md": ["execution_performed: false", "must never fabricate"],
+        "docs/runtime-contracts/EXECUTION_VALIDATION_AUDIT_REVIEW_ONLY_BOUNDARY_V0.1.md": ["Deferred Executor", "Approval consumption", "fabricated `SUCCEEDED`"],
+    }
+    active_docs = {
+        "docs/runtime-contracts/VALIDATION_RESULT_CONTRACT_V0.1.md": ["Validation does not create", "mutates_subject: false"],
+        "docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md": ["append-only", "Audit never grants"],
+        "docs/runtime-contracts/EXECUTION_VALIDATION_AUDIT_REVIEW_ONLY_BOUNDARY_V0.1.md": ["Validation Result", "Audit Event", "Active invariants"],
+    }
+
+    positives = []
+    negative_sets = []
+    doc_tokens = {}
+    if args.scope in {"active", "all"}:
+        positives.extend(active_positives)
+        negative_sets.extend(active_negative_sets)
+        doc_tokens.update(active_docs)
+    if args.scope in {"deferred", "all"}:
+        positives.extend(execution_positives)
+        negative_sets.extend(execution_negative_sets)
+        doc_tokens.update(execution_docs)
 
     for rel, schema_rel in positives:
         issues = schema_issues(rel, schema_rel)
@@ -408,48 +445,35 @@ def main() -> int:
         else:
             validate_semantics(rel, load_yaml(rel))
 
-    negative_sets = [
-        ("tests/fixtures/execution_requests", "schemas/execution_request.v0.1.schema.json"),
-        ("tests/fixtures/execution_results", "schemas/execution_result.v0.1.schema.json"),
-        ("tests/fixtures/validation_results", "schemas/validation_result.v0.1.schema.json"),
-        ("tests/fixtures/audit", "schemas/audit_event.v0.1.schema.json"),
-    ]
     negative_count = 0
     global ERRORS
     for directory, schema_rel in negative_sets:
-        for path in sorted((ROOT / directory).glob("*.yaml")):
+        for fixture in sorted((ROOT / directory).glob("*.yaml")):
             negative_count += 1
-            rel = path.relative_to(ROOT).as_posix()
+            rel = fixture.relative_to(ROOT).as_posix()
             schema_failures = schema_issues(rel, schema_rel)
             saved = ERRORS
             semantic_failures: list[str] = []
             if not schema_failures:
                 ERRORS = semantic_failures
-                validate_semantics(rel, load_yaml(path))
+                validate_semantics(rel, load_yaml(fixture))
                 ERRORS = saved
             if not schema_failures and not semantic_failures:
                 error(f"{rel}: negative fixture unexpectedly passed")
 
-    doc_tokens = {
-        "docs/runtime-contracts/EXECUTION_REQUEST_CONTRACT_V0.1.md": ["PREVIEW_ONLY", "does not execute", "Approval cannot repair insufficient Authority"],
-        "docs/runtime-contracts/EXECUTION_RESULT_CONTRACT_V0.1.md": ["execution_performed: false", "must never fabricate"],
-        "docs/runtime-contracts/VALIDATION_RESULT_CONTRACT_V0.1.md": ["Validation does not create", "mutates_subject: false"],
-        "docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md": ["append-only", "Audit never grants"],
-        "docs/runtime-contracts/EXECUTION_VALIDATION_AUDIT_REVIEW_ONLY_BOUNDARY_V0.1.md": ["Executor Registry creation", "Approval consumption", "fabricated `SUCCEEDED`"],
-    }
     for rel, tokens in doc_tokens.items():
-        text = (ROOT / rel).read_text(encoding="utf-8")
+        source = (ROOT / rel).read_text(encoding="utf-8")
         for token in tokens:
-            if token not in text:
+            if token not in source:
                 error(f"{rel}: missing safety token: {token}")
 
     if ERRORS:
-        print("FAIL: I0.4.4 Execution/Validation/Audit validation found errors")
+        print(f"FAIL: {args.scope} Execution/Validation/Audit validation found errors")
         for item in ERRORS:
             print(f" - {item}")
         return 1
 
-    print("PASS: I0.4.4 Execution Request, Execution Result, Validation Result, and Audit Event validation completed")
+    print(f"PASS: {args.scope} Execution/Validation/Audit validation completed")
     print(f"Validated {len(positives)} positive examples and {negative_count} fail-closed fixtures")
     print("No Executor, Tool, Program, external endpoint, financial path, Runtime mutation, Approval consumption, or Permission expansion was enabled")
     return 0

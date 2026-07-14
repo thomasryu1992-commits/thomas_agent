@@ -33,17 +33,11 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install -r requirements-validation.lock
 
-      - name: Validate gate separation
-        run: python scripts/validate_gate_separation.py
-
-      - name: Run active architecture gate
-        run: python scripts/run_active_gate.py --check-only
-
-      - name: Run slimming unit tests
-        run: python -m unittest tests.test_architecture_slimming tests.test_gate_separation -v
+      - name: Run canonical active architecture gate
+        run: python scripts/run_architecture_gate.py --scope active --check-only
 
   deferred-gate:
-    name: Deferred Architecture Gate
+    name: Deferred and Legacy Architecture Gates
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
@@ -59,8 +53,8 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install -r requirements-validation.lock
 
-      - name: Run deferred architecture gate
-        run: python scripts/run_deferred_architecture_gate.py --check-only
+      - name: Run canonical deferred architecture gate
+        run: python scripts/run_architecture_gate.py --scope deferred --check-only
 
-      - name: Run legacy compatibility gate
-        run: python scripts/run_legacy_compatibility_gate.py --check-only
+      - name: Run canonical legacy compatibility gate
+        run: python scripts/run_architecture_gate.py --scope legacy --check-only

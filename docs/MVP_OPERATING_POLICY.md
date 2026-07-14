@@ -1,9 +1,12 @@
 # MVP_OPERATING_POLICY.md
 
-**Document Version:** `0.1.1`
-**Document Status:** `Reviewed MVP Draft`
+**Document Version:** `0.2.0`
+**Document Status:** `OPERATIONAL_GUIDE_NON_NORMATIVE_FOR_GOVERNANCE`
 **Owner:** `Thomas`
 **Applies To:** Thomas Prime, MVP Specialist Roles, Validation Agent, Programs, Tools, Memory System
+
+**Canonical Governance Policy:** [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml)
+**Governance Authority:** This document is an operational guide. Permission, Approval, Authority, effect, action-identity, Control Channel, Kill Switch, and conflict rules are owned only by the canonical Governance Policy.
 
 **Role Contracts:** [`03_ROLE_CONTRACTS`](../03_ROLE_CONTRACTS/README.md)
 
@@ -31,8 +34,13 @@ Organization Architecture
 
 ↓
 
+Canonical Governance Policy
+`../governance/GOVERNANCE_POLICY.yaml`
+
+↓
+
 MVP Operating Policy
-본 문서
+본 문서 — operational guide only
 
 ↓
 
@@ -52,7 +60,7 @@ Task, Memory, Approval, Audit Records
 
 MVP에서 아직 존재하지 않거나 비활성인 문서는 실행 근거로 사용하지 않는다.
 
-Task별 지시는 Core, Architecture, 본 Policy의 권한·위험 규칙을 변경할 수 없다.
+Task별 지시는 Core, Architecture, 또는 canonical Governance Policy의 규칙을 변경할 수 없다. 본 문서의 Governance 예시는 설명용이며 충돌 시 canonical Governance Policy와 더 엄격한 규칙을 따른다.
 
 ---
 

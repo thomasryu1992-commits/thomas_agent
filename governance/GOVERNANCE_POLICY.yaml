@@ -1,22 +1,58 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.0.1
-status: MIGRATION_CANDIDATE
+policy_version: 1.1.0
+status: ACTIVE_POLICY_SOURCE
 owner: Thomas
-authoritative: false
-
-target_authority:
-  planned_source_of_truth: true
-  activation_requires_explicit_cutover: true
-  active_source_replaced: false
+authoritative: true
 operating_model: BOUNDED_MAXIMUM_AUTONOMY
+approved_at_utc: '2026-07-12T16:02:53Z'
+
+source_of_truth:
+  active_for:
+    - authority_levels_and_invariants
+    - effect_classification
+    - permission_disposition
+    - approval_requirements
+    - approval_lifetime
+    - action_identity
+    - control_channel_requirements
+    - role_tool_program_governance
+    - financial_governance
+    - memory_and_learning_governance
+    - validation_governance
+    - kill_switch_governance
+    - conflict_resolution
+  replaces_rule_ownership_in:
+    - docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml
+    - docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_PRINCIPLES_V0.1.md
+    - docs/runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md
+    - docs/runtime-contracts/ACTION_FINGERPRINT_POLICY_V0.1.md
+    - docs/MVP_OPERATING_POLICY.md
+  record_contracts_remain_separate:
+    - docs/runtime-contracts/PERMISSION_DECISION_CONTRACT_V0.3.md
+    - docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md
+  generated_or_reference_artifacts_authoritative: false
+
+cutover:
+  cutover_id: PR9_GOVERNANCE_ATOMIC_CONSOLIDATION
+  cutover_type: IN_PLACE_POLICY_AUTHORITY_CONSOLIDATION
+  previous_policy_sources_replaced: true
+  compatibility_reference_retained: true
+  grants_runtime_execution: false
+  grants_tool_or_program_enablement: false
+  grants_external_or_financial_execution: false
+  grants_approval_consumption: false
+  grants_executor_handoff: false
+  grants_core_activation: false
 
 scope:
   defines:
     - effect_classification
+    - authority_levels_and_invariants
     - permission_disposition
     - approval_requirements
-    - authority_limits
+    - action_identity_rules
+    - control_channel_rules
     - conflict_resolution
   does_not_define:
     - task_schema
@@ -25,77 +61,143 @@ scope:
     - runtime_state
     - tool_behavior
     - program_behavior
+    - executor_implementation
 
-precedence:
-  - BLOCK
-  - APPROVAL_REQUIRED
-  - EXECUTE_AND_REPORT
+# Least restrictive to most restrictive. Conflict resolution always selects the stricter result.
+decision_order:
   - ALLOW
+  - EXECUTE_AND_REPORT
+  - APPROVAL_REQUIRED
+  - BLOCK
 
-dispositions:
+policy_dispositions:
   ALLOW:
-    effects:
-      - INTERNAL_READ
-      - INTERNAL_ANALYSIS
-      - DRAFT_CREATION
-      - SIMULATION_VALIDATION
-      - REVIEW_PACKET_CREATION
-      - CANDIDATE_CREATION
-      - CONTROL_CHANNEL_RESPONSE
+    - INTERNAL_READ
+    - INTERNAL_ANALYSIS
+    - DRAFT_CREATION
+    - SIMULATION_VALIDATION
+    - REVIEW_PACKET_CREATION
+    - CANDIDATE_CREATION
+    - CONTROL_CHANNEL_RESPONSE
   EXECUTE_AND_REPORT:
-    effects:
-      - WORKSPACE_REVERSIBLE_WRITE
-      - GIT_AGENT_BRANCH_CHANGE
-      - LOCAL_BUILD_TEST
-      - LOW_RISK_OPERATIONAL_KNOWLEDGE
-      - FINANCIAL_APPROVED_BUDGET_USE
-    requirements:
-      reversible: true
-      scoped: true
-      versioned: true
-      rollback_available: true
-      audit_required: true
+    - WORKSPACE_REVERSIBLE_WRITE
+    - GIT_AGENT_BRANCH_CHANGE
+    - LOCAL_BUILD_TEST
+    - LOW_RISK_OPERATIONAL_KNOWLEDGE
+    - FINANCIAL_APPROVED_BUDGET_USE
   APPROVAL_REQUIRED:
-    effects:
-      - EXTERNAL_COMMUNICATION
-      - PUBLICATION
-      - PROTECTED_BRANCH_CHANGE
-      - RELEASE_DEPLOYMENT
-      - FINANCIAL_NEW_COMMITMENT
-      - RUNTIME_GOVERNANCE
-      - DESTRUCTIVE_CHANGE
-      - ROLE_GOVERNANCE
-      - TOOL_PROGRAM_GOVERNANCE
-      - CANDIDATE_ROLE_TRIAL
-      - SENSITIVE_MEMORY_GOVERNANCE
-      - SECURITY_SENSITIVE_CHANGE
+    - EXTERNAL_COMMUNICATION
+    - PUBLICATION
+    - PROTECTED_BRANCH_CHANGE
+    - RELEASE_DEPLOYMENT
+    - FINANCIAL_NEW_COMMITMENT
+    - RUNTIME_GOVERNANCE
+    - DESTRUCTIVE_CHANGE
+    - ROLE_GOVERNANCE
+    - TOOL_PROGRAM_GOVERNANCE
+    - CANDIDATE_ROLE_TRIAL
+    - SENSITIVE_MEMORY_GOVERNANCE
+    - SECURITY_SENSITIVE_CHANGE
   BLOCK:
-    effects:
-      - AUTHORITY_ESCALATION
-      - SELF_APPROVAL
-      - APPROVAL_REUSE
-      - SECRET_EXFILTRATION
-      - AUDIT_TAMPERING
-      - KILL_SWITCH_BYPASS
-      - UNREGISTERED_RESOURCE_EXECUTION
-      - DISABLED_RESOURCE_EXECUTION
-      - PROTECTED_BRANCH_FORCE_PUSH
-      - UNAPPROVED_HISTORY_REWRITE
+    - AUTHORITY_ESCALATION
+    - SELF_APPROVAL
+    - APPROVAL_REUSE
+    - SECRET_EXFILTRATION
+    - AUDIT_TAMPERING
+    - KILL_SWITCH_BYPASS
+    - UNREGISTERED_RESOURCE_EXECUTION
+    - DISABLED_RESOURCE_EXECUTION
+    - PROTECTED_BRANCH_FORCE_PUSH
+    - UNAPPROVED_HISTORY_REWRITE
 
 authority:
+  levels:
+    P0: OBSERVE
+    P1: READ
+    P2: ANALYZE
+    P3: CREATE
+    P4: INTERNAL_MODIFY
+    P5: EXTERNAL_ACTION
+    P6: CRITICAL_AUTHORITY
+  evaluation_order:
+    - required_permission_level
+    - effective_permission_level
+    - assignment_granted_permission_level
+    - role_permission_ceiling
+    - system_actor_maximum
+  required_invariant: required_permission_level <= effective_permission_level <= assignment_granted_permission_level <= role_permission_ceiling <= system_actor_maximum
   approval_cannot_expand_authority: true
   insufficient_authority_result: BLOCK
   self_approval_allowed: false
   role_self_permission_change_allowed: false
   runtime_self_activation_allowed: false
+  tool_or_program_may_expand_authority: false
+  p5_and_p6_require_separate_policy_gate: true
 
-approval:
+action_identity:
+  payload_schema: action_fingerprint_payload.v0.1
+  algorithm: SHA-256
+  output_prefix: 'sha256:'
+  canonicalization:
+    encoding: UTF-8
+    object_keys_sorted: true
+    insignificant_whitespace_removed: true
+    unicode_preserved: true
+    float_values_allowed: false
+    data_scope_sorted_unique: true
+  required_fields:
+    - task_id
+    - task_revision
+    - core_context_binding_id
+    - requester_ref
+    - permission_scope
+    - action_type
+    - target_ref
+    - tool_id
+    - program_id
+    - data_scope
+    - content_sha256
+    - amount_decimal
+    - currency
+    - normalized_parameters
+    - expires_at
+  invalidated_by_any_material_field_change: true
+  secrets_forbidden: true
+  hashing_a_secret_does_not_make_secret_handling_allowed: true
+  executable_implementation: scripts/lib/action_fingerprint.py
+
+control_channel:
+  primary_channel: TELEGRAM_PRIVATE_1_TO_1
   required_approver: Thomas
+  registered_user_id_match_required: true
+  registered_private_chat_match_required: true
+  approval_id_or_fingerprint_code_required: true
+  explicit_approval_expression_required: true
+  allowed_identity_verification_methods:
+    - telegram_private_control_channel
+  invalid_approval_sources:
+    - telegram_group
+    - telegram_channel
+    - other_user
+    - forwarded_message
+    - emoji_only
+    - ambiguous_expression
+    - stale_message_without_matching_code
+    - different_action
+  local_operator_console:
+    emergency_controls_allowed:
+      - pause
+      - stop_task
+      - kill
+      - status
+      - audit
+      - recovery
+    new_high_risk_approval_creation_allowed: false
+
+approval_lifetime:
   one_time_use_required: true
-  default_ttl_minutes: 30
+  default_approval_ttl_minutes: 30
   permission_decision_max_ttl_minutes: 60
-  exact_action_fingerprint_required: true
-  invalid_if_action_changes: true
   scope_max_ttl_minutes:
     EXTERNAL_COMMUNICATION: 5
     PUBLICATION: 5
@@ -109,11 +211,8 @@ approval:
     CANDIDATE_ROLE_TRIAL: 30
     SENSITIVE_MEMORY_GOVERNANCE: 30
     SECURITY_SENSITIVE_CHANGE: 5
-
-action_identity:
-  algorithm: SHA-256
-  exact_binding_required: true
-  secrets_forbidden: true
+  approval_reuse_allowed: false
+  approval_consumption_implemented: false
 
 github:
   execute_and_report:
@@ -137,22 +236,81 @@ github:
     - audit_concealment
     - unapproved_history_rewrite
 
+financial:
+  analysis_and_budget_proposal: ALLOW
+  approved_provider_within_registered_budget: EXECUTE_AND_REPORT
+  new_commitment_or_budget_overrun: APPROVAL_REQUIRED
+  autonomous_spend_without_registered_budget: '0'
+  financial_executor_enabled: false
+
 role_tool_program:
   candidate_creation: ALLOW
   candidate_role_trial: APPROVAL_REQUIRED
   role_activation_or_promotion: APPROVAL_REQUIRED
+  role_deactivation: APPROVAL_REQUIRED
+  authority_ceiling_change: APPROVAL_REQUIRED
+  allowlist_change: APPROVAL_REQUIRED
   tool_or_program_request_creation: ALLOW
   tool_or_program_activation: APPROVAL_REQUIRED
   unregistered_or_disabled_resource_execution: BLOCK
+  candidate_status_does_not_grant_runtime_permission: true
+
+memory_learning:
+  working_memory_and_candidate_creation: ALLOW
+  validated_low_risk_operational_knowledge: EXECUTE_AND_REPORT
+  protected_identity_or_policy_change: APPROVAL_REQUIRED
+  secret_storage_in_memory_allowed: false
+  ten_valid_repetitions_result: PROGRAMIZATION_REVIEW_TRIGGER_ONLY
+  automatic_runtime_promotion_allowed: false
+  feedback_may_create_candidates_only: true
 
 validation:
+  independent_validation_required_for:
+    - external_public_action
+    - financial_action
+    - production_change
+    - protected_core_change
+    - permission_or_authority_policy_change
+    - role_tool_or_program_activation
+    - destructive_action
+    - high_uncertainty_material_decision
   self_review_counts_as_independent: false
-  grants_permission: false
+  validation_grants_permission: false
+  validation_grants_approval: false
+  validation_grants_authority: false
+  validation_may_block_progression: true
 
-conflict_resolution:
+kill_switch:
+  commands:
+    - /pause
+    - /stop <task_id>
+    - /kill
+    - /resume
+  kill_blocks:
+    - new_execution
+    - pending_execution
+    - external_execution
+    - tool_write
+    - program_write
+    - scheduler_execution
+  kill_allows:
+    - read_only_status
+    - audit_read
+  resume_requires_thomas_authentication: true
+  agent_can_disable_or_bypass: false
+  runtime_enforcement_active: false
+
+conflict_policy:
   stricter_rule_wins: true
   fail_closed_on_uncertainty: true
+  missing_policy_data_result: BLOCK
+  inconsistent_policy_data_result: BLOCK
+  escalation_path:
+    - PAUSE
+    - THOMAS_PRIME_REVIEW
+    - THOMAS_APPROVAL_IF_REQUIRED
 
+# Policy authority is active; execution authority is not. Every field below must remain false.
 runtime_effect:
   mode: REVIEW_ONLY
   grants_runtime_execution: false
@@ -160,3 +318,12 @@ runtime_effect:
   grants_external_execution: false
   grants_financial_execution: false
   grants_permission_expansion: false
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+  approval_consumption_allowed: false
+  core_activation_allowed: false

@@ -183,7 +183,7 @@ def check_template() -> None:
         "release_gate_evidence"
     )
 
-    if gate_evidence != "build/release_gate/RELEASE_GATE_EVIDENCE.yaml":
+    if gate_evidence != "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml":
         error(
             "Template must reference the canonical Release Gate evidence path"
         )

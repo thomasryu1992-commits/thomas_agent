@@ -1,192 +1,32 @@
-schema_version: thomas_permission_approval_operating_policy.v0.1
-policy_id: thomas.permission_approval.operating_policy
-policy_version: 0.1.0
-status: THOMAS_APPROVED_FOR_IMPLEMENTATION
+schema_version: governance_policy_compatibility_reference.v0.1
+document_version: 0.2.0
+status: SUPERSEDED_BY_CANONICAL_GOVERNANCE_POLICY
 owner: Thomas
-operating_model: BOUNDED_MAXIMUM_AUTONOMY
-approved_at_utc: '2026-07-12T16:02:53Z'
-approval_source:
-  source_type: design_conversation_confirmation
-  approved_by: Thomas
-  scope: POLICY_DEFINITION_AND_IMPLEMENTATION_ONLY
-  grants_runtime_execution: false
-  grants_tool_or_program_enablement: false
-  grants_external_or_financial_execution: false
-decision_order:
-- ALLOW
-- EXECUTE_AND_REPORT
-- APPROVAL_REQUIRED
-- BLOCK
-policy_dispositions:
-  ALLOW:
-  - INTERNAL_READ
-  - INTERNAL_ANALYSIS
-  - DRAFT_CREATION
-  - SIMULATION_VALIDATION
-  - REVIEW_PACKET_CREATION
-  - CANDIDATE_CREATION
-  - CONTROL_CHANNEL_RESPONSE
-  EXECUTE_AND_REPORT:
-  - WORKSPACE_REVERSIBLE_WRITE
-  - GIT_AGENT_BRANCH_CHANGE
-  - LOCAL_BUILD_TEST
-  - LOW_RISK_OPERATIONAL_KNOWLEDGE
-  - FINANCIAL_APPROVED_BUDGET_USE
-  APPROVAL_REQUIRED:
-  - EXTERNAL_COMMUNICATION
-  - PUBLICATION
-  - PROTECTED_BRANCH_CHANGE
-  - RELEASE_DEPLOYMENT
-  - FINANCIAL_NEW_COMMITMENT
-  - RUNTIME_GOVERNANCE
-  - DESTRUCTIVE_CHANGE
-  - ROLE_GOVERNANCE
-  - TOOL_PROGRAM_GOVERNANCE
-  - CANDIDATE_ROLE_TRIAL
-  - SENSITIVE_MEMORY_GOVERNANCE
-  - SECURITY_SENSITIVE_CHANGE
-  BLOCK:
-  - AUTHORITY_ESCALATION
-  - SELF_APPROVAL
-  - APPROVAL_REUSE
-  - SECRET_EXFILTRATION
-  - AUDIT_TAMPERING
-  - KILL_SWITCH_BYPASS
-  - UNREGISTERED_RESOURCE_EXECUTION
-  - DISABLED_RESOURCE_EXECUTION
-  - PROTECTED_BRANCH_FORCE_PUSH
-authority:
-  approval_cannot_expand_authority: true
-  insufficient_authority_result: BLOCK
-  self_approval_allowed: false
-control_channel:
-  primary_channel: TELEGRAM_PRIVATE_1_TO_1
-  required_approver: Thomas
-  registered_user_id_match_required: true
-  registered_private_chat_match_required: true
-  approval_id_or_fingerprint_code_required: true
-  explicit_approval_expression_required: true
-  allowed_identity_verification_methods:
-  - telegram_private_control_channel
-  invalid_approval_sources:
-  - telegram_group
-  - telegram_channel
-  - other_user
-  - forwarded_message
-  - emoji_only
-  - ambiguous_expression
-  - stale_message_without_matching_code
-  - different_action
-  local_operator_console:
-    emergency_controls_allowed:
-    - pause
-    - stop_task
-    - kill
-    - status
-    - audit
-    - recovery
-    new_high_risk_approval_creation_allowed: false
-approval_lifetime:
-  one_time_use_required: true
-  default_approval_ttl_minutes: 30
-  permission_decision_max_ttl_minutes: 60
-  scope_max_ttl_minutes:
-    EXTERNAL_COMMUNICATION: 5
-    PUBLICATION: 5
-    PROTECTED_BRANCH_CHANGE: 15
-    RELEASE_DEPLOYMENT: 15
-    FINANCIAL_NEW_COMMITMENT: 5
-    RUNTIME_GOVERNANCE: 15
-    DESTRUCTIVE_CHANGE: 5
-    ROLE_GOVERNANCE: 15
-    TOOL_PROGRAM_GOVERNANCE: 15
-    CANDIDATE_ROLE_TRIAL: 30
-    SENSITIVE_MEMORY_GOVERNANCE: 30
-    SECURITY_SENSITIVE_CHANGE: 5
-github:
-  execute_and_report:
-  - agent_branch_create
-  - repository_code_or_document_edit
-  - test
-  - validator
-  - build
-  - agent_branch_commit
-  - agent_branch_push_to_approved_repository
-  - draft_pull_request_create_or_update
-  approval_required:
-  - protected_branch_merge
-  - release
-  - production_deployment
-  - repository_visibility_change
-  - branch_protection_change
-  - repository_delete
-  blocked:
-  - protected_branch_force_push
-  - audit_concealment
-  - unapproved_history_rewrite
-financial:
-  analysis_and_budget_proposal: ALLOW
-  approved_provider_within_registered_budget: EXECUTE_AND_REPORT
-  new_commitment_or_budget_overrun: APPROVAL_REQUIRED
-  autonomous_spend_without_registered_budget: '0'
-  financial_executor_enabled: false
-role_tool_program:
-  candidate_creation: ALLOW
-  candidate_role_trial: APPROVAL_REQUIRED
-  role_activation_or_promotion: APPROVAL_REQUIRED
-  tool_or_program_request_creation: ALLOW
-  tool_or_program_activation: APPROVAL_REQUIRED
-  unregistered_or_disabled_resource_execution: BLOCK
-memory_learning:
-  working_memory_and_candidate_creation: ALLOW
-  validated_low_risk_operational_knowledge: EXECUTE_AND_REPORT
-  protected_identity_or_policy_change: APPROVAL_REQUIRED
-  secret_storage_in_memory_allowed: false
-  ten_valid_repetitions_result: PROGRAMIZATION_REVIEW_TRIGGER_ONLY
-  automatic_runtime_promotion_allowed: false
-validation:
-  independent_validation_required_for:
-  - external_public_action
-  - financial_action
-  - production_change
-  - protected_core_change
-  - permission_or_authority_policy_change
-  - role_tool_or_program_activation
-  - destructive_action
-  - high_uncertainty_material_decision
-  self_review_counts_as_independent: false
-  validation_grants_permission: false
-kill_switch:
-  commands:
-  - /pause
-  - /stop <task_id>
-  - /kill
-  - /resume
-  kill_blocks:
-  - new_execution
-  - pending_execution
-  - external_execution
-  - tool_write
-  - program_write
-  - scheduler_execution
-  kill_allows:
-  - read_only_status
-  - audit_read
-  resume_requires_thomas_authentication: true
-  agent_can_disable_or_bypass: false
-conflict_policy:
-  stricter_rule_wins: true
-  fail_closed_on_uncertainty: true
-  escalation_path:
-  - PAUSE
-  - THOMAS_PRIME_REVIEW
-  - THOMAS_APPROVAL_IF_REQUIRED
-runtime_effect:
-  mode: REVIEW_ONLY
-  executor_handoff_allowed: false
-  external_execution_allowed: false
-  financial_execution_allowed: false
-  runtime_mutation_allowed: false
-  tool_enablement_allowed: false
-  program_enablement_allowed: false
-  permission_expansion_allowed: false
+authoritative: false
+runtime_use_allowed: false
+
+canonical_policy:
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
+  authoritative: true
+
+legacy_identity:
+  policy_id: thomas.permission_approval.operating_policy
+  policy_version: 0.1.0
+  historical_schema: thomas_permission_approval_operating_policy.v0.1
+  historical_records_remain_interpretable: true
+
+reference_policy:
+  rules_embedded: false
+  may_define_permission_disposition: false
+  may_define_approval_requirements: false
+  may_define_authority: false
+  may_define_runtime_effects: false
+  may_grant_execution: false
+
+migration:
+  cutover_id: PR9_GOVERNANCE_ATOMIC_CONSOLIDATION
+  new_records_must_bind_canonical_policy: true
+  old_record_binding_supported_for_historical_schema_compatibility_only: true
+  silent_historical_record_rewrite_allowed: false

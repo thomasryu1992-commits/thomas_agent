@@ -118,7 +118,7 @@ def full_repository_present() -> bool:
 
 
 def check_projection_map() -> dict[str, Any]:
-    rel = "docs/build/CORE_PROJECTION_MAP.yaml"
+    rel = "generated/docs/CORE_PROJECTION_MAP.yaml"
     data = load_yaml(rel)
 
     expect(
@@ -219,7 +219,7 @@ def check_versions() -> None:
         "THOMAS_CORE/MVP_ACTIVE_CORE.yaml"
     )
     projection = load_yaml(
-        "docs/build/CORE_PROJECTION_MAP.yaml"
+        "generated/docs/CORE_PROJECTION_MAP.yaml"
     )
     policy = load_yaml(
         "THOMAS_CORE/CORE_RUNTIME_POLICY_PROJECTION.yaml"
@@ -234,7 +234,7 @@ def check_versions() -> None:
     for rel, data in [
         ("CORE_METADATA.yaml", metadata),
         ("MVP_ACTIVE_CORE.yaml", active),
-        ("docs/build/CORE_PROJECTION_MAP.yaml", projection),
+        ("generated/docs/CORE_PROJECTION_MAP.yaml", projection),
         ("CORE_RUNTIME_POLICY_PROJECTION.yaml", policy),
     ]:
         if data.get("core_version") != "0.2.1":
@@ -586,7 +586,7 @@ def scan_stale_text(
             rel = path.relative_to(ROOT)
             rel_posix = rel.as_posix()
 
-            if rel_posix == "docs/build/CORE_PROJECTION_MAP.yaml":
+            if rel_posix == "generated/docs/CORE_PROJECTION_MAP.yaml":
                 continue
 
             if (

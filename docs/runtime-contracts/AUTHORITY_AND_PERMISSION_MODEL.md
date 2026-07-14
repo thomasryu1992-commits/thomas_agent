@@ -1,79 +1,54 @@
-# Authority and Permission Model
+# Authority and Permission Model — Explanatory Reference
 
-**Document Version:** `0.1.0`
-**Status:** `Active MVP Contract`
+**Document Version:** `0.2.0`
+**Status:** `EXPLANATORY_REFERENCE`
 **Owner:** `Thomas`
+**Authoritative:** `false`
+**Canonical Governance Source:** [`governance/GOVERNANCE_POLICY.yaml`](../../governance/GOVERNANCE_POLICY.yaml)
 
 ## 1. Purpose
 
-This document separates two concepts that must never be treated as the same value.
-
-1. **Authority Level** — what an actor is structurally allowed to do.
-2. **Permission Decision** — whether one exact requested action may proceed now.
-
-The model prevents invalid comparisons such as `ALLOW <= P3` and keeps Role, Task, Assignment, Tool, Program, Policy, Approval, and Runtime decisions auditable.
-
-## 2. Authority Levels
+This document explains the distinction between Authority and Permission. The canonical Authority levels, invariants, Permission dispositions, Approval requirements, effect classifications, and conflict rules are defined only in `governance/GOVERNANCE_POLICY.yaml`.
 
 ```text
-P0 Observe
-P1 Read
-P2 Analyze
-P3 Create
-P4 Internal Modify
-P5 External Action
-P6 Critical Authority
+Authority
+→ What an actor class may structurally do within its maximum scope
+
+Permission
+→ Whether one exact action may proceed now
 ```
 
-### P0 — Observe
+Authority and Permission must never be treated as the same axis. Values such as `ALLOW` and `BLOCK` are not numerically comparable with `P0` through `P6`.
 
-- Read status indicators.
-- Read non-content operational metadata.
+## 2. Authority levels
 
-### P1 — Read
+| Level | Meaning | Typical boundary |
+|---|---|---|
+| `P0` | Observe | Status and non-content metadata |
+| `P1` | Read | Assigned documents, data, Memory, and Task context |
+| `P2` | Analyze | Compare, calculate, evaluate, classify, and reason |
+| `P3` | Create | Drafts, plans, analyses, reports, internal artifacts, and candidates |
+| `P4` | Internal Modify | Explicitly assigned, reversible internal state |
+| `P5` | External Action | Messages, publication, or external-system state change |
+| `P6` | Critical Authority | Financial, Core, policy, privileged, destructive, or equivalent critical action |
 
-- Read authorized documents, data, Memory, and Task context.
+This table is explanatory. The machine-readable level map is owned by the canonical Governance Policy.
 
-### P2 — Analyze
+## 3. Canonical Authority invariant
 
-- Compare, calculate, evaluate, classify, and reason over authorized inputs.
-
-### P3 — Create
-
-- Create drafts, plans, analyses, reports, internal artifacts, and Memory Candidates.
-
-### P4 — Internal Modify
-
-- Modify explicitly assigned and reversible internal state.
-- Modify Working Memory or Task state only when separately allowed.
-
-### P5 — External Action
-
-- Send messages, publish content, or modify external systems.
-- Requires a separate Policy Gate and action-bound approval when policy requires it.
-
-### P6 — Critical Authority
-
-- Financial action, critical permission change, Core change, Policy change, high-impact deployment, destructive privileged action, or equivalent critical authority.
-- Thomas-only or separately governed by an explicit approved policy.
-
-## 3. Canonical Authority Fields
-
-```yaml
-required_permission_level: P2
-role_permission_ceiling: P3
-assignment_granted_permission_level: P2
-effective_permission_level: P2
+```text
+required_permission_level
+<= effective_permission_level
+<= assignment_granted_permission_level
+<= role_permission_ceiling
+<= system_actor_maximum
 ```
 
-- `required_permission_level`: minimum authority required by the planned action.
-- `role_permission_ceiling`: maximum authority the selected Role Definition may ever receive.
-- `assignment_granted_permission_level`: maximum authority Thomas Prime grants for this exact Assignment.
-- `effective_permission_level`: final authority available after actor, Role, Assignment, resource, and policy constraints.
+If the chain is incomplete, unknown, or insufficient, the result is `BLOCK`.
 
-## 4. Permission Decisions
+Approval cannot expand Authority. A Tool or Program cannot expand Authority. A Role cannot change its own ceiling. Runtime cannot activate itself.
 
-Permission Decisions are not authority levels.
+## 4. Permission dispositions
 
 ```text
 ALLOW
@@ -82,133 +57,67 @@ APPROVAL_REQUIRED
 BLOCK
 ```
 
-### `ALLOW`
+- `ALLOW`: the exact action may proceed only within valid Authority, scope, lineage, resource, budget, and Runtime boundaries.
+- `EXECUTE_AND_REPORT`: the exact action may proceed only when the canonical policy's reversibility, scope, versioning, rollback, and reporting requirements are satisfied.
+- `APPROVAL_REQUIRED`: the action must not proceed until a valid exact-action Approval exists. Current Review-only records still do not create an execution token.
+- `BLOCK`: the action must not proceed.
 
-The exact action may proceed within the effective authority, scope, resource, and budget constraints.
+The scope-to-disposition map is defined only in `governance/GOVERNANCE_POLICY.yaml`.
 
-### `EXECUTE_AND_REPORT`
-
-The exact action may proceed and must be reported afterward.
-
-### `APPROVAL_REQUIRED`
-
-The action must not execute until a valid action-bound approval is issued and consumed.
-
-### `BLOCK`
-
-The action must not execute.
-
-## 5. Canonical Evaluation Order
-
-Authority is calculated first.
+## 5. Evaluation sequence
 
 ```text
-effective_permission_level =
-minimum_authority(
-  system_actor_scope,
-  role_permission_ceiling,
-  assignment_granted_permission_level,
-  tool_or_program_authority_scope
-)
+Task / requested action
+        ↓
+Authority lineage and ceiling check
+        ↓
+Exact action fingerprint
+        ↓
+Canonical Governance Policy evaluation
+        ↓
+ALLOW / EXECUTE_AND_REPORT / APPROVAL_REQUIRED / BLOCK
+        ↓
+Runtime boundary check
 ```
 
-Then Runtime checks:
+A sufficient Authority level is necessary but not sufficient. Policy may narrow, require Approval, or block an otherwise authorized action.
+
+## 6. Record responsibilities
+
+| Record | Responsibility | Does not own |
+|---|---|---|
+| `PermissionDecision` | Immutable result and evidence for one exact action | Global Governance rules |
+| `Approval` | Thomas decision and lifecycle evidence for one action-bound Permission Decision | Authority expansion or execution permission |
+| `RoleAssignment` | Task-specific Authority grant and scope | Global Permission policy |
+| `Task` | Required level and decision references | Policy rule definitions |
+
+Records preserve decisions and lineage. They do not redefine the rules that produced those decisions.
+
+## 7. External action example
 
 ```text
-required_permission_level <= effective_permission_level
+Specialist Role at P2/P3
+→ internal analysis or draft
+
+Independent Validation when required
+→ review only
+
+Canonical Governance Policy
+→ APPROVAL_REQUIRED for the external effect
+
+Action Approval
+→ exact-action evidence only
+
+Future separately approved Executor
+→ still required for any real external action
 ```
 
-If false, the action is blocked and a new Permission Decision or Role Assignment is required.
+A Task that may later produce an external action can still contain internal analysis or drafting. The external effect is a separate action with its own Authority, Permission, Approval, hot-path risk, and Executor requirements.
 
-After authority sufficiency is confirmed, the Policy Engine decides whether the exact action may proceed.
-
-```text
-Authority Sufficient?
-  NO  -> BLOCK
-  YES -> Policy Decision
-            ALLOW
-            EXECUTE_AND_REPORT
-            APPROVAL_REQUIRED
-            BLOCK
-```
-
-## 6. Invariants
-
-```text
-Actual Runtime Authority
-<= Assignment Granted Permission Level
-<= Role Permission Ceiling
-<= System Actor Maximum
-```
-
-The following rules always apply.
-
-- Permission Decision values are never compared numerically with P0–P6.
-- A Role Assignment cannot grant authority above the Role Permission Ceiling.
-- A Tool or Program cannot expand an actor's authority.
-- A Policy Decision may narrow, require approval for, or block an otherwise authorized action.
-- `APPROVAL_REQUIRED` does not increase authority by itself.
-- Approval is valid only for the exact approved action fingerprint, target, content, amount, Tool, scope, and expiration.
-- New authority requires a new Permission Decision and, when Assignment scope changes, a new Role Assignment.
-- P5 and P6 always require separate policy gates.
-
-## 7. Task Contract Use
-
-```yaml
-authority:
-  required_permission_level: P2
-
-permission:
-  permission_decision: ALLOW
-  permission_decision_ref: perm_01HX_example
-```
-
-The Task Permission Decision does not replace the Role Assignment authority fields.
-
-## 8. Role Assignment Use
-
-```yaml
-authority:
-  required_permission_level: P2
-  role_permission_ceiling: P3
-  assignment_granted_permission_level: P2
-  effective_permission_level: P2
-
-permission:
-  permission_decision: ALLOW
-  permission_decision_ref: perm_01HX_example
-```
-
-## 9. External Action Use
-
-A Specialist may analyze or draft content for a future external action while remaining at P2 or P3.
-
-The actual external action is a separate P5 Execution Request handled by the Restricted Execution Service.
-
-```text
-Specialist Role
-P2/P3
--> analysis or draft
-
-Validation
--> review
-
-Policy Engine
--> APPROVAL_REQUIRED
-
-Thomas Approval
--> action-bound approval
-
-Restricted Execution Service
-P5-scoped execution
-```
-
-A Task that includes a future external action does not automatically disqualify an internal drafting or analysis Role.
-
-## 10. Final Rule
+## 8. Final rule
 
 > Authority answers: “Can this actor class perform this action type within this scope?”
-
+>
 > Permission answers: “May this exact action proceed now?”
-
-> Runtime must satisfy both questions independently before execution.
+>
+> Runtime must satisfy both questions independently and must still preserve every no-effect and execution-stage boundary.

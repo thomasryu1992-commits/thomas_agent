@@ -187,7 +187,7 @@ def main() -> int:
                     for item in active.get("active_rules", [])
                     if isinstance(item, dict)
                 ]
-                projection = load_yaml(ROOT / "docs/build/CORE_PROJECTION_MAP.yaml")
+                projection = load_yaml(ROOT / "generated/docs/CORE_PROJECTION_MAP.yaml")
 
                 canonical_logical = {
                     "philosophy": "THOMAS_CORE/THOMAS_CORE_PHILOSOPHY.md",

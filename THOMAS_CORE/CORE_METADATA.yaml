@@ -182,4 +182,4 @@ release_governance:
   unverified_manual_approval_runtime_activation_allowed: false
 definition_status: thomas_approved
 canonical_files:
-  projection_map: docs/build/CORE_PROJECTION_MAP.yaml
+  projection_map: generated/docs/CORE_PROJECTION_MAP.yaml

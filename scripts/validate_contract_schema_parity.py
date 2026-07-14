@@ -94,6 +94,8 @@ def compare_required(
 
 
 def main() -> int:
+    # Historical I0.4 parity is owned by the Legacy Gate and Historical index.
+    # Deferred contract/schema parity is owned by scripts/validate_deferred_architecture.py.
     compare_required(
         "03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md",
         "schemas/role_assignment.v0.2.schema.json",
@@ -136,19 +138,7 @@ def main() -> int:
         "## 3. Program Eligibility",
     )
 
-    compare_required(
-        "docs/runtime-contracts/EXECUTION_REQUEST_CONTRACT_V0.1.md",
-        "schemas/execution_request.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Upstream Binding",
-    )
 
-    compare_required(
-        "docs/runtime-contracts/EXECUTION_RESULT_CONTRACT_V0.1.md",
-        "schemas/execution_result.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Result Status",
-    )
 
     compare_required(
         "docs/runtime-contracts/VALIDATION_RESULT_CONTRACT_V0.1.md",
@@ -164,147 +154,9 @@ def main() -> int:
         "## 3. Append-Only Rule",
     )
 
-    compare_required(
-        "docs/runtime-contracts/EXECUTOR_REGISTRY_CONTRACT_V0.1.md",
-        "schemas/executor_registry.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Registry Rule",
-    )
-    compare_required(
-        "docs/runtime-contracts/EXECUTOR_READINESS_REVIEW_CONTRACT_V0.1.md",
-        "schemas/executor_readiness_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Readiness Categories",
-    )
-    compare_required(
-        "docs/runtime-contracts/DISABLED_RESTRICTED_EXECUTION_SERVICE_INTERFACE_V0.1.md",
-        "schemas/disabled_executor_evidence.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Disabled Interface Behavior",
-    )
-    compare_required(
-        "docs/runtime-contracts/HOT_PATH_PRE_EXECUTION_REVALIDATION_CONTRACT_V0.1.md",
-        "schemas/pre_execution_revalidation.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Mandatory Hot-Path Checks",
-    )
-    compare_required(
-        "docs/runtime-contracts/APPROVAL_CONSUMPTION_CONTRACT_V0.1.md",
-        "schemas/approval_consumption_preview.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Atomic Future Design",
-    )
-    compare_required(
-        "docs/runtime-contracts/ROLLBACK_RECOVERY_CONTRACT_V0.1.md",
-        "schemas/rollback_recovery_plan.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Requirements",
-    )
 
-    compare_required(
-        "docs/runtime-contracts/MONITORING_SNAPSHOT_CONTRACT_V0.1.md",
-        "schemas/monitoring_snapshot.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/ALERT_EVENT_CONTRACT_V0.1.md",
-        "schemas/alert_event.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/HEALTH_SNAPSHOT_CONTRACT_V0.1.md",
-        "schemas/health_snapshot.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/CLOCK_SYNC_EVIDENCE_CONTRACT_V0.1.md",
-        "schemas/clock_sync_evidence.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/KILL_SWITCH_STATE_CONTRACT_V0.1.md",
-        "schemas/kill_switch_state.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/KILL_SWITCH_COMMAND_REVIEW_CONTRACT_V0.1.md",
-        "schemas/kill_switch_command_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_CONTRACT_V0.1.md",
-        "schemas/executor_candidate_intake.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/EXECUTOR_CANDIDATE_INTAKE_REVIEW_CONTRACT_V0.1.md",
-        "schemas/executor_candidate_intake_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
 
-    compare_required(
-        "docs/runtime-contracts/CONTROL_CHANNEL_IDENTITY_BINDING_CONTRACT_V0.1.md",
-        "schemas/control_channel_identity_binding.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/CONTROL_CHANNEL_COMMAND_ENVELOPE_REVIEW_CONTRACT_V0.1.md",
-        "schemas/control_channel_command_envelope_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/DISABLED_PROCESS_SUPERVISOR_INTERFACE_V0.1.md",
-        "schemas/process_supervisor_snapshot.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/DISABLED_SCHEDULER_INTERFACE_V0.1.md",
-        "schemas/scheduler_plan_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_POLICY_V0.1.md",
-        "schemas/monitoring_alert_threshold_policy.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/MONITORING_ALERT_THRESHOLD_EVALUATION_CONTRACT_V0.1.md",
-        "schemas/monitoring_alert_threshold_evaluation.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_PLAN_V0.1.md",
-        "schemas/local_reversible_sandbox_candidate_test_plan.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
-    compare_required(
-        "docs/runtime-contracts/LOCAL_REVERSIBLE_SANDBOX_CANDIDATE_TEST_REVIEW_CONTRACT_V0.1.md",
-        "schemas/local_reversible_sandbox_candidate_test_review.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
 
-    compare_required(
-        "docs/runtime-contracts/I0_4_RUNTIME_CONTRACT_SET_INDEX_V0.1.md",
-        "schemas/i0_4_runtime_contract_set_index.v0.1.schema.json",
-        "## 2. Required Fields",
-        "## 3. Review-Only Boundary",
-    )
 
     compare_required(
         "docs/runtime-contracts/READ_ONLY_RUNTIME_INPUT_BUNDLE_CONTRACT_V0.1.md",

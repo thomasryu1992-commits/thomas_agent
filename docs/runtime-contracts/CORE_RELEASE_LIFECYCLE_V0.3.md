@@ -49,7 +49,7 @@ THOMAS_CORE/releases/<release_id>/
 
 Historical verification reads the Release directory, not the current working-tree Core or current validators.
 
-`docs/build/CORE_PROJECTION_MAP.yaml` is build-time validation metadata and is not part of the semantic Core Release bundle.
+`generated/docs/CORE_PROJECTION_MAP.yaml` is build-time validation metadata and is not part of the semantic Core Release bundle.
 
 ## 3. Review and Approval
 
