@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from .integrity import IntegrityError, sha256_bytes
+from .integrity import IntegrityError, canonical_text_file_bytes, sha256_bytes
 
 
 class ReadBoundaryError(ValueError):
@@ -67,9 +67,9 @@ def parse_record_bytes(raw: bytes, path: Path) -> dict[str, Any]:
 
 
 def read_record_snapshot(path: Path) -> tuple[dict[str, Any], str]:
-    """Hash and parse one immutable in-memory byte snapshot."""
+    """Hash one canonical text snapshot and parse the checked-out record."""
     raw = path.read_bytes()
-    return parse_record_bytes(raw, path), sha256_bytes(raw)
+    return parse_record_bytes(raw, path), sha256_bytes(canonical_text_file_bytes(path))
 
 
 def load_record(path: Path) -> dict[str, Any]:

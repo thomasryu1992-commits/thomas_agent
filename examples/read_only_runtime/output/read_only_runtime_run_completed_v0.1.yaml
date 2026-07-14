@@ -4,7 +4,7 @@ run_mode: DEVELOPMENT_REPLAY
 input_bundle:
   bundle_id: rorbundle_i0_5_contract_inspection_001
   bundle_ref: examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml
-  bundle_sha256: sha256:5fc0a81f8f0db664dd8ccba3927b57f2ba0faff773a0acb20d70339ba7d2d4e2
+  bundle_sha256: sha256:5155b7fcff8ee86b179a5d646239bb002efb32f31c6539d2fd10ba8f8243fb3d
   record_sha256:
     task: sha256:4ffe4c16ddcf70d46a733da5f476c504c6e5ebe7e3d1df07eba8f8b36e4275d3
     core_context_binding: sha256:279577a19860790e0042b40c7fb7bf5e0fb38a6230ff5dab48580ce9e52b30f1
@@ -13,6 +13,7 @@ input_bundle:
     role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
     tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
     program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
+    governance_policy: sha256:084e18dbb20d62a2c8c0e16373ccc74743c9081a41b320f5c38342590f90c720
     i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
 lineage:
   trace_id: trace_i0_5_contract_inspection_001
@@ -49,14 +50,30 @@ preflight:
     notes: Input Bundle passed the repository Draft 2020-12 schema.
   - check_id: required_records
     result: PASS
-    notes: Input bundle must include every required Task, Core, Role, Registry, and
-      I0.4 index record.
+    notes: Input bundle must include every required Task, Core, Role, Registry, Governance
+      Policy, and I0.4 index record.
   - check_id: runtime_record_schema_validation
     result: PASS
     notes: 'Validated available schemas for [''core_context_binding'', ''i0_4_contract_set_index'',
       ''role_assignment'', ''task'']; semantic fail-closed checks cover records without
-      repository schemas: [''program_registry'', ''role_definition'', ''role_registry'',
-      ''tool_registry''].'
+      repository schemas: [''governance_policy'', ''program_registry'', ''role_definition'',
+      ''role_registry'', ''tool_registry''].'
+  - check_id: governance_policy_binding
+    result: PASS
+    notes: Governance Policy ID, version, repository reference, and exact file SHA-256
+      must match the hash-bound Runtime input.
+  - check_id: governance_policy_active_authority
+    result: PASS
+    notes: Read-only replay requires the canonical active authoritative Governance
+      Policy source.
+  - check_id: governance_policy_runtime_effect_disabled
+    result: PASS
+    notes: The bound Governance Policy must remain review-only and grant no Runtime,
+      resource, external, financial, approval, or authority effect.
+  - check_id: governance_policy_fail_closed
+    result: PASS
+    notes: The bound Governance Policy must keep validation non-authoritative and
+      resolve missing, inconsistent, or uncertain policy data fail-closed.
   - check_id: task_schema
     result: PASS
     notes: Task schema_version must be task.v0.3.
@@ -978,7 +995,7 @@ lifecycle:
 effects:
   mode: DEVELOPMENT_REPLAY_READ_ONLY
   filesystem_read_performed: true
-  filesystem_read_count: 314
+  filesystem_read_count: 315
   filesystem_write_performed: false
   model_invocation_performed: false
   tool_execution_performed: false
@@ -1006,7 +1023,7 @@ integrity:
     schema_version: read_only_runtime_run_fingerprint_payload.v0.1
     run_id: rorun_bc7f04f8eda1a3db8e64
     bundle_id: rorbundle_i0_5_contract_inspection_001
-    bundle_sha256: sha256:5fc0a81f8f0db664dd8ccba3927b57f2ba0faff773a0acb20d70339ba7d2d4e2
+    bundle_sha256: sha256:5155b7fcff8ee86b179a5d646239bb002efb32f31c6539d2fd10ba8f8243fb3d
     task_id: task_i0_5_contract_inspection_001
     task_revision: 1
     core_context_binding_id: ccb-i0-5-contract-inspection-001
@@ -1022,5 +1039,5 @@ integrity:
     - sha256:5e55b4e819afa4021c29fcf13028d49c3cdeed08fd9ca6c80c4d62a629a35d9c
     - sha256:348556f4ae2c6cf82fd2f092c5b00e50c773fa4622b9577bd54aa033f821f4c0
     created_at: '2026-07-13T04:02:00Z'
-  run_sha256: sha256:65a646288cd92f4e005d48c8342553c046f423e93e2f2d300fed266c14f53712
+  run_sha256: sha256:1ab488861c6bfa046b1465b0a707755740f3dfabc52273f0bfed5f88b45b3a19
 created_at: '2026-07-13T04:02:00Z'

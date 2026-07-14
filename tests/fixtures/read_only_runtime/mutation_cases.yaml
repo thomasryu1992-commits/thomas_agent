@@ -201,3 +201,35 @@ cases:
   path: contract_set.freeze_status
   value: OPEN_FOR_NEW_CONTRACTS
   expected_reason: I0_4_CONTRACT_SET_NOT_FROZEN
+- case_id: invalid_governance_binding_policy_id
+  target: bundle
+  path: governance_binding.policy_id
+  value: thomas.governance.policy.other
+  rebuild_integrity: true
+  expected_reason: GOVERNANCE_POLICY_BINDING_MISMATCH
+- case_id: invalid_governance_binding_policy_hash
+  target: bundle
+  path: governance_binding.policy_sha256
+  value: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  rebuild_integrity: true
+  expected_reason: GOVERNANCE_POLICY_BINDING_MISMATCH
+- case_id: invalid_governance_policy_not_authoritative
+  target: governance_policy
+  path: authoritative
+  value: false
+  expected_reason: GOVERNANCE_POLICY_NOT_ACTIVE
+- case_id: invalid_governance_policy_status
+  target: governance_policy
+  path: status
+  value: INACTIVE_POLICY_SOURCE
+  expected_reason: GOVERNANCE_POLICY_NOT_ACTIVE
+- case_id: invalid_governance_policy_runtime_effect
+  target: governance_policy
+  path: runtime_effect.grants_runtime_execution
+  value: true
+  expected_reason: GOVERNANCE_POLICY_RUNTIME_EFFECT_ENABLED
+- case_id: invalid_governance_policy_validation_grants_authority
+  target: governance_policy
+  path: validation.validation_grants_authority
+  value: true
+  expected_reason: GOVERNANCE_POLICY_FAIL_CLOSED_INVALID

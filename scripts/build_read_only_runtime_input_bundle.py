@@ -23,6 +23,7 @@ REF_ARGUMENTS = {
     "role_registry": "role-registry",
     "tool_registry": "tool-registry",
     "program_registry": "program-registry",
+    "governance_policy": "governance-policy",
     "i0_4_contract_set_index": "i0-4-contract-set-index",
 }
 
@@ -51,6 +52,23 @@ def main() -> int:
         refs[key] = path.relative_to(repo_root).as_posix()
         hashes[key] = sha256_file(path)
 
+    governance_path = resolve_read_only_path(repo_root, refs["governance_policy"])
+    governance_policy = yaml.safe_load(governance_path.read_text(encoding="utf-8"))
+    if not isinstance(governance_policy, dict):
+        raise ValueError("Governance Policy must decode to an object")
+    policy_id = governance_policy.get("policy_id")
+    policy_version = governance_policy.get("policy_version")
+    if not isinstance(policy_id, str) or not policy_id:
+        raise ValueError("Governance Policy policy_id must be a non-empty string")
+    if not isinstance(policy_version, str) or not policy_version:
+        raise ValueError("Governance Policy policy_version must be a non-empty string")
+    governance_binding = {
+        "policy_id": policy_id,
+        "policy_version": policy_version,
+        "policy_ref": refs["governance_policy"],
+        "policy_sha256": hashes["governance_policy"],
+    }
+
     constraints = {
         "filesystem_read_only": True,
         "external_network_allowed": False,
@@ -69,6 +87,7 @@ def main() -> int:
         "run_mode": "DEVELOPMENT_REPLAY",
         "refs": refs,
         "sha256": hashes,
+        "governance_binding": governance_binding,
         "constraints": constraints,
         "created_at": created_at,
     }
@@ -78,6 +97,7 @@ def main() -> int:
         "run_mode": "DEVELOPMENT_REPLAY",
         "refs": refs,
         "sha256": hashes,
+        "governance_binding": governance_binding,
         "constraints": constraints,
         "integrity": {
             "hash_schema": "read_only_runtime_input_bundle_fingerprint_payload.v0.1",

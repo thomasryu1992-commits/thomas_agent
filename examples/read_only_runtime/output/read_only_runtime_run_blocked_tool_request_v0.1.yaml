@@ -76,7 +76,7 @@ lifecycle:
 effects:
   mode: DEVELOPMENT_REPLAY_READ_ONLY
   filesystem_read_performed: true
-  filesystem_read_count: 314
+  filesystem_read_count: 315
   filesystem_write_performed: false
   model_invocation_performed: false
   tool_execution_performed: false

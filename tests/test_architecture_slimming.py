@@ -14,6 +14,7 @@ from runtime.registry_resolution import (
     resolve_role_registry,
     resolve_role_registry_snapshot,
 )
+from runtime.read_only_kernel.integrity import sha256_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +169,27 @@ class ArchitectureSlimmingTests(unittest.TestCase):
                 self.assertFalse(resolved["_resolution"]["may_expand_authority"])
                 self.assertTrue(resolved[collection])
                 self.assertIn("required_permission_level", resolved[collection][0])
+
+    def test_replay_bundle_binds_active_governance_policy_by_identity_and_hash(self):
+        bundle_path = ROOT / "examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml"
+        bundle = self.load_yaml("examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml")
+        policy_path = ROOT / bundle["refs"]["governance_policy"]
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        binding = bundle["governance_binding"]
+        expected_hash = sha256_file(policy_path)
+
+        self.assertEqual(binding["policy_id"], policy["policy_id"])
+        self.assertEqual(binding["policy_version"], policy["policy_version"])
+        self.assertEqual(binding["policy_ref"], bundle["refs"]["governance_policy"])
+        self.assertEqual(binding["policy_sha256"], expected_hash)
+        self.assertEqual(bundle["sha256"]["governance_policy"], expected_hash)
+        self.assertEqual(
+            bundle["integrity"]["bundle_fingerprint_payload"]["governance_binding"],
+            binding,
+        )
+        self.assertTrue(policy["authoritative"])
+        self.assertEqual(policy["status"], "ACTIVE_POLICY_SOURCE")
+        self.assertEqual(policy["runtime_effect"]["mode"], "REVIEW_ONLY")
 
     def test_parallel_candidates_and_legacy_shims_are_not_active(self):
         for rel in (

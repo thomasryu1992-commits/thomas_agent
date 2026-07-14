@@ -10,6 +10,7 @@
     "run_mode",
     "refs",
     "sha256",
+    "governance_binding",
     "constraints",
     "integrity",
     "created_at"
@@ -36,6 +37,7 @@
         "role_registry",
         "tool_registry",
         "program_registry",
+        "governance_policy",
         "i0_4_contract_set_index"
       ],
       "properties": {
@@ -70,6 +72,11 @@
           "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
         },
         "program_registry": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "governance_policy": {
           "type": "string",
           "minLength": 1,
           "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
@@ -92,6 +99,7 @@
         "role_registry",
         "tool_registry",
         "program_registry",
+        "governance_policy",
         "i0_4_contract_set_index"
       ],
       "properties": {
@@ -123,7 +131,40 @@
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "governance_policy": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "i0_4_contract_set_index": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "governance_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "policy_version",
+        "policy_ref",
+        "policy_sha256"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "policy_sha256": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         }
@@ -194,6 +235,7 @@
             "run_mode",
             "refs",
             "sha256",
+            "governance_binding",
             "constraints",
             "created_at"
           ],
@@ -219,6 +261,7 @@
                 "role_registry",
                 "tool_registry",
                 "program_registry",
+                "governance_policy",
                 "i0_4_contract_set_index"
               ],
               "properties": {
@@ -253,6 +296,11 @@
                   "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
                 },
                 "program_registry": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "governance_policy": {
                   "type": "string",
                   "minLength": 1,
                   "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
@@ -275,6 +323,7 @@
                 "role_registry",
                 "tool_registry",
                 "program_registry",
+                "governance_policy",
                 "i0_4_contract_set_index"
               ],
               "properties": {
@@ -306,7 +355,40 @@
                   "type": "string",
                   "pattern": "^sha256:[0-9a-f]{64}$"
                 },
+                "governance_policy": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
                 "i0_4_contract_set_index": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            },
+            "governance_binding": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "policy_id",
+                "policy_version",
+                "policy_ref",
+                "policy_sha256"
+              ],
+              "properties": {
+                "policy_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "policy_version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "policy_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                },
+                "policy_sha256": {
                   "type": "string",
                   "pattern": "^sha256:[0-9a-f]{64}$"
                 }
