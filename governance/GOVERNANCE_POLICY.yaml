@@ -1,0 +1,157 @@
+schema_version: thomas_governance_policy.v1
+policy_id: thomas.governance.policy
+policy_version: 1.0.0
+status: PROPOSED_CANONICAL
+owner: Thomas
+source_of_truth: true
+operating_model: BOUNDED_MAXIMUM_AUTONOMY
+
+scope:
+  defines:
+    - effect_classification
+    - permission_disposition
+    - approval_requirements
+    - authority_limits
+    - conflict_resolution
+  does_not_define:
+    - task_schema
+    - role_capabilities
+    - role_status
+    - runtime_state
+    - tool_behavior
+    - program_behavior
+
+precedence:
+  - BLOCK
+  - APPROVAL_REQUIRED
+  - EXECUTE_AND_REPORT
+  - ALLOW
+
+dispositions:
+  ALLOW:
+    effects:
+      - INTERNAL_READ
+      - INTERNAL_ANALYSIS
+      - DRAFT_CREATION
+      - SIMULATION_VALIDATION
+      - REVIEW_PACKET_CREATION
+      - CANDIDATE_CREATION
+      - CONTROL_CHANNEL_RESPONSE
+  EXECUTE_AND_REPORT:
+    effects:
+      - WORKSPACE_REVERSIBLE_WRITE
+      - GIT_AGENT_BRANCH_CHANGE
+      - LOCAL_BUILD_TEST
+      - LOW_RISK_OPERATIONAL_KNOWLEDGE
+      - FINANCIAL_APPROVED_BUDGET_USE
+    requirements:
+      reversible: true
+      scoped: true
+      versioned: true
+      rollback_available: true
+      audit_required: true
+  APPROVAL_REQUIRED:
+    effects:
+      - EXTERNAL_COMMUNICATION
+      - PUBLICATION
+      - PROTECTED_BRANCH_CHANGE
+      - RELEASE_DEPLOYMENT
+      - FINANCIAL_NEW_COMMITMENT
+      - RUNTIME_GOVERNANCE
+      - DESTRUCTIVE_CHANGE
+      - ROLE_GOVERNANCE
+      - TOOL_PROGRAM_GOVERNANCE
+      - CANDIDATE_ROLE_TRIAL
+      - SENSITIVE_MEMORY_GOVERNANCE
+      - SECURITY_SENSITIVE_CHANGE
+  BLOCK:
+    effects:
+      - AUTHORITY_ESCALATION
+      - SELF_APPROVAL
+      - APPROVAL_REUSE
+      - SECRET_EXFILTRATION
+      - AUDIT_TAMPERING
+      - KILL_SWITCH_BYPASS
+      - UNREGISTERED_RESOURCE_EXECUTION
+      - DISABLED_RESOURCE_EXECUTION
+      - PROTECTED_BRANCH_FORCE_PUSH
+      - UNAPPROVED_HISTORY_REWRITE
+
+authority:
+  approval_cannot_expand_authority: true
+  insufficient_authority_result: BLOCK
+  self_approval_allowed: false
+  role_self_permission_change_allowed: false
+  runtime_self_activation_allowed: false
+
+approval:
+  required_approver: Thomas
+  one_time_use_required: true
+  default_ttl_minutes: 30
+  permission_decision_max_ttl_minutes: 60
+  exact_action_fingerprint_required: true
+  invalid_if_action_changes: true
+  scope_max_ttl_minutes:
+    EXTERNAL_COMMUNICATION: 5
+    PUBLICATION: 5
+    PROTECTED_BRANCH_CHANGE: 15
+    RELEASE_DEPLOYMENT: 15
+    FINANCIAL_NEW_COMMITMENT: 5
+    RUNTIME_GOVERNANCE: 15
+    DESTRUCTIVE_CHANGE: 5
+    ROLE_GOVERNANCE: 15
+    TOOL_PROGRAM_GOVERNANCE: 15
+    CANDIDATE_ROLE_TRIAL: 30
+    SENSITIVE_MEMORY_GOVERNANCE: 30
+    SECURITY_SENSITIVE_CHANGE: 5
+
+action_identity:
+  algorithm: SHA-256
+  exact_binding_required: true
+  secrets_forbidden: true
+
+github:
+  execute_and_report:
+    - agent_branch_create
+    - repository_code_or_document_edit
+    - test
+    - validator
+    - build
+    - agent_branch_commit
+    - agent_branch_push_to_approved_repository
+    - draft_pull_request_create_or_update
+  approval_required:
+    - protected_branch_merge
+    - release
+    - production_deployment
+    - repository_visibility_change
+    - branch_protection_change
+    - repository_delete
+  blocked:
+    - protected_branch_force_push
+    - audit_concealment
+    - unapproved_history_rewrite
+
+role_tool_program:
+  candidate_creation: ALLOW
+  candidate_role_trial: APPROVAL_REQUIRED
+  role_activation_or_promotion: APPROVAL_REQUIRED
+  tool_or_program_request_creation: ALLOW
+  tool_or_program_activation: APPROVAL_REQUIRED
+  unregistered_or_disabled_resource_execution: BLOCK
+
+validation:
+  self_review_counts_as_independent: false
+  grants_permission: false
+
+conflict_resolution:
+  stricter_rule_wins: true
+  fail_closed_on_uncertainty: true
+
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_runtime_execution: false
+  grants_tool_or_program_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  grants_permission_expansion: false

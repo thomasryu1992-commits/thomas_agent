@@ -1,0 +1,20 @@
+schema_version: program_definition.v0.1
+program_id: schema.validator
+version: 0.1.0
+status: candidate
+owner: Thomas
+purpose: Validate structured records against explicitly assigned approved schemas.
+deterministic: true
+required_permission_level: P1
+inputs:
+  - record
+  - schema_reference
+outputs:
+  - validation_result
+effects:
+  external_action: false
+  filesystem_write: false
+  network_access: false
+runtime:
+  implementation_available: false
+  enabled: false

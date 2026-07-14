@@ -32,6 +32,9 @@ OWNED_ROOTS = [
     "examples",
     "tests",
     "runtime",
+    "governance",
+    "programs",
+    "tools",
     ".github/workflows",
 ]
 

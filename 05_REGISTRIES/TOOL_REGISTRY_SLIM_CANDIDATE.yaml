@@ -1,0 +1,40 @@
+schema_version: tool_registry.v0.2
+document_version: 0.2.0
+registry_id: thomas_tool_registry
+status: migration_candidate_no_active_tools
+owner: Thomas
+source_of_truth_for:
+  - tool_status
+  - enablement
+  - tool_class
+  - canonical_definition_path
+  - canonical_definition_hash
+  - runtime_implementation_availability
+
+governance_policy_ref: governance/GOVERNANCE_POLICY.yaml
+
+tools:
+  - tool_id: document.reader
+    version: 0.1.0
+    status: candidate
+    enabled: false
+    tool_class: read
+    definition_path: tools/definitions/DOCUMENT_READER_TOOL.yaml
+    definition_sha256: c53b005a471296cbeea7eb7604f6702d05841b169634f8f6e3ad0077cb6109ef
+    runtime_implementation_available: false
+
+  - tool_id: search.readonly
+    version: 0.1.0
+    status: candidate
+    enabled: false
+    tool_class: read
+    definition_path: tools/definitions/SEARCH_READONLY_TOOL.yaml
+    definition_sha256: 7e42346e66cdf8731b02425fb869307b09b04719a18d9d2f218808ba5c937635
+    runtime_implementation_available: false
+
+rules:
+  active_and_enabled_required_for_runtime: true
+  missing_definition_action: BLOCK_EXECUTION
+  hash_mismatch_action: BLOCK_EXECUTION
+  registry_does_not_define_permission_rules: true
+  registry_does_not_define_behavior: true

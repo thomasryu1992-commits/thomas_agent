@@ -166,6 +166,10 @@ def main() -> int:
             "I0.5.5 Disabled Single Read-only Entry Integration Candidate",
             [python, "scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py"],
         ),
+        (
+            "Architecture Slimming Safe Overlay",
+            [python, "scripts/run_slimming_gate.py"],
+        ),
         ("Thomas Core", [python, "scripts/validate_thomas_core.py"]),
         (
             "Core Projection Consistency",

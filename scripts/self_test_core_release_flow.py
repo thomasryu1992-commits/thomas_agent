@@ -64,7 +64,8 @@ def copy_repository(source: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     owned = [
         "THOMAS_CORE", "03_ROLE_CONTRACTS", "05_REGISTRIES", "docs", "schemas",
-        "scripts", "runtime", "examples", "tests", "requirements-validation.in", "requirements-validation.lock",
+        "scripts", "runtime", "governance", "programs", "tools", "examples", "tests",
+        "requirements-validation.in", "requirements-validation.lock",
         ".gitattributes", ".github",
     ]
 
