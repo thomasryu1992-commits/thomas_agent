@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..registry_resolution import RegistryResolutionError, resolve_role_registry_snapshot
 from .constants import ALLOWED_PERMISSION_DECISIONS, AUTHORITY_ORDER
 from .errors import KernelBlocked
 from .integrity import scan_for_secret_bearing_keys, sha256_value
@@ -44,6 +45,7 @@ def run_preflight(
         "run_mode": bundle.get("run_mode"),
         "refs": bundle.get("refs"),
         "sha256": bundle.get("sha256"),
+        "governance_binding": bundle.get("governance_binding"),
         "constraints": bundle.get("constraints"),
         "created_at": bundle.get("created_at"),
     }
@@ -95,13 +97,14 @@ def run_preflight(
         "role_registry",
         "tool_registry",
         "program_registry",
+        "governance_policy",
         "i0_4_contract_set_index",
     }
     check(
         "required_records",
         required_records.issubset(records),
         "REQUIRED_RECORD_MISSING",
-        "Input bundle must include every required Task, Core, Role, Registry, and I0.4 index record.",
+        "Input bundle must include every required Task, Core, Role, Registry, Governance Policy, and I0.4 index record.",
     )
     for record in records.values():
         scan_for_secret_bearing_keys(record)
@@ -133,7 +136,68 @@ def run_preflight(
     role_registry = records["role_registry"]
     tool_registry = records["tool_registry"]
     program_registry = records["program_registry"]
+    governance_policy = records["governance_policy"]
     contract_index = records["i0_4_contract_set_index"]
+
+    governance_binding = bundle.get("governance_binding", {})
+    governance_ref = bundle.get("refs", {}).get("governance_policy")
+    governance_sha256 = bundle.get("sha256", {}).get("governance_policy")
+    check(
+        "governance_policy_binding",
+        governance_binding.get("policy_id") == governance_policy.get("policy_id")
+        and governance_binding.get("policy_version") == governance_policy.get("policy_version")
+        and governance_binding.get("policy_ref") == governance_ref
+        and governance_binding.get("policy_sha256") == governance_sha256,
+        "GOVERNANCE_POLICY_BINDING_MISMATCH",
+        "Governance Policy ID, version, repository reference, and exact file SHA-256 must match the hash-bound Runtime input.",
+    )
+    check(
+        "governance_policy_active_authority",
+        governance_policy.get("schema_version") == "thomas_governance_policy.v1"
+        and governance_policy.get("policy_id") == "thomas.governance.policy"
+        and governance_policy.get("status") == "ACTIVE_POLICY_SOURCE"
+        and governance_policy.get("authoritative") is True,
+        "GOVERNANCE_POLICY_NOT_ACTIVE",
+        "Read-only replay requires the canonical active authoritative Governance Policy source.",
+    )
+    runtime_effect = governance_policy.get("runtime_effect", {})
+    required_disabled_effects = (
+        "grants_runtime_execution",
+        "grants_tool_or_program_enablement",
+        "grants_external_execution",
+        "grants_financial_execution",
+        "grants_permission_expansion",
+        "executor_handoff_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "runtime_mutation_allowed",
+        "tool_enablement_allowed",
+        "program_enablement_allowed",
+        "permission_expansion_allowed",
+        "approval_consumption_allowed",
+        "core_activation_allowed",
+    )
+    check(
+        "governance_policy_runtime_effect_disabled",
+        runtime_effect.get("mode") == "REVIEW_ONLY"
+        and all(runtime_effect.get(name) is False for name in required_disabled_effects),
+        "GOVERNANCE_POLICY_RUNTIME_EFFECT_ENABLED",
+        "The bound Governance Policy must remain review-only and grant no Runtime, resource, external, financial, approval, or authority effect.",
+    )
+    validation_policy = governance_policy.get("validation", {})
+    conflict_policy = governance_policy.get("conflict_policy", {})
+    check(
+        "governance_policy_fail_closed",
+        validation_policy.get("validation_grants_permission") is False
+        and validation_policy.get("validation_grants_approval") is False
+        and validation_policy.get("validation_grants_authority") is False
+        and conflict_policy.get("stricter_rule_wins") is True
+        and conflict_policy.get("fail_closed_on_uncertainty") is True
+        and conflict_policy.get("missing_policy_data_result") == "BLOCK"
+        and conflict_policy.get("inconsistent_policy_data_result") == "BLOCK",
+        "GOVERNANCE_POLICY_FAIL_CLOSED_INVALID",
+        "The bound Governance Policy must keep validation non-authoritative and resolve missing, inconsistent, or uncertain policy data fail-closed.",
+    )
 
     identity = task["identity"]
     task_id = identity["task_id"]
@@ -267,7 +331,7 @@ def run_preflight(
         role.get("role_id") == assignment.get("role_id")
         and role.get("role_version") == assignment.get("role_version"),
         "ROLE_IDENTITY_MISMATCH",
-        "Role Definition and Assignment role identity must match.",
+        "Role Definition and Assignment role identity must match exactly.",
     )
     check(
         "role_active_routable",
@@ -329,10 +393,30 @@ def run_preflight(
         "Task and Assignment Permission records must match and require no Approval.",
     )
 
+    try:
+        resolved_role_registry = resolve_role_registry_snapshot(
+            registry=role_registry,
+            role_definition=role,
+            definition_ref=bundle.get("refs", {}).get("role_definition", ""),
+            definition_content_sha256=bundle.get("sha256", {}).get("role_definition", ""),
+        )
+    except RegistryResolutionError as exc:
+        raise KernelBlocked("ROLE_REGISTRY_MISMATCH", str(exc)) from exc
+    checks.append(
+        {
+            "check_id": "role_registry_snapshot_resolution",
+            "result": "PASS",
+            "notes": (
+                "Slim Role Registry v0.3 snapshot and the exact hash-bound Role "
+                "Definition snapshot resolved to a non-authoritative in-memory view."
+            ),
+        }
+    )
+
     role_entries = [
         item
-        for item in role_registry.get("active_roles", [])
-        if item.get("role_id") == role["role_id"] and item.get("role_version") == role["role_version"]
+        for item in resolved_role_registry.get("roles", [])
+        if item.get("role_id") == role["role_id"] and item.get("version") == role["role_version"]
     ]
     check(
         "role_registry_entry",
@@ -340,7 +424,7 @@ def run_preflight(
         and role_entries[0].get("status") == "active"
         and role_entries[0].get("routable") is True,
         "ROLE_REGISTRY_MISMATCH",
-        "Role Registry must contain one matching active and routable Role entry.",
+        "Resolved slim Role Registry view must contain one matching active and routable Role entry.",
     )
     check(
         "tool_registry_disabled",

@@ -151,19 +151,10 @@ def validate_active_kernel() -> None:
         fail("read_only_kernel slim_candidate.py must be retired from active Runtime")
 
 
-def validate_deferred() -> None:
-    record = load_yaml(ROOT / "deferred/DEFERRED_ARCHITECTURE.yaml")
-    if record.get("authoritative_for_deferred_design") is not True:
-        fail("Deferred Architecture must own deferred design indexing")
-    if record.get("runtime_authoritative") is not False:
-        fail("Deferred Architecture must not be Runtime authoritative")
-
-
 def main() -> int:
     policy = validate_governance()
     validate_registries(policy)
     validate_active_kernel()
-    validate_deferred()
     ERRORS.extend(validate_artifact_boundaries(ROOT))
 
     for target in (
@@ -181,8 +172,9 @@ def main() -> int:
         for item in ERRORS:
             print(f" - {item}")
         return 1
-    print("PASS: final Architecture Slimming invariants validated")
-    print("One Governance authority, index-only Registries, one active Kernel, one Deferred index, and explicit Generated/Historical boundaries are in place.")
+    print("PASS: active Architecture Slimming invariants validated")
+    print("One Governance authority, index-only Registries, one active Kernel, and explicit Generated/Historical boundaries are in place.")
+    print("Deferred design semantics are owned by the canonical Deferred Gate, not duplicated in the Active Gate.")
     print("No Runtime, Tool, Program, Executor, external, financial, Permission-expansion, Authority-expansion, or Core-activation capability was enabled.")
     return 0
 

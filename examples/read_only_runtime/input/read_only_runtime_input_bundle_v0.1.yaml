@@ -1,7 +1,7 @@
 schema_version: read_only_runtime_input_bundle.v0.1
 bundle_id: rorbundle_i0_5_contract_inspection_001
 run_mode: DEVELOPMENT_REPLAY
-refs: &id001
+refs:
   task: examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
   core_context_binding: examples/read_only_runtime/input/core_context_binding_v0.3_contract_inspection.yaml
   role_assignment: examples/read_only_runtime/input/role_assignment_v0.2_contract_inspection.yaml
@@ -9,17 +9,24 @@ refs: &id001
   role_registry: examples/read_only_runtime/input/role_registry_snapshot.yaml
   tool_registry: examples/read_only_runtime/input/tool_registry_snapshot.yaml
   program_registry: examples/read_only_runtime/input/program_registry_snapshot.yaml
+  governance_policy: governance/GOVERNANCE_POLICY.yaml
   i0_4_contract_set_index: 05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml
-sha256: &id002
+sha256:
   task: sha256:4ffe4c16ddcf70d46a733da5f476c504c6e5ebe7e3d1df07eba8f8b36e4275d3
   core_context_binding: sha256:279577a19860790e0042b40c7fb7bf5e0fb38a6230ff5dab48580ce9e52b30f1
   role_assignment: sha256:abbd12732a597a70f3f59e6add231c8da8af101b95250ee8ba2678444a9331dd
   role_definition: sha256:cc599d54e758cfb9c68ca7c61f7af19b2c0f486c23ee69e270a273939d7b467d
-  role_registry: sha256:5bcd113a61f6b2c5b70302d6d51c93e2595920af65ee4b87ad73298599c597f6
+  role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
   tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
   program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
+  governance_policy: sha256:084e18dbb20d62a2c8c0e16373ccc74743c9081a41b320f5c38342590f90c720
   i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
-constraints: &id003
+governance_binding:
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
+  policy_sha256: sha256:084e18dbb20d62a2c8c0e16373ccc74743c9081a41b320f5c38342590f90c720
+constraints:
   filesystem_read_only: true
   external_network_allowed: false
   tool_execution_allowed: false
@@ -35,9 +42,41 @@ integrity:
     schema_version: read_only_runtime_input_bundle_fingerprint_payload.v0.1
     bundle_id: rorbundle_i0_5_contract_inspection_001
     run_mode: DEVELOPMENT_REPLAY
-    refs: *id001
-    sha256: *id002
-    constraints: *id003
+    refs:
+      task: examples/read_only_runtime/input/task_v0.3_contract_inspection.yaml
+      core_context_binding: examples/read_only_runtime/input/core_context_binding_v0.3_contract_inspection.yaml
+      role_assignment: examples/read_only_runtime/input/role_assignment_v0.2_contract_inspection.yaml
+      role_definition: examples/read_only_runtime/input/role_definition_v0.2_general_specialist_snapshot.yaml
+      role_registry: examples/read_only_runtime/input/role_registry_snapshot.yaml
+      tool_registry: examples/read_only_runtime/input/tool_registry_snapshot.yaml
+      program_registry: examples/read_only_runtime/input/program_registry_snapshot.yaml
+      governance_policy: governance/GOVERNANCE_POLICY.yaml
+      i0_4_contract_set_index: 05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml
+    sha256:
+      task: sha256:4ffe4c16ddcf70d46a733da5f476c504c6e5ebe7e3d1df07eba8f8b36e4275d3
+      core_context_binding: sha256:279577a19860790e0042b40c7fb7bf5e0fb38a6230ff5dab48580ce9e52b30f1
+      role_assignment: sha256:abbd12732a597a70f3f59e6add231c8da8af101b95250ee8ba2678444a9331dd
+      role_definition: sha256:cc599d54e758cfb9c68ca7c61f7af19b2c0f486c23ee69e270a273939d7b467d
+      role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
+      tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
+      program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
+      governance_policy: sha256:084e18dbb20d62a2c8c0e16373ccc74743c9081a41b320f5c38342590f90c720
+      i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
+    governance_binding:
+      policy_id: thomas.governance.policy
+      policy_version: 1.1.0
+      policy_ref: governance/GOVERNANCE_POLICY.yaml
+      policy_sha256: sha256:084e18dbb20d62a2c8c0e16373ccc74743c9081a41b320f5c38342590f90c720
+    constraints:
+      filesystem_read_only: true
+      external_network_allowed: false
+      tool_execution_allowed: false
+      program_execution_allowed: false
+      model_invocation_allowed: false
+      external_action_allowed: false
+      runtime_mutation_allowed: false
+      filesystem_write_allowed: false
+      secrets_allowed: false
     created_at: '2026-07-13T04:01:00Z'
-  bundle_sha256: sha256:6eedeb298dd1c469275f02a8623be6c5c75a5c6d312d8d6e93d8fc15d3a2a0b0
+  bundle_sha256: sha256:690fc8a93a5f9c3e16e9eb00e87fea9de4b34eeb48fd58a8094fc751efa8d130
 created_at: '2026-07-13T04:01:00Z'

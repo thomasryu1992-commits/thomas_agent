@@ -62,6 +62,171 @@ def scan_retired_import_consumers(repo_root: Path) -> list[str]:
     return consumers
 
 
+def _markdown_section(text: str, heading: str) -> str | None:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start < 0:
+        return None
+    body_start = start + len(marker)
+    next_heading = text.find("\n## ", body_start)
+    return text[body_start:] if next_heading < 0 else text[body_start:next_heading]
+
+
+def _fenced_text_after(section: str, label: str) -> str | None:
+    label_index = section.find(label)
+    if label_index < 0:
+        return None
+    fence_start = section.find("```text", label_index)
+    if fence_start < 0:
+        return None
+    body_start = section.find("\n", fence_start)
+    if body_start < 0:
+        return None
+    fence_end = section.find("\n```", body_start + 1)
+    if fence_end < 0:
+        return None
+    return section[body_start + 1:fence_end]
+
+
+def _tokens_in_order(text: str, tokens: tuple[str, ...]) -> bool:
+    position = -1
+    for token in tokens:
+        next_position = text.find(token, position + 1)
+        if next_position < 0:
+            return False
+        position = next_position
+    return True
+
+
+def validate_architecture_reference_boundaries(repo_root: Path) -> list[str]:
+    errors: list[str] = []
+    active_path = repo_root / "docs/ACTIVE_ARCHITECTURE.md"
+    constitution_path = repo_root / "governance/SYSTEM_CONSTITUTION.md"
+    docs_index_path = repo_root / "docs/README.md"
+
+    for path in (active_path, constitution_path, docs_index_path):
+        if not path.is_file():
+            errors.append(
+                f"architecture reference boundary file missing: {path.relative_to(repo_root).as_posix()}"
+            )
+    if errors:
+        return errors
+
+    active_text = active_path.read_text(encoding="utf-8")
+    one_screen = _markdown_section(active_text, "Architecture on One Screen")
+    if one_screen is None:
+        errors.append("docs/ACTIVE_ARCHITECTURE.md missing Architecture on One Screen section")
+    else:
+        active_label = "Active authority and execution lane:"
+        candidate_label = "Inactive candidate lane — not part of the active dependency chain:"
+        active_lane = _fenced_text_after(one_screen, active_label)
+        candidate_lane = _fenced_text_after(one_screen, candidate_label)
+
+        if active_lane is None:
+            errors.append("Active Architecture missing explicit active authority and execution lane")
+        else:
+            if "System Constitution" in active_lane:
+                errors.append("inactive System Constitution must not appear in the active authority lane")
+            active_order = (
+                "Thomas",
+                "Thomas Core",
+                "Governance Policy",
+                "Thomas Prime",
+                "Thin Read-only Runtime Kernel",
+                "Router",
+                "Role / Program / Tool Definitions",
+                "Validation",
+                "Memory Candidate / Append-only Audit",
+            )
+            if not _tokens_in_order(active_lane, active_order):
+                errors.append("Active Architecture lane order is incomplete or inconsistent")
+
+        if candidate_lane is None:
+            errors.append("Active Architecture missing separate inactive Constitution candidate lane")
+        else:
+            for token in (
+                "System Constitution",
+                "status: Migration Candidate",
+                "authoritative: No",
+                "active dependency: none",
+                "proposed future position: between Thomas Core and Governance Policy",
+                "cutover: separate review and explicit Thomas approval required",
+            ):
+                if token not in candidate_lane:
+                    errors.append(f"inactive Constitution candidate lane missing token: {token}")
+
+    for token in (
+        "Runtime-authoritative execution: Disabled",
+        "## Repository Boundaries",
+        "Generated evidence grants no authority",
+        "Historical evidence grants no authority",
+        "### Non-authoritative Candidate Reference",
+        "The active lane above is the only current authority and dependency chain.",
+    ):
+        if token not in active_text:
+            errors.append(f"docs/ACTIVE_ARCHITECTURE.md missing final reference token: {token}")
+
+    constitution_text = constitution_path.read_text(encoding="utf-8")
+    for token in (
+        "**Status:** Migration Candidate",
+        "**Authoritative:** No — explicit cutover required",
+        "**Active dependency:** None",
+        "## Current Active Authority Boundary",
+        "## Proposed Future Authority Order After Explicit Cutover",
+        "## No Active Dependency Rule",
+        "## Cutover Preconditions",
+    ):
+        if token not in constitution_text:
+            errors.append(f"governance/SYSTEM_CONSTITUTION.md missing candidate boundary token: {token}")
+
+    current_boundary = _markdown_section(constitution_text, "Current Active Authority Boundary")
+    proposed_boundary = _markdown_section(
+        constitution_text,
+        "Proposed Future Authority Order After Explicit Cutover",
+    )
+    current_lane = (
+        _fenced_text_after(current_boundary, "active authority and execution lane remains:")
+        if current_boundary is not None
+        else None
+    )
+    proposed_lane = (
+        _fenced_text_after(proposed_boundary, "following order is a proposal only")
+        if proposed_boundary is not None
+        else None
+    )
+
+    if current_lane is None:
+        errors.append("System Constitution missing current active authority lane")
+    else:
+        if "System Constitution" in current_lane:
+            errors.append("System Constitution must not insert itself into the current active authority lane")
+        if not _tokens_in_order(
+            current_lane,
+            ("Thomas", "Thomas Core", "Governance Policy", "Thomas Prime", "Runtime Kernel"),
+        ):
+            errors.append("System Constitution current active boundary order is incomplete")
+
+    if proposed_lane is None:
+        errors.append("System Constitution missing proposed future authority lane")
+    elif not _tokens_in_order(
+        proposed_lane,
+        ("Thomas", "Thomas Core", "System Constitution", "Governance Policy", "Thomas Prime"),
+    ):
+        errors.append("System Constitution proposed future authority order is incomplete")
+
+    docs_index_text = docs_index_path.read_text(encoding="utf-8")
+    candidate_section = _markdown_section(docs_index_text, "Non-active Candidate Reference")
+    active_sources_section = _markdown_section(docs_index_text, "Active Source Families")
+    if candidate_section is None or "governance/SYSTEM_CONSTITUTION.md" not in candidate_section:
+        errors.append("docs/README.md must list System Constitution under Non-active Candidate Reference")
+    if active_sources_section is None:
+        errors.append("docs/README.md missing Active Source Families section")
+    elif "SYSTEM_CONSTITUTION.md" in active_sources_section:
+        errors.append("docs/README.md must not list System Constitution as an Active Source Family")
+
+    return errors
+
+
 def validate_artifact_boundaries(repo_root: Path) -> list[str]:
     errors: list[str] = []
     generated_path = repo_root / GENERATED_INDEX_REL
@@ -103,6 +268,7 @@ def validate_artifact_boundaries(repo_root: Path) -> list[str]:
         "runtime/read_only_kernel/orchestrator.py",
         "deferred/DEFERRED_ARCHITECTURE.yaml",
         "docs/ACTIVE_ARCHITECTURE.md",
+        "governance/SYSTEM_CONSTITUTION.md",
         "generated/README.md",
         "historical/README.md",
     )
@@ -140,16 +306,7 @@ def validate_artifact_boundaries(repo_root: Path) -> list[str]:
         if resolution.get("resolved_view_authoritative") is not False:
             errors.append(f"{rel}: resolved view must remain non-authoritative")
 
-    active_text = (repo_root / "docs/ACTIVE_ARCHITECTURE.md").read_text(encoding="utf-8")
-    for token in (
-        "## Architecture on One Screen",
-        "## Repository Boundaries",
-        "Runtime-authoritative execution: Disabled",
-        "Generated evidence grants no authority",
-        "Historical evidence grants no authority",
-    ):
-        if token not in active_text:
-            errors.append(f"docs/ACTIVE_ARCHITECTURE.md missing final reference token: {token}")
+    errors.extend(validate_architecture_reference_boundaries(repo_root))
 
     release_policy = historical.get("core_release_integrity", {})
     manifests = release_policy.get("immutable_manifests", {})

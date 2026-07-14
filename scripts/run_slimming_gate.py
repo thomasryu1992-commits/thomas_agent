@@ -31,13 +31,12 @@ def main() -> int:
             "tests",
         ],
     )
-    run("Final Slimming Invariants", [python, "scripts/validate_slimming_package.py"])
+    run("Final Active Slimming Invariants", [python, "scripts/validate_slimming_package.py"])
     run("Artifact Boundaries", [python, "scripts/validate_artifact_boundaries.py"])
-    run("Gate Separation", [python, "scripts/validate_gate_separation.py"])
+    run("Gate and CI Scope Separation", [python, "scripts/validate_gate_separation.py"])
     run("Active Kernel Decomposition", [python, "scripts/validate_active_kernel_decomposition.py"])
-    run("Deferred Architecture Structure", [python, "scripts/validate_deferred_architecture.py", "--structure-only"])
     run(
-        "Focused Architecture Tests",
+        "Focused Active Architecture Tests",
         [
             python,
             "-m",
@@ -46,13 +45,12 @@ def main() -> int:
             "tests.test_artifact_boundaries",
             "tests.test_active_kernel_decomposition",
             "tests.test_gate_separation",
-            "tests.test_deferred_architecture",
             "-v",
         ],
         timeout=1200,
     )
-    print("\nPASS: final Architecture Slimming Gate completed")
-    print("Generated, Historical, Deferred, compatibility, Runtime, and authority boundaries remain separate and fail closed.")
+    print("\nPASS: active Architecture Slimming Gate completed")
+    print("Active source ownership, artifact boundaries, Runtime decomposition, and CI scope routing remain explicit and fail closed.")
     return 0
 
 

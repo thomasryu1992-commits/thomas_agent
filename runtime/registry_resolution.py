@@ -70,6 +70,15 @@ def _require_no_fields(
         )
 
 
+def _normalize_sha256_digest(value: str | None, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise RegistryResolutionError(f"{label} must be a non-empty SHA-256 value")
+    digest = value.removeprefix("sha256:")
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest.lower()):
+        raise RegistryResolutionError(f"{label} must contain a 64-character hexadecimal SHA-256 digest")
+    return digest.lower()
+
+
 def load_markdown_yaml_front_matter(
     *,
     path: Path,
@@ -207,6 +216,106 @@ def resolve_role_registry(
         "_resolution": {
             "authoritative": False,
             "persistent": False,
+            "may_expand_authority": False,
+            "source_registry_authoritative": True,
+        },
+    }
+
+
+def resolve_role_registry_snapshot(
+    *,
+    registry: Mapping[str, Any],
+    role_definition: Mapping[str, Any],
+    definition_ref: str,
+    definition_content_sha256: str,
+) -> dict[str, Any]:
+    """Resolve one hash-bound replay Role snapshot through the slim Registry shape.
+
+    Development replay carries immutable Registry and Definition records inside the
+    input bundle. This resolver verifies the same index-only boundary as the active
+    Registry resolver without reading unbound live repository state.
+    """
+
+    source = dict(_require_mapping(registry, "registry snapshot"))
+    _require_registry_authority(source, "Role Registry snapshot")
+    if source.get("schema_version") != "role_registry.v0.3":
+        raise RegistryResolutionError(
+            "Role Registry snapshot must use schema_version role_registry.v0.3"
+        )
+
+    raw_entries = source.get("roles", [])
+    if not isinstance(raw_entries, list) or len(raw_entries) != 1:
+        raise RegistryResolutionError(
+            "Role Registry snapshot must contain exactly one Task-bound Role entry"
+        )
+
+    item = dict(_require_mapping(raw_entries[0], "role snapshot entry"))
+    _require_no_fields(item, PROHIBITED_ROLE_FIELDS, str(item.get("role_id", "role")))
+    definition = deepcopy(dict(_require_mapping(role_definition, "role definition snapshot")))
+
+    expected_hash = _normalize_sha256_digest(
+        item.get("definition_sha256"),
+        "Role Registry snapshot definition_sha256",
+    )
+    actual_hash = _normalize_sha256_digest(
+        definition_content_sha256,
+        "input bundle role_definition SHA-256",
+    )
+    if actual_hash != expected_hash:
+        raise RegistryResolutionError(
+            "Role Definition snapshot hash does not match the slim Registry entry: "
+            f"expected={expected_hash} actual={actual_hash}"
+        )
+
+    identity_pairs = {
+        "role_id": item.get("role_id"),
+        "role_version": item.get("version"),
+        "status": item.get("status"),
+        "routable": item.get("routable"),
+        "role_type": item.get("role_type"),
+    }
+    for key, expected in identity_pairs.items():
+        if definition.get(key) != expected:
+            raise RegistryResolutionError(
+                f"{item.get('role_id')}: Definition snapshot mismatch for {key}: "
+                f"expected={expected} actual={definition.get(key)}"
+            )
+
+    definition_path = str(item.get("definition_path", ""))
+    if not definition_path:
+        raise RegistryResolutionError("Role Registry snapshot entry is missing definition_path")
+    if definition_path != definition_ref:
+        raise RegistryResolutionError(
+            "Role Registry snapshot definition_path does not match the exact input bundle ref: "
+            f"expected={definition_ref} actual={definition_path}"
+        )
+
+    resolved_role = {
+        **item,
+        "role_name": definition.get("role_name"),
+        "capabilities": deepcopy(definition.get("capabilities", [])),
+        "permission_ceiling": definition.get("permission_ceiling"),
+        "validation_policy": deepcopy(definition.get("validation_policy", {})),
+        "memory_policy": deepcopy(definition.get("memory_policy", {})),
+        "_resolution": {
+            "authoritative": False,
+            "persistent": False,
+            "snapshot_bound": True,
+            "definition_hash_verified": True,
+            "definition_source": definition_path,
+            "governance_policy_ref": source.get("governance_refs", {}).get(
+                "canonical_governance_policy"
+            ),
+        },
+    }
+    return {
+        "schema_version": "role_registry.resolved_view.v0.1",
+        "roles": [resolved_role],
+        "non_dynamic_roles": deepcopy(source.get("non_dynamic_roles", [])),
+        "_resolution": {
+            "authoritative": False,
+            "persistent": False,
+            "snapshot_bound": True,
             "may_expand_authority": False,
             "source_registry_authoritative": True,
         },

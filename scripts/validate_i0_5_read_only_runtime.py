@@ -62,15 +62,29 @@ def set_path(record: Any, dotted_path: str, value: Any) -> None:
         current[last] = value
 
 
-def rebuild_bundle(repo: Path, bundle: dict[str, Any]) -> None:
+def rebuild_bundle(
+    repo: Path,
+    bundle: dict[str, Any],
+    *,
+    refresh_governance_binding: bool = True,
+) -> None:
     refs = bundle["refs"]
     bundle["sha256"] = {name: sha256_file(repo / ref) for name, ref in refs.items()}
+    if refresh_governance_binding and "governance_policy" in refs:
+        governance_policy = load_yaml(repo / refs["governance_policy"])
+        bundle["governance_binding"] = {
+            "policy_id": governance_policy.get("policy_id"),
+            "policy_version": governance_policy.get("policy_version"),
+            "policy_ref": refs["governance_policy"],
+            "policy_sha256": bundle["sha256"]["governance_policy"],
+        }
     payload = {
         "schema_version": "read_only_runtime_input_bundle_fingerprint_payload.v0.1",
         "bundle_id": bundle["bundle_id"],
         "run_mode": bundle["run_mode"],
         "refs": bundle["refs"],
         "sha256": bundle["sha256"],
+        "governance_binding": bundle["governance_binding"],
         "constraints": bundle["constraints"],
         "created_at": bundle["created_at"],
     }
@@ -85,6 +99,7 @@ def copy_test_repo(destination: Path) -> None:
     for rel in [
         "examples/read_only_runtime/input",
         "05_REGISTRIES/I0_4_RUNTIME_CONTRACT_SET_INDEX.yaml",
+        "governance/GOVERNANCE_POLICY.yaml",
         "schemas/read_only_runtime_input_bundle.v0.1.schema.json",
     ]:
         source = ROOT / rel
@@ -126,6 +141,15 @@ def static_code_review() -> None:
 def validate_positive() -> dict[str, Any]:
     bundle = load_yaml(ROOT / BUNDLE_REL)
     validate_schema(bundle, ROOT / "schemas/read_only_runtime_input_bundle.v0.1.schema.json", "input bundle")
+    governance_binding = bundle["governance_binding"]
+    governance_policy = load_yaml(ROOT / bundle["refs"]["governance_policy"])
+    assert governance_binding["policy_id"] == governance_policy["policy_id"]
+    assert governance_binding["policy_version"] == governance_policy["policy_version"]
+    assert governance_binding["policy_ref"] == bundle["refs"]["governance_policy"]
+    assert governance_binding["policy_sha256"] == bundle["sha256"]["governance_policy"]
+    assert governance_binding["policy_sha256"] == sha256_file(
+        ROOT / bundle["refs"]["governance_policy"]
+    )
     result = run_bundle(ROOT, ROOT / BUNDLE_REL, now=FIXED_NOW)
     validate_schema(result, ROOT / "schemas/read_only_runtime_run.v0.1.schema.json", "runtime run")
     assert result["summary"]["result"] == "COMPLETED_READ_ONLY_REPLAY"
@@ -155,6 +179,15 @@ def validate_positive() -> dict[str, Any]:
     assert result["lifecycle"]["source_task_state_unchanged"] is True
     assert result["effects"]["filesystem_read_count"] > 0
     assert result["governance"]["verification_status"] == "REFERENCES_PRESENT_NOT_VERIFIED"
+    preflight_check_ids = {item["check_id"] for item in result["preflight"]["checks"]}
+    for required_check in (
+        "governance_policy_binding",
+        "governance_policy_active_authority",
+        "governance_policy_runtime_effect_disabled",
+        "governance_policy_fail_closed",
+    ):
+        assert required_check in preflight_check_ids
+    assert result["input_bundle"]["record_sha256"]["governance_policy"] == governance_binding["policy_sha256"]
     assert result["integrity"]["run_sha256"] == sha256_value(result["integrity"]["run_fingerprint_payload"])
 
     audits = result["outputs"]["audit_events"]
@@ -208,7 +241,13 @@ def validate_negative_cases() -> int:
             if target_name == "bundle":
                 set_path(target, case["path"], deepcopy(case.get("value")))
                 if case.get("rebuild_integrity"):
-                    rebuild_bundle(repo, bundle)
+                    rebuild_bundle(
+                        repo,
+                        bundle,
+                        refresh_governance_binding=not case["path"].startswith(
+                            "governance_binding."
+                        ),
+                    )
                 write_yaml(bundle_path, bundle)
             else:
                 rebuild_bundle(repo, bundle)

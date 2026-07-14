@@ -1,26 +1,29 @@
-schema_version: role_registry.v0.2
-document_version: 0.4.0
+schema_version: role_registry.v0.3
+document_version: 0.6.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
-router_source_of_truth: true
-active_roles:
+authoritative: true
+source_of_truth_for:
+- role_status
+- routability
+- canonical_definition_path
+- canonical_definition_hash
+governance_refs:
+  canonical_governance_policy: governance/GOVERNANCE_POLICY.yaml
+  dynamic_role_contract: 03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md
+roles:
 - role_id: general.specialist
-  role_name: General Specialist Role
-  role_version: 0.3.0
+  version: 0.3.0
   role_type: dynamic_specialist
   status: active
   routable: true
-  permission_ceiling: P3
-  capabilities:
-  - research
-  - analysis
-  - planning
-  - comparison
-  - drafting
-  restrictions:
-    external_action_allowed: false
-    direct_validated_memory_write_allowed: false
-    core_modification_allowed: false
-    permission_change_allowed: false
-candidate_roles: []
+  definition_path: examples/read_only_runtime/input/role_definition_v0.2_general_specialist_snapshot.yaml
+  definition_sha256: cc599d54e758cfb9c68ca7c61f7af19b2c0f486c23ee69e270a273939d7b467d
+resolution:
+  resolver_module: runtime/registry_resolution.py
+  definition_fields_loaded_at_consumer_boundary: true
+  resolved_view_authoritative: false
+  persistent_resolved_view_allowed: false
+  fail_closed_on_missing_definition: true
+  fail_closed_on_hash_mismatch: true

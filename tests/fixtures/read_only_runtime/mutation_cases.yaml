@@ -167,8 +167,24 @@ cases:
   expected_reason: ASSIGNMENT_PERMISSION_MISMATCH
 - case_id: invalid_role_registry_missing_entry
   target: role_registry
-  path: active_roles
+  path: roles
   value: []
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_hash
+  target: role_registry
+  path: roles.0.definition_sha256
+  value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_field_duplication
+  target: role_registry
+  path: roles.0.capabilities
+  value:
+  - research
+  expected_reason: ROLE_REGISTRY_MISMATCH
+- case_id: invalid_role_registry_definition_path
+  target: role_registry
+  path: roles.0.definition_path
+  value: examples/read_only_runtime/input/other_role_definition.yaml
   expected_reason: ROLE_REGISTRY_MISMATCH
 - case_id: invalid_tool_registry_enabled
   target: tool_registry
@@ -185,3 +201,35 @@ cases:
   path: contract_set.freeze_status
   value: OPEN_FOR_NEW_CONTRACTS
   expected_reason: I0_4_CONTRACT_SET_NOT_FROZEN
+- case_id: invalid_governance_binding_policy_id
+  target: bundle
+  path: governance_binding.policy_id
+  value: thomas.governance.policy.other
+  rebuild_integrity: true
+  expected_reason: GOVERNANCE_POLICY_BINDING_MISMATCH
+- case_id: invalid_governance_binding_policy_hash
+  target: bundle
+  path: governance_binding.policy_sha256
+  value: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  rebuild_integrity: true
+  expected_reason: GOVERNANCE_POLICY_BINDING_MISMATCH
+- case_id: invalid_governance_policy_not_authoritative
+  target: governance_policy
+  path: authoritative
+  value: false
+  expected_reason: GOVERNANCE_POLICY_NOT_ACTIVE
+- case_id: invalid_governance_policy_status
+  target: governance_policy
+  path: status
+  value: INACTIVE_POLICY_SOURCE
+  expected_reason: GOVERNANCE_POLICY_NOT_ACTIVE
+- case_id: invalid_governance_policy_runtime_effect
+  target: governance_policy
+  path: runtime_effect.grants_runtime_execution
+  value: true
+  expected_reason: GOVERNANCE_POLICY_RUNTIME_EFFECT_ENABLED
+- case_id: invalid_governance_policy_validation_grants_authority
+  target: governance_policy
+  path: validation.validation_grants_authority
+  value: true
+  expected_reason: GOVERNANCE_POLICY_FAIL_CLOSED_INVALID

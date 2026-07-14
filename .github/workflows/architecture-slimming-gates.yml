@@ -1,4 +1,4 @@
-name: Architecture Slimming Gates
+name: Architecture Scope Gates
 
 on:
   pull_request:
@@ -10,7 +10,47 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: thomas-architecture-scopes-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  classify-changes:
+    name: Classify CI scopes
+    runs-on: ubuntu-latest
+    outputs:
+      deferred: ${{ steps.scope.outputs.deferred }}
+      legacy: ${{ steps.scope.outputs.legacy }}
+      full: ${{ steps.scope.outputs.full }}
+      changed_count: ${{ steps.scope.outputs.changed_count }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-validation.lock
+
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements-validation.lock
+
+      - name: Classify changed paths
+        id: scope
+        shell: bash
+        run: >-
+          python scripts/classify_ci_scope_changes.py
+          --event-name "${{ github.event_name }}"
+          --base "${{ github.event.pull_request.base.sha }}"
+          --pr-head "${{ github.event.pull_request.head.sha }}"
+          --before "${{ github.event.before }}"
+          --head "${{ github.sha }}"
+          --github-output "$GITHUB_OUTPUT"
+
   active-gate:
     name: Active Architecture Gate
     runs-on: ${{ matrix.os }}
@@ -23,6 +63,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v6
         with:
@@ -37,12 +79,15 @@ jobs:
         run: python scripts/run_architecture_gate.py --scope active --check-only
 
   deferred-gate:
-    name: Deferred and Legacy Architecture Gates
-    if: github.event_name == 'workflow_dispatch'
+    name: Deferred Architecture Gate
+    needs: classify-changes
+    if: needs.classify-changes.outputs.deferred == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v6
         with:
@@ -56,5 +101,55 @@ jobs:
       - name: Run canonical deferred architecture gate
         run: python scripts/run_architecture_gate.py --scope deferred --check-only
 
+  legacy-gate:
+    name: Legacy Compatibility Gate
+    needs: classify-changes
+    if: needs.classify-changes.outputs.legacy == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-validation.lock
+
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements-validation.lock
+
       - name: Run canonical legacy compatibility gate
         run: python scripts/run_architecture_gate.py --scope legacy --check-only
+
+  full-gate:
+    name: Full validation
+    needs: classify-changes
+    if: needs.classify-changes.outputs.full == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-validation.lock
+
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements-validation.lock
+
+      - name: Run full repository gate for shared CI or Gate infrastructure changes
+        run: python scripts/run_repository_release_gate.py --full --check-only

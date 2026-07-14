@@ -77,8 +77,18 @@ def sha256_value(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def canonical_text_file_bytes(path: Path) -> bytes:
+    """Return stable UTF-8 text bytes independent of checkout line endings."""
+    raw = path.read_bytes()
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise IntegrityError(f"{path}: record must be valid UTF-8") from exc
+    return raw.replace(b"\r\n", b"\n")
+
+
 def sha256_file(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_text_file_bytes(path)).hexdigest()
 
 
 def sha256_bytes(value: bytes) -> str:

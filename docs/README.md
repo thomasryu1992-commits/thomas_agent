@@ -17,6 +17,16 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 | Generated Artifact boundary | [`generated/README.md`](../generated/README.md) |
 | Historical Artifact boundary | [`historical/README.md`](../historical/README.md) |
 
+## Non-active Candidate Reference
+
+- System Constitution proposal: [`governance/SYSTEM_CONSTITUTION.md`](../governance/SYSTEM_CONSTITUTION.md)
+  - Status: Migration Candidate
+  - Authoritative: No
+  - Active dependency: None
+  - Future use requires separate review, explicit Thomas approval, and atomic cutover.
+
+The candidate Constitution is intentionally excluded from the Active Source Families and from the current active authority lane.
+
 ## Active Source Families
 
 - Core: [`THOMAS_CORE/`](../THOMAS_CORE/)

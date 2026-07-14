@@ -9,9 +9,12 @@ import yaml
 from runtime.registry_resolution import (
     RegistryResolutionError,
     load_resource_definitions,
+    raw_file_sha256,
     resolve_resource_registry,
     resolve_role_registry,
+    resolve_role_registry_snapshot,
 )
+from runtime.read_only_kernel.integrity import sha256_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +77,12 @@ class ArchitectureSlimmingTests(unittest.TestCase):
         self.assertFalse(resolved["_resolution"]["authoritative"])
         by_id = {item["role_id"]: item for item in resolved["roles"]}
         self.assertIn("research", by_id["general.specialist"]["capabilities"])
-        self.assertEqual(by_id["general.specialist"]["role_version"] if "role_version" in by_id["general.specialist"] else by_id["general.specialist"]["version"], "0.3.0")
+        self.assertEqual(
+            by_id["general.specialist"]["role_version"]
+            if "role_version" in by_id["general.specialist"]
+            else by_id["general.specialist"]["version"],
+            "0.3.0",
+        )
 
     def test_role_resolution_blocks_hash_mismatch(self):
         registry = self.load_yaml("03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml")
@@ -85,6 +93,54 @@ class ArchitectureSlimmingTests(unittest.TestCase):
                 repo_root=ROOT,
                 registry=broken,
                 governance_policy=self.load_yaml("governance/GOVERNANCE_POLICY.yaml"),
+            )
+
+    def test_replay_role_snapshot_uses_slim_registry_and_remains_non_authoritative(self):
+        registry = self.load_yaml("examples/read_only_runtime/input/role_registry_snapshot.yaml")
+        definition_path = ROOT / (
+            "examples/read_only_runtime/input/"
+            "role_definition_v0.2_general_specialist_snapshot.yaml"
+        )
+        definition = yaml.safe_load(definition_path.read_text(encoding="utf-8"))
+        resolved = resolve_role_registry_snapshot(
+            registry=registry,
+            role_definition=definition,
+            definition_ref=registry["roles"][0]["definition_path"],
+            definition_content_sha256=raw_file_sha256(definition_path),
+        )
+        self.assertEqual(registry["schema_version"], "role_registry.v0.3")
+        self.assertNotIn("active_roles", registry)
+        self.assertFalse(resolved["_resolution"]["authoritative"])
+        self.assertTrue(resolved["_resolution"]["snapshot_bound"])
+        self.assertFalse(resolved["_resolution"]["may_expand_authority"])
+        self.assertEqual(resolved["roles"][0]["role_id"], "general.specialist")
+        self.assertIn("research", resolved["roles"][0]["capabilities"])
+
+    def test_replay_role_snapshot_blocks_hash_mismatch_and_registry_duplication(self):
+        registry = self.load_yaml("examples/read_only_runtime/input/role_registry_snapshot.yaml")
+        definition = self.load_yaml(
+            "examples/read_only_runtime/input/"
+            "role_definition_v0.2_general_specialist_snapshot.yaml"
+        )
+
+        broken_hash = json.loads(json.dumps(registry))
+        broken_hash["roles"][0]["definition_sha256"] = "0" * 64
+        with self.assertRaises(RegistryResolutionError):
+            resolve_role_registry_snapshot(
+                registry=broken_hash,
+                role_definition=definition,
+                definition_ref=broken_hash["roles"][0]["definition_path"],
+                definition_content_sha256="1" * 64,
+            )
+
+        duplicated = json.loads(json.dumps(registry))
+        duplicated["roles"][0]["capabilities"] = ["research"]
+        with self.assertRaises(RegistryResolutionError):
+            resolve_role_registry_snapshot(
+                registry=duplicated,
+                role_definition=definition,
+                definition_ref=duplicated["roles"][0]["definition_path"],
+                definition_content_sha256=duplicated["roles"][0]["definition_sha256"],
             )
 
     def test_program_and_tool_resolution_uses_definitions(self):
@@ -113,6 +169,27 @@ class ArchitectureSlimmingTests(unittest.TestCase):
                 self.assertFalse(resolved["_resolution"]["may_expand_authority"])
                 self.assertTrue(resolved[collection])
                 self.assertIn("required_permission_level", resolved[collection][0])
+
+    def test_replay_bundle_binds_active_governance_policy_by_identity_and_hash(self):
+        bundle_path = ROOT / "examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml"
+        bundle = self.load_yaml("examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml")
+        policy_path = ROOT / bundle["refs"]["governance_policy"]
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        binding = bundle["governance_binding"]
+        expected_hash = sha256_file(policy_path)
+
+        self.assertEqual(binding["policy_id"], policy["policy_id"])
+        self.assertEqual(binding["policy_version"], policy["policy_version"])
+        self.assertEqual(binding["policy_ref"], bundle["refs"]["governance_policy"])
+        self.assertEqual(binding["policy_sha256"], expected_hash)
+        self.assertEqual(bundle["sha256"]["governance_policy"], expected_hash)
+        self.assertEqual(
+            bundle["integrity"]["bundle_fingerprint_payload"]["governance_binding"],
+            binding,
+        )
+        self.assertTrue(policy["authoritative"])
+        self.assertEqual(policy["status"], "ACTIVE_POLICY_SOURCE")
+        self.assertEqual(policy["runtime_effect"]["mode"], "REVIEW_ONLY")
 
     def test_parallel_candidates_and_legacy_shims_are_not_active(self):
         for rel in (

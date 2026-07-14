@@ -1,16 +1,19 @@
-name: Thomas Agent Runtime Validation
+name: Thomas Agent Full Repository Validation
 
 on:
-  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
+      - "release-*"
 
 permissions:
   contents: read
 
 concurrency:
-  group: thomas-runtime-validation-${{ github.workflow }}-${{ github.ref }}
+  group: thomas-full-validation-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
