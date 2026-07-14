@@ -1,0 +1,17 @@
+schema_version: tool_definition.v0.1
+tool_id: document.reader
+version: 0.1.0
+status: candidate
+owner: Thomas
+tool_class: read
+purpose: Read explicitly assigned local document references within approved scope.
+required_permission_level: P1
+data_scope:
+  explicitly_assigned_only: true
+effects:
+  external_action: false
+  filesystem_write: false
+  network_access: false
+runtime:
+  implementation_available: false
+  enabled: false

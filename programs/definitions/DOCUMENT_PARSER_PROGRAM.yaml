@@ -1,0 +1,19 @@
+schema_version: program_definition.v0.1
+program_id: document.parser
+version: 0.1.0
+status: candidate
+owner: Thomas
+purpose: Parse explicitly assigned documents into structured text without external effects.
+deterministic: true
+required_permission_level: P1
+inputs:
+  - assigned_document_reference
+outputs:
+  - structured_text
+effects:
+  external_action: false
+  filesystem_write: false
+  network_access: false
+runtime:
+  implementation_available: false
+  enabled: false

@@ -1,0 +1,93 @@
+schema_version: role_registry.v0.3
+document_version: 0.5.1
+registry_id: thomas_mvp_role_registry
+status: migration_candidate
+owner: Thomas
+authoritative: false
+
+target_source_of_truth_for:
+  - role_status
+  - routability
+  - canonical_definition_path
+  - canonical_definition_hash
+
+activation:
+  requires_explicit_cutover: true
+  active_registry_replaced: false
+
+governance_policy_ref: governance/GOVERNANCE_POLICY.yaml
+
+non_dynamic_roles:
+  - role_id: thomas.prime
+    role_type: chief_autonomous_coordinator
+    status: active
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md
+
+roles:
+  - role_id: general.specialist
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: active
+    routable: true
+    definition_path: 03_ROLE_CONTRACTS/ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
+    definition_sha256: 772cdefebe343e4f3a7b5d8f4f026fb7a4442517d72bd6c976e4688507ae7405
+
+  - role_id: validation.independent
+    version: 0.3.0
+    role_type: independent_validator
+    status: active
+    routable: true
+    definition_path: 03_ROLE_CONTRACTS/ROLES/ACTIVE/VALIDATION_ROLE.md
+    definition_sha256: ee6e627e7d4a8e3c4fb80b65659681708f71e81a2c5626b42cee9c3b75df887f
+
+  - role_id: research.general
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: candidate
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/RESEARCH_ROLE.md
+    definition_sha256: 6ad74e7924d0f00f528b07d2cf4cadcfbd155286fb6e821225a40027ae740847
+
+  - role_id: translation.general
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: candidate
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/TRANSLATION_ROLE.md
+    definition_sha256: 820d59755abe5d7dae7b6387dd91bd2d4c19d69590177aca43a4883a24753c27
+
+  - role_id: content.general
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: candidate
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/CONTENT_ROLE.md
+    definition_sha256: 3387d708fe0909921bc860d05ccfd511a1e8a811ddebf93fdd04e73dce06ba23
+
+  - role_id: business.analysis
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: candidate
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md
+    definition_sha256: c841d4513f14867419ff89276ae651b8a51b7f082a98478431d019037ffaf4cc
+
+  - role_id: development.general
+    version: 0.3.0
+    role_type: dynamic_specialist
+    status: candidate
+    routable: false
+    definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
+    definition_sha256: 56f1201387638ae78bc10714b3c7471277abb50776c343b9ef2985eb5c596ae2
+
+rules:
+  registry_does_not_define_capabilities: true
+  registry_does_not_define_permission_ceiling: true
+  registry_does_not_define_restrictions: true
+  registry_does_not_define_validation_policy: true
+  registry_does_not_define_promotion_policy: true
+  definition_hash_required: true
+  markdown_yaml_front_matter_is_runtime_definition: true
+  missing_definition_action: BLOCK_ROUTING
+  hash_mismatch_action: BLOCK_ROUTING

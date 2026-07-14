@@ -1,0 +1,60 @@
+schema_version: thomas_memory_policy.v0.1
+policy_id: thomas.memory.policy
+policy_version: 0.1.1
+status: MIGRATION_CANDIDATE
+owner: Thomas
+authoritative: false
+
+target_authority:
+  planned_source_of_truth: true
+  activation_requires_explicit_cutover: true
+  active_source_replaced: false
+
+memory_classes:
+  working:
+    persistent: false
+    task_scoped: true
+    may_grant_authority: false
+  candidate:
+    persistent: true
+    requires_provenance: true
+    requires_confidence: true
+    requires_review_date: true
+    may_grant_authority: false
+  validated_operational_knowledge:
+    persistent: true
+    requires_validation: true
+    requires_version: true
+    requires_evidence: true
+    requires_review_date: true
+    requires_rollback: true
+    may_grant_authority: false
+
+protected_content:
+  requires_thomas_approval:
+    - identity
+    - core_values
+    - mission
+    - vision
+    - long_term_goals
+    - risk_boundaries
+    - permission_policy
+    - authority_policy
+    - sensitive_long_term_information
+
+secrets:
+  storage_allowed: false
+  values_allowed: false
+  metadata_only_reference_allowed: true
+
+learning:
+  may_create:
+    - report
+    - candidate
+    - recommendation
+    - review_packet
+    - operational_knowledge_candidate
+    - programization_candidate
+  may_directly_change_runtime: false
+  may_expand_authority: false
+  repeated_success_triggers_review_only: true
