@@ -114,7 +114,7 @@ def assert_workflow() -> None:
     for token in required:
         if token not in text:
             raise AssertionError(f"workflow missing required token: {token}")
-    forbidden = ["contents: write", "pull-requests: write", "id-token: write", "secrets.", "workflow_dispatch:"]
+    forbidden = ["contents: write", "pull-requests: write", "id-token: write", "secrets."]
     for token in forbidden:
         if token in text:
             raise AssertionError(f"workflow contains forbidden token: {token}")

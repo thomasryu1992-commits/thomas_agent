@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 from scripts.gate_matrix import (
     ACTIVE_CHECKS,
     ACTIVE_CHECK_PATHS,
+    CI_SCOPE_PATH_PATTERNS,
     DEFERRED_CHECKS,
     DEFERRED_CHECK_PATHS,
     GATE_DEFINITIONS,
@@ -12,7 +17,16 @@ from scripts.gate_matrix import (
     LEGACY_COMPATIBILITY_CHECKS,
     LEGACY_COMPATIBILITY_CHECK_PATHS,
     REPOSITORY_RELEASE_CHECKS,
+    classify_ci_scopes,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_workflow(rel: str) -> dict[str, Any]:
+    value = yaml.load((ROOT / rel).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(value, dict)
+    return value
 
 
 class GateSeparationTests(unittest.TestCase):
@@ -66,6 +80,73 @@ class GateSeparationTests(unittest.TestCase):
         labels = {label for label, _ in REPOSITORY_RELEASE_CHECKS}
         self.assertNotIn("Core Release Reproducibility", labels)
         self.assertNotIn("Core Apply Idempotency", labels)
+
+    def test_ci_scope_path_policy_has_one_owner_per_scope(self):
+        self.assertEqual(set(CI_SCOPE_PATH_PATTERNS), {"deferred", "legacy", "full"})
+        for patterns in CI_SCOPE_PATH_PATTERNS.values():
+            self.assertTrue(patterns)
+            self.assertEqual(len(patterns), len(set(patterns)))
+
+    def test_active_only_change_does_not_select_deferred_or_legacy(self):
+        self.assertEqual(
+            classify_ci_scopes(["runtime/read_only_kernel/preflight.py"]),
+            {"active": True, "deferred": False, "legacy": False, "full": False},
+        )
+
+    def test_deferred_change_selects_active_and_deferred_only(self):
+        self.assertEqual(
+            classify_ci_scopes(["deferred/DEFERRED_ARCHITECTURE.yaml"]),
+            {"active": True, "deferred": True, "legacy": False, "full": False},
+        )
+
+    def test_legacy_change_selects_active_and_legacy_only(self):
+        self.assertEqual(
+            classify_ci_scopes(["historical/architecture/old.md"]),
+            {"active": True, "deferred": False, "legacy": True, "full": False},
+        )
+
+    def test_shared_gate_infrastructure_change_selects_all_scopes_and_full(self):
+        self.assertEqual(
+            classify_ci_scopes(["scripts/gate_matrix.py"]),
+            {"active": True, "deferred": True, "legacy": True, "full": True},
+        )
+
+    def test_architecture_workflow_routes_each_scope_conditionally(self):
+        workflow = load_workflow(".github/workflows/architecture-slimming-gates.yml")
+        jobs = workflow["jobs"]
+        self.assertEqual(
+            set(jobs),
+            {"classify-changes", "active-gate", "deferred-gate", "legacy-gate", "full-gate"},
+        )
+        self.assertEqual(
+            jobs["deferred-gate"]["if"],
+            "needs.classify-changes.outputs.deferred == 'true'",
+        )
+        self.assertEqual(
+            jobs["legacy-gate"]["if"],
+            "needs.classify-changes.outputs.legacy == 'true'",
+        )
+        self.assertEqual(
+            jobs["full-gate"]["if"],
+            "needs.classify-changes.outputs.full == 'true'",
+        )
+
+    def test_full_workflow_is_not_a_default_pull_request_gate(self):
+        workflow = load_workflow(".github/workflows/thomas-agent-runtime-validation.yml")
+        triggers = workflow["on"]
+        self.assertNotIn("pull_request", triggers)
+        self.assertEqual(set(triggers), {"workflow_dispatch", "schedule", "push"})
+        self.assertEqual(triggers["push"]["tags"], ["v*", "release-*"])
+
+    def test_active_slimming_runner_does_not_call_deferred_gate_or_tests(self):
+        text = (ROOT / "scripts/run_slimming_gate.py").read_text(encoding="utf-8")
+        self.assertNotIn("validate_deferred_architecture.py", text)
+        self.assertNotIn("tests.test_deferred_architecture", text)
+
+    def test_active_slimming_validator_does_not_duplicate_deferred_semantics(self):
+        text = (ROOT / "scripts/validate_slimming_package.py").read_text(encoding="utf-8")
+        self.assertNotIn("def validate_deferred(", text)
+        self.assertNotIn("validate_deferred()", text)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from gate_matrix import (
     ACTIVE_CHECKS,
     ACTIVE_CHECK_PATHS,
+    CI_SCOPE_PATH_PATTERNS,
     DEFERRED_CHECKS,
     DEFERRED_CHECK_PATHS,
     GATE_DEFINITIONS,
@@ -13,13 +17,126 @@ from gate_matrix import (
     LEGACY_COMPATIBILITY_CHECKS,
     LEGACY_COMPATIBILITY_CHECK_PATHS,
     REPOSITORY_RELEASE_CHECKS,
+    classify_ci_scopes,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+ACTIVE_WORKFLOW = ".github/workflows/architecture-slimming-gates.yml"
+FULL_WORKFLOW = ".github/workflows/thomas-agent-runtime-validation.yml"
 
 
 def fail(message: str) -> None:
     raise SystemExit(f"FAIL: {message}")
+
+
+def load_workflow(rel: str) -> dict[str, Any]:
+    value = yaml.load((ROOT / rel).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    if not isinstance(value, dict):
+        fail(f"{rel}: workflow must decode to a mapping")
+    return value
+
+
+def collect_run_commands(value: Any) -> list[str]:
+    commands: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "run" and isinstance(child, str):
+                commands.append(" ".join(child.split()))
+            commands.extend(collect_run_commands(child))
+    elif isinstance(value, list):
+        for child in value:
+            commands.extend(collect_run_commands(child))
+    return commands
+
+
+def validate_workflow_scope_policy() -> None:
+    active = load_workflow(ACTIVE_WORKFLOW)
+    triggers = active.get("on")
+    if not isinstance(triggers, dict) or set(triggers) != {
+        "pull_request", "push", "workflow_dispatch"
+    }:
+        fail("Architecture scope workflow must run on pull_request, main push, and workflow_dispatch")
+    push = triggers.get("push")
+    if not isinstance(push, dict) or push.get("branches") != ["main"]:
+        fail("Architecture scope workflow push trigger must be limited to main")
+
+    jobs = active.get("jobs")
+    required_jobs = {
+        "classify-changes", "active-gate", "deferred-gate", "legacy-gate", "full-gate"
+    }
+    if not isinstance(jobs, dict) or set(jobs) != required_jobs:
+        fail("Architecture scope workflow must contain exactly the classifier and four canonical Gate jobs")
+    if jobs["deferred-gate"].get("if") != "needs.classify-changes.outputs.deferred == 'true'":
+        fail("Deferred Gate job must use the canonical deferred classifier output")
+    if jobs["legacy-gate"].get("if") != "needs.classify-changes.outputs.legacy == 'true'":
+        fail("Legacy Gate job must use the canonical legacy classifier output")
+    if jobs["full-gate"].get("if") != "needs.classify-changes.outputs.full == 'true'":
+        fail("Full Gate job must use the canonical full classifier output")
+
+    commands = collect_run_commands(active)
+    required_commands = (
+        "python scripts/classify_ci_scope_changes.py",
+        "python scripts/run_architecture_gate.py --scope active --check-only",
+        "python scripts/run_architecture_gate.py --scope deferred --check-only",
+        "python scripts/run_architecture_gate.py --scope legacy --check-only",
+        "python scripts/run_repository_release_gate.py --full --check-only",
+    )
+    for token in required_commands:
+        if not any(token in command for command in commands):
+            fail(f"Architecture scope workflow missing command: {token}")
+
+    full = load_workflow(FULL_WORKFLOW)
+    full_triggers = full.get("on")
+    if not isinstance(full_triggers, dict) or set(full_triggers) != {
+        "workflow_dispatch", "schedule", "push"
+    }:
+        fail("Full Repository workflow must be manual, nightly, and release-tag triggered only")
+    if "pull_request" in full_triggers:
+        fail("Full Repository workflow must not run for every pull request")
+    full_push = full_triggers.get("push")
+    if not isinstance(full_push, dict) or full_push.get("tags") != ["v*", "release-*"]:
+        fail("Full Repository workflow push trigger must be limited to release tags")
+    schedules = full_triggers.get("schedule")
+    if not isinstance(schedules, list) or not schedules or not schedules[0].get("cron"):
+        fail("Full Repository workflow must retain a nightly schedule")
+    full_commands = collect_run_commands(full)
+    expected = "python scripts/run_repository_release_gate.py --full --check-only"
+    if expected not in full_commands:
+        fail("Full Repository workflow must run the canonical full Release Gate")
+
+
+def validate_classifier_policy() -> None:
+    if set(CI_SCOPE_PATH_PATTERNS) != {"deferred", "legacy", "full"}:
+        fail("CI scope path policy must define deferred, legacy, and full only")
+    for scope, patterns in CI_SCOPE_PATH_PATTERNS.items():
+        if not patterns or len(patterns) != len(set(patterns)):
+            fail(f"CI scope {scope} patterns must be non-empty and unique")
+
+    cases = (
+        (["runtime/read_only_kernel/preflight.py"], {"active": True, "deferred": False, "legacy": False, "full": False}),
+        (["deferred/DEFERRED_ARCHITECTURE.yaml"], {"active": True, "deferred": True, "legacy": False, "full": False}),
+        (["historical/architecture/old.md"], {"active": True, "deferred": False, "legacy": True, "full": False}),
+        (["scripts/gate_matrix.py"], {"active": True, "deferred": True, "legacy": True, "full": True}),
+    )
+    for paths, expected in cases:
+        actual = classify_ci_scopes(paths)
+        if actual != expected:
+            fail(f"CI scope classification mismatch for {paths}: {actual} != {expected}")
+
+
+def validate_active_runner_does_not_execute_deferred_gate() -> None:
+    text = (ROOT / "scripts/run_slimming_gate.py").read_text(encoding="utf-8")
+    for forbidden in (
+        "validate_deferred_architecture.py",
+        "tests.test_deferred_architecture",
+        "Deferred Architecture Structure",
+    ):
+        if forbidden in text:
+            fail(f"Active Slimming runner must not execute Deferred ownership: {forbidden}")
+
+    slimming = (ROOT / "scripts/validate_slimming_package.py").read_text(encoding="utf-8")
+    if "def validate_deferred(" in slimming or "validate_deferred()" in slimming:
+        fail("Active Slimming validator must not duplicate Deferred manifest semantics")
 
 
 def main() -> int:
@@ -51,11 +168,14 @@ def main() -> int:
         "scripts/run_deferred_architecture_gate.py",
         "scripts/run_legacy_compatibility_gate.py",
         "scripts/run_split_repository_gate.py",
+        "scripts/classify_ci_scope_changes.py",
+        ACTIVE_WORKFLOW,
+        FULL_WORKFLOW,
     ):
         if not (ROOT / rel).exists():
             missing.append(rel)
     if missing:
-        fail("Gate matrix or entrypoint references missing files: " + ", ".join(sorted(set(missing))))
+        fail("Gate matrix, CI classifier, workflow, or entrypoint references missing files: " + ", ".join(sorted(set(missing))))
 
     expected_repository_checks = [*ACTIVE_CHECKS, *DEFERRED_CHECKS, LEGACY_COMPATIBILITY_CHECKS[0]]
     if REPOSITORY_RELEASE_CHECKS != expected_repository_checks:
@@ -84,7 +204,11 @@ def main() -> int:
         if any(fragment in label for fragment in prohibited_active_fragments):
             fail(f"Deferred scope leaked into Active Gate: {label}")
 
-    print("THOMAS_AGENT_GATE_SEPARATION: PASS")
+    validate_classifier_policy()
+    validate_workflow_scope_policy()
+    validate_active_runner_does_not_execute_deferred_gate()
+
+    print("THOMAS_AGENT_GATE_AND_CI_SCOPE_SEPARATION: PASS")
     return 0
 
 

@@ -129,6 +129,29 @@ python scripts/run_repository_release_gate.py --full --check-only
 
 Compatibility wrapper commands may remain for external callers, but `scripts/gate_matrix.py` and `scripts/run_architecture_gate.py` own Gate composition.
 
+### CI Scope Routing
+
+CI routing selects an existing canonical Gate; it does not create authority or redefine Gate composition.
+
+```text
+Every pull request and main push
+  → Active Gate
+
+Deferred-owned path changed
+  → Active Gate + Deferred Gate
+
+Legacy-owned path changed
+  → Active Gate + Legacy Gate
+
+Shared CI / Gate infrastructure changed
+  → Active + Deferred + Legacy + Full Repository Gate
+
+Nightly schedule, manual dispatch, or release tag
+  → Full Repository Gate on Ubuntu and Windows
+```
+
+`scripts/gate_matrix.py` owns the CI path classification patterns, and `scripts/classify_ci_scope_changes.py` only applies those patterns to the current Git diff. The Full Repository Gate remains the comprehensive integration and release check, but it is not the default blocking check for unrelated Active pull requests.
+
 ## Safety State
 
 The following remain disabled:
