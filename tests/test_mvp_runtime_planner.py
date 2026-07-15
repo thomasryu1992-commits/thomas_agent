@@ -33,8 +33,9 @@ def test_classify_received_task():
     assert c["execution_mode"] == "AGENT"
     assert c["risk_level"] == "GREEN"
     assert c["priority"] == "NORMAL"
-    assert decision["authority"]["required_permission_level"] == "P3"
+    assert decision["authority"]["required_permission_level"] == "P2"
     assert decision["required_capabilities"] == ["research", "analysis"]
+    assert decision["permission_scope"] == "INTERNAL_ANALYSIS"
 
 
 def test_classify_preserves_priority():

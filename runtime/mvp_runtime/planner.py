@@ -39,7 +39,8 @@ _LEVEL_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, "P6": 6}
 MVP_EXECUTION_MODE = "AGENT"          # judgment/interpretation, not a deterministic program
 MVP_COMPLEXITY = "NORMAL"
 MVP_RISK_LEVEL = "GREEN"              # internal analysis, no external/financial effect
-MVP_REQUIRED_PERMISSION_LEVEL = "P3"  # produces an analysis + recommendation draft (CREATE)
+MVP_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"  # governance effect class (ALLOW disposition)
+MVP_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — internal read-only analysis (least privilege)
 MVP_REQUIRED_CAPABILITIES = ("research", "analysis")
 _READ_ONLY_CONSTRAINT = "no_external_action"
 
@@ -81,9 +82,10 @@ def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
         },
         "authority": {
             "required_permission_level": MVP_REQUIRED_PERMISSION_LEVEL,
-            "authority_reason": "Internal analysis and recommendation draft (read-only).",
+            "authority_reason": "Internal read-only analysis within the assigned Task scope.",
         },
         "required_capabilities": list(MVP_REQUIRED_CAPABILITIES),
+        "permission_scope": MVP_PERMISSION_SCOPE,
     }
 
 
