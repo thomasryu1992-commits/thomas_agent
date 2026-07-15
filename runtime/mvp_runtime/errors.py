@@ -1,0 +1,24 @@
+"""Fail-closed error types for the MVP runtime.
+
+Every uncertain, missing, or invalid condition raises one of these instead of
+guessing. A caught error is a BLOCK, never a silent default.
+"""
+
+from __future__ import annotations
+
+
+class MvpRuntimeError(ValueError):
+    """Base for all MVP runtime fail-closed errors.
+
+    ``reason_code`` is a short stable slug (e.g. ``EMPTY_REQUEST``) suitable for
+    audit records and user-facing BLOCK reasons; the message adds detail.
+    """
+
+    def __init__(self, reason_code: str, message: str):
+        self.reason_code = reason_code
+        self.reason = message
+        super().__init__(f"{reason_code}: {message}")
+
+
+class TaskIntakeBlocked(MvpRuntimeError):
+    """Task Intake could not produce a valid RECEIVED task.v0.3 record."""
