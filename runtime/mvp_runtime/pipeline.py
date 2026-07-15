@@ -34,6 +34,7 @@ from .errors import MvpRuntimeError, PersistenceError
 from .intake import build_task
 from .prime import plan_task
 from .store import LedgerStore
+from .tools import MockSearchTool, SearchTool, run_search
 from .validation import validate_agent_output
 from .worker import MockProvider, Provider, run_analysis_worker
 
@@ -119,6 +120,7 @@ def run_task(
     raw_request: str,
     *,
     provider: Provider | None = None,
+    search_tool: SearchTool | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
@@ -126,8 +128,13 @@ def run_task(
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
     fail-closed condition (those become ``status == "BLOCKED"``). Pass ``store`` to
-    persist the records + audit trail durably (the CLI does)."""
+    persist the records + audit trail durably (the CLI does).
+
+    ``search_tool`` runs a read-only web search whose hits become source-attributed
+    evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
+    network tool is chosen via the Safety-Flag Gate by the caller)."""
     provider = provider if provider is not None else MockProvider()
+    search_tool = search_tool if search_tool is not None else MockSearchTool()
     now = now if now is not None else _utc_now_iso()
     result: dict[str, Any] = {
         "status": "BLOCKED",
@@ -155,11 +162,20 @@ def run_task(
         plan = plan_task(task, now=now, repo_root=repo_root)
         records.update({
             "task": plan["task"], "binding": plan["binding"],
-            "permission_decision": plan["permission_decision"], "role_assignment": plan["role_assignment"],
+            "permission_decision": plan["permission_decision"],
+            "search_permission_decision": plan["search_permission_decision"],
+            "role_assignment": plan["role_assignment"],
         })
 
+        # R3: run the authorized read-only search (mock by default; gated real tool).
+        # Its hits become source-attributed evidence; the use is recorded + audited.
+        query = plan["task"].get("request", {}).get("normalized_goal") or raw_request
+        search_hits, tool_use = run_search(query, tool=search_tool, now=now)
+        records["tool_use"] = tool_use
+
         agent_output, invocation = run_analysis_worker(
-            plan["task"], plan["role_assignment"], provider=provider, created_at=now, repo_root=repo_root
+            plan["task"], plan["role_assignment"], provider=provider, created_at=now,
+            search_hits=search_hits, repo_root=repo_root,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
@@ -169,7 +185,8 @@ def run_task(
 
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
-            now=now, genesis_previous_hash=genesis, repo_root=repo_root,
+            now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
+            genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:
         return _finalize_block(

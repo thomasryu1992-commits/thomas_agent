@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
-from runtime.mvp_runtime.errors import ProviderError
+from runtime.mvp_runtime.errors import ProviderError, ToolError
 from runtime.mvp_runtime.pipeline import run_task
 from runtime.mvp_runtime.worker import MockProvider
 
@@ -32,6 +32,13 @@ class _OverconfidentProvider(MockProvider):
         return r
 
 
+class _ErrorSearchTool:
+    tool_id, tool_version, network_egress = "search.readonly", "0.1.0", False
+
+    def search(self, query, *, max_results, timeout_seconds):
+        raise ToolError("BOOM", "search backend unavailable")
+
+
 # --- fail-closed without a Core (run everywhere) ----------------------------
 
 def test_empty_request_blocks():
@@ -54,15 +61,18 @@ def test_normal_task_completes_and_delivers():
     assert r["status"] == "COMPLETED" and r["delivered"] is True
     assert isinstance(r["final_response"], str) and "Key findings" in r["final_response"]
     rec = r["records"]
-    for key in ("received_task", "task", "binding", "permission_decision", "role_assignment",
-                "agent_output", "invocation", "validation_result", "audit_trail"):
+    for key in ("received_task", "task", "binding", "permission_decision", "search_permission_decision",
+                "role_assignment", "tool_use", "agent_output", "invocation", "validation_result", "audit_trail"):
         assert key in rec
     assert rec["agent_output"]["status"] == "needs_validation"
     assert rec["validation_result"]["validation"]["result"] == "PASS"
-    assert len(rec["audit_trail"]) == 5  # + MODEL_INVOKED
+    assert len(rec["audit_trail"]) == 6  # + TOOL_USED + MODEL_INVOKED
     assert [e["event_type"] for e in rec["audit_trail"]] == [
-        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
+        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
     ]
+    # The read-only search hits are recorded as source-attributed evidence on the output.
+    assert any(e["type"] == "web_search" for e in rec["agent_output"]["evidence"])
+    assert rec["tool_use"]["tool_id"] == "search.readonly" and rec["tool_use"]["read_only"] is True
 
 
 @requires_local_core
@@ -84,6 +94,14 @@ def test_provider_error_blocks_the_run():
     r = run_task(REQUEST, provider=_ErrorProvider(), now=NOW)
     assert r["status"] == "BLOCKED"
     assert r["block"]["reason_code"] == "PROVIDER_ERROR"
+
+
+@requires_local_core
+def test_search_tool_error_blocks_the_run():
+    # A failing read-only search fails the whole run closed (no silent skip).
+    r = run_task(REQUEST, provider=MockProvider(), search_tool=_ErrorSearchTool(), now=NOW)
+    assert r["status"] == "BLOCKED"
+    assert r["block"]["reason_code"] == "TOOL_ERROR"
 
 
 @requires_local_core

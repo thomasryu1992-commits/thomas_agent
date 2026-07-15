@@ -117,7 +117,21 @@ class MockProvider:
         )
 
 
-def build_prompt(task: Mapping[str, Any], assignment: Mapping[str, Any]) -> str:
+def _search_context(search_hits: list[Mapping[str, Any]] | None) -> str:
+    """A read-only search-results block appended to the prompt. Empty when no search ran."""
+    if not search_hits:
+        return ""
+    lines = ["\nRead-only web search results (use as supporting evidence; cite by [S#]):"]
+    for index, hit in enumerate(search_hits, start=1):
+        lines.append(f"[S{index}] {hit.get('title', '')} — {hit.get('url', '')}: {hit.get('snippet', '')}")
+    return "\n".join(lines) + "\n"
+
+
+def build_prompt(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    search_hits: list[Mapping[str, Any]] | None = None,
+) -> str:
     scope = task.get("scope", {})
     role_scope = assignment.get("role_scope", {})
     rules = ", ".join(task.get("context", {}).get("active_core_rule_ids", []))
@@ -130,9 +144,27 @@ def build_prompt(task: Mapping[str, Any], assignment: Mapping[str, Any]) -> str:
         f"Expected outputs: {outputs}\n"
         f"Active Core rules in scope: {rules}\n"
         f"Evaluate the business idea in this priority order: {priorities}.\n"
+        f"{_search_context(search_hits)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
         "inferences, disclose assumptions and uncertainty, and do not propose external actions."
     )
+
+
+def _build_evidence(search_hits: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Evidence backing the output: the model's own reasoning plus each read-only search
+    hit (source-attributed), so a fact grounded in a search result is auditable to it."""
+    evidence: list[dict[str, Any]] = [{"ref": "model:analysis", "type": "model_reasoning"}]
+    for index, hit in enumerate(search_hits or [], start=1):
+        url = hit.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        evidence.append({
+            "ref": f"search:{hit.get('source', 'search')}:{index}",
+            "type": "web_search",
+            "url": url,
+            "title": hit.get("title", ""),
+        })
+    return evidence
 
 
 _REQUIRED_ANALYSIS_KEYS = ("summary", "key_findings", "facts", "inferences", "risks", "recommendation",
@@ -201,9 +233,13 @@ def run_analysis_worker(
     *,
     provider: Provider,
     created_at: str,
+    search_hits: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one specialist model call and return ``(agent_output, invocation_metadata)``.
+
+    ``search_hits`` (if any) are read-only web-search results the specialist may use: they
+    are added to the prompt and recorded as source-attributed evidence on the output.
 
     Fails closed (``WorkerBlocked``) on missing model budget, provider error/timeout,
     token-budget breach, malformed analysis, or a schema-invalid Agent Output.
@@ -222,7 +258,7 @@ def run_analysis_worker(
     if not isinstance(max_model_calls, int) or max_model_calls < 1:
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
-    prompt = build_prompt(task, assignment)
+    prompt = build_prompt(task, assignment, search_hits)
     try:
         result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
     except (ProviderError, TimeoutError) as exc:
@@ -257,7 +293,7 @@ def run_analysis_worker(
         "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
         "summary": analysis["summary"],
         "facts": _normalize_facts(analysis.get("facts")),
-        "evidence": [{"ref": "model:analysis", "type": "model_reasoning"}],
+        "evidence": _build_evidence(search_hits),
         "inferences": _normalize_inferences(analysis.get("inferences")),
         "assumptions": _str_list(analysis.get("assumptions")),
         "uncertainty": _str_list(analysis.get("uncertainty")),

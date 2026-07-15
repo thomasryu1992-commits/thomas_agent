@@ -19,6 +19,7 @@ from .errors import MvpRuntimeError
 from .pipeline import run_task
 from .providers import GoogleAIStudioProvider, select_provider
 from .store import LedgerStore
+from .tools import WebSearchTool, select_search_tool
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -54,15 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     # authorizes it; otherwise select_provider fails closed and the run is BLOCKED here.
     try:
         provider = select_provider()
+        # The read-only search tool goes through the same Safety-Flag Gate: default is the
+        # network-free MockSearchTool; a real network tool requires a valid activation.
+        search_tool = select_search_tool()
     except MvpRuntimeError as exc:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return EXIT_BLOCKED
     if isinstance(provider, GoogleAIStudioProvider):
         sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
+    if isinstance(search_tool, WebSearchTool):
+        sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     store = LedgerStore.default()
-    result = run_task(raw_request, provider=provider, channel="manual", store=store)
+    result = run_task(raw_request, provider=provider, search_tool=search_tool, channel="manual", store=store)
     if (result.get("block") or {}).get("stage") != "persistence":
         sys.stderr.write(f"LEDGER: recorded to {store.root}\n")
     if result["status"] == "COMPLETED":

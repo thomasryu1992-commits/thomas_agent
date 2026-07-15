@@ -187,18 +187,21 @@ def build_pipeline_audit(
     invocation: Mapping[str, Any],
     *,
     now: str,
+    tool_use: Mapping[str, Any] | None = None,
+    search_permission_decision: Mapping[str, Any] | None = None,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Return the hash-chained audit trail for one completed task run. Append-only;
     evidence only.
 
-    Events: TASK_CREATED -> PERMISSION_DECIDED -> MODEL_INVOKED -> VALIDATION_COMPLETED ->
-    TASK_STATE_CHANGED. MODEL_INVOKED records the gated action itself (which model/version
-    answered, token usage, finish reason, and whether it crossed the network boundary) as
-    an OTHER-typed event — ``audit_event.v0.1`` has no model-specific type, so the fact is
-    carried in the reason codes + fingerprinted invocation payload rather than by adding a
-    new schema. ``validation_result`` carries the Agent Output reference and fingerprint.
+    Events: TASK_CREATED -> PERMISSION_DECIDED -> [TOOL_USED] -> MODEL_INVOKED ->
+    VALIDATION_COMPLETED -> TASK_STATE_CHANGED. When a read-only search ran, a TOOL_USED
+    event (OTHER-typed, like MODEL_INVOKED — ``audit_event.v0.1`` has no tool-specific
+    type) records the gated tool use itself: tool id/class, query + result hashes, sources,
+    result count, and whether it crossed the network boundary, referencing its INTERNAL_READ
+    PermissionDecision. MODEL_INVOKED records the gated model call; ``validation_result``
+    carries the Agent Output reference and fingerprint.
     """
     root = repo_root if repo_root is not None else _repo_root()
     tid = task["identity"]["task_id"]
@@ -228,6 +231,31 @@ def build_pipeline_audit(
             related_record_refs=[f"in_memory:task:{tid}"],
             evidence_refs=[f"in_memory:{permission_decision['permission_decision_id']}"], payload_sha256=perm_fp,
         ),
+    ]
+
+    if tool_use is not None:
+        tool_fp = _fingerprint(dict(tool_use), "tool_use")
+        tool_egress = bool(tool_use.get("network_egress"))
+        search_permdec_ref = (
+            f"in_memory:{search_permission_decision['permission_decision_id']}"
+            if search_permission_decision else f"in_memory:task:{tid}"
+        )
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                         role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+            subject_type="TOOL_USE", subject_id=str(tool_use.get("tool_id")),
+            subject_ref=f"in_memory:tool_use:{tid}", subject_fingerprint=tool_fp,
+            summary=(f"Read-only tool used: {tool_use.get('tool_id')} ({tool_use.get('tool_class')}) — "
+                     f"{tool_use.get('result_count')} results from {tool_use.get('sources')}, "
+                     f"network_egress={tool_egress}."),
+            outcome="RECORDED",
+            reason_codes=["TOOL_USED", "NETWORK_EGRESS" if tool_egress else "NO_NETWORK_EGRESS"],
+            related_record_refs=[search_permdec_ref],
+            evidence_refs=[f"in_memory:tool_use:{tid}"], payload_sha256=tool_fp,
+        ))
+
+    steps.extend([
         dict(
             event_type="OTHER",
             actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
@@ -261,7 +289,7 @@ def build_pipeline_audit(
             related_record_refs=[f"in_memory:{validation_result['validation_result_id']}"],
             evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
         ),
-    ]
+    ])
     return _chain_events(root, task, steps, now, genesis_previous_hash)
 
 
