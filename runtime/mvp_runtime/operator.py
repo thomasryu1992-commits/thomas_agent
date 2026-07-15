@@ -183,20 +183,23 @@ def handle_operator_message(
 
 @runtime_checkable
 class OperatorChannel(Protocol):
-    def poll(self) -> list[InboundMessage]: ...
+    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]: ...
     def send(self, chat_id: str, text: str) -> None: ...
 
 
 @dataclass
 class MockOperatorChannel:
     """Deterministic, network-free channel for tests and local runs. ``inbound`` is drained
-    on each ``poll``; ``sent`` captures ``(chat_id, text)`` for assertions."""
+    on each ``poll``; ``sent`` captures ``(chat_id, text)`` for assertions. ``long_poll_seconds``
+    is accepted for protocol parity but ignored — the in-memory queue returns immediately."""
 
     inbound: list[InboundMessage] = field(default_factory=list)
     sent: list[tuple[str, str]] = field(default_factory=list)
     network_egress: bool = False
+    last_long_poll_seconds: int | None = None
 
-    def poll(self) -> list[InboundMessage]:
+    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
+        self.last_long_poll_seconds = long_poll_seconds
         batch, self.inbound = list(self.inbound), []
         return batch
 
@@ -248,6 +251,11 @@ class TelegramChannel:
             raise OperatorBlocked("NO_BOT_TOKEN", f"environment variable {self._token_env} is not set")
         return token
 
+    # Extra HTTP timeout beyond the server-side long-poll hold, so the client waits out the
+    # full long-poll plus network latency instead of aborting it early.
+    _HTTP_TIMEOUT_BUFFER = 10
+    _DEFAULT_HTTP_TIMEOUT = 30
+
     def _call(self, token: str, method: str, params: dict[str, Any], *, timeout: int) -> dict[str, Any]:
         data = urllib.parse.urlencode(params).encode("utf-8")
         request = urllib.request.Request(
@@ -264,12 +272,15 @@ class TelegramChannel:
             raise OperatorBlocked("CHANNEL_TRANSPORT", f"telegram {method} returned an error response")
         return payload
 
-    def poll(self, *, long_poll_seconds: int = 0, timeout: int = 30) -> list[InboundMessage]:
+    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
+        # Real long-poll: getUpdates holds the connection up to ``long_poll_seconds`` server
+        # side; the HTTP timeout must outlast that hold (+buffer) or it would abort early.
         token = self._assert()
+        http_timeout = (long_poll_seconds + self._HTTP_TIMEOUT_BUFFER) if long_poll_seconds > 0 else self._DEFAULT_HTTP_TIMEOUT
         payload = self._call(
             token, "getUpdates",
             {"offset": self._offset, "timeout": long_poll_seconds, "allowed_updates": json.dumps(["message"])},
-            timeout=timeout,
+            timeout=http_timeout,
         )
         messages: list[InboundMessage] = []
         for update in payload.get("result", []):
@@ -309,18 +320,21 @@ def run_operator_once(
     channel: OperatorChannel,
     registration: OperatorIdentity,
     *,
+    long_poll_seconds: int = 0,
     provider: Provider | None = None,
     search_tool: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Poll one batch, handle each verified message, and send its reply. Messages that fail
-    the control-channel identity gate are **silently dropped** — an unverified sender gets no
-    reply (no engagement, no info leak) and no task runs. Returns a small summary."""
+    """Poll one batch, handle each verified message, and send its reply. ``long_poll_seconds``
+    lets a network channel hold the poll open until a message arrives (0 = return immediately).
+    Messages that fail the control-channel identity gate are **silently dropped** — an
+    unverified sender gets no reply (no engagement, no info leak) and no task runs. Returns a
+    small summary."""
     handled: list[OperatorReply] = []
     dropped = 0
-    for message in channel.poll():
+    for message in channel.poll(long_poll_seconds=long_poll_seconds):
         try:
             verify_control_channel(message, registration)
         except OperatorBlocked:
