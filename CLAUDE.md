@@ -47,6 +47,27 @@ Run the MVP intake CLI (R2.1):
 ```
 On Windows set `PYTHONUTF8=1` for non-ASCII I/O.
 
+## Core activation (local, per-environment)
+
+The MVP binds each Task to an **active** approved Core Release. The approved
+Release itself (`THOMAS_CORE/releases/thomas-core-v0.2.1-*/`) is committed and
+shared. **Activation is a local runtime step, not shared source**: the approval,
+activation, and current-pointer records are gitignored and live per-machine. This
+keeps the shared repo Core-neutral so the deferred runtime-promotion-readiness gate
+stays green everywhere.
+
+- The current pointer lives at **`.runtime_governance_state/CURRENT_CORE_RELEASE.yaml`**
+  (outside `THOMAS_CORE/` so source validators don't treat the tree as activated).
+- The MVP binding must be pointed at it: `--current-pointer .runtime_governance_state/CURRENT_CORE_RELEASE.yaml`.
+- To activate on a fresh machine (once): record an operator-decision evidence file,
+  then run `scripts/approve_core_release.py` → `scripts/activate_core_release.py`
+  (source_type `operator_decision_intake`, verification `verified_by_control_channel`),
+  then move the generated `THOMAS_CORE/CURRENT_CORE_RELEASE.yaml` into
+  `.runtime_governance_state/`. The gitignored `THOMAS_CORE/approvals/` and
+  `THOMAS_CORE/activations/` records stay local.
+- Never commit `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`, or
+  `THOMAS_CORE/approvals/` — they are local runtime state.
+
 ## Conventions & guardrails (do not violate without explicit Thomas approval)
 
 - **Reuse first.** No new Contract / Schema / Registry / Gate unless an existing owner truly can't express it. One concept = one authority = one source of truth.
