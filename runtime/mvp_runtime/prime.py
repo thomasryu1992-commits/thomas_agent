@@ -28,7 +28,11 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from .assignment import build_role_assignment
 from .binding import bind_task_to_core
 from .errors import PlannerBlocked
-from .permission import MVP_TTL_MINUTES, build_permission_decision
+from .permission import (
+    MVP_TTL_MINUTES,
+    build_permission_decision,
+    build_search_permission_decision,
+)
 from .planner import classify_task, load_resolved_roles, select_role
 
 TASK_SCHEMA_VERSION = "task.v0.3"
@@ -129,6 +133,16 @@ def plan_task(
         repo_root=root,
     )
 
+    # R3: authorize the specialist's read-only web search as a separate INTERNAL_READ
+    # ALLOW action (its own PermissionDecision — the search is a distinct governed action,
+    # not part of the analysis grant). The pipeline consumes this before running the tool.
+    search_permission_decision = build_search_permission_decision(
+        bound,
+        role_permission_ceiling=role["permission_ceiling"],
+        now=now,
+        repo_root=root,
+    )
+
     expires_at = _plus_minutes(now, MVP_TTL_MINUTES)
     role_assignment = build_role_assignment(
         bound,
@@ -152,6 +166,7 @@ def plan_task(
         "task": planned,
         "binding": binding,
         "permission_decision": permission_decision,
+        "search_permission_decision": search_permission_decision,
         "role_assignment": role_assignment,
         "decision": decision,
         "role": role,

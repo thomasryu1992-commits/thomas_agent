@@ -39,7 +39,8 @@ BLOCKS_FILE = "blocks.jsonl"
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
     "received_task", "task", "binding", "permission_decision",
-    "role_assignment", "agent_output", "invocation", "validation_result",
+    "search_permission_decision", "role_assignment", "tool_use",
+    "agent_output", "invocation", "validation_result",
 )
 
 
