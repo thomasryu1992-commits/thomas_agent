@@ -27,30 +27,25 @@ def load_task(path: Path) -> dict:
     return data
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Create minimal Core Context Binding v0.3 from an actual Task record."
-    )
-    parser.add_argument("--task-file", required=True)
-    parser.add_argument("--binding-output", required=True)
-    parser.add_argument("--updated-task-output", required=True)
-    parser.add_argument("--current-pointer", default=DEFAULT_POINTER)
-    parser.add_argument("--bound-by", default="Thomas Prime Runtime")
-    parser.add_argument("--previous-binding-id")
-    parser.add_argument(
-        "--change-type",
-        choices=["root_binding", "task_revision_same_core", "core_rebind"],
-    )
-    parser.add_argument("--change-reason")
-    parser.add_argument("--material-change-ref")
-    args = parser.parse_args()
+def build_core_context_binding(
+    root: Path,
+    task: dict,
+    *,
+    pointer_path: Path,
+    bound_by: str = "Thomas Prime Runtime",
+    change_type: str | None = None,
+    previous_binding_id: str | None = None,
+    change_reason: str | None = None,
+    material_change_ref: str | None = None,
+    now: str | None = None,
+) -> tuple[dict, dict]:
+    """Build a Core Context Binding v0.3 + the updated Task, in memory.
 
-    task_path = safe_repo_path(ROOT, args.task_file, must_exist=True)
-    binding_path = safe_repo_path(ROOT, args.binding_output)
-    updated_task_path = safe_repo_path(ROOT, args.updated_task_output)
-    pointer_path = safe_repo_path(ROOT, args.current_pointer, must_exist=True)
-
-    task = load_task(task_path)
+    Verifies the current pointer, activation chain, and rule subset, and computes
+    the deterministic binding id. Raises ``ValueError`` on any invalid state (the
+    CLI and callers translate that into their own fail-closed error). Performs no
+    file writes; the caller persists the returned records.
+    """
     identity = task.get("identity")
     context = task.get("context")
     lifecycle = task.get("lifecycle")
@@ -82,12 +77,12 @@ def main() -> int:
     elif not (isinstance(existing_binding_id, str) and existing_binding_id.startswith("ccb-")):
         raise ValueError("Task Core Binding ID is invalid")
 
-    current = verify_current_pointer(ROOT, pointer_path)
+    current = verify_current_pointer(root, pointer_path)
     if current.get("runtime_activation_status") != "approved_via_activation_registry":
         raise ValueError("Current Core is deactivated; new Task Binding is prohibited")
 
-    activation_path = safe_repo_path(ROOT, current["activation_path"], must_exist=True)
-    activation, manifest, approval, manifest_path, _ = verify_activation_record(ROOT, activation_path)
+    activation_path = safe_repo_path(root, current["activation_path"], must_exist=True)
+    activation, manifest, approval, manifest_path, _ = verify_activation_record(root, activation_path)
 
     active_rule_ids = manifest.get("active_runtime", {}).get("active_rule_ids")
     if not isinstance(active_rule_ids, list) or not active_rule_ids:
@@ -98,9 +93,9 @@ def main() -> int:
         raise ValueError(f"Task requests Rules that are not active in the bound Release snapshot: {unknown}")
 
     if task_revision == 1:
-        if args.change_type not in {None, "root_binding"}:
+        if change_type not in {None, "root_binding"}:
             raise ValueError("Task revision 1 must use root_binding")
-        if any([args.previous_binding_id, args.change_reason, args.material_change_ref]):
+        if any([previous_binding_id, change_reason, material_change_ref]):
             raise ValueError("Root Binding must not include previous Binding lineage")
         lineage = {
             "previous_binding_id": None,
@@ -109,20 +104,20 @@ def main() -> int:
             "material_change_ref": None,
         }
     else:
-        if args.change_type not in {"task_revision_same_core", "core_rebind"}:
-            raise ValueError("Task revision > 1 requires --change-type")
+        if change_type not in {"task_revision_same_core", "core_rebind"}:
+            raise ValueError("Task revision > 1 requires change_type")
         for name, value in [
-            ("--previous-binding-id", args.previous_binding_id),
-            ("--change-reason", args.change_reason),
-            ("--material-change-ref", args.material_change_ref),
+            ("previous_binding_id", previous_binding_id),
+            ("change_reason", change_reason),
+            ("material_change_ref", material_change_ref),
         ]:
             if not value:
                 raise ValueError(f"{name} is required for Task revision lineage")
         lineage = {
-            "previous_binding_id": args.previous_binding_id,
-            "change_type": args.change_type,
-            "change_reason": args.change_reason,
-            "material_change_ref": args.material_change_ref,
+            "previous_binding_id": previous_binding_id,
+            "change_type": change_type,
+            "change_reason": change_reason,
+            "material_change_ref": material_change_ref,
         }
 
     seed = (
@@ -147,7 +142,7 @@ def main() -> int:
         "release": {
             "release_id": manifest["release_id"],
             "core_version": manifest["core_version"],
-            "manifest_path": manifest_path.relative_to(ROOT).as_posix(),
+            "manifest_path": manifest_path.relative_to(root).as_posix(),
             "manifest_sha256": sha256_file(manifest_path),
             "approval_id": approval["approval_id"],
             "activation_id": activation["activation_id"],
@@ -156,8 +151,8 @@ def main() -> int:
             "loaded_rule_ids": loaded_rule_ids,
         },
         "binding": {
-            "bound_at_utc": utc_now(),
-            "bound_by": args.bound_by,
+            "bound_at_utc": now if now is not None else utc_now(),
+            "bound_by": bound_by,
             "binding_reason": "Bind Task record to one exact approved and active Core Release.",
         },
         "inheritance": {
@@ -178,6 +173,44 @@ def main() -> int:
     updated_context = dict(context)
     updated_context["core_context_binding_id"] = binding_id
     updated_task["context"] = updated_context
+    return binding, updated_task
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Create minimal Core Context Binding v0.3 from an actual Task record."
+    )
+    parser.add_argument("--task-file", required=True)
+    parser.add_argument("--binding-output", required=True)
+    parser.add_argument("--updated-task-output", required=True)
+    parser.add_argument("--current-pointer", default=DEFAULT_POINTER)
+    parser.add_argument("--bound-by", default="Thomas Prime Runtime")
+    parser.add_argument("--previous-binding-id")
+    parser.add_argument(
+        "--change-type",
+        choices=["root_binding", "task_revision_same_core", "core_rebind"],
+    )
+    parser.add_argument("--change-reason")
+    parser.add_argument("--material-change-ref")
+    args = parser.parse_args()
+
+    task_path = safe_repo_path(ROOT, args.task_file, must_exist=True)
+    binding_path = safe_repo_path(ROOT, args.binding_output)
+    updated_task_path = safe_repo_path(ROOT, args.updated_task_output)
+    pointer_path = safe_repo_path(ROOT, args.current_pointer, must_exist=True)
+
+    task = load_task(task_path)
+    binding, updated_task = build_core_context_binding(
+        ROOT,
+        task,
+        pointer_path=pointer_path,
+        bound_by=args.bound_by,
+        change_type=args.change_type,
+        previous_binding_id=args.previous_binding_id,
+        change_reason=args.change_reason,
+        material_change_ref=args.material_change_ref,
+    )
+    binding_id = binding["identity"]["core_context_binding_id"]
 
     with exclusive_lock(LOCK_PATH):
         immutable_write_text(
