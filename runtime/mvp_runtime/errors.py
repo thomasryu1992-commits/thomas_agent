@@ -26,3 +26,15 @@ class TaskIntakeBlocked(MvpRuntimeError):
 
 class PlannerBlocked(MvpRuntimeError):
     """Thomas Prime planning could not classify, route, or assign the task."""
+
+
+class WorkerBlocked(MvpRuntimeError):
+    """The specialist worker could not produce a valid Agent Output (provider error,
+    timeout, budget exceeded, or an output that fails its contract)."""
+
+
+class ProviderError(MvpRuntimeError):
+    """A model provider failed (transport error, timeout, or a malformed response).
+
+    Raised by provider adapters; the worker translates it into a fail-closed
+    ``WorkerBlocked``."""
