@@ -99,6 +99,17 @@ def test_pipeline_records_are_coherent():
 
 
 @requires_local_core
+def test_malformed_role_blocks():
+    bound, _, pd, _ = _pipeline()
+    with pytest.raises(PlannerBlocked) as exc:
+        build_role_assignment(
+            bound, {"role_id": "x"}, pd,  # missing version / definition_path
+            required_capabilities=["research"], created_at=NOW, expires_at=EXPIRES,
+        )
+    assert exc.value.reason_code == "INVALID_ROLE"
+
+
+@requires_local_core
 def test_capability_exceeding_role_blocks():
     bound, role, pd, _ = _pipeline()
     with pytest.raises(PlannerBlocked) as exc:

@@ -53,6 +53,13 @@ def test_classify_blocks_already_classified():
     assert exc.value.reason_code == "ALREADY_CLASSIFIED"
 
 
+@pytest.mark.parametrize("bad", [None, "not a dict", 123])
+def test_classify_non_mapping_task_blocks(bad):
+    with pytest.raises(PlannerBlocked) as exc:
+        classify_task(bad)
+    assert exc.value.reason_code == "INVALID_TASK"
+
+
 def test_classify_blocks_non_received():
     task = _received_task()
     task["lifecycle"]["status"] = "PLANNED"

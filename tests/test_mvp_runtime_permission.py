@@ -81,6 +81,22 @@ def test_unknown_scope_blocks():
 
 
 @requires_local_core
+@pytest.mark.parametrize("scope", ["EXTERNAL_COMMUNICATION", "PUBLICATION", "FINANCIAL_NEW_COMMITMENT", "AUTHORITY_ESCALATION"])
+def test_non_allow_scope_fails_closed_explicitly(scope):
+    # Non-ALLOW dispositions must be refused up front (not via a downstream schema accident).
+    with pytest.raises(PlannerBlocked) as exc:
+        _decide(_bound_task(), permission_scope=scope)
+    assert exc.value.reason_code == "NOT_ALLOWED"
+
+
+@requires_local_core
+def test_insufficient_authority_blocks_explicitly():
+    with pytest.raises(PlannerBlocked) as exc:
+        _decide(_bound_task(), required_permission_level="P5", role_permission_ceiling="P3")
+    assert exc.value.reason_code == "AUTHORITY_INSUFFICIENT"
+
+
+@requires_local_core
 def test_invalid_level_blocks():
     with pytest.raises(PlannerBlocked) as exc:
         _decide(_bound_task(), required_permission_level="P9")

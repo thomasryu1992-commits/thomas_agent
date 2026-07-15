@@ -98,6 +98,13 @@ def build_permission_decision(
     disposition = scope_policy_map(policy).get(permission_scope)
     if disposition is None:
         raise PlannerBlocked("UNKNOWN_SCOPE", f"permission_scope {permission_scope!r} has no policy disposition")
+    # Fail closed explicitly on anything the MVP cannot perform, before building the
+    # record — do not rely on a downstream schema conditional to reject it.
+    if disposition != "ALLOW":
+        raise PlannerBlocked(
+            "NOT_ALLOWED",
+            f"MVP only performs ALLOW-tier actions; scope {permission_scope} disposition is {disposition}",
+        )
 
     created = _parse_ts(now)
     expires_at = _fmt_ts(created + timedelta(minutes=ttl_minutes))
@@ -108,6 +115,11 @@ def build_permission_decision(
     effective_level = required_permission_level
     granted_level = required_permission_level
     authority_sufficient = required_rank <= _LEVEL_RANK[effective_level] <= _LEVEL_RANK[granted_level] <= ceiling_rank
+    if not authority_sufficient:
+        raise PlannerBlocked(
+            "AUTHORITY_INSUFFICIENT",
+            f"authority invariant fails: required {required_permission_level} exceeds role ceiling {role_permission_ceiling}",
+        )
 
     requester_ref = f"thomas_prime:{actor_id}"
     fingerprint_payload = {
@@ -207,10 +219,4 @@ def build_permission_decision(
     issues = validate_permission_record(record, policy)
     if issues:
         raise PlannerBlocked("PERMISSION_SEMANTICS_INVALID", "; ".join(issues[:5]))
-
-    if record["decision"]["permission_decision"] != "ALLOW":
-        raise PlannerBlocked(
-            "NOT_ALLOWED",
-            f"MVP only performs ALLOW-tier actions; scope {permission_scope} disposition is {decision}",
-        )
     return record

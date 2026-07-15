@@ -93,6 +93,8 @@ def build_role_assignment(
     if not (isinstance(ccb, str) and ccb.startswith("ccb-")):
         raise PlannerBlocked("NOT_BOUND", "task must be bound before a role assignment")
 
+    if not isinstance(role, Mapping) or not role.get("role_id") or not role.get("version") or not role.get("definition_path"):
+        raise PlannerBlocked("INVALID_ROLE", "role must carry role_id, version, and definition_path")
     role_id = role.get("role_id")
     role_version = role.get("version")
     ceiling = role.get("permission_ceiling")

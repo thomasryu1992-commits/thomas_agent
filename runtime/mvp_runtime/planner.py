@@ -52,6 +52,8 @@ def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
     and ``required_capabilities``. Raises ``PlannerBlocked`` if the task is not in the
     expected pre-classification state or is outside the read-only MVP scope.
     """
+    if not isinstance(task, Mapping):
+        raise PlannerBlocked("INVALID_TASK", "task must be a mapping")
     lifecycle = task.get("lifecycle", {})
     classification = task.get("classification", {})
     if lifecycle.get("status") != "RECEIVED":
