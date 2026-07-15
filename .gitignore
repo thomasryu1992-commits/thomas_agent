@@ -4,6 +4,11 @@ tmp/
 __pycache__/
 *.py[cod]
 
+# Local Python virtualenvs (see CLAUDE.md dev setup)
+.venv/
+venv/
+.pytest_cache/
+
 
 # Mutable protected local governance state; never commit or include in Release source fingerprints.
 .runtime_governance_state/
