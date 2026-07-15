@@ -75,6 +75,7 @@ class MockProvider:
 
     model_id = "mock.analysis"
     model_version = "0.1.0"
+    network_egress = False  # deterministic, in-process; no outbound call
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         analysis = {
@@ -293,5 +294,7 @@ def run_analysis_worker(
         "tokens_used": tokens_used,
         "latency_ms": int(result.latency_ms),
         "finish_reason": result.finish_reason,
+        # Whether this invocation crossed the network boundary (audited downstream).
+        "network_egress": bool(getattr(provider, "network_egress", False)),
     }
     return agent_output, invocation_metadata

@@ -26,11 +26,11 @@ requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no
 def _run(validation_transform=None):
     task = build_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송", now=NOW)
     plan = plan_task(task, now=NOW)
-    out, _ = run_analysis_worker(plan["task"], plan["role_assignment"], provider=MockProvider(), created_at=NOW)
+    out, inv = run_analysis_worker(plan["task"], plan["role_assignment"], provider=MockProvider(), created_at=NOW)
     if validation_transform:
         out = validation_transform(out)
     vr = validate_agent_output(out, plan["task"], plan["role_assignment"], now=NOW)
-    chain = build_pipeline_audit(plan["task"], plan["permission_decision"], vr, now=NOW)
+    chain = build_pipeline_audit(plan["task"], plan["permission_decision"], vr, out, inv, now=NOW)
     return chain, vr
 
 
@@ -38,7 +38,7 @@ def _run(validation_transform=None):
 def test_chain_shape_and_schema():
     chain, _ = _run()
     assert [e["event_type"] for e in chain] == [
-        "TASK_CREATED", "PERMISSION_DECIDED", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
+        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
     ]
     for i, e in enumerate(chain, start=1):
         schema_validation.validate_against_schema(e, AUDIT_SCHEMA, "test")
@@ -47,6 +47,17 @@ def test_chain_shape_and_schema():
         assert e["integrity"]["overwrite_allowed"] is False and e["integrity"]["delete_allowed"] is False
         assert e["runtime_effect"]["mode"] == "EVIDENCE_ONLY"
         assert all(v is False for k, v in e["runtime_effect"].items() if k != "mode")
+
+
+@requires_local_core
+def test_model_invocation_is_audited():
+    chain, _ = _run()
+    model_event = chain[2]
+    assert model_event["event_type"] == "OTHER"
+    assert "MODEL_INVOKED" in model_event["event"]["reason_codes"]
+    assert "NO_NETWORK_EGRESS" in model_event["event"]["reason_codes"]  # MockProvider is in-process
+    assert model_event["event"]["payload_sha256"].startswith("sha256:")  # fingerprinted invocation metadata
+    assert model_event["actor"]["actor_type"] == "role"
 
 
 @requires_local_core
@@ -73,9 +84,9 @@ def test_deterministic():
 def test_pass_run_concludes_completed():
     chain, vr = _run()
     assert vr["validation"]["result"] == "PASS"
-    assert chain[2]["event"]["outcome"] == "PASS"
-    assert chain[3]["event"]["outcome"] == "RECORDED"
-    assert "FINAL_COMPLETED" in chain[3]["event"]["reason_codes"]
+    assert chain[3]["event"]["outcome"] == "PASS"          # VALIDATION_COMPLETED
+    assert chain[4]["event"]["outcome"] == "RECORDED"      # TASK_STATE_CHANGED
+    assert "FINAL_COMPLETED" in chain[4]["event"]["reason_codes"]
 
 
 @requires_local_core
@@ -88,6 +99,6 @@ def test_blocked_validation_concludes_blocked():
 
     chain, vr = _run(break_lineage)
     assert vr["validation"]["result"] == "BLOCK"
-    assert chain[2]["event"]["outcome"] == "BLOCKED"  # audit enum uses BLOCKED, not BLOCK
-    assert chain[3]["event"]["outcome"] == "BLOCKED"
-    assert "FINAL_BLOCKED" in chain[3]["event"]["reason_codes"]
+    assert chain[3]["event"]["outcome"] == "BLOCKED"  # VALIDATION_COMPLETED (enum uses BLOCKED)
+    assert chain[4]["event"]["outcome"] == "BLOCKED"  # TASK_STATE_CHANGED
+    assert "FINAL_BLOCKED" in chain[4]["event"]["reason_codes"]

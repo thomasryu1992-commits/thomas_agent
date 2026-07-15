@@ -155,18 +155,59 @@ def _actor(actor_type: str, actor_id: str, *, role_id: str | None = None,
             "role_version": role_version, "assignment_id": assignment_id}
 
 
+def _chain_events(
+    root: Path, task: Mapping[str, Any], steps: list[dict[str, Any]], now: str,
+    genesis_previous_hash: str | None,
+) -> list[dict[str, Any]]:
+    """Fingerprint and hash-chain a sequence of event steps. ``genesis_previous_hash``
+    links the first event onto a prior run's last event so the ledger is tamper-evident
+    across runs, not just within one."""
+    events: list[dict[str, Any]] = []
+    previous_hash = genesis_previous_hash
+    previous_audit_id: str | None = None
+    for sequence, step in enumerate(steps, start=1):
+        record, event_sha256 = _make_event(
+            root=root, task=task, now=now, sequence=sequence,
+            previous_hash=previous_hash, previous_audit_id=previous_audit_id, **step,
+        )
+        events.append(record)
+        previous_hash = event_sha256
+        previous_audit_id = record["audit_event_id"]
+    return events
+
+
+def _task_created_step(tid: str, task_fp: str) -> dict[str, Any]:
+    return dict(
+        event_type="TASK_CREATED",
+        actor=_actor("system", "mvp.intake"),
+        subject_type="TASK", subject_id=tid,
+        subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
+        summary="Task received and recorded (read-only intake).",
+        outcome="RECORDED", reason_codes=["TASK_INTAKE"],
+        related_record_refs=[], evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
+    )
+
+
 def build_pipeline_audit(
     task: Mapping[str, Any],
     permission_decision: Mapping[str, Any],
     validation_result: Mapping[str, Any],
+    agent_output: Mapping[str, Any],
+    invocation: Mapping[str, Any],
     *,
     now: str,
+    genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the hash-chained audit trail for one task run. Append-only; evidence only.
+    """Return the hash-chained audit trail for one completed task run. Append-only;
+    evidence only.
 
-    ``validation_result`` carries the Agent Output reference and fingerprint (its
-    subject), so the Agent Output is audited without re-fingerprinting it here.
+    Events: TASK_CREATED -> PERMISSION_DECIDED -> MODEL_INVOKED -> VALIDATION_COMPLETED ->
+    TASK_STATE_CHANGED. MODEL_INVOKED records the gated action itself (which model/version
+    answered, token usage, finish reason, and whether it crossed the network boundary) as
+    an OTHER-typed event — ``audit_event.v0.1`` has no model-specific type, so the fact is
+    carried in the reason codes + fingerprinted invocation payload rather than by adding a
+    new schema. ``validation_result`` carries the Agent Output reference and fingerprint.
     """
     root = repo_root if repo_root is not None else _repo_root()
     tid = task["identity"]["task_id"]
@@ -179,19 +220,13 @@ def build_pipeline_audit(
     task_fp = _fingerprint(task, "task")
     perm_fp = _fingerprint(permission_decision, "permission_decision")
     val_fp = _fingerprint(validation_result, "validation_result")
+    inv_fp = _fingerprint(dict(invocation), "invocation")
     output_ref = validation_result["subject"]["subject_ref"]
     output_fp = validation_result["subject"]["subject_fingerprint"]
+    egress = bool(invocation.get("network_egress"))
 
     steps = [
-        dict(
-            event_type="TASK_CREATED",
-            actor=_actor("system", "mvp.intake"),
-            subject_type="TASK", subject_id=tid,
-            subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
-            summary="Task received and recorded (read-only intake).",
-            outcome="RECORDED", reason_codes=["TASK_INTAKE"],
-            related_record_refs=[], evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
-        ),
+        _task_created_step(tid, task_fp),
         dict(
             event_type="PERMISSION_DECIDED",
             actor=_actor("thomas_prime", "thomas.prime"),
@@ -201,6 +236,20 @@ def build_pipeline_audit(
             outcome="RECORDED", reason_codes=[permission_decision["decision"]["permission_decision"]],
             related_record_refs=[f"in_memory:task:{tid}"],
             evidence_refs=[f"in_memory:{permission_decision['permission_decision_id']}"], payload_sha256=perm_fp,
+        ),
+        dict(
+            event_type="OTHER",
+            actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                         role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+            subject_type="AGENT_OUTPUT", subject_id=agent_output["agent_output_id"],
+            subject_ref=output_ref, subject_fingerprint=output_fp,
+            summary=(f"Model invoked: {invocation.get('model_id')} {invocation.get('model_version')} — "
+                     f"{invocation.get('tokens_used')} tokens, finish={invocation.get('finish_reason')}, "
+                     f"network_egress={egress}."),
+            outcome="RECORDED",
+            reason_codes=["MODEL_INVOKED", "NETWORK_EGRESS" if egress else "NO_NETWORK_EGRESS"],
+            related_record_refs=[f"in_memory:{permission_decision['permission_decision_id']}"],
+            evidence_refs=[output_ref], payload_sha256=inv_fp,
         ),
         dict(
             event_type="VALIDATION_COMPLETED",
@@ -222,16 +271,36 @@ def build_pipeline_audit(
             evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
         ),
     ]
+    return _chain_events(root, task, steps, now, genesis_previous_hash)
 
-    events: list[dict[str, Any]] = []
-    previous_hash: str | None = None
-    previous_audit_id: str | None = None
-    for sequence, step in enumerate(steps, start=1):
-        record, event_sha256 = _make_event(
-            root=root, task=task, now=now, sequence=sequence,
-            previous_hash=previous_hash, previous_audit_id=previous_audit_id, **step,
-        )
-        events.append(record)
-        previous_hash = event_sha256
-        previous_audit_id = record["audit_event_id"]
-    return events
+
+def build_blocked_audit(
+    task: Mapping[str, Any],
+    *,
+    stage: str,
+    reason_code: str,
+    now: str,
+    genesis_previous_hash: str | None = None,
+    repo_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return a minimal hash-chained trail for a run that failed *after* binding but
+    before completion: TASK_CREATED -> TASK_STATE_CHANGED(BLOCKED). A blocked run is
+    audited too — a governance-first agent that only records its successes is not
+    auditable. Requires a bound ``task`` (an unbound early failure is recorded by the
+    store's block ledger instead, since ``audit_event.v0.1`` needs a binding)."""
+    root = repo_root if repo_root is not None else _repo_root()
+    tid = task["identity"]["task_id"]
+    task_fp = _fingerprint(task, "task")
+    steps = [
+        _task_created_step(tid, task_fp),
+        dict(
+            event_type="TASK_STATE_CHANGED",
+            actor=_actor("system", "mvp.pipeline"),
+            subject_type="TASK", subject_id=tid,
+            subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
+            summary=f"Task run blocked at {stage}: {reason_code}.",
+            outcome="BLOCKED", reason_codes=[reason_code, "FINAL_BLOCKED"],
+            related_record_refs=[], evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
+        ),
+    ]
+    return _chain_events(root, task, steps, now, genesis_previous_hash)

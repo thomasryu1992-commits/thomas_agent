@@ -18,6 +18,7 @@ import sys
 from .errors import MvpRuntimeError
 from .pipeline import run_task
 from .providers import GoogleAIStudioProvider, select_provider
+from .store import LedgerStore
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -59,7 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(provider, GoogleAIStudioProvider):
         sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
 
-    result = run_task(raw_request, provider=provider, channel="manual")
+    # Persist every run's records + hash-chained audit trail to the local append-only ledger.
+    store = LedgerStore.default()
+    result = run_task(raw_request, provider=provider, channel="manual", store=store)
+    if (result.get("block") or {}).get("stage") != "persistence":
+        sys.stderr.write(f"LEDGER: recorded to {store.root}\n")
     if result["status"] == "COMPLETED":
         sys.stdout.write(result["final_response"] + "\n")
         return EXIT_OK

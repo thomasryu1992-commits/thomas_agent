@@ -88,6 +88,7 @@ class GoogleAIStudioProvider:
     """
 
     model_id = "google_ai_studio"
+    network_egress = True  # makes an outbound HTTPS call — audited as network egress
     _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     def __init__(
