@@ -11,7 +11,14 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
-from runtime.mvp_runtime.memory import CANDIDATE_STATUS, MAX_CANDIDATES, build_memory_candidates
+from runtime.mvp_runtime.errors import PersistenceError
+from runtime.mvp_runtime.memory import (
+    CANDIDATE_STATUS,
+    MAX_CANDIDATES,
+    build_memory_candidates,
+    retrieve_working_memory,
+)
+from runtime.mvp_runtime.working_memory import ENTRIES_FILE, WorkingMemoryStore
 
 LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
 requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
@@ -76,6 +83,74 @@ def test_deterministic_ids():
     a = build_memory_candidates(_analysis(["a", "b"]), _assignment(), now=NOW, seed={"task_id": "t"})
     b = build_memory_candidates(_analysis(["a", "b"]), _assignment(), now=NOW, seed={"task_id": "t"})
     assert [c["candidate_id"] for c in a] == [c["candidate_id"] for c in b]
+
+
+# --- R5.2: working-memory store + retrieval ---------------------------------
+
+def _readable_assignment(**memory_scope):
+    scope = dict(
+        readable_scopes=["task_working_memory", "related_validated_memory"],
+        prohibited_scopes=["unrelated_private_memory", "restricted_memory"],
+    )
+    scope.update(memory_scope)
+    return {"memory_scope": scope}
+
+
+def _entry(cid, content, *, scope="task_working_memory", status=CANDIDATE_STATUS, created_at=NOW):
+    return {"candidate_id": cid, "candidate_type": "reusable_knowledge", "scope": scope,
+            "status": status, "validated": False, "promotable": False, "content": content,
+            "evidence_refs": ["model:analysis"], "created_at": created_at}
+
+
+def test_store_append_and_read(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    assert store.read_all() == []                        # empty store reads clean
+    store.append([_entry("memcand_a", "alpha")])
+    store.append([_entry("memcand_b", "beta")])
+    assert [e["candidate_id"] for e in store.read_all()] == ["memcand_a", "memcand_b"]
+
+
+def test_store_corrupt_read_fails_closed(tmp_path):
+    root = tmp_path / "wm"
+    root.mkdir()
+    (root / ENTRIES_FILE).write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(PersistenceError) as exc:
+        WorkingMemoryStore(root).read_all()
+    assert exc.value.reason_code == "WORKING_MEMORY_UNREADABLE"
+
+
+def test_retrieve_reads_scoped_candidates(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append([
+        _entry("memcand_1", "keep me", created_at="2026-07-16T09:00:00Z"),
+        _entry("memcand_2", "wrong scope", scope="related_validated_memory"),
+        _entry("memcand_3", "not a candidate", status="VALIDATED"),
+        _entry("memcand_4", "keep me too", created_at="2026-07-16T10:00:00Z"),
+    ])
+    got = retrieve_working_memory(_readable_assignment(), store)
+    ids = [e["candidate_id"] for e in got]
+    assert ids == ["memcand_1", "memcand_4"]             # only task_working_memory CANDIDATEs, recency order
+
+
+def test_retrieve_none_when_scope_not_readable(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append([_entry("memcand_1", "x")])
+    a = _readable_assignment(readable_scopes=["related_validated_memory"])  # task_working_memory not readable
+    assert retrieve_working_memory(a, store) == []
+
+
+def test_retrieve_none_when_scope_prohibited(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append([_entry("memcand_1", "x")])
+    a = _readable_assignment(prohibited_scopes=["task_working_memory"])
+    assert retrieve_working_memory(a, store) == []
+
+
+def test_retrieve_capped_and_recent(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append([_entry(f"memcand_{i}", f"c{i}", created_at=f"2026-07-16T09:{i:02d}:00Z") for i in range(9)])
+    got = retrieve_working_memory(_readable_assignment(), store, limit=3)
+    assert [e["candidate_id"] for e in got] == ["memcand_6", "memcand_7", "memcand_8"]  # 3 most recent
 
 
 @requires_local_core

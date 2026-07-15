@@ -32,11 +32,13 @@ from runtime.read_only_kernel import integrity
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError
 from .intake import build_task
+from .memory import retrieve_working_memory
 from .prime import plan_task
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, run_search
 from .validation import validate_agent_output
 from .worker import MockProvider, Provider, run_analysis_worker
+from .working_memory import WorkingMemoryStore
 
 
 def _utc_now_iso() -> str:
@@ -121,6 +123,7 @@ def run_task(
     *,
     provider: Provider | None = None,
     search_tool: SearchTool | None = None,
+    working_memory: WorkingMemoryStore | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
@@ -132,7 +135,11 @@ def run_task(
 
     ``search_tool`` runs a read-only web search whose hits become source-attributed
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
-    network tool is chosen via the Safety-Flag Gate by the caller)."""
+    network tool is chosen via the Safety-Flag Gate by the caller).
+
+    ``working_memory`` (opt-in) makes prior working-memory candidates available as context
+    and accumulates this run's candidates for later runs. Omitting it keeps the run pure and
+    deterministic — memory only accumulates when a caller supplies the store."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
     now = now if now is not None else _utc_now_iso()
@@ -173,9 +180,17 @@ def run_task(
         search_hits, tool_use = run_search(query, tool=search_tool, now=now)
         records["tool_use"] = tool_use
 
+        # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
+        # A corrupt store fails closed here (BLOCK), like the ledger.
+        memory_entries = (
+            retrieve_working_memory(plan["role_assignment"], working_memory)
+            if working_memory is not None else []
+        )
+        records["memory_retrieved"] = memory_entries
+
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=provider, created_at=now,
-            search_hits=search_hits, repo_root=repo_root,
+            search_hits=search_hits, memory_entries=memory_entries, repo_root=repo_root,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
@@ -203,6 +218,14 @@ def run_task(
             except PersistenceError as exc:
                 result["block"] = {"stage": "persistence", "reason_code": exc.reason_code, "message": exc.reason}
                 return result
+        # Accumulate this run's candidates into working memory for later runs. Best-effort:
+        # working memory is enrichment, not the audit of record, so a write failure is noted
+        # but does not withhold a delivered, durably-audited result.
+        if working_memory is not None:
+            try:
+                working_memory.append(agent_output.get("memory_candidates", []))
+            except PersistenceError as exc:
+                result.setdefault("working_memory_error", exc.reason_code)
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(agent_output)

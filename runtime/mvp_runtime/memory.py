@@ -28,6 +28,7 @@ CANDIDATE_STATUS = "CANDIDATE"          # never VALIDATED / CORE
 CANDIDATE_SCOPE = "task_working_memory"
 PREFERRED_TYPE = "reusable_knowledge"
 MAX_CANDIDATES = 5
+MAX_RETRIEVED = 5
 
 
 def build_memory_candidates(
@@ -77,3 +78,35 @@ def build_memory_candidates(
         except IntegrityError as exc:
             raise MemoryBlocked("SECRET_IN_CANDIDATE", str(exc)) from exc
     return candidates
+
+
+def retrieve_working_memory(
+    assignment: Mapping[str, Any],
+    store: Any,
+    *,
+    limit: int = MAX_RETRIEVED,
+) -> list[dict[str, Any]]:
+    """Return recent ``task_working_memory`` candidates for context, or none.
+
+    Read-only and governance-scoped: reads only when the assignment's ``readable_scopes``
+    admits ``task_working_memory``; returns only CANDIDATE-status entries in that scope that
+    are not in the assignment's ``prohibited_scopes``; most-recent-first, capped at ``limit``.
+    Never mutates the store and never promotes anything. Propagates the store's fail-closed
+    ``PersistenceError`` on a corrupt store (the caller turns it into a BLOCK)."""
+    memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
+    readable = set(memory_scope.get("readable_scopes", []))
+    prohibited = set(memory_scope.get("prohibited_scopes", []))
+    if CANDIDATE_SCOPE not in readable or CANDIDATE_SCOPE in prohibited:
+        return []
+
+    entries = store.read_all()
+    selected = [
+        e for e in entries
+        if isinstance(e, dict)
+        and e.get("scope") == CANDIDATE_SCOPE
+        and e.get("status") == CANDIDATE_STATUS
+        and e.get("scope") not in prohibited
+    ]
+    # Deterministic recency order; take the most recent `limit`.
+    selected.sort(key=lambda e: (str(e.get("created_at", "")), str(e.get("candidate_id", ""))))
+    return selected[-limit:] if limit > 0 else []

@@ -128,10 +128,21 @@ def _search_context(search_hits: list[Mapping[str, Any]] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _memory_context(memory_entries: list[Mapping[str, Any]] | None) -> str:
+    """A prior-working-memory block appended to the prompt. Empty when none was retrieved."""
+    if not memory_entries:
+        return ""
+    lines = ["\nRelevant prior working memory (candidates only — unverified, do not over-rely):"]
+    for index, entry in enumerate(memory_entries, start=1):
+        lines.append(f"[M{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+    return "\n".join(lines) + "\n"
+
+
 def build_prompt(
     task: Mapping[str, Any],
     assignment: Mapping[str, Any],
     search_hits: list[Mapping[str, Any]] | None = None,
+    memory_entries: list[Mapping[str, Any]] | None = None,
 ) -> str:
     scope = task.get("scope", {})
     role_scope = assignment.get("role_scope", {})
@@ -145,15 +156,20 @@ def build_prompt(
         f"Expected outputs: {outputs}\n"
         f"Active Core rules in scope: {rules}\n"
         f"Evaluate the business idea in this priority order: {priorities}.\n"
+        f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
         "inferences, disclose assumptions and uncertainty, and do not propose external actions."
     )
 
 
-def _build_evidence(search_hits: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
-    """Evidence backing the output: the model's own reasoning plus each read-only search
-    hit (source-attributed), so a fact grounded in a search result is auditable to it."""
+def _build_evidence(
+    search_hits: list[Mapping[str, Any]] | None,
+    memory_entries: list[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Evidence backing the output: the model's own reasoning, each read-only search hit
+    (source-attributed), and each prior working-memory candidate the run drew on — so what the
+    output leaned on is auditable."""
     evidence: list[dict[str, Any]] = [{"ref": "model:analysis", "type": "model_reasoning"}]
     for index, hit in enumerate(search_hits or [], start=1):
         url = hit.get("url")
@@ -164,6 +180,15 @@ def _build_evidence(search_hits: list[Mapping[str, Any]] | None) -> list[dict[st
             "type": "web_search",
             "url": url,
             "title": hit.get("title", ""),
+        })
+    for entry in memory_entries or []:
+        candidate_id = entry.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            continue
+        evidence.append({
+            "ref": f"working_memory:{candidate_id}",
+            "type": "working_memory",
+            "candidate_type": entry.get("candidate_type", ""),
         })
     return evidence
 
@@ -235,12 +260,14 @@ def run_analysis_worker(
     provider: Provider,
     created_at: str,
     search_hits: list[Mapping[str, Any]] | None = None,
+    memory_entries: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one specialist model call and return ``(agent_output, invocation_metadata)``.
 
-    ``search_hits`` (if any) are read-only web-search results the specialist may use: they
-    are added to the prompt and recorded as source-attributed evidence on the output.
+    ``search_hits`` (read-only web results) and ``memory_entries`` (prior working-memory
+    candidates) are context the specialist may use: both are added to the prompt and recorded
+    as evidence on the output (``web_search`` / ``working_memory`` types).
 
     Fails closed (``WorkerBlocked``) on missing model budget, provider error/timeout,
     token-budget breach, malformed analysis, or a schema-invalid Agent Output.
@@ -259,7 +286,7 @@ def run_analysis_worker(
     if not isinstance(max_model_calls, int) or max_model_calls < 1:
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
-    prompt = build_prompt(task, assignment, search_hits)
+    prompt = build_prompt(task, assignment, search_hits, memory_entries)
     try:
         result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
     except (ProviderError, TimeoutError) as exc:
@@ -301,7 +328,7 @@ def run_analysis_worker(
         "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
         "summary": analysis["summary"],
         "facts": _normalize_facts(analysis.get("facts")),
-        "evidence": _build_evidence(search_hits),
+        "evidence": _build_evidence(search_hits, memory_entries),
         "inferences": _normalize_inferences(analysis.get("inferences")),
         "assumptions": _str_list(analysis.get("assumptions")),
         "uncertainty": _str_list(analysis.get("uncertainty")),
