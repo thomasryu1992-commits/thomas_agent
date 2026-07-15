@@ -65,9 +65,22 @@ def validate_agent_output(
     """
     root = repo_root if repo_root is not None else _repo_root()
     ref = f"in_memory:{agent_output.get('agent_output_id')}"
-    output_fingerprint = integrity.sha256_record(dict(agent_output))
     identity = task.get("identity", {})
     checks: list[dict[str, Any]] = []
+
+    # Detect secret-bearing keys up front: sha256_record itself secret-scans, so a
+    # secret-bearing output cannot be fingerprinted normally — withhold its content.
+    secret_bearing = False
+    try:
+        integrity.scan_for_secret_bearing_keys(dict(agent_output))
+    except IntegrityError:
+        secret_bearing = True
+    if secret_bearing:
+        output_fingerprint = integrity.sha256_record(
+            {"agent_output_id": agent_output.get("agent_output_id"), "content_withheld": "secret_bearing"}
+        )
+    else:
+        output_fingerprint = integrity.sha256_record(dict(agent_output))
 
     # 1) Lineage — the output must belong to exactly this Task/Assignment lineage.
     lineage_ok = (
@@ -88,11 +101,8 @@ def validate_agent_output(
     boundary_result, boundary_note = "PASS", "No permission expansion or secret-bearing keys."
     if agent_output.get("permission_request_refs"):
         boundary_result, boundary_note = "BLOCK", "Output attempts to request/expand permission."
-    else:
-        try:
-            integrity.scan_for_secret_bearing_keys(dict(agent_output))
-        except IntegrityError as exc:
-            boundary_result, boundary_note = "BLOCK", f"Secret-bearing key in output: {exc}"
+    elif secret_bearing:
+        boundary_result, boundary_note = "BLOCK", "Secret-bearing key present in output."
     checks.append(_check("permission_boundary", boundary_result, [ref], boundary_note))
 
     # 3) Required sections present.
