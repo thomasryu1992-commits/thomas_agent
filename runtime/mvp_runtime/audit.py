@@ -19,20 +19,11 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from .authority import audit_event_runtime_effect
 from .errors import AuditError
 
 AUDIT_EVENT_SCHEMA_VERSION = "audit_event.v0.1"
 FINGERPRINT_SCHEMA = "audit_event_fingerprint_payload.v0.1"
-
-_EVIDENCE_ONLY = {
-    "mode": "EVIDENCE_ONLY",
-    "grants_permission": False,
-    "grants_approval": False,
-    "grants_authority": False,
-    "grants_execution": False,
-    "grants_activation": False,
-    "mutates_runtime": False,
-}
 
 
 def _repo_root() -> Path:
@@ -138,7 +129,7 @@ def _make_event(
             "delete_allowed": False,
         },
         "sensitivity": task["context"]["data_sensitivity"],
-        "runtime_effect": dict(_EVIDENCE_ONLY),
+        "runtime_effect": audit_event_runtime_effect(),
         "created_at": now,
     }
     schema_path = root / "schemas" / f"{AUDIT_EVENT_SCHEMA_VERSION}.schema.json"

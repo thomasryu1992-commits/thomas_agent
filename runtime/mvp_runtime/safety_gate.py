@@ -29,6 +29,7 @@ from typing import Any, Sequence
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
 
+from .authority import rank_of
 from .errors import SafetyGateBlocked
 
 # Capability flags this gate governs. These are the two OFF-by-default safety flags
@@ -41,7 +42,6 @@ _KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS})
 ACTIVATION_REL = ".runtime_governance_state/safety_flag_activation.json"
 
 ACTIVATION_MARKER = "safety_flag_activation.v0"
-_AUTHORITY_LEVELS = frozenset({"P0", "P1", "P2", "P3", "P4", "P5", "P6"})
 _HASH_FIELD = "content_sha256"
 _REQUIRED_FIELDS = (
     "activation_marker", "flags", "provider_id", "authority_level",
@@ -100,7 +100,7 @@ def _verify_integrity(record: dict[str, Any]) -> str:
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "unrecognized activation_marker")
     if not isinstance(record["flags"], list) or not all(isinstance(f, str) for f in record["flags"]):
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "flags must be a list of strings")
-    if record["authority_level"] not in _AUTHORITY_LEVELS:
+    if rank_of(record["authority_level"]) is None:
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
 
     claimed = record[_HASH_FIELD]
@@ -136,7 +136,7 @@ def build_activation_record(
     bad = [f for f in flags if f not in _KNOWN_FLAGS]
     if bad:
         raise SafetyGateBlocked("UNKNOWN_FLAG", f"not a governed safety flag: {bad}")
-    if authority_level not in _AUTHORITY_LEVELS:
+    if rank_of(authority_level) is None:
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
     record = {
         "activation_marker": ACTIVATION_MARKER,
