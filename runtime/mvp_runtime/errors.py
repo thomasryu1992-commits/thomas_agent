@@ -69,3 +69,11 @@ class ToolError(MvpRuntimeError):
     """A tool adapter failed (transport error, timeout, or malformed result).
 
     Raised by tool adapters; the executor translates it into a fail-closed ``ToolBlocked``."""
+
+
+class OperatorBlocked(MvpRuntimeError):
+    """The operator control channel refused an inbound message (R4).
+
+    Raised when a message fails the canonical Control Channel identity rules — not the
+    registered Thomas user id, not the registered private 1:1 chat, a group/channel, or a
+    forwarded message. The MVP never runs a task for an unverified operator (fail-closed)."""
