@@ -1,8 +1,10 @@
-"""Thin CLI entry point for R2.1 Task Intake.
+"""CLI entry point for the single-agent MVP pipeline.
 
-Reads a request from CLI args (or stdin) and emits a schema-valid RECEIVED
-``task.v0.3`` record as JSON on stdout. Fail-closed: on any BLOCK it writes the
-reason to stderr and exits non-zero. No external effect.
+Reads a request from CLI args (or stdin), runs it end-to-end (intake -> plan ->
+worker -> validation -> audit), and writes the final response to stdout. Fail-closed:
+on any BLOCK it writes the reason to stderr and exits non-zero. Uses the deterministic
+MockProvider — a real hosted provider is enabled only behind the Safety-Flag Gate — so
+the run performs no external write and no network I/O.
 
 Usage:
     python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
@@ -11,11 +13,9 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import sys
 
-from .errors import TaskIntakeBlocked
-from .intake import build_task
+from .pipeline import run_task
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -46,15 +46,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("BLOCKED EMPTY_REQUEST: no request text provided (arg or stdin)\n")
         return EXIT_USAGE
 
-    try:
-        task = build_task(raw_request, channel="manual")
-    except TaskIntakeBlocked as exc:
-        sys.stderr.write(f"BLOCKED {exc}\n")
-        return EXIT_BLOCKED
+    # Runs the full single-agent pipeline with the deterministic MockProvider (a real
+    # hosted provider is enabled only behind the Safety-Flag Gate).
+    result = run_task(raw_request, channel="manual")
+    if result["status"] == "COMPLETED":
+        sys.stdout.write(result["final_response"] + "\n")
+        return EXIT_OK
 
-    json.dump(task, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return EXIT_OK
+    block = result["block"] or {"reason_code": "BLOCKED", "message": "unknown"}
+    sys.stderr.write(f"BLOCKED {block['reason_code']}: {block['message']}\n")
+    return EXIT_BLOCKED
 
 
 if __name__ == "__main__":
