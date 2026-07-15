@@ -87,6 +87,20 @@ def test_handle_refuses_empty_request():
     assert reply.accepted is False and reply.reason_code == "EMPTY_REQUEST"
 
 
+def test_handle_forwards_working_memory_to_run(monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    captured = {}
+
+    def fake_run_task(text, **kwargs):
+        captured.update(kwargs)
+        return {"status": "COMPLETED", "final_response": "ok", "records": {}}
+    monkeypatch.setattr(operator_mod, "run_task", fake_run_task)
+
+    sentinel = object()
+    handle_operator_message(_msg(), registration=REG, working_memory=sentinel, provider=MockProvider(), now=NOW)
+    assert captured.get("working_memory") is sentinel
+
+
 # --- registration loader ----------------------------------------------------
 
 def test_load_registration_missing_fails_closed(tmp_path):
@@ -252,3 +266,17 @@ def test_run_once_handles_registered_and_replies():
     assert summary["handled"] == 1 and summary["dropped"] == 1
     assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-777"
     assert "Key findings" in ch.sent[0][1]
+
+
+@requires_local_core
+def test_operator_accumulates_working_memory(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+
+    run_operator_once(MockOperatorChannel(inbound=[_msg()]), REG, provider=MockProvider(), working_memory=wm, now=NOW)
+    after_first = len(wm.read_all())
+    assert after_first  # the operator run accumulated working memory
+
+    run_operator_once(MockOperatorChannel(inbound=[_msg(text="구독 사업 유지율 분석")]), REG,
+                      provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    assert len(wm.read_all()) > after_first  # a later operator run adds more

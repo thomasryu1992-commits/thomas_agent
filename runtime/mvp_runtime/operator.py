@@ -133,6 +133,7 @@ def handle_operator_message(
     registration: OperatorIdentity,
     provider: Provider | None = None,
     search_tool: Any | None = None,
+    working_memory: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
     repo_root: Path | None = None,
@@ -140,6 +141,9 @@ def handle_operator_message(
     """Verify an inbound operator message and, only if it is from the registered operator,
     run the task and return the reply. An unverified message is refused with a generic reason
     and no task runs. Never raises for a fail-closed condition — those become a REFUSED reply.
+
+    ``working_memory`` (opt-in) is shared with the run so the operator channel accumulates and
+    reuses working memory just like the one-shot CLI.
     """
     try:
         verify_control_channel(message, registration)
@@ -158,6 +162,7 @@ def handle_operator_message(
         text,
         provider=provider,
         search_tool=search_tool,
+        working_memory=working_memory,
         now=now,
         store=store,
         repo_root=repo_root,
@@ -323,15 +328,17 @@ def run_operator_once(
     long_poll_seconds: int = 0,
     provider: Provider | None = None,
     search_tool: Any | None = None,
+    working_memory: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Poll one batch, handle each verified message, and send its reply. ``long_poll_seconds``
     lets a network channel hold the poll open until a message arrives (0 = return immediately).
-    Messages that fail the control-channel identity gate are **silently dropped** — an
-    unverified sender gets no reply (no engagement, no info leak) and no task runs. Returns a
-    small summary."""
+    ``working_memory`` (opt-in) is shared across handled messages so the operator channel
+    accumulates and reuses working memory. Messages that fail the control-channel identity gate
+    are **silently dropped** — an unverified sender gets no reply (no engagement, no info leak)
+    and no task runs. Returns a small summary."""
     handled: list[OperatorReply] = []
     dropped = 0
     for message in channel.poll(long_poll_seconds=long_poll_seconds):
@@ -342,7 +349,7 @@ def run_operator_once(
             continue
         reply = handle_operator_message(
             message, registration=registration, provider=provider, search_tool=search_tool,
-            now=now, store=store, repo_root=repo_root,
+            working_memory=working_memory, now=now, store=store, repo_root=repo_root,
         )
         channel.send(message.chat_id, reply.text)
         handled.append(reply)
