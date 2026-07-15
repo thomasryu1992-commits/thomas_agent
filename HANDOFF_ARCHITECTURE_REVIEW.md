@@ -1,11 +1,15 @@
-# Handoff — Architecture Review Remediation (A/B done, D next)
+# Handoff — Architecture Review Remediation (A/B/D done, C parked; R3 done)
 
-**Date:** 2026-07-15  ·  **main at handoff:** `7dc85ea`  ·  **Purpose:** cross-machine handoff so the next
-session (on another computer) can continue with finding **D**.
+**Original handoff date:** 2026-07-15 (`main` at `7dc85ea`) · **Updated:** 2026-07-16 (`main` at `680f45c`)
+**Purpose:** cross-machine handoff so the next session can continue after finding **D** and Phase **R3**.
 
-This session ran an independent adversarial review of the whole architecture and fixed the two most
-serious findings. This file records what was done, what was investigated, and the concrete plan for
-the next task (D). Nothing here grants any runtime authority; it is notes only.
+The original session ran an independent adversarial review and fixed A and B. A later session
+(this update) completed **D** and the whole of **R3** (read-only web-search tool). This file records
+what was done, what was investigated, and what is next. Nothing here grants any runtime authority; it
+is notes only.
+
+> **Update 2026-07-16:** D and R3 are complete and merged. See "Update" boxes below; the original
+> D plan is preserved for the record. Next task is **R4 (Operator/Telegram)**.
 
 ---
 
@@ -16,7 +20,11 @@ the next task (D). Nothing here grants any runtime authority; it is notes only.
 | **A** | Safety guarantees were *described, not enforced* — `model_invocation`/`network_access` gated only by an env var; the read-only kernel (the only real enforcement) is off the live path. | ✅ **DONE** — PR #13, merged |
 | **B** | "Auditable, append-only, hash-chained" agent persisted nothing; failed/blocked runs + the model invocation itself were unaudited. | ✅ **DONE** — PR #14, merged |
 | **C** | ~70% of the repo is speculative certification of disabled capabilities. | ⏸️ **PARKED** — premise overstated (see below) |
-| **D** | One-concept-one-authority violated: `runtime_effect` + the authority invariant + the P0–P6 rank map are encoded in ~7 places and already drifting. | ⬜ **NEXT** — plan below |
+| **D** | One-concept-one-authority violated: `runtime_effect` + the authority invariant + the P0–P6 rank map are encoded in ~7 places and already drifting. | ✅ **DONE** — PR #16, merged |
+
+Phase work merged in the same update: **R3 read-only web-search tool** — PRs #17 (foundation + gated
+adapter), #19 (INTERNAL_READ permission model), #20 (pipeline wiring), #21 (operator activation helper +
+docs).
 
 ---
 
@@ -75,7 +83,15 @@ and CI patterns in `scripts/gate_matrix.py` (L90–91) — and triggers the full
 
 ---
 
-## D — NEXT TASK: collapse the duplicated authority/effect encodings
+## D — collapse the duplicated authority/effect encodings
+
+> **✅ Update 2026-07-16 (PR #16, merged).** Done as planned. `runtime/mvp_runtime/authority.py` now OWNS
+> the P0–P6 rank map + `rank_of`, `authority_invariant_holds`, and the REVIEW_ONLY/EVIDENCE_ONLY effect-block
+> factories. `planner.py`, `permission.py`, `assignment.py`, `validation.py`, `audit.py`, and `safety_gate.py`
+> (a seventh copy found during the work) import from it; local copies deleted. The read-only kernel was left
+> frozen with its intentional divergence documented in the module. No closed-schema `const` changed. Records are
+> byte-identical, so the audit hash-chain is unchanged. +21 tests; full suite + release gate green. The original
+> plan below is preserved for the record.
 
 **Problem (real, active-path, already drifting).** Two safety predicates + the rank map are re-encoded in ~7 places:
 
@@ -111,17 +127,42 @@ so they guard the refactor. Target: no behavior change, full suite green, releas
 
 ---
 
+## R3 — read-only web-search tool (✅ done, mock path complete)
+
+Merged across PRs #17/#19/#20/#21. The specialist now runs an authorized read-only web search whose hits become
+source-attributed `web_search` evidence and whose use is audited — modelled exactly as the plan prescribed:
+an **`INTERNAL_READ` ALLOW action at P1** (not a `tool_request`).
+
+- **`runtime/mvp_runtime/tools.py`** — `SearchTool` protocol, `MockSearchTool` (deterministic, no network),
+  `WebSearchTool` (Brave REST adapter behind the A gate — re-checks egress authorization, key by env-var name),
+  `select_search_tool()` (mock default; real tool only with a valid `network_access` activation), `run_search()`
+  (tamper-evident tool-use evidence record).
+- **`permission.build_search_permission_decision`** — the INTERNAL_READ/P1 decision (shared builder via `_ActionSpec`).
+- **`pipeline.py` / `worker.py` / `audit.py` / `store.py` / `cli.py`** — execute the search, thread hits into the
+  output as evidence, persist the search decision + tool-use record, and add a `TOOL_USED` audit event. Audit chain is
+  now 6 events: `TASK_CREATED → PERMISSION_DECIDED → TOOL_USED → MODEL_INVOKED → VALIDATION_COMPLETED → TASK_STATE_CHANGED`.
+- **Governance invariant preserved:** the search is a read-only capability, NOT a runtime tool-enablement —
+  `allowed_tool_ids` stays empty, every effect stays REVIEW_ONLY/EVIDENCE_ONLY.
+- **`scripts/activate_safety_flag.py`** — operator helper to activate the real search (or model) locally in one command.
+  See `docs/runtime-contracts/READONLY_SEARCH_TOOL_V0.1.md` for the runbook.
+
+**R3 remaining is operational only:** run the real Brave backend once (write an activation record with the helper, set
+`BRAVE_SEARCH_API_KEY`, run with `MVP_SEARCH_TOOL=brave_search`). No code left; it needs a real API key so it is a local,
+per-machine, gated step.
+
+## Next task — R4 (Operator/Telegram)
+
+Per the roadmap in CLAUDE.md: **R4 Operator/Telegram** channel → R4.5 Server Deploy → R5 Memory → R6 Scheduler →
+R7 Multi-Agent → R8 Controlled Write. C stays parked (low ROI; see above).
+
 ## Repo / resume notes
 
-- **Branches on origin:** `main` (`7dc85ea`, A+B merged). `feat/r3-web-search-tool` (R3 read-only search-tool foundation,
-  mock only — pushed this session, **not** merged, and now behind main → **rebase onto main before continuing R3**).
-- **R3 remaining** (after D or whenever): real search adapter (network → must go through the A gate), wire search into the
-  worker, and the `search.readonly` tool activation. Note `tool_request.v0.1` is the wrong contract for a read-only search
-  (it's an executor-handoff review packet); model the search as an `INTERNAL_READ` ALLOW action instead.
+- **`main` is at `680f45c`** with A/B/D + full R2 pipeline + R3 (mock path) merged. All prior stacked R3 branches are
+  merged/superseded; the stale `feat/r3-web-search-tool` and `feat/r3-search-permission` origin branches can be deleted.
 - **Environment on a fresh machine** (see CLAUDE.md): CI is Python 3.12; `py -3 -m venv .venv`; install
   `requirements-validation.lock` + `pytest`; run `.venv/Scripts/python -m pytest tests/ -q` and
   `.venv/Scripts/python scripts/run_repository_release_gate.py --full --check-only`. Full-run pipeline tests need a local
   Core activation (`.runtime_governance_state/CURRENT_CORE_RELEASE.yaml`) — see CLAUDE.md "Core activation (local)".
   On Windows set `PYTHONUTF8=1` for non-ASCII I/O.
-- **Local runtime state** (`.runtime_governance_state/`, incl. the new ledger + any safety-flag activation) is gitignored
-  and per-machine — it does NOT travel between computers. Re-create as needed.
+- **Local runtime state** (`.runtime_governance_state/`, incl. the ledger, Core activation, and any safety-flag
+  activation) is gitignored and per-machine — it does NOT travel between computers. Re-create as needed.
