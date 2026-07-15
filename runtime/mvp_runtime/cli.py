@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import sys
 
+from .errors import MvpRuntimeError
 from .pipeline import run_task
-from .providers import select_provider
+from .providers import GoogleAIStudioProvider, select_provider
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -47,10 +48,18 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("BLOCKED EMPTY_REQUEST: no request text provided (arg or stdin)\n")
         return EXIT_USAGE
 
-    # Runs the full single-agent pipeline. The provider defaults to the deterministic
-    # MockProvider; a real hosted provider is used only when opted in via the environment
-    # (Safety-Flag Gate opened locally). See providers.select_provider.
-    result = run_task(raw_request, provider=select_provider(), channel="manual")
+    # Select the provider through the enforced Safety-Flag Gate. Default = MockProvider
+    # (no network). A hosted provider is returned only if a valid local activation record
+    # authorizes it; otherwise select_provider fails closed and the run is BLOCKED here.
+    try:
+        provider = select_provider()
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
+        return EXIT_BLOCKED
+    if isinstance(provider, GoogleAIStudioProvider):
+        sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
+
+    result = run_task(raw_request, provider=provider, channel="manual")
     if result["status"] == "COMPLETED":
         sys.stdout.write(result["final_response"] + "\n")
         return EXIT_OK

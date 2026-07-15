@@ -18,9 +18,12 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
+from . import safety_gate
 from .errors import ProviderError
+from .safety_gate import MODEL_INVOCATION, NETWORK_ACCESS, Authorization
 from .worker import MockProvider, Provider, ProviderResult
 
 # The worker maps these keys onto agent_output.v0.2; the model is asked to return exactly
@@ -42,22 +45,30 @@ _RESPONSE_INSTRUCTION = (
 
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
 HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
+GOOGLE_AI_STUDIO = "google_ai_studio"
+_NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
 
-def select_provider() -> Provider:
-    """Choose the worker's provider from the environment.
+def select_provider(*, now: str | None = None, root: Path | None = None) -> Provider:
+    """Choose the worker's provider — the enforced Safety-Flag Gate chokepoint.
 
-    Defaults to the deterministic, network-free ``MockProvider``. Returns a real hosted
-    provider ONLY when explicitly opted in (``MVP_HOSTED_PROVIDER=google_ai_studio``) —
-    i.e. only after the Safety-Flag Gate is opened locally. Even then, the hosted provider
-    fails closed at call time if its API key env var is unset, so opting in without a key
-    still performs no successful external call.
+    Defaults to the deterministic, network-free ``MockProvider`` (no gate needed; it
+    performs no network I/O). A real hosted provider is returned ONLY when both (a) the
+    caller opts in via ``MVP_HOSTED_PROVIDER=google_ai_studio`` AND (b) the Safety-Flag
+    Gate authorizes it against a local, integrity-checked activation record. The env var
+    alone is NOT sufficient: with no valid activation this fails closed
+    (:class:`SafetyGateBlocked`) rather than silently opening a network path.
     """
     choice = os.environ.get(HOSTED_PROVIDER_ENV, "").strip().lower()
-    if choice == "google_ai_studio":
-        model = os.environ.get(HOSTED_MODEL_ENV, "gemini-flash-latest").strip()
-        return GoogleAIStudioProvider(model=model)
-    return MockProvider()
+    if choice != GOOGLE_AI_STUDIO:
+        return MockProvider()
+
+    # Opted into a network-capable provider — must pass the gate before it is even built.
+    authorization = safety_gate.authorize(
+        _NETWORK_FLAGS, provider_id=GOOGLE_AI_STUDIO, now=now or safety_gate.utc_now_iso(), root=root
+    )
+    model = os.environ.get(HOSTED_MODEL_ENV, "gemini-flash-latest").strip()
+    return GoogleAIStudioProvider(model=model, authorization=authorization)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -79,12 +90,28 @@ class GoogleAIStudioProvider:
     model_id = "google_ai_studio"
     _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, *, model: str = "gemini-flash-latest", api_key_env: str = "GOOGLE_AI_STUDIO_API_KEY"):
+    def __init__(
+        self,
+        *,
+        model: str = "gemini-flash-latest",
+        api_key_env: str = "GOOGLE_AI_STUDIO_API_KEY",
+        authorization: Authorization | None = None,
+    ):
         self._model = model
         self._api_key_env = api_key_env  # the NAME of the env var, never the value
         self.model_version = model
+        # Egress authorization from the Safety-Flag Gate. Without it, generate() refuses
+        # to open a socket — so a directly-constructed provider cannot bypass the gate.
+        self._authorization = authorization
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.model_id,
+            now=safety_gate.utc_now_iso(),
+        )
         api_key = os.environ.get(self._api_key_env)
         if not api_key:
             raise ProviderError("NO_API_KEY", f"environment variable {self._api_key_env} is not set")
