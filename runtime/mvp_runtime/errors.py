@@ -38,3 +38,7 @@ class ProviderError(MvpRuntimeError):
 
     Raised by provider adapters; the worker translates it into a fail-closed
     ``WorkerBlocked``."""
+
+
+class AuditError(MvpRuntimeError):
+    """The audit builder could not produce a valid, chained audit_event record."""

@@ -1,28 +1,32 @@
-"""R2.1 Task Intake CLI tests."""
+"""CLI tests — full single-agent pipeline (MockProvider)."""
 
 from __future__ import annotations
 
-import json
+from pathlib import Path
+
+import pytest
 
 from runtime.mvp_runtime import cli
+from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
+
+LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
+requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
 
 
-def test_cli_argv_happy_path_emits_valid_task(capsys):
+@requires_local_core
+def test_cli_runs_pipeline_and_emits_response(capsys):
     rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"])
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
-    task = json.loads(out)
-    assert task["schema_version"] == "task.v0.3"
-    assert task["lifecycle"]["status"] == "RECEIVED"
-    # Non-ASCII request round-trips losslessly through the CLI.
-    assert "사업 아이디어" in task["request"]["raw_request"]
+    # Final response is human-readable text (not raw JSON) with findings + the read-only note.
+    assert "Key findings" in out
+    assert "Read-only analysis" in out
 
 
 def test_cli_empty_argv_is_usage_block(capsys):
     rc = cli.main([""])
     assert rc == cli.EXIT_USAGE
-    err = capsys.readouterr().err
-    assert "EMPTY_REQUEST" in err
+    assert "EMPTY_REQUEST" in capsys.readouterr().err
 
 
 def test_cli_bom_only_argv_is_usage_block(capsys):
