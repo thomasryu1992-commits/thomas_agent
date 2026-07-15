@@ -103,10 +103,11 @@ def build_permission_decision(
     expires_at = _fmt_ts(created + timedelta(minutes=ttl_minutes))
     created_at = _fmt_ts(created)
 
-    # Effective == required (least privilege); the assignment grants up to the ceiling.
+    # Least privilege: required == effective == granted == the action's need; the role
+    # ceiling is the upper bound the grant stays within.
     effective_level = required_permission_level
-    granted_level = role_permission_ceiling
-    authority_sufficient = required_rank <= _LEVEL_RANK[effective_level] <= ceiling_rank <= ceiling_rank
+    granted_level = required_permission_level
+    authority_sufficient = required_rank <= _LEVEL_RANK[effective_level] <= _LEVEL_RANK[granted_level] <= ceiling_rank
 
     requester_ref = f"thomas_prime:{actor_id}"
     fingerprint_payload = {
