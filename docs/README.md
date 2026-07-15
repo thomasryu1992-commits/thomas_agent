@@ -1,58 +1,73 @@
 # Thomas Autonomous Organization Document Map
 
-Status: MVP Document Structure v0.1
+**Status:** `MVP Document Structure v0.3`  
+**Owner:** `Thomas`
 
-Owner: Thomas
-
-## 1. Document Hierarchy
-
-문서는 조직 구조와 같은 방향으로 위에서 아래로 구체화한다.
+## 1. Document Structure
 
 ```text
 Thomas
 └─ Thomas Core
-   └─ Operating Constitution (Target, not active in MVP)
+   └─ Operating Constitution
+      Target document; inactive in MVP
       └─ Organization Architecture
          └─ MVP Operating Policy
-            └─ Common I/O Contracts
-               └─ Role, Agent, Program, Tool Definitions
-                  └─ Runtime Records and Audit Events
+            └─ Runtime Contract Precedence Addendum
+               └─ Canonical Runtime Contracts
+                  └─ Prime and Dynamic Role Contracts
+                     └─ Role, Program, and Tool Registries
+                        └─ Runtime Records and Audit Events
 ```
 
-상위 문서는 정체성, 가치, 권한 경계처럼 안정적인 기준을 정의한다.
+Organization Architecture defines structure and long-term boundaries.
 
-하위 문서는 실행 방법과 개별 업무 기록처럼 자주 변경되는 내용을 정의한다.
+MVP Operating Policy defines active operating rules.
 
-상위 문서와 하위 문서가 충돌하면 상위 문서를 우선한다.
+Canonical Runtime contracts define machine-facing semantics and record structures.
 
 ## 2. Active MVP Documents
 
 | Level | Document | MVP Use |
 | --- | --- | --- |
-| Thomas Core | `../THOMAS_CORE/MVP_ACTIVE_CORE.yaml` | 활성 Core 8개 규칙 |
-| Organization Architecture | `thomas-autonomous-organization-architecture-v0.1.md` | Target, MVP, Dynamic Team 구조 |
-| Operating Policy | `MVP_OPERATING_POLICY.md` | 실행, 권한, Telegram, Memory, 실패, 학습 규칙 |
-| Common I/O Contracts | `thomas-twin-core-architecture-v0.1.md` | Task, Agent Output, Program Result, Permission Decision, Memory Record |
-| Prime Charter | `../03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md` | Thomas Prime의 역할, 책임, 권한과 금지 경계 |
-| Dynamic Role Contract | `../03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md` | Dynamic Role 공통 규칙 |
-| Role Assignment | `../03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md` | Task별 실제 Role 권한, Context와 예산 |
-| Role Registry | `../03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` | 활성·후보 역할과 라우팅 상태 |
-| Prime Foundation Reference | `thomas-prime-foundation-settings-v0.1.md` | 초기 상세 설정 참고 자료. Active Core와 Charter가 우선 |
+| Thomas Core | `../THOMAS_CORE/MVP_ACTIVE_CORE.yaml` | Only active Core rules |
+| Organization Architecture | `thomas-autonomous-organization-architecture-v0.1.md` | Target, MVP, and Dynamic Team architecture |
+| Operating Policy | `MVP_OPERATING_POLICY.md` | Execution, risk, permission, Telegram, Memory, failure, learning, and Audit rules |
+| Runtime Precedence | `runtime-contracts/RUNTIME_CONTRACT_PRECEDENCE_ADDENDUM_v0.3.md` | Resolves migration conflicts and identifies canonical contracts |
+| Authority and Permission | `runtime-contracts/AUTHORITY_AND_PERMISSION_MODEL.md` | Separates P0–P6 from ALLOW–BLOCK |
+| Agent Output | `runtime-contracts/AGENT_OUTPUT_CONTRACT_V0.2.md` | Assignment and Role lineage for Agent results |
+| Execution Budget | `runtime-contracts/EXECUTION_BUDGET_SCHEMA.yaml` | Canonical numeric Task, Role, Assignment, and usage budget |
+| Prime Charter | `../03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md` | Thomas Prime identity, responsibility, authority, and prohibitions |
+| Dynamic Role Contract | `../03_ROLE_CONTRACTS/MVP_DYNAMIC_ROLE_CONTRACT.md` | Dynamic Role common rules |
+| Role Definition Template | `../03_ROLE_CONTRACTS/ROLE_DEFINITION_TEMPLATE.yaml` | Machine-readable Role Definition structure |
+| Role Assignment | `../03_ROLE_CONTRACTS/ROLE_ASSIGNMENT_CONTRACT.md` | Task-specific Role scope, authority, permission, Memory, resources, validation, and budget |
+| Role Registry | `../03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` | Role status, routability, version, hashes, and Candidate trial policy |
+| Program Registry | `../05_REGISTRIES/PROGRAM_REGISTRY.yaml` | Registered Program status and Runtime availability |
+| Tool Registry | `../05_REGISTRIES/TOOL_REGISTRY.yaml` | Registered Tool status and Runtime availability |
 
-## 3. Planned Documents
+## 3. Legacy Integrated Contract Document
 
-- `OPERATING_CONSTITUTION.md`: 장기 Governance가 필요해질 때 활성화한다.
-- Candidate Role Activation: 전문 역할의 반복 필요와 분리 가치가 검증될 때 Registry에서 활성화한다.
-- Program Definition: 실제 Program 구현 전에 추가한다.
-- Tool Definition: 실제 Tool 연결 전에 추가한다.
-- Runtime schemas: 구현 단계에서 I/O 계약을 기계 검증 형식으로 고정한다.
+`thomas-twin-core-architecture-v0.1.md` remains a useful architecture and historical I/O reference.
 
-계획 문서는 존재하거나 활성화된 것처럼 참조하지 않는다.
+For new Runtime records, the canonical contracts listed above supersede conflicting shorthand or older schema sections.
 
-## 4. Change Rule
+Existing records remain valid under their original schema versions.
 
-- Thomas Core와 Operating Constitution 변경은 Thomas 승인이 필요하다.
-- Organization Architecture 변경은 Thomas가 방향을 승인한다.
-- MVP Operating Policy의 낮은 위험 세부 조정은 제안과 검토를 거쳐 반영한다.
-- Common I/O Contract 변경은 버전을 올리고 기존 기록과 호환성을 확인한다.
-- Runtime Record와 Audit Event는 기존 기록을 덮어쓰지 않는다.
+## 4. Planned Documents
+
+- Operating Constitution activation package.
+- Tool Request Contract.
+- Execution Request and Execution Result Contracts.
+- Validation Result standalone schema if required.
+- Audit Event schema.
+- Department Definition after real department separation is justified.
+- Runtime implementations for candidate Programs and Tools.
+
+Planned documents do not grant Runtime permission.
+
+## 5. Change Rule
+
+- Thomas Core and Operating Constitution changes require Thomas approval.
+- Active Core promotion always requires explicit Thomas approval, versioned update, and Audit.
+- Runtime Contract changes require version updates and compatibility review.
+- Role Definition changes require Registry consistency and hash updates.
+- Runtime Records and Audit Events are append-only; corrections are new events rather than silent overwrite.
