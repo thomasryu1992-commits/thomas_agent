@@ -42,3 +42,11 @@ class ProviderError(MvpRuntimeError):
 
 class AuditError(MvpRuntimeError):
     """The audit builder could not produce a valid, chained audit_event record."""
+
+
+class SafetyGateBlocked(MvpRuntimeError):
+    """The Safety-Flag Gate refused a network-capable capability (model/network).
+
+    Raised when the local activation record is missing, malformed, tampered, expired,
+    or does not enable the requested flags/provider — enabling a real model/network call
+    requires an integrity-consistent, evidence-backed activation, never a bare env var."""
