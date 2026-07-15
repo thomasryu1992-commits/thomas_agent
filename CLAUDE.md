@@ -82,8 +82,7 @@ stays green everywhere.
 
 ## Status & roadmap
 
-- Done: R0.5 (repo sync/cleanup), R1 (MVP spec), **R2.1 Task Intake** (`runtime/mvp_runtime/intake.py` + `cli.py`, tests green).
-- Next: **R2.2 Thomas Prime Planner** → R2.3 Role Routing → R2.4 LLM invocation (behind mock until the Safety-Flag Gate) → R2.5 Validation → R2.6 Audit → R2.7 E2E.
-- Then: R3 Read-only Tool (web search) → R4 Operator/Telegram → R4.5 Server Deploy (Dockerfile + prod requirements live here) → R5 Memory → R6 Scheduler → R7 Multi-Agent (last) → R8 Controlled Write.
+- Done: R0.5 (repo sync/cleanup), R1 (MVP spec), **R2 full single-agent pipeline** (R2.1 Intake → R2.7 E2E: intake, Thomas Prime planner, role routing, model invocation behind the Safety-Flag Gate, output validation, hash-chained audit, durable append-only ledger), and **R3 Read-only web-search tool** (mock path complete — search is an `INTERNAL_READ` ALLOW action whose hits become evidence and whose use is audited; the real Brave backend is gated, activate locally with `scripts/activate_safety_flag.py`). Architecture-review remediations A (enforced Safety-Flag Gate), B (durable ledger + audit-every-outcome), and D (single authority for levels/invariant/effect in `authority.py`) also merged; C parked (see the handoff doc).
+- Next: **R4 Operator/Telegram** → R4.5 Server Deploy (Dockerfile + prod requirements live here) → R5 Memory → R6 Scheduler → R7 Multi-Agent (last) → R8 Controlled Write.
 
 Key locked decisions: MVP use case = "analyze this business idea"; MVP role = `general.specialist`; provider = a single free hosted API (default Google AI Studio; alt Groq/Cerebras); MVP runtime is a new module reusing kernel parts (not a kernel extension).
