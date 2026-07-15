@@ -13,7 +13,10 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.errors import PlannerBlocked
 from runtime.mvp_runtime.intake import build_task
-from runtime.mvp_runtime.permission import build_permission_decision
+from runtime.mvp_runtime.permission import (
+    build_permission_decision,
+    build_search_permission_decision,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
@@ -101,3 +104,53 @@ def test_invalid_level_blocks():
     with pytest.raises(PlannerBlocked) as exc:
         _decide(_bound_task(), required_permission_level="P9")
     assert exc.value.reason_code == "INVALID_LEVEL"
+
+
+# --- R3: read-only search action modelled as INTERNAL_READ ALLOW ------------
+
+def test_search_unbound_task_blocks_everywhere():
+    task = build_task("검색해줘", now=FIXED_NOW)  # RECEIVED, unbound
+    with pytest.raises(PlannerBlocked) as exc:
+        build_search_permission_decision(task, role_permission_ceiling="P3", now=FIXED_NOW)
+    assert exc.value.reason_code == "NOT_BOUND"
+
+
+@requires_local_core
+def test_search_decision_is_allow_internal_read_at_p1():
+    rec = build_search_permission_decision(_bound_task(), role_permission_ceiling="P3", now=FIXED_NOW)
+    payload = rec["fingerprint_payload"]
+    assert rec["decision"]["permission_decision"] == "ALLOW"
+    assert rec["risk"]["policy_disposition"] == "ALLOW"
+    assert payload["permission_scope"] == "INTERNAL_READ"
+    assert payload["action_type"] == "internal.read.search"
+    assert payload["tool_id"] == "search.readonly"
+    assert payload["target_ref"].endswith(":search")
+    assert rec["authority"]["required_permission_level"] == "P1"
+    assert rec["authority"]["authority_sufficient"] is True
+
+
+@requires_local_core
+def test_search_decision_is_not_an_executor_token():
+    rec = build_search_permission_decision(_bound_task(), role_permission_ceiling="P3", now=FIXED_NOW)
+    eff = rec["runtime_effect"]
+    assert eff["mode"] == "REVIEW_ONLY"
+    assert all(v is False for k, v in eff.items() if k != "mode")
+
+
+@requires_local_core
+def test_search_and_analysis_are_distinct_actions():
+    bound = _bound_task()
+    search = build_search_permission_decision(bound, role_permission_ceiling="P3", now=FIXED_NOW)
+    analysis = _decide(bound)
+    # Different action identity => different fingerprint and decision id, even for one task.
+    assert search["action_fingerprint"] != analysis["action_fingerprint"]
+    assert search["permission_decision_id"] != analysis["permission_decision_id"]
+
+
+@requires_local_core
+def test_search_decision_is_deterministic():
+    bound = _bound_task()
+    a = build_search_permission_decision(bound, role_permission_ceiling="P3", now=FIXED_NOW)
+    b = build_search_permission_decision(bound, role_permission_ceiling="P3", now=FIXED_NOW)
+    assert a["permission_decision_id"] == b["permission_decision_id"]
+    assert a["action_fingerprint"] == b["action_fingerprint"]
