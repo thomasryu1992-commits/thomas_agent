@@ -50,3 +50,11 @@ class SafetyGateBlocked(MvpRuntimeError):
     Raised when the local activation record is missing, malformed, tampered, expired,
     or does not enable the requested flags/provider — enabling a real model/network call
     requires an integrity-consistent, evidence-backed activation, never a bare env var."""
+
+
+class PersistenceError(MvpRuntimeError):
+    """The append-only runtime ledger could not be written or read.
+
+    Raised by the store when a record/audit-event cannot be durably persisted or the
+    existing ledger is unreadable/corrupt. A run whose evidence cannot be persisted is
+    not delivered (no durable audit => no trust)."""

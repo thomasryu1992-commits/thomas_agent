@@ -59,7 +59,10 @@ def test_normal_task_completes_and_delivers():
         assert key in rec
     assert rec["agent_output"]["status"] == "needs_validation"
     assert rec["validation_result"]["validation"]["result"] == "PASS"
-    assert len(rec["audit_trail"]) == 4
+    assert len(rec["audit_trail"]) == 5  # + MODEL_INVOKED
+    assert [e["event_type"] for e in rec["audit_trail"]] == [
+        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
+    ]
 
 
 @requires_local_core
