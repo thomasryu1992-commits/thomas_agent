@@ -1,0 +1,260 @@
+"""R2.4 Read-only Model Invocation — the specialist worker.
+
+``run_analysis_worker`` runs the single specialist model call for a planned, bound,
+routed task and maps the result into a schema-valid ``agent_output.v0.2`` with status
+``needs_validation`` (R2.5 validates it; the worker never returns a "final" output).
+
+Model invocation is **provider-abstracted**. A ``Provider`` returns a structured
+analysis plus invocation metadata (model id/version, token usage, latency). The
+``MockProvider`` is deterministic and needs no network or model — it lets the whole
+worker→output→(validation)→(audit) pipeline run and be tested *before* the Safety-Flag
+Gate. A real hosted provider is added only behind that gate (explicit Thomas approval +
+versioned governance update + audit to enable model_invocation/network_access).
+
+The worker enforces the assignment's execution budget (one model call, token cap,
+timeout) and fails closed (``WorkerBlocked``) on any provider error, timeout, budget
+breach, or an output that violates the Agent Output contract.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Mapping, Protocol, runtime_checkable
+
+from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
+
+from .errors import ProviderError, WorkerBlocked
+
+WORKER_ID = "mvp.business_analysis.llm"
+WORKER_VERSION = "0.1.0"
+PROMPT_VERSION = "mvp_business_analysis.v1"
+AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v0.2"
+
+# Business-idea evaluation priorities (Core MVP_RULE_005); the worker asks the model
+# to reason in this order and records them for auditability.
+EVALUATION_PRIORITIES = (
+    "revenue_potential",
+    "risk_adjusted_expected_value",
+    "scalability",
+    "automatability",
+    "long_term_growth",
+)
+
+
+@dataclass
+class ProviderResult:
+    """A provider's structured analysis + invocation metadata.
+
+    ``analysis`` is an internal payload (not a separate governed contract) that the
+    worker maps onto agent_output.v0.2. Required keys: ``summary`` (str), ``key_findings``
+    (list[str]), ``facts`` (list[{statement, evidence_refs}]), ``inferences`` (list[str]),
+    ``risks`` (list[str]), ``recommendation`` ({action, reason} | None), ``evidence_quality``
+    (str), ``unresolved_questions`` (list[str]). Optional: assumptions, uncertainty,
+    limitations, next_actions.
+    """
+
+    analysis: dict[str, Any]
+    model_id: str
+    model_version: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    finish_reason: str = "stop"
+
+
+@runtime_checkable
+class Provider(Protocol):
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult: ...
+
+
+class MockProvider:
+    """Deterministic provider: no network, no real model. Returns a fixed structured
+    analysis shaped for the business-idea use case. For tests and pre-gate pipeline runs."""
+
+    model_id = "mock.analysis"
+    model_version = "0.1.0"
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        analysis = {
+            "summary": "Deterministic mock analysis of the supplied business idea across the "
+            "standard priorities; not a real model judgement.",
+            "key_findings": [
+                "revenue_potential: recurring-revenue model with plausible early cash flow",
+                "risk_adjusted_expected_value: moderate, dominated by acquisition cost",
+                "scalability: constrained by fulfilment/logistics",
+                "automatability: ordering and reordering are automatable",
+                "long_term_growth: compounding via retention and brand",
+            ],
+            "facts": [
+                {"statement": "The idea targets a recurring-purchase category.", "evidence_refs": ["model:analysis"]},
+            ],
+            "inferences": [
+                "Recurring purchases suggest subscription mechanics improve lifetime value.",
+            ],
+            "assumptions": ["Demand and unit economics were not independently verified."],
+            "uncertainty": ["Customer acquisition cost is unknown."],
+            "risks": ["Thin margins if logistics are not optimised."],
+            "recommendation": {
+                "action": "Run a small validation before committing capital.",
+                "reason": "Cash-flow and CAC assumptions dominate the risk-adjusted value.",
+            },
+            "limitations": ["Read-only analysis; figures are illustrative, not researched."],
+            "next_actions": ["Estimate CAC and payback with a small paid test."],
+            "evidence_quality": "low_illustrative",
+            "unresolved_questions": ["What is the realistic CAC and retention curve?"],
+        }
+        return ProviderResult(
+            analysis=analysis,
+            model_id=self.model_id,
+            model_version=self.model_version,
+            input_tokens=min(len(prompt) // 4, max_output_tokens),
+            output_tokens=180,
+            latency_ms=0,
+            finish_reason="stop",
+        )
+
+
+def build_prompt(task: Mapping[str, Any], assignment: Mapping[str, Any]) -> str:
+    scope = task.get("scope", {})
+    role_scope = assignment.get("role_scope", {})
+    rules = ", ".join(task.get("context", {}).get("active_core_rule_ids", []))
+    outputs = "; ".join(scope.get("expected_outputs", []))
+    priorities = " > ".join(EVALUATION_PRIORITIES)
+    return (
+        f"Role objective: {role_scope.get('role_objective', '')}\n"
+        f"Task: {scope.get('primary_objective', '')}\n"
+        f"Request: {task.get('request', {}).get('raw_request', '')}\n"
+        f"Expected outputs: {outputs}\n"
+        f"Active Core rules in scope: {rules}\n"
+        f"Evaluate the business idea in this priority order: {priorities}.\n"
+        "Return a structured, read-only analysis. Separate facts (with evidence) from "
+        "inferences, disclose assumptions and uncertainty, and do not propose external actions."
+    )
+
+
+_REQUIRED_ANALYSIS_KEYS = ("summary", "key_findings", "facts", "inferences", "risks", "recommendation",
+                           "evidence_quality", "unresolved_questions")
+
+
+def _require_analysis(analysis: Any) -> dict[str, Any]:
+    if not isinstance(analysis, Mapping):
+        raise WorkerBlocked("MALFORMED_ANALYSIS", "provider analysis must be a mapping")
+    missing = [k for k in _REQUIRED_ANALYSIS_KEYS if k not in analysis]
+    if missing:
+        raise WorkerBlocked("MALFORMED_ANALYSIS", f"provider analysis missing keys: {missing}")
+    summary = analysis.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise WorkerBlocked("MALFORMED_ANALYSIS", "analysis.summary must be a non-empty string")
+    facts = analysis.get("facts")
+    if not isinstance(facts, list):
+        raise WorkerBlocked("MALFORMED_ANALYSIS", "analysis.facts must be a list")
+    return dict(analysis)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def run_analysis_worker(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    *,
+    provider: Provider,
+    created_at: str,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one specialist model call and return ``(agent_output, invocation_metadata)``.
+
+    Fails closed (``WorkerBlocked``) on missing model budget, provider error/timeout,
+    token-budget breach, malformed analysis, or a schema-invalid Agent Output.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    identity = task.get("identity", {})
+    context = task.get("context", {})
+    ccb = context.get("core_context_binding_id")
+    if not (isinstance(ccb, str) and ccb.startswith("ccb-")):
+        raise WorkerBlocked("NOT_BOUND", "task must be bound before worker invocation")
+
+    limits = assignment.get("execution_budget", {}).get("limits", {})
+    max_model_calls = limits.get("max_model_calls", 0)
+    token_budget = limits.get("token_budget", 0)
+    timeout_seconds = limits.get("max_runtime_seconds", 0)
+    if not isinstance(max_model_calls, int) or max_model_calls < 1:
+        raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
+
+    prompt = build_prompt(task, assignment)
+    try:
+        result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
+    except (ProviderError, TimeoutError) as exc:
+        raise WorkerBlocked("PROVIDER_ERROR", str(exc)) from exc
+
+    tokens_used = int(result.input_tokens) + int(result.output_tokens)
+    if token_budget and tokens_used > int(token_budget):
+        raise WorkerBlocked("TOKEN_BUDGET_EXCEEDED", f"used {tokens_used} tokens > budget {token_budget}")
+
+    analysis = _require_analysis(result.analysis)
+
+    seed = {
+        "task_id": identity.get("task_id"),
+        "task_revision": identity.get("task_revision"),
+        "assignment_id": assignment.get("assignment_id"),
+        "worker_id": WORKER_ID,
+        "worker_version": WORKER_VERSION,
+        "model_id": result.model_id,
+        "prompt_version": PROMPT_VERSION,
+    }
+    agent_output = {
+        "schema_version": AGENT_OUTPUT_SCHEMA_VERSION,
+        "agent_output_id": integrity.short_id("agentout", seed),
+        "trace_id": identity.get("trace_id"),
+        "task_id": identity.get("task_id"),
+        "core_context_binding_id": ccb,
+        "assignment_id": assignment.get("assignment_id"),
+        "actor_instance_id": assignment.get("actor_instance_id"),
+        "role_id": assignment.get("role_id"),
+        "role_version": assignment.get("role_version"),
+        "status": "needs_validation",
+        "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
+        "summary": analysis["summary"],
+        "facts": list(analysis["facts"]),
+        "evidence": [{"ref": "model:analysis", "type": "model_reasoning"}],
+        "inferences": [{"statement": s} for s in analysis.get("inferences", []) if isinstance(s, str) and s.strip()],
+        "assumptions": list(analysis.get("assumptions", [])),
+        "uncertainty": list(analysis.get("uncertainty", [])),
+        "risks": list(analysis.get("risks", [])),
+        "recommendation": analysis.get("recommendation"),
+        "limitations": [*analysis.get("limitations", []), "Read-only analysis; not independently validated."],
+        "validation_recommended": True,
+        "permission_request_refs": [],
+        "next_actions": list(analysis.get("next_actions", [])),
+        "memory_candidates": [],
+        "escalation_required": False,
+        "role_specific_output": {
+            "key_findings": list(analysis.get("key_findings", [])),
+            "evidence_quality": analysis.get("evidence_quality", ""),
+            "unresolved_questions": list(analysis.get("unresolved_questions", [])),
+        },
+        "created_at": created_at,
+    }
+
+    schema_path = root / "schemas" / f"{AGENT_OUTPUT_SCHEMA_VERSION}.schema.json"
+    try:
+        schema_validation.validate_against_schema(agent_output, schema_path, "agent_output")
+    except RuntimeSchemaError as exc:
+        raise WorkerBlocked("OUTPUT_SCHEMA_INVALID", str(exc)) from exc
+
+    invocation_metadata = {
+        "worker_id": WORKER_ID,
+        "worker_version": WORKER_VERSION,
+        "model_id": result.model_id,
+        "model_version": result.model_version,
+        "prompt_version": PROMPT_VERSION,
+        "input_tokens": int(result.input_tokens),
+        "output_tokens": int(result.output_tokens),
+        "tokens_used": tokens_used,
+        "latency_ms": int(result.latency_ms),
+        "finish_reason": result.finish_reason,
+    }
+    return agent_output, invocation_metadata
