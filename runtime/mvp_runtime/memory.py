@@ -1,0 +1,79 @@
+"""R5.1 Memory candidate creation.
+
+Per the canonical Governance Policy (`memory_learning`): working-memory candidate creation
+is **ALLOW**, but validated/core memory writes are gated, `automatic_runtime_promotion_allowed`
+is false, and `secret_storage_in_memory_allowed` is false. So the specialist may *propose*
+memory candidates from its analysis; it may never promote them, and a candidate never carries
+runtime permission.
+
+`build_memory_candidates` derives candidate proposals from an analysis, honoring the
+**assignment's** memory scope (creation must be allowed; only the role's allowed candidate
+types are used) and failing closed on a secret-bearing candidate. Every candidate is stamped
+`status="CANDIDATE"`, `validated=False`, `promotable=False` — it is a proposal, nothing more.
+The candidates ride on `agent_output.memory_candidates`, so they are persisted and audited
+with the output (the output fingerprint covers them); explicit promotion is out of scope and
+requires separate governance.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from runtime.read_only_kernel import integrity
+from runtime.read_only_kernel.integrity import IntegrityError
+
+from .errors import MemoryBlocked
+
+CANDIDATE_STATUS = "CANDIDATE"          # never VALIDATED / CORE
+CANDIDATE_SCOPE = "task_working_memory"
+PREFERRED_TYPE = "reusable_knowledge"
+MAX_CANDIDATES = 5
+
+
+def build_memory_candidates(
+    analysis: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    *,
+    now: str,
+    seed: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Propose working-memory candidates from an analysis, or none.
+
+    Fail-closed to an empty list when the assignment does not permit candidate creation or
+    declares no allowed candidate types. Raises ``MemoryBlocked`` on a secret-bearing
+    candidate. Candidates are proposals: ``status=CANDIDATE``, ``validated=False``,
+    ``promotable=False`` — never validated, core, or auto-promoted."""
+    memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
+    if not memory_scope.get("memory_candidate_creation_allowed"):
+        return []
+    allowed = [t for t in memory_scope.get("allowed_candidate_types", []) if isinstance(t, str) and t]
+    if not allowed:
+        return []
+    candidate_type = PREFERRED_TYPE if PREFERRED_TYPE in allowed else sorted(allowed)[0]
+
+    findings = [f.strip() for f in (analysis.get("key_findings") or [])
+                if isinstance(f, str) and f.strip()][:MAX_CANDIDATES]
+    base = dict(seed or {})
+    candidates: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings, start=1):
+        candidates.append({
+            "candidate_id": integrity.short_id(
+                "memcand", {**base, "candidate_type": candidate_type, "index": index, "content": finding}
+            ),
+            "candidate_type": candidate_type,
+            "scope": CANDIDATE_SCOPE,
+            "status": CANDIDATE_STATUS,
+            "validated": False,
+            "promotable": False,
+            "content": finding,
+            "evidence_refs": ["model:analysis"],
+            "created_at": now,
+        })
+
+    # Secrets must never be stored in memory (governance). Fail closed on a secret-bearing key.
+    for candidate in candidates:
+        try:
+            integrity.scan_for_secret_bearing_keys(candidate)
+        except IntegrityError as exc:
+            raise MemoryBlocked("SECRET_IN_CANDIDATE", str(exc)) from exc
+    return candidates
