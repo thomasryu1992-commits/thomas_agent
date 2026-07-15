@@ -55,7 +55,7 @@ def select_provider() -> Provider:
     """
     choice = os.environ.get(HOSTED_PROVIDER_ENV, "").strip().lower()
     if choice == "google_ai_studio":
-        model = os.environ.get(HOSTED_MODEL_ENV, "gemini-2.5-flash").strip()
+        model = os.environ.get(HOSTED_MODEL_ENV, "gemini-flash-latest").strip()
         return GoogleAIStudioProvider(model=model)
     return MockProvider()
 
@@ -79,7 +79,7 @@ class GoogleAIStudioProvider:
     model_id = "google_ai_studio"
     _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, *, model: str = "gemini-2.5-flash", api_key_env: str = "GOOGLE_AI_STUDIO_API_KEY"):
+    def __init__(self, *, model: str = "gemini-flash-latest", api_key_env: str = "GOOGLE_AI_STUDIO_API_KEY"):
         self._model = model
         self._api_key_env = api_key_env  # the NAME of the env var, never the value
         self.model_version = model
