@@ -77,3 +77,12 @@ class OperatorBlocked(MvpRuntimeError):
     Raised when a message fails the canonical Control Channel identity rules — not the
     registered Thomas user id, not the registered private 1:1 chat, a group/channel, or a
     forwarded message. The MVP never runs a task for an unverified operator (fail-closed)."""
+
+
+class MemoryBlocked(MvpRuntimeError):
+    """A memory-candidate operation was refused (R5).
+
+    Raised when candidate creation would violate the memory governance — e.g. a
+    secret-bearing candidate (``secret_storage_in_memory_allowed: false``). Memory
+    candidates are proposals only: they never carry runtime permission and never
+    auto-promote to validated/core memory."""

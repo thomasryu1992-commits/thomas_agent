@@ -26,6 +26,7 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .errors import ProviderError, WorkerBlocked
+from .memory import build_memory_candidates
 
 WORKER_ID = "mvp.business_analysis.llm"
 WORKER_VERSION = "0.1.0"
@@ -279,6 +280,13 @@ def run_analysis_worker(
         "model_id": result.model_id,
         "prompt_version": PROMPT_VERSION,
     }
+    # R5: propose working-memory candidates from the analysis, honoring the assignment's
+    # memory scope (creation gate + allowed types). Proposals only — never promoted.
+    memory_candidates = build_memory_candidates(
+        analysis, assignment, now=created_at,
+        seed={"task_id": identity.get("task_id"), "task_revision": identity.get("task_revision"),
+              "assignment_id": assignment.get("assignment_id")},
+    )
     agent_output = {
         "schema_version": AGENT_OUTPUT_SCHEMA_VERSION,
         "agent_output_id": integrity.short_id("agentout", seed),
@@ -303,7 +311,7 @@ def run_analysis_worker(
         "validation_recommended": True,
         "permission_request_refs": [],
         "next_actions": _str_list(analysis.get("next_actions")),
-        "memory_candidates": [],
+        "memory_candidates": memory_candidates,
         "escalation_required": False,
         "role_specific_output": {
             "key_findings": _str_list(analysis.get("key_findings")),
