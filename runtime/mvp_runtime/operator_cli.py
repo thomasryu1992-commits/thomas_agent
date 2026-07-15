@@ -58,8 +58,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the operator control-channel loop.")
     parser.add_argument("--max-batches", type=int, default=1,
                         help="number of poll batches to process; 0 = run until interrupted (default 1)")
+    parser.add_argument("--long-poll-seconds", type=int, default=0,
+                        help="hold each poll open until a message arrives, up to N seconds "
+                             "(real long-poll; 0 = return immediately). Use e.g. 25 for continuous runs.")
     parser.add_argument("--sleep-seconds", type=float, default=0.0,
-                        help="pause between poll batches (default 0)")
+                        help="extra pause between poll batches (default 0; unneeded with --long-poll-seconds)")
     return parser.parse_args(argv)
 
 
@@ -105,8 +108,8 @@ def main(
     try:
         while args.max_batches == 0 or batch < args.max_batches:
             summary = run_operator_once(
-                channel, registration, provider=provider, search_tool=search_tool,
-                store=store, repo_root=repo_root,
+                channel, registration, long_poll_seconds=args.long_poll_seconds,
+                provider=provider, search_tool=search_tool, store=store, repo_root=repo_root,
             )
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]

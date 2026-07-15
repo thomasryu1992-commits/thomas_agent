@@ -50,6 +50,13 @@ def test_multiple_batches_drain_and_stop():
     assert ch.sent == []  # impostor dropped, never answered
 
 
+def test_long_poll_flag_reaches_channel():
+    ch = MockOperatorChannel()
+    rc = main(["--long-poll-seconds", "25"], channel=ch, registration=REG, provider=MockProvider())
+    assert rc == 0
+    assert ch.last_long_poll_seconds == 25
+
+
 @requires_local_core
 def test_handles_registered_message_and_replies(capsys):
     ch = MockOperatorChannel(inbound=[_msg(), _msg(sender_id="tg-999")])

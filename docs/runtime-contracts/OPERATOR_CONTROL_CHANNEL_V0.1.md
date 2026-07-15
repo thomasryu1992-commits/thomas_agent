@@ -59,8 +59,13 @@ python -m runtime.mvp_runtime.operator_cli
 python scripts/activate_safety_flag.py --provider-id telegram --flags network_access \
     --authority-level P2 --ttl-minutes 240 --reason "Operator decision: enable the Telegram control channel."
 export TELEGRAM_BOT_TOKEN=...              # Windows: setx TELEGRAM_BOT_TOKEN ...
-MVP_OPERATOR_CHANNEL=telegram python -m runtime.mvp_runtime.operator_cli --max-batches 0 --sleep-seconds 2
+MVP_OPERATOR_CHANNEL=telegram python -m runtime.mvp_runtime.operator_cli --max-batches 0 --long-poll-seconds 25
 ```
+
+`--long-poll-seconds N` makes each `getUpdates` hold the connection open server-side until a
+message arrives (up to N seconds) before returning — efficient continuous listening; the HTTP
+timeout is extended past the hold so it is never aborted early. `0` (the default) returns
+immediately (a short poll), which is what the mock smoke test and the tests use.
 
 Without the registration file the loop exits `REGISTRATION_MISSING`; without the activation it
 exits `ACTIVATION_MISSING`; without the token it fails closed `NO_BOT_TOKEN`. Every handled

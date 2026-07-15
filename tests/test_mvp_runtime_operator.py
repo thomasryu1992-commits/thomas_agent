@@ -202,6 +202,21 @@ def test_telegram_poll_maps_updates(monkeypatch):
     assert msgs[0].channel == "telegram_private"
 
 
+def test_telegram_long_poll_http_timeout_outlasts_hold(monkeypatch):
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        seen["timeout"] = timeout
+        return _FakeResp({"ok": True, "result": []})
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    TelegramChannel(authorization=_TG_AUTH).poll(long_poll_seconds=25)
+    assert seen["timeout"] == 35   # 25s server hold + 10s buffer, so the client never aborts early
+    TelegramChannel(authorization=_TG_AUTH).poll(long_poll_seconds=0)
+    assert seen["timeout"] == 30   # short poll uses the default timeout
+
+
 def test_telegram_transport_error_fails_closed_without_leaking(monkeypatch):
     import urllib.error
     monkeypatch.setenv(TOKEN_ENV, "secret-token-value")
@@ -222,6 +237,12 @@ def test_run_once_drops_unverified_without_replying():
     summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
     assert summary["handled"] == 0 and summary["dropped"] == 2
     assert ch.sent == []                     # no reply to unverified senders
+
+
+def test_run_once_forwards_long_poll_to_channel():
+    ch = MockOperatorChannel()
+    run_operator_once(ch, REG, long_poll_seconds=25, provider=MockProvider(), now=NOW)
+    assert ch.last_long_poll_seconds == 25
 
 
 @requires_local_core
