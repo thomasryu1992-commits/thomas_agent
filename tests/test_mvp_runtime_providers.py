@@ -8,9 +8,24 @@ import urllib.error
 import pytest
 
 from runtime.mvp_runtime.errors import ProviderError
-from runtime.mvp_runtime.providers import GoogleAIStudioProvider
+from runtime.mvp_runtime.providers import (
+    HOSTED_PROVIDER_ENV,
+    GoogleAIStudioProvider,
+    select_provider,
+)
+from runtime.mvp_runtime.worker import MockProvider
 
 API_ENV = "GOOGLE_AI_STUDIO_API_KEY"
+
+
+def test_select_provider_defaults_to_mock(monkeypatch):
+    monkeypatch.delenv(HOSTED_PROVIDER_ENV, raising=False)
+    assert isinstance(select_provider(), MockProvider)
+
+
+def test_select_provider_opts_into_hosted(monkeypatch):
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio")
+    assert isinstance(select_provider(), GoogleAIStudioProvider)
 
 _ANALYSIS = {
     "summary": "A concise analysis.",

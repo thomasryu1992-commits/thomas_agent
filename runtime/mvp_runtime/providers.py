@@ -21,7 +21,7 @@ import urllib.request
 from typing import Any
 
 from .errors import ProviderError
-from .worker import ProviderResult
+from .worker import MockProvider, Provider, ProviderResult
 
 # The worker maps these keys onto agent_output.v0.2; the model is asked to return exactly
 # this JSON shape (see _RESPONSE_INSTRUCTION).
@@ -38,6 +38,26 @@ _RESPONSE_INSTRUCTION = (
     "recommendation (object {action: string, reason: string} or null), limitations (array of strings), "
     "next_actions (array of strings), evidence_quality (string), unresolved_questions (array of strings)."
 )
+
+
+HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
+HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
+
+
+def select_provider() -> Provider:
+    """Choose the worker's provider from the environment.
+
+    Defaults to the deterministic, network-free ``MockProvider``. Returns a real hosted
+    provider ONLY when explicitly opted in (``MVP_HOSTED_PROVIDER=google_ai_studio``) —
+    i.e. only after the Safety-Flag Gate is opened locally. Even then, the hosted provider
+    fails closed at call time if its API key env var is unset, so opting in without a key
+    still performs no successful external call.
+    """
+    choice = os.environ.get(HOSTED_PROVIDER_ENV, "").strip().lower()
+    if choice == "google_ai_studio":
+        model = os.environ.get(HOSTED_MODEL_ENV, "gemini-2.5-flash").strip()
+        return GoogleAIStudioProvider(model=model)
+    return MockProvider()
 
 
 def _strip_code_fences(text: str) -> str:
