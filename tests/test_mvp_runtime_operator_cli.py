@@ -65,3 +65,12 @@ def test_handles_registered_message_and_replies(capsys):
     assert "handled 1, dropped 1" in capsys.readouterr().out
     assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-1"
     assert "Key findings" in ch.sent[0][1]
+
+
+@requires_local_core
+def test_cli_shares_working_memory(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    ch = MockOperatorChannel(inbound=[_msg()])
+    rc = main([], channel=ch, registration=REG, provider=MockProvider(), working_memory=wm)
+    assert rc == 0 and wm.read_all()  # the operator CLI accumulates working memory

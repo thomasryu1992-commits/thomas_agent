@@ -39,6 +39,7 @@ from .operator import (
 from .providers import GoogleAIStudioProvider, select_provider
 from .store import LedgerStore
 from .tools import WebSearchTool, select_search_tool
+from .working_memory import WorkingMemoryStore
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -73,6 +74,7 @@ def main(
     registration: OperatorIdentity | None = None,
     provider: Any | None = None,
     search_tool: Any | None = None,
+    working_memory: Any | None = None,
     store: LedgerStore | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
@@ -100,6 +102,7 @@ def main(
         sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
 
     store = store if store is not None else LedgerStore.default()
+    working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
     sys.stderr.write(f"OPERATOR: listening for the registered operator (ledger: {store.root})\n")
 
     total_handled = 0
@@ -109,7 +112,8 @@ def main(
         while args.max_batches == 0 or batch < args.max_batches:
             summary = run_operator_once(
                 channel, registration, long_poll_seconds=args.long_poll_seconds,
-                provider=provider, search_tool=search_tool, store=store, repo_root=repo_root,
+                provider=provider, search_tool=search_tool, working_memory=working_memory,
+                store=store, repo_root=repo_root,
             )
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]
