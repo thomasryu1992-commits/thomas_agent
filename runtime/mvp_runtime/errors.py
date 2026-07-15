@@ -58,3 +58,14 @@ class PersistenceError(MvpRuntimeError):
     Raised by the store when a record/audit-event cannot be durably persisted or the
     existing ledger is unreadable/corrupt. A run whose evidence cannot be persisted is
     not delivered (no durable audit => no trust)."""
+
+
+class ToolBlocked(MvpRuntimeError):
+    """A read-only tool use could not complete (invalid query, tool error, timeout,
+    rate limit, or a result outside the tool's read-only scope)."""
+
+
+class ToolError(MvpRuntimeError):
+    """A tool adapter failed (transport error, timeout, or malformed result).
+
+    Raised by tool adapters; the executor translates it into a fail-closed ``ToolBlocked``."""
