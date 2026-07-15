@@ -12,3 +12,10 @@ venv/
 
 # Mutable protected local governance state; never commit or include in Release source fingerprints.
 .runtime_governance_state/
+
+# Local (per-environment) Core activation state. The approved Core Release under
+# THOMAS_CORE/releases/ is shared; activation is a local runtime step (see CLAUDE.md),
+# so the current pointer lives in .runtime_governance_state/ and these stay local.
+THOMAS_CORE/activations/
+THOMAS_CORE/approvals/
+THOMAS_CORE/CURRENT_CORE_RELEASE.yaml

@@ -22,3 +22,7 @@ class MvpRuntimeError(ValueError):
 
 class TaskIntakeBlocked(MvpRuntimeError):
     """Task Intake could not produce a valid RECEIVED task.v0.3 record."""
+
+
+class PlannerBlocked(MvpRuntimeError):
+    """Thomas Prime planning could not classify, route, or assign the task."""
