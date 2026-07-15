@@ -29,11 +29,8 @@ import yaml
 from runtime import registry_resolution
 from runtime.registry_resolution import RegistryResolutionError
 
+from .authority import rank_of
 from .errors import PlannerBlocked
-
-# Authority levels, least to most privileged. Ranking is used to check that a
-# Role's permission ceiling admits the task's required level.
-_LEVEL_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, "P6": 6}
 
 # MVP classification: the only use case is internal, read-only business analysis.
 MVP_EXECUTION_MODE = "AGENT"          # judgment/interpretation, not a deterministic program
@@ -126,7 +123,7 @@ def select_role(
     every required capability, and its permission ceiling admits the required level.
     Fails closed if no Role (or an ambiguous set) qualifies.
     """
-    required_rank = _LEVEL_RANK.get(required_permission_level)
+    required_rank = rank_of(required_permission_level)
     if required_rank is None:
         raise PlannerBlocked("INVALID_REQUIRED_LEVEL", f"unknown permission level {required_permission_level!r}")
     needed = set(required_capabilities)
@@ -139,7 +136,7 @@ def select_role(
         if not needed.issubset(capabilities):
             continue
         ceiling = role.get("permission_ceiling")
-        ceiling_rank = _LEVEL_RANK.get(ceiling)
+        ceiling_rank = rank_of(ceiling)
         if ceiling_rank is None or ceiling_rank < required_rank:
             continue
         candidates.append(role)

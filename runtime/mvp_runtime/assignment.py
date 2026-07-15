@@ -20,10 +20,10 @@ from runtime import registry_resolution
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from .authority import authority_invariant_holds
 from .errors import PlannerBlocked
 
 ROLE_ASSIGNMENT_SCHEMA_VERSION = "role_assignment.v0.2"
-_LEVEL_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, "P6": 6}
 
 
 def _repo_root() -> Path:
@@ -110,10 +110,11 @@ def build_role_assignment(
     required = pd_authority.get("required_permission_level")
     effective = pd_authority.get("effective_permission_level")
     granted = pd_authority.get("assignment_granted_permission_level")
-    ranks = [_LEVEL_RANK.get(x) for x in (required, effective, granted, ceiling)]
-    if any(r is None for r in ranks):
-        raise PlannerBlocked("INVALID_AUTHORITY", "authority levels must be P0..P6")
-    if not (ranks[0] <= ranks[1] <= ranks[2] <= ranks[3]):
+    try:
+        invariant_holds = authority_invariant_holds(required, effective, granted, ceiling)
+    except ValueError as exc:
+        raise PlannerBlocked("INVALID_AUTHORITY", "authority levels must be P0..P6") from exc
+    if not invariant_holds:
         raise PlannerBlocked(
             "AUTHORITY_INVARIANT",
             f"required<=effective<=granted<=ceiling violated: {required}<={effective}<={granted}<={ceiling}",

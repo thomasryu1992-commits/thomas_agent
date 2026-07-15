@@ -29,6 +29,7 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import MvpRuntimeError
 
 VALIDATION_RESULT_SCHEMA_VERSION = "validation_result.v0.1"
@@ -197,25 +198,8 @@ def validate_agent_output(
             "limitations": ["Content-level sensitivity and hallucination are not fully detectable automatically."],
         },
         "evidence_refs": [ref],
-        "permission_boundary": {
-            "grants_permission": False,
-            "grants_approval": False,
-            "grants_authority": False,
-            "grants_execution": False,
-            "grants_activation": False,
-            "mutates_subject": False,
-        },
-        "runtime_effect": {
-            "mode": "REVIEW_ONLY",
-            "grants_permission": False,
-            "grants_approval": False,
-            "grants_authority": False,
-            "grants_execution": False,
-            "grants_activation": False,
-            "executor_handoff_allowed": False,
-            "side_effects_allowed": False,
-            "runtime_mutation_allowed": False,
-        },
+        "permission_boundary": validation_result_permission_boundary(),
+        "runtime_effect": validation_result_runtime_effect(),
         "lifecycle": {"created_at": now, "supersedes": []},
         "audit_refs": [],
     }

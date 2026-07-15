@@ -24,6 +24,7 @@ import yaml
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from .authority import authority_invariant_holds, permission_decision_runtime_effect, rank_of
 from .errors import PlannerBlocked
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parents[2] / "scripts")
@@ -39,7 +40,6 @@ from validate_permission_approval_contracts import (  # noqa: E402
 
 PERMISSION_DECISION_SCHEMA_VERSION = "permission_decision.v0.3"
 MVP_TTL_MINUTES = 30
-_LEVEL_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5, "P6": 6}
 
 
 def _repo_root() -> Path:
@@ -85,9 +85,7 @@ def build_permission_decision(
     if not (isinstance(ccb, str) and ccb.startswith("ccb-")):
         raise PlannerBlocked("NOT_BOUND", "task must be bound to a Core Release before a permission decision")
 
-    required_rank = _LEVEL_RANK.get(required_permission_level)
-    ceiling_rank = _LEVEL_RANK.get(role_permission_ceiling)
-    if required_rank is None or ceiling_rank is None:
+    if rank_of(required_permission_level) is None or rank_of(role_permission_ceiling) is None:
         raise PlannerBlocked("INVALID_LEVEL", "required level / role ceiling must be P0..P6")
 
     # Load the canonical Governance Policy and map the action scope to its disposition.
@@ -114,7 +112,9 @@ def build_permission_decision(
     # ceiling is the upper bound the grant stays within.
     effective_level = required_permission_level
     granted_level = required_permission_level
-    authority_sufficient = required_rank <= _LEVEL_RANK[effective_level] <= _LEVEL_RANK[granted_level] <= ceiling_rank
+    authority_sufficient = authority_invariant_holds(
+        required_permission_level, effective_level, granted_level, role_permission_ceiling
+    )
     if not authority_sufficient:
         raise PlannerBlocked(
             "AUTHORITY_INSUFFICIENT",
@@ -191,16 +191,7 @@ def build_permission_decision(
             "approval_id": None,
             "approval_status": "NOT_REQUIRED",
         },
-        "runtime_effect": {
-            "mode": "REVIEW_ONLY",
-            "executor_handoff_allowed": False,
-            "external_execution_allowed": False,
-            "financial_execution_allowed": False,
-            "runtime_mutation_allowed": False,
-            "tool_enablement_allowed": False,
-            "program_enablement_allowed": False,
-            "permission_expansion_allowed": False,
-        },
+        "runtime_effect": permission_decision_runtime_effect(),
         "lifecycle": {
             "decision_status": "ACTIVE",
             "created_at": created_at,
