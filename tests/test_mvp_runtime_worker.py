@@ -56,6 +56,24 @@ class _BadAnalysisProvider:
                               input_tokens=1, output_tokens=1, latency_ms=0)
 
 
+class _MessyButValidProvider(MockProvider):
+    """A real-model-like provider whose facts/inferences don't perfectly match the schema
+    (extra keys, missing evidence_refs, object inferences) — the worker must normalize them."""
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        r.analysis = {
+            **r.analysis,
+            "facts": [
+                {"statement": "no evidence key here", "evidence_regularity": "oops"},  # missing evidence_refs + extra key
+                {"statement": "grounded", "evidence_refs": ["e1"]},
+                "not even a dict",  # dropped
+            ],
+            "inferences": [{"statement": "object inference"}, "string inference", 42],
+        }
+        return r
+
+
 # --- fail-closed (runs everywhere) ------------------------------------------
 
 def test_unbound_task_blocks_everywhere():
@@ -130,3 +148,17 @@ def test_malformed_analysis_blocks():
     with pytest.raises(WorkerBlocked) as exc:
         run_analysis_worker(task, assignment, provider=_BadAnalysisProvider(), created_at=NOW)
     assert exc.value.reason_code == "MALFORMED_ANALYSIS"
+
+
+@requires_local_core
+def test_worker_normalizes_imperfect_model_output():
+    # A real model may emit facts with extra/missing keys and mixed inference types; the
+    # worker normalizes them into a schema-valid Agent Output instead of failing.
+    task, assignment = _planned()
+    out, _ = run_analysis_worker(task, assignment, provider=_MessyButValidProvider(), created_at=NOW)
+    schema_validation.validate_against_schema(out, AGENT_OUTPUT_SCHEMA, "test")
+    # Missing evidence defaulted; the non-dict fact dropped; both real facts kept.
+    assert len(out["facts"]) == 2
+    assert out["facts"][0]["evidence_refs"] == ["model:analysis"]
+    assert all(isinstance(i, dict) and "statement" in i for i in out["inferences"])
+    assert len(out["inferences"]) == 2  # the integer inference dropped

@@ -153,6 +153,43 @@ def _require_analysis(analysis: Any) -> dict[str, Any]:
     return dict(analysis)
 
 
+def _str_list(value: Any) -> list[str]:
+    return [x for x in value if isinstance(x, str) and x.strip()] if isinstance(value, list) else []
+
+
+def _normalize_facts(value: Any) -> list[dict[str, Any]]:
+    """Coerce model-provided facts to the strict {statement, evidence_refs>=1} shape,
+    dropping unexpected keys and defaulting missing evidence to the model reference. Real
+    models do not perfectly follow the schema; malformed facts are normalized, not trusted."""
+    out: list[dict[str, Any]] = []
+    for fact in value if isinstance(value, list) else []:
+        if not isinstance(fact, dict):
+            continue
+        statement = fact.get("statement")
+        if not isinstance(statement, str) or not statement.strip():
+            continue
+        refs = _str_list(fact.get("evidence_refs")) or ["model:analysis"]
+        out.append({"statement": statement, "evidence_refs": refs})
+    return out
+
+
+def _normalize_inferences(value: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for item in value if isinstance(value, list) else []:
+        statement = item if isinstance(item, str) else (item.get("statement") if isinstance(item, dict) else None)
+        if isinstance(statement, str) and statement.strip():
+            out.append({"statement": statement})
+    return out
+
+
+def _normalize_recommendation(value: Any) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        action, reason = value.get("action"), value.get("reason")
+        if isinstance(action, str) and action.strip() and isinstance(reason, str) and reason.strip():
+            return {"action": action, "reason": reason}
+    return None
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -218,23 +255,23 @@ def run_analysis_worker(
         "status": "needs_validation",
         "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
         "summary": analysis["summary"],
-        "facts": list(analysis["facts"]),
+        "facts": _normalize_facts(analysis.get("facts")),
         "evidence": [{"ref": "model:analysis", "type": "model_reasoning"}],
-        "inferences": [{"statement": s} for s in analysis.get("inferences", []) if isinstance(s, str) and s.strip()],
-        "assumptions": list(analysis.get("assumptions", [])),
-        "uncertainty": list(analysis.get("uncertainty", [])),
-        "risks": list(analysis.get("risks", [])),
-        "recommendation": analysis.get("recommendation"),
-        "limitations": [*analysis.get("limitations", []), "Read-only analysis; not independently validated."],
+        "inferences": _normalize_inferences(analysis.get("inferences")),
+        "assumptions": _str_list(analysis.get("assumptions")),
+        "uncertainty": _str_list(analysis.get("uncertainty")),
+        "risks": _str_list(analysis.get("risks")),
+        "recommendation": _normalize_recommendation(analysis.get("recommendation")),
+        "limitations": [*_str_list(analysis.get("limitations")), "Read-only analysis; not independently validated."],
         "validation_recommended": True,
         "permission_request_refs": [],
-        "next_actions": list(analysis.get("next_actions", [])),
+        "next_actions": _str_list(analysis.get("next_actions")),
         "memory_candidates": [],
         "escalation_required": False,
         "role_specific_output": {
-            "key_findings": list(analysis.get("key_findings", [])),
-            "evidence_quality": analysis.get("evidence_quality", ""),
-            "unresolved_questions": list(analysis.get("unresolved_questions", [])),
+            "key_findings": _str_list(analysis.get("key_findings")),
+            "evidence_quality": analysis["evidence_quality"] if isinstance(analysis.get("evidence_quality"), str) else "",
+            "unresolved_questions": _str_list(analysis.get("unresolved_questions")),
         },
         "created_at": created_at,
     }

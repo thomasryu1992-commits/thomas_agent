@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 
 from .pipeline import run_task
+from .providers import select_provider
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -46,9 +47,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("BLOCKED EMPTY_REQUEST: no request text provided (arg or stdin)\n")
         return EXIT_USAGE
 
-    # Runs the full single-agent pipeline with the deterministic MockProvider (a real
-    # hosted provider is enabled only behind the Safety-Flag Gate).
-    result = run_task(raw_request, channel="manual")
+    # Runs the full single-agent pipeline. The provider defaults to the deterministic
+    # MockProvider; a real hosted provider is used only when opted in via the environment
+    # (Safety-Flag Gate opened locally). See providers.select_provider.
+    result = run_task(raw_request, provider=select_provider(), channel="manual")
     if result["status"] == "COMPLETED":
         sys.stdout.write(result["final_response"] + "\n")
         return EXIT_OK
