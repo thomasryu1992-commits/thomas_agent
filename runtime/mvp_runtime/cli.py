@@ -20,6 +20,7 @@ from .pipeline import run_task
 from .providers import GoogleAIStudioProvider, select_provider
 from .store import LedgerStore
 from .tools import WebSearchTool, select_search_tool
+from .working_memory import WorkingMemoryStore
 
 EXIT_OK = 0
 EXIT_BLOCKED = 2
@@ -67,8 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
+    # Working memory (local, per-machine) accumulates candidates and feeds them back as context.
     store = LedgerStore.default()
-    result = run_task(raw_request, provider=provider, search_tool=search_tool, channel="manual", store=store)
+    working_memory = WorkingMemoryStore.default()
+    result = run_task(raw_request, provider=provider, search_tool=search_tool,
+                      working_memory=working_memory, channel="manual", store=store)
     if (result.get("block") or {}).get("stage") != "persistence":
         sys.stderr.write(f"LEDGER: recorded to {store.root}\n")
     if result["status"] == "COMPLETED":

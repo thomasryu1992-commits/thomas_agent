@@ -113,6 +113,37 @@ def test_revise_validation_withholds_delivery():
 
 @requires_local_core
 def test_recorded_replay_determinism():
+    # No working_memory store => pure, deterministic (two identical runs are equal).
     a = run_task(REQUEST, provider=MockProvider(), now=NOW)
     b = run_task(REQUEST, provider=MockProvider(), now=NOW)
     assert a == b
+
+
+@requires_local_core
+def test_working_memory_accumulates_and_feeds_back(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+
+    # First run: no prior memory to draw on; it stores its candidates.
+    first = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now=NOW)
+    assert first["status"] == "COMPLETED"
+    assert first["records"]["memory_retrieved"] == []
+    assert wm.read_all()  # candidates were accumulated
+
+    # Second run: retrieves the first run's candidates and records them as working_memory evidence.
+    second = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    assert second["status"] == "COMPLETED"
+    assert second["records"]["memory_retrieved"]  # prior candidates surfaced as context
+    ev_types = {e["type"] for e in second["records"]["agent_output"]["evidence"]}
+    assert "working_memory" in ev_types
+
+
+@requires_local_core
+def test_working_memory_corrupt_store_fails_closed(tmp_path):
+    from runtime.mvp_runtime.working_memory import ENTRIES_FILE, WorkingMemoryStore
+    root = tmp_path / "wm"
+    root.mkdir()
+    (root / ENTRIES_FILE).write_text("{bad json}\n", encoding="utf-8")
+    r = run_task(REQUEST, provider=MockProvider(), working_memory=WorkingMemoryStore(root), now=NOW)
+    assert r["status"] == "BLOCKED"
+    assert r["block"]["reason_code"] == "WORKING_MEMORY_UNREADABLE"
