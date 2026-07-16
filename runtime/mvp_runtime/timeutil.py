@@ -36,3 +36,8 @@ def format_iso(dt: datetime) -> str:
 def plus_minutes(now: str, minutes: int) -> str:
     """Return ``now`` (RFC3339) advanced by ``minutes``, in the same fixed form."""
     return format_iso(parse_iso(now) + timedelta(minutes=minutes))
+
+
+def plus_seconds(now: str, seconds: int) -> str:
+    """Return ``now`` (RFC3339) advanced by ``seconds``, in the same fixed form."""
+    return format_iso(parse_iso(now) + timedelta(seconds=seconds))
