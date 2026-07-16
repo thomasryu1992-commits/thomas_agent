@@ -86,3 +86,11 @@ class MemoryBlocked(MvpRuntimeError):
     secret-bearing candidate (``secret_storage_in_memory_allowed: false``). Memory
     candidates are proposals only: they never carry runtime permission and never
     auto-promote to validated/core memory."""
+
+
+class ControlBlocked(MvpRuntimeError):
+    """An operator emergency-console command could not be applied (R4).
+
+    Raised on an unknown command, a stop without a task id, or a failure to persist the
+    control state. Fail-closed: the control state is a safety control, so an uncertain or
+    unwritable state never silently permits execution."""

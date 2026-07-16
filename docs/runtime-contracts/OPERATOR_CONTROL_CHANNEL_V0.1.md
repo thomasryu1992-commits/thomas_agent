@@ -71,17 +71,57 @@ Without the registration file the loop exits `REGISTRATION_MISSING`; without the
 exits `ACTIVATION_MISSING`; without the token it fails closed `NO_BOT_TOKEN`. Every handled
 request is persisted to the same append-only ledger as the one-shot CLI.
 
+## Emergency console (pause / stop_task / kill / resume / status)
+
+Per `governance/GOVERNANCE_POLICY.yaml` (`control_channel.local_operator_console` +
+`kill_switch`), the operator can halt the runtime — over the verified Telegram channel **or**
+directly on the host (an SSH emergency stop when the channel is down). Both act on one local,
+gitignored control state (`.runtime_governance_state/operator_control_state.json`) that the loop
+enforces, and both record a tamper-evident control event to the durable ledger
+(`control_events.jsonl`).
+
+| Command | Effect |
+|---|---|
+| `/status` | Read-only report of the control state (always allowed, even when KILLED). |
+| `/pause` | Refuse new task requests until `/resume`. Reversible. |
+| `/kill` | Block all new/pending execution; only status and audit reads remain. |
+| `/resume` | Clear pause/kill → ACTIVE. Only the **authenticated operator** may resume. |
+| `/stop <task_id>` | Record a stop request. The MVP runs tasks synchronously (nothing long-running to interrupt yet), so it is logged for audit and applies once R6 adds persistent tasks. |
+
+Enforcement and fail-closed rules:
+
+- Only `ACTIVE` lets the loop start a task; `PAUSED` and `KILLED` refuse task requests
+  (`RUNTIME_PAUSED` / `RUNTIME_KILLED`) **before** any run.
+- A **missing** control file means ACTIVE (a fresh deployment must not be bricked by absence);
+  a **present but unreadable/invalid** file fails closed to **KILLED** — a corrupt safety state
+  never silently re-enables execution.
+- The agent/runtime can never disable or bypass the control (`agent_can_disable_or_bypass:
+  false`): nothing on the run path clears a pause/kill, only an explicit operator command does,
+  and an impostor who fails the identity gate can never `/resume`.
+
+```bash
+# Local host console (works without Telegram):
+python -m runtime.mvp_runtime.console_cli status
+python -m runtime.mvp_runtime.console_cli kill --reason "halt now"
+python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
+
+# Over Telegram: the registered operator texts /status, /pause, /kill, /resume, /stop <id>.
+```
+
 ## Key modules
 
 - `runtime/mvp_runtime/operator.py` — identity gate, registration, `OperatorChannel` /
-  `MockOperatorChannel` / `TelegramChannel`, `select_operator_channel`, `handle_operator_message`,
-  `run_operator_once`.
-- `runtime/mvp_runtime/operator_cli.py` — the loop entrypoint.
+  `MockOperatorChannel` / `TelegramChannel`, `select_operator_channel`, `handle_operator_message`
+  (console-command routing + PAUSED/KILLED enforcement), `run_operator_once`.
+- `runtime/mvp_runtime/control.py` — `ControlState` / `ControlStore`, `parse_command`,
+  `apply_command`; the local control state and its fail-closed semantics.
+- `runtime/mvp_runtime/console_cli.py` — the local host emergency console.
+- `runtime/mvp_runtime/operator_cli.py` — the loop entrypoint (defaults a `ControlStore`).
 - `scripts/activate_safety_flag.py` — activate the `network_access` flag for `telegram`.
 
 ## Not yet implemented
 
-Emergency operator-console controls (`pause` / `stop_task` / `kill` / `status` / `audit` /
-`recovery`) and control-channel **approval** handling (for any future `APPROVAL_REQUIRED`
-action — the MVP is ALLOW-only today) are later increments. The policy already forbids new
-high-risk approval creation from the local console.
+Control-channel **approval** handling (for any future `APPROVAL_REQUIRED` action — the MVP is
+ALLOW-only today) is a later increment; the policy already forbids new high-risk approval
+creation from the local console. `audit` / `recovery` console verbs beyond `/status` and the
+durable control-event log are also later.

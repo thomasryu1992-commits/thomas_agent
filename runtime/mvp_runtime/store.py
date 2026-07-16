@@ -18,6 +18,9 @@ Three files, each append-only (one JSON object per line):
   exists. Such a failure cannot be expressed as an ``audit_event.v0.1`` (that schema
   requires a bound task with a ``core_context_binding_id``), so a minimal, still-durable
   block entry is recorded instead.
+- ``control_events.jsonl`` — operator emergency-console events (pause/kill/resume/stop).
+  These are runtime control actions, not task outcomes, so like blocks they are durable
+  standalone entries rather than task-bound ``audit_event.v0.1`` records.
 
 Fail-closed: any write or read failure raises :class:`PersistenceError`. Secrets are never
 written — the records are already metadata-only and secret-scanned upstream.
@@ -36,6 +39,7 @@ LEDGER_REL = ".runtime_governance_state/runtime_ledger"
 AUDIT_FILE = "audit_events.jsonl"
 RECORDS_FILE = "records.jsonl"
 BLOCKS_FILE = "blocks.jsonl"
+CONTROL_FILE = "control_events.jsonl"
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -73,6 +77,10 @@ class LedgerStore:
 
     def append_block(self, entry: Mapping[str, Any]) -> None:
         jsonl.append_lines(self._root / BLOCKS_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the block ledger")
+
+    def append_control(self, entry: Mapping[str, Any]) -> None:
+        """Durably record one operator emergency-console event (pause/kill/resume/stop)."""
+        jsonl.append_lines(self._root / CONTROL_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the control ledger")
 
     def last_audit_hash(self) -> str | None:
         """Return the last persisted event's ``event_sha256`` (the chain tip), or None.
