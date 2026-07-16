@@ -18,7 +18,7 @@ breach, or an output that violates the Agent Output contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
@@ -27,6 +27,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .errors import ProviderError, WorkerBlocked
 from .memory import build_memory_candidates
+from .paths import repo_root as _repo_root
 
 WORKER_ID = "mvp.business_analysis.llm"
 WORKER_VERSION = "0.1.0"
@@ -247,10 +248,6 @@ def _normalize_recommendation(value: Any) -> dict[str, str] | None:
         if isinstance(action, str) and action.strip() and isinstance(reason, str) and reason.strip():
             return {"action": action, "reason": reason}
     return None
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def run_analysis_worker(

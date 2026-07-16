@@ -28,8 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from . import safety_gate
+from . import safety_gate, timeutil
 from .errors import OperatorBlocked
+from .paths import repo_root as _repo_root
 from .pipeline import run_task
 from .safety_gate import NETWORK_ACCESS, Authorization
 from .store import LedgerStore
@@ -85,10 +86,6 @@ class OperatorReply:
     status: str                          # ACCEPTED result status, or REFUSED
     reason_code: str | None = None
     trace_id: str | None = None
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def load_operator_registration(repo_root: Path | None = None) -> OperatorIdentity:
@@ -223,7 +220,7 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     if choice != TELEGRAM:
         return MockOperatorChannel()
     authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=TELEGRAM, now=now or safety_gate.utc_now_iso(), root=root
+        _NETWORK_FLAGS, provider_id=TELEGRAM, now=now or timeutil.utc_now_iso(), root=root
     )
     return TelegramChannel(authorization=authorization)
 
@@ -249,7 +246,7 @@ class TelegramChannel:
     def _assert(self) -> str:
         safety_gate.assert_authorization(
             self._authorization, required_flags=_NETWORK_FLAGS, provider_id=self.provider_id,
-            now=safety_gate.utc_now_iso(),
+            now=timeutil.utc_now_iso(),
         )
         token = os.environ.get(self._token_env)
         if not token:
@@ -338,7 +335,9 @@ def run_operator_once(
     ``working_memory`` (opt-in) is shared across handled messages so the operator channel
     accumulates and reuses working memory. Messages that fail the control-channel identity gate
     are **silently dropped** — an unverified sender gets no reply (no engagement, no info leak)
-    and no task runs. Returns a small summary."""
+    and no task runs. Returns a small summary, including whether this channel's transport crossed
+    the network (``network_egress``) so the loop can observe/report control-channel egress the
+    same way provider/tool egress is recorded on the run."""
     handled: list[OperatorReply] = []
     dropped = 0
     for message in channel.poll(long_poll_seconds=long_poll_seconds):
@@ -353,4 +352,9 @@ def run_operator_once(
         )
         channel.send(message.chat_id, reply.text)
         handled.append(reply)
-    return {"handled": len(handled), "dropped": dropped, "replies": handled}
+    return {
+        "handled": len(handled),
+        "dropped": dropped,
+        "replies": handled,
+        "network_egress": bool(getattr(channel, "network_egress", False)),
+    }

@@ -17,21 +17,18 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import PlannerBlocked
+from .paths import repo_root as _repo_root
 
 # The core-binding builder lives under scripts/ and uses ``from lib.X`` imports, so
 # it is only importable with scripts/ on sys.path. Add it once here (a localized
 # bridge) rather than shelling out to a subprocess.
-_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2] / "scripts")
+_SCRIPTS_DIR = str(_repo_root() / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from create_core_context_binding import build_core_context_binding  # noqa: E402
 
 DEFAULT_POINTER_REL = ".runtime_governance_state/CURRENT_CORE_RELEASE.yaml"
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def bind_task_to_core(

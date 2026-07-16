@@ -27,7 +27,6 @@ safe; making the kernel package import lazy is a tracked follow-up.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -35,7 +34,10 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import timeutil
+from .budgets import default_execution_budget
 from .errors import TaskIntakeBlocked
+from .paths import repo_root as _repo_root
 
 TASK_SCHEMA_VERSION = "task.v0.3"
 
@@ -63,15 +65,6 @@ DEFAULT_SUCCESS_CONDITIONS = ("primary_objective_addressed",)
 DEFAULT_EXPECTED_OUTPUTS = ("structured_response",)
 DEFAULT_ACCEPTANCE_CRITERIA = ("objective_met", "output_contract_valid")
 DEFAULT_REJECTION_CRITERIA = ("authority_or_permission_violation",)
-
-
-def _repo_root() -> Path:
-    # runtime/mvp_runtime/intake.py -> parents[2] == repo root
-    return Path(__file__).resolve().parents[2]
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _reject_control_chars(value: str, field: str) -> None:
@@ -102,47 +95,10 @@ def _validate_timestamp(value: str) -> str:
     if not isinstance(value, str):
         raise TaskIntakeBlocked("INVALID_TIMESTAMP", "now must be an RFC3339 date-time string")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        timeutil.parse_iso(value)
     except ValueError as exc:
         raise TaskIntakeBlocked("INVALID_TIMESTAMP", f"now is not a valid RFC3339 date-time: {value!r}") from exc
     return value
-
-
-def _default_task_budget() -> dict[str, Any]:
-    """MVP task-level budget. Caps are conservative; the role/assignment tightens
-    them further at planning time. Free-tier provider => cost_budget 0 (currency is
-    a required 3-letter placeholder, not a spend authorization)."""
-    return {
-        "schema_version": "execution_budget.v0.1",
-        "limits": {
-            "max_agent_invocations": 1,
-            "max_model_calls": 1,
-            "max_tool_calls": 0,
-            "max_program_calls": 0,
-            "max_revision_cycles": 1,
-            "max_validation_cycles": 1,
-            "max_retry_count": 1,
-            "max_parallel_workers": 1,
-            "max_runtime_seconds": 120,
-            "token_budget": 8000,
-            "cost_budget": 0,
-            "cost_currency": "USD",
-        },
-        "usage": {
-            "agent_invocations": 0,
-            "model_calls": 0,
-            "tool_calls": 0,
-            "program_calls": 0,
-            "revision_cycles": 0,
-            "validation_cycles": 0,
-            "retry_count": 0,
-            "peak_parallel_workers": 0,
-            "runtime_seconds": 0,
-            "tokens_used": 0,
-            "cost_used": 0,
-            "cost_currency": "USD",
-        },
-    }
 
 
 def _clean_str_list(value: Sequence[str] | None, default: Sequence[str], field: str) -> list[str]:
@@ -201,7 +157,7 @@ def build_task(
     if not isinstance(authenticated, bool):
         raise TaskIntakeBlocked("INVALID_AUTHENTICATED", "authenticated must be a bool (no coercion)")
 
-    now_str = _validate_timestamp(now) if now is not None else _utc_now_iso()
+    now_str = _validate_timestamp(now) if now is not None else timeutil.utc_now_iso()
     goal = normalized_goal.strip() if isinstance(normalized_goal, str) and normalized_goal.strip() else raw_request.strip()
     objective = primary_objective.strip() if isinstance(primary_objective, str) and primary_objective.strip() else goal
 
@@ -304,7 +260,7 @@ def build_task(
             "rejection_criteria": list(DEFAULT_REJECTION_CRITERIA),
             "validation_output_refs": [],
         },
-        "execution_budget": _default_task_budget(),
+        "execution_budget": default_execution_budget(),
         "results": {
             "agent_output_refs": [],
             "program_result_refs": [],

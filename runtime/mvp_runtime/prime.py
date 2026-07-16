@@ -18,16 +18,17 @@ closed task.v0.3 schema.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import timeutil
 from .assignment import build_role_assignment
 from .binding import bind_task_to_core
 from .errors import PlannerBlocked
+from .paths import repo_root as _repo_root
 from .permission import (
     MVP_TTL_MINUTES,
     build_permission_decision,
@@ -36,15 +37,6 @@ from .permission import (
 from .planner import classify_task, load_resolved_roles, select_role
 
 TASK_SCHEMA_VERSION = "task.v0.3"
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def _plus_minutes(now: str, minutes: int) -> str:
-    dt = datetime.fromisoformat(now.replace("Z", "+00:00")) + timedelta(minutes=minutes)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _apply_plan_to_task(
@@ -143,7 +135,7 @@ def plan_task(
         repo_root=root,
     )
 
-    expires_at = _plus_minutes(now, MVP_TTL_MINUTES)
+    expires_at = timeutil.plus_minutes(now, MVP_TTL_MINUTES)
     role_assignment = build_role_assignment(
         bound,
         role,

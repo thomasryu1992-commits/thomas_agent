@@ -135,13 +135,14 @@ def retrieve_working_memory(
     if CANDIDATE_SCOPE not in readable or CANDIDATE_SCOPE in prohibited:
         return []
 
+    # CANDIDATE_SCOPE is already known to be absent from `prohibited` (guarded above), so
+    # every selected entry — all in that one scope — is by construction not prohibited.
     entries = store.read_all()
     selected = [
         e for e in entries
         if isinstance(e, dict)
         and e.get("scope") == CANDIDATE_SCOPE
         and e.get("status") == CANDIDATE_STATUS
-        and e.get("scope") not in prohibited
     ]
     # Deterministic recency order; take the most recent `limit`.
     selected.sort(key=lambda e: (str(e.get("created_at", "")), str(e.get("candidate_id", ""))))
