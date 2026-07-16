@@ -57,12 +57,14 @@ def _make_event(
     previous_hash: str | None,
     previous_audit_id: str | None,
     now: str,
+    id_seed_extra: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     identity = task["identity"]
     ccb = task["context"]["core_context_binding_id"]
     audit_id = integrity.short_id(
         "audit", {"task_id": identity["task_id"], "task_revision": identity["task_revision"],
-                  "event_type": event_type, "sequence": sequence}
+                  "event_type": event_type, "sequence": sequence,
+                  **(dict(id_seed_extra) if id_seed_extra else {})}
     )
     payload = {
         "schema_version": FINGERPRINT_SCHEMA,
@@ -344,3 +346,78 @@ def build_blocked_audit(
         ),
     ]
     return _chain_events(root, task, steps, now, genesis_previous_hash)
+
+
+_ORIGIN_REQUIRED_STR = ("task_id", "trace_id", "core_context_binding_id", "data_sensitivity")
+
+
+def build_promotion_audit(
+    candidate: Mapping[str, Any],
+    validated_entry: Mapping[str, Any],
+    *,
+    promoted_by: str,
+    reason: str,
+    now: str,
+    previous_hash: str | None = None,
+    previous_audit_id: str | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Build the single audit event that *reports* an operator promotion (R5.4).
+
+    Promoting a working-memory candidate to VALIDATED memory is EXECUTE_AND_REPORT and happens
+    off the run path, so it is not part of any pipeline chain — it is one standalone event that
+    chains onto the durable ledger's current tip (``previous_hash``), keeping the audit trail
+    tamper-evident across runs *and* operator actions. There is no dedicated ``event_type`` for
+    promotion, so (reuse-first) it is ``OTHER`` with the specifics carried in ``reason_codes``.
+
+    The event is anchored to the *originating task* via the candidate's ``origin`` provenance;
+    a candidate without complete provenance fails closed (``AuditError``) rather than fabricate a
+    task identity. Returns ``(record, event_sha256)``; the caller appends it to the ledger."""
+    root = repo_root if repo_root is not None else _repo_root()
+    origin = candidate.get("origin") if isinstance(candidate, Mapping) else None
+    if not isinstance(origin, Mapping):
+        raise AuditError("PROMOTION_ORIGIN_MISSING",
+                         "candidate has no origin provenance; promotion cannot be audited")
+    missing = [k for k in _ORIGIN_REQUIRED_STR if not (isinstance(origin.get(k), str) and origin.get(k))]
+    if not (isinstance(origin.get("task_revision"), int) and origin.get("task_revision") >= 1):
+        missing.append("task_revision")
+    if missing:
+        raise AuditError("PROMOTION_ORIGIN_INVALID",
+                         f"candidate origin provenance is incomplete: {sorted(missing)}")
+    if not (isinstance(promoted_by, str) and promoted_by.strip()):
+        raise AuditError("PROMOTION_ACTOR_MISSING", "promotion audit requires an operator identity")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise AuditError("PROMOTION_REASON_MISSING", "promotion audit requires an operator reason")
+
+    synthetic_task = {
+        "identity": {"task_id": origin["task_id"], "task_revision": origin["task_revision"],
+                     "trace_id": origin["trace_id"]},
+        "context": {"core_context_binding_id": origin["core_context_binding_id"],
+                    "data_sensitivity": origin["data_sensitivity"]},
+    }
+    candidate_id = candidate.get("candidate_id")
+    validated_id = validated_entry.get("validated_memory_id")
+    if not (isinstance(candidate_id, str) and candidate_id
+            and isinstance(validated_id, str) and validated_id):
+        raise AuditError("PROMOTION_SUBJECT_INVALID",
+                         "promotion audit requires a candidate_id and a validated_memory_id")
+    validated_fp = _fingerprint(validated_entry, "validated_memory")
+
+    return _make_event(
+        root=root, task=synthetic_task, now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", promoted_by.strip()),
+        subject_type="validated_memory", subject_id=validated_id,
+        subject_ref=f"validated_memory:{validated_id}", subject_fingerprint=validated_fp,
+        summary=(f"Operator {promoted_by.strip()} promoted working-memory candidate "
+                 f"{candidate_id} to VALIDATED memory (EXECUTE_AND_REPORT): {reason.strip()}"),
+        outcome="RECORDED",
+        reason_codes=["MEMORY_PROMOTED", "EXECUTE_AND_REPORT", f"SOURCE_CANDIDATE_{candidate_id}"],
+        related_record_refs=[f"working_memory:{candidate_id}"],
+        evidence_refs=[f"validated_memory:{validated_id}", f"working_memory:{candidate_id}"],
+        payload_sha256=validated_fp,
+        sequence=1,
+        previous_hash=previous_hash, previous_audit_id=previous_audit_id,
+        id_seed_extra={"candidate_id": candidate_id, "validated_memory_id": validated_id,
+                       "promoted_by": promoted_by.strip()},
+    )

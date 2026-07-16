@@ -35,19 +35,48 @@ VALIDATED_SCOPE = "related_validated_memory"
 PROMOTION_DISPOSITION = "EXECUTE_AND_REPORT"   # governance tier for validated-knowledge promotion
 
 
+ORIGIN_FIELDS = ("task_id", "task_revision", "trace_id", "core_context_binding_id", "data_sensitivity")
+
+
+def _normalize_origin(origin: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return a candidate's origin provenance, or ``None`` when no usable origin was supplied.
+
+    Fail-closed: an origin that is present but incomplete raises ``MemoryBlocked`` rather than
+    stamping a half-populated lineage that cannot be audited later. A candidate with no origin
+    at all is allowed (older/opt-out callers) — its promotion simply fails closed downstream."""
+    if origin is None:
+        return None
+    provenance = {field: origin.get(field) for field in ORIGIN_FIELDS}
+    missing = [k for k in ("task_id", "trace_id", "core_context_binding_id", "data_sensitivity")
+               if not (isinstance(provenance[k], str) and provenance[k])]
+    if not (isinstance(provenance["task_revision"], int) and provenance["task_revision"] >= 1):
+        missing.append("task_revision")
+    if missing:
+        raise MemoryBlocked("INVALID_ORIGIN", f"candidate origin provenance is incomplete: {sorted(missing)}")
+    return provenance
+
+
 def build_memory_candidates(
     analysis: Mapping[str, Any],
     assignment: Mapping[str, Any],
     *,
     now: str,
     seed: Mapping[str, Any] | None = None,
+    origin: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Propose working-memory candidates from an analysis, or none.
 
     Fail-closed to an empty list when the assignment does not permit candidate creation or
     declares no allowed candidate types. Raises ``MemoryBlocked`` on a secret-bearing
     candidate. Candidates are proposals: ``status=CANDIDATE``, ``validated=False``,
-    ``promotable=False`` — never validated, core, or auto-promoted."""
+    ``promotable=False`` — never validated, core, or auto-promoted.
+
+    ``origin`` (optional) stamps each candidate with the identity of the task that produced it
+    (``task_id``/``task_revision``/``trace_id``/``core_context_binding_id``/``data_sensitivity``).
+    That provenance is what lets a later, off-run-path promotion be audited against the real
+    originating task (R5.4). It never affects ``candidate_id`` (derived from ``seed``), so
+    stamping provenance is deterministic and leaves existing ids unchanged."""
+    origin_provenance = _normalize_origin(origin)
     memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
     if not memory_scope.get("memory_candidate_creation_allowed"):
         return []
@@ -61,7 +90,7 @@ def build_memory_candidates(
     base = dict(seed or {})
     candidates: list[dict[str, Any]] = []
     for index, finding in enumerate(findings, start=1):
-        candidates.append({
+        candidate = {
             "candidate_id": integrity.short_id(
                 "memcand", {**base, "candidate_type": candidate_type, "index": index, "content": finding}
             ),
@@ -73,7 +102,10 @@ def build_memory_candidates(
             "content": finding,
             "evidence_refs": ["model:analysis"],
             "created_at": now,
-        })
+        }
+        if origin_provenance is not None:
+            candidate["origin"] = origin_provenance
+        candidates.append(candidate)
 
     # Secrets must never be stored in memory (governance). Fail closed on a secret-bearing key.
     for candidate in candidates:
@@ -161,6 +193,11 @@ def promote_candidate(
         "promotion_reason": reason.strip(),
         "promoted_at": now,
     }
+    # Carry the originating-task lineage forward (R5.4): the promotion audit event is anchored
+    # to this same origin. Present only when the candidate was stamped with provenance.
+    origin = candidate.get("origin")
+    if isinstance(origin, Mapping):
+        validated["source_origin"] = dict(origin)
     try:
         integrity.scan_for_secret_bearing_keys(validated)
     except IntegrityError as exc:

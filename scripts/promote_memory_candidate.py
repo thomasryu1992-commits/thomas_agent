@@ -5,8 +5,12 @@ Governance: promoting validated low-risk operational knowledge is EXECUTE_AND_RE
 ``automatic_runtime_promotion_allowed`` is false — so promotion never happens on the run
 path. This is the ONLY entry point that promotes, and it requires an explicit operator
 identity and reason (the "report"). It reads the local working-memory store, finds the
-named candidate, promotes it via ``memory.promote_candidate``, and appends the VALIDATED
-entry to the local (gitignored, per-machine) validated store.
+named candidate, promotes it via ``memory.promote_candidate``, appends the VALIDATED entry
+to the local (gitignored, per-machine) validated store, and — R5.4 — records the promotion
+as its own audit event in the durable ledger (the machine-readable "report"): an ``OTHER``
+event chained onto the ledger tip, anchored to the originating task via the candidate's
+provenance. The validated entry is written first, then the audit event; a promotion that
+cannot be audited fails closed *before* anything is written.
 
 Example:
 
@@ -28,8 +32,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime.audit import build_promotion_audit  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.memory import promote_candidate  # noqa: E402
+from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore  # noqa: E402
 
 
@@ -47,11 +53,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = None, now: str | None = None) -> int:
+def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = None,
+         ledger: LedgerStore | None = None, now: str | None = None) -> int:
     args = _parse_args(argv)
     if store is None:
         store = WorkingMemoryStore(args.root / ".runtime_governance_state/working_memory") if args.root \
             else WorkingMemoryStore.default()
+    if ledger is None:
+        ledger = LedgerStore(args.root / LEDGER_REL) if args.root else LedgerStore.default()
 
     try:
         candidates = store.read_all()
@@ -74,18 +83,28 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
         print(f"ERROR: no working-memory candidate with id {args.candidate_id!r}", file=sys.stderr)
         return 2
 
+    stamp = now or _utc_now_iso()
     try:
         validated = promote_candidate(
-            match, promoted_by=args.promoted_by, reason=args.reason, now=now or _utc_now_iso()
+            match, promoted_by=args.promoted_by, reason=args.reason, now=stamp
+        )
+        # Build the promotion's audit event *before* persisting anything: a promotion that
+        # cannot be audited (e.g. a candidate with no origin provenance) fails closed here,
+        # leaving no half-written state. The event chains onto the durable ledger's tip.
+        audit_event, _sha = build_promotion_audit(
+            match, validated, promoted_by=args.promoted_by, reason=args.reason,
+            now=stamp, previous_hash=ledger.last_audit_hash(),
         )
         store.append_validated([validated])
+        ledger.append_audit_events([audit_event])
     except MvpRuntimeError as exc:
         print(f"ERROR {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return 1
 
     print(f"Promoted {args.candidate_id} -> {validated['validated_memory_id']} (VALIDATED, {validated['scope']})")
     print(f"  by {validated['promoted_by']}: {validated['promotion_reason']}")
-    print("Validated memory is local, gitignored, per-machine. Never committed.")
+    print(f"  audited as {audit_event['audit_event_id']} (OTHER / MEMORY_PROMOTED) in the durable ledger")
+    print("Validated memory and ledger are local, gitignored, per-machine. Never committed.")
     return 0
 
 

@@ -313,6 +313,11 @@ def run_analysis_worker(
         analysis, assignment, now=created_at,
         seed={"task_id": identity.get("task_id"), "task_revision": identity.get("task_revision"),
               "assignment_id": assignment.get("assignment_id")},
+        # R5.4: stamp each candidate with the originating task's identity so an explicit,
+        # off-run-path promotion can be audited against the real task that produced it.
+        origin={"task_id": identity.get("task_id"), "task_revision": identity.get("task_revision"),
+                "trace_id": identity.get("trace_id"), "core_context_binding_id": ccb,
+                "data_sensitivity": context.get("data_sensitivity")},
     )
     agent_output = {
         "schema_version": AGENT_OUTPUT_SCHEMA_VERSION,
