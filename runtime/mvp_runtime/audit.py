@@ -196,7 +196,9 @@ def build_pipeline_audit(
     evidence only.
 
     Events: TASK_CREATED -> PERMISSION_DECIDED -> [TOOL_USED] -> MODEL_INVOKED ->
-    VALIDATION_COMPLETED -> TASK_STATE_CHANGED. When a read-only search ran, a TOOL_USED
+    [MEMORY_CANDIDATE_CREATED] -> VALIDATION_COMPLETED -> TASK_STATE_CHANGED. When the
+    specialist proposed working-memory candidates, a MEMORY_CANDIDATE_CREATED event records
+    their creation (proposals only — none promoted). When a read-only search ran, a TOOL_USED
     event (OTHER-typed, like MODEL_INVOKED — ``audit_event.v0.1`` has no tool-specific
     type) records the gated tool use itself: tool id/class, query + result hashes, sources,
     result count, and whether it crossed the network boundary, referencing its INTERNAL_READ
@@ -255,21 +257,40 @@ def build_pipeline_audit(
             evidence_refs=[f"in_memory:tool_use:{tid}"], payload_sha256=tool_fp,
         ))
 
-    steps.extend([
-        dict(
-            event_type="OTHER",
+    steps.append(dict(
+        event_type="OTHER",
+        actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                     role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+        subject_type="AGENT_OUTPUT", subject_id=agent_output["agent_output_id"],
+        subject_ref=output_ref, subject_fingerprint=output_fp,
+        summary=(f"Model invoked: {invocation.get('model_id')} {invocation.get('model_version')} — "
+                 f"{invocation.get('tokens_used')} tokens, finish={invocation.get('finish_reason')}, "
+                 f"network_egress={egress}."),
+        outcome="RECORDED",
+        reason_codes=["MODEL_INVOKED", "NETWORK_EGRESS" if egress else "NO_NETWORK_EGRESS"],
+        related_record_refs=[f"in_memory:{permission_decision['permission_decision_id']}"],
+        evidence_refs=[output_ref], payload_sha256=inv_fp,
+    ))
+
+    # R5: if the specialist proposed working-memory candidates, record their creation as its
+    # own EVIDENCE_ONLY event. Candidates are proposals (ALLOW/CANDIDATE_CREATION) — the event
+    # asserts nothing was promoted; the candidates are fingerprinted via the output.
+    candidates = agent_output.get("memory_candidates") or []
+    if candidates:
+        types = sorted({c.get("candidate_type", "memory") for c in candidates if isinstance(c, dict)})
+        steps.append(dict(
+            event_type="MEMORY_CANDIDATE_CREATED",
             actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
                          role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
-            subject_type="AGENT_OUTPUT", subject_id=agent_output["agent_output_id"],
+            subject_type="MEMORY_CANDIDATE", subject_id=agent_output["agent_output_id"],
             subject_ref=output_ref, subject_fingerprint=output_fp,
-            summary=(f"Model invoked: {invocation.get('model_id')} {invocation.get('model_version')} — "
-                     f"{invocation.get('tokens_used')} tokens, finish={invocation.get('finish_reason')}, "
-                     f"network_egress={egress}."),
+            summary=f"{len(candidates)} working-memory candidate(s) proposed (types: {types}); none promoted.",
             outcome="RECORDED",
-            reason_codes=["MODEL_INVOKED", "NETWORK_EGRESS" if egress else "NO_NETWORK_EGRESS"],
-            related_record_refs=[f"in_memory:{permission_decision['permission_decision_id']}"],
-            evidence_refs=[output_ref], payload_sha256=inv_fp,
-        ),
+            reason_codes=["MEMORY_CANDIDATE_CREATED", f"COUNT_{len(candidates)}", "NO_PROMOTION"],
+            related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
+        ))
+
+    steps.extend([
         dict(
             event_type="VALIDATION_COMPLETED",
             actor=_actor("system", "mvp.output_validator.automatic"),

@@ -66,9 +66,10 @@ def test_normal_task_completes_and_delivers():
         assert key in rec
     assert rec["agent_output"]["status"] == "needs_validation"
     assert rec["validation_result"]["validation"]["result"] == "PASS"
-    assert len(rec["audit_trail"]) == 6  # + TOOL_USED + MODEL_INVOKED
+    assert len(rec["audit_trail"]) == 7  # + TOOL_USED + MODEL_INVOKED + MEMORY_CANDIDATE_CREATED
     assert [e["event_type"] for e in rec["audit_trail"]] == [
-        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
+        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER",
+        "MEMORY_CANDIDATE_CREATED", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
     ]
     # The read-only search hits are recorded as source-attributed evidence on the output.
     assert any(e["type"] == "web_search" for e in rec["agent_output"]["evidence"])

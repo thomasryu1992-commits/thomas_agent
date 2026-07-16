@@ -45,7 +45,8 @@ def _run(validation_transform=None):
 def test_chain_shape_and_schema():
     chain, _ = _run()
     assert [e["event_type"] for e in chain] == [
-        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
+        "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER",
+        "MEMORY_CANDIDATE_CREATED", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
     ]
     for i, e in enumerate(chain, start=1):
         schema_validation.validate_against_schema(e, AUDIT_SCHEMA, "test")
@@ -100,12 +101,23 @@ def test_deterministic():
 
 
 @requires_local_core
+def test_memory_candidate_creation_is_audited():
+    chain, _ = _run()
+    mem_event = chain[4]
+    assert mem_event["event_type"] == "MEMORY_CANDIDATE_CREATED"
+    assert "MEMORY_CANDIDATE_CREATED" in mem_event["event"]["reason_codes"]
+    assert "NO_PROMOTION" in mem_event["event"]["reason_codes"]  # candidates never auto-promote
+    assert mem_event["subject"]["subject_type"] == "MEMORY_CANDIDATE"
+    assert mem_event["actor"]["actor_type"] == "role"
+
+
+@requires_local_core
 def test_pass_run_concludes_completed():
     chain, vr = _run()
     assert vr["validation"]["result"] == "PASS"
-    assert chain[4]["event"]["outcome"] == "PASS"          # VALIDATION_COMPLETED
-    assert chain[5]["event"]["outcome"] == "RECORDED"      # TASK_STATE_CHANGED
-    assert "FINAL_COMPLETED" in chain[5]["event"]["reason_codes"]
+    assert chain[5]["event"]["outcome"] == "PASS"          # VALIDATION_COMPLETED
+    assert chain[6]["event"]["outcome"] == "RECORDED"      # TASK_STATE_CHANGED
+    assert "FINAL_COMPLETED" in chain[6]["event"]["reason_codes"]
 
 
 @requires_local_core
@@ -118,6 +130,6 @@ def test_blocked_validation_concludes_blocked():
 
     chain, vr = _run(break_lineage)
     assert vr["validation"]["result"] == "BLOCK"
-    assert chain[4]["event"]["outcome"] == "BLOCKED"  # VALIDATION_COMPLETED (enum uses BLOCKED)
-    assert chain[5]["event"]["outcome"] == "BLOCKED"  # TASK_STATE_CHANGED
-    assert "FINAL_BLOCKED" in chain[5]["event"]["reason_codes"]
+    assert chain[5]["event"]["outcome"] == "BLOCKED"  # VALIDATION_COMPLETED (enum uses BLOCKED)
+    assert chain[6]["event"]["outcome"] == "BLOCKED"  # TASK_STATE_CHANGED
+    assert "FINAL_BLOCKED" in chain[6]["event"]["reason_codes"]
