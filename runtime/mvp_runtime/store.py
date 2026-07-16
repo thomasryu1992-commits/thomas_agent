@@ -50,8 +50,10 @@ SCHEDULER_FILE = "scheduler_events.jsonl"
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
     "received_task", "task", "binding", "permission_decision",
-    "search_permission_decision", "role_assignment", "tool_use",
+    "search_permission_decision", "role_assignment",
+    "validator_permission_decision", "validator_assignment", "tool_use",
     "agent_output", "invocation", "validation_result",
+    "independent_validation_result", "validator_invocation",
 )
 
 

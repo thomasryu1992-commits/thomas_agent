@@ -188,6 +188,9 @@ def build_pipeline_audit(
     now: str,
     tool_use: Mapping[str, Any] | None = None,
     search_permission_decision: Mapping[str, Any] | None = None,
+    independent_validation_result: Mapping[str, Any] | None = None,
+    validator_invocation: Mapping[str, Any] | None = None,
+    validator_permission_decision: Mapping[str, Any] | None = None,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -195,21 +198,32 @@ def build_pipeline_audit(
     evidence only.
 
     Events: TASK_CREATED -> PERMISSION_DECIDED -> [TOOL_USED] -> MODEL_INVOKED ->
-    [MEMORY_CANDIDATE_CREATED] -> VALIDATION_COMPLETED -> TASK_STATE_CHANGED. When the
-    specialist proposed working-memory candidates, a MEMORY_CANDIDATE_CREATED event records
-    their creation (proposals only — none promoted). When a read-only search ran, a TOOL_USED
-    event (OTHER-typed, like MODEL_INVOKED — ``audit_event.v0.1`` has no tool-specific
-    type) records the gated tool use itself: tool id/class, query + result hashes, sources,
-    result count, and whether it crossed the network boundary, referencing its INTERNAL_READ
-    PermissionDecision. MODEL_INVOKED records the gated model call; ``validation_result``
-    carries the Agent Output reference and fingerprint.
+    [MEMORY_CANDIDATE_CREATED] -> VALIDATION_COMPLETED -> [VALIDATOR MODEL_INVOKED ->
+    INDEPENDENT VALIDATION_COMPLETED] -> TASK_STATE_CHANGED. When the specialist proposed
+    working-memory candidates, a MEMORY_CANDIDATE_CREATED event records their creation
+    (proposals only — none promoted). When a read-only search ran, a TOOL_USED event
+    (OTHER-typed, like MODEL_INVOKED — ``audit_event.v0.1`` has no tool-specific type)
+    records the gated tool use itself, referencing its INTERNAL_READ PermissionDecision.
+    MODEL_INVOKED records the gated model call; ``validation_result`` carries the Agent
+    Output reference and fingerprint.
+
+    R7: when an independent validator ran (``independent_validation_result`` +
+    ``validator_invocation``), its model call and its INDEPENDENT validation verdict are
+    each recorded, and the final task state derives from the **stricter** of the automatic
+    and independent results (stricter_rule_wins).
     """
     root = repo_root if repo_root is not None else _repo_root()
     tid = task["identity"]["task_id"]
     result = validation_result["validation"]["result"]
+    if independent_validation_result is not None:
+        independent = independent_validation_result["validation"]["result"]
+        severity = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
+        result = result if severity.get(result, 2) >= severity.get(independent, 2) else independent
     # Map the validation result (PASS/REVISE/BLOCK) onto the audit outcome enum
     # (which uses BLOCKED, not BLOCK).
-    validation_outcome = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}[result]
+    validation_outcome = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}[
+        validation_result["validation"]["result"]
+    ]
     final_state = "COMPLETED" if result == "PASS" else "BLOCKED"
 
     task_fp = _fingerprint(task, "task")
@@ -289,27 +303,66 @@ def build_pipeline_audit(
             related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
         ))
 
-    steps.extend([
-        dict(
+    automatic_result = validation_result["validation"]["result"]
+    steps.append(dict(
+        event_type="VALIDATION_COMPLETED",
+        actor=_actor("system", "mvp.output_validator.automatic"),
+        subject_type="VALIDATION_RESULT", subject_id=validation_result["validation_result_id"],
+        subject_ref=f"in_memory:{validation_result['validation_result_id']}", subject_fingerprint=val_fp,
+        summary=f"Automatic output validation result: {automatic_result}.",
+        outcome=validation_outcome, reason_codes=[f"VALIDATION_{automatic_result}"],
+        related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
+    ))
+
+    # R7: the independent validator's own model call + INDEPENDENT verdict, each audited.
+    if independent_validation_result is not None:
+        ival = independent_validation_result
+        ival_fp = _fingerprint(ival, "independent_validation_result")
+        ival_result = ival["validation"]["result"]
+        ival_outcome = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}[ival_result]
+        validator_role = ival["validator"].get("validator_role_id") or "validation.independent"
+        validator_permdec_ref = (
+            f"in_memory:{validator_permission_decision['permission_decision_id']}"
+            if validator_permission_decision else output_ref
+        )
+        if validator_invocation is not None:
+            vinv_fp = _fingerprint(dict(validator_invocation), "validator_invocation")
+            vegress = bool(validator_invocation.get("network_egress"))
+            steps.append(dict(
+                event_type="OTHER",
+                actor=_actor("role", validator_role, role_id=validator_role,
+                             role_version=ival["validator"].get("validator_role_version")),
+                subject_type="VALIDATION_RESULT", subject_id=ival["validation_result_id"],
+                subject_ref=f"in_memory:{ival['validation_result_id']}", subject_fingerprint=ival_fp,
+                summary=(f"Validator model invoked: {validator_invocation.get('model_id')} "
+                         f"{validator_invocation.get('model_version')} — "
+                         f"{validator_invocation.get('tokens_used')} tokens, network_egress={vegress}."),
+                outcome="RECORDED",
+                reason_codes=["MODEL_INVOKED", "NETWORK_EGRESS" if vegress else "NO_NETWORK_EGRESS"],
+                related_record_refs=[validator_permdec_ref],
+                evidence_refs=[output_ref], payload_sha256=vinv_fp,
+            ))
+        steps.append(dict(
             event_type="VALIDATION_COMPLETED",
-            actor=_actor("system", "mvp.output_validator.automatic"),
-            subject_type="VALIDATION_RESULT", subject_id=validation_result["validation_result_id"],
-            subject_ref=f"in_memory:{validation_result['validation_result_id']}", subject_fingerprint=val_fp,
-            summary=f"Automatic output validation result: {result}.",
-            outcome=validation_outcome, reason_codes=[f"VALIDATION_{result}"],
+            actor=_actor("role", validator_role, role_id=validator_role,
+                         role_version=ival["validator"].get("validator_role_version")),
+            subject_type="VALIDATION_RESULT", subject_id=ival["validation_result_id"],
+            subject_ref=f"in_memory:{ival['validation_result_id']}", subject_fingerprint=ival_fp,
+            summary=f"Independent validation result: {ival_result} (stricter result decides the final state).",
+            outcome=ival_outcome, reason_codes=[f"VALIDATION_{ival_result}", "INDEPENDENT"],
             related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
-        ),
-        dict(
-            event_type="TASK_STATE_CHANGED",
-            actor=_actor("thomas_prime", "thomas.prime"),
-            subject_type="TASK", subject_id=tid,
-            subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
-            summary=f"Task run concluded: {final_state}.",
-            outcome="RECORDED" if result == "PASS" else "BLOCKED", reason_codes=[f"FINAL_{final_state}"],
-            related_record_refs=[f"in_memory:{validation_result['validation_result_id']}"],
-            evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
-        ),
-    ])
+        ))
+
+    steps.append(dict(
+        event_type="TASK_STATE_CHANGED",
+        actor=_actor("thomas_prime", "thomas.prime"),
+        subject_type="TASK", subject_id=tid,
+        subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
+        summary=f"Task run concluded: {final_state}.",
+        outcome="RECORDED" if result == "PASS" else "BLOCKED", reason_codes=[f"FINAL_{final_state}"],
+        related_record_refs=[f"in_memory:{validation_result['validation_result_id']}"],
+        evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
+    ))
     return _chain_events(root, task, steps, now, genesis_previous_hash)
 
 

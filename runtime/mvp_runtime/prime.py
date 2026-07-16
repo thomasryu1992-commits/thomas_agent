@@ -33,8 +33,15 @@ from .permission import (
     MVP_TTL_MINUTES,
     build_permission_decision,
     build_search_permission_decision,
+    build_validation_permission_decision,
 )
-from .planner import classify_task, load_resolved_roles, select_role
+from .planner import (
+    VALIDATOR_REQUIRED_CAPABILITIES,
+    VALIDATOR_REQUIRED_PERMISSION_LEVEL,
+    classify_task,
+    load_resolved_roles,
+    select_role,
+)
 
 TASK_SCHEMA_VERSION = "task.v0.3"
 
@@ -47,6 +54,7 @@ def _apply_plan_to_task(
     assignment: Mapping[str, Any],
     *,
     now: str,
+    validator_assignment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Produce a PLANNED task.v0.3 from the bound task and the planning records."""
     task = dict(bound_task)
@@ -63,12 +71,21 @@ def _apply_plan_to_task(
         "approval_id": None,
         "action_fingerprint": None,
     }
+    # R7: when an independent validator was planned, the routing records BOTH agents of
+    # the (minimal) dynamic team — the specialist and the validator.
+    assigned_roles = [assignment["role_id"]]
+    assigned_actors = [assignment["actor_instance_id"]]
+    assignment_ids = [assignment["assignment_id"]]
+    if validator_assignment is not None:
+        assigned_roles.append(validator_assignment["role_id"])
+        assigned_actors.append(validator_assignment["actor_instance_id"])
+        assignment_ids.append(validator_assignment["assignment_id"])
     task["routing"] = {
         "required_capabilities": list(decision["required_capabilities"]),
         "selected_route": "ROLE",
-        "assigned_role_ids": [assignment["role_id"]],
-        "assigned_actor_ids": [assignment["actor_instance_id"]],
-        "role_assignment_ids": [assignment["assignment_id"]],
+        "assigned_role_ids": assigned_roles,
+        "assigned_actor_ids": assigned_actors,
+        "role_assignment_ids": assignment_ids,
         "program_request_ids": [],
         "tool_request_ids": [],
     }
@@ -98,11 +115,19 @@ def plan_task(
     *,
     now: str,
     repo_root: Path | None = None,
+    independent_validation: bool = False,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
 
     Keys: ``task`` (PLANNED task.v0.3), ``binding``, ``permission_decision``,
     ``role_assignment``, ``decision``, ``role``. Fails closed via ``PlannerBlocked``.
+
+    ``independent_validation`` (R7, opt-in) additionally plans the second agent of the
+    minimal dynamic team — the independent validator (``validation.independent``) with its
+    own PermissionDecision (SIMULATION_VALIDATION, P2) and its own role_assignment — adding
+    keys ``validator_role``, ``validator_permission_decision``, ``validator_assignment``.
+    Prime requests validation without lowering any policy (a role activation condition);
+    the validator reviews, it never performs the original task.
     """
     root = repo_root if repo_root is not None else _repo_root()
 
@@ -146,7 +171,34 @@ def plan_task(
         repo_root=root,
     )
 
-    planned = _apply_plan_to_task(bound, decision, role, permission_decision, role_assignment, now=now)
+    # R7 (opt-in): plan the independent validator as a second, separately-governed agent.
+    validator_role = validator_permission_decision = validator_assignment = None
+    if independent_validation:
+        validator_role = select_role(
+            resolved,
+            required_capabilities=VALIDATOR_REQUIRED_CAPABILITIES,
+            required_permission_level=VALIDATOR_REQUIRED_PERMISSION_LEVEL,
+        )
+        validator_permission_decision = build_validation_permission_decision(
+            bound,
+            role_permission_ceiling=validator_role["permission_ceiling"],
+            now=now,
+            repo_root=root,
+        )
+        validator_assignment = build_role_assignment(
+            bound,
+            validator_role,
+            validator_permission_decision,
+            required_capabilities=list(VALIDATOR_REQUIRED_CAPABILITIES),
+            created_at=now,
+            expires_at=expires_at,
+            repo_root=root,
+        )
+
+    planned = _apply_plan_to_task(
+        bound, decision, role, permission_decision, role_assignment,
+        now=now, validator_assignment=validator_assignment,
+    )
 
     schema_path = root / "schemas" / f"{TASK_SCHEMA_VERSION}.schema.json"
     try:
@@ -154,7 +206,7 @@ def plan_task(
     except RuntimeSchemaError as exc:
         raise PlannerBlocked("PLANNED_TASK_INVALID", str(exc)) from exc
 
-    return {
+    plan: dict[str, Any] = {
         "task": planned,
         "binding": binding,
         "permission_decision": permission_decision,
@@ -163,3 +215,10 @@ def plan_task(
         "decision": decision,
         "role": role,
     }
+    if independent_validation:
+        plan.update({
+            "validator_role": validator_role,
+            "validator_permission_decision": validator_permission_decision,
+            "validator_assignment": validator_assignment,
+        })
+    return plan

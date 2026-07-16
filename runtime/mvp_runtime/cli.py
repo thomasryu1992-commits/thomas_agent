@@ -9,6 +9,10 @@ the run performs no external write and no network I/O.
 Usage:
     python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
     echo "..." | python -m runtime.mvp_runtime.cli
+
+    # R7 (opt-in): add the independent validation agent — a second reviewer whose
+    # stricter verdict decides delivery:
+    python -m runtime.mvp_runtime.cli --independent-validation "이 사업 아이디어를 분석해줘: ..."
 """
 
 from __future__ import annotations
@@ -42,6 +46,8 @@ def _force_utf8_io() -> None:
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
+    independent_validation = "--independent-validation" in argv
+    argv = [a for a in argv if a != "--independent-validation"]
     text = " ".join(argv) if argv else sys.stdin.read()
     # Drop a leading BOM (some shells inject U+FEFF on an "empty" pipe) so a
     # BOM-only input is correctly treated as empty rather than a 1-char request.
@@ -72,7 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     store = LedgerStore.default()
     working_memory = WorkingMemoryStore.default()
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
-                      working_memory=working_memory, channel="manual", store=store)
+                      working_memory=working_memory, channel="manual", store=store,
+                      independent_validation=independent_validation)
     if (result.get("block") or {}).get("stage") != "persistence":
         sys.stderr.write(f"LEDGER: recorded to {store.root}\n")
     if result["status"] == "COMPLETED":

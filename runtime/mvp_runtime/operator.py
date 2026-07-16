@@ -135,6 +135,7 @@ def handle_operator_message(
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    independent_validation: bool = False,
     repo_root: Path | None = None,
 ) -> OperatorReply:
     """Verify an inbound operator message and, only if it is from the registered operator,
@@ -192,6 +193,7 @@ def handle_operator_message(
         now=now,
         store=store,
         repo_root=repo_root,
+        independent_validation=independent_validation,
         channel="telegram",
         requester_type="real_thomas",
         requester_id=registration.operator_id,
@@ -358,6 +360,7 @@ def run_operator_once(
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    independent_validation: bool = False,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Poll one batch, handle each verified message, and send its reply. ``long_poll_seconds``
@@ -381,7 +384,7 @@ def run_operator_once(
         reply = handle_operator_message(
             message, registration=registration, provider=provider, search_tool=search_tool,
             working_memory=working_memory, now=now, store=store, control_store=control_store,
-            repo_root=repo_root,
+            independent_validation=independent_validation, repo_root=repo_root,
         )
         channel.send(message.chat_id, reply.text)
         handled.append(reply)
