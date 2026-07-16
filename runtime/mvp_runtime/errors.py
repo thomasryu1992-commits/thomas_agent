@@ -94,3 +94,11 @@ class ControlBlocked(MvpRuntimeError):
     Raised on an unknown command, a stop without a task id, or a failure to persist the
     control state. Fail-closed: the control state is a safety control, so an uncertain or
     unwritable state never silently permits execution."""
+
+
+class SchedulerBlocked(MvpRuntimeError):
+    """A scheduler operation was refused (R6).
+
+    Raised on an invalid schedule (unknown kind, non-positive/too-small interval, missing
+    request for a task schedule) or an unreadable schedule store. Scheduled execution is bound
+    to the kill switch: while the runtime is PAUSED/KILLED, due schedules are skipped, never run."""
