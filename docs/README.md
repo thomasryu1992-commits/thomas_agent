@@ -12,6 +12,7 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 | Final active architecture and canonical Gate commands | [Active Architecture](ACTIVE_ARCHITECTURE.md) |
 | Canonical Governance Policy | [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml) |
 | Architecture Slimming principles | [Step 1 — Principles](architecture-slimming/STEP1_PRINCIPLES.md) |
+| Architecture review findings (why C is parked) | [Architecture Review Record](ARCHITECTURE_REVIEW_RECORD.md) |
 | Completed PR #6–#11 migration record | [Architecture Slimming Master](architecture-slimming/ARCHITECTURE_SLIMMING_MASTER.md) |
 | Deferred Architecture | [`deferred/README.md`](../deferred/README.md) |
 | Generated Artifact boundary | [`generated/README.md`](../generated/README.md) |
