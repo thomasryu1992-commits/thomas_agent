@@ -107,6 +107,7 @@ def main(
 
     total_handled = 0
     total_dropped = 0
+    channel_egress = False
     batch = 0
     try:
         while args.max_batches == 0 or batch < args.max_batches:
@@ -117,6 +118,7 @@ def main(
             )
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]
+            channel_egress = channel_egress or bool(summary.get("network_egress"))
             for reply in summary["replies"]:
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")
             batch += 1
@@ -125,7 +127,10 @@ def main(
     except KeyboardInterrupt:
         sys.stderr.write("\nOPERATOR: stopped.\n")
 
-    sys.stdout.write(f"handled {total_handled}, dropped {total_dropped} over {batch} batch(es)\n")
+    sys.stdout.write(
+        f"handled {total_handled}, dropped {total_dropped} over {batch} batch(es) "
+        f"(channel network_egress={channel_egress})\n"
+    )
     return EXIT_OK
 
 

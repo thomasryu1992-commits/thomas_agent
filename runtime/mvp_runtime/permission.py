@@ -33,11 +33,13 @@ import yaml
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import timeutil
 from .authority import authority_invariant_holds, permission_decision_runtime_effect, rank_of
 from .errors import PlannerBlocked
+from .paths import repo_root as _repo_root
 from .tools import SEARCH_TOOL_ID
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2] / "scripts")
+_SCRIPTS_DIR = str(_repo_root() / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
@@ -98,19 +100,11 @@ _SEARCH_ACTION = _ActionSpec(
 )
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
 def _parse_ts(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return timeutil.parse_iso(value)
     except (AttributeError, ValueError) as exc:
         raise PlannerBlocked("INVALID_TIMESTAMP", f"now is not a valid RFC3339 date-time: {value!r}") from exc
-
-
-def _fmt_ts(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build_permission_decision(
@@ -164,8 +158,8 @@ def build_permission_decision(
         )
 
     created = _parse_ts(now)
-    expires_at = _fmt_ts(created + timedelta(minutes=ttl_minutes))
-    created_at = _fmt_ts(created)
+    expires_at = timeutil.format_iso(created + timedelta(minutes=ttl_minutes))
+    created_at = timeutil.format_iso(created)
 
     # Least privilege: required == effective == granted == the action's need; the role
     # ceiling is the upper bound the grant stays within.

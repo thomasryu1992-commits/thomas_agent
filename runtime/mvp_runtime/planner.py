@@ -31,6 +31,7 @@ from runtime.registry_resolution import RegistryResolutionError
 
 from .authority import rank_of
 from .errors import PlannerBlocked
+from .paths import repo_root as _repo_root
 
 # MVP classification: the only use case is internal, read-only business analysis.
 MVP_EXECUTION_MODE = "AGENT"          # judgment/interpretation, not a deterministic program
@@ -86,10 +87,6 @@ def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
         "required_capabilities": list(MVP_REQUIRED_CAPABILITIES),
         "permission_scope": MVP_PERMISSION_SCOPE,
     }
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def load_resolved_roles(repo_root: Path | None = None) -> dict[str, Any]:

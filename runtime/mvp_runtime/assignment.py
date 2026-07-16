@@ -21,48 +21,11 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .authority import authority_invariant_holds
+from .budgets import default_execution_budget
 from .errors import PlannerBlocked
+from .paths import repo_root as _repo_root
 
 ROLE_ASSIGNMENT_SCHEMA_VERSION = "role_assignment.v0.2"
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def _mvp_execution_budget() -> dict[str, Any]:
-    """MVP assignment budget: one model call, no tools/programs, concrete caps."""
-    return {
-        "schema_version": "execution_budget.v0.1",
-        "limits": {
-            "max_agent_invocations": 1,
-            "max_model_calls": 1,
-            "max_tool_calls": 0,
-            "max_program_calls": 0,
-            "max_revision_cycles": 1,
-            "max_validation_cycles": 1,
-            "max_retry_count": 1,
-            "max_parallel_workers": 1,
-            "max_runtime_seconds": 120,
-            "token_budget": 8000,
-            "cost_budget": 0,
-            "cost_currency": "USD",
-        },
-        "usage": {
-            "agent_invocations": 0,
-            "model_calls": 0,
-            "tool_calls": 0,
-            "program_calls": 0,
-            "revision_cycles": 0,
-            "validation_cycles": 0,
-            "retry_count": 0,
-            "peak_parallel_workers": 0,
-            "runtime_seconds": 0,
-            "tokens_used": 0,
-            "cost_used": 0,
-            "cost_currency": "USD",
-        },
-    }
 
 
 def build_role_assignment(
@@ -192,7 +155,7 @@ def build_role_assignment(
             "rejection_criteria": list(task_validation.get("rejection_criteria", [])),
             "maximum_cycles": 1,
         },
-        "execution_budget": _mvp_execution_budget(),
+        "execution_budget": default_execution_budget(),
         "constraints": list(scope.get("constraints", [])),
         "escalation_target": "thomas_prime",
         "trial_authorization_ref": None,

@@ -14,19 +14,15 @@ and deterministic — accumulation only happens when a caller (the CLI) provides
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .errors import PersistenceError
+from . import jsonl
+from .paths import repo_root as _repo_root
 
 WORKING_MEMORY_REL = ".runtime_governance_state/working_memory"
 ENTRIES_FILE = "candidates.jsonl"
 VALIDATED_FILE = "validated.jsonl"      # R5: promoted (validated) memory — separate from candidates
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 class WorkingMemoryStore:
@@ -64,20 +60,7 @@ class WorkingMemoryStore:
     def _append(self, filename: str, entries: list[Mapping[str, Any]], code: str, label: str) -> None:
         if not entries:
             return
-        try:
-            self._root.mkdir(parents=True, exist_ok=True)
-            with (self._root / filename).open("a", encoding="utf-8") as fh:
-                for entry in entries:
-                    fh.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
-        except (OSError, TypeError, ValueError) as exc:
-            raise PersistenceError(code, f"could not append {label}: {exc}") from exc
+        jsonl.append_lines(self._root / filename, entries, write_code=code, label=label)
 
     def _read(self, filename: str, code: str, label: str) -> list[dict[str, Any]]:
-        path = self._root / filename
-        if not path.is_file():
-            return []
-        try:
-            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-            return [json.loads(ln) for ln in lines]
-        except (OSError, ValueError) as exc:
-            raise PersistenceError(code, f"could not read {label}: {exc}") from exc
+        return jsonl.read_objects(self._root / filename, read_code=code, label=label)

@@ -31,6 +31,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import MvpRuntimeError
+from .paths import repo_root as _repo_root
 
 VALIDATION_RESULT_SCHEMA_VERSION = "validation_result.v0.1"
 VALIDATOR_ACTOR_ID = "mvp.output_validator.automatic"
@@ -45,10 +46,6 @@ class ValidationError(MvpRuntimeError):
 
 def _check(check_id: str, result: str, evidence_refs: list[str], notes: str) -> dict[str, Any]:
     return {"check_id": check_id, "result": result, "evidence_refs": evidence_refs, "notes": notes}
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def validate_agent_output(
