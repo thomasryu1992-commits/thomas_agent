@@ -1,0 +1,39 @@
+# Never bake per-machine governance state or secrets into the image. These are provided at
+# runtime via a mounted volume (Core pointer, operator registration, safety-flag activation,
+# control state, ledger) and environment variables (bot token, API key). The Safety-Flag Gate
+# depends on this: an image must never carry an activation that could enable a network call.
+.runtime_governance_state/
+THOMAS_CORE/approvals/
+THOMAS_CORE/activations/
+THOMAS_CORE/deactivations/
+THOMAS_CORE/revocations/
+THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+**/.env
+**/*.pem
+**/*.key
+**/*.p12
+
+# Dev cruft and anything the runtime service does not read.
+.git/
+.gitignore
+.gitattributes
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+.mypy_cache/
+.claude/
+tests/
+docs/
+historical/
+deferred/
+generated/
+examples/
+programs/
+tools/
+.github/
+Dockerfile
+.dockerignore
+requirements-validation.in
+requirements-validation.lock
