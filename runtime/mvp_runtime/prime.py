@@ -34,6 +34,7 @@ from .permission import (
     build_permission_decision,
     build_search_permission_decision,
     build_validation_permission_decision,
+    build_write_permission_decision,
 )
 from .planner import (
     VALIDATOR_REQUIRED_CAPABILITIES,
@@ -116,6 +117,7 @@ def plan_task(
     now: str,
     repo_root: Path | None = None,
     independent_validation: bool = False,
+    controlled_write: bool = False,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
 
@@ -128,6 +130,11 @@ def plan_task(
     keys ``validator_role``, ``validator_permission_decision``, ``validator_assignment``.
     Prime requests validation without lowering any policy (a role activation condition);
     the validator reviews, it never performs the original task.
+
+    ``controlled_write`` (R8, opt-in) additionally plans the workspace write as its own
+    governed action, adding ``write_permission_decision`` — a WORKSPACE_REVERSIBLE_WRITE
+    grant at P3 whose disposition is EXECUTE_AND_REPORT. Planning it does not perform it;
+    the pipeline writes only after validation passes, through the gated writer.
     """
     root = repo_root if repo_root is not None else _repo_root()
 
@@ -195,6 +202,18 @@ def plan_task(
             repo_root=root,
         )
 
+    # R8 (opt-in): authorize the controlled workspace write as its own governed action.
+    # Its disposition is EXECUTE_AND_REPORT (not ALLOW) — the runtime's first — and the
+    # grant is refused outright if the specialist's ceiling is below P3 CREATE.
+    write_permission_decision = None
+    if controlled_write:
+        write_permission_decision = build_write_permission_decision(
+            bound,
+            role_permission_ceiling=role["permission_ceiling"],
+            now=now,
+            repo_root=root,
+        )
+
     planned = _apply_plan_to_task(
         bound, decision, role, permission_decision, role_assignment,
         now=now, validator_assignment=validator_assignment,
@@ -221,4 +240,6 @@ def plan_task(
             "validator_permission_decision": validator_permission_decision,
             "validator_assignment": validator_assignment,
         })
+    if controlled_write:
+        plan["write_permission_decision"] = write_permission_decision
     return plan

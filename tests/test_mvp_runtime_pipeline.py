@@ -9,7 +9,9 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.errors import ProviderError, ToolError
 from runtime.mvp_runtime.pipeline import run_task
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
 from runtime.mvp_runtime.worker import MockProvider
+from runtime.mvp_runtime.workspace import RealWorkspaceWriter
 
 LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
 NOW = "2026-07-15T09:00:00Z"
@@ -37,6 +39,31 @@ class _ErrorSearchTool:
 
     def search(self, query, *, max_results, timeout_seconds):
         raise ToolError("BOOM", "search backend unavailable")
+
+
+def _authorized_writer() -> RealWorkspaceWriter:
+    """A writer holding a granted authorization, as select_writer would return once the
+    Safety-Flag Gate has passed. Lets the write path be exercised without an activation
+    record on the test machine."""
+    return RealWorkspaceWriter(authorization=Authorization(
+        flags=(FILESYSTEM_WRITE,), provider_id="workspace.writer",
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    ))
+
+
+@pytest.fixture
+def workspace_repo(tmp_path, monkeypatch):
+    """Redirect only the write-facing root at ``workspace/`` under tmp_path.
+
+    The pipeline resolves governance, schemas and the Core pointer through each module's
+    own root, so those keep reading the real repo; repointing ``workspace``'s root alone
+    isolates the write (and the control state it consults) without cloning the repo.
+    Returns the tmp root, so ``<root>/workspace/...`` is where a write should land.
+    """
+    (tmp_path / "workspace").mkdir()
+    monkeypatch.setattr("runtime.mvp_runtime.workspace._repo_root", lambda: tmp_path)
+    return tmp_path
 
 
 # --- fail-closed without a Core (run everywhere) ----------------------------
@@ -148,3 +175,81 @@ def test_working_memory_corrupt_store_fails_closed(tmp_path):
     r = run_task(REQUEST, provider=MockProvider(), working_memory=WorkingMemoryStore(root), now=NOW)
     assert r["status"] == "BLOCKED"
     assert r["block"]["reason_code"] == "WORKING_MEMORY_UNREADABLE"
+
+
+# --- R8: the controlled write -----------------------------------------------
+
+
+@requires_local_core
+def test_no_write_happens_unless_asked(tmp_path):
+    """The write is opt-in: a plain run plans no write grant and produces no write."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW)
+    assert r["status"] == "COMPLETED"
+    assert "write" not in r
+    assert "write_use" not in r["records"]
+    assert r["records"].get("write_permission_decision") is None
+
+
+@requires_local_core
+def test_write_is_planned_audited_and_reported(workspace_repo):
+    """The happy path: a passing run creates the file, audits it, and reports it —
+    the EXECUTE_AND_REPORT obligation end to end."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW,
+                 write_path="reports/out.md", writer=_authorized_writer())
+    assert r["status"] == "COMPLETED"
+    assert (workspace_repo / "workspace/reports/out.md").is_file()
+    # Reported to the caller...
+    assert r["write"]["relative_path"] == "reports/out.md"
+    assert r["write"]["disposition"] == "EXECUTE_AND_REPORT"
+    assert r["write"]["filesystem_write"] is True
+    # ...and durably audited, referencing its own EXECUTE_AND_REPORT grant.
+    write_events = [
+        e for e in r["records"]["audit_trail"]
+        if "WORKSPACE_WRITE" in e["event"]["reason_codes"]
+    ]
+    assert len(write_events) == 1
+    assert "EXECUTE_AND_REPORT" in write_events[0]["event"]["reason_codes"]
+    permdec = r["records"]["write_permission_decision"]
+    assert permdec["decision"]["permission_decision"] == "EXECUTE_AND_REPORT"
+
+
+@requires_local_core
+def test_a_rejected_analysis_never_leaves_an_artifact(workspace_repo):
+    """The safety property that matters most: validation must gate the write, so a run
+    that is not delivered also does not write."""
+    r = run_task(REQUEST, provider=_OverconfidentProvider(), now=NOW,
+                 write_path="reports/rejected.md", writer=_authorized_writer())
+    assert r["status"] == "BLOCKED"
+    assert r["delivered"] is False
+    assert not (workspace_repo / "workspace/reports/rejected.md").exists()
+    assert "write" not in r
+
+
+@requires_local_core
+def test_the_written_file_is_the_delivered_response(workspace_repo):
+    """What lands on disk must be what the run reported — not a divergent rendering."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW,
+                 write_path="reports/out.md", writer=_authorized_writer())
+    on_disk = (workspace_repo / "workspace/reports/out.md").read_text(encoding="utf-8")
+    assert on_disk == r["final_response"]
+
+
+@requires_local_core
+def test_default_writer_is_a_dry_run(workspace_repo):
+    """Without an explicitly authorized writer the pipeline plans, audits and reports the
+    write but leaves nothing on disk."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW,
+                 write_path="reports/out.md")
+    assert r["status"] == "COMPLETED"
+    assert not (workspace_repo / "workspace/reports/out.md").exists()
+    assert r["write"]["filesystem_write"] is False
+
+
+@requires_local_core
+def test_an_escaping_write_path_blocks_the_run(workspace_repo):
+    """A path escape must fail the run closed, not fall back to a safe location."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW,
+                 write_path="../../escaped.md", writer=_authorized_writer())
+    assert r["status"] == "BLOCKED"
+    assert r["block"]["reason_code"] == "PATH_ESCAPE"
+    assert not (workspace_repo.parent / "escaped.md").exists()

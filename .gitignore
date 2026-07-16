@@ -19,3 +19,8 @@ venv/
 THOMAS_CORE/activations/
 THOMAS_CORE/approvals/
 THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
+
+# R8 approved internal workspace — the only tree the agent may write into. Its contents
+# are per-machine runtime output, never shared source, so a controlled write can never
+# reach a commit.
+workspace/
