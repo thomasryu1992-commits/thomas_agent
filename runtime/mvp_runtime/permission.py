@@ -57,6 +57,12 @@ MVP_TTL_MINUTES = 30
 SEARCH_PERMISSION_SCOPE = "INTERNAL_READ"
 SEARCH_REQUIRED_PERMISSION_LEVEL = "P1"  # READ — a read-only lookup, one level below ANALYZE
 
+# Governance scope + level for the R7 independent validation action. A distinct ALLOW-tier
+# scope (SIMULATION_VALIDATION) both matches the action semantically and keeps the validator's
+# permission_decision_id distinct from the specialist's (the id seed includes the scope).
+VALIDATION_PERMISSION_SCOPE = "SIMULATION_VALIDATION"
+VALIDATION_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only review of an internal output
+
 
 @dataclass(frozen=True)
 class _ActionSpec:
@@ -97,6 +103,18 @@ _SEARCH_ACTION = _ActionSpec(
     authority_reason="Read-only information lookup within the assigned Task scope and authority ceiling.",
     decision_reason="Authority is sufficient and the search is a reversible, read-only information lookup.",
     constraint="Read-only search; no external write, publication, tool/program execution, or runtime mutation.",
+)
+
+_VALIDATION_ACTION = _ActionSpec(
+    action_type="internal.validation.review",
+    target_suffix="validation",
+    tool_id=None,
+    data_scope=("task.request", "agent_output.review"),
+    normalized_parameters={"review_target": "agent_output", "visibility": "internal"},
+    risk_reason="Read-only independent review of an internal output; no external, financial, or runtime effect.",
+    authority_reason="Independent validation within the assigned Task scope and the validator role's ceiling.",
+    decision_reason="Authority is sufficient and the review is a read-only assessment of an internal artifact.",
+    constraint="Review only; the validator never modifies the original output and grants nothing.",
 )
 
 
@@ -291,4 +309,32 @@ def build_search_permission_decision(
         ttl_minutes=ttl_minutes,
         repo_root=repo_root,
         action=_SEARCH_ACTION,
+    )
+
+
+def build_validation_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the ALLOW PermissionDecision for the R7 independent validation review.
+
+    A thin wrapper over :func:`build_permission_decision` fixing the validation scope
+    (``SIMULATION_VALIDATION``), the least-privilege level (P2 ANALYZE), and the review
+    action spec. Fails closed identically. The validator agent acts under this decision,
+    separate from the specialist's analysis grant."""
+    return build_permission_decision(
+        bound_task,
+        permission_scope=VALIDATION_PERMISSION_SCOPE,
+        required_permission_level=VALIDATION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=_VALIDATION_ACTION,
     )

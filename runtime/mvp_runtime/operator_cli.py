@@ -65,6 +65,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "(real long-poll; 0 = return immediately). Use e.g. 25 for continuous runs.")
     parser.add_argument("--sleep-seconds", type=float, default=0.0,
                         help="extra pause between poll batches (default 0; unneeded with --long-poll-seconds)")
+    parser.add_argument("--independent-validation", action="store_true",
+                        help="R7: add the independent validation agent to every handled request "
+                             "(a second reviewer; the stricter verdict decides delivery)")
     return parser.parse_args(argv)
 
 
@@ -120,7 +123,8 @@ def main(
             summary = run_operator_once(
                 channel, registration, long_poll_seconds=args.long_poll_seconds,
                 provider=provider, search_tool=search_tool, working_memory=working_memory,
-                store=store, control_store=control_store, repo_root=repo_root,
+                store=store, control_store=control_store,
+                independent_validation=args.independent_validation, repo_root=repo_root,
             )
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]

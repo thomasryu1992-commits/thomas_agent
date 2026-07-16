@@ -37,6 +37,7 @@ from .prime import plan_task
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, run_search
 from .validation import validate_agent_output
+from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .worker import MockProvider, Provider, run_analysis_worker
 from .working_memory import WorkingMemoryStore
 
@@ -123,6 +124,8 @@ def run_task(
     now: str | None = None,
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
+    independent_validation: bool = False,
+    validator_provider: Provider | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
@@ -135,9 +138,19 @@ def run_task(
 
     ``working_memory`` (opt-in) makes prior working-memory candidates available as context
     and accumulates this run's candidates for later runs. Omitting it keeps the run pure and
-    deterministic — memory only accumulates when a caller supplies the store."""
+    deterministic — memory only accumulates when a caller supplies the store.
+
+    ``independent_validation`` (R7, opt-in) adds the second agent of the minimal dynamic
+    team: an independent validator (``validation.independent``) reviews the specialist's
+    output in a fresh context and the **stricter** of the automatic and independent results
+    decides delivery. The validator is skipped when the automatic checks already BLOCK
+    (the outcome is decided; no model call is spent). ``validator_provider`` defaults to the
+    deterministic ``MockValidatorProvider`` when the specialist uses the mock provider, and
+    to the same (gated) provider otherwise — one Safety-Flag Gate governs both agents."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
+    if validator_provider is None:
+        validator_provider = MockValidatorProvider() if isinstance(provider, MockProvider) else provider
     now = now if now is not None else timeutil.utc_now_iso()
     result: dict[str, Any] = {
         "status": "BLOCKED",
@@ -162,13 +175,16 @@ def run_task(
         received_task = task
         records["received_task"] = task
 
-        plan = plan_task(task, now=now, repo_root=repo_root)
+        plan = plan_task(task, now=now, repo_root=repo_root, independent_validation=independent_validation)
         records.update({
             "task": plan["task"], "binding": plan["binding"],
             "permission_decision": plan["permission_decision"],
             "search_permission_decision": plan["search_permission_decision"],
             "role_assignment": plan["role_assignment"],
         })
+        if independent_validation:
+            records["validator_permission_decision"] = plan["validator_permission_decision"]
+            records["validator_assignment"] = plan["validator_assignment"]
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
@@ -194,9 +210,24 @@ def run_task(
         validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
         records["validation_result"] = validation
 
+        # R7 (opt-in): the independent validator reviews the output in a fresh context.
+        # Skipped when the automatic checks already BLOCK — the outcome is decided and a
+        # model call would be spent for nothing. The stricter result decides delivery.
+        independent_validation_result = validator_invocation = None
+        if independent_validation and validation["validation"]["result"] != "BLOCK":
+            independent_validation_result, validator_invocation = run_validation_worker(
+                plan["task"], plan["validator_assignment"], agent_output,
+                provider=validator_provider, created_at=now, repo_root=repo_root,
+            )
+            records["independent_validation_result"] = independent_validation_result
+            records["validator_invocation"] = validator_invocation
+
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
             now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
+            independent_validation_result=independent_validation_result,
+            validator_invocation=validator_invocation,
+            validator_permission_decision=plan.get("validator_permission_decision"),
             genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:
@@ -206,6 +237,8 @@ def run_task(
         )
 
     outcome = validation["validation"]["result"]
+    if independent_validation_result is not None:
+        outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
     if outcome == "PASS":
         # Fail-closed on persistence: a completed run with no durable audit is not delivered.
         if store is not None:
@@ -232,10 +265,13 @@ def run_task(
                 _persist(store, records)
             except PersistenceError as exc:
                 result.setdefault("persist_error", exc.reason_code)
+        reasons = list(validation["validation"]["result_reasons"])
+        if independent_validation_result is not None:
+            reasons.extend(independent_validation_result["validation"]["result_reasons"])
         result["status"] = "BLOCKED"
         result["block"] = {
             "stage": "validation",
             "reason_code": f"VALIDATION_{outcome}",
-            "message": "; ".join(validation["validation"]["result_reasons"]),
+            "message": "; ".join(dict.fromkeys(reasons)),
         }
     return result

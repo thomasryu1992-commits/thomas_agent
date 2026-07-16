@@ -42,6 +42,14 @@ MVP_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — internal read-only analysis 
 MVP_REQUIRED_CAPABILITIES = ("research", "analysis")
 _READ_ONLY_CONSTRAINT = "no_external_action"
 
+# R7: capabilities that select the independent validator role (validation.independent).
+# These are validator-only capabilities, so select_role resolves them uniquely; the
+# validator's ceiling is P2 (ANALYZE) — it reviews, it never creates or acts.
+VALIDATOR_REQUIRED_CAPABILITIES = (
+    "objective_alignment_check", "evidence_check", "logic_check", "output_contract_check",
+)
+VALIDATOR_REQUIRED_PERMISSION_LEVEL = "P2"
+
 
 def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
     """Classify a RECEIVED/UNCLASSIFIED task. Pure and fail-closed.
