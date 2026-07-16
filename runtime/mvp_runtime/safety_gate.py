@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -31,6 +30,7 @@ from runtime.read_only_kernel.integrity import IntegrityError
 
 from .authority import rank_of
 from .errors import SafetyGateBlocked
+from .paths import repo_root as _repo_root
 
 # Capability flags this gate governs. These are the two OFF-by-default safety flags
 # named in CLAUDE.md; enabling either requires an activation record that lists it.
@@ -49,10 +49,6 @@ _REQUIRED_FIELDS = (
 )
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 @dataclass(frozen=True)
 class Authorization:
     """A granted authorization to use a network-capable capability.
@@ -67,10 +63,6 @@ class Authorization:
     activation_sha256: str
     expires_at: str
     evidence_ref: str
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def _load_record(root: Path) -> dict[str, Any]:

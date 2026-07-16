@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .control import ControlStore
 from .errors import MvpRuntimeError
 from .operator import (
     OperatorChannel,
@@ -76,6 +77,7 @@ def main(
     search_tool: Any | None = None,
     working_memory: Any | None = None,
     store: LedgerStore | None = None,
+    control_store: ControlStore | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
 ) -> int:
@@ -103,20 +105,26 @@ def main(
 
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
-    sys.stderr.write(f"OPERATOR: listening for the registered operator (ledger: {store.root})\n")
+    control_store = control_store if control_store is not None else ControlStore.default()
+    control_mode = control_store.load().mode
+    sys.stderr.write(
+        f"OPERATOR: listening for the registered operator (ledger: {store.root}; control: {control_mode})\n"
+    )
 
     total_handled = 0
     total_dropped = 0
+    channel_egress = False
     batch = 0
     try:
         while args.max_batches == 0 or batch < args.max_batches:
             summary = run_operator_once(
                 channel, registration, long_poll_seconds=args.long_poll_seconds,
                 provider=provider, search_tool=search_tool, working_memory=working_memory,
-                store=store, repo_root=repo_root,
+                store=store, control_store=control_store, repo_root=repo_root,
             )
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]
+            channel_egress = channel_egress or bool(summary.get("network_egress"))
             for reply in summary["replies"]:
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")
             batch += 1
@@ -125,7 +133,10 @@ def main(
     except KeyboardInterrupt:
         sys.stderr.write("\nOPERATOR: stopped.\n")
 
-    sys.stdout.write(f"handled {total_handled}, dropped {total_dropped} over {batch} batch(es)\n")
+    sys.stdout.write(
+        f"handled {total_handled}, dropped {total_dropped} over {batch} batch(es) "
+        f"(channel network_egress={channel_egress})\n"
+    )
     return EXIT_OK
 
 

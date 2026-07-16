@@ -11,6 +11,3 @@ network I/O, and no model invocation (it does read schema files read-only).
 """
 
 from __future__ import annotations
-
-MVP_RUNTIME_ID = "runtime.mvp_runtime"
-MVP_RUNTIME_VERSION = "0.1.0"

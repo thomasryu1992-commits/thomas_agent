@@ -21,18 +21,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import safety_gate
+from . import safety_gate, timeutil
 from .errors import ProviderError
 from .safety_gate import MODEL_INVOCATION, NETWORK_ACCESS, Authorization
 from .worker import MockProvider, Provider, ProviderResult
 
-# The worker maps these keys onto agent_output.v0.2; the model is asked to return exactly
-# this JSON shape (see _RESPONSE_INSTRUCTION).
-_ANALYSIS_KEYS = (
-    "summary", "key_findings", "facts", "inferences", "assumptions",
-    "uncertainty", "risks", "recommendation", "limitations", "next_actions",
-    "evidence_quality", "unresolved_questions",
-)
+# The model is asked to return exactly this JSON shape; the worker maps it onto
+# agent_output.v0.2.
 _RESPONSE_INSTRUCTION = (
     "\n\nReturn ONLY a single JSON object (no markdown, no prose) with these keys: "
     "summary (string), key_findings (array of strings), facts (array of objects "
@@ -65,7 +60,7 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
 
     # Opted into a network-capable provider — must pass the gate before it is even built.
     authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=GOOGLE_AI_STUDIO, now=now or safety_gate.utc_now_iso(), root=root
+        _NETWORK_FLAGS, provider_id=GOOGLE_AI_STUDIO, now=now or timeutil.utc_now_iso(), root=root
     )
     model = os.environ.get(HOSTED_MODEL_ENV, "gemini-flash-latest").strip()
     return GoogleAIStudioProvider(model=model, authorization=authorization)
@@ -111,7 +106,7 @@ class GoogleAIStudioProvider:
             self._authorization,
             required_flags=_NETWORK_FLAGS,
             provider_id=self.model_id,
-            now=safety_gate.utc_now_iso(),
+            now=timeutil.utc_now_iso(),
         )
         api_key = os.environ.get(self._api_key_env)
         if not api_key:

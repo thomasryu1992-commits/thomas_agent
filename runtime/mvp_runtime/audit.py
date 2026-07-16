@@ -21,13 +21,10 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .authority import audit_event_runtime_effect
 from .errors import AuditError
+from .paths import repo_root as _repo_root
 
 AUDIT_EVENT_SCHEMA_VERSION = "audit_event.v0.1"
 FINGERPRINT_SCHEMA = "audit_event_fingerprint_payload.v0.1"
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def _fingerprint(record: Mapping[str, Any], label: str) -> str:

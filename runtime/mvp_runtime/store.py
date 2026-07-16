@@ -18,6 +18,11 @@ Three files, each append-only (one JSON object per line):
   exists. Such a failure cannot be expressed as an ``audit_event.v0.1`` (that schema
   requires a bound task with a ``core_context_binding_id``), so a minimal, still-durable
   block entry is recorded instead.
+- ``control_events.jsonl`` — operator emergency-console events (pause/kill/resume/stop).
+  These are runtime control actions, not task outcomes, so like blocks they are durable
+  standalone entries rather than task-bound ``audit_event.v0.1`` records.
+- ``memory_events.jsonl`` — memory maintenance events (working-memory retention/deletion),
+  likewise standalone rather than task-bound.
 
 Fail-closed: any write or read failure raises :class:`PersistenceError`. Secrets are never
 written — the records are already metadata-only and secret-scanned upstream.
@@ -25,16 +30,19 @@ written — the records are already metadata-only and secret-scanned upstream.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import jsonl
 from .errors import PersistenceError
+from .paths import repo_root as _repo_root
 
 LEDGER_REL = ".runtime_governance_state/runtime_ledger"
 AUDIT_FILE = "audit_events.jsonl"
 RECORDS_FILE = "records.jsonl"
 BLOCKS_FILE = "blocks.jsonl"
+CONTROL_FILE = "control_events.jsonl"
+MEMORY_FILE = "memory_events.jsonl"
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -42,10 +50,6 @@ _RECORD_KINDS = (
     "search_permission_decision", "role_assignment", "tool_use",
     "agent_output", "invocation", "validation_result",
 )
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 class LedgerStore:
@@ -63,40 +67,37 @@ class LedgerStore:
     def root(self) -> Path:
         return self._root
 
-    def _append_line(self, filename: str, obj: Any) -> None:
-        try:
-            self._root.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(obj, ensure_ascii=False, sort_keys=True)
-            with (self._root / filename).open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except (OSError, TypeError, ValueError) as exc:
-            raise PersistenceError("LEDGER_WRITE_FAILED", f"could not append to {filename}: {exc}") from exc
-
     def append_audit_events(self, events: list[Mapping[str, Any]]) -> None:
-        for event in events:
-            self._append_line(AUDIT_FILE, event)
+        jsonl.append_lines(self._root / AUDIT_FILE, events, write_code="LEDGER_WRITE_FAILED", label="the audit ledger")
 
     def append_records(self, trace_id: str | None, records: Mapping[str, Any]) -> None:
-        for kind in _RECORD_KINDS:
-            if kind in records:
-                self._append_line(RECORDS_FILE, {"kind": kind, "trace_id": trace_id, "record": records[kind]})
+        rows = [
+            {"kind": kind, "trace_id": trace_id, "record": records[kind]}
+            for kind in _RECORD_KINDS
+            if kind in records
+        ]
+        jsonl.append_lines(self._root / RECORDS_FILE, rows, write_code="LEDGER_WRITE_FAILED", label="the record ledger")
 
     def append_block(self, entry: Mapping[str, Any]) -> None:
-        self._append_line(BLOCKS_FILE, dict(entry))
+        jsonl.append_lines(self._root / BLOCKS_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the block ledger")
+
+    def append_control(self, entry: Mapping[str, Any]) -> None:
+        """Durably record one operator emergency-console event (pause/kill/resume/stop)."""
+        jsonl.append_lines(self._root / CONTROL_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the control ledger")
+
+    def append_memory_event(self, entry: Mapping[str, Any]) -> None:
+        """Durably record one memory maintenance event (e.g. working-memory retention/deletion)."""
+        jsonl.append_lines(self._root / MEMORY_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the memory ledger")
 
     def last_audit_hash(self) -> str | None:
         """Return the last persisted event's ``event_sha256`` (the chain tip), or None.
 
         Reading a corrupt or unparseable ledger fails closed rather than silently
         starting a fresh chain over a damaged one."""
-        path = self._root / AUDIT_FILE
-        if not path.is_file():
+        events = jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger tip")
+        if not events:
             return None
         try:
-            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-            if not lines:
-                return None
-            last = json.loads(lines[-1])
-            return last["integrity"]["event_sha256"]
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return events[-1]["integrity"]["event_sha256"]
+        except (KeyError, TypeError) as exc:
             raise PersistenceError("LEDGER_UNREADABLE", f"could not read the audit ledger tip: {exc}") from exc

@@ -20,13 +20,13 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from runtime.read_only_kernel import integrity
 
-from . import safety_gate
+from . import safety_gate, timeutil
 from .errors import ToolBlocked, ToolError
 from .safety_gate import NETWORK_ACCESS, Authorization
 
@@ -156,9 +156,8 @@ def select_search_tool(*, now: str | None = None, root: Path | None = None) -> S
     The env var alone is NOT sufficient: with no valid activation this fails closed
     (:class:`SafetyGateBlocked`) rather than silently opening a network path.
 
-    This is the search analog of ``providers.select_provider``. Wiring the selected tool
-    into the worker/pipeline is a subsequent increment; nothing calls it on the default
-    path yet.
+    This is the search analog of ``providers.select_provider``, and both CLIs select
+    their search tool through it (``cli.py``, ``operator_cli.py``).
     """
     choice = os.environ.get(SEARCH_TOOL_ENV, "").strip().lower()
     if choice != BRAVE_SEARCH:
@@ -166,7 +165,7 @@ def select_search_tool(*, now: str | None = None, root: Path | None = None) -> S
 
     # Opted into a network-capable tool — must pass the gate before it is even built.
     authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=BRAVE_SEARCH, now=now or safety_gate.utc_now_iso(), root=root
+        _NETWORK_FLAGS, provider_id=BRAVE_SEARCH, now=now or timeutil.utc_now_iso(), root=root
     )
     return WebSearchTool(authorization=authorization)
 
@@ -209,7 +208,7 @@ class WebSearchTool:
             self._authorization,
             required_flags=_NETWORK_FLAGS,
             provider_id=self.provider_id,
-            now=safety_gate.utc_now_iso(),
+            now=timeutil.utc_now_iso(),
         )
         api_key = os.environ.get(self._api_key_env)
         if not api_key:

@@ -23,12 +23,12 @@ MockProvider), and no tool/program execution.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from runtime.read_only_kernel import integrity
 
+from . import timeutil
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError
 from .intake import build_task
@@ -39,10 +39,6 @@ from .tools import MockSearchTool, SearchTool, run_search
 from .validation import validate_agent_output
 from .worker import MockProvider, Provider, run_analysis_worker
 from .working_memory import WorkingMemoryStore
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def render_response(agent_output: dict[str, Any]) -> str:
@@ -142,7 +138,7 @@ def run_task(
     deterministic — memory only accumulates when a caller supplies the store."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
-    now = now if now is not None else _utc_now_iso()
+    now = now if now is not None else timeutil.utc_now_iso()
     result: dict[str, Any] = {
         "status": "BLOCKED",
         "delivered": False,
@@ -183,7 +179,7 @@ def run_task(
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
         # A corrupt store fails closed here (BLOCK), like the ledger.
         memory_entries = (
-            retrieve_working_memory(plan["role_assignment"], working_memory)
+            retrieve_working_memory(plan["role_assignment"], working_memory, now=now)
             if working_memory is not None else []
         )
         records["memory_retrieved"] = memory_entries

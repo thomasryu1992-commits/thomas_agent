@@ -28,8 +28,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from . import safety_gate
-from .errors import OperatorBlocked
+from . import control, safety_gate, timeutil
+from .control import ControlStore
+from .errors import ControlBlocked, OperatorBlocked
+from .paths import repo_root as _repo_root
 from .pipeline import run_task
 from .safety_gate import NETWORK_ACCESS, Authorization
 from .store import LedgerStore
@@ -87,10 +89,6 @@ class OperatorReply:
     trace_id: str | None = None
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
 def load_operator_registration(repo_root: Path | None = None) -> OperatorIdentity:
     """Load the local operator registration. Fail-closed if missing/malformed — with no
     registered operator the runtime cannot verify anyone, so it acts for no one."""
@@ -136,14 +134,19 @@ def handle_operator_message(
     working_memory: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
+    control_store: ControlStore | None = None,
     repo_root: Path | None = None,
 ) -> OperatorReply:
     """Verify an inbound operator message and, only if it is from the registered operator,
-    run the task and return the reply. An unverified message is refused with a generic reason
-    and no task runs. Never raises for a fail-closed condition — those become a REFUSED reply.
+    handle it. An unverified message is refused with a generic reason and no task runs. Never
+    raises for a fail-closed condition — those become a REFUSED reply.
 
-    ``working_memory`` (opt-in) is shared with the run so the operator channel accumulates and
-    reuses working memory just like the one-shot CLI.
+    When ``control_store`` is provided, an emergency-console command (``/status`` ``/pause``
+    ``/kill`` ``/resume`` ``/stop <task_id>``) is handled as a control action rather than a
+    task, and a task request is refused while the runtime is PAUSED or KILLED. ``/resume`` is
+    accepted here only because the message already passed the operator identity gate
+    (``resume_requires_thomas_authentication``). ``working_memory`` (opt-in) is shared with the
+    run so the operator channel accumulates and reuses working memory like the one-shot CLI.
     """
     try:
         verify_control_channel(message, registration)
@@ -157,6 +160,29 @@ def handle_operator_message(
     text = message.text.strip() if isinstance(message.text, str) else ""
     if not text:
         return OperatorReply(text="Empty request.", accepted=False, status="REFUSED", reason_code="EMPTY_REQUEST")
+
+    if control_store is not None:
+        # Emergency-console commands are handled before (and regardless of) the run state — a
+        # KILLED runtime must still answer /status and accept /resume from the verified operator.
+        command = control.parse_command(text)
+        if command is not None:
+            verb, arg = command
+            try:
+                outcome = control.apply_command(
+                    control_store, verb, actor=registration.operator_id, now=now, arg=arg, ledger=store,
+                )
+            except ControlBlocked as exc:
+                return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+            return OperatorReply(text=outcome["reply"], accepted=True, status="CONTROL", reason_code=outcome["action"])
+
+        # A task request is refused while the runtime is not ACTIVE (kill blocks new execution).
+        state = control_store.load()
+        if not state.execution_allowed:
+            reason_code = "RUNTIME_KILLED" if state.mode == control.KILLED else "RUNTIME_PAUSED"
+            return OperatorReply(
+                text=f"Runtime is {state.mode}; new requests are blocked. Send /resume to continue (or /status).",
+                accepted=False, status="REFUSED", reason_code=reason_code,
+            )
 
     result = run_task(
         text,
@@ -223,7 +249,7 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     if choice != TELEGRAM:
         return MockOperatorChannel()
     authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=TELEGRAM, now=now or safety_gate.utc_now_iso(), root=root
+        _NETWORK_FLAGS, provider_id=TELEGRAM, now=now or timeutil.utc_now_iso(), root=root
     )
     return TelegramChannel(authorization=authorization)
 
@@ -249,7 +275,7 @@ class TelegramChannel:
     def _assert(self) -> str:
         safety_gate.assert_authorization(
             self._authorization, required_flags=_NETWORK_FLAGS, provider_id=self.provider_id,
-            now=safety_gate.utc_now_iso(),
+            now=timeutil.utc_now_iso(),
         )
         token = os.environ.get(self._token_env)
         if not token:
@@ -331,14 +357,19 @@ def run_operator_once(
     working_memory: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
+    control_store: ControlStore | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Poll one batch, handle each verified message, and send its reply. ``long_poll_seconds``
     lets a network channel hold the poll open until a message arrives (0 = return immediately).
     ``working_memory`` (opt-in) is shared across handled messages so the operator channel
-    accumulates and reuses working memory. Messages that fail the control-channel identity gate
-    are **silently dropped** — an unverified sender gets no reply (no engagement, no info leak)
-    and no task runs. Returns a small summary."""
+    accumulates and reuses working memory. ``control_store`` (opt-in) enables the emergency
+    console: control commands are handled and a PAUSED/KILLED runtime refuses task requests.
+    Messages that fail the control-channel identity gate are **silently dropped** — an unverified
+    sender gets no reply (no engagement, no info leak) and no task runs. Returns a small summary,
+    including whether this channel's transport crossed the network (``network_egress``) so the
+    loop can observe/report control-channel egress the same way provider/tool egress is recorded
+    on the run."""
     handled: list[OperatorReply] = []
     dropped = 0
     for message in channel.poll(long_poll_seconds=long_poll_seconds):
@@ -349,8 +380,14 @@ def run_operator_once(
             continue
         reply = handle_operator_message(
             message, registration=registration, provider=provider, search_tool=search_tool,
-            working_memory=working_memory, now=now, store=store, repo_root=repo_root,
+            working_memory=working_memory, now=now, store=store, control_store=control_store,
+            repo_root=repo_root,
         )
         channel.send(message.chat_id, reply.text)
         handled.append(reply)
-    return {"handled": len(handled), "dropped": dropped, "replies": handled}
+    return {
+        "handled": len(handled),
+        "dropped": dropped,
+        "replies": handled,
+        "network_egress": bool(getattr(channel, "network_egress", False)),
+    }
