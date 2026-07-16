@@ -107,8 +107,8 @@ def test_completed_run_persists_records_and_audit(tmp_path):
     r = run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
     assert r["status"] == "COMPLETED"
     audit = _read_jsonl(store.root / AUDIT_FILE)
-    assert len(audit) == 6
-    assert [e["event_type"] for e in audit][2:4] == ["OTHER", "OTHER"]  # TOOL_USED, MODEL_INVOKED
+    assert len(audit) == 7
+    assert [e["event_type"] for e in audit][2:5] == ["OTHER", "OTHER", "MEMORY_CANDIDATE_CREATED"]
     kinds = {row["kind"] for row in _read_jsonl(store.root / RECORDS_FILE)}
     assert {"received_task", "task", "permission_decision", "search_permission_decision",
             "tool_use", "agent_output", "validation_result"} <= kinds
@@ -120,9 +120,9 @@ def test_audit_chain_spans_runs(tmp_path):
     run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
     run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
     audit = _read_jsonl(store.root / AUDIT_FILE)
-    assert len(audit) == 12  # two 6-event runs
+    assert len(audit) == 14  # two 7-event runs
     # The second run's first event chains onto the first run's last event.
-    assert audit[6]["lineage"]["previous_event_sha256"] == audit[5]["integrity"]["event_sha256"]
+    assert audit[7]["lineage"]["previous_event_sha256"] == audit[6]["integrity"]["event_sha256"]
 
 
 @requires_local_core
