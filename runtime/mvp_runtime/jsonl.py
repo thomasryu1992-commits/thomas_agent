@@ -11,6 +11,7 @@ still names the store it came from.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -45,3 +46,20 @@ def read_objects(path: Path, *, read_code: str, label: str) -> list[dict[str, An
         return [json.loads(ln) for ln in lines]
     except (OSError, ValueError) as exc:
         raise PersistenceError(read_code, f"could not read {label}: {exc}") from exc
+
+
+def write_objects(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code: str, label: str) -> None:
+    """Atomically **overwrite** ``path`` with exactly ``objects`` (one JSON line each).
+
+    Used by compaction/retention that must rewrite a JSONL store rather than append (temp file +
+    ``os.replace``, so a crash never leaves a half-written store). Fail-closed on write error.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for obj in objects:
+                fh.write(json.dumps(obj, ensure_ascii=False, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as exc:
+        raise PersistenceError(write_code, f"could not rewrite {label}: {exc}") from exc

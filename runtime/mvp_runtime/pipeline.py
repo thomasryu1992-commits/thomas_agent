@@ -179,7 +179,7 @@ def run_task(
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
         # A corrupt store fails closed here (BLOCK), like the ledger.
         memory_entries = (
-            retrieve_working_memory(plan["role_assignment"], working_memory)
+            retrieve_working_memory(plan["role_assignment"], working_memory, now=now)
             if working_memory is not None else []
         )
         records["memory_retrieved"] = memory_entries
