@@ -40,6 +40,7 @@ from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .worker import MockProvider, Provider, run_analysis_worker
 from .working_memory import WorkingMemoryStore
+from .workspace import DryRunWriter, WorkspaceWriter, run_write
 
 
 def render_response(agent_output: dict[str, Any]) -> str:
@@ -126,6 +127,8 @@ def run_task(
     store: LedgerStore | None = None,
     independent_validation: bool = False,
     validator_provider: Provider | None = None,
+    write_path: str | None = None,
+    writer: WorkspaceWriter | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
@@ -146,7 +149,15 @@ def run_task(
     decides delivery. The validator is skipped when the automatic checks already BLOCK
     (the outcome is decided; no model call is spent). ``validator_provider`` defaults to the
     deterministic ``MockValidatorProvider`` when the specialist uses the mock provider, and
-    to the same (gated) provider otherwise — one Safety-Flag Gate governs both agents."""
+    to the same (gated) provider otherwise — one Safety-Flag Gate governs both agents.
+
+    ``write_path`` (R8, opt-in) additionally creates the rendered response as a file at
+    that workspace-relative path — the runtime's first EXECUTE_AND_REPORT action. Supplying
+    it plans a WORKSPACE_REVERSIBLE_WRITE grant; the write itself happens only if validation
+    PASSES, is create-only and confined to ``workspace/``, and is reported (audited, plus
+    ``result["write"]``). ``writer`` defaults to the ``DryRunWriter``, which computes the
+    write without touching disk; a real writer is chosen via the Safety-Flag Gate by the
+    caller (``workspace.select_writer``)."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
     if validator_provider is None:
@@ -175,7 +186,11 @@ def run_task(
         received_task = task
         records["received_task"] = task
 
-        plan = plan_task(task, now=now, repo_root=repo_root, independent_validation=independent_validation)
+        plan = plan_task(
+            task, now=now, repo_root=repo_root,
+            independent_validation=independent_validation,
+            controlled_write=write_path is not None,
+        )
         records.update({
             "task": plan["task"], "binding": plan["binding"],
             "permission_decision": plan["permission_decision"],
@@ -185,6 +200,10 @@ def run_task(
         if independent_validation:
             records["validator_permission_decision"] = plan["validator_permission_decision"]
             records["validator_assignment"] = plan["validator_assignment"]
+        if write_path is not None:
+            # Persist the grant that authorizes the write, not just the audit event that
+            # reports it: the ledger must hold the decision the action was taken under.
+            records["write_permission_decision"] = plan["write_permission_decision"]
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
@@ -222,12 +241,32 @@ def run_task(
             records["independent_validation_result"] = independent_validation_result
             records["validator_invocation"] = validator_invocation
 
+        outcome = validation["validation"]["result"]
+        if independent_validation_result is not None:
+            outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
+
+        # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
+        # Only a PASSING result is written: a rejected analysis must not leave an artifact
+        # behind, so the write is gated on the same stricter outcome that gates delivery.
+        # A write failure fails the run closed (BLOCKED) rather than delivering a result
+        # that claims a file exists when it does not.
+        write_use = None
+        if write_path is not None and outcome == "PASS":
+            _write_result, write_use = run_write(
+                write_path, render_response(agent_output),
+                writer=writer if writer is not None else DryRunWriter(),
+                now=now, root=repo_root,
+            )
+            records["write_use"] = write_use
+
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
             now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
             independent_validation_result=independent_validation_result,
             validator_invocation=validator_invocation,
             validator_permission_decision=plan.get("validator_permission_decision"),
+            write_use=write_use,
+            write_permission_decision=plan.get("write_permission_decision"),
             genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:
@@ -236,9 +275,6 @@ def run_task(
             now=now, genesis=genesis, store=store, repo_root=repo_root,
         )
 
-    outcome = validation["validation"]["result"]
-    if independent_validation_result is not None:
-        outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
     if outcome == "PASS":
         # Fail-closed on persistence: a completed run with no durable audit is not delivered.
         if store is not None:
@@ -258,6 +294,18 @@ def run_task(
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(agent_output)
+        # The "report" half of EXECUTE_AND_REPORT: the write is never silent. The audit
+        # trail is its durable record; this surfaces it to whoever is listening (the CLI
+        # prints it, the operator loop reports it over the control channel).
+        if write_use is not None:
+            result["write"] = {
+                "relative_path": write_use["relative_path"],
+                "target_ref": write_use["target_ref"],
+                "bytes_written": write_use["bytes_written"],
+                "content_sha256": write_use["content_sha256"],
+                "filesystem_write": write_use["filesystem_write"],
+                "disposition": "EXECUTE_AND_REPORT",
+            }
     else:
         # Validation withheld delivery; the trail already concludes BLOCKED. Persist best-effort.
         if store is not None:

@@ -191,6 +191,8 @@ def build_pipeline_audit(
     independent_validation_result: Mapping[str, Any] | None = None,
     validator_invocation: Mapping[str, Any] | None = None,
     validator_permission_decision: Mapping[str, Any] | None = None,
+    write_use: Mapping[str, Any] | None = None,
+    write_permission_decision: Mapping[str, Any] | None = None,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -211,6 +213,10 @@ def build_pipeline_audit(
     ``validator_invocation``), its model call and its INDEPENDENT validation verdict are
     each recorded, and the final task state derives from the **stricter** of the automatic
     and independent results (stricter_rule_wins).
+
+    R8: when a controlled write ran (``write_use``), a WORKSPACE_WRITE event records it —
+    the durable half of the EXECUTE_AND_REPORT obligation, referencing its
+    WORKSPACE_REVERSIBLE_WRITE PermissionDecision.
     """
     root = repo_root if repo_root is not None else _repo_root()
     tid = task["identity"]["task_id"]
@@ -351,6 +357,39 @@ def build_pipeline_audit(
             summary=f"Independent validation result: {ival_result} (stricter result decides the final state).",
             outcome=ival_outcome, reason_codes=[f"VALIDATION_{ival_result}", "INDEPENDENT"],
             related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
+        ))
+
+    # R8: the controlled write is the runtime's first EXECUTE_AND_REPORT action — this
+    # event is the "report" half's durable record. OTHER-typed with the subtype in
+    # reason_codes (audit_event.v0.1 has no write type), following MODEL_INVOKED/TOOL_USED.
+    # It records the target, size, and content hash — never the content. It is emitted
+    # last because the write persists an already-validated result; a run whose validation
+    # did not PASS never reaches it (the pipeline does not write).
+    if write_use is not None:
+        write_fp = _fingerprint(dict(write_use), "write_use")
+        touched_disk = bool(write_use.get("filesystem_write"))
+        write_permdec_ref = (
+            f"in_memory:{write_permission_decision['permission_decision_id']}"
+            if write_permission_decision else f"in_memory:task:{tid}"
+        )
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                         role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+            subject_type="TOOL_USE", subject_id=str(write_use.get("tool_id")),
+            subject_ref=f"in_memory:write_use:{tid}", subject_fingerprint=write_fp,
+            summary=(f"Controlled write: {write_use.get('target_ref')} — "
+                     f"{write_use.get('bytes_written')} bytes, create-only, "
+                     f"filesystem_write={touched_disk}."),
+            outcome="RECORDED",
+            reason_codes=[
+                "WORKSPACE_WRITE",
+                "EXECUTE_AND_REPORT",
+                "CREATE_ONLY",
+                "FILESYSTEM_WRITE" if touched_disk else "NO_FILESYSTEM_WRITE",
+            ],
+            related_record_refs=[write_permdec_ref],
+            evidence_refs=[f"in_memory:write_use:{tid}"], payload_sha256=write_fp,
         ))
 
     steps.append(dict(

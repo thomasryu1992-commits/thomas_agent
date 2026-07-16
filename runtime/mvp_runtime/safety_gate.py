@@ -32,11 +32,15 @@ from .authority import rank_of
 from .errors import SafetyGateBlocked
 from .paths import repo_root as _repo_root
 
-# Capability flags this gate governs. These are the two OFF-by-default safety flags
-# named in CLAUDE.md; enabling either requires an activation record that lists it.
+# Capability flags this gate governs — each OFF by default; enabling one requires an
+# activation record that lists it. model_invocation/network_access are the two named in
+# CLAUDE.md; filesystem_write (R8) governs leaving a durable artifact on disk. It crosses
+# no network, but it is the runtime's first effect outside its own private state, so it
+# is gated on the same terms rather than on a bare env var.
 MODEL_INVOCATION = "model_invocation"
 NETWORK_ACCESS = "network_access"
-_KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS})
+FILESYSTEM_WRITE = "filesystem_write"
+_KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS, FILESYSTEM_WRITE})
 
 # Local (gitignored) activation record — never committed, per-machine, like the Core pointer.
 ACTIVATION_REL = ".runtime_governance_state/safety_flag_activation.json"

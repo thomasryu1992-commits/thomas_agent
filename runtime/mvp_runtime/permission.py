@@ -38,6 +38,7 @@ from .authority import authority_invariant_holds, permission_decision_runtime_ef
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 from .tools import SEARCH_TOOL_ID
+from .workspace import WORKSPACE_REL, WRITE_TOOL_ID
 
 _SCRIPTS_DIR = str(_repo_root() / "scripts")
 if _SCRIPTS_DIR not in sys.path:
@@ -62,6 +63,24 @@ SEARCH_REQUIRED_PERMISSION_LEVEL = "P1"  # READ — a read-only lookup, one leve
 # permission_decision_id distinct from the specialist's (the id seed includes the scope).
 VALIDATION_PERMISSION_SCOPE = "SIMULATION_VALIDATION"
 VALIDATION_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only review of an internal output
+
+# Governance scope + level for the R8 controlled write. The Governance Policy already
+# prices WORKSPACE_REVERSIBLE_WRITE at EXECUTE_AND_REPORT, making this the runtime's first
+# non-ALLOW action. P3 CREATE is the honest level for creating a new file: the policy's
+# authority ladder is P3 CREATE / P4 INTERNAL_MODIFY, so create-only stays at P3 and within
+# the specialist's ceiling. Modifying an existing file would be P4 — above that ceiling,
+# and not implemented (see workspace.py: writes are create-only).
+WRITE_PERMISSION_SCOPE = "WORKSPACE_REVERSIBLE_WRITE"
+WRITE_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — creates a new internal artifact
+
+EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
+# Dispositions the MVP has an implementation and a reporting path for. Anything stricter
+# (APPROVAL_REQUIRED, BLOCK) stays unbuildable — there is no approval flow to satisfy.
+_EXECUTABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT})
+# The EXECUTE_AND_REPORT scopes the MVP actually implements. Kept as an explicit allowlist
+# so widening the disposition gate does not silently admit the other scopes governance
+# prices at EXECUTE_AND_REPORT (GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST, ...).
+_EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
 
 
 @dataclass(frozen=True)
@@ -118,6 +137,25 @@ _VALIDATION_ACTION = _ActionSpec(
 )
 
 
+_WRITE_ACTION = _ActionSpec(
+    action_type="workspace.file.create",
+    target_suffix="workspace_write",
+    tool_id=WRITE_TOOL_ID,
+    data_scope=("task.request", "workspace.internal"),
+    normalized_parameters={"write_mode": "create_only", "workspace_root": WORKSPACE_REL, "visibility": "internal"},
+    risk_reason="Create-only write into the approved internal workspace; no external, financial, or runtime effect.",
+    authority_reason="Creating a new internal artifact within the assigned Task scope and authority ceiling.",
+    decision_reason=(
+        "Authority is sufficient and the write is confined, create-only, and reversible by "
+        "deleting the created file; the outcome is reported."
+    ),
+    constraint=(
+        "Create-only inside the approved workspace; never overwrites or deletes, and performs "
+        "no publication, tool/program execution, or runtime mutation."
+    ),
+)
+
+
 def _parse_ts(value: str) -> datetime:
     try:
         return timeutil.parse_iso(value)
@@ -168,11 +206,22 @@ def build_permission_decision(
     if disposition is None:
         raise PlannerBlocked("UNKNOWN_SCOPE", f"permission_scope {permission_scope!r} has no policy disposition")
     # Fail closed explicitly on anything the MVP cannot perform, before building the
-    # record — do not rely on a downstream schema conditional to reject it.
-    if disposition != "ALLOW":
+    # record — do not rely on a downstream schema conditional to reject it. The MVP
+    # performs ALLOW actions and, since R8, the one EXECUTE_AND_REPORT action it has an
+    # implementation and a reporting path for (see _EXECUTABLE_DISPOSITIONS). Everything
+    # stricter — APPROVAL_REQUIRED, BLOCK — stays refused: the MVP has no approval flow,
+    # so an APPROVAL_REQUIRED action has no way to become authorized and must not proceed.
+    if disposition not in _EXECUTABLE_DISPOSITIONS:
         raise PlannerBlocked(
             "NOT_ALLOWED",
-            f"MVP only performs ALLOW-tier actions; scope {permission_scope} disposition is {disposition}",
+            f"MVP cannot perform {disposition} actions; scope {permission_scope} disposition is {disposition}",
+        )
+    if disposition == EXECUTE_AND_REPORT and permission_scope not in _EXECUTE_AND_REPORT_SCOPES:
+        # An EXECUTE_AND_REPORT scope the runtime has no implementation for (e.g.
+        # GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST) must not ride in on R8's widening.
+        raise PlannerBlocked(
+            "NOT_ALLOWED",
+            f"scope {permission_scope} is EXECUTE_AND_REPORT but the MVP implements no such action",
         )
 
     created = _parse_ts(now)
@@ -337,4 +386,36 @@ def build_validation_permission_decision(
         ttl_minutes=ttl_minutes,
         repo_root=repo_root,
         action=_VALIDATION_ACTION,
+    )
+
+
+def build_write_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the EXECUTE_AND_REPORT PermissionDecision for the R8 controlled write.
+
+    A thin wrapper over :func:`build_permission_decision` fixing the write scope
+    (``WORKSPACE_REVERSIBLE_WRITE``), the least-privilege level (P3 CREATE), and the write
+    action spec. Fails closed identically — including on authority: a role whose ceiling is
+    below P3 cannot obtain this grant.
+
+    Unlike its siblings this decision is **EXECUTE_AND_REPORT, not ALLOW** — the runtime's
+    first. The disposition comes from the canonical Governance Policy, not from here; the
+    caller owes the "report" half (audit + operator report), which the pipeline provides."""
+    return build_permission_decision(
+        bound_task,
+        permission_scope=WRITE_PERMISSION_SCOPE,
+        required_permission_level=WRITE_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=_WRITE_ACTION,
     )
