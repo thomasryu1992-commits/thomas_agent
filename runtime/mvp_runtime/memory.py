@@ -30,6 +30,10 @@ PREFERRED_TYPE = "reusable_knowledge"
 MAX_CANDIDATES = 5
 MAX_RETRIEVED = 5
 
+VALIDATED_STATUS = "VALIDATED"
+VALIDATED_SCOPE = "related_validated_memory"
+PROMOTION_DISPOSITION = "EXECUTE_AND_REPORT"   # governance tier for validated-knowledge promotion
+
 
 def build_memory_candidates(
     analysis: Mapping[str, Any],
@@ -110,3 +114,55 @@ def retrieve_working_memory(
     # Deterministic recency order; take the most recent `limit`.
     selected.sort(key=lambda e: (str(e.get("created_at", "")), str(e.get("candidate_id", ""))))
     return selected[-limit:] if limit > 0 else []
+
+
+def promote_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    promoted_by: str,
+    reason: str,
+    now: str,
+) -> dict[str, Any]:
+    """Promote a working-memory CANDIDATE to VALIDATED memory. Explicit operator action only.
+
+    Governance: promotion of validated low-risk operational knowledge is EXECUTE_AND_REPORT and
+    ``automatic_runtime_promotion_allowed`` is false — so this is NEVER called from the run
+    pipeline; only the operator promotion tool invokes it, with an operator identity + reason
+    (the "report"). Fails closed (``MemoryBlocked``) unless the input is a genuine
+    CANDIDATE-status working-memory entry with content, and on a secret-bearing entry.
+    """
+    if not isinstance(candidate, Mapping):
+        raise MemoryBlocked("NOT_A_CANDIDATE", "promotion input must be a candidate mapping")
+    if candidate.get("status") != CANDIDATE_STATUS or candidate.get("scope") != CANDIDATE_SCOPE:
+        raise MemoryBlocked("NOT_A_CANDIDATE", "only a task_working_memory CANDIDATE may be promoted")
+    candidate_id = candidate.get("candidate_id")
+    content = candidate.get("content")
+    if not (isinstance(candidate_id, str) and candidate_id):
+        raise MemoryBlocked("INVALID_CANDIDATE", "candidate is missing a candidate_id")
+    if not (isinstance(content, str) and content.strip()):
+        raise MemoryBlocked("INVALID_CANDIDATE", "candidate is missing content")
+    if not (isinstance(promoted_by, str) and promoted_by.strip()):
+        raise MemoryBlocked("MISSING_OPERATOR", "promotion requires an operator identity (promoted_by)")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise MemoryBlocked("MISSING_REASON", "promotion requires an operator reason (EXECUTE_AND_REPORT)")
+
+    validated = {
+        "validated_memory_id": integrity.short_id(
+            "valmem", {"candidate_id": candidate_id, "promoted_by": promoted_by, "promoted_at": now}
+        ),
+        "source_candidate_id": candidate_id,
+        "candidate_type": candidate.get("candidate_type", "reusable_knowledge"),
+        "scope": VALIDATED_SCOPE,
+        "status": VALIDATED_STATUS,
+        "disposition": PROMOTION_DISPOSITION,
+        "content": content.strip(),
+        "evidence_refs": [f"working_memory:{candidate_id}"],
+        "promoted_by": promoted_by.strip(),
+        "promotion_reason": reason.strip(),
+        "promoted_at": now,
+    }
+    try:
+        integrity.scan_for_secret_bearing_keys(validated)
+    except IntegrityError as exc:
+        raise MemoryBlocked("SECRET_IN_VALIDATED", str(exc)) from exc
+    return validated
