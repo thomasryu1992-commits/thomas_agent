@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import jsonl
+from . import jsonl, memory
 from .paths import repo_root as _repo_root
 
 WORKING_MEMORY_REL = ".runtime_governance_state/working_memory"
@@ -56,6 +56,22 @@ class WorkingMemoryStore:
     def read_validated(self) -> list[dict[str, Any]]:
         """Return every promoted (VALIDATED) memory entry. Fail-closed on a corrupt store."""
         return self._read(VALIDATED_FILE, "VALIDATED_MEMORY_UNREADABLE", "validated memory")
+
+    def prune_expired(self, now: str) -> list[dict[str, Any]]:
+        """Delete expired candidates (policy §12.4 retention) and return the removed entries.
+
+        Compacts ``candidates.jsonl`` to only the entries still live as of ``now`` (atomic
+        rewrite). Entries without an ``expires_at`` are kept (see ``memory.is_expired``). Only
+        the candidate store is pruned — promoted VALIDATED memory has its own longer retention
+        and is never touched here. Returns the removed entries so the caller can audit the
+        deletion (policy §15). Fail-closed on a read/rewrite error (``PersistenceError``)."""
+        entries = self.read_all()
+        kept = [e for e in entries if not memory.is_expired(e, now)]
+        removed = [e for e in entries if memory.is_expired(e, now)]
+        if removed:
+            jsonl.write_objects(self._root / ENTRIES_FILE, kept,
+                                write_code="WORKING_MEMORY_WRITE_FAILED", label="working memory")
+        return removed
 
     def _append(self, filename: str, entries: list[Mapping[str, Any]], code: str, label: str) -> None:
         if not entries:
