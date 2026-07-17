@@ -21,6 +21,7 @@ from runtime.mvp_runtime.safety_gate import (
     assert_authorization,
     authorize,
     build_activation_record,
+    select_gated,
 )
 
 NOW = "2026-07-15T00:00:00Z"
@@ -178,3 +179,96 @@ def test_assert_passes_for_valid_grant():
     auth = Authorization(flags=FLAGS, provider_id=PROVIDER, activation_sha256="sha256:x",
                          expires_at="2099-01-01T00:00:00Z", evidence_ref="ev.md")
     assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)  # no raise
+
+
+# --- select_gated: the chokepoint every gated capability shares ---------------------
+
+
+def test_select_gated_returns_the_inert_default_without_opt_in(monkeypatch, tmp_path):
+    monkeypatch.delenv("PROBE_GATE_ENV", raising=False)
+    built = []
+    got = select_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: built.append(auth) or "capable",
+        root=tmp_path,
+    )
+    assert got == "inert"
+    assert built == []  # the capable implementation was never constructed
+
+
+@pytest.mark.parametrize("value", ["", "   ", "something-else", "REALLY"])
+def test_select_gated_falls_back_to_inert_on_any_other_value(value, monkeypatch, tmp_path):
+    """An unrecognised opt-in must fall back to inert, never to the capable path."""
+    monkeypatch.setenv("PROBE_GATE_ENV", value)
+    got = select_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: "capable",
+        root=tmp_path,
+    )
+    assert got == "inert"
+
+
+def test_select_gated_accepts_the_opt_in_case_insensitively(monkeypatch, tmp_path):
+    """The value is normalised, so REAL/Real/real behave identically — and all of them
+    still have to pass the gate."""
+    monkeypatch.setenv("PROBE_GATE_ENV", "  REAL  ")
+    with pytest.raises(SafetyGateBlocked):
+        select_gated(
+            env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+            provider_id="probe",
+            default_factory=lambda: "inert",
+            gated_factory=lambda auth: "capable",
+            root=tmp_path,
+        )
+
+
+def test_select_gated_never_builds_the_capable_thing_when_the_gate_is_shut(monkeypatch, tmp_path):
+    """The property the whole extraction exists for: opting in is not enough. With no
+    activation record the gate raises and `gated_factory` is never called, so a capable
+    implementation cannot come into existence unauthorized."""
+    monkeypatch.setenv("PROBE_GATE_ENV", "real")
+    built = []
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_gated(
+            env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+            provider_id="probe",
+            default_factory=lambda: "inert",
+            gated_factory=lambda auth: built.append("built") or "capable",
+            root=tmp_path,
+        )
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    assert built == []
+
+
+def test_select_gated_passes_the_authorization_to_the_factory(monkeypatch, tmp_path):
+    """When the gate does open, the factory receives the grant — so the object it builds
+    can re-verify it at egress (defense in depth)."""
+    evidence = tmp_path / "evidence.md"
+    evidence.write_text("operator decision", encoding="utf-8")
+    record = build_activation_record(
+        flags=[NETWORK_ACCESS], provider_id="probe", authority_level="P2",
+        evidence_ref="evidence.md",
+        activated_at="2026-01-01T00:00:00Z", expires_at="2999-01-01T00:00:00Z",
+    )
+    path = tmp_path / ACTIVATION_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setenv("PROBE_GATE_ENV", "real")
+    received = []
+    got = select_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: received.append(auth) or "capable",
+        now="2026-07-16T12:00:00Z", root=tmp_path,
+    )
+    assert got == "capable"
+    assert len(received) == 1
+    assert isinstance(received[0], Authorization)
+    assert received[0].provider_id == "probe"
+    assert NETWORK_ACCESS in received[0].flags

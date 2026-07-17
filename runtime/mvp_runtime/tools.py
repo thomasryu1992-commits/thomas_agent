@@ -157,17 +157,20 @@ def select_search_tool(*, now: str | None = None, root: Path | None = None) -> S
     (:class:`SafetyGateBlocked`) rather than silently opening a network path.
 
     This is the search analog of ``providers.select_provider``, and both CLIs select
-    their search tool through it (``cli.py``, ``operator_cli.py``).
+    their search tool through it (``cli.py``, ``operator_cli.py``). The shared
+    ``safety_gate.select_gated`` enforces the ordering: no network-capable tool is
+    constructed until the gate has opened.
     """
-    choice = os.environ.get(SEARCH_TOOL_ENV, "").strip().lower()
-    if choice != BRAVE_SEARCH:
-        return MockSearchTool()
-
-    # Opted into a network-capable tool — must pass the gate before it is even built.
-    authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=BRAVE_SEARCH, now=now or timeutil.utc_now_iso(), root=root
+    return safety_gate.select_gated(
+        env_var=SEARCH_TOOL_ENV,
+        opt_in_value=BRAVE_SEARCH,
+        flags=_NETWORK_FLAGS,
+        provider_id=BRAVE_SEARCH,
+        default_factory=MockSearchTool,
+        gated_factory=lambda authorization: WebSearchTool(authorization=authorization),
+        now=now,
+        root=root,
     )
-    return WebSearchTool(authorization=authorization)
 
 
 class WebSearchTool:

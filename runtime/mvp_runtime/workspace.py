@@ -32,7 +32,6 @@ Safety model:
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol, runtime_checkable
@@ -263,13 +262,17 @@ def select_writer(*, now: str | None = None, root: Path | None = None) -> Worksp
     alone is NOT sufficient: with no valid activation this fails closed
     (:class:`SafetyGateBlocked`) rather than silently opening a write path.
 
-    The writer analog of ``providers.select_provider`` and ``tools.select_search_tool``.
+    The writer analog of ``providers.select_provider`` and ``tools.select_search_tool``;
+    all four share ``safety_gate.select_gated``, which is what makes "authorize before the
+    capable thing is constructed" structural rather than remembered.
     """
-    choice = os.environ.get(WRITER_ENV, "").strip().lower()
-    if choice != REAL_WRITER:
-        return DryRunWriter()
-
-    authorization = safety_gate.authorize(
-        _WRITE_FLAGS, provider_id=WRITE_TOOL_ID, now=now or timeutil.utc_now_iso(), root=root
+    return safety_gate.select_gated(
+        env_var=WRITER_ENV,
+        opt_in_value=REAL_WRITER,
+        flags=_WRITE_FLAGS,
+        provider_id=WRITE_TOOL_ID,
+        default_factory=DryRunWriter,
+        gated_factory=lambda authorization: RealWorkspaceWriter(authorization=authorization),
+        now=now,
+        root=root,
     )
-    return RealWorkspaceWriter(authorization=authorization)

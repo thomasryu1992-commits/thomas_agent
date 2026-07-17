@@ -21,9 +21,10 @@ metadata only (flags, provider id, timestamps, evidence ref, self-hash) — neve
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
@@ -31,6 +32,10 @@ from runtime.read_only_kernel.integrity import IntegrityError
 from .authority import rank_of
 from .errors import SafetyGateBlocked
 from .paths import repo_root as _repo_root
+from .timeutil import utc_now_iso as _utc_now_iso
+
+# The capability a gated selection returns (a Provider, SearchTool, OperatorChannel, ...).
+T = TypeVar("T")
 
 # Capability flags this gate governs — each OFF by default; enabling one requires an
 # activation record that lists it. model_invocation/network_access are the two named in
@@ -219,3 +224,41 @@ def assert_authorization(
         raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"authorization does not enable required flags: {missing}")
     if now >= authorization.expires_at:
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "authorization has expired since it was granted")
+
+
+def select_gated(
+    *,
+    env_var: str,
+    opt_in_value: str,
+    flags: Sequence[str],
+    provider_id: str,
+    default_factory: Callable[[], T],
+    gated_factory: Callable[[Authorization], T],
+    now: str | None = None,
+    root: Path | None = None,
+) -> T:
+    """The Safety-Flag Gate chokepoint shared by every gated capability.
+
+    Every capability that can reach outside the runtime — the model provider, the search
+    tool, the operator channel, the workspace writer — chooses its implementation the same
+    way, and that sameness is the safety property, not a coincidence worth deduplicating:
+
+    1. Without the caller's explicit opt-in (``env_var == opt_in_value``), return the inert
+       default. It needs no gate because it cannot reach anything.
+    2. With the opt-in, ``authorize`` FIRST. Only if it passes does ``gated_factory`` run.
+
+    Step 2 is why this exists. "Never construct the capable thing before the gate opens" was
+    previously four authors each remembering to write it in the right order; here it is
+    structural — ``gated_factory`` receives the :class:`Authorization` as its argument, so it
+    cannot run without one. An env var alone can never open a capability: with no valid
+    activation record, ``authorize`` raises :class:`SafetyGateBlocked` and nothing is built.
+
+    The gated object is still expected to re-verify its authorization at the moment it acts
+    (defense in depth) — this selects; it does not excuse the egress check.
+    """
+    choice = os.environ.get(env_var, "").strip().lower()
+    if choice != opt_in_value:
+        return default_factory()
+    # Opted in — the gate must pass before the capable implementation is even constructed.
+    authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
+    return gated_factory(authorization)

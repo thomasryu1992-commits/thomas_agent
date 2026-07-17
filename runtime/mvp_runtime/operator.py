@@ -292,14 +292,20 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     Defaults to the network-free ``MockOperatorChannel`` (no gate needed). A real
     ``TelegramChannel`` is returned ONLY when both ``MVP_OPERATOR_CHANNEL=telegram`` AND the
     Safety-Flag Gate authorizes ``network_access`` against a local activation record. The env
-    var alone fails closed (``SafetyGateBlocked``), never silently opening a network path."""
-    choice = os.environ.get(OPERATOR_CHANNEL_ENV, "").strip().lower()
-    if choice != TELEGRAM:
-        return MockOperatorChannel()
-    authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=TELEGRAM, now=now or timeutil.utc_now_iso(), root=root
+    var alone fails closed (``SafetyGateBlocked``), never silently opening a network path.
+
+    Shares ``safety_gate.select_gated`` with the provider, search tool, and writer — one
+    place decides that the capable implementation is never built before the gate opens."""
+    return safety_gate.select_gated(
+        env_var=OPERATOR_CHANNEL_ENV,
+        opt_in_value=TELEGRAM,
+        flags=_NETWORK_FLAGS,
+        provider_id=TELEGRAM,
+        default_factory=MockOperatorChannel,
+        gated_factory=lambda authorization: TelegramChannel(authorization=authorization),
+        now=now,
+        root=root,
     )
-    return TelegramChannel(authorization=authorization)
 
 
 class TelegramChannel:
