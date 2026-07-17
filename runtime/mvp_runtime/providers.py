@@ -41,6 +41,8 @@ _RESPONSE_INSTRUCTION = (
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
 HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
 GOOGLE_AI_STUDIO = "google_ai_studio"
+# The default hosted model. Not "gemini-2.5-flash": that 404s for newly issued keys.
+DEFAULT_HOSTED_MODEL = "gemini-flash-latest"
 _NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
 
@@ -53,17 +55,24 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     Gate authorizes it against a local, integrity-checked activation record. The env var
     alone is NOT sufficient: with no valid activation this fails closed
     (:class:`SafetyGateBlocked`) rather than silently opening a network path.
-    """
-    choice = os.environ.get(HOSTED_PROVIDER_ENV, "").strip().lower()
-    if choice != GOOGLE_AI_STUDIO:
-        return MockProvider()
 
-    # Opted into a network-capable provider — must pass the gate before it is even built.
-    authorization = safety_gate.authorize(
-        _NETWORK_FLAGS, provider_id=GOOGLE_AI_STUDIO, now=now or timeutil.utc_now_iso(), root=root
+    The gate ordering lives in ``safety_gate.select_gated``, shared with the search tool,
+    operator channel, and workspace writer. The model name is read inside the gated factory
+    — it only matters once the gate has already opened.
+    """
+    return safety_gate.select_gated(
+        env_var=HOSTED_PROVIDER_ENV,
+        opt_in_value=GOOGLE_AI_STUDIO,
+        flags=_NETWORK_FLAGS,
+        provider_id=GOOGLE_AI_STUDIO,
+        default_factory=MockProvider,
+        gated_factory=lambda authorization: GoogleAIStudioProvider(
+            model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
+            authorization=authorization,
+        ),
+        now=now,
+        root=root,
     )
-    model = os.environ.get(HOSTED_MODEL_ENV, "gemini-flash-latest").strip()
-    return GoogleAIStudioProvider(model=model, authorization=authorization)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -89,7 +98,7 @@ class GoogleAIStudioProvider:
     def __init__(
         self,
         *,
-        model: str = "gemini-flash-latest",
+        model: str = DEFAULT_HOSTED_MODEL,
         api_key_env: str = "GOOGLE_AI_STUDIO_API_KEY",
         authorization: Authorization | None = None,
     ):
