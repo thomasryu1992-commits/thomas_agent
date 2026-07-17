@@ -14,6 +14,7 @@ import urllib.error
 import pytest
 
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
+from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
 from runtime.mvp_runtime.tools import (
     SEARCH_TOOL_ENV,
@@ -131,7 +132,9 @@ def test_select_real_tool_with_activation_returns_web_tool(monkeypatch, tmp_path
         evidence_ref=evidence_rel,
         authority_level="P1",
     )
-    (state / "safety_flag_activation.json").write_text(json.dumps(record), encoding="utf-8")
+    path = safety_gate.activation_path(tmp_path, "brave_search")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
 
     monkeypatch.setenv(SEARCH_TOOL_ENV, "brave_search")
     tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)

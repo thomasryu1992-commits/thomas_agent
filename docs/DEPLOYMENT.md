@@ -42,8 +42,13 @@ or a registration). To process real requests, provide the same local state a wor
   chat id). Without it the loop exits `REGISTRATION_MISSING`.
 - `CURRENT_CORE_RELEASE.yaml` + the referenced `THOMAS_CORE/activations|approvals/` records —
   the active approved Core the pipeline binds each task to.
-- `safety_flag_activation.json` — required to enable the real Telegram transport and/or the
-  hosted model provider (build it with `scripts/activate_safety_flag.py`).
+- `safety_flag_activations/<provider_id>.json` — **one grant per provider**, each required to
+  enable that provider: `telegram` for the real control-channel transport, `google_ai_studio`
+  for the hosted model, `brave_search` for real search, `workspace.writer` for real writes.
+  Build each with `scripts/activate_safety_flag.py --provider-id ...`; the referenced
+  `safety_flag_evidence/` file must be mounted too, since the gate verifies it exists.
+  Granting one provider never grants another — a bare image still fails closed on every
+  capability you did not explicitly activate.
 - The `runtime_ledger/` and control state are created on first write.
 
 Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to

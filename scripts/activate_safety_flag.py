@@ -106,8 +106,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return 2
 
-    # 3) Write it to the gitignored per-machine path the gate reads.
-    activation_path = root / safety_gate.ACTIVATION_REL
+    # 3) Write it to this provider's own gitignored path. One grant per provider, so
+    #    activating a second provider leaves the first exactly as it was.
+    try:
+        activation_path = safety_gate.activation_path(root, args.provider_id)
+    except SafetyGateBlocked as exc:
+        print(f"ERROR: {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return 2
     activation_path.parent.mkdir(parents=True, exist_ok=True)
     activation_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
