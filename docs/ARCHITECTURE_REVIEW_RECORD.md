@@ -27,9 +27,12 @@ document is the standing reference for **why finding C is parked**.
 Chokepoint so a network-capable provider is only reachable behind a verified activation, never a bare env var.
 
 - **`runtime/mvp_runtime/safety_gate.py`** (single authority): `authorize()` verifies a local, integrity-checked
-  activation record at `.runtime_governance_state/safety_flag_activation.json` (gitignored, per-machine) —
-  present / self-hash-consistent (tamper-evident) / unexpired / evidence-backed / flags+provider explicit →
-  else fail-closed `SafetyGateBlocked`. `build_activation_record()` mints a valid record (computes the hash).
+  activation record (gitignored, per-machine) — present / self-hash-consistent (tamper-evident) / unexpired /
+  evidence-backed / flags+provider explicit → else fail-closed `SafetyGateBlocked`. `build_activation_record()`
+  mints a valid record (computes the hash).
+  *(Since superseded in layout only: the record was a single `safety_flag_activation.json`; grants are now one
+  file per provider under `safety_flag_activations/`, so two vendors can be authorized independently. The
+  verification described here is unchanged — see CLAUDE.md for the current path.)*
 - **`providers.select_provider()`** requires `authorize()` before building a hosted provider;
   **`GoogleAIStudioProvider.generate()`** re-checks the authorization at egress (defense in depth).
 - To run the REAL hosted provider locally you must WRITE an activation record (env var alone fail-closes) —

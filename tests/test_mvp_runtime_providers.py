@@ -19,6 +19,7 @@ from runtime.mvp_runtime.providers import (
     GoogleAIStudioProvider,
     select_provider,
 )
+from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import (
     MODEL_INVOCATION,
     NETWORK_ACCESS,
@@ -68,7 +69,9 @@ def test_select_provider_hosted_with_activation_returns_hosted(monkeypatch, tmp_
         evidence_ref=evidence_rel,
         authority_level="P4",
     )
-    (state / "safety_flag_activation.json").write_text(json.dumps(record), encoding="utf-8")
+    path = safety_gate.activation_path(tmp_path, "google_ai_studio")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
 
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio")
     provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)

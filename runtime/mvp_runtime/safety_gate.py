@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
@@ -47,8 +48,19 @@ NETWORK_ACCESS = "network_access"
 FILESYSTEM_WRITE = "filesystem_write"
 _KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS, FILESYSTEM_WRITE})
 
-# Local (gitignored) activation record — never committed, per-machine, like the Core pointer.
-ACTIVATION_REL = ".runtime_governance_state/safety_flag_activation.json"
+# Local (gitignored) activation records — never committed, per-machine, like the Core pointer.
+# ONE FILE PER PROVIDER. Each grant is scoped, expired, and evidenced on its own, so
+# authorizing a second provider cannot widen, refresh, or accidentally re-authorize the
+# first, and a corrupt or expired grant fails only its own provider closed rather than all
+# of them. A single shared record could not express "the specialist may call Gemini AND the
+# validator may call a different vendor" at all — it had one provider_id field.
+ACTIVATIONS_DIR_REL = ".runtime_governance_state/safety_flag_activations"
+
+# provider_id becomes a filename, so it is confined like any caller-supplied path segment:
+# lowercase alnum start, then alnum/underscore/dot/hyphen. This admits every real provider
+# id (google_ai_studio, brave_search, telegram, workspace.writer) and admits no separator,
+# no traversal, and no absolute path.
+_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 
 ACTIVATION_MARKER = "safety_flag_activation.v0"
 _HASH_FIELD = "content_sha256"
@@ -74,13 +86,34 @@ class Authorization:
     evidence_ref: str
 
 
-def _load_record(root: Path) -> dict[str, Any]:
-    path = root / ACTIVATION_REL
+def activation_path(root: Path, provider_id: str) -> Path:
+    """Where ``provider_id``'s activation record lives, or fail closed.
+
+    The id is a caller-supplied path segment, so it is validated against a strict pattern
+    and the resolved path is verified to stay inside the activations directory — a provider
+    id can name a grant, never a location.
+    """
+    if not (isinstance(provider_id, str) and _PROVIDER_ID_PATTERN.match(provider_id)):
+        raise SafetyGateBlocked(
+            "INVALID_PROVIDER_ID",
+            f"provider id {provider_id!r} is not a valid activation name",
+        )
+    base = (root / ACTIVATIONS_DIR_REL).resolve()
+    path = (base / f"{provider_id}.json").resolve()
+    if path.parent != base:
+        raise SafetyGateBlocked(
+            "INVALID_PROVIDER_ID", f"provider id {provider_id!r} resolves outside the activations directory"
+        )
+    return path
+
+
+def _load_record(root: Path, provider_id: str) -> dict[str, Any]:
+    path = activation_path(root, provider_id)
     if not path.is_file():
         raise SafetyGateBlocked(
             "ACTIVATION_MISSING",
-            f"no safety-flag activation record at {ACTIVATION_REL}; network-capable "
-            "providers are disabled (fail-closed)",
+            f"no safety-flag activation record for {provider_id!r} at "
+            f"{ACTIVATIONS_DIR_REL}/{provider_id}.json; the capability is disabled (fail-closed)",
         )
     try:
         raw = path.read_text(encoding="utf-8")
@@ -131,12 +164,15 @@ def build_activation_record(
 
     This is the *only* supported way to produce the ``content_sha256``; it does not
     write any file and does not enable anything by itself — the operator records the
-    approval evidence and writes the returned object to ``ACTIVATION_REL`` as a
-    deliberate, local governance step.
+    approval evidence and writes the returned object to ``activation_path(root,
+    provider_id)`` as a deliberate, local governance step, one grant per provider.
     """
     bad = [f for f in flags if f not in _KNOWN_FLAGS]
     if bad:
         raise SafetyGateBlocked("UNKNOWN_FLAG", f"not a governed safety flag: {bad}")
+    if not _PROVIDER_ID_PATTERN.match(provider_id or ""):
+        # Refuse to mint a grant whose id could not be stored or looked up.
+        raise SafetyGateBlocked("INVALID_PROVIDER_ID", f"provider id {provider_id!r} is not a valid activation name")
     if rank_of(authority_level) is None:
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
     record = {
@@ -161,13 +197,16 @@ def authorize(
 ) -> Authorization:
     """Authorize a network-capable capability, or fail closed.
 
-    Verifies the local activation record: present, integrity-consistent, unexpired,
-    references a real evidence file, and explicitly enables every ``required_flag`` for
-    ``provider_id``. Returns an :class:`Authorization` on success; raises
+    Verifies **that provider's own** activation record: present, integrity-consistent,
+    unexpired, references a real evidence file, and explicitly enables every
+    ``required_flag``. Returns an :class:`Authorization` on success; raises
     :class:`SafetyGateBlocked` (a fail-closed BLOCK) otherwise.
+
+    Each provider is authorized independently, so one open grant never speaks for another:
+    a run may hold a Gemini grant and no Groq grant, and the Groq call still fails closed.
     """
     root = root if root is not None else _repo_root()
-    record = _load_record(root)
+    record = _load_record(root, provider_id)
     activation_sha256 = _verify_integrity(record)
 
     activated_at, expires_at = record["activated_at"], record["expires_at"]
@@ -176,6 +215,10 @@ def authorize(
     if now >= str(expires_at):
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "safety-flag activation has expired (fail-closed)")
 
+    # The filename is only an index; the record's own content is the authority. Copying
+    # google_ai_studio.json to groq.json therefore grants nothing — the inner provider_id
+    # still says google_ai_studio, and it is covered by the self-hash, so it cannot be
+    # edited to agree without breaking integrity.
     if record["provider_id"] != provider_id:
         raise SafetyGateBlocked(
             "PROVIDER_NOT_AUTHORIZED",
