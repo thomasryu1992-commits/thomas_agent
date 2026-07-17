@@ -61,6 +61,7 @@ until locally activated behind the Safety-Flag Gate.
 | R4 operator control channel (Telegram private 1:1) | [`OPERATOR_CONTROL_CHANNEL_V0.1`](runtime-contracts/OPERATOR_CONTROL_CHANNEL_V0.1.md), [`runtime/mvp_runtime/operator.py`](../runtime/mvp_runtime/operator.py); run `python -m runtime.mvp_runtime.operator_cli` |
 | R8 controlled write (first EXECUTE_AND_REPORT action) | [`CONTROLLED_WRITE_V0.1`](runtime-contracts/CONTROLLED_WRITE_V0.1.md), [`runtime/mvp_runtime/workspace.py`](../runtime/mvp_runtime/workspace.py); `--write-output PATH` |
 | R9 approval flow (ask Thomas; stops before execution) | [`APPROVAL_FLOW_V0.1`](runtime-contracts/APPROVAL_FLOW_V0.1.md), [`runtime/mvp_runtime/approval.py`](../runtime/mvp_runtime/approval.py); `python -m runtime.mvp_runtime.approval_cli request --candidate-id ...`, then `/approve <id>` on the control channel |
+| Audit-chain verification + state diagnosis (read-only; work while KILLED) | [`AUDIT_RECOVERY_CONSOLE_V0.1`](runtime-contracts/AUDIT_RECOVERY_CONSOLE_V0.1.md); `python -m runtime.mvp_runtime.console_cli audit` · `... console_cli recovery`, or `/audit` · `/recovery` |
 
 Local per-machine setup (Core activation, safety-flag activation, the ledger) is described in
 the repo-root `CLAUDE.md`; that state lives under the gitignored `.runtime_governance_state/`.
