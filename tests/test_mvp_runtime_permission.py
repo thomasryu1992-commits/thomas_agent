@@ -13,6 +13,7 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.errors import PlannerBlocked
 from runtime.mvp_runtime.intake import build_task
+from runtime.mvp_runtime import permission
 from runtime.mvp_runtime.permission import (
     build_permission_decision,
     build_search_permission_decision,
@@ -186,12 +187,25 @@ def test_write_is_refused_below_the_p3_create_ceiling():
 
 
 @requires_local_core
-def test_approval_required_scopes_stay_refused():
-    """R8 widened the gate to EXECUTE_AND_REPORT only. APPROVAL_REQUIRED scopes must not
-    become reachable — the MVP has no approval flow to satisfy."""
-    with pytest.raises(PlannerBlocked) as exc:
-        _decide(_bound_task(), permission_scope="PUBLICATION", required_permission_level="P3")
-    assert exc.value.reason_code == "NOT_ALLOWED"
+def test_unimplemented_approval_required_scopes_stay_refused():
+    """R9 lets an APPROVAL_REQUIRED decision be BUILT (it is the object an Approval Request
+    binds to) — but only for the one scope the runtime can actually ask about. The rest name
+    actions it has no implementation for, so a request for one would be an ask it could never
+    honour."""
+    for scope in ("PUBLICATION", "EXTERNAL_COMMUNICATION", "DESTRUCTIVE_CHANGE"):
+        with pytest.raises(PlannerBlocked) as exc:
+            _decide(_bound_task(), permission_scope=scope, required_permission_level="P3",
+                    approval_id="approval_probe")
+        assert exc.value.reason_code == "NOT_ALLOWED"
+
+
+@requires_local_core
+def test_approval_required_is_buildable_but_never_executable():
+    """The R9 boundary: building the record is not acting on it. An APPROVAL_REQUIRED
+    decision exists so Thomas can be asked; the runtime still has no path to perform it
+    (approval consumption is gate-pinned unimplemented)."""
+    assert "APPROVAL_REQUIRED" in permission._BUILDABLE_DISPOSITIONS
+    assert "APPROVAL_REQUIRED" not in permission._EXECUTABLE_DISPOSITIONS
 
 
 @requires_local_core

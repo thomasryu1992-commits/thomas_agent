@@ -102,3 +102,13 @@ class SchedulerBlocked(MvpRuntimeError):
     Raised on an invalid schedule (unknown kind, non-positive/too-small interval, missing
     request for a task schedule) or an unreadable schedule store. Scheduled execution is bound
     to the kill switch: while the runtime is PAUSED/KILLED, due schedules are skipped, never run."""
+
+
+class ApprovalBlocked(MvpRuntimeError):
+    """An approval operation was refused (R9).
+
+    Raised when an Approval cannot be requested (the decision is not APPROVAL_REQUIRED, has
+    no approval_id, or already expired) or cannot be decided (not PENDING, expired, wrong
+    approver, unverified source, missing reason). Fail-closed: an approval is only worth the
+    certainty that Thomas gave it, so any doubt about identity, freshness, or one-time use
+    refuses rather than records a decision that might not be his."""
