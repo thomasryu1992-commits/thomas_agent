@@ -510,3 +510,108 @@ def build_promotion_audit(
         id_seed_extra={"candidate_id": candidate_id, "validated_memory_id": validated_id,
                        "promoted_by": promoted_by.strip()},
     )
+
+
+def _approval_synthetic_task(approval: Mapping[str, Any]) -> dict[str, Any]:
+    """The task identity an approval event anchors to.
+
+    An approval carries the full lineage of the action it decides (task, revision, trace,
+    Core binding), so the event anchors to the originating task without fabricating anything.
+    An action that needs Thomas is SENSITIVE by construction — it is the class of action the
+    governance reserves to him — so the event is classified that way rather than as routine
+    internal traffic.
+    """
+    return {
+        "identity": {
+            "task_id": approval["task_id"],
+            "task_revision": approval["task_revision"],
+            "trace_id": approval["trace_id"],
+        },
+        "context": {
+            "core_context_binding_id": approval["core_context_binding_id"],
+            "data_sensitivity": "SENSITIVE",
+        },
+    }
+
+
+def build_approval_request_audit(
+    approval: Mapping[str, Any],
+    *,
+    now: str,
+    genesis_previous_hash: str | None = None,
+    repo_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Audit that Thomas was ASKED (R9) — one standalone event chained onto the ledger tip.
+
+    Asking is not acting: the outcome is RECORDED and the event asserts that nothing was
+    authorized. ``audit_event.v0.1`` has no approval event type, so (reuse-first, per the
+    I0.5.4 precedent) this is ``OTHER`` with the subtype in ``reason_codes``.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    approval_id = approval["approval_id"]
+    snapshot = approval["approved_action_snapshot"]
+    fp = _fingerprint(dict(approval), "approval")
+    event, _ = _make_event(
+        root=root, task=_approval_synthetic_task(approval), now=now,
+        event_type="OTHER",
+        actor=_actor("thomas_prime", "thomas.prime"),
+        subject_type="APPROVAL", subject_id=approval_id,
+        subject_ref=f"approval:{approval_id}", subject_fingerprint=fp,
+        summary=(f"Approval requested from Thomas: {snapshot['action_type']} on "
+                 f"{snapshot['target_ref']} ({snapshot['permission_scope']}); "
+                 f"expires {approval['validity']['expires_at']}."),
+        outcome="RECORDED",
+        reason_codes=["APPROVAL_REQUESTED", "APPROVAL_REQUIRED", "PENDING", "NO_EXECUTION_AUTHORIZED"],
+        related_record_refs=[f"in_memory:{approval['permission_decision_id']}"],
+        evidence_refs=[f"approval:{approval_id}"],
+        payload_sha256=fp,
+        sequence=1,
+        previous_hash=genesis_previous_hash, previous_audit_id=None,
+        id_seed_extra={"approval_id": approval_id, "kind": "approval_request"},
+    )
+    return [event]
+
+
+def build_approval_decision_audit(
+    approval: Mapping[str, Any],
+    *,
+    now: str,
+    actor_id: str,
+    genesis_previous_hash: str | None = None,
+    repo_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Audit Thomas's ANSWER (R9) — the durable record of who decided what, and how we know.
+
+    The event names the verification method and ref, so the trail shows not just that an
+    approval was granted but that it was granted by the registered Thomas on the verified
+    private channel. It records no execution: an APPROVED approval authorizes nothing here.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    approval_id = approval["approval_id"]
+    snapshot = approval["approved_action_snapshot"]
+    status = approval["status"]
+    approver = approval["approver"]
+    if approver.get("verification_status") != "VERIFIED":
+        raise AuditError("APPROVAL_UNVERIFIED",
+                         "a decided approval must carry a verified approver to be audited")
+    fp = _fingerprint(dict(approval), "approval")
+    event, _ = _make_event(
+        root=root, task=_approval_synthetic_task(approval), now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", actor_id),
+        subject_type="APPROVAL", subject_id=approval_id,
+        subject_ref=f"approval:{approval_id}", subject_fingerprint=fp,
+        summary=(f"Thomas {status} approval {approval_id} for {snapshot['action_type']} on "
+                 f"{snapshot['target_ref']} via {approver['identity_verification_method']}; "
+                 f"no execution authorized (consumption unimplemented)."),
+        outcome="RECORDED",
+        reason_codes=[f"APPROVAL_{status}", "VERIFIED_CONTROL_CHANNEL", "ONE_TIME_USE",
+                      "NOT_CONSUMED", "NO_EXECUTION_AUTHORIZED"],
+        related_record_refs=[f"in_memory:{approval['permission_decision_id']}"],
+        evidence_refs=[f"approval:{approval_id}", approver["verification_ref"]],
+        payload_sha256=fp,
+        sequence=1,
+        previous_hash=genesis_previous_hash, previous_audit_id=None,
+        id_seed_extra={"approval_id": approval_id, "kind": "approval_decision", "status": status},
+    )
+    return [event]

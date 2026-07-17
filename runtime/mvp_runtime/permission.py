@@ -73,14 +73,36 @@ VALIDATION_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only review of a
 WRITE_PERMISSION_SCOPE = "WORKSPACE_REVERSIBLE_WRITE"
 WRITE_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — creates a new internal artifact
 
+# Governance scope + level for the R9 memory-promotion action — the runtime's first
+# APPROVAL_REQUIRED action. Promotion changes persistent VALIDATED memory, which Prime's
+# conditional P4 explicitly excludes (THOMAS_PRIME_CHARTER §10: "Active Core, Policy,
+# Validated Memory를 변경하지 않는다"), which is exactly why it needs Thomas. Prime's
+# authority here is the authority to *prepare* the request for review; the decision is
+# Thomas's. Mirrors examples/permission/permission_approval_required_v0.3.yaml.
+MEMORY_PROMOTION_PERMISSION_SCOPE = "SENSITIVE_MEMORY_GOVERNANCE"
+MEMORY_PROMOTION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates validated memory
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
-# Dispositions the MVP has an implementation and a reporting path for. Anything stricter
-# (APPROVAL_REQUIRED, BLOCK) stays unbuildable — there is no approval flow to satisfy.
+APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+# Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
 _EXECUTABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT})
+# Dispositions a RECORD may be built for. Building an APPROVAL_REQUIRED decision is not
+# acting on it — the record is REVIEW_ONLY evidence that states an action needs Thomas, and
+# it is the object an Approval Request binds to. The runtime still cannot perform an
+# APPROVAL_REQUIRED action: real approval consumption is gate-pinned unimplemented
+# (`approval_lifetime.approval_consumption_implemented: false`), so an approved action has
+# no execution path — by design, not by omission. BLOCK stays unbuildable: a BLOCK means
+# do not, and there is nothing to record a request against.
+_BUILDABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT, APPROVAL_REQUIRED})
 # The EXECUTE_AND_REPORT scopes the MVP actually implements. Kept as an explicit allowlist
 # so widening the disposition gate does not silently admit the other scopes governance
 # prices at EXECUTE_AND_REPORT (GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST, ...).
 _EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
+# Likewise for APPROVAL_REQUIRED: only the scope the runtime can actually ask about. The
+# other APPROVAL_REQUIRED scopes (PUBLICATION, EXTERNAL_COMMUNICATION, FINANCIAL_*, ...)
+# name actions the runtime has no implementation for, so a request record for one would
+# assert an ask it could never honour. Refuse rather than record a fiction.
+_APPROVAL_REQUIRED_SCOPES = frozenset({MEMORY_PROMOTION_PERMISSION_SCOPE})
 
 
 @dataclass(frozen=True)
@@ -98,6 +120,14 @@ class _ActionSpec:
     authority_reason: str
     decision_reason: str
     constraint: str
+    # An action on something that is not a task-internal artifact names its own target
+    # (e.g. a memory candidate) instead of the internal:{task_id}:{suffix} form.
+    target_ref: str | None = None
+    # The exact content the action is bound to, when it has one. Part of the action
+    # fingerprint, so the approved action cannot be swapped for a different payload.
+    content_sha256: str | None = None
+    # GREEN suits internal read/analysis work; an action needing Thomas is not GREEN.
+    risk_level: str = "GREEN"
 
 
 _ANALYSIS_ACTION = _ActionSpec(
@@ -174,6 +204,7 @@ def build_permission_decision(
     ttl_minutes: int = MVP_TTL_MINUTES,
     repo_root: Path | None = None,
     action: "_ActionSpec | None" = None,
+    approval_id: str | None = None,
 ) -> dict[str, Any]:
     """Build and fully validate a permission_decision.v0.3 for a bound task.
 
@@ -211,10 +242,10 @@ def build_permission_decision(
     # implementation and a reporting path for (see _EXECUTABLE_DISPOSITIONS). Everything
     # stricter — APPROVAL_REQUIRED, BLOCK — stays refused: the MVP has no approval flow,
     # so an APPROVAL_REQUIRED action has no way to become authorized and must not proceed.
-    if disposition not in _EXECUTABLE_DISPOSITIONS:
+    if disposition not in _BUILDABLE_DISPOSITIONS:
         raise PlannerBlocked(
             "NOT_ALLOWED",
-            f"MVP cannot perform {disposition} actions; scope {permission_scope} disposition is {disposition}",
+            f"MVP cannot build a {disposition} decision; scope {permission_scope} disposition is {disposition}",
         )
     if disposition == EXECUTE_AND_REPORT and permission_scope not in _EXECUTE_AND_REPORT_SCOPES:
         # An EXECUTE_AND_REPORT scope the runtime has no implementation for (e.g.
@@ -222,6 +253,13 @@ def build_permission_decision(
         raise PlannerBlocked(
             "NOT_ALLOWED",
             f"scope {permission_scope} is EXECUTE_AND_REPORT but the MVP implements no such action",
+        )
+    if disposition == APPROVAL_REQUIRED and permission_scope not in _APPROVAL_REQUIRED_SCOPES:
+        # An APPROVAL_REQUIRED scope the runtime cannot perform even once approved must not
+        # ride in on R9's widening — it could only ever produce an ask it can't honour.
+        raise PlannerBlocked(
+            "NOT_ALLOWED",
+            f"scope {permission_scope} is APPROVAL_REQUIRED but the MVP implements no such action",
         )
 
     created = _parse_ts(now)
@@ -250,11 +288,11 @@ def build_permission_decision(
         "requester_ref": requester_ref,
         "permission_scope": permission_scope,
         "action_type": action.action_type,
-        "target_ref": f"internal:{task_id}:{action.target_suffix}",
+        "target_ref": action.target_ref or f"internal:{task_id}:{action.target_suffix}",
         "tool_id": action.tool_id,
         "program_id": None,
         "data_scope": list(action.data_scope),
-        "content_sha256": None,
+        "content_sha256": action.content_sha256,
         "amount_decimal": None,
         "currency": None,
         "normalized_parameters": dict(action.normalized_parameters),
@@ -264,6 +302,15 @@ def build_permission_decision(
         action_fingerprint = compute_action_fingerprint(fingerprint_payload)
     except ValueError as exc:
         raise PlannerBlocked("FINGERPRINT_FAILED", str(exc)) from exc
+
+    # The Approval an APPROVAL_REQUIRED decision waits on is identified by the action
+    # itself: derive its id from the action fingerprint so that ANY material change to the
+    # action yields a different approval_id, exactly as the Governance Policy requires
+    # (`action_identity.invalidated_by_any_material_field_change`). Deriving it here rather
+    # than taking it from the caller also removes the footgun of pointing a decision at a
+    # reused or unrelated approval.
+    if disposition == APPROVAL_REQUIRED and approval_id is None:
+        approval_id = integrity.short_id("approval", {"action_fingerprint": action_fingerprint})
 
     decision = disposition  # exactly the policy minimum for this scope
     permdec_id = integrity.short_id(
@@ -297,7 +344,7 @@ def build_permission_decision(
             "authority_reasons": [action.authority_reason],
         },
         "risk": {
-            "risk_level": "GREEN",
+            "risk_level": action.risk_level,
             "risk_reasons": [action.risk_reason],
             "policy_disposition": disposition,
         },
@@ -306,11 +353,13 @@ def build_permission_decision(
             "decision_reasons": [action.decision_reason],
             "constraints": [action.constraint],
         },
-        "approval": {
-            "approval_required": False,
-            "approval_id": None,
-            "approval_status": "NOT_REQUIRED",
-        },
+        # An APPROVAL_REQUIRED decision names the Approval it waits on and starts PENDING;
+        # everything else carries no approval state at all (the schema enforces both).
+        "approval": (
+            {"approval_required": True, "approval_id": approval_id, "approval_status": "PENDING"}
+            if disposition == APPROVAL_REQUIRED
+            else {"approval_required": False, "approval_id": None, "approval_status": "NOT_REQUIRED"}
+        ),
         "runtime_effect": permission_decision_runtime_effect(),
         "lifecycle": {
             "decision_status": "ACTIVE",
@@ -386,6 +435,64 @@ def build_validation_permission_decision(
         ttl_minutes=ttl_minutes,
         repo_root=repo_root,
         action=_VALIDATION_ACTION,
+    )
+
+
+def build_memory_promotion_permission_decision(
+    bound_task: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str = MEMORY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+    now: str,
+    approval_id: str | None = None,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for promoting one working-memory
+    candidate to VALIDATED — the runtime's first action that Thomas must decide.
+
+    The action is bound to the exact candidate: its id is the target, and its content hash
+    is in the fingerprint, so an approval of *this* promotion cannot be re-pointed at
+    different content (any material change invalidates the fingerprint, per the Governance
+    Policy's `action_identity.invalidated_by_any_material_field_change`).
+
+    Building this record does not promote anything and never can: the decision is
+    APPROVAL_REQUIRED, and approval consumption is gate-pinned unimplemented. Promotion
+    remains what R5.3 made it — an explicit operator action.
+    """
+    candidate_id = candidate.get("candidate_id")
+    content = candidate.get("content")
+    if not (isinstance(candidate_id, str) and candidate_id):
+        raise PlannerBlocked("INVALID_CANDIDATE", "candidate must carry a candidate_id")
+    if not (isinstance(content, str) and content.strip()):
+        raise PlannerBlocked("INVALID_CANDIDATE", "candidate must carry content to promote")
+
+    action = _ActionSpec(
+        action_type="memory.validated.promote",
+        target_suffix="memory_promotion",
+        tool_id=None,
+        data_scope=(f"memory.candidate.{candidate_id}", "task.evidence"),
+        normalized_parameters={"target_scope": "validated_memory", "promotion_mode": "manual_review"},
+        risk_reason="Promotion changes persistent validated organizational memory.",
+        authority_reason="Prime may prepare a validated-memory promotion for Thomas review.",
+        decision_reason="Persistent validated-memory promotion requires exact Thomas approval.",
+        constraint="Approval is review-only and cannot create executor handoff.",
+        target_ref=f"memory_candidate:{candidate_id}",
+        content_sha256=integrity.sha256_record({"content": content}),
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=MEMORY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=MEMORY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
     )
 
 

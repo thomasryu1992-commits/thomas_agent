@@ -60,6 +60,7 @@ until locally activated behind the Safety-Flag Gate.
 | R3 read-only web-search tool | [`READONLY_SEARCH_TOOL_V0.1`](runtime-contracts/READONLY_SEARCH_TOOL_V0.1.md), [`runtime/mvp_runtime/tools.py`](../runtime/mvp_runtime/tools.py) |
 | R4 operator control channel (Telegram private 1:1) | [`OPERATOR_CONTROL_CHANNEL_V0.1`](runtime-contracts/OPERATOR_CONTROL_CHANNEL_V0.1.md), [`runtime/mvp_runtime/operator.py`](../runtime/mvp_runtime/operator.py); run `python -m runtime.mvp_runtime.operator_cli` |
 | R8 controlled write (first EXECUTE_AND_REPORT action) | [`CONTROLLED_WRITE_V0.1`](runtime-contracts/CONTROLLED_WRITE_V0.1.md), [`runtime/mvp_runtime/workspace.py`](../runtime/mvp_runtime/workspace.py); `--write-output PATH` |
+| R9 approval flow (ask Thomas; stops before execution) | [`APPROVAL_FLOW_V0.1`](runtime-contracts/APPROVAL_FLOW_V0.1.md), [`runtime/mvp_runtime/approval.py`](../runtime/mvp_runtime/approval.py); `python -m runtime.mvp_runtime.approval_cli request --candidate-id ...`, then `/approve <id>` on the control channel |
 
 Local per-machine setup (Core activation, safety-flag activation, the ledger) is described in
 the repo-root `CLAUDE.md`; that state lives under the gitignored `.runtime_governance_state/`.

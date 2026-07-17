@@ -28,9 +28,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from . import control, safety_gate, timeutil
+from . import approval, control, safety_gate, timeutil
+from .audit import build_approval_decision_audit
 from .control import ControlStore
-from .errors import ControlBlocked, OperatorBlocked
+from .errors import ApprovalBlocked, AuditError, ControlBlocked, OperatorBlocked, PersistenceError
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
 from .safety_gate import NETWORK_ACCESS, Authorization
@@ -135,6 +136,7 @@ def handle_operator_message(
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    approval_store: Any | None = None,
     independent_validation: bool = False,
     repo_root: Path | None = None,
 ) -> OperatorReply:
@@ -148,6 +150,12 @@ def handle_operator_message(
     accepted here only because the message already passed the operator identity gate
     (``resume_requires_thomas_authentication``). ``working_memory`` (opt-in) is shared with the
     run so the operator channel accumulates and reuses working memory like the one-shot CLI.
+
+    When ``approval_store`` is provided, ``/approve <id>`` and ``/reject <id>`` (R9) record
+    Thomas's decision on a pending Approval Request. Passing the identity gate above IS the
+    verification the approval record requires, so no separate proof is needed — and nothing
+    that fails the gate can ever reach the decision path. An approved Approval authorizes no
+    execution: consumption is gate-pinned unimplemented.
     """
     try:
         verify_control_channel(message, registration)
@@ -176,6 +184,44 @@ def handle_operator_message(
                 return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
             return OperatorReply(text=outcome["reply"], accepted=True, status="CONTROL", reason_code=outcome["action"])
 
+    # R9: /approve <id> and /reject <id>. Handled after the identity gate and, like the
+    # console commands, regardless of run state: answering a pending ask is not starting
+    # work, and a paused runtime must still let Thomas close out what it already asked.
+    # The gate above is precisely the verification the approval record demands — registered
+    # user, registered private chat, not forwarded — so reaching here IS the proof.
+    if approval_store is not None:
+        approval_command = approval.parse_approval_command(text)
+        if approval_command is not None:
+            verb, approval_id = approval_command
+            try:
+                outcome = approval.apply_command(
+                    approval_store, verb, approval_id, now=now or timeutil.utc_now_iso(),
+                    repo_root=repo_root,
+                    verification=approval.Verification(
+                        approved_by=registration.approver,
+                        method=approval.TELEGRAM_VERIFICATION_METHOD,
+                        verification_ref=f"telegram:private_chat:{message.chat_id}:{approval_id}",
+                    ),
+                )
+            except ApprovalBlocked as exc:
+                return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+            if store is not None:
+                try:
+                    store.append_audit_events(build_approval_decision_audit(
+                        outcome["approval"], now=now or timeutil.utc_now_iso(),
+                        actor_id=registration.operator_id,
+                        genesis_previous_hash=store.last_audit_hash(), repo_root=repo_root,
+                    ))
+                except (PersistenceError, AuditError) as exc:
+                    # The decision is already durable in the approval store; note the audit
+                    # gap rather than losing Thomas's answer.
+                    return OperatorReply(
+                        text=outcome["reply"] + f"\n(WARNING: decision audit failed: {exc.reason_code})",
+                        accepted=True, status="APPROVAL", reason_code=outcome["action"],
+                    )
+            return OperatorReply(text=outcome["reply"], accepted=True, status="APPROVAL", reason_code=outcome["action"])
+
+    if control_store is not None:
         # A task request is refused while the runtime is not ACTIVE (kill blocks new execution).
         state = control_store.load()
         if not state.execution_allowed:
