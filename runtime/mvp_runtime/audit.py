@@ -13,7 +13,7 @@ and ``sha256_record`` secret-scans the fingerprinted records).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.integrity import IntegrityError
@@ -615,3 +615,127 @@ def build_approval_decision_audit(
         id_seed_extra={"approval_id": approval_id, "kind": "approval_decision", "status": status},
     )
     return [event]
+
+
+# --- verification ------------------------------------------------------------------
+
+# How each fingerprint-payload field maps back onto the record it fingerprints. The payload
+# duplicates the record's fields, so agreement between them is not redundant — it is the
+# check that catches the obvious attack: edit the visible record and leave the payload
+# alone, and a self-hash-only check still passes.
+def _record_view(record: Mapping[str, Any]) -> dict[str, Any]:
+    actor = record.get("actor", {})
+    subject = record.get("subject", {})
+    event = record.get("event", {})
+    lineage = record.get("lineage", {})
+    return {
+        "audit_event_id": record.get("audit_event_id"),
+        "trace_id": record.get("trace_id"),
+        "task_id": record.get("task_id"),
+        "task_revision": record.get("task_revision"),
+        "core_context_binding_id": record.get("core_context_binding_id"),
+        "event_type": record.get("event_type"),
+        "actor_ref": f"{actor.get('actor_type')}:{actor.get('actor_id')}",
+        "subject_ref": subject.get("subject_ref"),
+        "subject_fingerprint": subject.get("subject_fingerprint"),
+        "event_summary": event.get("event_summary"),
+        "outcome": event.get("outcome"),
+        "reason_codes": event.get("reason_codes"),
+        "payload_sha256": event.get("payload_sha256"),
+        "evidence_refs": event.get("evidence_refs"),
+        "related_record_refs": event.get("related_record_refs"),
+        "parent_audit_event_ids": lineage.get("parent_audit_event_ids"),
+        "previous_event_sha256": lineage.get("previous_event_sha256"),
+        "sequence_number": lineage.get("sequence_number"),
+        "created_at": record.get("created_at"),
+    }
+
+
+def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Verify the append-only audit chain and report what (if anything) is wrong.
+
+    The runtime has always *built* a hash chain; nothing ever *checked* it, which made the
+    tamper-evidence a claim rather than a property. This is the check.
+
+    Four independent things must hold for every event, because each catches a different
+    tampering (reason codes follow the vocabulary already used by
+    ``runtime/protected_governance_state/recovery.py``):
+
+    1. ``AUDIT_EVENT_HASH_MISMATCH`` — ``sha256(event_fingerprint_payload) == event_sha256``.
+       Catches an edited payload.
+    2. ``AUDIT_PAYLOAD_RECORD_MISMATCH`` — the payload's fields match the record they claim
+       to fingerprint. This catches the easy attack that (1) alone **misses entirely**:
+       change the visible record and leave the payload untouched, and a self-hash check
+       still passes happily. (The existing verifier named above has this blind spot; it is
+       deferred code, so this is a note, not a fix.)
+    3. ``AUDIT_APPEND_ONLY_BOUNDARY_MISMATCH`` — the event still declares itself append-only.
+    4. ``AUDIT_PREVIOUS_HASH_MISMATCH`` — each event's ``previous_event_sha256`` is the prior
+       event's ``event_sha256``. Catches insertion, deletion, and reordering.
+
+    Sequence numbers restart per run, so they are *not* a global ordering check; the hash
+    chain is what spans runs. A **prefix** of a valid chain is itself valid, so this cannot
+    by itself detect a truncated tail — the caller compares against the ledger tip for that.
+
+    Returns a report ``{intact, checked, breaks: [...], first_break_index}``. It never
+    raises for a broken chain — a broken chain is a finding to report, not a crash — but the
+    caller must treat ``intact: False`` as serious: the trail can no longer be trusted.
+    """
+    breaks: list[dict[str, Any]] = []
+    previous_hash: str | None = None
+    previous_id: str | None = None
+
+    for index, record in enumerate(events):
+        integrity_block = record.get("integrity", {}) if isinstance(record, Mapping) else {}
+        payload = integrity_block.get("event_fingerprint_payload")
+        claimed = integrity_block.get("event_sha256")
+        event_id = record.get("audit_event_id") if isinstance(record, Mapping) else None
+
+        def _break(check: str, detail: str) -> None:
+            breaks.append({"index": index, "audit_event_id": event_id, "check": check, "detail": detail})
+
+        if not isinstance(payload, Mapping) or not isinstance(claimed, str):
+            _break("AUDIT_STRUCTURE_INVALID", "event has no integrity fingerprint payload or event_sha256")
+            previous_hash, previous_id = claimed if isinstance(claimed, str) else None, event_id
+            continue
+
+        # 1. self-hash
+        try:
+            recomputed = integrity.sha256_value(dict(payload))
+        except IntegrityError as exc:
+            _break("AUDIT_EVENT_HASH_MISMATCH", f"payload is not fingerprintable: {exc}")
+            recomputed = None
+        if recomputed is not None and recomputed != claimed:
+            _break("AUDIT_EVENT_HASH_MISMATCH",
+                   "event_sha256 does not match its own fingerprint payload (payload edited)")
+
+        # 2. the payload must describe the record it is embedded in
+        view = _record_view(record)
+        mismatched = sorted(k for k, v in view.items() if payload.get(k) != v)
+        if mismatched:
+            _break("AUDIT_PAYLOAD_RECORD_MISMATCH",
+                   f"record fields disagree with the fingerprinted payload: {mismatched}")
+
+        # 3. the event must still declare itself append-only. Flipping these flags is how a
+        # record would announce it may be overwritten or deleted; the trail says otherwise.
+        if (integrity_block.get("append_only") is not True
+                or integrity_block.get("overwrite_allowed") is not False
+                or integrity_block.get("delete_allowed") is not False):
+            _break("AUDIT_APPEND_ONLY_BOUNDARY_MISMATCH",
+                   "event no longer declares the append-only boundary (append_only/overwrite/delete)")
+
+        # 4. linkage
+        actual_previous = record.get("lineage", {}).get("previous_event_sha256")
+        if index > 0 and actual_previous != previous_hash:
+            _break("AUDIT_PREVIOUS_HASH_MISMATCH",
+                   f"previous_event_sha256 does not match the preceding event ({previous_id}); "
+                   "an event was inserted, removed, or reordered")
+
+        previous_hash = claimed
+        previous_id = event_id
+
+    return {
+        "intact": not breaks,
+        "checked": len(events),
+        "breaks": breaks,
+        "first_break_index": breaks[0]["index"] if breaks else None,
+    }

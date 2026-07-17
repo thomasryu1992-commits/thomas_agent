@@ -37,10 +37,14 @@ LOCAL_ACTOR = "local_console"
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="console_cli",
-        description="Local operator emergency console (status/pause/kill/resume/stop).",
+        description=(
+            "Local operator emergency console. status/audit/recovery are read-only and keep "
+            "working while PAUSED or KILLED; pause/kill/resume/stop change the control state."
+        ),
     )
     parser.add_argument("command", choices=sorted(control.COMMANDS), help="the console command to apply")
-    parser.add_argument("task_id", nargs="?", default=None, help="task id (required for 'stop')")
+    parser.add_argument("task_id", nargs="?", default=None,
+                        help="task id (required for 'stop'); event count (optional for 'audit')")
     parser.add_argument("--reason", default="", help="operator reason recorded in the control event")
     return parser.parse_args(argv)
 

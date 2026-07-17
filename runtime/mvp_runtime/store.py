@@ -110,3 +110,40 @@ class LedgerStore:
             return events[-1]["integrity"]["event_sha256"]
         except (KeyError, TypeError) as exc:
             raise PersistenceError("LEDGER_UNREADABLE", f"could not read the audit ledger tip: {exc}") from exc
+
+    def read_audit_events(self) -> list[dict[str, Any]]:
+        """Every persisted audit event, in append order. Fails closed on a corrupt ledger.
+
+        The ledger has always been written and never read back beyond its tip; this is what
+        lets the operator console verify the chain it has been building all along."""
+        return jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger")
+
+    def health(self) -> list[dict[str, Any]]:
+        """Report each ledger file's readability without failing on a bad one.
+
+        Deliberately does NOT fail closed: this is the diagnostic that runs precisely when
+        something is already broken, so it must survive a corrupt file and name it rather
+        than raise and leave the operator with the same blank stare that sent them here.
+        """
+        report: list[dict[str, Any]] = []
+        for kind, filename in (
+            ("audit_events", AUDIT_FILE), ("records", RECORDS_FILE), ("blocks", BLOCKS_FILE),
+            ("control_events", CONTROL_FILE), ("memory_events", MEMORY_FILE),
+            ("scheduler_events", SCHEDULER_FILE),
+        ):
+            path = self._root / filename
+            entry: dict[str, Any] = {"kind": kind, "path": filename, "present": path.is_file()}
+            if not entry["present"]:
+                # Absent is normal: a store is created on first write, not at startup.
+                entry.update({"status": "ABSENT", "count": 0, "detail": "not written yet (normal before first use)"})
+            else:
+                try:
+                    entry.update({
+                        "status": "OK",
+                        "count": len(jsonl.read_objects(path, read_code="LEDGER_UNREADABLE", label=kind)),
+                        "detail": None,
+                    })
+                except PersistenceError as exc:
+                    entry.update({"status": "CORRUPT", "count": None, "detail": exc.reason})
+            report.append(entry)
+        return report
