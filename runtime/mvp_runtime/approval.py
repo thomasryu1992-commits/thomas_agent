@@ -5,29 +5,20 @@ itself (ALLOW) or did-and-reported (EXECUTE_AND_REPORT, R8). An APPROVAL_REQUIRE
 is one it may not decide: it must ask Thomas, over the one channel that can prove it was
 Thomas, and record the answer as tamper-evident evidence.
 
-**Where this stops, and why.** This module implements the lifecycle up to and including
-Thomas's decision:
+**The lifecycle this module owns** — the *ask* and Thomas's *answer*:
 
-    PENDING --(/approve)--> APPROVED
+    PENDING --(/approve)--> APPROVED --(consume, R10)--> CONSUMED
             --(/reject )--> REJECTED
             --(ttl)-------> EXPIRED
 
-It deliberately stops there. *Consuming* an approval — spending the one-time grant to
-authorize execution — is pinned shut by the governance, not merely unimplemented:
-
-- `governance/GOVERNANCE_POLICY.yaml` `approval_lifetime.approval_consumption_implemented:
-  false`, pinned by `scripts/validate_permission_approval_contracts.py`
-  ("real Approval consumption must remain unimplemented").
-- `runtime_effect.approval_consumption_allowed: false`, pinned by the ACTIVE gate
-  (`scripts/validate_slimming_package.py`: "must remain false").
-- `approval.v0.1` has no `CONSUMED` state — `consumption_status` is only
-  `NOT_CONSUMED | PREVIEWED_ONLY`.
-- `APPROVAL_CONTRACT_V0.1` §7: real consumption "requires a future separately approved
-  Runtime stage with atomic state protection".
-
-So an APPROVED approval authorizes nothing on its own, and this module never claims
-otherwise. What it produces is proof that Thomas was asked and what he answered.
-(`CONSUMPTION_PREVIEWED` is also not implemented here: its schema requires an
+Through R9 this module stopped at APPROVED: an approved grant authorized nothing on its own.
+R10 adds the last transition — *consuming* the one-time grant to perform exactly its bound
+action — but that step lives in `consumption.py`, behind the `approval_consumption` safety
+flag, and stays deliberately narrow (a scoped `SENSITIVE_MEMORY_GOVERNANCE` promotion; no
+executor handoff, no external or financial effect; the record stays REVIEW_ONLY). This
+module still only *asks* and *records the answer*; it also builds the CONSUMED evidence
+record (:func:`build_consumed_record`) that consumption appends once it has acted.
+(`CONSUMPTION_PREVIEWED` remains unimplemented: its schema requires an
 `execution_request.v0.1`, which belongs to the deferred executor family.)
 
 **Identity is the whole point.** An approval is only worth the certainty that Thomas gave
@@ -61,7 +52,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 from validate_permission_approval_contracts import validate_approval_record  # noqa: E402
 
-APPROVAL_SCHEMA_VERSION = "approval.v0.1"
+APPROVAL_SCHEMA_VERSION = "approval.v0.2"
 
 # The only approver the schema will accept, and the only channel that can prove identity.
 REQUIRED_APPROVER = "Thomas"
@@ -71,6 +62,7 @@ STATUS_PENDING = "PENDING"
 STATUS_APPROVED = "APPROVED"
 STATUS_REJECTED = "REJECTED"
 STATUS_EXPIRED = "EXPIRED"
+STATUS_CONSUMED = "CONSUMED"
 
 # An in-memory PermissionDecision is referenced the way every other MVP record is; the
 # schema only requires a non-empty string, not a file path.
@@ -206,6 +198,8 @@ def build_approval_request(
             "consumption_status": "NOT_CONSUMED",
             "previewed_at": None,
             "preview_ref": None,
+            "consumed_at": None,
+            "consumption_ref": None,
         },
         "validity": {"issued_at": timeutil.format_iso(issued), "expires_at": timeutil.format_iso(expires)},
         "runtime_effect": {
@@ -299,6 +293,57 @@ def expire(approval: Mapping[str, Any], *, now: str) -> dict[str, Any]:
     return expired
 
 
+def build_consumed_record(
+    approval: Mapping[str, Any],
+    permission_decision: Mapping[str, Any],
+    *,
+    consumed_at: str,
+    consumption_ref: str,
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the CONSUMED approval record — the tamper-evident evidence that this one-time
+    grant was spent (R10).
+
+    The input must be an APPROVED approval; anything else is refused, since only Thomas's
+    verified APPROVED grant may be consumed. Returns a NEW record carrying the same verified
+    approver and decision (a consumed approval is still the approval Thomas granted), with the
+    consumption block advanced to CONSUMED. The record stays REVIEW_ONLY with every runtime
+    flag false — consuming an approval performs its bound internal action; it does not widen
+    the approval into an executor/external/financial capability.
+
+    ``consumption_ref`` points at the durable outcome (the validated-memory id + audit event),
+    so the trail links the spent grant to exactly what it produced. Fails closed on a
+    non-APPROVED input, a missing ref, or a record that fails schema/semantics.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    status = approval.get("status")
+    if status == STATUS_CONSUMED:
+        raise ApprovalBlocked("ALREADY_CONSUMED", "approval has already been consumed (one-time use)")
+    if status != STATUS_APPROVED:
+        raise ApprovalBlocked(
+            "NOT_APPROVED", f"only an APPROVED approval can be consumed; this one is {status}"
+        )
+    if not (isinstance(consumption_ref, str) and consumption_ref.strip()):
+        raise ApprovalBlocked("NO_CONSUMPTION_REF", "a consumed approval must record what it produced")
+
+    consumed = dict(approval)
+    consumed["status"] = STATUS_CONSUMED
+    consumed["consumption"] = {
+        "one_time_use": True,
+        "consumption_status": "CONSUMED",
+        "previewed_at": None,
+        "preview_ref": None,
+        "consumed_at": consumed_at,
+        "consumption_ref": consumption_ref,
+    }
+    consumed["audit_refs"] = list(dict.fromkeys([
+        *approval.get("audit_refs", []), f"audit:approval_consumption:{approval['approval_id']}"
+    ]))
+    _validate(consumed, permission_decision, root)
+    return consumed
+
+
 def format_request(approval: Mapping[str, Any]) -> str:
     """Render the Approval Request for the control channel.
 
@@ -329,8 +374,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
         "",
         f"가능한 선택:  /approve {approval['approval_id']}  |  /reject {approval['approval_id']}",
         "",
-        "이 승인은 REVIEW_ONLY입니다. 승인해도 런타임이 자동으로 실행하지 않습니다",
-        "(승인 소비는 거버넌스가 미구현으로 고정) — 승격은 운영자가 직접 수행합니다.",
+        "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
+        "승인 후 소비(consume)는 별도의 운영자 단계이며, approval_consumption 세이프티",
+        "플래그가 켜진 기기에서만 이 승인 하나에 묶인 승격을 1회 수행합니다.",
     ]
     return "\n".join(lines)
 
@@ -430,7 +476,8 @@ def apply_command(
     )
     if granted:
         reply += (
-            "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically "
-            "(approval consumption is not implemented). Perform the promotion with the operator tool."
+            "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically. "
+            "Consume it as a separate operator step (approval_cli consume <id>) to perform the "
+            "single bound promotion; consumption is gated by the approval_consumption safety flag."
         )
     return {"action": decided["status"], "approval": decided, "reply": reply}

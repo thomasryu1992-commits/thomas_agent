@@ -46,7 +46,12 @@ T = TypeVar("T")
 MODEL_INVOCATION = "model_invocation"
 NETWORK_ACCESS = "network_access"
 FILESYSTEM_WRITE = "filesystem_write"
-_KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS, FILESYSTEM_WRITE})
+# approval_consumption (R10) governs spending an APPROVED, single-use approval to perform its
+# bound action (a SENSITIVE_MEMORY_GOVERNANCE promotion). It crosses no network, but it is the
+# first capability that acts on a *governance* decision rather than just recording it, so — like
+# filesystem_write — it is gated on the same terms rather than on a bare env var.
+APPROVAL_CONSUMPTION = "approval_consumption"
+_KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS, FILESYSTEM_WRITE, APPROVAL_CONSUMPTION})
 
 # Local (gitignored) activation records — never committed, per-machine, like the Core pointer.
 # ONE FILE PER PROVIDER. Each grant is scoped, expired, and evidenced on its own, so

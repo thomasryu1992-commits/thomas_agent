@@ -603,7 +603,7 @@ def build_approval_decision_audit(
         subject_ref=f"approval:{approval_id}", subject_fingerprint=fp,
         summary=(f"Thomas {status} approval {approval_id} for {snapshot['action_type']} on "
                  f"{snapshot['target_ref']} via {approver['identity_verification_method']}; "
-                 f"no execution authorized (consumption unimplemented)."),
+                 f"the decision authorizes nothing on its own — consumption is a separate step."),
         outcome="RECORDED",
         reason_codes=[f"APPROVAL_{status}", "VERIFIED_CONTROL_CHANNEL", "ONE_TIME_USE",
                       "NOT_CONSUMED", "NO_EXECUTION_AUTHORIZED"],
@@ -613,6 +613,63 @@ def build_approval_decision_audit(
         sequence=1,
         previous_hash=genesis_previous_hash, previous_audit_id=None,
         id_seed_extra={"approval_id": approval_id, "kind": "approval_decision", "status": status},
+    )
+    return [event]
+
+
+def build_approval_consumption_audit(
+    approval: Mapping[str, Any],
+    validated_entry: Mapping[str, Any],
+    *,
+    now: str,
+    genesis_previous_hash: str | None = None,
+    repo_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Audit that an APPROVED approval was CONSUMED (R10) — the one-time grant was spent to
+    perform its bound promotion.
+
+    This is the "report" half of the consumption: one standalone event chained onto the ledger
+    tip, anchored to the originating task via the approval's lineage. It records the durable
+    outcome (the validated-memory id it produced) but never the content. The approval must be
+    CONSUMED and carry a verified Thomas approver, or the event is refused — an unspent or
+    unverified approval has no consumption to report. ``OTHER``-typed with the subtype in
+    ``reason_codes`` (reuse-first, per the I0.5.4 precedent), like the R5 promotion event.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    approval_id = approval["approval_id"]
+    snapshot = approval["approved_action_snapshot"]
+    approver = approval.get("approver", {})
+    if approval.get("status") != "CONSUMED":
+        raise AuditError("APPROVAL_NOT_CONSUMED",
+                         "only a CONSUMED approval can be reported as consumed")
+    if approver.get("verification_status") != "VERIFIED":
+        raise AuditError("APPROVAL_UNVERIFIED",
+                         "a consumed approval must carry a verified approver to be audited")
+    validated_id = validated_entry.get("validated_memory_id")
+    if not (isinstance(validated_id, str) and validated_id):
+        raise AuditError("CONSUMPTION_SUBJECT_INVALID",
+                         "consumption audit requires the validated_memory_id it produced")
+    validated_fp = _fingerprint(validated_entry, "validated_memory")
+    event, _ = _make_event(
+        root=root, task=_approval_synthetic_task(approval), now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", approver.get("approved_by") or "Thomas"),
+        subject_type="validated_memory", subject_id=validated_id,
+        subject_ref=f"validated_memory:{validated_id}", subject_fingerprint=validated_fp,
+        summary=(f"Approval {approval_id} CONSUMED: {snapshot['action_type']} on "
+                 f"{snapshot['target_ref']} performed once, producing validated memory "
+                 f"{validated_id} (EXECUTE_AND_REPORT under REVIEW_ONLY)."),
+        outcome="RECORDED",
+        reason_codes=["APPROVAL_CONSUMED", "MEMORY_PROMOTED", "EXECUTE_AND_REPORT",
+                      "ONE_TIME_USE", "CONSUMED"],
+        related_record_refs=[f"approval:{approval_id}",
+                             f"in_memory:{approval['permission_decision_id']}"],
+        evidence_refs=[f"validated_memory:{validated_id}", f"approval:{approval_id}"],
+        payload_sha256=validated_fp,
+        sequence=1,
+        previous_hash=genesis_previous_hash, previous_audit_id=None,
+        id_seed_extra={"approval_id": approval_id, "kind": "approval_consumption",
+                       "validated_memory_id": validated_id},
     )
     return [event]
 

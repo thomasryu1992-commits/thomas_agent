@@ -12,31 +12,34 @@ record the answer as tamper-evident evidence.
 
 Implemented in `runtime/mvp_runtime/approval.py` + `approval_store.py` + `approval_cli.py`.
 
-## Where this stops, and why
+## Where this stops (and where R10 continues it)
 
 ```
-PENDING --(/approve)--> APPROVED
+PENDING --(/approve)--> APPROVED --(consume, R10)--> CONSUMED
         --(/reject )--> REJECTED
         --(ttl)-------> EXPIRED
 ```
 
-It stops there, deliberately. **Consuming** an approval — spending the one-time grant to
-authorize execution — is pinned shut by the governance, not merely unbuilt:
+Through R9 the flow stopped at APPROVED: an approved grant authorized nothing on its own.
+**R10 adds the last transition** — *consuming* the one-time grant to perform exactly its
+bound action — as its own governed, gated step. It is deliberately the narrowest possible
+crossing; the full design is in [APPROVAL_CONSUMPTION_V0.1](APPROVAL_CONSUMPTION_V0.1.md).
+What changed, and what did **not**:
 
-| Pin | Where |
-|---|---|
-| `approval_lifetime.approval_consumption_implemented: false` | pinned by `validate_permission_approval_contracts.py` — *"real Approval consumption must remain unimplemented"* |
-| `runtime_effect.approval_consumption_allowed: false` | pinned by the **ACTIVE gate** `validate_slimming_package.py` — *"must remain false"* |
-| no `CONSUMED` state | `approval.v0.1` `consumption_status` is only `NOT_CONSUMED \| PREVIEWED_ONLY` |
-| `approval_scope`, `runtime_effect.mode` | `{"const": "REVIEW_ONLY"}` in the schema |
-| real consumption | `APPROVAL_CONTRACT_V0.1` §7: *"requires a future separately approved Runtime stage with atomic state protection"* |
+| Aspect | R9 | R10 |
+|---|---|---|
+| `approval_lifetime.approval_consumption_implemented` | `false` | **`true`** (a scoped implementation exists) |
+| `runtime_effect.approval_consumption_allowed` | `false` | **`false`** — unchanged; consumption is granted per-machine by the `approval_consumption` safety flag, not as a standing runtime effect (the R8 `filesystem_write` precedent; the read-only kernel still requires this block fully REVIEW_ONLY) |
+| `CONSUMED` state | absent | added in **`approval.v0.2`** (`consumption_status: … \| CONSUMED`) |
+| `approval_scope`, `runtime_effect.mode` | `REVIEW_ONLY` | `REVIEW_ONLY` — unchanged; a CONSUMED record grants no executor/external/financial effect |
 
-So an APPROVED approval authorizes **nothing**, and nothing here claims otherwise. What the
-flow produces is proof that Thomas was asked and what he answered. Crossing to consumption
-means changing the canonical Governance Policy **and** the active gate **and** bumping two
-closed schemas — a deliberate decision, not an increment.
+So an APPROVED approval **still** authorizes nothing on its own — spending it is a separate
+step that fails closed unless the `approval_consumption` safety flag is activated on the
+machine. What the ask/answer flow produces is proof that Thomas was asked and what he
+answered; consumption produces proof that the one grant was spent, once, on exactly what he
+saw.
 
-`CONSUMPTION_PREVIEWED` is also not implemented: its schema requires an
+`CONSUMPTION_PREVIEWED` remains unimplemented: its schema requires an
 `execution_request.v0.1`, which belongs to the **deferred** executor family
 (`request_can_execute: false`). Implementing it would pull deferred material onto the
 active path.
@@ -117,16 +120,22 @@ binds to — while leaving it **not executable**:
 | Local console (ask) | `python -m runtime.mvp_runtime.approval_cli request --candidate-id memcand_...` |
 | Local console (read) | `... approval_cli list` / `... approval_cli show <approval_id>` |
 | Control channel (answer) | `/approve <approval_id>` · `/reject <approval_id>` |
+| Local console (spend, R10) | `... approval_cli consume <approval_id>` (gated by the `approval_consumption` safety flag) |
 
 Answering from the local console is deliberately impossible: only the verified Telegram
 private channel can prove the answer is Thomas's
-(`local_operator_console.new_high_risk_approval_creation_allowed: false`).
+(`local_operator_console.new_high_risk_approval_creation_allowed: false`). *Consuming*, by
+contrast, is a local operator step — it spends an answer Thomas already gave on the verified
+channel, and is itself gated behind the safety flag.
 
 ## Audit
 
-Asking and answering are each their own event (`OTHER` + subtype in `reason_codes`, per the
-I0.5.4 precedent), chained onto the durable ledger, classified `SENSITIVE`, and both carry
-`NO_EXECUTION_AUTHORIZED`. The decision event names the verification method and ref, so the
-trail shows not just that an approval was granted but how we know it was Thomas.
+Asking, answering, and spending are each their own event (`OTHER` + subtype in
+`reason_codes`, per the I0.5.4 precedent), chained onto the durable ledger and classified
+`SENSITIVE`. Asking and answering carry `NO_EXECUTION_AUTHORIZED`; the decision event names
+the verification method and ref, so the trail shows not just that an approval was granted but
+how we know it was Thomas. The **consumption** event (R10) carries `APPROVAL_CONSUMED` +
+`CONSUMED` and names the validated-memory id it produced, so the trail also shows that the
+grant was spent, once, and exactly what it produced.
 
 Approvals live in `.runtime_governance_state/approvals/` (local, gitignored, per-machine).

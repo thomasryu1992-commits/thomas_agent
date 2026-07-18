@@ -17,9 +17,9 @@ Usage:
     # What did he answer, and how do we know it was him?
     python -m runtime.mvp_runtime.approval_cli show approval_abc123
 
-An APPROVED approval authorizes no execution: approval consumption is pinned unimplemented
-by the governance (see ``approval.py``). Promotion remains an explicit operator action
-(``scripts/promote_memory_candidate.py``).
+An APPROVED approval does not act on its own. Spending it — ``consume`` — performs the one
+bound promotion exactly once, and only behind the ``approval_consumption`` safety flag
+(fail-closed when the flag is off). See ``consumption.py``.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import argparse
 import sys
 from typing import Any
 
-from . import approval, timeutil
+from . import approval, consumption, timeutil
 from .approval_store import ApprovalStore
 from .audit import build_approval_request_audit
 from .binding import bind_task_to_core
@@ -142,11 +142,36 @@ def _show(args: argparse.Namespace) -> int:
         f"reason      : {record['decision']['decision_reason'] or '—'}",
         f"consumption : {record['consumption']['consumption_status']} (one-time use)",
     ]
+    if record["consumption"].get("consumption_ref"):
+        lines.append(f"consumed    : {record['consumption']['consumed_at']} -> {record['consumption']['consumption_ref']}")
     if record["status"] == "APPROVED":
         lines.append("")
-        lines.append("APPROVED authorizes no execution here — consumption is not implemented.")
-        lines.append("Promote with: python scripts/promote_memory_candidate.py --candidate-id ...")
+        lines.append("APPROVED does not act on its own. Spend it with:")
+        lines.append(f"  python -m runtime.mvp_runtime.approval_cli consume {record['approval_id']}")
+        lines.append("(only on a machine where the approval_consumption safety flag is activated).")
+    elif record["status"] == "CONSUMED":
+        lines.append("")
+        lines.append("CONSUMED — the one-time grant was spent; it cannot be consumed again.")
     sys.stdout.write("\n".join(lines) + "\n")
+    return EXIT_OK
+
+
+def _consume(args: argparse.Namespace) -> int:
+    result = consumption.consume_approval(args.approval_id)
+    consumed = result["approval"]
+    validated = result["validated"]
+    audit_events = result["audit"]
+    sys.stdout.write(
+        f"CONSUMED {consumed['approval_id']}\n"
+        f"  promoted -> {validated['validated_memory_id']} (VALIDATED, {validated['scope']})\n"
+        f"  by {validated['promoted_by']}: {validated['promotion_reason']}\n"
+    )
+    if audit_events:
+        sys.stdout.write(f"  audited as {audit_events[0]['audit_event_id']} (OTHER / APPROVAL_CONSUMED)\n")
+    sys.stderr.write(
+        "The approval is now CONSUMED and single-use. Validated memory, the approval store, "
+        "and the ledger are local, gitignored, per-machine. Never committed.\n"
+    )
     return EXIT_OK
 
 
@@ -167,6 +192,11 @@ def main(argv: list[str] | None = None) -> int:
     show = sub.add_parser("show", help="show one approval and its verification evidence")
     show.add_argument("approval_id")
     show.set_defaults(func=_show)
+
+    consume = sub.add_parser(
+        "consume", help="spend an APPROVED approval to perform its one bound promotion (gated)")
+    consume.add_argument("approval_id")
+    consume.set_defaults(func=_consume)
 
     args = parser.parse_args(argv)
     try:
