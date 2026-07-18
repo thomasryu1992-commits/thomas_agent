@@ -65,7 +65,19 @@ def _extract_write_path(argv: list[str]) -> tuple[str | None, list[str], str | N
     return path, argv[:index] + argv[index + 2:], None
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    store: LedgerStore | None = None,
+    working_memory: WorkingMemoryStore | None = None,
+) -> int:
+    """Run one request end-to-end. Returns the process exit code.
+
+    ``store`` / ``working_memory`` default to the repo-local per-machine ones. They are
+    injectable so a test can drive the real entry point without appending synthetic runs
+    to the operator's ledger and — more importantly — without seeding working memory,
+    which retrieval feeds back as context into subsequent real runs.
+    """
     _force_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
     independent_validation = "--independent-validation" in argv
@@ -120,8 +132,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     # Working memory (local, per-machine) accumulates candidates and feeds them back as context.
-    store = LedgerStore.default()
-    working_memory = WorkingMemoryStore.default()
+    store = store if store is not None else LedgerStore.default()
+    working_memory = (
+        working_memory if working_memory is not None else WorkingMemoryStore.default()
+    )
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
                       working_memory=working_memory, channel="manual", store=store,
                       independent_validation=independent_validation,
