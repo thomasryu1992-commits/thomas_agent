@@ -150,6 +150,15 @@ def test_happy_path_parses_structured_analysis(monkeypatch):
     assert result.input_tokens == 12 and result.output_tokens == 34
 
 
+def test_latency_is_measured_around_the_http_call(monkeypatch):
+    monkeypatch.setenv(API_ENV, "test-key-not-real")
+    _patch_urlopen(monkeypatch, _gemini_response(_ANALYSIS))
+    ticks = iter([10.0, 10.25])  # perf_counter before / after the call → 250ms
+    monkeypatch.setattr("runtime.mvp_runtime.providers.time.perf_counter", lambda: next(ticks))
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate("analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.latency_ms == 250
+
+
 def test_code_fenced_json_is_parsed(monkeypatch):
     monkeypatch.setenv(API_ENV, "k")
     fenced = "```json\n" + json.dumps(_ANALYSIS) + "\n```"

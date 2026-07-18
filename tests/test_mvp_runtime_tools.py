@@ -196,6 +196,15 @@ def test_web_search_happy_path_parses_hits(monkeypatch):
     assert all(h.source == "brave_search" for h in result.hits)
 
 
+def test_web_search_latency_is_measured_around_the_http_call(monkeypatch):
+    monkeypatch.setenv(API_ENV, "test-key-not-real")
+    _patch_urlopen(monkeypatch, _BRAVE_RESPONSE)
+    ticks = iter([10.0, 10.25])  # perf_counter before / after the call → 250ms
+    monkeypatch.setattr("runtime.mvp_runtime.tools.time.perf_counter", lambda: next(ticks))
+    result = WebSearchTool(authorization=_AUTH).search("q", max_results=5, timeout_seconds=10)
+    assert result.latency_ms == 250
+
+
 def test_web_search_integrates_with_run_search_evidence(monkeypatch):
     monkeypatch.setenv(API_ENV, "k")
     _patch_urlopen(monkeypatch, _BRAVE_RESPONSE)

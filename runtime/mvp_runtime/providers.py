@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -134,16 +135,20 @@ class GoogleAIStudioProvider:
             method="POST",
             headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         )
+        # Wall-clock around the HTTP call only (recorded metadata, not replayed state);
+        # monotonic so a system clock adjustment mid-call cannot record a negative value.
+        started = time.perf_counter()
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
             raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
-        return self._parse(raw)
+        return self._parse(raw, latency_ms=latency_ms)
 
-    def _parse(self, raw: str) -> ProviderResult:
+    def _parse(self, raw: str, *, latency_ms: int = 0) -> ProviderResult:
         try:
             data: dict[str, Any] = json.loads(raw)
             text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -160,6 +165,6 @@ class GoogleAIStudioProvider:
             model_version=self._model,
             input_tokens=int(usage.get("promptTokenCount", 0) or 0),
             output_tokens=int(usage.get("candidatesTokenCount", 0) or 0),
-            latency_ms=0,
+            latency_ms=latency_ms,
             finish_reason=str((data.get("candidates", [{}]) or [{}])[0].get("finishReason", "stop")),
         )
