@@ -1,0 +1,665 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "approval.v0.2.schema.json",
+  "title": "Thomas Action Approval v0.2 — scoped consumption of a review-only grant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "permission_decision_id",
+    "permission_decision_ref",
+    "trace_id",
+    "task_id",
+    "task_revision",
+    "core_context_binding_id",
+    "operating_policy",
+    "action_fingerprint",
+    "approved_action_snapshot",
+    "approval_scope",
+    "status",
+    "approver",
+    "decision",
+    "consumption",
+    "validity",
+    "runtime_effect",
+    "audit_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "approval.v0.2"
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^approval_[A-Za-z0-9._:-]+$"
+    },
+    "permission_decision_id": {
+      "type": "string",
+      "pattern": "^permdec_[A-Za-z0-9._:-]+$"
+    },
+    "permission_decision_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^trace_[A-Za-z0-9._-]+$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task_[A-Za-z0-9._-]+$"
+    },
+    "task_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "core_context_binding_id": {
+      "type": "string",
+      "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+    },
+    "operating_policy": {
+      "description": "Current records bind the canonical Governance Policy. The legacy binding is accepted only to preserve historical record compatibility.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_id",
+            "policy_version",
+            "policy_ref"
+          ],
+          "properties": {
+            "policy_id": {
+              "const": "thomas.governance.policy"
+            },
+            "policy_version": {
+              "const": "1.1.0"
+            },
+            "policy_ref": {
+              "const": "governance/GOVERNANCE_POLICY.yaml"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_id",
+            "policy_version",
+            "policy_ref"
+          ],
+          "properties": {
+            "policy_id": {
+              "const": "thomas.permission_approval.operating_policy"
+            },
+            "policy_version": {
+              "const": "0.1.0"
+            },
+            "policy_ref": {
+              "const": "docs/runtime-contracts/THOMAS_PERMISSION_APPROVAL_OPERATING_POLICY_V0.1.yaml"
+            }
+          }
+        }
+      ]
+    },
+    "action_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "approved_action_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "task_revision",
+        "core_context_binding_id",
+        "requester_ref",
+        "permission_scope",
+        "action_type",
+        "target_ref",
+        "tool_id",
+        "program_id",
+        "data_scope",
+        "content_sha256",
+        "amount_decimal",
+        "currency",
+        "normalized_parameters",
+        "expires_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "action_fingerprint_payload.v0.1"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^task_[A-Za-z0-9._-]+$"
+        },
+        "task_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "core_context_binding_id": {
+          "type": "string",
+          "pattern": "^ccb-[A-Za-z0-9._:-]+$"
+        },
+        "requester_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permission_scope": {
+          "enum": [
+            "INTERNAL_READ",
+            "INTERNAL_ANALYSIS",
+            "DRAFT_CREATION",
+            "SIMULATION_VALIDATION",
+            "REVIEW_PACKET_CREATION",
+            "CANDIDATE_CREATION",
+            "CONTROL_CHANNEL_RESPONSE",
+            "WORKSPACE_REVERSIBLE_WRITE",
+            "GIT_AGENT_BRANCH_CHANGE",
+            "LOCAL_BUILD_TEST",
+            "LOW_RISK_OPERATIONAL_KNOWLEDGE",
+            "FINANCIAL_APPROVED_BUDGET_USE",
+            "EXTERNAL_COMMUNICATION",
+            "PUBLICATION",
+            "PROTECTED_BRANCH_CHANGE",
+            "RELEASE_DEPLOYMENT",
+            "FINANCIAL_NEW_COMMITMENT",
+            "RUNTIME_GOVERNANCE",
+            "DESTRUCTIVE_CHANGE",
+            "ROLE_GOVERNANCE",
+            "TOOL_PROGRAM_GOVERNANCE",
+            "CANDIDATE_ROLE_TRIAL",
+            "SENSITIVE_MEMORY_GOVERNANCE",
+            "SECURITY_SENSITIVE_CHANGE",
+            "AUTHORITY_ESCALATION",
+            "SELF_APPROVAL",
+            "APPROVAL_REUSE",
+            "SECRET_EXFILTRATION",
+            "AUDIT_TAMPERING",
+            "KILL_SWITCH_BYPASS",
+            "UNREGISTERED_RESOURCE_EXECUTION",
+            "DISABLED_RESOURCE_EXECUTION",
+            "PROTECTED_BRANCH_FORCE_PUSH",
+            "UNAPPROVED_HISTORY_REWRITE"
+          ]
+        },
+        "action_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]*$"
+        },
+        "target_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "program_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "data_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "content_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "amount_decimal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z]{3,12}$"
+        },
+        "normalized_parameters": {
+          "type": "object"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "approval_scope": {
+      "const": "REVIEW_ONLY"
+    },
+    "status": {
+      "enum": [
+        "PENDING",
+        "APPROVED",
+        "REJECTED",
+        "EXPIRED",
+        "REVOKED",
+        "SUPERSEDED",
+        "CONSUMPTION_PREVIEWED",
+        "CONSUMED"
+      ]
+    },
+    "approver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_approver",
+        "approved_by",
+        "verification_status",
+        "identity_verification_method",
+        "verification_ref"
+      ],
+      "properties": {
+        "required_approver": {
+          "const": "Thomas"
+        },
+        "approved_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "Thomas",
+            null
+          ]
+        },
+        "verification_status": {
+          "enum": [
+            "NOT_VERIFIED",
+            "VERIFIED"
+          ]
+        },
+        "identity_verification_method": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "telegram_private_control_channel",
+            null
+          ]
+        },
+        "verification_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_reason",
+        "decided_at"
+      ],
+      "properties": {
+        "decision_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "decided_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "consumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "one_time_use",
+        "consumption_status",
+        "previewed_at",
+        "preview_ref",
+        "consumed_at",
+        "consumption_ref"
+      ],
+      "properties": {
+        "one_time_use": {
+          "const": true
+        },
+        "consumption_status": {
+          "enum": [
+            "NOT_CONSUMED",
+            "PREVIEWED_ONLY",
+            "CONSUMED"
+          ]
+        },
+        "previewed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "preview_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "consumed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "consumption_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issued_at",
+        "expires_at"
+      ],
+      "properties": {
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "executor_handoff_allowed",
+        "external_execution_allowed",
+        "financial_execution_allowed",
+        "runtime_mutation_allowed",
+        "tool_enablement_allowed",
+        "program_enablement_allowed",
+        "permission_expansion_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "const": "REVIEW_ONLY"
+        },
+        "executor_handoff_allowed": {
+          "const": false
+        },
+        "external_execution_allowed": {
+          "const": false
+        },
+        "financial_execution_allowed": {
+          "const": false
+        },
+        "runtime_mutation_allowed": {
+          "const": false
+        },
+        "tool_enablement_allowed": {
+          "const": false
+        },
+        "program_enablement_allowed": {
+          "const": false
+        },
+        "permission_expansion_allowed": {
+          "const": false
+        }
+      }
+    },
+    "audit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PENDING"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "approver": {
+            "properties": {
+              "approved_by": {
+                "type": "null"
+              },
+              "verification_status": {
+                "const": "NOT_VERIFIED"
+              },
+              "identity_verification_method": {
+                "type": "null"
+              },
+              "verification_ref": {
+                "type": "null"
+              }
+            }
+          },
+          "decision": {
+            "properties": {
+              "decision_reason": {
+                "type": "null"
+              },
+              "decided_at": {
+                "type": "null"
+              }
+            }
+          },
+          "consumption": {
+            "properties": {
+              "consumption_status": {
+                "const": "NOT_CONSUMED"
+              },
+              "previewed_at": {
+                "type": "null"
+              },
+              "preview_ref": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "APPROVED",
+              "REJECTED",
+              "REVOKED",
+              "CONSUMPTION_PREVIEWED",
+              "CONSUMED"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "approver": {
+            "properties": {
+              "approved_by": {
+                "const": "Thomas"
+              },
+              "verification_status": {
+                "const": "VERIFIED"
+              },
+              "identity_verification_method": {
+                "type": "string",
+                "minLength": 1
+              },
+              "verification_ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "decision": {
+            "properties": {
+              "decision_reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "decided_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CONSUMPTION_PREVIEWED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "consumption": {
+            "properties": {
+              "consumption_status": {
+                "const": "PREVIEWED_ONLY"
+              },
+              "previewed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "preview_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "consumed_at": {
+                "type": "null"
+              },
+              "consumption_ref": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CONSUMED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "consumption": {
+            "properties": {
+              "consumption_status": {
+                "const": "CONSUMED"
+              },
+              "consumed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "consumption_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "previewed_at": {
+                "type": "null"
+              },
+              "preview_ref": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED",
+              "EXPIRED",
+              "REVOKED",
+              "SUPERSEDED"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "consumption": {
+            "properties": {
+              "consumption_status": {
+                "const": "NOT_CONSUMED"
+              },
+              "previewed_at": {
+                "type": "null"
+              },
+              "preview_ref": {
+                "type": "null"
+              },
+              "consumed_at": {
+                "type": "null"
+              },
+              "consumption_ref": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

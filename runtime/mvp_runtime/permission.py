@@ -88,11 +88,11 @@ APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 _EXECUTABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT})
 # Dispositions a RECORD may be built for. Building an APPROVAL_REQUIRED decision is not
 # acting on it — the record is REVIEW_ONLY evidence that states an action needs Thomas, and
-# it is the object an Approval Request binds to. The runtime still cannot perform an
-# APPROVAL_REQUIRED action: real approval consumption is gate-pinned unimplemented
-# (`approval_lifetime.approval_consumption_implemented: false`), so an approved action has
-# no execution path — by design, not by omission. BLOCK stays unbuildable: a BLOCK means
-# do not, and there is nothing to record a request against.
+# it is the object an Approval Request binds to. Building the decision still performs nothing:
+# an APPROVAL_REQUIRED action executes only when its APPROVED approval is later *consumed*
+# (R10), a separate step gated behind the `approval_consumption` safety flag (see
+# consumption.py) — never as a side effect of the decision. BLOCK stays unbuildable: a BLOCK
+# means do not, and there is nothing to record a request against.
 _BUILDABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT, APPROVAL_REQUIRED})
 # The EXECUTE_AND_REPORT scopes the MVP actually implements. Kept as an explicit allowlist
 # so widening the disposition gate does not silently admit the other scopes governance

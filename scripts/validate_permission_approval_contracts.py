@@ -52,6 +52,9 @@ POLICY_RUNTIME_FALSE_FIELDS = (
     "grants_financial_execution",
     "grants_permission_expansion",
     *RUNTIME_FALSE_FIELDS,
+    # R10 keeps this false: scoped consumption is granted per-machine by the approval_consumption
+    # safety flag, not as a standing runtime effect (mirrors R8 filesystem_write). Only
+    # approval_lifetime.approval_consumption_implemented flips true.
     "approval_consumption_allowed",
     "core_activation_allowed",
 )
@@ -258,8 +261,10 @@ def validate_policy_record(policy: dict[str, Any]) -> list[str]:
         issues.append("Action Approval must remain one-time-use")
     if lifetime.get("approval_reuse_allowed") is not False:
         issues.append("Approval reuse must remain disabled")
-    if lifetime.get("approval_consumption_implemented") is not False:
-        issues.append("real Approval consumption must remain unimplemented")
+    if lifetime.get("approval_consumption_implemented") is not True:
+        # R10: scoped consumption is implemented. Reuse stays disabled (above); this asserts
+        # the implementation is declared, not that consumption is unbounded.
+        issues.append("Approval consumption is implemented; approval_consumption_implemented must be true")
     if lifetime.get("default_approval_ttl_minutes") != 30:
         issues.append("default Approval TTL must remain 30 minutes")
     if lifetime.get("permission_decision_max_ttl_minutes") != 60:
@@ -463,7 +468,9 @@ def validate_approval_record(
             issues.append("PENDING approval must be NOT_VERIFIED")
         if decision.get("decided_at") is not None:
             issues.append("PENDING approval cannot have decided_at")
-    elif status in {"APPROVED", "REJECTED", "REVOKED", "CONSUMPTION_PREVIEWED"}:
+    elif status in {"APPROVED", "REJECTED", "REVOKED", "CONSUMPTION_PREVIEWED", "CONSUMED"}:
+        # CONSUMED (R10) is reached only from APPROVED, so it carries the same verified Thomas
+        # approver — a consumed grant is still the grant Thomas gave.
         if approver.get("approved_by") != "Thomas":
             issues.append(f"{status} approval must be decided by Thomas")
         if approver.get("verification_status") != "VERIFIED":
@@ -493,6 +500,20 @@ def validate_approval_record(
             )
         if not consumption.get("previewed_at") or not consumption.get("preview_ref"):
             issues.append("consumption preview requires timestamp and reference")
+        if consumption.get("consumed_at") is not None or consumption.get("consumption_ref") is not None:
+            issues.append("a previewed approval has not been consumed")
+    elif status == "CONSUMED":
+        # R10: a spent one-time grant. It records what it produced and never a preview marker.
+        if consumption.get("consumption_status") != "CONSUMED":
+            issues.append("CONSUMED status requires CONSUMED consumption status")
+        if not consumption.get("consumed_at") or not consumption.get("consumption_ref"):
+            issues.append("a consumed approval requires consumed_at and consumption_ref")
+        if consumption.get("previewed_at") is not None or consumption.get("preview_ref") is not None:
+            issues.append("a consumed approval cannot also carry a preview marker")
+        # A grant cannot be spent after it died — the same bound the decision already has.
+        consumed_at = parse_dt(consumption.get("consumed_at"), "consumption.consumed_at", issues)
+        if consumed_at and expires and consumed_at > expires:
+            issues.append("approval consumption occurred after expiration")
     else:
         if consumption.get("consumption_status") != "NOT_CONSUMED":
             issues.append("non-preview status must remain NOT_CONSUMED")
@@ -500,6 +521,8 @@ def validate_approval_record(
             issues.append("non-preview status cannot have previewed_at")
         if consumption.get("preview_ref") is not None:
             issues.append("non-preview status cannot have preview_ref")
+        if consumption.get("consumed_at") is not None or consumption.get("consumption_ref") is not None:
+            issues.append("an unconsumed approval cannot carry consumption evidence")
 
     if consumption.get("one_time_use") is not True:
         issues.append("Action Approval must remain one-time-use")
@@ -559,6 +582,7 @@ def main() -> int:
 
     permission_validator = validator_for("schemas/permission_decision.v0.3.schema.json")
     approval_validator = validator_for("schemas/approval.v0.1.schema.json")
+    approval_v2_validator = validator_for("schemas/approval.v0.2.schema.json")
 
     permission_positive = [
         "examples/permission/permission_allow_v0.3.yaml",
@@ -583,6 +607,18 @@ def main() -> int:
     for rel in approval_positive:
         data = load_yaml(rel)
         issues = schema_issues(approval_validator, data)
+        issues.extend(validate_approval_record(data, permission_cache, policy))
+        if issues:
+            error(f"{rel}: expected valid, got {issues}")
+
+    # R10: the CONSUMED example is an approval.v0.2 record — validate it against the v0.2 schema
+    # and the same semantic pass (which now understands the CONSUMED consumption evidence).
+    approval_v2_positive = [
+        "examples/approval/approval_consumed_review_only_v0.2.yaml",
+    ]
+    for rel in approval_v2_positive:
+        data = load_yaml(rel)
+        issues = schema_issues(approval_v2_validator, data)
         issues.extend(validate_approval_record(data, permission_cache, policy))
         if issues:
             error(f"{rel}: expected valid, got {issues}")
@@ -689,6 +725,7 @@ def main() -> int:
             "one_time_use_required: true",
             "financial_executor_enabled: false",
             "approval_consumption_allowed: false",
+            "approval_consumption_implemented: true",
             "core_activation_allowed: false",
         ],
     )

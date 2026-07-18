@@ -107,14 +107,16 @@ consumption:
   one_time_use: true
 ```
 
-Current supported evidence states are:
+Supported evidence states in this v0.1 review-only foundation are:
 
 ```text
 NOT_CONSUMED
 PREVIEWED_ONLY
 ```
 
-Real Runtime consumption is intentionally absent and requires a future separately approved Runtime stage with atomic state protection and hot-path revalidation.
+Real Runtime consumption is intentionally absent **from this v0.1 foundation** and requires a separately approved Runtime stage with atomic state protection and hot-path revalidation.
+
+> **R10 (superseding, scoped):** that separately approved stage now exists as `approval.v0.2`, which adds a terminal `CONSUMED` evidence state and the narrowest possible consumption — spending one APPROVED, single-use grant to perform exactly its bound `SENSITIVE_MEMORY_GOVERNANCE` promotion, with the atomic state protection and hot-path revalidation this section named, and gated per-machine behind the `approval_consumption` safety flag. It is deliberately not broadened into Executor handoff or external/financial effect, and `runtime_effect.approval_consumption_allowed` stays `false` (the grant is the safety flag, not a standing runtime effect). See [APPROVAL_CONSUMPTION_V0.1](APPROVAL_CONSUMPTION_V0.1.md).
 
 ## 8. Expiration
 

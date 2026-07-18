@@ -212,7 +212,12 @@ approval_lifetime:
     SENSITIVE_MEMORY_GOVERNANCE: 30
     SECURITY_SENSITIVE_CHANGE: 5
   approval_reuse_allowed: false
-  approval_consumption_implemented: false
+  # R10: the runtime now has a scoped consumption implementation (spend one APPROVED,
+  # single-use approval to perform exactly its bound SENSITIVE_MEMORY_GOVERNANCE promotion,
+  # gated behind the `approval_consumption` safety flag). The consumption *code* exists, so
+  # this is true; whether any given machine may actually consume is still gated per-machine
+  # by the safety-flag activation record, and reuse stays blocked (one_time_use above).
+  approval_consumption_implemented: true
 
 github:
   execute_and_report:
@@ -311,6 +316,11 @@ conflict_policy:
     - THOMAS_APPROVAL_IF_REQUIRED
 
 # Policy authority is active; execution authority is not. Every field below must remain false.
+# R10 note: scoped approval consumption exists (approval_lifetime.approval_consumption_implemented
+# above is true), but it is NOT a standing runtime effect the policy auto-grants — like R8's
+# filesystem_write, the grant is a per-machine `approval_consumption` safety-flag activation, an
+# out-of-band operator decision. So this block stays fully REVIEW_ONLY with every flag false,
+# which is also what the read-only replay kernel's preflight requires.
 runtime_effect:
   mode: REVIEW_ONLY
   grants_runtime_execution: false

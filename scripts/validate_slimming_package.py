@@ -62,6 +62,9 @@ def validate_governance() -> dict[str, Any]:
         "grants_financial_execution",
         "grants_permission_expansion",
         "executor_handoff_allowed",
+        # R10 keeps this false: scoped consumption is a per-machine safety-flag grant, not a
+        # standing runtime effect (mirrors R8 filesystem_write). The read-only kernel preflight
+        # requires this block to stay fully REVIEW_ONLY, so it must not flip here.
         "approval_consumption_allowed",
         "core_activation_allowed",
     ):

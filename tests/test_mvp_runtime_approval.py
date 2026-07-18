@@ -63,6 +63,7 @@ def test_request_is_pending_review_only_and_unconsumed():
     assert req["consumption"] == {
         "one_time_use": True, "consumption_status": "NOT_CONSUMED",
         "previewed_at": None, "preview_ref": None,
+        "consumed_at": None, "consumption_ref": None,
     }
     assert req["approver"]["verification_status"] == "NOT_VERIFIED"
     assert req["approver"]["required_approver"] == "Thomas"
@@ -219,18 +220,19 @@ def test_a_rejected_approval_cannot_be_flipped_to_approved():
 
 
 @requires_local_core
-def test_an_approved_approval_authorizes_no_execution():
-    """The point of the whole increment. APPROVED records Thomas's answer; it is not an
-    execution token, and the runtime has no path to spend it."""
+def test_an_approved_approval_authorizes_no_execution_on_its_own():
+    """APPROVED records Thomas's answer; it is not itself an execution token. Spending it is a
+    separate, safety-flag-gated step (R10 consumption) — the decision never executes as a side
+    effect, and the APPROVED record is still unconsumed and REVIEW_ONLY."""
     ok = approval.record_decision(_request(), _permdec(), granted=True, verification=VERIFIED,
                                   reason="ok", now=LATER)
     assert ok["approval_scope"] == "REVIEW_ONLY"
     assert ok["runtime_effect"]["mode"] == "REVIEW_ONLY"
     assert ok["runtime_effect"]["executor_handoff_allowed"] is False
-    # There is no CONSUMED state to reach: consumption is gate-pinned unimplemented.
+    # An APPROVED record is not yet consumed — consumption is a deliberate later step.
     assert ok["consumption"]["consumption_status"] == "NOT_CONSUMED"
     assert ok["consumption"]["one_time_use"] is True
-    # And the promotion action itself remains something the runtime cannot perform.
+    # And building/deciding an APPROVAL_REQUIRED action never executes it.
     assert "APPROVAL_REQUIRED" not in permission._EXECUTABLE_DISPOSITIONS
 
 
