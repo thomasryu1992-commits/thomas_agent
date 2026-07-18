@@ -45,6 +45,8 @@ Run the MVP intake CLI (R2.1):
 ```
 .venv/Scripts/python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
+Options are `--independent-validation` (R7) and `--write-output PATH` (R8); any other
+`--flag` is rejected with `EXIT_USAGE` rather than folded into the request text.
 On Windows set `PYTHONUTF8=1` for non-ASCII I/O.
 
 ## Core activation (local, per-environment)
@@ -58,7 +60,9 @@ stays green everywhere.
 
 - The current pointer lives at **`.runtime_governance_state/CURRENT_CORE_RELEASE.yaml`**
   (outside `THOMAS_CORE/` so source validators don't treat the tree as activated).
-- The MVP binding must be pointed at it: `--current-pointer .runtime_governance_state/CURRENT_CORE_RELEASE.yaml`.
+- The MVP binding reads that path by default (`binding.DEFAULT_POINTER_REL`) — the intake
+  CLI takes no pointer argument, so pass nothing. (`--current-pointer` belongs to
+  `scripts/create_core_context_binding.py` and the release gate, not to the MVP CLI.)
 - To activate on a fresh machine (once): record an operator-decision evidence file,
   then run `scripts/approve_core_release.py` → `scripts/activate_core_release.py`
   (source_type `operator_decision_intake`, verification `verified_by_control_channel`),
