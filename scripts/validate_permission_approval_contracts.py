@@ -510,6 +510,10 @@ def validate_approval_record(
             issues.append("a consumed approval requires consumed_at and consumption_ref")
         if consumption.get("previewed_at") is not None or consumption.get("preview_ref") is not None:
             issues.append("a consumed approval cannot also carry a preview marker")
+        # A grant cannot be spent after it died — the same bound the decision already has.
+        consumed_at = parse_dt(consumption.get("consumed_at"), "consumption.consumed_at", issues)
+        if consumed_at and expires and consumed_at > expires:
+            issues.append("approval consumption occurred after expiration")
     else:
         if consumption.get("consumption_status") != "NOT_CONSUMED":
             issues.append("non-preview status must remain NOT_CONSUMED")

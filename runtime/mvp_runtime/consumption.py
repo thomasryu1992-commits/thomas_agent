@@ -40,7 +40,8 @@ from runtime.read_only_kernel import integrity
 from . import approval as approval_mod
 from . import audit, safety_gate, timeutil
 from .approval_store import ApprovalStore
-from .errors import ApprovalBlocked, MvpRuntimeError
+from .control import ControlStore
+from .errors import ApprovalBlocked
 from .memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, promote_candidate
 from .paths import repo_root as _repo_root
 from .permission import MEMORY_PROMOTION_PERMISSION_SCOPE
@@ -146,6 +147,7 @@ def consume_approval(
     now: str | None = None,
     repo_root: Path | None = None,
     consumer: Any | None = None,
+    control_store: ControlStore | None = None,
 ) -> dict[str, Any]:
     """Spend an APPROVED approval to perform its one bound promotion, or fail closed.
 
@@ -157,14 +159,27 @@ def consume_approval(
     off. :class:`SafetyGateBlocked` propagates when opted in without a valid activation record.
 
     ``consumer`` is a test seam (mirroring ``workspace.run_write``): production callers leave
-    it None and the capability is selected through the Safety-Flag Gate. ``repo_root`` locates
-    the schemas/policy the produced record is validated against (default: this repo).
+    it None, and only then is the capability selected through the Safety-Flag Gate. Passing one
+    explicitly bypasses the gate, so it is for in-process tests, never a production path.
+    ``repo_root`` locates the schemas/policy the produced record is validated against (default:
+    this repo); ``control_store`` overrides where the kill-switch state is read from.
     """
     now = now or timeutil.utc_now_iso()
     root = repo_root if repo_root is not None else _repo_root()
     approval_store = approval_store or ApprovalStore.default()
     working_memory_store = working_memory_store or WorkingMemoryStore.default()
     ledger = ledger or LedgerStore.default()
+
+    # kill_blocks: new_execution / pending_execution — spending a grant mutates VALIDATED
+    # memory, so a PAUSED or KILLED runtime must not consume. Checked first, before any other
+    # work, exactly as workspace.run_write and the scheduler do for their own effects.
+    control = control_store if control_store is not None else ControlStore(root)
+    state = control.load()
+    if not state.execution_allowed:
+        raise ApprovalBlocked(
+            "KILL_SWITCH_ACTIVE",
+            f"runtime is {state.mode}; kill_blocks forbids consuming an approval",
+        )
 
     approval_rec = approval_store.get(approval_id)
     if approval_rec is None:
@@ -254,7 +269,7 @@ def consume_approval(
     consumption_ref = f"validated_memory:{validated['validated_memory_id']}"
     consumed = approval_mod.build_consumed_record(
         approval_rec, permission_decision,
-        consumed_at=now, consumption_ref=consumption_ref, now=now, repo_root=root,
+        consumed_at=now, consumption_ref=consumption_ref, repo_root=root,
     )
 
     # Build the audit BEFORE persisting anything: a consumption that cannot be audited fails
@@ -262,8 +277,13 @@ def consume_approval(
     consumption_audit = audit.build_approval_consumption_audit(
         consumed, validated, now=now, genesis_previous_hash=ledger.last_audit_hash(), repo_root=root,
     )
-    working_memory_store.append_validated([validated])
+    # Order matters for the one-time-use guarantee: **spend the grant first**, then promote.
+    # If the promotion write fails after this, the grant is spent-but-unpromoted — Thomas must
+    # approve again, which is the safe direction. The reverse order (promote first) would leave
+    # a still-APPROVED grant next to a completed promotion, so a retry would pass every guard
+    # and promote a second time — two VALIDATED entries from one single-use approval.
     approval_store.append([consumed])
+    working_memory_store.append_validated([validated])
     ledger.append_audit_events(consumption_audit)
 
     return {"approval": consumed, "validated": validated, "audit": consumption_audit}

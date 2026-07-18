@@ -299,7 +299,6 @@ def build_consumed_record(
     *,
     consumed_at: str,
     consumption_ref: str,
-    now: str,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build the CONSUMED approval record — the tamper-evident evidence that this one-time

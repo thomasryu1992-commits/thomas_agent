@@ -65,6 +65,21 @@ sequentially, so this closes the realistic window, and the append-only store the
 spend itself durable, tamper-evident evidence. Reuse stays blocked
 (`approval_reuse_allowed: false`, `one_time_use_required: true`).
 
+**Write order is part of this guarantee.** The grant is marked CONSUMED *before* the
+promotion is written. If the promotion write then fails, the grant is spent-but-unpromoted —
+Thomas must approve again, which is the safe direction. The reverse order would leave a
+still-APPROVED grant beside a completed promotion, so a retry would pass every guard and
+promote a second time: two VALIDATED entries from one single-use approval.
+
+### Kill-switch bound
+
+Spending a grant mutates VALIDATED memory, so it is an execution the emergency stop must
+reach (`kill_switch.kill_blocks: new_execution` / `pending_execution`). Consumption checks the
+runtime control state **first**, before any other work, and refuses with `KILL_SWITCH_ACTIVE`
+while PAUSED or KILLED — the same binding `workspace.run_write` has for `tool_write` and the
+scheduler has for `scheduler_execution`. Only the authenticated operator can resume
+(`agent_can_disable_or_bypass: false`).
+
 ## The lifecycle
 
 ```

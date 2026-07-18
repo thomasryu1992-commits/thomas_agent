@@ -21,7 +21,8 @@ from runtime.mvp_runtime import approval, consumption, permission, timeutil
 from runtime.mvp_runtime.approval_store import ApprovalStore
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.consumption import _CapableConsumer, _DryRunConsumer, consume_approval
-from runtime.mvp_runtime.errors import ApprovalBlocked, SafetyGateBlocked
+from runtime.mvp_runtime.control import ControlState, ControlStore
+from runtime.mvp_runtime.errors import ApprovalBlocked, PersistenceError, SafetyGateBlocked
 from runtime.mvp_runtime.intake import build_task
 from runtime.mvp_runtime.memory import CANDIDATE_SCOPE, CANDIDATE_STATUS
 from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION, Authorization
@@ -256,6 +257,54 @@ def test_consume_opted_in_without_activation_fails_closed(tmp_path, monkeypatch)
                          ledger=ledger, now=LATER, repo_root=tmp_path)
 
 
+# --- the kill switch -------------------------------------------------------------
+
+
+@requires_local_core
+@pytest.mark.parametrize("mode", ["PAUSED", "KILLED"])
+def test_consume_is_refused_while_the_runtime_is_not_active(tmp_path, mode):
+    """Spending a grant mutates VALIDATED memory, so the emergency stop must block it
+    (`kill_blocks: new_execution` / `pending_execution`) — as it does for the R8 write and
+    the R6 scheduler."""
+    astore, wm, ledger, approval_id, _ = _approved(tmp_path)
+    control = ControlStore(tmp_path / "control")
+    control.save(ControlState(mode=mode, updated_by="Thomas", updated_at=NOW, reason="test"))
+    with pytest.raises(ApprovalBlocked) as exc:
+        consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT),
+                         control_store=control)
+    assert exc.value.reason_code == "KILL_SWITCH_ACTIVE"
+    # Nothing was spent or promoted.
+    assert astore.get(approval_id)["status"] == "APPROVED"
+    assert wm.read_validated() == []
+
+
+@requires_local_core
+def test_the_grant_is_spent_before_the_promotion_is_written(tmp_path):
+    """One-time-use ordering: if the promotion write fails, the grant must already be spent —
+    otherwise a retry would pass every guard and promote a second time."""
+    astore, wm, ledger, approval_id, _ = _approved(tmp_path)
+
+    class _FailingValidatedStore:
+        """Wraps the real store but fails the validated write, as a disk error would."""
+        def __init__(self, inner): self._inner = inner
+        def read_all(self): return self._inner.read_all()
+        def read_validated(self): return self._inner.read_validated()
+        def append_validated(self, entries): raise PersistenceError("WRITE_FAILED", "disk full")
+
+    with pytest.raises(PersistenceError):
+        consume_approval(approval_id, approval_store=astore,
+                         working_memory_store=_FailingValidatedStore(wm),
+                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    # The grant is spent (safe direction) and nothing was promoted, so it cannot be spent twice.
+    assert astore.get(approval_id)["status"] == "CONSUMED"
+    assert wm.read_validated() == []
+    with pytest.raises(ApprovalBlocked) as exc:
+        consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    assert exc.value.reason_code == "ALREADY_CONSUMED"
+
+
 def test_dry_run_consumer_refuses():
     with pytest.raises(ApprovalBlocked) as exc:
         _DryRunConsumer().consume({"content": "x"})
@@ -285,5 +334,5 @@ def test_build_consumed_record_refuses_a_non_approved_input(tmp_path):
     request = approval.build_approval_request(permdec, now=NOW)  # PENDING
     with pytest.raises(ApprovalBlocked) as exc:
         approval.build_consumed_record(request, permdec, consumed_at=LATER,
-                                       consumption_ref="validated_memory:x", now=LATER)
+                                       consumption_ref="validated_memory:x")
     assert exc.value.reason_code == "NOT_APPROVED"
