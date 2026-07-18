@@ -74,6 +74,20 @@ def main(argv: list[str] | None = None) -> int:
     if usage_error is not None:
         sys.stderr.write(f"BLOCKED USAGE: {usage_error}\n")
         return EXIT_USAGE
+    # Everything left is free-form request text. Reject leftover option-shaped tokens
+    # rather than silently folding them into the prompt: a mistyped or non-existent flag
+    # (e.g. --current-pointer, which this CLI never had) would otherwise be swallowed into
+    # the request, polluting the prompt and the audited record while the caller believes it
+    # took effect. Fail closed, as everywhere else. A request that genuinely starts with
+    # "--" can be piped on stdin.
+    unknown = [a for a in argv if a.startswith("--")]
+    if unknown:
+        sys.stderr.write(
+            f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
+            "(known options: --independent-validation, --write-output PATH); "
+            "pipe the request on stdin if it must start with '--'\n"
+        )
+        return EXIT_USAGE
     text = " ".join(argv) if argv else sys.stdin.read()
     # Drop a leading BOM (some shells inject U+FEFF on an "empty" pipe) so a
     # BOM-only input is correctly treated as empty rather than a 1-char request.
