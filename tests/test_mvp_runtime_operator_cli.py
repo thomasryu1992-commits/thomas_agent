@@ -10,6 +10,8 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.operator import InboundMessage, MockOperatorChannel, OperatorIdentity
 from runtime.mvp_runtime.operator_cli import main
+from runtime.mvp_runtime.store import LedgerStore
+from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 from runtime.mvp_runtime.worker import MockProvider
 
 LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
@@ -58,9 +60,11 @@ def test_long_poll_flag_reaches_channel():
 
 
 @requires_local_core
-def test_handles_registered_message_and_replies(capsys):
+def test_handles_registered_message_and_replies(capsys, tmp_path):
     ch = MockOperatorChannel(inbound=[_msg(), _msg(sender_id="tg-999")])
-    rc = main([], channel=ch, registration=REG, provider=MockProvider())
+    rc = main([], channel=ch, registration=REG, provider=MockProvider(),
+              store=LedgerStore(tmp_path / "ledger"),
+              working_memory=WorkingMemoryStore(tmp_path / "wm"))
     assert rc == 0
     assert "handled 1, dropped 1" in capsys.readouterr().out
     assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-1"
@@ -69,8 +73,8 @@ def test_handles_registered_message_and_replies(capsys):
 
 @requires_local_core
 def test_cli_shares_working_memory(tmp_path):
-    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
     wm = WorkingMemoryStore(tmp_path / "wm")
     ch = MockOperatorChannel(inbound=[_msg()])
-    rc = main([], channel=ch, registration=REG, provider=MockProvider(), working_memory=wm)
+    rc = main([], channel=ch, registration=REG, provider=MockProvider(), working_memory=wm,
+              store=LedgerStore(tmp_path / "ledger"))
     assert rc == 0 and wm.read_all()  # the operator CLI accumulates working memory
