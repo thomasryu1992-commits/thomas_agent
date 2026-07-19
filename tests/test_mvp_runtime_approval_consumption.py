@@ -212,6 +212,66 @@ def test_content_changed_since_approval_is_refused(tmp_path):
 
 
 @requires_local_core
+def test_an_expired_candidate_cannot_be_promoted(tmp_path):
+    """Retention (§12.4) holds on the write path, not only on reads: a candidate whose
+    ``expires_at`` has passed is refused even though the prune has not run yet."""
+    bound = _bound()
+    candidate = _candidate(bound)
+    candidate["expires_at"] = "2026-07-16T12:10:00Z"  # before LATER, after approval issue
+    astore, wm, ledger = _stores(tmp_path)
+    wm.append([candidate])
+    permdec = permission.build_memory_promotion_permission_decision(bound, candidate, now=NOW)
+    request = approval.build_approval_request(permdec, now=NOW)
+    astore.append_permission_decision(permdec)
+    astore.append([request])
+    verification = approval.Verification(
+        approved_by="Thomas", method="telegram_private_control_channel",
+        verification_ref="telegram:private_chat:registered-thomas:msg-1")
+    decided = approval.record_decision(request, permdec, granted=True,
+                                       verification=verification, reason="Approved.", now=NOW)
+    astore.append([decided])
+    with pytest.raises(ApprovalBlocked) as exc:
+        consume_approval(request["approval_id"], approval_store=astore, working_memory_store=wm,
+                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    assert exc.value.reason_code == "CANDIDATE_EXPIRED"
+    assert wm.read_validated() == []
+
+
+@requires_local_core
+def test_concurrent_consumes_spend_the_grant_exactly_once(tmp_path):
+    """Two consumes racing on the same grant (operator loop + docker-exec CLI in the shipped
+    deployment): the cross-process lock serializes the compare-and-set, so exactly one wins
+    and the loser is refused with ALREADY_CONSUMED — never two promotions from one grant."""
+    import threading
+
+    astore, wm, ledger, approval_id, _ = _approved(tmp_path)
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def attempt():
+        barrier.wait()
+        try:
+            consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                             ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+            result = "CONSUMED"
+        except ApprovalBlocked as exc:
+            result = exc.reason_code
+        with lock:
+            outcomes.append(result)
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(outcomes) == ["ALREADY_CONSUMED", "CONSUMED"]
+    assert len(wm.read_validated()) == 1  # one promotion, not two
+    assert astore.get(approval_id)["status"] == "CONSUMED"
+
+
+@requires_local_core
 def test_a_vanished_candidate_is_refused(tmp_path):
     """The approval is set up but the candidate was never stored (promoted/pruned already)."""
     astore, wm, ledger, approval_id, _ = _approved(tmp_path, store_candidate=False)

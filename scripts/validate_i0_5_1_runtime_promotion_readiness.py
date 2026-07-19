@@ -446,12 +446,17 @@ def validate_component_mutations() -> int:
             mutated = deepcopy(original)
             set_path(mutated, path, value)
             (repo / REGISTRY_REL).write_text(yaml.safe_dump(mutated, sort_keys=False), encoding="utf-8")
+            # Fail-closed means: the mutation is detected either by a raised error or by a
+            # non-PASS attestation. The AssertionError must be raised OUTSIDE the try, so
+            # the broad except cannot swallow the very failure this check exists to catch.
             try:
                 record = build_component_attestation(repo, created_at=FIXED_NOW)
-                if record["summary"]["result"] == "PASS":
-                    raise AssertionError("mutated component registry unexpectedly passed")
             except Exception:
-                pass
+                detected = True
+            else:
+                detected = record["summary"]["result"] != "PASS"
+            if not detected:
+                raise AssertionError(f"mutated component registry must fail closed: {path}")
             count += 1
         (repo / REGISTRY_REL).write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
     return count

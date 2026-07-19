@@ -53,11 +53,24 @@ def test_append_audit_events_and_read_tip(tmp_path):
     assert len(_read_jsonl(store.root / AUDIT_FILE)) == 2
 
 
-def test_append_records_only_known_kinds(tmp_path):
+def test_append_records_rejects_unknown_kinds(tmp_path):
+    """An unrecognized kind fails closed instead of being silently dropped — the silent-drop
+    path once swallowed the R8 write records while their audit events survived."""
     store = LedgerStore(tmp_path / "ledger")
-    store.append_records("trace-1", {"task": {"x": 1}, "not_a_kind": {"y": 2}, "audit_trail": []})
+    with pytest.raises(PersistenceError) as exc:
+        store.append_records("trace-1", {"task": {"x": 1}, "not_a_kind": {"y": 2}, "audit_trail": []})
+    assert exc.value.reason_code == "LEDGER_UNKNOWN_RECORD_KIND"
+    assert not (store.root / RECORDS_FILE).exists()  # nothing partial was written
+
+
+def test_append_records_persists_known_kinds_and_skips_non_record_keys(tmp_path):
+    store = LedgerStore(tmp_path / "ledger")
+    store.append_records("trace-1", {
+        "task": {"x": 1}, "write_permission_decision": {"d": 1}, "write_use": {"w": 1},
+        "audit_trail": [], "block_record": None, "memory_retrieved": [],
+    })
     rows = _read_jsonl(store.root / RECORDS_FILE)
-    assert [r["kind"] for r in rows] == ["task"]
+    assert [r["kind"] for r in rows] == ["task", "write_permission_decision", "write_use"]
     assert rows[0]["trace_id"] == "trace-1"
 
 

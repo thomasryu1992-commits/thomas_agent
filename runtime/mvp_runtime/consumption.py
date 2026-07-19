@@ -21,9 +21,11 @@ layer:
   snapshot and re-hashes the *current* candidate content, refusing (``FINGERPRINT_MISMATCH`` /
   ``CONTENT_CHANGED``) if either drifted since Thomas approved. He can only ever spend a grant
   on exactly what he saw.
-- **One-time use.** A CONSUMED approval is terminal; a compare-and-set re-read of the stored
-  status immediately before acting refuses a second consume (``ALREADY_CONSUMED``). The store
-  is append-only, so the spend is itself tamper-evident evidence.
+- **One-time use.** A CONSUMED approval is terminal. The spend runs under a cross-process
+  file lock (:mod:`filelock`): the stored status is re-read and the CONSUMED record appended
+  inside one exclusion, so two concurrent consumes — the operator loop and a ``docker exec``
+  CLI share these stores — cannot both pass the check (``ALREADY_CONSUMED`` for the loser).
+  The store is append-only, so the spend is itself tamper-evident evidence.
 
 Everything here fails closed: any doubt about identity, freshness, content, or single-use
 refuses rather than performs an action Thomas did not exactly authorize.
@@ -42,7 +44,8 @@ from . import audit, safety_gate, timeutil
 from .approval_store import ApprovalStore
 from .control import ControlStore
 from .errors import ApprovalBlocked
-from .memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, promote_candidate
+from .filelock import locked
+from .memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, is_expired as memory_is_expired, promote_candidate
 from .paths import repo_root as _repo_root
 from .permission import MEMORY_PROMOTION_PERMISSION_SCOPE
 from .safety_gate import APPROVAL_CONSUMPTION
@@ -155,8 +158,8 @@ def consume_approval(
     memory it produced, and the consumption audit event(s). Raises :class:`ApprovalBlocked`
     (a fail-closed BLOCK) on any of: unknown/expired/not-APPROVED/already-CONSUMED approval,
     a missing bound PermissionDecision, a drifted action fingerprint or candidate content, a
-    scope other than the memory-promotion scope, a vanished candidate, or the safety flag being
-    off. :class:`SafetyGateBlocked` propagates when opted in without a valid activation record.
+    scope other than the memory-promotion scope, a vanished or expired candidate, or the safety
+    flag being off. :class:`SafetyGateBlocked` propagates when opted in without a valid activation record.
 
     ``consumer`` is a test seam (mirroring ``workspace.run_write``): production callers leave
     it None, and only then is the capability selected through the Safety-Flag Gate. Passing one
@@ -232,7 +235,16 @@ def consume_approval(
     if candidate is None:
         raise ApprovalBlocked(
             "CANDIDATE_GONE",
-            f"working-memory candidate {candidate_id} is not on record (promoted, pruned, or expired)",
+            f"working-memory candidate {candidate_id} is not on record (promoted or pruned)",
+        )
+    # Retention (§12.4) must hold on the one write path that makes content permanent, not
+    # only on reads: an expired-but-not-yet-pruned candidate is refused, exactly as if the
+    # prune had already run.
+    if memory_is_expired(candidate, now=now):
+        raise ApprovalBlocked(
+            "CANDIDATE_EXPIRED",
+            f"working-memory candidate {candidate_id} expired at {candidate.get('expires_at')}; "
+            "an expired candidate cannot be promoted",
         )
     content = candidate.get("content")
     if not (isinstance(content, str) and content.strip()):
@@ -249,41 +261,43 @@ def consume_approval(
     if consumer is None:
         consumer = select_consumer(now=now, root=root)
 
-    # Atomic single-use compare-and-set: re-read the stored status immediately before acting, so
-    # a second consume of the same grant (or one that raced ahead) is refused. The MVP runs a
-    # single process sequentially, so this closes the realistic window; the append-only store
-    # then makes the spend itself durable evidence.
-    latest = approval_store.get(approval_id)
-    if latest is None or latest.get("status") != approval_mod.STATUS_APPROVED:
-        raise ApprovalBlocked(
-            "ALREADY_CONSUMED", "approval is no longer APPROVED (a concurrent consume won); refusing"
+    # Single-use compare-and-set under a cross-process file lock: the shipped deployment is
+    # multi-process (the operator loop plus `docker exec` CLIs on one volume), so the re-read
+    # and the spend must be one mutual exclusion — without it, two concurrent consumes both
+    # read APPROVED, both pass every guard, and one single-use grant promotes twice.
+    with locked(approval_store.root / ".consume.lock",
+                code="APPROVAL_WRITE_FAILED", label="the approval store"):
+        latest = approval_store.get(approval_id)
+        if latest is None or latest.get("status") != approval_mod.STATUS_APPROVED:
+            raise ApprovalBlocked(
+                "ALREADY_CONSUMED", "approval is no longer APPROVED (a concurrent consume won); refusing"
+            )
+
+        promoted_by = (approval_rec.get("approver", {}) or {}).get("approved_by") or approval_mod.REQUIRED_APPROVER
+        reason = (
+            f"Consumed approval {approval_id} — "
+            f"{approval_rec.get('decision', {}).get('decision_reason') or 'approved by Thomas on the verified channel'}"
+        )
+        validated = consumer.consume(candidate, promoted_by=promoted_by, reason=reason, now=now)
+
+        consumption_ref = f"validated_memory:{validated['validated_memory_id']}"
+        consumed = approval_mod.build_consumed_record(
+            approval_rec, permission_decision,
+            consumed_at=now, consumption_ref=consumption_ref, repo_root=root,
         )
 
-    promoted_by = (approval_rec.get("approver", {}) or {}).get("approved_by") or approval_mod.REQUIRED_APPROVER
-    reason = (
-        f"Consumed approval {approval_id} — "
-        f"{approval_rec.get('decision', {}).get('decision_reason') or 'approved by Thomas on the verified channel'}"
-    )
-    validated = consumer.consume(candidate, promoted_by=promoted_by, reason=reason, now=now)
-
-    consumption_ref = f"validated_memory:{validated['validated_memory_id']}"
-    consumed = approval_mod.build_consumed_record(
-        approval_rec, permission_decision,
-        consumed_at=now, consumption_ref=consumption_ref, repo_root=root,
-    )
-
-    # Build the audit BEFORE persisting anything: a consumption that cannot be audited fails
-    # closed here, leaving no half-written state (mirrors the R5 promotion ordering).
-    consumption_audit = audit.build_approval_consumption_audit(
-        consumed, validated, now=now, genesis_previous_hash=ledger.last_audit_hash(), repo_root=root,
-    )
-    # Order matters for the one-time-use guarantee: **spend the grant first**, then promote.
-    # If the promotion write fails after this, the grant is spent-but-unpromoted — Thomas must
-    # approve again, which is the safe direction. The reverse order (promote first) would leave
-    # a still-APPROVED grant next to a completed promotion, so a retry would pass every guard
-    # and promote a second time — two VALIDATED entries from one single-use approval.
-    approval_store.append([consumed])
-    working_memory_store.append_validated([validated])
-    ledger.append_audit_events(consumption_audit)
+        # Build the audit BEFORE persisting anything: a consumption that cannot be audited fails
+        # closed here, leaving no half-written state (mirrors the R5 promotion ordering).
+        consumption_audit = audit.build_approval_consumption_audit(
+            consumed, validated, now=now, genesis_previous_hash=ledger.last_audit_hash(), repo_root=root,
+        )
+        # Order matters for the one-time-use guarantee: **spend the grant first**, then promote.
+        # If the promotion write fails after this, the grant is spent-but-unpromoted — Thomas must
+        # approve again, which is the safe direction. The reverse order (promote first) would leave
+        # a still-APPROVED grant next to a completed promotion, so a retry would pass every guard
+        # and promote a second time — two VALIDATED entries from one single-use approval.
+        approval_store.append([consumed])
+        working_memory_store.append_validated([validated])
+        ledger.append_audit_events(consumption_audit)
 
     return {"approval": consumed, "validated": validated, "audit": consumption_audit}
