@@ -31,10 +31,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import ProviderError, WorkerBlocked
 from .paths import repo_root as _repo_root
@@ -304,7 +305,7 @@ def run_validation_worker(
 
     schema_path = root / "schemas" / f"{VALIDATION_RESULT_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(record, schema_path, "independent_validation_result")
+        schema_cache.validate_against_schema(record, schema_path, "independent_validation_result")
     except RuntimeSchemaError as exc:
         raise ValidationError("VALIDATION_RESULT_INVALID", str(exc)) from exc
 

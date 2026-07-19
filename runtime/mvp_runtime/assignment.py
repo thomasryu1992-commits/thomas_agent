@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from runtime import registry_resolution
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from .authority import authority_invariant_holds
 from .budgets import default_execution_budget
 from .errors import PlannerBlocked
@@ -165,7 +166,7 @@ def build_role_assignment(
 
     schema_path = root / "schemas" / f"{ROLE_ASSIGNMENT_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(assignment, schema_path, "role_assignment")
+        schema_cache.validate_against_schema(assignment, schema_path, "role_assignment")
     except RuntimeSchemaError as exc:
         raise PlannerBlocked("ASSIGNMENT_SCHEMA_INVALID", str(exc)) from exc
     return assignment

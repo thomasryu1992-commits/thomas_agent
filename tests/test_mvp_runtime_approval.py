@@ -21,8 +21,7 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.errors import ApprovalBlocked, PlannerBlocked
 from runtime.mvp_runtime.intake import build_task
 
-LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 NOW = "2026-07-16T12:00:00Z"
 LATER = "2026-07-16T12:05:00Z"

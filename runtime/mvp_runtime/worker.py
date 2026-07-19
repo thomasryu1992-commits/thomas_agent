@@ -22,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from .errors import ProviderError, WorkerBlocked
 from .memory import build_memory_candidates
 from .paths import repo_root as _repo_root
@@ -352,7 +353,7 @@ def run_analysis_worker(
 
     schema_path = root / "schemas" / f"{AGENT_OUTPUT_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(agent_output, schema_path, "agent_output")
+        schema_cache.validate_against_schema(agent_output, schema_path, "agent_output")
     except RuntimeSchemaError as exc:
         raise WorkerBlocked("OUTPUT_SCHEMA_INVALID", str(exc)) from exc
 

@@ -38,9 +38,10 @@ from typing import Any, Mapping
 
 import yaml
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from . import timeutil
 from .authority import permission_decision_runtime_effect
 from .errors import ApprovalBlocked
@@ -104,7 +105,7 @@ def _validate(approval: Mapping[str, Any], permission_decision: Mapping[str, Any
     PermissionDecision (ids, fingerprint, snapshot, policy), so a mismatched pair fails."""
     schema_path = root / "schemas" / f"{APPROVAL_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(dict(approval), schema_path, "approval")
+        schema_cache.validate_against_schema(dict(approval), schema_path, "approval")
     except RuntimeSchemaError as exc:
         raise ApprovalBlocked("APPROVAL_SCHEMA_INVALID", str(exc)) from exc
     issues = validate_approval_record(

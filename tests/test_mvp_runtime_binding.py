@@ -17,14 +17,12 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.errors import PlannerBlocked
 from runtime.mvp_runtime.intake import build_task
 
+from tests._helpers import LOCAL_POINTER, requires_local_core
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 FIXED_NOW = "2026-07-15T09:00:00Z"
 
 _has_local_core = LOCAL_POINTER.is_file()
-requires_local_core = pytest.mark.skipif(
-    not _has_local_core, reason="no local Core activation (.runtime_governance_state/CURRENT_CORE_RELEASE.yaml)"
-)
 
 
 def _received_task(**overrides):

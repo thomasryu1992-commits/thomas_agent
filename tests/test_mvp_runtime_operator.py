@@ -29,10 +29,9 @@ from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
 from runtime.mvp_runtime.worker import MockProvider
 
-LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
 NOW = "2026-07-16T09:00:00Z"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
 

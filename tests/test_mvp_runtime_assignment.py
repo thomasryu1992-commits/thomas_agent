@@ -18,11 +18,10 @@ from runtime.mvp_runtime.permission import build_permission_decision
 from runtime.mvp_runtime.planner import classify_task, load_resolved_roles, select_role
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 NOW = "2026-07-15T09:00:00Z"
 EXPIRES = "2026-07-15T09:30:00Z"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 def _pipeline():
