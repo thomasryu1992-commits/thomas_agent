@@ -335,6 +335,108 @@ def test_telegram_without_state_path_keeps_the_cursor_in_memory(monkeypatch, tmp
     assert list(tmp_path.iterdir()) == []
 
 
+# --- Telegram 4096-unit send chunking -----------------------------------------
+
+def test_split_for_send_short_text_is_one_chunk():
+    from runtime.mvp_runtime.operator import _split_for_send
+    assert _split_for_send("짧은 답변", 4000) == ["짧은 답변"]
+    assert _split_for_send("", 4000) == [""]
+
+
+def test_split_for_send_cuts_after_newlines_and_loses_nothing():
+    from runtime.mvp_runtime.operator import _split_for_send
+    text = "\n".join(f"분석 라인 {i}: " + "내용" * 40 for i in range(120))
+    chunks = _split_for_send(text, 4000)
+    assert len(chunks) > 1
+    assert "".join(chunks) == text                      # nothing lost, nothing reordered
+    for chunk in chunks[:-1]:
+        assert chunk.endswith("\n")                     # preferred cut is a line boundary
+    for chunk in chunks:
+        assert sum(2 if ord(c) > 0xFFFF else 1 for c in chunk) <= 4000
+
+
+def test_split_for_send_counts_utf16_units_for_astral_chars():
+    from runtime.mvp_runtime.operator import _split_for_send
+    text = "\U0001F600" * 2100                          # each emoji is 2 UTF-16 units
+    chunks = _split_for_send(text, 4000)
+    assert [len(c) for c in chunks] == [2000, 100]
+    assert "".join(chunks) == text
+
+
+def test_telegram_send_chunks_long_replies(monkeypatch):
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    long_reply = "\n".join("사업성 분석 결과 문단 " + "상세 " * 50 for _ in range(60))
+    calls = _capture_urlopen(monkeypatch, [{"ok": True, "result": []}] * 10)
+    TelegramChannel(authorization=_TG_AUTH).send("chat-777", long_reply)
+    assert len(calls) > 1                               # split into several sendMessage calls
+    assert "".join(c["text"] for c in calls) == long_reply
+    for c in calls:
+        assert sum(2 if ord(ch) > 0xFFFF else 1 for ch in c["text"]) <= 4000
+
+
+# --- a failed send must not abort the rest of an already-claimed batch --------
+
+class _FirstSendFailsChannel(MockOperatorChannel):
+    def send(self, chat_id: str, text: str) -> None:
+        if not self.sent:
+            self.sent.append((chat_id, "<DELIVERY FAILED>"))
+            raise OperatorBlocked("CHANNEL_TRANSPORT", "telegram sendMessage returned an error response")
+        super().send(chat_id, text)
+
+
+def test_run_once_send_failure_does_not_abort_the_batch(tmp_path, monkeypatch):
+    """The poll cursor is advanced before handling (a batch is claimed once), so a failed
+    reply delivery must not abort the remaining messages — a /kill queued behind a long
+    analysis would otherwise be lost forever."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.control import ControlStore, KILLED
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "COMPLETED", "final_response": "분석 결과", "records": {}},
+    )
+    control_store = ControlStore(tmp_path / "control")
+    ch = _FirstSendFailsChannel(inbound=[_msg(text="이 사업 아이디어를 분석해줘"), _msg(text="/kill")])
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW, control_store=control_store)
+    assert summary["handled"] == 2 and summary["send_failures"] == 1
+    assert control_store.load().mode == KILLED          # the queued /kill still fired
+
+
+# --- unmatched slash commands must never reach the pipeline -------------------
+
+def test_unknown_slash_command_is_refused_not_analyzed(tmp_path, monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.control import ControlStore
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    for text in ("/killl", "/unknown thing", "/approve@otherbot x"):
+        reply = handle_operator_message(
+            _msg(text=text), registration=REG, now=NOW,
+            control_store=ControlStore(tmp_path / "control"),
+        )
+        assert reply.accepted is False and reply.reason_code == "UNKNOWN_COMMAND", text
+
+
+def test_unknown_slash_command_refused_even_without_stores(monkeypatch):
+    # With no console/approval store wired, a slash message still must not become a task.
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    reply = handle_operator_message(_msg(text="/status"), registration=REG, now=NOW)
+    assert reply.accepted is False and reply.reason_code == "UNKNOWN_COMMAND"
+
+
+def test_botname_suffixed_kill_fires_the_emergency_verb(tmp_path, monkeypatch):
+    """Telegram appends the bot username to menu-picked commands: /kill@bot must KILL,
+    never be analyzed as a business idea."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.control import ControlStore, KILLED
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    control_store = ControlStore(tmp_path / "control")
+    reply = handle_operator_message(
+        _msg(text="/kill@thomas_agent_bot"), registration=REG, now=NOW, control_store=control_store,
+    )
+    assert reply.accepted is True and reply.status == "CONTROL"
+    assert control_store.load().mode == KILLED
+
+
 # --- R9 over the loop: /approve must reach the approval path ------------------
 
 def test_run_once_routes_approve_to_the_approval_path_not_the_pipeline(tmp_path, monkeypatch):
