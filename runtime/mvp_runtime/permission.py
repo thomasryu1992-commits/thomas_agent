@@ -1,17 +1,21 @@
 """R2.2 PermissionDecision (governance step).
 
 Build an immutable ``permission_decision.v0.3`` record for a bound task and have
-governance judge it. The MVP mints two ALLOW-tier actions: the specialist's internal
-analysis (``INTERNAL_ANALYSIS``) and — for R3 — a read-only web search
-(``INTERNAL_READ``). Each record is validated twice — against the closed schema and
-against the canonical Governance Policy semantics (``validate_permission_record``) — and
-any issue fails closed. ALLOW is never an executor token: ``runtime_effect`` stays
-REVIEW_ONLY with every grant flag false.
+governance judge it. The MVP mints five action specs across three dispositions: the
+ALLOW tier (the specialist's ``INTERNAL_ANALYSIS``, the R3 read-only search's
+``INTERNAL_READ``, the R7 validator's ``SIMULATION_VALIDATION``), the R8 workspace
+write (``WORKSPACE_REVERSIBLE_WRITE``, EXECUTE_AND_REPORT), and the R9 memory promotion
+(``SENSITIVE_MEMORY_GOVERNANCE``, APPROVAL_REQUIRED). Each record is validated twice —
+against the closed schema and against the canonical Governance Policy semantics
+(``validate_permission_record``) — and any issue fails closed. No decision is ever an
+executor token: ``runtime_effect`` stays REVIEW_ONLY with every grant flag false, and
+only implemented EXECUTE_AND_REPORT scopes are executable (APPROVAL_REQUIRED is
+buildable for the one approval-flow scope; BLOCK stays refused).
 
-The two actions differ only in their action-identity fields (scope, action_type,
-target, tool, data scope, parameters) and human-readable reasons; the governance
-evaluation, authority invariant, and REVIEW_ONLY guarantee are identical and handled
-once. A read-only search is modelled as an ``INTERNAL_READ`` ALLOW action at P1 (READ) —
+The actions differ in their action-identity fields (scope, action_type, target, tool,
+data scope, parameters) and human-readable reasons; the governance evaluation,
+authority invariant, and REVIEW_ONLY guarantee are identical and handled once. A
+read-only search is modelled as an ``INTERNAL_READ`` ALLOW action at P1 (READ) —
 NOT a ``tool_request`` (that contract is an executor-handoff review packet, the wrong
 shape for an internal read).
 
@@ -236,10 +240,11 @@ def build_permission_decision(
         raise PlannerBlocked("UNKNOWN_SCOPE", f"permission_scope {permission_scope!r} has no policy disposition")
     # Fail closed explicitly on anything the MVP cannot perform, before building the
     # record — do not rely on a downstream schema conditional to reject it. The MVP
-    # performs ALLOW actions and, since R8, the one EXECUTE_AND_REPORT action it has an
-    # implementation and a reporting path for (see _EXECUTABLE_DISPOSITIONS). Everything
-    # stricter — APPROVAL_REQUIRED, BLOCK — stays refused: the MVP has no approval flow,
-    # so an APPROVAL_REQUIRED action has no way to become authorized and must not proceed.
+    # performs ALLOW actions, the one EXECUTE_AND_REPORT action it has an implementation
+    # and a reporting path for (R8; see _EXECUTABLE_DISPOSITIONS), and — since R9 — it can
+    # BUILD (never execute) an APPROVAL_REQUIRED decision for the one scope the approval
+    # flow serves (_APPROVAL_REQUIRED_SCOPES); acting on the grant is R10 consumption,
+    # behind its own gate. BLOCK, and every unimplemented scope, stays refused.
     if disposition not in _BUILDABLE_DISPOSITIONS:
         raise PlannerBlocked(
             "NOT_ALLOWED",

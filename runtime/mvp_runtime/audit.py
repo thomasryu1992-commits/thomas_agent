@@ -1,7 +1,7 @@
 """R2.6 Audit.
 
 ``build_pipeline_audit`` produces the append-only, hash-chained sequence of
-``audit_event.v0.1`` records for one MVP task run: TASK_CREATED -> PERMISSION_DECIDED
+``audit_event.v0.2`` records for one MVP task run: TASK_CREATED -> PERMISSION_DECIDED
 -> VALIDATION_COMPLETED -> TASK_STATE_CHANGED. Each event is fingerprinted
 (``event_sha256``) and the next event carries the previous event's hash and id, so the
 chain is tamper-evident. Audit is evidence only — ``runtime_effect.mode`` is
@@ -561,8 +561,11 @@ def build_approval_request_audit(
     """Audit that Thomas was ASKED (R9) — one standalone event chained onto the ledger tip.
 
     Asking is not acting: the outcome is RECORDED and the event asserts that nothing was
-    authorized. ``audit_event.v0.1`` has no approval event type, so (reuse-first, per the
-    I0.5.4 precedent) this is ``OTHER`` with the subtype in ``reason_codes``.
+    authorized. The schema's enum does define ``APPROVAL_REQUESTED``/``APPROVAL_DECIDED``;
+    this runtime deliberately emits ``OTHER`` + the subtype in ``reason_codes`` for every
+    non-pipeline event (the I0.5.4 precedent), so the whole ledger stays queryable one way.
+    Adopting the typed vocabulary is a separate, ledger-wide decision — it changes what
+    verification and every reader must accept — not a per-builder choice.
     """
     root = repo_root if repo_root is not None else _repo_root()
     approval_id = approval["approval_id"]
@@ -864,9 +867,10 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         # event this runtime has ever built, so verification can require them even though
         # the fingerprint payload does not cover them. This closes the safety-relevant part
         # of the payload's blind spot — flipping runtime_effect flags or the record's schema
-        # claim is now caught. (Actor role/assignment detail and sensitivity remain
-        # uncovered until an audit_event.v0.2 extends the closed fingerprint payload — a
-        # schema decision, not a code fix.)
+        # claim is now caught. (The v0.2 fingerprint payload — what this runtime now emits —
+        # covers actor detail, subject identity, payload_ref, and sensitivity; the residual
+        # blind spot is only for pre-v0.2 events already in a ledger, whose v0.1 payloads
+        # cannot be extended retroactively.)
         if record.get("runtime_effect") != audit_event_runtime_effect():
             _break("AUDIT_DECLARATION_MISMATCH",
                    "runtime_effect is not the canonical EVIDENCE_ONLY block (a grant flag was edited)")
