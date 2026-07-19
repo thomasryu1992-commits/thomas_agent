@@ -12,19 +12,15 @@ binding fails closed with ``CORE_NOT_ACTIVATED``.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 
-# The core-binding builder lives under scripts/ and uses ``from lib.X`` imports, so
-# it is only importable with scripts/ on sys.path. Add it once here (a localized
-# bridge) rather than shelling out to a subprocess.
-_SCRIPTS_DIR = str(_repo_root() / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+# The core-binding builder lives under scripts/ and uses ``from lib.X`` imports;
+# the shared bridge puts scripts/ on sys.path exactly once for the whole runtime.
+from . import _scripts_bridge  # noqa: F401
 
 from create_core_context_binding import build_core_context_binding  # noqa: E402
 

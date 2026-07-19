@@ -29,6 +29,7 @@ from typing import Any
 from runtime.read_only_kernel import integrity
 
 from . import timeutil
+from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError
 from .intake import build_task
@@ -68,15 +69,13 @@ def _block_record(*, stage: str, reason_code: str, message: str, raw_request: st
     Not an ``audit_event.v0.1`` — that schema requires a bound task — so this records the
     stage, reason, request fingerprint (never the raw text beyond a hash), and trace id."""
     trace = received_task["identity"]["trace_id"] if received_task else None
-    return {
-        "record_type": "run_block.v0",
-        "stage": stage,
-        "reason_code": reason_code,
-        "message": message,
-        "request_sha256": integrity.sha256_record({"raw_request": raw_request}),
-        "trace_id": trace,
-        "created_at": now,
-    }
+    # stamped_event gives block entries the same tamper-evident self-hash as the other
+    # standalone ledger events (this builder was the one that had forgotten it).
+    return stamped_event(
+        "run_block.v0", stage=stage, reason_code=reason_code, message=message,
+        request_sha256=integrity.sha256_record({"raw_request": raw_request}),
+        trace_id=trace, created_at=now,
+    )
 
 
 def _persist(store: LedgerStore, records: dict[str, Any]) -> None:

@@ -33,7 +33,6 @@ refuses rather than performs an action Thomas did not exactly authorize.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -45,16 +44,14 @@ from .approval_store import ApprovalStore
 from .control import ControlStore
 from .errors import ApprovalBlocked
 from .filelock import locked
-from .memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, is_expired as memory_is_expired, promote_candidate
+from .memory import is_expired as memory_is_expired, promote_candidate
 from .paths import repo_root as _repo_root
 from .permission import MEMORY_PROMOTION_PERMISSION_SCOPE
 from .safety_gate import APPROVAL_CONSUMPTION
 from .store import LedgerStore
-from .working_memory import WorkingMemoryStore
+from .working_memory import WorkingMemoryStore, find_candidate
 
-_SCRIPTS_DIR = str(_repo_root() / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
 from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 
@@ -108,25 +105,6 @@ class _CapableConsumer:
             provider_id=PROVIDER_ID, now=now,
         )
         return promote_candidate(candidate, promoted_by=promoted_by, reason=reason, now=now)
-
-
-def _find_candidate(store: WorkingMemoryStore, candidate_id: str) -> dict[str, Any] | None:
-    """The live working-memory CANDIDATE with this id, or None. Only an un-promoted candidate
-    in the working-memory scope is eligible — a promotion consumes a candidate, not a validated
-    entry.
-
-    Latest-wins: the working-memory store is append-only, so the *last* entry for an id is its
-    current state. Consuming must revalidate against current content, not a superseded earlier
-    copy — otherwise a candidate re-appended with tampered content after the approval would slip
-    past the content-hash check below."""
-    latest: dict[str, Any] | None = None
-    for entry in store.read_all():
-        if (isinstance(entry, dict)
-                and entry.get("candidate_id") == candidate_id
-                and entry.get("status") == CANDIDATE_STATUS
-                and entry.get("scope") == CANDIDATE_SCOPE):
-            latest = entry
-    return latest
 
 
 def select_consumer(*, now: str, root: Path) -> Any:
@@ -231,7 +209,7 @@ def consume_approval(
         raise ApprovalBlocked("TARGET_NOT_CANDIDATE", f"approval target {target_ref!r} is not a memory candidate")
     candidate_id = target_ref[len(_CANDIDATE_TARGET_PREFIX):]
 
-    candidate = _find_candidate(working_memory_store, candidate_id)
+    candidate = find_candidate(working_memory_store, candidate_id)
     if candidate is None:
         raise ApprovalBlocked(
             "CANDIDATE_GONE",

@@ -28,33 +28,20 @@ from pathlib import Path
 from typing import Any
 
 from .approval_store import ApprovalStore
+from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError, OperatorBlocked
 from .operator import (
     OperatorChannel,
     OperatorIdentity,
-    TelegramChannel,
     load_operator_registration,
     run_operator_once,
     select_operator_channel,
 )
-from .providers import GoogleAIStudioProvider, select_provider
+from .providers import select_provider
 from .store import LedgerStore
-from .tools import WebSearchTool, select_search_tool
+from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
-
-EXIT_OK = 0
-EXIT_BLOCKED = 2
-
-
-def _force_utf8_io() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -89,7 +76,7 @@ def main(
     """Run the operator loop. Returns 0 on a clean finish, non-zero on a fail-closed block.
     Dependencies are injectable for tests; unset ones are selected through the Safety-Flag
     Gate / loaded from local state."""
-    _force_utf8_io()
+    force_utf8_io()
     args = _parse_args(argv)
 
     try:
@@ -98,15 +85,9 @@ def main(
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
+        return report_block(exc)
 
-    if isinstance(channel, TelegramChannel):
-        sys.stderr.write("SAFETY_GATE: network-capable operator channel authorized (network_access)\n")
-    if isinstance(provider, GoogleAIStudioProvider):
-        sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
-    if isinstance(search_tool, WebSearchTool):
-        sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
+    gate_banners(channel=channel, provider=provider, search_tool=search_tool)
 
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
@@ -143,8 +124,7 @@ def main(
                 if exc.reason_code != "CHANNEL_TRANSPORT":
                     # Anything but a transport blip (missing token, malformed offset state,
                     # persist failure) is a real fail-closed condition: stop, don't spin.
-                    sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-                    return EXIT_BLOCKED
+                    return report_block(exc)
                 transport_failures += 1
                 if max_transport_retries is not None and transport_failures > max_transport_retries:
                     sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason} (retries exhausted)\n")

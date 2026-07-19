@@ -36,6 +36,7 @@ from typing import Any
 from runtime.read_only_kernel import integrity
 
 from . import timeutil
+from .events import stamped_event
 from .audit import verify_audit_chain
 from .errors import ControlBlocked, MvpRuntimeError
 from .paths import repo_root as _repo_root
@@ -297,18 +298,11 @@ class ControlStore:
 
 def _control_event(action: str, state: ControlState, *, now: str, task_id: str | None = None) -> dict[str, Any]:
     """Build a tamper-evident control event for the durable ledger."""
-    event: dict[str, Any] = {
-        "record_type": CONTROL_EVENT_TYPE,
-        "action": action,
-        "resulting_mode": state.mode,
-        "actor": state.updated_by,
-        "reason": state.reason,
-        "created_at": now,
-    }
-    if task_id is not None:
-        event["task_id"] = task_id
-    event["integrity"] = {"event_sha256": integrity.sha256_record(dict(event))}
-    return event
+    extra = {"task_id": task_id} if task_id is not None else {}
+    return stamped_event(
+        CONTROL_EVENT_TYPE, action=action, resulting_mode=state.mode,
+        actor=state.updated_by, reason=state.reason, created_at=now, **extra,
+    )
 
 
 def parse_command(text: Any) -> tuple[str, str | None] | None:

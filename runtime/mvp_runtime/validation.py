@@ -36,8 +36,22 @@ from .paths import repo_root as _repo_root
 VALIDATION_RESULT_SCHEMA_VERSION = "validation_result.v0.1"
 VALIDATOR_ACTOR_ID = "mvp.output_validator.automatic"
 
-_SEVERITY = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
-_NEXT_STATE = {"PASS": "DELIVER_FINAL_RESPONSE", "REVISE": "REVISION_REQUIRED", "BLOCK": "BLOCKED_WITH_REASON"}
+# Single source for the PASS/REVISE/BLOCK verdict order and its derived maps. The delivery
+# merge (pipeline), the independent validator, and the audited final state must all rank
+# verdicts identically — two encodings here would let what was delivered and what the
+# ledger says happened silently desynchronize.
+SEVERITY = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
+NEXT_STATE = {"PASS": "DELIVER_FINAL_RESPONSE", "REVISE": "REVISION_REQUIRED", "BLOCK": "BLOCKED_WITH_REASON"}
+# The audit outcome enum says BLOCKED where the validation enum says BLOCK.
+AUDIT_OUTCOME = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}
+
+
+def stricter_result(a: str, b: str) -> str:
+    """The stricter of two PASS/REVISE/BLOCK results (governance: stricter_rule_wins).
+    An unknown value fails closed to BLOCK."""
+    if a not in SEVERITY or b not in SEVERITY:
+        return "BLOCK"
+    return a if SEVERITY[a] >= SEVERITY[b] else b
 
 
 class ValidationError(MvpRuntimeError):
@@ -132,7 +146,7 @@ def validate_agent_output(
         "Uncertainty/assumptions disclosed." if calibrated else "No uncertainty or assumptions disclosed (over-confident).",
     ))
 
-    overall = max((c["result"] for c in checks), key=lambda r: _SEVERITY[r])
+    overall = max((c["result"] for c in checks), key=lambda r: SEVERITY[r])
     result_reasons = [c["notes"] for c in checks if c["result"] != "PASS"] or [
         "All automatic output checks passed."
     ]
@@ -185,7 +199,7 @@ def validate_agent_output(
             ],
             "checks": checks,
             "result_reasons": result_reasons,
-            "recommended_next_state": _NEXT_STATE[overall],
+            "recommended_next_state": NEXT_STATE[overall],
         },
         "findings": {
             "facts": ["The Agent Output was assessed against automatic output-quality checks."],

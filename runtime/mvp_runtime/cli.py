@@ -23,29 +23,14 @@ from __future__ import annotations
 
 import sys
 
+from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, gate_banners, report_block
 from .errors import MvpRuntimeError
 from .pipeline import run_task
-from .providers import GoogleAIStudioProvider, select_provider
+from .providers import select_provider
 from .store import LedgerStore
-from .tools import WebSearchTool, select_search_tool
+from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
-from .workspace import RealWorkspaceWriter, select_writer
-
-EXIT_OK = 0
-EXIT_BLOCKED = 2
-EXIT_USAGE = 3
-
-
-def _force_utf8_io() -> None:
-    # Windows consoles default to a legacy code page (e.g. cp949); force UTF-8 so
-    # non-ASCII requests decode/encode losslessly instead of producing surrogates.
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
+from .workspace import select_writer
 
 
 def _extract_write_path(argv: list[str]) -> tuple[str | None, list[str], str | None]:
@@ -78,7 +63,7 @@ def main(
     to the operator's ledger and — more importantly — without seeding working memory,
     which retrieval feeds back as context into subsequent real runs.
     """
-    _force_utf8_io()
+    force_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
     independent_validation = "--independent-validation" in argv
     argv = [a for a in argv if a != "--independent-validation"]
@@ -122,14 +107,8 @@ def main(
         # a disk-writing writer requires a valid activation enabling filesystem_write.
         writer = select_writer() if write_path is not None else None
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
-    if isinstance(provider, GoogleAIStudioProvider):
-        sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
-    if isinstance(search_tool, WebSearchTool):
-        sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
-    if isinstance(writer, RealWorkspaceWriter):
-        sys.stderr.write("SAFETY_GATE: disk-writing workspace writer authorized (filesystem_write)\n")
+        return report_block(exc)
+    gate_banners(provider=provider, search_tool=search_tool, writer=writer)
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     # Working memory (local, per-machine) accumulates candidates and feeds them back as context.

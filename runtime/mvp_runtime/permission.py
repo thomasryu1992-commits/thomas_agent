@@ -22,7 +22,6 @@ evaluation). scripts/ is added to sys.path (localized bridge) as in binding.py.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,9 +39,7 @@ from .paths import repo_root as _repo_root
 from .tools import SEARCH_TOOL_ID
 from .workspace import WORKSPACE_REL, WRITE_TOOL_ID
 
-_SCRIPTS_DIR = str(_repo_root() / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
 from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 from validate_permission_approval_contracts import (  # noqa: E402

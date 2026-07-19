@@ -38,24 +38,22 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import ProviderError, WorkerBlocked
 from .paths import repo_root as _repo_root
-from .validation import VALIDATION_RESULT_SCHEMA_VERSION, ValidationError
+from .validation import (
+    NEXT_STATE,
+    SEVERITY,
+    VALIDATION_RESULT_SCHEMA_VERSION,
+    ValidationError,
+    stricter_result,
+)
 from .worker import Provider, ProviderResult
 
 VALIDATOR_WORKER_ID = "mvp.independent_validation.llm"
 VALIDATOR_WORKER_VERSION = "0.1.0"
 VALIDATOR_PROMPT_VERSION = "mvp_independent_validation.v1"
 
-_VERDICTS = ("PASS", "REVISE", "BLOCK")
-_SEVERITY = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
-_NEXT_STATE = {"PASS": "DELIVER_FINAL_RESPONSE", "REVISE": "REVISION_REQUIRED", "BLOCK": "BLOCKED_WITH_REASON"}
-
-
-def stricter_result(a: str, b: str) -> str:
-    """The stricter of two PASS/REVISE/BLOCK results (governance: stricter_rule_wins).
-    An unknown value fails closed to BLOCK."""
-    if a not in _SEVERITY or b not in _SEVERITY:
-        return "BLOCK"
-    return a if _SEVERITY[a] >= _SEVERITY[b] else b
+# The verdict order, its next-state map, and stricter_result live in validation.py —
+# one source for every module that ranks PASS/REVISE/BLOCK. ``stricter_result`` is
+# imported above and re-exported here so existing callers (pipeline) keep their import site.
 
 
 class MockValidatorProvider:
@@ -150,7 +148,7 @@ def _verdict_of(analysis: Mapping[str, Any]) -> tuple[str, str, bool]:
     recommendation = analysis.get("recommendation")
     action = recommendation.get("action") if isinstance(recommendation, Mapping) else None
     verdict = action.strip().upper() if isinstance(action, str) else ""
-    if verdict in _VERDICTS:
+    if verdict in SEVERITY:
         reason = recommendation.get("reason") if isinstance(recommendation, Mapping) else ""
         return verdict, (reason if isinstance(reason, str) and reason.strip()
                          else f"Independent review verdict: {verdict}."), True
@@ -287,7 +285,7 @@ def run_validation_worker(
             ],
             "checks": checks,
             "result_reasons": result_reasons,
-            "recommended_next_state": _NEXT_STATE[verdict],
+            "recommended_next_state": NEXT_STATE[verdict],
         },
         "findings": {
             "facts": [f.get("statement") for f in analysis.get("facts", []) or []

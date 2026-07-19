@@ -21,7 +21,9 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from .authority import audit_event_runtime_effect
 from .errors import AuditError
+from .memory import missing_origin_fields
 from .paths import repo_root as _repo_root
+from .validation import AUDIT_OUTCOME, stricter_result
 
 AUDIT_EVENT_SCHEMA_VERSION = "audit_event.v0.1"
 FINGERPRINT_SCHEMA = "audit_event_fingerprint_payload.v0.1"
@@ -222,14 +224,10 @@ def build_pipeline_audit(
     tid = task["identity"]["task_id"]
     result = validation_result["validation"]["result"]
     if independent_validation_result is not None:
-        independent = independent_validation_result["validation"]["result"]
-        severity = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
-        result = result if severity.get(result, 2) >= severity.get(independent, 2) else independent
-    # Map the validation result (PASS/REVISE/BLOCK) onto the audit outcome enum
-    # (which uses BLOCKED, not BLOCK).
-    validation_outcome = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}[
-        validation_result["validation"]["result"]
-    ]
+        # The SAME merge that decides delivery (pipeline.py) decides the audited final
+        # state — a second encoding here could desynchronize the ledger from reality.
+        result = stricter_result(result, independent_validation_result["validation"]["result"])
+    validation_outcome = AUDIT_OUTCOME[validation_result["validation"]["result"]]
     final_state = "COMPLETED" if result == "PASS" else "BLOCKED"
 
     task_fp = _fingerprint(task, "task")
@@ -325,7 +323,7 @@ def build_pipeline_audit(
         ival = independent_validation_result
         ival_fp = _fingerprint(ival, "independent_validation_result")
         ival_result = ival["validation"]["result"]
-        ival_outcome = {"PASS": "PASS", "REVISE": "REVISE", "BLOCK": "BLOCKED"}[ival_result]
+        ival_outcome = AUDIT_OUTCOME[ival_result]
         validator_role = ival["validator"].get("validator_role_id") or "validation.independent"
         validator_permdec_ref = (
             f"in_memory:{validator_permission_decision['permission_decision_id']}"
@@ -437,9 +435,6 @@ def build_blocked_audit(
     return _chain_events(root, task, steps, now, genesis_previous_hash)
 
 
-_ORIGIN_REQUIRED_STR = ("task_id", "trace_id", "core_context_binding_id", "data_sensitivity")
-
-
 def build_promotion_audit(
     candidate: Mapping[str, Any],
     validated_entry: Mapping[str, Any],
@@ -467,12 +462,13 @@ def build_promotion_audit(
     if not isinstance(origin, Mapping):
         raise AuditError("PROMOTION_ORIGIN_MISSING",
                          "candidate has no origin provenance; promotion cannot be audited")
-    missing = [k for k in _ORIGIN_REQUIRED_STR if not (isinstance(origin.get(k), str) and origin.get(k))]
-    if not (isinstance(origin.get("task_revision"), int) and origin.get("task_revision") >= 1):
-        missing.append("task_revision")
+    # THE completeness rule lives in memory.missing_origin_fields — creation and this
+    # audit must agree on what "complete provenance" means (the boundary re-check stays;
+    # only the field list is shared).
+    missing = missing_origin_fields(origin)
     if missing:
         raise AuditError("PROMOTION_ORIGIN_INVALID",
-                         f"candidate origin provenance is incomplete: {sorted(missing)}")
+                         f"candidate origin provenance is incomplete: {missing}")
     if not (isinstance(promoted_by, str) and promoted_by.strip()):
         raise AuditError("PROMOTION_ACTOR_MISSING", "promotion audit requires an operator identity")
     if not (isinstance(reason, str) and reason.strip()):
