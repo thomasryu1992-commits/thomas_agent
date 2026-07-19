@@ -9,8 +9,18 @@ named candidate, promotes it via ``memory.promote_candidate``, appends the VALID
 to the local (gitignored, per-machine) validated store, and — R5.4 — records the promotion
 as its own audit event in the durable ledger (the machine-readable "report"): an ``OTHER``
 event chained onto the ledger tip, anchored to the originating task via the candidate's
-provenance. The validated entry is written first, then the audit event; a promotion that
-cannot be audited fails closed *before* anything is written.
+provenance.
+
+Hardened to the R10 consumption path's guards (QA wave 6d) — the same physical action must
+carry the same protections whichever door it comes through: the candidate is resolved with
+the shared **latest-wins** lookup (``working_memory.find_candidate``, never a stale first
+match), an **expired** candidate is refused exactly as consumption refuses it, and the
+**kill switch** is checked first (promotion mutates VALIDATED memory; ``kill_allows`` is
+read-only only). Write order is validated entry -> PROMOTED retirement marker -> audit
+event. Unlike consumption there is no single-use grant to spend first, and retiring the
+candidate before promoting would strand its content (retired but never written) on a
+mid-sequence failure; each later leg failing is reported as exactly what it is
+(PROMOTED_NOT_RETIRED / PROMOTED_UNAUDITED), never masked as "nothing happened".
 
 Example:
 
@@ -33,10 +43,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from runtime.mvp_runtime.audit import build_promotion_audit  # noqa: E402
+from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
-from runtime.mvp_runtime.memory import promote_candidate  # noqa: E402
+from runtime.mvp_runtime.memory import is_expired, promote_candidate  # noqa: E402
+from runtime.mvp_runtime.paths import repo_root as _repo_root  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
-from runtime.mvp_runtime.working_memory import WorkingMemoryStore  # noqa: E402
+from runtime.mvp_runtime.working_memory import WorkingMemoryStore, find_candidate, mark_promoted  # noqa: E402
 
 
 def _utc_now_iso() -> str:
@@ -54,13 +66,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = None,
-         ledger: LedgerStore | None = None, now: str | None = None) -> int:
+         ledger: LedgerStore | None = None, control_store: ControlStore | None = None,
+         now: str | None = None) -> int:
     args = _parse_args(argv)
     if store is None:
         store = WorkingMemoryStore(args.root / ".runtime_governance_state/working_memory") if args.root \
             else WorkingMemoryStore.default()
     if ledger is None:
         ledger = LedgerStore(args.root / LEDGER_REL) if args.root else LedgerStore.default()
+    if control_store is None:
+        control_store = ControlStore(args.root if args.root else _repo_root())
 
     try:
         candidates = store.read_all()
@@ -78,27 +93,62 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
         print("ERROR: --candidate-id, --promoted-by and --reason are required to promote", file=sys.stderr)
         return 2
 
-    match = next((c for c in candidates if c.get("candidate_id") == args.candidate_id), None)
-    if match is None:
-        print(f"ERROR: no working-memory candidate with id {args.candidate_id!r}", file=sys.stderr)
-        return 2
-
     stamp = now or _utc_now_iso()
+
+    # Kill-switch first (kill_allows is read-only only): promotion mutates VALIDATED
+    # memory, so a PAUSED/KILLED runtime must refuse — exactly as the R10 consume does.
+    state = control_store.load()
+    if not state.execution_allowed:
+        print(f"ERROR KILL_SWITCH_ACTIVE: runtime is {state.mode}; "
+              "promotion mutates validated memory and is refused while not ACTIVE", file=sys.stderr)
+        return 1
+
+    # THE candidate lookup (latest-wins, live-CANDIDATE-only) — shared with the R9 ask and
+    # the R10 spend. A first-match scan promoted the oldest copy of a re-appended id, and a
+    # candidate already retired by a promotion stayed promotable here.
+    match = find_candidate(store, args.candidate_id)
+    if match is None:
+        print(f"ERROR: no live working-memory candidate with id {args.candidate_id!r} "
+              "(unknown, already promoted, or pruned)", file=sys.stderr)
+        return 2
+    # Retention (§12.4) holds on every write path that makes content permanent: an
+    # expired-but-not-yet-pruned candidate is refused, exactly as consumption refuses it.
+    if is_expired(match, stamp):
+        print(f"ERROR CANDIDATE_EXPIRED: candidate expired at {match.get('expires_at')}; "
+              "an expired candidate cannot be promoted", file=sys.stderr)
+        return 1
+
     try:
         validated = promote_candidate(
             match, promoted_by=args.promoted_by, reason=args.reason, now=stamp
         )
-        # Build the promotion's audit event *before* persisting anything: a promotion that
+        # Build the promotion's audit event before persisting anything: a promotion that
         # cannot be audited (e.g. a candidate with no origin provenance) fails closed here,
-        # leaving no half-written state. The event chains onto the durable ledger's tip.
+        # with nothing yet written. The event chains onto the durable ledger's tip.
         audit_event, _sha = build_promotion_audit(
             match, validated, promoted_by=args.promoted_by, reason=args.reason,
             now=stamp, previous_hash=ledger.last_audit_hash(),
         )
         store.append_validated([validated])
-        ledger.append_audit_events([audit_event])
     except MvpRuntimeError as exc:
         print(f"ERROR {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return 1
+    # Partial failures after the validated write are reported as what they ARE — the
+    # promotion is durable — never masked as a clean failure (the old single try block
+    # printed one generic ERROR whether nothing, half, or all-but-audit had been written).
+    try:
+        mark_promoted(store, match, validated_memory_id=validated["validated_memory_id"], now=stamp)
+    except MvpRuntimeError as exc:
+        print(f"ERROR PROMOTED_NOT_RETIRED: the promotion is written but the candidate's "
+              f"PROMOTED marker failed ({exc.reason_code}); the candidate remains visible "
+              "to a future promotion — investigate", file=sys.stderr)
+        return 1
+    try:
+        ledger.append_audit_events([audit_event])
+    except MvpRuntimeError as exc:
+        print(f"ERROR PROMOTED_UNAUDITED: the promotion is written but its ledger event "
+              f"failed ({exc.reason_code}); an unaudited validated-memory mutation is on "
+              "disk — investigate the ledger before anything else", file=sys.stderr)
         return 1
 
     print(f"Promoted {args.candidate_id} -> {validated['validated_memory_id']} (VALIDATED, {validated['scope']})")
