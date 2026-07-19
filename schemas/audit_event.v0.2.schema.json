@@ -1,0 +1,507 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit_event.v0.2.schema.json",
+  "title": "Thomas Audit Event v0.2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_event_id",
+    "trace_id",
+    "task_id",
+    "task_revision",
+    "core_context_binding_id",
+    "event_type",
+    "actor",
+    "subject",
+    "event",
+    "lineage",
+    "integrity",
+    "sensitivity",
+    "runtime_effect",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "audit_event.v0.2"
+    },
+    "audit_event_id": {
+      "type": "string",
+      "pattern": "^audit_[A-Za-z0-9._:-]+$"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "core_context_binding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "enum": [
+        "TASK_CREATED",
+        "TASK_STATE_CHANGED",
+        "PERMISSION_DECIDED",
+        "APPROVAL_REQUESTED",
+        "APPROVAL_DECIDED",
+        "TOOL_REQUEST_CREATED",
+        "PROGRAM_REQUEST_CREATED",
+        "EXECUTION_REQUEST_CREATED",
+        "EXECUTION_BLOCKED",
+        "EXECUTION_PREVIEWED",
+        "VALIDATION_COMPLETED",
+        "MEMORY_CANDIDATE_CREATED",
+        "PROGRAMIZATION_REVIEW_TRIGGERED",
+        "KILL_SWITCH_CHANGED",
+        "SECURITY_BLOCKED",
+        "OTHER"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_type",
+        "actor_id",
+        "role_id",
+        "role_version",
+        "assignment_id"
+      ],
+      "properties": {
+        "actor_type": {
+          "enum": [
+            "thomas",
+            "thomas_prime",
+            "role",
+            "system"
+          ]
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "role_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "assignment_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_type",
+        "subject_id",
+        "subject_ref",
+        "subject_fingerprint"
+      ],
+      "properties": {
+        "subject_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_summary",
+        "outcome",
+        "reason_codes",
+        "payload_ref",
+        "payload_sha256",
+        "evidence_refs",
+        "related_record_refs"
+      ],
+      "properties": {
+        "event_summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "enum": [
+            "RECORDED",
+            "REVIEW_READY",
+            "BLOCKED",
+            "PASS",
+            "REVISE",
+            "FAILED",
+            "NO_EFFECT"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "payload_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "payload_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "related_record_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_audit_event_ids",
+        "previous_event_sha256",
+        "sequence_number"
+      ],
+      "properties": {
+        "parent_audit_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "previous_event_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "sequence_number": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hash_schema",
+        "event_fingerprint_payload",
+        "event_sha256",
+        "append_only",
+        "overwrite_allowed",
+        "delete_allowed"
+      ],
+      "properties": {
+        "hash_schema": {
+          "const": "audit_event_fingerprint_payload.v0.2"
+        },
+        "event_fingerprint_payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "audit_event_id",
+            "trace_id",
+            "task_id",
+            "task_revision",
+            "core_context_binding_id",
+            "event_type",
+            "actor_ref",
+            "subject_ref",
+            "subject_fingerprint",
+            "event_summary",
+            "outcome",
+            "reason_codes",
+            "payload_sha256",
+            "evidence_refs",
+            "related_record_refs",
+            "parent_audit_event_ids",
+            "previous_event_sha256",
+            "sequence_number",
+            "created_at",
+            "actor_role_id",
+            "actor_role_version",
+            "actor_assignment_id",
+            "subject_type",
+            "subject_id",
+            "payload_ref",
+            "sensitivity"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "audit_event_fingerprint_payload.v0.2"
+            },
+            "audit_event_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "trace_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "task_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "task_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "core_context_binding_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "event_type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actor_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "subject_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "subject_fingerprint": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "event_summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason_codes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "payload_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "evidence_refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "related_record_refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "parent_audit_event_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "previous_event_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "sequence_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "actor_role_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "actor_role_version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "actor_assignment_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "subject_type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "subject_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "payload_ref": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "sensitivity": {
+              "enum": [
+                "PUBLIC",
+                "INTERNAL",
+                "PRIVATE",
+                "SENSITIVE",
+                "RESTRICTED"
+              ]
+            }
+          }
+        },
+        "event_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "append_only": {
+          "const": true
+        },
+        "overwrite_allowed": {
+          "const": false
+        },
+        "delete_allowed": {
+          "const": false
+        }
+      }
+    },
+    "sensitivity": {
+      "enum": [
+        "PUBLIC",
+        "INTERNAL",
+        "PRIVATE",
+        "SENSITIVE",
+        "RESTRICTED"
+      ]
+    },
+    "runtime_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "grants_permission",
+        "grants_approval",
+        "grants_authority",
+        "grants_execution",
+        "grants_activation",
+        "mutates_runtime"
+      ],
+      "properties": {
+        "mode": {
+          "const": "EVIDENCE_ONLY"
+        },
+        "grants_permission": {
+          "const": false
+        },
+        "grants_approval": {
+          "const": false
+        },
+        "grants_authority": {
+          "const": false
+        },
+        "grants_execution": {
+          "const": false
+        },
+        "grants_activation": {
+          "const": false
+        },
+        "mutates_runtime": {
+          "const": false
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -309,3 +309,30 @@ def test_health_survives_a_corrupt_file(tmp_path):
     report = {e["kind"]: e for e in ledger.health()}
     assert report["audit_events"]["status"] == "CORRUPT"
     assert report["records"]["status"] == "ABSENT"
+
+
+def test_v0_2_payload_covers_sensitivity_and_actor_detail(chain):
+    """A v0.2-extended payload makes editing sensitivity/actor detail in the visible record
+    detectable — exactly the fields a v0.1 payload could not cover."""
+    from runtime.read_only_kernel import integrity as _integrity
+
+    event = chain[0]
+    payload = event["integrity"]["event_fingerprint_payload"]
+    payload.update({
+        "actor_role_id": None, "actor_role_version": None, "actor_assignment_id": None,
+        "subject_type": "TASK", "subject_id": "task_t", "payload_ref": "in_memory:s",
+        "sensitivity": "INTERNAL",
+    })
+    event["integrity"]["event_sha256"] = _integrity.sha256_value(payload)
+    assert verify_audit_chain([event])["intact"] is True
+
+    event["sensitivity"] = "PUBLIC"  # edit the visible record only; payload untouched
+    report = verify_audit_chain([event])
+    assert report["intact"] is False
+    assert "AUDIT_PAYLOAD_RECORD_MISMATCH" in {b["check"] for b in report["breaks"]}
+
+
+def test_v0_1_events_without_the_extended_payload_still_verify(chain):
+    """Backward compatibility: ledgers written before v0.2 carry the smaller payload and
+    must keep verifying (the comparison is conditional on the keys the payload has)."""
+    assert verify_audit_chain(chain)["intact"] is True

@@ -59,6 +59,14 @@ A correction is a new Audit Event that references the prior event.
 
 The resulting SHA-256 is stored as `event_sha256`.
 
+> **v0.2 (additive):** `audit_event.v0.2` / `audit_event_fingerprint_payload.v0.2` extend the
+> fingerprint to also bind the actor's role id, role version, and assignment id, the subject
+> type and id, the event `payload_ref`, and the record `sensitivity` — the fields whose
+> editing v0.1 verification could not detect (they sat outside the payload). Required fields
+> and every rule in this contract are unchanged. Ledgers holding v0.1 events remain
+> verifiable: the payload↔record comparison is conditional on the keys the payload carries,
+> and a key cannot be removed undetected because the payload is under its own hash.
+
 ## 5. Secret and Payload Policy
 
 Secrets must not be embedded in Audit Event payloads.
