@@ -188,6 +188,17 @@ def main() -> int:
             "grants_execution_permission": False,
         },
     }
+    if args.full:
+        # The E2E self-test must pass BEFORE any PASS evidence lands on disk: writing the
+        # evidence first meant a failing --full run still left reusable PASS evidence
+        # behind, which the Release Builder would honor while the source fingerprint was
+        # unchanged.
+        run(
+            [python, "scripts/self_test_core_release_flow.py"],
+            "I0.4.1 Lean End-to-End Self-Test",
+            timeout=900,
+        )
+
     if args.check_only:
         print("\nPASS: Thomas Agent repository-wide Release Gate completed in check-only mode")
         print("No Release Gate evidence was written. This mode grants no Release, Core, Runtime, or execution authority.")
@@ -196,13 +207,6 @@ def main() -> int:
         print("\nPASS: Thomas Agent repository-wide Release Gate completed")
         print("Gate evidence: " + evidence_path.relative_to(ROOT).as_posix())
         print("The Release Builder will reuse this evidence only while the repository source fingerprint is unchanged.")
-
-    if args.full:
-        run(
-            [python, "scripts/self_test_core_release_flow.py"],
-            "I0.4.1 Lean End-to-End Self-Test",
-            timeout=900,
-        )
 
     return 0
 

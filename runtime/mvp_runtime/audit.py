@@ -710,9 +710,10 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     The runtime has always *built* a hash chain; nothing ever *checked* it, which made the
     tamper-evidence a claim rather than a property. This is the check.
 
-    Four independent things must hold for every event, because each catches a different
+    These independent things must hold for every event, because each catches a different
     tampering (reason codes follow the vocabulary already used by
-    ``runtime/protected_governance_state/recovery.py``):
+    ``runtime/protected_governance_state/recovery.py``, plus ``AUDIT_DECLARATION_MISMATCH``
+    for the constant-by-construction fields the fingerprint payload does not cover):
 
     1. ``AUDIT_EVENT_HASH_MISMATCH`` — ``sha256(event_fingerprint_payload) == event_sha256``.
        Catches an edited payload.
@@ -726,8 +727,9 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
        event's ``event_sha256``. Catches insertion, deletion, and reordering.
 
     Sequence numbers restart per run, so they are *not* a global ordering check; the hash
-    chain is what spans runs. A **prefix** of a valid chain is itself valid, so this cannot
-    by itself detect a truncated tail — the caller compares against the ledger tip for that.
+    chain is what spans runs. Front truncation IS detected (the first event must be a true
+    genesis with a null previous hash). A **prefix** of a valid chain is itself valid, so a
+    truncated TAIL still needs an external signal — that limit stands.
 
     Returns a report ``{intact, checked, breaks: [...], first_break_index}``. It never
     raises for a broken chain — a broken chain is a finding to report, not a crash — but the
@@ -776,8 +778,31 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             _break("AUDIT_APPEND_ONLY_BOUNDARY_MISMATCH",
                    "event no longer declares the append-only boundary (append_only/overwrite/delete)")
 
-        # 4. linkage
+        # 3b. declaration invariants: these fields are constants by construction for every
+        # event this runtime has ever built, so verification can require them even though
+        # the fingerprint payload does not cover them. This closes the safety-relevant part
+        # of the payload's blind spot — flipping runtime_effect flags or the record's schema
+        # claim is now caught. (Actor role/assignment detail and sensitivity remain
+        # uncovered until an audit_event.v0.2 extends the closed fingerprint payload — a
+        # schema decision, not a code fix.)
+        if record.get("runtime_effect") != audit_event_runtime_effect():
+            _break("AUDIT_DECLARATION_MISMATCH",
+                   "runtime_effect is not the canonical EVIDENCE_ONLY block (a grant flag was edited)")
+        if record.get("schema_version") != AUDIT_EVENT_SCHEMA_VERSION:
+            _break("AUDIT_DECLARATION_MISMATCH", "record schema_version was altered")
+        if integrity_block.get("hash_schema") != FINGERPRINT_SCHEMA:
+            _break("AUDIT_DECLARATION_MISMATCH", "integrity.hash_schema was altered")
+        if record.get("event", {}).get("payload_ref") != record.get("subject", {}).get("subject_ref"):
+            _break("AUDIT_DECLARATION_MISMATCH", "event.payload_ref no longer matches subject.subject_ref")
+
+        # 4. linkage. The first event of the ledger must be a true genesis: a non-null
+        # previous hash there dangles into deleted history, i.e. events were removed from
+        # the FRONT — detectable for free, unlike tail truncation (see docstring).
         actual_previous = record.get("lineage", {}).get("previous_event_sha256")
+        if index == 0 and actual_previous is not None:
+            _break("AUDIT_PREVIOUS_HASH_MISMATCH",
+                   "the first event carries a previous_event_sha256; events before the start "
+                   "of the ledger were removed (front truncation)")
         if index > 0 and actual_previous != previous_hash:
             _break("AUDIT_PREVIOUS_HASH_MISMATCH",
                    f"previous_event_sha256 does not match the preceding event ({previous_id}); "

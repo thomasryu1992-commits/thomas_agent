@@ -18,11 +18,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import jsonl, memory
+from .filelock import locked
 from .paths import repo_root as _repo_root
 
 WORKING_MEMORY_REL = ".runtime_governance_state/working_memory"
 ENTRIES_FILE = "candidates.jsonl"
 VALIDATED_FILE = "validated.jsonl"      # R5: promoted (validated) memory — separate from candidates
+_CANDIDATES_LOCK = ".candidates.lock"   # serializes candidate appends vs. the prune rewrite
 
 
 class WorkingMemoryStore:
@@ -40,8 +42,15 @@ class WorkingMemoryStore:
         return self._root
 
     def append(self, entries: list[Mapping[str, Any]]) -> None:
-        """Append candidate entries (append-only; fail-closed on write error)."""
-        self._append(ENTRIES_FILE, entries, "WORKING_MEMORY_WRITE_FAILED", "working memory")
+        """Append candidate entries (append-only; fail-closed on write error).
+
+        Held under the candidates lock: the prune compaction is a read-modify-replace, so
+        an unlocked append racing it (operator loop vs. a scheduled ``memory_prune`` in
+        another process) would be silently discarded by the rewrite."""
+        if not entries:
+            return
+        with self._candidates_lock():
+            self._append(ENTRIES_FILE, entries, "WORKING_MEMORY_WRITE_FAILED", "working memory")
 
     def read_all(self) -> list[dict[str, Any]]:
         """Return every stored candidate. A corrupt/unreadable store fails closed rather than
@@ -65,13 +74,21 @@ class WorkingMemoryStore:
         the candidate store is pruned — promoted VALIDATED memory has its own longer retention
         and is never touched here. Returns the removed entries so the caller can audit the
         deletion (policy §15). Fail-closed on a read/rewrite error (``PersistenceError``)."""
-        entries = self.read_all()
-        kept = [e for e in entries if not memory.is_expired(e, now)]
-        removed = [e for e in entries if memory.is_expired(e, now)]
-        if removed:
-            jsonl.write_objects(self._root / ENTRIES_FILE, kept,
-                                write_code="WORKING_MEMORY_WRITE_FAILED", label="working memory")
+        # The read and the replacing rewrite are one critical section: without the lock, a
+        # candidate appended by another process between them vanishes without trace — a
+        # deletion the retention event never records.
+        with self._candidates_lock():
+            entries = self.read_all()
+            kept = [e for e in entries if not memory.is_expired(e, now)]
+            removed = [e for e in entries if memory.is_expired(e, now)]
+            if removed:
+                jsonl.write_objects(self._root / ENTRIES_FILE, kept,
+                                    write_code="WORKING_MEMORY_WRITE_FAILED", label="working memory")
         return removed
+
+    def _candidates_lock(self):
+        return locked(self._root / _CANDIDATES_LOCK,
+                      code="WORKING_MEMORY_WRITE_FAILED", label="working memory")
 
     def _append(self, filename: str, entries: list[Mapping[str, Any]], code: str, label: str) -> None:
         if not entries:

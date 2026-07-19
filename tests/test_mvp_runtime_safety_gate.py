@@ -390,3 +390,32 @@ def test_every_real_provider_id_is_a_valid_grant_name(good, tmp_path):
     path = activation_path(tmp_path, good)
     assert path.name == f"{good}.json"
     assert path.parent == (tmp_path / ACTIVATIONS_DIR_REL).resolve()
+
+
+def test_activation_with_malformed_timestamp_cannot_be_minted():
+    """Lexicographic time compares are only correct for the fixed Z form; a '+00:00' or
+    sub-second grant could compare wrong in either direction (including never-expires)."""
+    with pytest.raises(SafetyGateBlocked) as exc:
+        build_activation_record(
+            flags=[NETWORK_ACCESS], provider_id="telegram",
+            activated_at="2026-07-01T00:00:00+00:00", expires_at="2026-12-31T23:59:59Z",
+            evidence_ref="ev.md", authority_level="P2",
+        )
+    assert exc.value.reason_code == "ACTIVATION_MALFORMED"
+
+
+def test_escaping_evidence_ref_fails_closed(tmp_path):
+    """An absolute or '..' evidence_ref would let ANY existing file on the machine satisfy
+    the evidence-exists check; the ref must stay inside the repository."""
+    record = build_activation_record(
+        flags=[NETWORK_ACCESS], provider_id="telegram",
+        activated_at="2026-07-01T00:00:00Z", expires_at="2999-12-31T23:59:59Z",
+        evidence_ref="../outside-evidence.md", authority_level="P2",
+    )
+    (tmp_path.parent / "outside-evidence.md").write_text("x", encoding="utf-8")
+    path = activation_path(tmp_path, "telegram")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        authorize([NETWORK_ACCESS], provider_id="telegram", now="2026-07-16T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "EVIDENCE_INVALID"

@@ -352,10 +352,13 @@ def test_the_grant_is_spent_before_the_promotion_is_written(tmp_path):
         def read_validated(self): return self._inner.read_validated()
         def append_validated(self, entries): raise PersistenceError("WRITE_FAILED", "disk full")
 
-    with pytest.raises(PersistenceError):
+    with pytest.raises(ApprovalBlocked) as exc:
         consume_approval(approval_id, approval_store=astore,
                          working_memory_store=_FailingValidatedStore(wm),
                          ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    # The failure names the TRUE state — a durably spent grant — not a generic block that
+    # reads like nothing happened.
+    assert exc.value.reason_code == "CONSUMED_NOT_PROMOTED"
     # The grant is spent (safe direction) and nothing was promoted, so it cannot be spent twice.
     assert astore.get(approval_id)["status"] == "CONSUMED"
     assert wm.read_validated() == []
