@@ -18,6 +18,7 @@ import pytest
 
 from runtime.mvp_runtime import control
 from runtime.mvp_runtime.audit import verify_audit_chain
+from runtime.mvp_runtime.authority import audit_event_runtime_effect
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.store import LedgerStore
 
@@ -62,7 +63,7 @@ def _event(*, seq, previous, summary="e", event_id=None):
                       "event_sha256": integrity.sha256_value(payload),
                       "append_only": True, "overwrite_allowed": False, "delete_allowed": False},
         "sensitivity": "INTERNAL",
-        "runtime_effect": {"mode": "EVIDENCE_ONLY"},
+        "runtime_effect": audit_event_runtime_effect(),
         "created_at": "2026-07-17T00:00:00Z",
     }
 
@@ -126,6 +127,31 @@ def test_deleting_an_event_is_caught(chain):
     report = verify_audit_chain(chain)
     assert report["intact"] is False
     assert "AUDIT_PREVIOUS_HASH_MISMATCH" in {b["check"] for b in report["breaks"]}
+
+
+def test_deleting_events_from_the_front_is_caught(chain):
+    """Front truncation: the surviving first event's previous hash dangles into deleted
+    history — a true genesis must carry a null previous hash."""
+    report = verify_audit_chain(chain[1:])
+    assert report["intact"] is False
+    assert report["first_break_index"] == 0
+    assert "AUDIT_PREVIOUS_HASH_MISMATCH" in {b["check"] for b in report["breaks"]}
+
+
+def test_flipping_a_runtime_effect_flag_is_caught(chain):
+    """runtime_effect is outside the fingerprint payload, so only the declaration-invariant
+    check catches an edited grant flag — the exact blind spot the payload check leaves."""
+    chain[1]["runtime_effect"] = dict(audit_event_runtime_effect(), grants_execution=True)
+    report = verify_audit_chain(chain)
+    assert report["intact"] is False
+    assert "AUDIT_DECLARATION_MISMATCH" in {b["check"] for b in report["breaks"]}
+
+
+def test_altering_the_record_schema_claim_is_caught(chain):
+    chain[2]["schema_version"] = "audit_event.v9.9"
+    report = verify_audit_chain(chain)
+    assert report["intact"] is False
+    assert "AUDIT_DECLARATION_MISMATCH" in {b["check"] for b in report["breaks"]}
 
 
 def test_reordering_events_is_caught(chain):

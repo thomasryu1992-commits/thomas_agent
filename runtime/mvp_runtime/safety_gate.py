@@ -24,7 +24,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Sequence, TypeVar
 
 from runtime.read_only_kernel import integrity
@@ -66,6 +66,8 @@ ACTIVATIONS_DIR_REL = ".runtime_governance_state/safety_flag_activations"
 # id (google_ai_studio, brave_search, telegram, workspace.writer) and admits no separator,
 # no traversal, and no absolute path.
 _PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+# The one timestamp form the gate's lexicographic comparisons are correct for.
+_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 ACTIVATION_MARKER = "safety_flag_activation.v0"
 _HASH_FIELD = "content_sha256"
@@ -180,6 +182,16 @@ def build_activation_record(
         raise SafetyGateBlocked("INVALID_PROVIDER_ID", f"provider id {provider_id!r} is not a valid activation name")
     if rank_of(authority_level) is None:
         raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
+    for field_name, value in (("activated_at", activated_at), ("expires_at", expires_at)):
+        if not _TIMESTAMP_PATTERN.match(str(value) or ""):
+            # The gate compares these lexicographically, which is only a correct time
+            # compare for the one fixed second-precision Z format — a grant minted with
+            # "+00:00" or sub-second precision could compare wrong in EITHER direction
+            # (including never-expires). Refuse to mint what authorize() cannot compare.
+            raise SafetyGateBlocked(
+                "ACTIVATION_MALFORMED",
+                f"{field_name} must be the fixed UTC form YYYY-MM-DDThh:mm:ssZ, got {value!r}",
+            )
     record = {
         "activation_marker": ACTIVATION_MARKER,
         "flags": list(flags),
@@ -215,6 +227,16 @@ def authorize(
     activation_sha256 = _verify_integrity(record)
 
     activated_at, expires_at = record["activated_at"], record["expires_at"]
+    # Verify-time re-check of the timestamp format: a self-hash only proves the record was
+    # not edited, not that it was minted well-formed. Lexicographic comparison is a correct
+    # time compare ONLY for this one fixed format, so anything else fails closed here
+    # rather than comparing wrong (possibly in the never-expires direction).
+    for field_name, value in (("activated_at", activated_at), ("expires_at", expires_at)):
+        if not _TIMESTAMP_PATTERN.match(str(value) or ""):
+            raise SafetyGateBlocked(
+                "ACTIVATION_MALFORMED",
+                f"activation {field_name} is not the fixed UTC form YYYY-MM-DDThh:mm:ssZ",
+            )
     if now < str(activated_at):
         raise SafetyGateBlocked("ACTIVATION_NOT_YET_ACTIVE", "activation record is not active yet")
     if now >= str(expires_at):
@@ -234,7 +256,21 @@ def authorize(
     if missing:
         raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"activation does not enable required flags: {missing}")
 
-    evidence = (root / str(record["evidence_ref"])).resolve()
+    # The evidence ref must stay inside the repository: an absolute or escaping ref would
+    # let ANY existing file on the machine (C:\Windows\win.ini) satisfy "references a real
+    # approval-evidence file", which is not what the check attests.
+    ref = str(record["evidence_ref"])
+    ref_parts = PureWindowsPath(ref)
+    if ref_parts.is_absolute() or ref_parts.drive or ref.startswith(("/", "\\")) or ".." in ref_parts.parts:
+        raise SafetyGateBlocked(
+            "EVIDENCE_INVALID", f"evidence_ref {ref!r} must be a repo-relative path without '..'"
+        )
+    root_real = root.resolve()
+    evidence = (root_real / ref).resolve()
+    if evidence != root_real and root_real not in evidence.parents:
+        raise SafetyGateBlocked(
+            "EVIDENCE_INVALID", f"evidence_ref {ref!r} resolves outside the repository"
+        )
     if not evidence.is_file():
         raise SafetyGateBlocked(
             "EVIDENCE_MISSING",

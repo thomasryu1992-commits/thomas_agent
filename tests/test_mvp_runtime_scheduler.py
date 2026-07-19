@@ -181,3 +181,35 @@ def test_memory_prune_schedule_prunes_expired(tmp_path):
     assert summary["fired"] == 1
     assert summary["results"][0]["status"] == "pruned:1"
     assert wm.read_all() == []
+
+
+def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
+    """The occurrence is claimed durably BEFORE executing: a failure on a LATER schedule in
+    the same batch must not leave an earlier, already-executed schedule's next_run_at
+    un-advanced — that re-fired it (a duplicate full pipeline run) on the next tick."""
+    store = ScheduleStore(tmp_path)
+    first = _task_schedule(store, request="first")
+    second = _task_schedule(store, request="second")
+
+    class _ExplodingOnSecond:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, request, **kwargs):
+            self.calls.append(request)
+            if request == "second":
+                raise PersistenceError("LEDGER_WRITE_FAILED", "disk full mid-batch")
+            return {"status": "COMPLETED"}
+
+    executor = _ExplodingOnSecond()
+    with pytest.raises(PersistenceError):
+        run_due(store, now=T1, executor=executor)
+
+    by_id = {s.schedule_id: s for s in store.list()}
+    # The first schedule executed and its claim survived the later failure: it will NOT
+    # fire again at the same tick time.
+    assert executor.calls == ["first", "second"]
+    assert by_id[first.schedule_id].next_run_at > T1
+    # The second schedule's occurrence was claimed too (at-most-once: a crash drops the
+    # occurrence rather than doubling it, matching the kill-skip rule).
+    assert by_id[second.schedule_id].next_run_at > T1

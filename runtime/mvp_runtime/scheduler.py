@@ -220,35 +220,39 @@ def run_due(
     fired = 0
     skipped = 0
     results: list[dict[str, Any]] = []
-    updated: list[Schedule] = []
-    changed = False
+    updated: list[Schedule] = list(schedules)
 
-    for schedule in schedules:
+    for index, schedule in enumerate(schedules):
         due = schedule.enabled and schedule.next_run_at <= now
         if not due:
-            updated.append(schedule)
             continue
 
-        changed = True
         if not execution_allowed:
             # kill_blocks: scheduler_execution — skip, drop the occurrence, advance cadence.
             skipped += 1
             status = "skipped_not_active"
             if ledger is not None:
                 ledger.append_scheduler_event(_scheduler_event("skipped", schedule, now=now, status=status))
-            updated.append(replace(schedule, next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds)))
+            updated[index] = replace(schedule, next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds))
+            store.replace_all(updated)
             results.append({"schedule_id": schedule.schedule_id, "action": "skipped", "status": status})
             continue
+
+        # Claim the occurrence durably BEFORE executing. Deferring all state to one
+        # end-of-batch write meant a failure on a LATER schedule left this one's
+        # next_run_at un-advanced — it re-fired (a duplicate full pipeline run, duplicate
+        # model call) on the next tick. Claim-first is the at-most-once direction, matching
+        # the kill-skip rule above: a crash drops the occurrence, never doubles it.
+        updated[index] = replace(schedule, next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds))
+        store.replace_all(updated)
 
         status = _execute(schedule, now=now, ledger=ledger, working_memory=working_memory,
                           provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
         fired += 1
         if ledger is not None:
             ledger.append_scheduler_event(_scheduler_event("fired", schedule, now=now, status=status))
-        updated.append(replace(schedule, last_run_at=now, last_status=status,
-                               next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds)))
+        updated[index] = replace(updated[index], last_run_at=now, last_status=status)
+        store.replace_all(updated)
         results.append({"schedule_id": schedule.schedule_id, "action": "fired", "status": status})
 
-    if changed:
-        store.replace_all(updated)
     return {"fired": fired, "skipped": skipped, "results": results}

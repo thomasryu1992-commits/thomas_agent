@@ -42,7 +42,7 @@ from . import approval as approval_mod
 from . import audit, safety_gate, timeutil
 from .approval_store import ApprovalStore
 from .control import ControlStore
-from .errors import ApprovalBlocked
+from .errors import ApprovalBlocked, MvpRuntimeError
 from .filelock import locked
 from .memory import is_expired as memory_is_expired, promote_candidate
 from .paths import repo_root as _repo_root
@@ -275,7 +275,23 @@ def consume_approval(
         # a still-APPROVED grant next to a completed promotion, so a retry would pass every guard
         # and promote a second time — two VALIDATED entries from one single-use approval.
         approval_store.append([consumed])
-        working_memory_store.append_validated([validated])
-        ledger.append_audit_events(consumption_audit)
+        # Partial failures after the spend must be reported as what they ARE — a durably
+        # spent grant — not as a generic BLOCK that reads like nothing happened.
+        try:
+            working_memory_store.append_validated([validated])
+        except MvpRuntimeError as exc:
+            raise ApprovalBlocked(
+                "CONSUMED_NOT_PROMOTED",
+                f"the grant is spent (CONSUMED) but the promotion write failed ({exc.reason_code}); "
+                "it cannot be re-spent — ask Thomas for a new approval",
+            ) from exc
+        try:
+            ledger.append_audit_events(consumption_audit)
+        except MvpRuntimeError as exc:
+            raise ApprovalBlocked(
+                "CONSUMED_UNAUDITED",
+                f"the promotion is written but its ledger event failed ({exc.reason_code}); "
+                "the consumption record and validated entry are durable — investigate the ledger",
+            ) from exc
 
     return {"approval": consumed, "validated": validated, "audit": consumption_audit}
