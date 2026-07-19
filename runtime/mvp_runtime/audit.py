@@ -13,7 +13,7 @@ and ``sha256_record`` secret-scans the fingerprinted records).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, MutableMapping, Sequence
 
 from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.integrity import IntegrityError
@@ -668,6 +668,40 @@ def build_approval_consumption_audit(
                        "validated_memory_id": validated_id},
     )
     return [event]
+
+
+def rechain_events(events: Sequence[MutableMapping[str, Any]], previous_hash: str | None) -> None:
+    """Re-anchor a pre-built chain segment onto the CURRENT ledger tip, in place.
+
+    Builders chain events from the tip the caller read when the run STARTED. In the shipped
+    multi-process deployment (operator loop + docker-exec CLIs + scheduler on one volume),
+    another process may have appended meanwhile — both segments would then point at the same
+    stale tip and the ledger would FORK: an honest ledger that verify_audit_chain reports as
+    tampered, indistinguishable from real tampering. The durable store therefore re-anchors
+    every segment at persist time, under the ledger lock: rewrite each event's
+    ``previous_event_sha256`` (record + fingerprint payload, which covers it) and recompute
+    its ``event_sha256``, cascading down the segment. Recomputing against an unchanged tip
+    reproduces the identical hashes, so this is a no-op for the single-process case.
+
+    Mutates the given events so every holder of these dicts (run results, replies) sees
+    exactly what the ledger holds. Fails closed on a structurally invalid event.
+    """
+    previous = previous_hash
+    for event in events:
+        integrity_block = event.get("integrity")
+        lineage = event.get("lineage")
+        payload = integrity_block.get("event_fingerprint_payload") if isinstance(integrity_block, MutableMapping) else None
+        if not (isinstance(integrity_block, MutableMapping) and isinstance(payload, MutableMapping)
+                and isinstance(lineage, MutableMapping)):
+            raise AuditError("EVENT_STRUCTURE_INVALID", "cannot rechain a malformed audit event")
+        payload["previous_event_sha256"] = previous
+        lineage["previous_event_sha256"] = previous
+        try:
+            event_sha256 = integrity.sha256_value(dict(payload))
+        except IntegrityError as exc:
+            raise AuditError("EVENT_FINGERPRINT_FAILED", str(exc)) from exc
+        integrity_block["event_sha256"] = event_sha256
+        previous = event_sha256
 
 
 # --- verification ------------------------------------------------------------------
