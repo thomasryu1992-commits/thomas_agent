@@ -42,7 +42,14 @@ jobs:
           cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
-        run: python -m pip install -r requirements-validation.lock
+        run: python -m pip install -r requirements-validation.lock pytest
 
       - name: Run full repository gate without writing evidence
         run: python scripts/run_repository_release_gate.py --full --check-only
+
+      # The gate validates contracts and the frozen kernel; the enforcement code (safety
+      # gate, kill switch, consumption, workspace confinement) lives in the MVP runtime
+      # and is covered only by pytest. A release tag going green without ever executing
+      # that suite was a QA finding — full validation now means both.
+      - name: Run the MVP runtime test suite
+        run: python -m pytest tests/ -q
