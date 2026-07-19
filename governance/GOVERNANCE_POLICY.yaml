@@ -192,6 +192,13 @@ control_channel:
       - status
       - audit
       - recovery
+      # resume: explicit Thomas decision (2026-07-19 QA wave 6b). The host console has had
+      # /resume since R4 — physical/SSH access to the host IS the operator authentication
+      # for the emergency path (the runtime itself still can never self-clear a kill:
+      # agent_can_disable_or_bypass stays false). Listing it here makes the grant a policy
+      # decision instead of console-code drift; the runtime tests assert the console verb
+      # set stays a subset of this list.
+      - resume
     new_high_risk_approval_creation_allowed: false
 
 approval_lifetime:

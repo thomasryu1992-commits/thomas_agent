@@ -30,6 +30,12 @@ tools:
   tool_class: read
   definition_path: tools/definitions/SEARCH_READONLY_TOOL.yaml
   definition_sha256: 7e42346e66cdf8731b02425fb869307b09b04719a18d9d2f218808ba5c937635
+  # Authority split (QA wave 6b clarification): these fields govern the registered
+  # tool-request EXECUTION path (P4+ Tool execution), which remains inactive — hence
+  # false. R3's read-only web search is deliberately NOT that path: it runs as an
+  # INTERNAL_READ ALLOW action whose real network backend is enabled per-machine by a
+  # `network_access` safety-flag activation (runtime/mvp_runtime/safety_gate.py), never
+  # by this registry. Flipping these fields would not (and must not) enable it.
   runtime_implementation_available: false
 resolution:
   resolver_module: runtime/registry_resolution.py

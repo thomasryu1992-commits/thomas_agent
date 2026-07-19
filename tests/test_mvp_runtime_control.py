@@ -214,3 +214,26 @@ def test_unverified_sender_never_reaches_control(tmp_path):
     assert reply.reason_code == "UNREGISTERED_USER"
     # The kill still stands — an impostor cannot resume.
     assert store.load().mode == KILLED
+
+
+# --- policy drift gate --------------------------------------------------------
+
+def test_console_verbs_stay_within_the_policy_grant():
+    """Mechanical drift gate: every emergency verb the console exposes must be granted by
+    the Governance Policy (control_channel.local_operator_console.emergency_controls_allowed).
+    /resume silently exceeding the policy for several waves is exactly the drift class this
+    catches — a new console verb now requires the matching policy edit in the same change."""
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load(
+        (repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
+    )
+    allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
+    policy_name = {control.CMD_STOP: "stop_task"}  # the policy names the stop verb stop_task
+    for verb in control.COMMANDS:
+        assert policy_name.get(verb, verb) in allowed, (
+            f"console verb {verb!r} is not granted by the Governance Policy - "
+            "either drop the verb or extend emergency_controls_allowed explicitly"
+        )
