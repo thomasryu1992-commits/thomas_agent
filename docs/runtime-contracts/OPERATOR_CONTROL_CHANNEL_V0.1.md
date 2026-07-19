@@ -87,6 +87,14 @@ enforces, and both record a tamper-evident control event to the durable ledger
 | `/kill` | Block all new/pending execution; only status and audit reads remain. |
 | `/resume` | Clear pause/kill → ACTIVE. Only the **authenticated operator** may resume. |
 | `/stop <task_id>` | Record a stop request. The MVP runs tasks synchronously (nothing long-running to interrupt yet), so it is logged for audit and applies once R6 adds persistent tasks. |
+| `/audit [n]` | Read-only: verify the whole audit chain and show the last *n* events. Answers even while PAUSED/KILLED (`kill_allows: audit_read`). |
+| `/recovery` | Read-only diagnosis of the local stores/state; it never repairs (repairing the ledger would be audit concealment). |
+| `/approve <id>` / `/reject <id>` | R9: record Thomas's decision on a pending approval ask. Only over the verified Telegram channel — the identity gate IS the verification the approval record requires; the local console cannot decide. |
+
+Telegram clients may suffix a menu-picked command with the bot's username
+(`/kill@thomas_bot`) — the suffix is stripped. Any *other* leading-slash message is refused
+(`UNKNOWN_COMMAND`), never run as a task: a typo'd emergency verb silently becoming a full
+model-invoking analysis is the fail-open direction.
 
 Enforcement and fail-closed rules:
 
@@ -105,7 +113,8 @@ python -m runtime.mvp_runtime.console_cli status
 python -m runtime.mvp_runtime.console_cli kill --reason "halt now"
 python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
-# Over Telegram: the registered operator texts /status, /pause, /kill, /resume, /stop <id>.
+# Over Telegram: the registered operator texts /status, /pause, /kill, /resume,
+# /stop <id>, /audit [n], /recovery, /approve <id>, /reject <id>.
 ```
 
 ## Key modules
@@ -119,9 +128,12 @@ python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 - `runtime/mvp_runtime/operator_cli.py` — the loop entrypoint (defaults a `ControlStore`).
 - `scripts/activate_safety_flag.py` — activate the `network_access` flag for `telegram`.
 
-## Not yet implemented
+## Shipped after this contract was written
 
-Control-channel **approval** handling (for any future `APPROVAL_REQUIRED` action — the MVP is
-ALLOW-only today) is a later increment; the policy already forbids new high-risk approval
-creation from the local console. `audit` / `recovery` console verbs beyond `/status` and the
-durable control-event log are also later.
+Both items originally deferred here have since landed and are in the command table above:
+control-channel **approval** handling (R9 — `/approve <id>` / `/reject <id>` over the
+verified channel; see `APPROVAL_FLOW_V0.1.md`) and the read-only `audit` / `recovery`
+console verbs (see `AUDIT_RECOVERY_CONSOLE_V0.1.md`). The policy still forbids new
+high-risk approval *creation* from the local console
+(`new_high_risk_approval_creation_allowed: false`) — the console asks nothing; only the
+verified Telegram channel can answer.

@@ -45,11 +45,13 @@ class AuditError(MvpRuntimeError):
 
 
 class SafetyGateBlocked(MvpRuntimeError):
-    """The Safety-Flag Gate refused a network-capable capability (model/network).
+    """The Safety-Flag Gate refused a gated capability (model_invocation, network_access,
+    filesystem_write, approval_consumption).
 
     Raised when the local activation record is missing, malformed, tampered, expired,
-    or does not enable the requested flags/provider — enabling a real model/network call
-    requires an integrity-consistent, evidence-backed activation, never a bare env var."""
+    revoked (deleted/replaced since the grant), or does not enable the requested
+    flags/provider — enabling a gated capability requires an integrity-consistent,
+    evidence-backed activation, never a bare env var."""
 
 
 class PersistenceError(MvpRuntimeError):

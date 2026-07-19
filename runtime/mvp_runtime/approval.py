@@ -24,7 +24,7 @@ record (:func:`build_consumed_record`) that consumption appends once it has acte
 **Identity is the whole point.** An approval is only worth the certainty that Thomas gave
 it, so `record_decision` refuses anything the Governance Policy calls an invalid source —
 a group, a channel, another user, a forwarded message, an ambiguous expression, or a code
-that does not match the approval being decided. The `approval.v0.1` schema independently
+that does not match the approval being decided. The `approval.v0.2` schema independently
 requires `approved_by: Thomas` + `verification_status: VERIFIED` + a verification ref on
 any decided record, so a decision recorded without verified identity cannot even be built.
 """
@@ -131,7 +131,7 @@ def build_approval_request(
     ttl_minutes: int | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Build the PENDING ``approval.v0.1`` request for an APPROVAL_REQUIRED decision.
+    """Build the PENDING ``approval.v0.2`` request for an APPROVAL_REQUIRED decision.
 
     The approval snapshots the exact action (fingerprint + payload) so what Thomas sees is
     what he is deciding, and nothing else can later be substituted. Expiry is the earlier

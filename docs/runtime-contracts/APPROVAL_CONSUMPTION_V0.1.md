@@ -52,18 +52,20 @@ exists" — which the kernel does not read.
 
 Before acting, consumption re-derives the action fingerprint from the approved snapshot
 (`FINGERPRINT_MISMATCH` if it no longer matches) and re-hashes the **current** candidate
-content, refusing (`CONTENT_CHANGED`) if it drifted since the approval, or `CANDIDATE_GONE` if
-the candidate was promoted, pruned, or expired. The candidate lookup is latest-wins over the
-append-only working-memory store, so a candidate re-appended with tampered content is caught,
-not a superseded earlier copy.
+content, refusing (`CONTENT_CHANGED`) if it drifted since the approval; `CANDIDATE_GONE` if
+the candidate was promoted (its latest entry is the PROMOTED retirement marker) or pruned;
+and `CANDIDATE_EXPIRED` if it is past its retention expiry but not yet pruned. The candidate
+lookup is latest-wins over the append-only working-memory store, so a candidate re-appended
+with tampered content is caught, not a superseded earlier copy.
 
 ### Single-use — a spent grant is terminal
 
-A CONSUMED approval is final. A compare-and-set re-read of the stored status immediately
-before acting refuses a second consume (`ALREADY_CONSUMED`); the MVP runs one process
-sequentially, so this closes the realistic window, and the append-only store then makes the
-spend itself durable, tamper-evident evidence. Reuse stays blocked
-(`approval_reuse_allowed: false`, `one_time_use_required: true`).
+A CONSUMED approval is final. The spend runs under a **cross-process file lock**: the stored
+status is re-read and the CONSUMED record appended inside one mutual exclusion, so two
+concurrent consumes — the shipped deployment is multi-process (the operator loop plus
+`docker exec` CLIs on one volume) — cannot both pass the check (`ALREADY_CONSUMED` for the
+loser). The append-only store then makes the spend itself durable, tamper-evident evidence.
+Reuse stays blocked (`approval_reuse_allowed: false`, `one_time_use_required: true`).
 
 **Write order is part of this guarantee.** The grant is marked CONSUMED *before* the
 promotion is written. If the promotion write then fails, the grant is spent-but-unpromoted —
@@ -95,8 +97,12 @@ it came from — a spent grant is still the grant Thomas gave.
 
 `consume_approval` computes the promotion (behind the gate), builds the CONSUMED record, then
 **builds the consumption audit event before persisting anything** — a consumption that cannot
-be audited fails closed with no half-written state (mirroring the R5 promotion ordering).
-Only then are the validated entry, the CONSUMED approval, and the audit event appended.
+be audited fails closed with no half-written state. Persistence then follows the single-use
+write order from the section above: the CONSUMED approval is appended **first** (the grant is
+spent before the action lands), then the validated entry, then the candidate's PROMOTED
+retirement marker, then the audit event — each later leg failing is reported as exactly what
+it is (`CONSUMED_NOT_PROMOTED`, `CANDIDATE_NOT_RETIRED`, `CONSUMED_UNAUDITED`), never masked
+as a clean failure.
 
 ## Audit
 
