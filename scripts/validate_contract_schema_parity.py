@@ -124,6 +124,16 @@ def main() -> int:
         "## 3. Thomas-Approved Operating Policy Binding",
     )
 
+    # approval.v0.2 (R10: + CONSUMED state and consumption evidence fields) is additive over
+    # v0.1, so the same contract doc anchors both — the live schema must not drift from the
+    # documented required-field set either.
+    compare_required(
+        "docs/runtime-contracts/APPROVAL_CONTRACT_V0.1.md",
+        "schemas/approval.v0.2.schema.json",
+        "## 2. Required Fields",
+        "## 3. Thomas-Approved Operating Policy Binding",
+    )
+
     compare_required(
         "docs/runtime-contracts/TOOL_REQUEST_CONTRACT_V0.1.md",
         "schemas/tool_request.v0.1.schema.json",

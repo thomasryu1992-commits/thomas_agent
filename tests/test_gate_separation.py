@@ -130,6 +130,18 @@ class GateSeparationTests(unittest.TestCase):
             jobs["full-gate"]["if"],
             "needs.classify-changes.outputs.full == 'true'",
         )
+        # Scoped gates yield to the full Release Gate (a superset of every scope) at STEP
+        # level, so a full-scope change runs each validator once while the jobs still
+        # complete for required-check policies.
+        for job_name in ("active-gate", "deferred-gate", "legacy-gate"):
+            gate_steps = [s for s in jobs[job_name]["steps"]
+                          if "run_architecture_gate.py" in str(s.get("run", ""))]
+            self.assertEqual(len(gate_steps), 1, job_name)
+            self.assertEqual(
+                gate_steps[0]["if"],
+                "needs.classify-changes.outputs.full != 'true'",
+                job_name,
+            )
 
     def test_full_workflow_is_not_a_default_pull_request_gate(self):
         workflow = load_workflow(".github/workflows/thomas-agent-runtime-validation.yml")

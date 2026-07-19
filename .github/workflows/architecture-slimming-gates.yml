@@ -53,6 +53,7 @@ jobs:
 
   active-gate:
     name: Active Architecture Gate
+    needs: classify-changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,20 +64,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           persist-credentials: false
 
       - uses: actions/setup-python@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
+        if: needs.classify-changes.outputs.full != 'true'
         run: python -m pip install -r requirements-validation.lock
 
+      # The full Release Gate's check list is a superset of every scope; when it runs in
+      # this pipeline, running the scoped gate too would execute each validator twice.
+      # Step-level (not job-level) so the job still completes for required-check policies.
       - name: Run canonical active architecture gate
+        if: needs.classify-changes.outputs.full != 'true'
         run: python scripts/run_architecture_gate.py --scope active --check-only
+
+      - name: Covered by the full Release Gate
+        if: needs.classify-changes.outputs.full == 'true'
+        run: echo "Active checks run once in this pipeline's Full validation job."
 
   deferred-gate:
     name: Deferred Architecture Gate
@@ -86,20 +98,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           persist-credentials: false
 
       - uses: actions/setup-python@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
+        if: needs.classify-changes.outputs.full != 'true'
         run: python -m pip install -r requirements-validation.lock
 
       - name: Run canonical deferred architecture gate
+        if: needs.classify-changes.outputs.full != 'true'
         run: python scripts/run_architecture_gate.py --scope deferred --check-only
+
+      - name: Covered by the full Release Gate
+        if: needs.classify-changes.outputs.full == 'true'
+        run: echo "Deferred checks run once in this pipeline's Full validation job."
 
   legacy-gate:
     name: Legacy Compatibility Gate
@@ -109,20 +129,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           persist-credentials: false
 
       - uses: actions/setup-python@v6
+        if: needs.classify-changes.outputs.full != 'true'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-validation.lock
 
       - name: Install validation dependencies
+        if: needs.classify-changes.outputs.full != 'true'
         run: python -m pip install -r requirements-validation.lock
 
       - name: Run canonical legacy compatibility gate
+        if: needs.classify-changes.outputs.full != 'true'
         run: python scripts/run_architecture_gate.py --scope legacy --check-only
+
+      - name: Covered by the full Release Gate
+        if: needs.classify-changes.outputs.full == 'true'
+        run: echo "Legacy checks run once in this pipeline's Full validation job."
 
   full-gate:
     name: Full validation
