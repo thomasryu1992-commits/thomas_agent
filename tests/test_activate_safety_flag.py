@@ -80,6 +80,45 @@ def test_activating_a_second_provider_leaves_the_first_untouched(tmp_path):
         assert auth.provider_id == provider
 
 
+def test_helper_caps_the_ttl(tmp_path):
+    """An uncapped --ttl-minutes let one careless flag mint a de-facto standing grant
+    (10 years in a one-liner). 30 days is the ceiling; longer is a governance change."""
+    for bad in ("0", "-5", str(30 * 24 * 60 + 1), "5256000"):
+        rc = main([
+            "--provider-id", "brave_search", "--flags", "network_access",
+            "--authority-level", "P1", "--reason", "too long", "--ttl-minutes", bad,
+            "--root", str(tmp_path),
+        ])
+        assert rc == 2, bad
+        assert not _activation(tmp_path).is_file()
+    # The maximum itself is accepted.
+    assert main([
+        "--provider-id", "brave_search", "--flags", "network_access",
+        "--authority-level", "P1", "--reason", "30 days", "--ttl-minutes", str(30 * 24 * 60),
+        "--root", str(tmp_path),
+    ]) == 0
+
+
+def test_helper_audits_the_activation_to_the_ledger(tmp_path):
+    """Activation was the one governance transition with no audit trail — the ledger only
+    ever saw the later uses. The helper now appends a control event before the grant goes live."""
+    assert main([
+        "--provider-id", "brave_search", "--flags", "network_access",
+        "--authority-level", "P1", "--reason", "audited activation", "--ttl-minutes", "60",
+        "--root", str(tmp_path),
+    ]) == 0
+    lines = (tmp_path / ".runtime_governance_state/runtime_ledger/control_events.jsonl") \
+        .read_text(encoding="utf-8").strip().splitlines()
+    events = [json.loads(ln) for ln in lines]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["action"] == "safety_flag_activated"
+    assert ev["provider_id"] == "brave_search" and ev["flags"] == ["network_access"]
+    record = json.loads(_activation(tmp_path).read_text(encoding="utf-8"))
+    assert ev["activation_sha256"] == record["content_sha256"]
+    assert ev["integrity"]["event_sha256"].startswith("sha256:")
+
+
 def test_helper_refuses_a_path_shaped_provider_id(tmp_path):
     rc = main([
         "--provider-id", "../evil", "--flags", "network_access",
