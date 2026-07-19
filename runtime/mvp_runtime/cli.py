@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import sys
 
+from . import control
 from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, gate_banners, report_block
+from .control import ControlStore
 from .errors import MvpRuntimeError
 from .pipeline import run_task
 from .providers import select_provider
@@ -55,6 +57,7 @@ def main(
     *,
     store: LedgerStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
+    control_store: ControlStore | None = None,
 ) -> int:
     """Run one request end-to-end. Returns the process exit code.
 
@@ -94,6 +97,21 @@ def main(
     if not raw_request:
         sys.stderr.write("BLOCKED EMPTY_REQUEST: no request text provided (arg or stdin)\n")
         return EXIT_USAGE
+
+    # Kill-switch binding for the manual door (kill_blocks: new_execution). The operator
+    # loop, scheduler, R8 write, and R10 consume already refuse while PAUSED/KILLED; this
+    # host CLI was the one execution door without the check — a KILLED runtime performing
+    # a model-invoking pipeline run because the request came in over SSH instead of
+    # Telegram was the asymmetry, not the intent.
+    control_store = control_store if control_store is not None else ControlStore.default()
+    state = control_store.load()
+    if not state.execution_allowed:
+        reason_code = "RUNTIME_KILLED" if state.mode == control.KILLED else "RUNTIME_PAUSED"
+        sys.stderr.write(
+            f"BLOCKED {reason_code}: runtime is {state.mode}; new requests are blocked "
+            "(an authenticated operator resume clears it)\n"
+        )
+        return EXIT_BLOCKED
 
     # Select the provider through the enforced Safety-Flag Gate. Default = MockProvider
     # (no network). A hosted provider is returned only if a valid local activation record

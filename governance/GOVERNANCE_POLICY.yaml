@@ -310,7 +310,12 @@ kill_switch:
     - audit_read
   resume_requires_thomas_authentication: true
   agent_can_disable_or_bypass: false
-  runtime_enforcement_active: false
+  # Flipped true 2026-07-19 (QA wave 6c): the switch has been enforced in code since R4
+  # (operator loop, scheduler, R8 workspace write, R10 consumption) and this wave closed
+  # the last unbound doors (intake CLI, per-fire scheduler re-check, memory prune). The
+  # contracts validator now asserts this field stays true — a policy claiming enforcement
+  # is off while every door enforces it was drift in the understating direction.
+  runtime_enforcement_active: true
 
 conflict_policy:
   stricter_rule_wins: true

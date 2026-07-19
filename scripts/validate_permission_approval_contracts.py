@@ -284,6 +284,12 @@ def validate_policy_record(policy: dict[str, Any]) -> list[str]:
             issues.append(f"validation.{field} must remain false")
     if policy.get("kill_switch", {}).get("agent_can_disable_or_bypass") is not False:
         issues.append("Agents must not disable or bypass the Kill Switch")
+    # Since R4 the runtime enforces the kill switch (operator loop, scheduler, R8 write,
+    # R10 consume, and — QA wave 6c — the intake CLI and memory prune). An authoritative
+    # field asserting false about implemented enforcement is exactly the policy-vs-code
+    # drift this validator exists to catch, in the direction that understates the posture.
+    if policy.get("kill_switch", {}).get("runtime_enforcement_active") is not True:
+        issues.append("kill_switch.runtime_enforcement_active must be true (enforcement is implemented)")
     if policy.get("conflict_policy", {}).get("stricter_rule_wins") is not True:
         issues.append("stricter Governance rule must win")
     if policy.get("conflict_policy", {}).get("fail_closed_on_uncertainty") is not True:

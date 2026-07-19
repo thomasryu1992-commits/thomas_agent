@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from runtime.mvp_runtime import cli
+from runtime.mvp_runtime import cli, control
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
+from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 
@@ -25,7 +26,8 @@ def _ledger_fingerprint() -> list[tuple[str, int]]:
 def test_cli_runs_pipeline_and_emits_response(capsys, tmp_path):
     rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
                   store=LedgerStore(tmp_path / "ledger"),
-                  working_memory=WorkingMemoryStore(tmp_path / "memory"))
+                  working_memory=WorkingMemoryStore(tmp_path / "memory"),
+                  control_store=ControlStore(tmp_path))
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
     # Final response is human-readable text (not raw JSON) with findings + the read-only note.
@@ -41,12 +43,30 @@ def test_cli_run_does_not_touch_the_machine_ledger_or_working_memory(tmp_path):
     ledger, memory = tmp_path / "ledger", tmp_path / "memory"
     before = _ledger_fingerprint()
     rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
-                  store=LedgerStore(ledger), working_memory=WorkingMemoryStore(memory))
+                  store=LedgerStore(ledger), working_memory=WorkingMemoryStore(memory),
+                  control_store=ControlStore(tmp_path))
     assert rc == cli.EXIT_OK
     assert _ledger_fingerprint() == before
     # The run really happened — it just landed in the injected stores.
     assert (ledger / "audit_events.jsonl").is_file()
     assert (memory / "candidates.jsonl").is_file()
+
+
+@pytest.mark.parametrize("command, code", [("kill", "RUNTIME_KILLED"), ("pause", "RUNTIME_PAUSED")])
+def test_cli_refuses_new_execution_while_not_active(tmp_path, capsys, command, code):
+    """kill_blocks: new_execution — the manual host door. A KILLED runtime refusing a
+    Telegram request but running the same request from the host CLI (model call included)
+    was the one unbound execution door the QA review found."""
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, command, actor="op", now="2026-07-19T00:00:00Z")
+    ledger = tmp_path / "ledger"
+    rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
+                  store=LedgerStore(ledger),
+                  working_memory=WorkingMemoryStore(tmp_path / "memory"),
+                  control_store=control_store)
+    assert rc == cli.EXIT_BLOCKED
+    assert code in capsys.readouterr().err
+    assert not ledger.exists()          # refused at the door: no run, no ledger writes
 
 
 def test_cli_empty_argv_is_usage_block(capsys):

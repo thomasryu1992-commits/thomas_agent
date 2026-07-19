@@ -212,10 +212,16 @@ def run_due(
 
     While the runtime is PAUSED/KILLED (per ``control_store``), each due schedule is skipped and
     recorded; its ``next_run_at`` still advances so a kill drops the occurrence instead of queueing
-    a burst. Executed schedules run sequentially (overlap-safe). Returns a summary
-    ``{fired, skipped, results}``. Fail-closed on an unreadable schedule store."""
+    a burst. The control state is re-read **before each fire**, not once per batch: a schedule can
+    hold the tick for minutes (a full pipeline run), and a kill issued mid-batch must stop the
+    schedules behind it, not just the next tick. When no ``control_store`` is injected, the
+    per-machine one under ``repo_root`` is used — absent state means ACTIVE, but the check never
+    silently defaults to allowed (the old ``else True`` was the fail-open direction). Executed
+    schedules run sequentially (overlap-safe). Returns a summary ``{fired, skipped, results}``.
+    Fail-closed on an unreadable schedule store."""
     schedules = store.list()
-    execution_allowed = control_store.load().execution_allowed if control_store is not None else True
+    if control_store is None:
+        control_store = ControlStore(repo_root if repo_root is not None else _repo_root())
 
     fired = 0
     skipped = 0
@@ -227,7 +233,7 @@ def run_due(
         if not due:
             continue
 
-        if not execution_allowed:
+        if not control_store.load().execution_allowed:
             # kill_blocks: scheduler_execution — skip, drop the occurrence, advance cadence.
             skipped += 1
             status = "skipped_not_active"
