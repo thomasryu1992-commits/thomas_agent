@@ -246,6 +246,8 @@ def test_an_approved_approval_authorizes_no_execution_on_its_own():
         ("approve approval_abc", ("approve", "approval_abc")),
         ("  /APPROVE  approval_abc  ", ("approve", "approval_abc")),
         ("/approve", ("approve", None)),
+        # Telegram appends the bot username to menu-picked commands.
+        ("/approve@thomas_agent_bot approval_abc", ("approve", "approval_abc")),
     ],
 )
 def test_parse_approval_command(text, expected):

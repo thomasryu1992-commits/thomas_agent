@@ -98,12 +98,19 @@ def test_save_write_failure_fails_closed(tmp_path):
     ("/stop task-9", (control.CMD_STOP, "task-9")),
     ("stop_task task-9", (control.CMD_STOP, "task-9")),
     ("/resume  ", (control.CMD_RESUME, None)),
+    # Telegram appends the bot username to menu-picked commands — the suffix is addressing.
+    ("/kill@thomas_agent_bot", (control.CMD_KILL, None)),
+    ("/stop@bot task-9", (control.CMD_STOP, "task-9")),
 ])
 def test_parse_command_recognizes(text, expected):
     assert control.parse_command(text) == expected
 
 
-@pytest.mark.parametrize("text", ["이 사업 아이디어를 분석해줘", "/bogus", "", "   ", None])
+@pytest.mark.parametrize("text", [
+    "이 사업 아이디어를 분석해줘", "/bogus", "", "   ", None,
+    # @-suffix stripping applies only to the slash form — bare text stays non-command.
+    "kill@thomas_agent_bot",
+])
 def test_parse_command_ignores_non_commands(text):
     assert control.parse_command(text) is None
 

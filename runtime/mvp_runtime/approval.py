@@ -406,6 +406,10 @@ def parse_approval_command(text: Any) -> tuple[str, str | None] | None:
         return None
     head, _, rest = stripped.partition(" ")
     verb = head.lstrip("/").strip().lower()
+    if stripped.startswith("/") and "@" in verb:
+        # Telegram appends the bot username to menu-picked commands (``/approve@bot <id>``);
+        # the suffix is addressing, not part of the verb.
+        verb = verb.split("@", 1)[0]
     if verb not in _COMMANDS:
         return None
     return verb, (rest.strip() or None)

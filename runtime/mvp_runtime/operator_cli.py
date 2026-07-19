@@ -138,6 +138,14 @@ def main(
             transport_failures = 0
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]
+            if summary.get("send_failures"):
+                # The work is durable (ledger/control/approval stores); only the reply's
+                # delivery failed. Surface it so a systematically undeliverable reply
+                # (e.g. a dead bot token) is visible instead of silently swallowed.
+                sys.stderr.write(
+                    f"OPERATOR: {summary['send_failures']} reply delivery failure(s) this batch "
+                    "(handled work is recorded; the reply was not delivered)\n"
+                )
             channel_egress = channel_egress or bool(summary.get("network_egress"))
             for reply in summary["replies"]:
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")

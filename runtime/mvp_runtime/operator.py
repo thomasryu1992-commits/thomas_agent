@@ -224,6 +224,17 @@ def handle_operator_message(
                     )
             return OperatorReply(text=outcome["reply"], accepted=True, status="APPROVAL", reason_code=outcome["action"])
 
+    if text.startswith("/"):
+        # A leading-slash message that matched no console/approval verb is refused, never
+        # run as a task: a typo'd ``/killl`` (or an emergency verb reaching a deployment
+        # without its store wired) silently becoming a full pipeline run — model call
+        # included — is the fail-open direction.
+        return OperatorReply(
+            text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
+                  "/audit /recovery /approve <id> /reject <id>"),
+            accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
+        )
+
     if control_store is not None:
         # A task request is refused while the runtime is not ACTIVE (kill blocks new execution).
         state = control_store.load()
@@ -425,9 +436,40 @@ class TelegramChannel:
             self._save_offset()
         return [m for m in messages if m is not None]
 
+    # Telegram rejects a sendMessage over 4096 UTF-16 code units. Split just under that so a
+    # substantive analysis is delivered as several messages instead of failing outright — an
+    # undeliverable reply after a completed run burns the model call and loses the answer.
+    _MAX_SEND_UNITS = 4000
+
     def send(self, chat_id: str, text: str) -> None:
         token = self._assert()
-        self._call(token, "sendMessage", {"chat_id": chat_id, "text": text}, timeout=30)
+        for chunk in _split_for_send(text, self._MAX_SEND_UNITS):
+            self._call(token, "sendMessage", {"chat_id": chat_id, "text": chunk}, timeout=30)
+
+
+def _split_for_send(text: str, limit: int) -> list[str]:
+    """Split ``text`` into chunks of at most ``limit`` UTF-16 code units (Telegram's unit of
+    account — astral-plane characters count double), cutting after the last newline inside
+    the window when there is one so chunks break between lines, not mid-sentence."""
+    chunks: list[str] = []
+    start = 0
+    units = 0
+    cut_candidate = -1  # index just past the most recent newline inside the current window
+    i = start
+    while i < len(text):
+        units += 2 if ord(text[i]) > 0xFFFF else 1
+        if units > limit:
+            cut = cut_candidate if cut_candidate > start else i
+            chunks.append(text[start:cut])
+            start, units, cut_candidate = cut, 0, -1
+            i = cut
+            continue
+        if text[i] == "\n":
+            cut_candidate = i + 1
+        i += 1
+    if start < len(text) or not chunks:
+        chunks.append(text[start:])
+    return chunks
 
 
 def _message_from_update(update: dict[str, Any]) -> InboundMessage | None:
@@ -481,6 +523,7 @@ def run_operator_once(
     on the run."""
     handled: list[OperatorReply] = []
     dropped = 0
+    send_failures = 0
     for message in channel.poll(long_poll_seconds=long_poll_seconds):
         try:
             verify_control_channel(message, registration)
@@ -493,11 +536,20 @@ def run_operator_once(
             approval_store=approval_store,
             independent_validation=independent_validation, repo_root=repo_root,
         )
-        channel.send(message.chat_id, reply.text)
+        try:
+            channel.send(message.chat_id, reply.text)
+        except OperatorBlocked:
+            # The batch is already claimed (the poll cursor advanced before handling), so a
+            # failed delivery must not abort the remaining messages — a /kill or /approve
+            # queued behind this one would be lost forever. The handled work itself is
+            # durable (ledger, control state, approval store); only this reply's delivery
+            # is lost, and the summary reports it.
+            send_failures += 1
         handled.append(reply)
     return {
         "handled": len(handled),
         "dropped": dropped,
+        "send_failures": send_failures,
         "replies": handled,
         "network_egress": bool(getattr(channel, "network_egress", False)),
     }
