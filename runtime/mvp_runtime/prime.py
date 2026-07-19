@@ -21,9 +21,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from . import timeutil
 from .assignment import build_role_assignment
 from .binding import bind_task_to_core
@@ -221,7 +222,7 @@ def plan_task(
 
     schema_path = root / "schemas" / f"{TASK_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(planned, schema_path, "planned_task")
+        schema_cache.validate_against_schema(planned, schema_path, "planned_task")
     except RuntimeSchemaError as exc:
         raise PlannerBlocked("PLANNED_TASK_INVALID", str(exc)) from exc
 

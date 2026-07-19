@@ -13,11 +13,10 @@ from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
 from runtime.mvp_runtime.worker import MockProvider
 from runtime.mvp_runtime.workspace import RealWorkspaceWriter
 
-LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
 NOW = "2026-07-15T09:00:00Z"
 REQUEST = "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 class _ErrorProvider:

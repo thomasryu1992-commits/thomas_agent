@@ -17,7 +17,7 @@ Kernel components are reused as libraries (never modified):
   - ``integrity.short_id`` for deterministic ids (same input+time -> same ids,
     which keeps recorded-replay stable),
   - ``integrity.scan_for_secret_bearing_keys`` to fail closed on secret keys,
-  - ``schema_validation.validate_against_schema`` for the closed task.v0.3 schema.
+  - ``schema_cache.validate_against_schema`` for the closed task.v0.3 schema.
 
 Note: importing these leaf modules currently also loads the kernel package
 ``__init__`` (which eagerly imports the replay engine). The imported modules are
@@ -30,10 +30,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from . import timeutil
 from .budgets import default_execution_budget
 from .errors import TaskIntakeBlocked
@@ -304,7 +305,7 @@ def build_task(
         # Misconfiguration (bad repo_root / missing schema), not an invalid record.
         raise TaskIntakeBlocked("SCHEMA_UNAVAILABLE", f"task schema not found at {schema_path.as_posix()}")
     try:
-        schema_validation.validate_against_schema(task, schema_path, "task_intake")
+        schema_cache.validate_against_schema(task, schema_path, "task_intake")
     except RuntimeSchemaError as exc:
         raise TaskIntakeBlocked("SCHEMA_INVALID", str(exc)) from exc
 

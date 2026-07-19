@@ -14,11 +14,10 @@ from runtime.mvp_runtime.worker import MockProvider, ProviderResult, run_analysi
 from runtime.read_only_kernel import schema_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 AGENT_OUTPUT_SCHEMA = REPO_ROOT / "schemas" / "agent_output.v0.2.schema.json"
 NOW = "2026-07-15T09:00:00Z"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 def _planned():

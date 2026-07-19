@@ -13,11 +13,10 @@ from runtime.mvp_runtime.prime import plan_task
 from runtime.read_only_kernel import schema_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 TASK_SCHEMA = REPO_ROOT / "schemas" / "task.v0.3.schema.json"
 NOW = "2026-07-15T09:00:00Z"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 def test_out_of_scope_task_blocks_before_binding():

@@ -31,9 +31,7 @@ from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 from runtime.read_only_kernel import integrity
 
 REPO = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO / DEFAULT_POINTER_REL
-requires_local_core = pytest.mark.skipif(
-    not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 NOW = "2026-07-16T12:00:00Z"
 LATER = "2026-07-16T12:20:00Z"

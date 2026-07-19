@@ -15,10 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from .authority import audit_event_runtime_effect
 from .errors import AuditError
 from .memory import missing_origin_fields
@@ -155,7 +156,7 @@ def _make_event(
     }
     schema_path = root / "schemas" / f"{AUDIT_EVENT_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(record, schema_path, "audit_event")
+        schema_cache.validate_against_schema(record, schema_path, "audit_event")
     except RuntimeSchemaError as exc:
         raise AuditError("AUDIT_EVENT_INVALID", str(exc)) from exc
     return record, event_sha256

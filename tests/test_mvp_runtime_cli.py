@@ -11,8 +11,7 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 
-LOCAL_POINTER = Path(__file__).resolve().parents[1] / DEFAULT_POINTER_REL
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 def _ledger_fingerprint() -> list[tuple[str, int]]:

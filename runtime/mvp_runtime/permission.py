@@ -29,9 +29,10 @@ from typing import Any, Mapping
 
 import yaml
 
-from runtime.read_only_kernel import integrity, schema_validation
+from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
+from . import schema_cache
 from . import timeutil
 from .authority import authority_invariant_holds, permission_decision_runtime_effect, rank_of
 from .errors import PlannerBlocked
@@ -370,7 +371,7 @@ def build_permission_decision(
     # Closed-schema validation, then canonical Governance Policy semantics.
     schema_path = root / "schemas" / f"{PERMISSION_DECISION_SCHEMA_VERSION}.schema.json"
     try:
-        schema_validation.validate_against_schema(record, schema_path, "permission_decision")
+        schema_cache.validate_against_schema(record, schema_path, "permission_decision")
     except RuntimeSchemaError as exc:
         raise PlannerBlocked("PERMISSION_SCHEMA_INVALID", str(exc)) from exc
     issues = validate_permission_record(record, policy)

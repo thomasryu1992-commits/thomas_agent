@@ -18,11 +18,10 @@ from runtime.mvp_runtime.store import AUDIT_FILE, BLOCKS_FILE, RECORDS_FILE, Led
 from runtime.mvp_runtime.worker import MockProvider
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 NOW = "2026-07-15T09:00:00Z"
 REQUEST = "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"
 
-requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
+from tests._helpers import requires_local_core
 
 
 def _read_jsonl(path: Path) -> list[dict]:
