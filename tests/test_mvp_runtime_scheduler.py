@@ -183,6 +183,56 @@ def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
     assert [e["action"] for e in events] == ["fired", "skipped"]
 
 
+def test_operator_disable_mid_batch_survives_and_wins(tmp_path):
+    """An operator disable landing while the tick executes an earlier schedule must both
+    stop the disabled schedule from firing in this batch AND survive the batch — the old
+    stale-snapshot replace_all reverted the disable, so the schedule silently kept firing
+    with no trace."""
+    store = ScheduleStore(tmp_path)
+    control_store = ControlStore(tmp_path)
+    first = _task_schedule(store, request="first")
+    second = _task_schedule(store, request="second")
+
+    class _DisablesSecondDuringFirst:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, request, **kwargs):
+            self.calls.append(request)
+            if request == "first":
+                store.set_enabled(second.schedule_id, False)   # the docker-exec disable
+            return {"status": "COMPLETED"}
+
+    ex = _DisablesSecondDuringFirst()
+    summary = run_due(store, now=T1, control_store=control_store, executor=ex)
+    assert ex.calls == ["first"] and summary["fired"] == 1
+    by_id = {s.schedule_id: s for s in store.list()}
+    assert by_id[second.schedule_id].enabled is False          # the disable survived
+    assert by_id[first.schedule_id].last_status == "COMPLETED"
+
+
+def test_operator_remove_mid_batch_survives_and_wins(tmp_path):
+    store = ScheduleStore(tmp_path)
+    control_store = ControlStore(tmp_path)
+    _task_schedule(store, request="first")
+    second = _task_schedule(store, request="second")
+
+    class _RemovesSecondDuringFirst:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, request, **kwargs):
+            self.calls.append(request)
+            if request == "first":
+                assert store.remove(second.schedule_id) is True
+            return {"status": "COMPLETED"}
+
+    ex = _RemovesSecondDuringFirst()
+    summary = run_due(store, now=T1, control_store=control_store, executor=ex)
+    assert ex.calls == ["first"] and summary["fired"] == 1
+    assert [s.request for s in store.list()] == ["first"]      # the remove survived
+
+
 def test_no_control_store_defaults_to_the_per_machine_state_not_allowed(tmp_path):
     """With no injected control_store, run_due consults the per-machine state under
     repo_root — the old `else True` default silently ran with no kill binding at all."""
