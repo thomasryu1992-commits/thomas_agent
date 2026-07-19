@@ -51,10 +51,16 @@ SCHEDULER_FILE = "scheduler_events.jsonl"
 _RECORD_KINDS = (
     "received_task", "task", "binding", "permission_decision",
     "search_permission_decision", "role_assignment",
-    "validator_permission_decision", "validator_assignment", "tool_use",
+    "validator_permission_decision", "validator_assignment",
+    "write_permission_decision", "tool_use",
     "agent_output", "invocation", "validation_result",
-    "independent_validation_result", "validator_invocation",
+    "independent_validation_result", "validator_invocation", "write_use",
 )
+
+# Keys the pipeline carries in its records mapping that are deliberately NOT persisted as
+# record rows: the audit trail and block entry have their own files, and retrieved memory
+# is read-only context (already durable in the working-memory store, not a run product).
+_NON_RECORD_KEYS = frozenset({"audit_trail", "block_record", "memory_retrieved"})
 
 
 class LedgerStore:
@@ -76,6 +82,15 @@ class LedgerStore:
         jsonl.append_lines(self._root / AUDIT_FILE, events, write_code="LEDGER_WRITE_FAILED", label="the audit ledger")
 
     def append_records(self, trace_id: str | None, records: Mapping[str, Any]) -> None:
+        # Fail-closed on an unrecognized kind: silently dropping a record the pipeline
+        # produced would persist an audit trail whose fingerprints reference evidence that
+        # no longer exists anywhere (this exact hole once swallowed the R8 write records).
+        unknown = set(records) - set(_RECORD_KINDS) - _NON_RECORD_KEYS
+        if unknown:
+            raise PersistenceError(
+                "LEDGER_UNKNOWN_RECORD_KIND",
+                f"refusing to silently drop unrecognized record kinds: {sorted(unknown)}",
+            )
         rows = [
             {"kind": kind, "trace_id": trace_id, "record": records[kind]}
             for kind in _RECORD_KINDS
