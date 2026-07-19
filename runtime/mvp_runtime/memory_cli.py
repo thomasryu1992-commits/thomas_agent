@@ -18,12 +18,10 @@ import argparse
 import sys
 
 from . import memory, timeutil
+from .cli_common import EXIT_BLOCKED, EXIT_OK, report_block
 from .errors import MvpRuntimeError
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore
-
-EXIT_OK = 0
-EXIT_BLOCKED = 2
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -60,8 +58,7 @@ def main(
 
         summary = memory.prune_working_memory(store, ledger, now=stamp, reason=args.reason)
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
+        return report_block(exc)
 
     sys.stdout.write(f"pruned {summary['removed_count']} expired working-memory candidate(s)\n")
     return EXIT_OK

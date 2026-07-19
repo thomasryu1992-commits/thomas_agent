@@ -31,7 +31,6 @@ any decided record, so a decision recorded without verified identity cannot even
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -43,12 +42,11 @@ from runtime.read_only_kernel import integrity, schema_validation
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import timeutil
+from .authority import permission_decision_runtime_effect
 from .errors import ApprovalBlocked
 from .paths import repo_root as _repo_root
 
-_SCRIPTS_DIR = str(_repo_root() / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
 from validate_permission_approval_contracts import validate_approval_record  # noqa: E402
 
@@ -202,16 +200,9 @@ def build_approval_request(
             "consumption_ref": None,
         },
         "validity": {"issued_at": timeutil.format_iso(issued), "expires_at": timeutil.format_iso(expires)},
-        "runtime_effect": {
-            "mode": "REVIEW_ONLY",
-            "executor_handoff_allowed": False,
-            "external_execution_allowed": False,
-            "financial_execution_allowed": False,
-            "runtime_mutation_allowed": False,
-            "tool_enablement_allowed": False,
-            "program_enablement_allowed": False,
-            "permission_expansion_allowed": False,
-        },
+        # authority.py owns the no-grant effect block — no local copies (schema consts
+        # still catch value drift; this keeps one construction site).
+        "runtime_effect": permission_decision_runtime_effect(),
         "audit_refs": [f"audit:approval_request:{approval_id}"],
     }
     _validate(approval, permission_decision, root)

@@ -25,12 +25,11 @@ from pathlib import Path
 from typing import Any
 
 from . import control
+from .cli_common import EXIT_BLOCKED, EXIT_OK, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .store import LedgerStore
 
-EXIT_OK = 0
-EXIT_BLOCKED = 2
 LOCAL_ACTOR = "local_console"
 
 
@@ -68,8 +67,7 @@ def main(
             arg=args.task_id, ledger=ledger,
         )
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
+        return report_block(exc)
 
     sys.stdout.write(outcome["reply"] + "\n")
     sys.stderr.write(f"CONTROL: mode={outcome['mode']} action={outcome['action']} changed={outcome['changed']}\n")

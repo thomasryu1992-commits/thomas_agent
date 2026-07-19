@@ -24,27 +24,16 @@ from pathlib import Path
 from typing import Any
 
 from . import scheduler, timeutil
+from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
-from .providers import GoogleAIStudioProvider, select_provider
+from .providers import select_provider
 from .scheduler import ScheduleStore
 from .store import LedgerStore
-from .tools import WebSearchTool, select_search_tool
+from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
-EXIT_OK = 0
-EXIT_BLOCKED = 2
 LOCAL_ACTOR = "local_scheduler_cli"
-
-
-def _force_utf8_io() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -84,7 +73,7 @@ def main(
 ) -> int:
     """Run one scheduler command. Returns 0 on success, non-zero on a fail-closed block.
     Dependencies are injectable for tests; unset ones default to local state / the gate."""
-    _force_utf8_io()
+    force_utf8_io()
     args = _parse_args(argv)
     store = store if store is not None else ScheduleStore.default()
     ledger = ledger if ledger is not None else LedgerStore.default()
@@ -131,10 +120,7 @@ def main(
         working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
-        if isinstance(provider, GoogleAIStudioProvider):
-            sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
-        if isinstance(search_tool, WebSearchTool):
-            sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
+        gate_banners(provider=provider, search_tool=search_tool)
         sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
 
         total_fired = 0
@@ -159,8 +145,7 @@ def main(
         return EXIT_OK
 
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
+        return report_block(exc)
 
 
 if __name__ == "__main__":

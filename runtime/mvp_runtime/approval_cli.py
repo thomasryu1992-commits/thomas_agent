@@ -32,39 +32,27 @@ from . import approval, consumption, timeutil
 from .approval_store import ApprovalStore
 from .audit import build_approval_request_audit
 from .binding import bind_task_to_core
+from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from .errors import MvpRuntimeError
 from .intake import build_task
 from .permission import build_memory_promotion_permission_decision
 from .store import LedgerStore
-from .working_memory import WorkingMemoryStore
-
-EXIT_OK = 0
-EXIT_BLOCKED = 2
-EXIT_USAGE = 3
-
-
-def _force_utf8_io() -> None:
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
+from .working_memory import WorkingMemoryStore, find_candidate
 
 
 def _find_candidate(candidate_id: str) -> dict[str, Any]:
-    """Locate a working-memory candidate by id, or fail closed.
+    """Locate the live working-memory candidate by id, or fail closed.
 
     The candidate is read from the store rather than taken from the caller, so the approval
     is bound to what is actually on record — an operator cannot ask Thomas to approve
-    content that does not exist.
+    content that does not exist. Uses THE shared lookup (``working_memory.find_candidate``,
+    latest-wins, CANDIDATE-scope filtered): the ask and the spend (consumption) must resolve
+    "the candidate" identically, or Thomas can be asked about content the spend then rejects.
     """
-    entries = WorkingMemoryStore.default().read_all()
-    for entry in entries:
-        if entry.get("candidate_id") == candidate_id:
-            return entry
-    raise MvpRuntimeError("UNKNOWN_CANDIDATE", f"no working-memory candidate with id {candidate_id}")
+    entry = find_candidate(WorkingMemoryStore.default(), candidate_id)
+    if entry is None:
+        raise MvpRuntimeError("UNKNOWN_CANDIDATE", f"no working-memory candidate with id {candidate_id}")
+    return entry
 
 
 def _request(args: argparse.Namespace) -> int:
@@ -176,7 +164,7 @@ def _consume(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _force_utf8_io()
+    force_utf8_io()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -202,8 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except MvpRuntimeError as exc:
-        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
-        return EXIT_BLOCKED
+        return report_block(exc)
 
 
 if __name__ == "__main__":

@@ -80,3 +80,23 @@ class WorkingMemoryStore:
 
     def _read(self, filename: str, code: str, label: str) -> list[dict[str, Any]]:
         return jsonl.read_objects(self._root / filename, read_code=code, label=label)
+
+
+def find_candidate(store: WorkingMemoryStore, candidate_id: str) -> dict[str, Any] | None:
+    """The live working-memory CANDIDATE with this id, or None.
+
+    THE candidate lookup — the approval ask (approval_cli) and the approval spend
+    (consumption) must resolve "the candidate" identically, or the ask can bind content
+    the spend then rejects. Only an un-promoted candidate in the working-memory scope is
+    eligible, and **latest-wins**: the store is append-only, so the last entry for an id
+    is its current state. Revalidation must run against current content, not a superseded
+    earlier copy — otherwise a candidate re-appended with tampered content after the
+    approval would slip past the content-hash check at consume time."""
+    latest: dict[str, Any] | None = None
+    for entry in store.read_all():
+        if (isinstance(entry, dict)
+                and entry.get("candidate_id") == candidate_id
+                and entry.get("status") == memory.CANDIDATE_STATUS
+                and entry.get("scope") == memory.CANDIDATE_SCOPE):
+            latest = entry
+    return latest

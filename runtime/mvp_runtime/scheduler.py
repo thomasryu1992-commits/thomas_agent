@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping
 from runtime.read_only_kernel import integrity
 
 from . import jsonl, memory, timeutil
+from .events import stamped_event
 from .control import ControlStore
 from .errors import SchedulerBlocked
 from .paths import repo_root as _repo_root
@@ -170,16 +171,10 @@ class ScheduleStore:
 
 
 def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) -> dict[str, Any]:
-    event: dict[str, Any] = {
-        "record_type": SCHEDULER_EVENT_TYPE,
-        "action": action,                       # "fired" | "skipped"
-        "schedule_id": schedule.schedule_id,
-        "kind": schedule.kind,
-        "status": status,
-        "created_at": now,
-    }
-    event["integrity"] = {"event_sha256": integrity.sha256_record(dict(event))}
-    return event
+    return stamped_event(
+        SCHEDULER_EVENT_TYPE, action=action,    # "fired" | "skipped"
+        schedule_id=schedule.schedule_id, kind=schedule.kind, status=status, created_at=now,
+    )
 
 
 def _execute(

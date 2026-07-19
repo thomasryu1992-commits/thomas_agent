@@ -24,6 +24,7 @@ from runtime.read_only_kernel.integrity import IntegrityError
 
 from . import timeutil
 from .errors import MemoryBlocked
+from .events import stamped_event
 
 CANDIDATE_STATUS = "CANDIDATE"          # never VALIDATED / CORE
 CANDIDATE_SCOPE = "task_working_memory"
@@ -44,6 +45,19 @@ PROMOTION_DISPOSITION = "EXECUTE_AND_REPORT"   # governance tier for validated-k
 
 
 ORIGIN_FIELDS = ("task_id", "task_revision", "trace_id", "core_context_binding_id", "data_sensitivity")
+
+
+def missing_origin_fields(origin: Mapping[str, Any]) -> list[str]:
+    """Names of required origin-provenance fields missing or invalid in ``origin``, sorted.
+
+    THE completeness rule for candidate provenance — candidate creation (here) and the
+    promotion audit (audit.py) must agree on what "complete" means, so both call this
+    instead of keeping their own field lists that could drift apart."""
+    missing = [k for k in ("task_id", "trace_id", "core_context_binding_id", "data_sensitivity")
+               if not (isinstance(origin.get(k), str) and origin.get(k))]
+    if not (isinstance(origin.get("task_revision"), int) and origin.get("task_revision", 0) >= 1):
+        missing.append("task_revision")
+    return sorted(missing)
 
 
 def is_expired(entry: Mapping[str, Any], now: str) -> bool:
@@ -68,12 +82,9 @@ def _normalize_origin(origin: Mapping[str, Any] | None) -> dict[str, Any] | None
     if origin is None:
         return None
     provenance = {field: origin.get(field) for field in ORIGIN_FIELDS}
-    missing = [k for k in ("task_id", "trace_id", "core_context_binding_id", "data_sensitivity")
-               if not (isinstance(provenance[k], str) and provenance[k])]
-    if not (isinstance(provenance["task_revision"], int) and provenance["task_revision"] >= 1):
-        missing.append("task_revision")
+    missing = missing_origin_fields(provenance)
     if missing:
-        raise MemoryBlocked("INVALID_ORIGIN", f"candidate origin provenance is incomplete: {sorted(missing)}")
+        raise MemoryBlocked("INVALID_ORIGIN", f"candidate origin provenance is incomplete: {missing}")
     return provenance
 
 
@@ -184,16 +195,12 @@ MEMORY_EVENT_TYPE = "working_memory_retention_event.v0"
 
 def build_retention_event(removed: list[Mapping[str, Any]], *, now: str, reason: str) -> dict[str, Any]:
     """Build a tamper-evident memory-retention event for the durable ledger (policy §15)."""
-    event: dict[str, Any] = {
-        "record_type": MEMORY_EVENT_TYPE,
-        "action": "prune_working_memory",
-        "removed_count": len(removed),
-        "removed_candidate_ids": [str(e.get("candidate_id", "")) for e in removed],
-        "reason": reason,
-        "created_at": now,
-    }
-    event["integrity"] = {"event_sha256": integrity.sha256_record(dict(event))}
-    return event
+    return stamped_event(
+        MEMORY_EVENT_TYPE, action="prune_working_memory",
+        removed_count=len(removed),
+        removed_candidate_ids=[str(e.get("candidate_id", "")) for e in removed],
+        reason=reason, created_at=now,
+    )
 
 
 def prune_working_memory(store: Any, ledger: Any, *, now: str, reason: str = "") -> dict[str, Any]:
