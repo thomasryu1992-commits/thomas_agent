@@ -37,6 +37,7 @@ from typing import Any, Mapping
 
 from . import jsonl
 from .errors import PersistenceError
+from .filelock import locked
 from .paths import repo_root as _repo_root
 
 LEDGER_REL = ".runtime_governance_state/runtime_ledger"
@@ -79,7 +80,20 @@ class LedgerStore:
         return self._root
 
     def append_audit_events(self, events: list[Mapping[str, Any]]) -> None:
-        jsonl.append_lines(self._root / AUDIT_FILE, events, write_code="LEDGER_WRITE_FAILED", label="the audit ledger")
+        """Append a chain segment, re-anchored onto the CURRENT tip under the ledger lock.
+
+        Builders chain from the tip their caller read at run start; in the multi-process
+        deployment another process may have appended since, which would fork the chain and
+        make an honest ledger verify as tampered. Re-reading the tip and rechaining inside
+        one cross-process exclusion makes the ledger a single unforked chain by
+        construction. The events are mutated in place (hashes/links updated), so callers
+        holding them see exactly what was persisted."""
+        from .audit import rechain_events
+
+        events = list(events)
+        with self._audit_lock():
+            rechain_events(events, self._tip())  # type: ignore[arg-type]
+            jsonl.append_lines(self._root / AUDIT_FILE, events, write_code="LEDGER_WRITE_FAILED", label="the audit ledger")
 
     def append_records(self, trace_id: str | None, records: Mapping[str, Any]) -> None:
         # Fail-closed on an unrecognized kind: silently dropping a record the pipeline
@@ -116,8 +130,19 @@ class LedgerStore:
     def last_audit_hash(self) -> str | None:
         """Return the last persisted event's ``event_sha256`` (the chain tip), or None.
 
-        Reading a corrupt or unparseable ledger fails closed rather than silently
-        starting a fresh chain over a damaged one."""
+        Advisory for builders: the tip that MATTERS is re-read under the ledger lock at
+        append time (see ``append_audit_events``), so a stale value here can only cause a
+        rechain, never a fork. Reading a corrupt or unparseable ledger fails closed rather
+        than silently starting a fresh chain over a damaged one."""
+        with self._audit_lock():
+            return self._tip()
+
+    def _audit_lock(self):
+        return locked(self._root / (AUDIT_FILE + ".lock"),
+                      code="LEDGER_WRITE_FAILED", label="the audit ledger")
+
+    def _tip(self) -> str | None:
+        """The current chain tip, caller-locked. Fail-closed on a corrupt ledger."""
         events = jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger tip")
         if not events:
             return None

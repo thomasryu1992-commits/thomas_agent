@@ -42,15 +42,51 @@ def test_last_audit_hash_none_when_empty(tmp_path):
     assert LedgerStore(tmp_path / "ledger").last_audit_hash() is None
 
 
+def _chainable_event(seq: int, previous: str | None) -> dict:
+    """A structurally minimal audit event rechain can re-anchor (payload + lineage + hash)."""
+    from runtime.read_only_kernel import integrity
+
+    payload = {"audit_event_id": f"audit_{seq}", "event_summary": "e",
+               "previous_event_sha256": previous, "sequence_number": seq}
+    return {
+        "audit_event_id": f"audit_{seq}",
+        "event": {"event_summary": "e"},
+        "lineage": {"previous_event_sha256": previous, "sequence_number": seq},
+        "integrity": {"event_fingerprint_payload": payload,
+                      "event_sha256": integrity.sha256_value(payload)},
+    }
+
+
 def test_append_audit_events_and_read_tip(tmp_path):
     store = LedgerStore(tmp_path / "ledger")
-    events = [
-        {"integrity": {"event_sha256": "sha256:" + "a" * 64}},
-        {"integrity": {"event_sha256": "sha256:" + "b" * 64}},
-    ]
-    store.append_audit_events(events)
-    assert store.last_audit_hash() == "sha256:" + "b" * 64
+    first = _chainable_event(1, None)
+    second = _chainable_event(2, first["integrity"]["event_sha256"])
+    store.append_audit_events([first, second])
+    assert store.last_audit_hash() == second["integrity"]["event_sha256"]
     assert len(_read_jsonl(store.root / AUDIT_FILE)) == 2
+
+
+def test_append_rechains_a_segment_built_against_a_stale_tip(tmp_path):
+    """Two runs that both read the same tip before appending (multi-process deployment)
+    must not fork the chain: the second segment is re-anchored under the ledger lock, so
+    the persisted ledger is one continuous chain and the caller's dicts match it."""
+    store = LedgerStore(tmp_path / "ledger")
+    batch_a = [_chainable_event(1, None)]
+    batch_b = [_chainable_event(1, None)]  # built against the SAME stale (empty) tip
+    store.append_audit_events(batch_a)
+    store.append_audit_events(batch_b)
+
+    rows = _read_jsonl(store.root / AUDIT_FILE)
+    assert len(rows) == 2
+    # The second event now links to the first — no fork — and its hash was recomputed
+    # over the rewritten payload (in place, so batch_b sees the persisted values).
+    assert rows[1]["lineage"]["previous_event_sha256"] == rows[0]["integrity"]["event_sha256"]
+    assert rows[1]["integrity"]["event_sha256"] == batch_b[0]["integrity"]["event_sha256"]
+    from runtime.mvp_runtime.audit import verify_audit_chain
+    assert verify_audit_chain([
+        {**row, "integrity": row["integrity"]} for row in rows
+    ])["checked"] == 2
+    assert store.last_audit_hash() == rows[1]["integrity"]["event_sha256"]
 
 
 def test_append_records_rejects_unknown_kinds(tmp_path):
