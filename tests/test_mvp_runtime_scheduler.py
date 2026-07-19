@@ -100,7 +100,7 @@ def test_due_schedule_fires_and_advances(tmp_path):
     ledger = LedgerStore(tmp_path / "ledger")
     s = _task_schedule(store, now=T0, interval=60)   # next_run = T1
     ex = FakeExecutor()
-    summary = run_due(store, now=T1, ledger=ledger, executor=ex)
+    summary = run_due(store, now=T1, ledger=ledger, executor=ex, control_store=ControlStore(tmp_path))
     assert summary["fired"] == 1 and summary["skipped"] == 0
     assert len(ex.calls) == 1 and ex.calls[0]["request"] == "analyze X"
     assert ex.calls[0]["channel"] == "scheduler" and ex.calls[0]["requester_type"] == "scheduler"
@@ -115,7 +115,7 @@ def test_not_due_schedule_does_not_fire(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60)        # next_run = T1
     ex = FakeExecutor()
-    summary = run_due(store, now=T0, executor=ex)     # now < next_run
+    summary = run_due(store, now=T0, executor=ex, control_store=ControlStore(tmp_path))     # now < next_run
     assert summary["fired"] == 0 and ex.calls == []
 
 
@@ -123,7 +123,7 @@ def test_disabled_schedule_does_not_fire(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60, enabled=False)
     ex = FakeExecutor()
-    assert run_due(store, now=T1, executor=ex)["fired"] == 0
+    assert run_due(store, now=T1, executor=ex, control_store=ControlStore(tmp_path))["fired"] == 0
     assert ex.calls == []
 
 
@@ -132,7 +132,7 @@ def test_two_due_schedules_both_fire_sequentially(tmp_path):
     _task_schedule(store, now=T0, interval=60, request="a")
     _task_schedule(store, now=T0, interval=60, request="b")
     ex = FakeExecutor()
-    summary = run_due(store, now=T1, executor=ex)
+    summary = run_due(store, now=T1, executor=ex, control_store=ControlStore(tmp_path))
     assert summary["fired"] == 2
     assert sorted(c["request"] for c in ex.calls) == ["a", "b"]
 
@@ -153,6 +153,45 @@ def test_killed_or_paused_skips_execution(tmp_path, command, status):
     assert store.list()[0].next_run_at == T2          # occurrence dropped, cadence advanced
     event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
     assert event["action"] == "skipped" and event["status"] == status
+
+
+def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
+    """The control state is re-read before EACH fire, not once per batch: a /kill issued
+    while schedule 1 holds the tick (a pipeline run takes minutes) must stop schedules 2
+    and 3 behind it — the once-per-batch snapshot ran them after the kill."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control_store = ControlStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60, request="first")
+    _task_schedule(store, now=T0, interval=60, request="second")
+
+    class _KillsDuringFirst:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, request, **kwargs):
+            self.calls.append(request)
+            control.apply_command(control_store, "kill", actor="op", now=T1)
+            return {"status": "COMPLETED"}
+
+    ex = _KillsDuringFirst()
+    summary = run_due(store, now=T1, control_store=control_store, ledger=ledger, executor=ex)
+    assert ex.calls == ["first"]                       # the second never executed
+    assert summary["fired"] == 1 and summary["skipped"] == 1
+    events = [json.loads(line) for line in
+              (ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip().splitlines()]
+    assert [e["action"] for e in events] == ["fired", "skipped"]
+
+
+def test_no_control_store_defaults_to_the_per_machine_state_not_allowed(tmp_path):
+    """With no injected control_store, run_due consults the per-machine state under
+    repo_root — the old `else True` default silently ran with no kill binding at all."""
+    store = ScheduleStore(tmp_path)
+    control.apply_command(ControlStore(tmp_path), "kill", actor="op", now=T0)
+    _task_schedule(store, now=T0, interval=60)
+    ex = FakeExecutor()
+    summary = run_due(store, now=T1, repo_root=tmp_path, executor=ex)
+    assert summary["fired"] == 0 and summary["skipped"] == 1 and ex.calls == []
 
 
 def test_resume_lets_schedule_fire_again(tmp_path):
@@ -177,7 +216,8 @@ def test_memory_prune_schedule_prunes_expired(tmp_path):
                 "content": "old", "created_at": PAST, "expires_at": PAST}])
     s = build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400, created_by="op", now=T0)
     store.add(s)
-    summary = run_due(store, now="2026-07-17T09:00:00Z", ledger=ledger, working_memory=wm)
+    summary = run_due(store, now="2026-07-17T09:00:00Z", ledger=ledger, working_memory=wm,
+                      control_store=ControlStore(tmp_path))
     assert summary["fired"] == 1
     assert summary["results"][0]["status"] == "pruned:1"
     assert wm.read_all() == []
@@ -203,7 +243,7 @@ def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
 
     executor = _ExplodingOnSecond()
     with pytest.raises(PersistenceError):
-        run_due(store, now=T1, executor=executor)
+        run_due(store, now=T1, executor=executor, control_store=ControlStore(tmp_path))
 
     by_id = {s.schedule_id: s for s in store.list()}
     # The first schedule executed and its claim survived the later failure: it will NOT

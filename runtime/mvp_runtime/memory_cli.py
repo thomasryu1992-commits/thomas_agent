@@ -19,6 +19,7 @@ import sys
 
 from . import memory, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, report_block
+from .control import ControlStore
 from .errors import MvpRuntimeError
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore
@@ -36,6 +37,7 @@ def main(
     *,
     store: WorkingMemoryStore | None = None,
     ledger: LedgerStore | None = None,
+    control_store: ControlStore | None = None,
     now: str | None = None,
 ) -> int:
     """Run one maintenance command. Returns 0 on success, non-zero on a fail-closed block.
@@ -55,6 +57,18 @@ def main(
                 f"(expired as of now: {len(expired)}); validated memory: {len(validated)}\n"
             )
             return EXIT_OK
+
+        # Kill-switch binding: prune deletes data (EXECUTE_AND_REPORT), and kill_allows
+        # lists only read_only_status/audit_read — a PAUSED/KILLED runtime may report
+        # status above but must not delete. Same door rule as the scheduler and R8 write.
+        control_store = control_store if control_store is not None else ControlStore.default()
+        state = control_store.load()
+        if not state.execution_allowed:
+            sys.stderr.write(
+                f"BLOCKED KILL_SWITCH_ACTIVE: runtime is {state.mode}; "
+                "prune deletes data and is refused while not ACTIVE\n"
+            )
+            return EXIT_BLOCKED
 
         summary = memory.prune_working_memory(store, ledger, now=stamp, reason=args.reason)
     except MvpRuntimeError as exc:

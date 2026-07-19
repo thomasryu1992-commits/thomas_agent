@@ -19,13 +19,13 @@ sha256:
   role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
   tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
   program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
-  governance_policy: sha256:b515b21a96a508caec8375c98ad5f73d1607ad03d5ba000765f5cbc7cc38ea54
+  governance_policy: sha256:d09fafd64a856c391f3d8559135f23d8da9250d494f8096942bcf26f2e07d0dd
   i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
 governance_binding:
   policy_id: thomas.governance.policy
   policy_version: 1.1.0
   policy_ref: governance/GOVERNANCE_POLICY.yaml
-  policy_sha256: sha256:b515b21a96a508caec8375c98ad5f73d1607ad03d5ba000765f5cbc7cc38ea54
+  policy_sha256: sha256:d09fafd64a856c391f3d8559135f23d8da9250d494f8096942bcf26f2e07d0dd
 constraints:
   filesystem_read_only: true
   external_network_allowed: false
@@ -60,13 +60,13 @@ integrity:
       role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
       tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
       program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
-      governance_policy: sha256:b515b21a96a508caec8375c98ad5f73d1607ad03d5ba000765f5cbc7cc38ea54
+      governance_policy: sha256:d09fafd64a856c391f3d8559135f23d8da9250d494f8096942bcf26f2e07d0dd
       i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
     governance_binding:
       policy_id: thomas.governance.policy
       policy_version: 1.1.0
       policy_ref: governance/GOVERNANCE_POLICY.yaml
-      policy_sha256: sha256:b515b21a96a508caec8375c98ad5f73d1607ad03d5ba000765f5cbc7cc38ea54
+      policy_sha256: sha256:d09fafd64a856c391f3d8559135f23d8da9250d494f8096942bcf26f2e07d0dd
     constraints:
       filesystem_read_only: true
       external_network_allowed: false
@@ -78,5 +78,5 @@ integrity:
       filesystem_write_allowed: false
       secrets_allowed: false
     created_at: '2026-07-13T04:03:00Z'
-  bundle_sha256: sha256:d0456f93f903b35ae48eb4b068e4ad0f5980a235e8e76924452ca8689e33fe6d
+  bundle_sha256: sha256:ed230ccf1fd459f88b80234303fc5a739cfb2b2878b883f929ecfae6e952f62a
 created_at: '2026-07-13T04:03:00Z'
