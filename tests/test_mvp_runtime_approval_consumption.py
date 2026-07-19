@@ -156,6 +156,25 @@ def test_consumption_is_audited_onto_the_ledger_tip(tmp_path):
 
 
 @requires_local_core
+def test_consume_retires_the_candidate(tmp_path):
+    """Promotion consumes the candidate, not just the grant: after the spend, the id's
+    latest store entry is the PROMOTED marker, so the shared lookup no longer resolves it —
+    a second ask/spend for the same candidate gets CANDIDATE_GONE instead of a duplicate
+    VALIDATED entry."""
+    from runtime.mvp_runtime.memory import PROMOTED_STATUS
+    from runtime.mvp_runtime.working_memory import find_candidate
+
+    astore, wm, ledger, approval_id, candidate = _approved(tmp_path)
+    result = consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                              ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    assert find_candidate(wm, candidate["candidate_id"]) is None
+    marker = [e for e in wm.read_all()
+              if e.get("candidate_id") == candidate["candidate_id"] and e.get("status") == PROMOTED_STATUS]
+    assert len(marker) == 1
+    assert marker[0]["promotion_ref"] == f"validated_memory:{result['validated']['validated_memory_id']}"
+
+
+@requires_local_core
 def test_a_grant_can_be_consumed_only_once(tmp_path):
     astore, wm, ledger, approval_id, _ = _approved(tmp_path)
     consume_approval(approval_id, approval_store=astore, working_memory_store=wm,

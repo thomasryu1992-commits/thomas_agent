@@ -105,15 +105,47 @@ def find_candidate(store: WorkingMemoryStore, candidate_id: str) -> dict[str, An
     THE candidate lookup — the approval ask (approval_cli) and the approval spend
     (consumption) must resolve "the candidate" identically, or the ask can bind content
     the spend then rejects. Only an un-promoted candidate in the working-memory scope is
-    eligible, and **latest-wins**: the store is append-only, so the last entry for an id
-    is its current state. Revalidation must run against current content, not a superseded
-    earlier copy — otherwise a candidate re-appended with tampered content after the
-    approval would slip past the content-hash check at consume time."""
+    eligible, and **latest-wins across every entry for the id, whatever its status**: the
+    store is append-only, so the last entry is the candidate's current state. Revalidation
+    must run against current content, not a superseded earlier copy — otherwise a candidate
+    re-appended with tampered content after the approval would slip past the content-hash
+    check at consume time. A candidate whose latest entry is the PROMOTED retirement marker
+    (:func:`mark_promoted`) is no longer live: promotion consumes the candidate, so a second
+    ask/spend for the same id resolves to nothing instead of re-promoting the same content."""
     latest: dict[str, Any] | None = None
     for entry in store.read_all():
         if (isinstance(entry, dict)
                 and entry.get("candidate_id") == candidate_id
-                and entry.get("status") == memory.CANDIDATE_STATUS
                 and entry.get("scope") == memory.CANDIDATE_SCOPE):
             latest = entry
+    if latest is None or latest.get("status") != memory.CANDIDATE_STATUS:
+        return None
     return latest
+
+
+def mark_promoted(
+    store: WorkingMemoryStore,
+    candidate: Mapping[str, Any],
+    *,
+    validated_memory_id: str,
+    now: str,
+) -> dict[str, Any]:
+    """Append the PROMOTED retirement marker for a just-promoted candidate.
+
+    The candidate store is append-only, so promotion cannot edit the CANDIDATE row in
+    place; the marker is the append-only equivalent of retiring it — the id's latest entry
+    stops being CANDIDATE, so :func:`find_candidate` stops returning it. Without this,
+    nothing ever consumed the candidate: the same content could be asked-for and promoted
+    repeatedly (each round needing a fresh approval, but still yielding duplicate VALIDATED
+    entries), and CANDIDATE_GONE's "promoted or pruned" message was only half true. The
+    marker copies the candidate (same ``expires_at``), so retention prunes the pair
+    together. Retrieval-as-context is deliberately unchanged: the original CANDIDATE row
+    still serves until it expires — promotion narrows *promotability*, not context."""
+    marker = {
+        **dict(candidate),
+        "status": memory.PROMOTED_STATUS,
+        "promoted_at": now,
+        "promotion_ref": f"validated_memory:{validated_memory_id}",
+    }
+    store.append([marker])
+    return marker

@@ -27,6 +27,7 @@ from .errors import MemoryBlocked
 from .events import stamped_event
 
 CANDIDATE_STATUS = "CANDIDATE"          # never VALIDATED / CORE
+PROMOTED_STATUS = "PROMOTED"            # retirement marker: the candidate was promoted (R5/R10)
 CANDIDATE_SCOPE = "task_working_memory"
 PREFERRED_TYPE = "reusable_knowledge"
 MAX_CANDIDATES = 5

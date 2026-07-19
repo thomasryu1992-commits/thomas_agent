@@ -49,7 +49,7 @@ from .paths import repo_root as _repo_root
 from .permission import MEMORY_PROMOTION_PERMISSION_SCOPE
 from .safety_gate import APPROVAL_CONSUMPTION
 from .store import LedgerStore
-from .working_memory import WorkingMemoryStore, find_candidate
+from .working_memory import WorkingMemoryStore, find_candidate, mark_promoted
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
@@ -284,6 +284,19 @@ def consume_approval(
                 "CONSUMED_NOT_PROMOTED",
                 f"the grant is spent (CONSUMED) but the promotion write failed ({exc.reason_code}); "
                 "it cannot be re-spent — ask Thomas for a new approval",
+            ) from exc
+        # Retire the candidate (append the PROMOTED marker) so find_candidate stops
+        # returning it: promotion consumes the candidate, not just the grant. Reported as
+        # its own leg — the promotion and the spend are durable; only the retirement
+        # failed, so the same content could be asked-for again (behind a fresh approval).
+        try:
+            mark_promoted(working_memory_store, candidate,
+                          validated_memory_id=validated["validated_memory_id"], now=now)
+        except MvpRuntimeError as exc:
+            raise ApprovalBlocked(
+                "CANDIDATE_NOT_RETIRED",
+                f"the promotion is written but the candidate's PROMOTED marker failed "
+                f"({exc.reason_code}); the candidate remains visible to a future ask — investigate",
             ) from exc
         try:
             ledger.append_audit_events(consumption_audit)
