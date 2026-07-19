@@ -184,3 +184,22 @@ def test_response_missing_fields_fails_closed(monkeypatch):
     with pytest.raises(ProviderError) as exc:
         GoogleAIStudioProvider(authorization=_AUTH).generate("x", max_output_tokens=100, timeout_seconds=5)
     assert exc.value.reason_code == "MALFORMED_RESPONSE"
+
+
+@pytest.mark.parametrize("usage", [
+    {"promptTokenCount": {"nested": "junk"}},   # int() of a dict -> TypeError
+    "not-a-dict",                                # .get on a str -> AttributeError
+    {"candidatesTokenCount": "12abc"},           # int() of junk -> ValueError
+])
+def test_malformed_usage_metadata_fails_closed(monkeypatch, usage):
+    """Usage metadata is provider-supplied too: junk must BLOCK as MALFORMED_RESPONSE,
+    not escape as a raw TypeError that crashes the CLI/loop."""
+    monkeypatch.setenv(API_ENV, "k")
+    payload = json.dumps({
+        "candidates": [{"content": {"parts": [{"text": json.dumps(_ANALYSIS)}]}, "finishReason": "STOP"}],
+        "usageMetadata": usage,
+    })
+    _patch_urlopen(monkeypatch, payload)
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate("x", max_output_tokens=100, timeout_seconds=5)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"

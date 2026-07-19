@@ -41,6 +41,9 @@ from .worker import Provider
 # Local, per-machine (gitignored) registration of the single authorized operator — like the
 # Core pointer and safety-flag activation, this is machine state, not shared source.
 REGISTRATION_REL = ".runtime_governance_state/operator_registration.json"
+# The Telegram getUpdates cursor, persisted so a restart resumes AFTER the messages it
+# already fetched instead of re-fetching (and re-executing) up to 24h of updates.
+OFFSET_STATE_REL = ".runtime_governance_state/telegram_offset.json"
 PRIMARY_CHANNEL = "telegram_private"
 REQUIRED_APPROVER = "Thomas"
 
@@ -296,13 +299,16 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
 
     Shares ``safety_gate.select_gated`` with the provider, search tool, and writer — one
     place decides that the capable implementation is never built before the gate opens."""
+    state_path = (root if root is not None else _repo_root()) / OFFSET_STATE_REL
     return safety_gate.select_gated(
         env_var=OPERATOR_CHANNEL_ENV,
         opt_in_value=TELEGRAM,
         flags=_NETWORK_FLAGS,
         provider_id=TELEGRAM,
         default_factory=MockOperatorChannel,
-        gated_factory=lambda authorization: TelegramChannel(authorization=authorization),
+        gated_factory=lambda authorization: TelegramChannel(
+            authorization=authorization, state_path=state_path,
+        ),
         now=now,
         root=root,
     )
@@ -321,10 +327,18 @@ class TelegramChannel:
     network_egress = True
     _API = "https://api.telegram.org/bot{token}/{method}"
 
-    def __init__(self, *, token_env: str = "TELEGRAM_BOT_TOKEN", authorization: Authorization | None = None):
+    def __init__(self, *, token_env: str = "TELEGRAM_BOT_TOKEN", authorization: Authorization | None = None,
+                 state_path: Path | None = None):
         self._token_env = token_env  # the NAME of the env var, never the value
         self._authorization = authorization
-        self._offset = 0  # getUpdates cursor; advances past processed updates
+        # getUpdates cursor; advances past fetched updates. With ``state_path`` (the
+        # production path via select_operator_channel) it is durable: without persistence,
+        # every restart resets to 0 and Telegram re-delivers every unconfirmed update —
+        # duplicate model calls, duplicate ledger records, duplicate replies. ``None``
+        # keeps the cursor in-memory (tests; no machine-local state is touched).
+        self._state_path = state_path
+        self._offset = 0
+        self._offset_loaded = state_path is None
 
     def _assert(self) -> str:
         safety_gate.assert_authorization(
@@ -357,22 +371,58 @@ class TelegramChannel:
             raise OperatorBlocked("CHANNEL_TRANSPORT", f"telegram {method} returned an error response")
         return payload
 
+    def _load_offset(self) -> int:
+        """The persisted cursor, 0 when none exists yet. A malformed state file fails closed
+        (the operator deletes/fixes it) rather than silently restarting at 0 and replaying."""
+        if self._state_path is None or not self._state_path.is_file():
+            return 0
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            return int(data["offset"])
+        except (OSError, ValueError, KeyError, TypeError):
+            raise OperatorBlocked(
+                "OFFSET_STATE_MALFORMED",
+                f"telegram offset state at {self._state_path} is unreadable; fix or delete it",
+            ) from None
+
+    def _save_offset(self) -> None:
+        """Persist the advanced cursor atomically, BEFORE the batch is handed to the caller:
+        a fetched batch is claimed once. If persisting fails, fail closed — processing a
+        batch whose claim is not durable would re-execute it after the next restart."""
+        if self._state_path is None:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"offset": self._offset}), encoding="utf-8")
+            os.replace(tmp, self._state_path)
+        except OSError as exc:
+            raise OperatorBlocked(
+                "OFFSET_PERSIST_FAILED", f"could not persist the telegram offset: {exc}"
+            ) from None
+
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
         # Real long-poll: getUpdates holds the connection up to ``long_poll_seconds`` server
         # side; the HTTP timeout must outlast that hold (+buffer) or it would abort early.
         token = self._assert()
+        if not self._offset_loaded:
+            self._offset = self._load_offset()
+            self._offset_loaded = True
         http_timeout = (long_poll_seconds + self._HTTP_TIMEOUT_BUFFER) if long_poll_seconds > 0 else self._DEFAULT_HTTP_TIMEOUT
         payload = self._call(
             token, "getUpdates",
             {"offset": self._offset, "timeout": long_poll_seconds, "allowed_updates": json.dumps(["message"])},
             timeout=http_timeout,
         )
+        before = self._offset
         messages: list[InboundMessage] = []
         for update in payload.get("result", []):
             if not isinstance(update, dict):
                 continue
             self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
             messages.append(_message_from_update(update))
+        if self._offset != before:
+            self._save_offset()
         return [m for m in messages if m is not None]
 
     def send(self, chat_id: str, text: str) -> None:
@@ -412,6 +462,7 @@ def run_operator_once(
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    approval_store: Any | None = None,
     independent_validation: bool = False,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -420,6 +471,9 @@ def run_operator_once(
     ``working_memory`` (opt-in) is shared across handled messages so the operator channel
     accumulates and reuses working memory. ``control_store`` (opt-in) enables the emergency
     console: control commands are handled and a PAUSED/KILLED runtime refuses task requests.
+    ``approval_store`` (opt-in) enables the R9 decision path: without it, Thomas's
+    ``/approve <id>`` would fall through to the pipeline and be analyzed as a task — the loop
+    entrypoint must pass it or the documented answer path does not exist in production.
     Messages that fail the control-channel identity gate are **silently dropped** — an unverified
     sender gets no reply (no engagement, no info leak) and no task runs. Returns a small summary,
     including whether this channel's transport crossed the network (``network_egress``) so the
@@ -436,6 +490,7 @@ def run_operator_once(
         reply = handle_operator_message(
             message, registration=registration, provider=provider, search_tool=search_tool,
             working_memory=working_memory, now=now, store=store, control_store=control_store,
+            approval_store=approval_store,
             independent_validation=independent_validation, repo_root=repo_root,
         )
         channel.send(message.chat_id, reply.text)

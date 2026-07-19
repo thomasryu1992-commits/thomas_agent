@@ -153,13 +153,22 @@ class GoogleAIStudioProvider:
         if not isinstance(analysis, dict) or any(k not in analysis for k in ("summary", "key_findings", "facts")):
             raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
 
-        usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
+        # Usage metadata is provider-supplied too: parsing it must fail closed as
+        # MALFORMED_RESPONSE like the body above, not escape as a raw TypeError that
+        # crashes the CLI/loop instead of BLOCKing the run.
+        try:
+            usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
+            input_tokens = int(usage.get("promptTokenCount", 0) or 0)
+            output_tokens = int(usage.get("candidatesTokenCount", 0) or 0)
+            finish_reason = str((data.get("candidates", [{}]) or [{}])[0].get("finishReason", "stop"))
+        except (AttributeError, KeyError, IndexError, ValueError, TypeError):
+            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned unparseable usage metadata") from None
         return ProviderResult(
             analysis=analysis,
             model_id=self.model_id,
             model_version=self._model,
-            input_tokens=int(usage.get("promptTokenCount", 0) or 0),
-            output_tokens=int(usage.get("candidatesTokenCount", 0) or 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             latency_ms=0,
-            finish_reason=str((data.get("candidates", [{}]) or [{}])[0].get("finishReason", "stop")),
+            finish_reason=finish_reason,
         )

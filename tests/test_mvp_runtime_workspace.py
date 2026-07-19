@@ -290,3 +290,22 @@ def test_write_failure_surfaces_as_a_tool_error(root, monkeypatch):
         run_write("a.md", "hello", writer=_Boom(authorization=_AUTH), now=NOW, root=root,
                   control_store=_active_store(root))
     assert exc.value.reason_code == "WRITE_FAILED"
+
+
+@pytest.mark.parametrize("bad", ["foo.txt:stream", "notes.txt::$DATA", "sub/a.txt:hidden"])
+def test_resolve_target_rejects_alternate_data_streams(bad, root):
+    """An NTFS ADS ("file.txt:stream") attaches hidden content to an EXISTING file —
+    target.exists() is False for the stream, open("x") succeeds, and create-only is
+    defeated. Any colon in a relative workspace path is refused."""
+    with pytest.raises(ToolBlocked) as exc:
+        resolve_target(bad, root=root)
+    assert exc.value.reason_code == "INVALID_PATH"
+
+
+@pytest.mark.parametrize("bad", ["report.", "report ", "sub./x.txt", "a/b.txt "])
+def test_resolve_target_rejects_trailing_dot_or_space_components(bad, root):
+    """Windows strips trailing dots/spaces on create, so the EXECUTE_AND_REPORT record
+    would name a file that does not exist on disk. Refused on every platform."""
+    with pytest.raises(ToolBlocked) as exc:
+        resolve_target(bad, root=root)
+    assert exc.value.reason_code == "INVALID_PATH"

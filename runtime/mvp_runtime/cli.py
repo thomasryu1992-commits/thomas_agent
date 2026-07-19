@@ -60,7 +60,7 @@ def _extract_write_path(argv: list[str]) -> tuple[str | None, list[str], str | N
     if index + 1 >= len(argv):
         return None, argv, "--write-output requires a workspace-relative PATH"
     path = argv[index + 1]
-    if path.startswith("--"):
+    if path.startswith("-"):
         return None, argv, f"--write-output requires a PATH, got the flag {path!r}"
     return path, argv[:index] + argv[index + 2:], None
 
@@ -88,16 +88,17 @@ def main(
         return EXIT_USAGE
     # Everything left is free-form request text. Reject leftover option-shaped tokens
     # rather than silently folding them into the prompt: a mistyped or non-existent flag
-    # (e.g. --current-pointer, which this CLI never had) would otherwise be swallowed into
-    # the request, polluting the prompt and the audited record while the caller believes it
-    # took effect. Fail closed, as everywhere else. A request that genuinely starts with
-    # "--" can be piped on stdin.
-    unknown = [a for a in argv if a.startswith("--")]
+    # (e.g. -i, or --current-pointer, which this CLI never had) would otherwise be
+    # swallowed into the request, polluting the prompt and the audited record while the
+    # caller believes it took effect. Fail closed, as everywhere else — single-dash
+    # tokens included, one dash short is still a mistyped flag. A request that genuinely
+    # starts with "-" can be piped on stdin.
+    unknown = [a for a in argv if a.startswith("-") and len(a) > 1]
     if unknown:
         sys.stderr.write(
             f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
             "(known options: --independent-validation, --write-output PATH); "
-            "pipe the request on stdin if it must start with '--'\n"
+            "pipe the request on stdin if it must start with '-'\n"
         )
         return EXIT_USAGE
     text = " ".join(argv) if argv else sys.stdin.read()

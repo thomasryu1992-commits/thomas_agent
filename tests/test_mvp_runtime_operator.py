@@ -283,3 +283,70 @@ def test_operator_accumulates_working_memory(tmp_path):
     run_operator_once(MockOperatorChannel(inbound=[_msg(text="구독 사업 유지율 분석")]), REG,
                       provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
     assert len(wm.read_all()) > after_first  # a later operator run adds more
+
+# --- Telegram offset persistence (a restart must not re-deliver) --------------
+
+_UPDATE = {"update_id": 10, "message": {
+    "from": {"id": 12345}, "chat": {"id": 777, "type": "private"}, "text": "분석해줘"}}
+
+
+def _capture_urlopen(monkeypatch, payloads):
+    """Pop one payload per call; record each call's parsed form params."""
+    import urllib.parse as _urlparse
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(dict(_urlparse.parse_qsl(request.data.decode("utf-8"))))
+        return _FakeResp(payloads.pop(0))
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def test_telegram_offset_persists_across_restarts(monkeypatch, tmp_path):
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    state = tmp_path / "state" / "telegram_offset.json"
+    calls = _capture_urlopen(monkeypatch, [
+        {"ok": True, "result": [_UPDATE]},
+        {"ok": True, "result": []},
+    ])
+    TelegramChannel(authorization=_TG_AUTH, state_path=state).poll()
+    assert json.loads(state.read_text(encoding="utf-8"))["offset"] == 11
+    # A fresh instance — a restarted process — resumes AFTER the fetched update instead
+    # of re-fetching (and re-executing) up to 24h of unconfirmed updates from offset 0.
+    TelegramChannel(authorization=_TG_AUTH, state_path=state).poll()
+    assert calls[1]["offset"] == "11"
+
+
+def test_telegram_malformed_offset_state_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    state = tmp_path / "telegram_offset.json"
+    state.write_text("{broken", encoding="utf-8")
+    with pytest.raises(OperatorBlocked) as exc:
+        TelegramChannel(authorization=_TG_AUTH, state_path=state).poll()
+    assert exc.value.reason_code == "OFFSET_STATE_MALFORMED"
+
+
+def test_telegram_without_state_path_keeps_the_cursor_in_memory(monkeypatch, tmp_path):
+    """Direct construction (the test path) must not create machine-local state files."""
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    _patch_urlopen(monkeypatch, {"ok": True, "result": [_UPDATE]})
+    channel = TelegramChannel(authorization=_TG_AUTH)
+    channel.poll()
+    assert channel._offset == 11
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- R9 over the loop: /approve must reach the approval path ------------------
+
+def test_run_once_routes_approve_to_the_approval_path_not_the_pipeline(tmp_path, monkeypatch):
+    """Thomas's /approve over the deployed loop must draw the approval-path answer (here:
+    the unknown-id refusal), never be analyzed as a business idea — the wiring bug this
+    guards against silently sent it to the pipeline."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    ch = MockOperatorChannel(inbound=[_msg(text="/approve approval_nope")])
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW,
+                                approval_store=ApprovalStore(tmp_path / "approvals"))
+    assert summary["handled"] == 1
+    assert ch.sent and "no approval with id" in ch.sent[0][1]

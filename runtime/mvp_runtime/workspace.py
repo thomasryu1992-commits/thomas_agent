@@ -163,6 +163,17 @@ def resolve_target(relative_path: Any, *, root: Path | None = None) -> Path:
         raise ToolBlocked("ABSOLUTE_PATH", "workspace path must be relative to the workspace root")
     if ".." in candidate.parts:
         raise ToolBlocked("PATH_ESCAPE", "workspace path must not traverse outside the workspace")
+    if ":" in relative_path:
+        # An NTFS alternate data stream ("file.txt:stream") attaches hidden content to an
+        # EXISTING file — target.exists() is False for the stream, open("x") succeeds, and
+        # create-only is defeated (a de-facto P4 INTERNAL_MODIFY). No legitimate workspace
+        # path contains a colon once absolute/drive forms are rejected, so refuse them all.
+        raise ToolBlocked("INVALID_PATH", "workspace path must not contain ':'")
+    if any(part != part.rstrip(". ") for part in candidate.parts):
+        # Windows strips trailing dots/spaces on create, so the EXECUTE_AND_REPORT record
+        # would name a file that does not exist on disk. Refuse on every platform so the
+        # record always matches the artifact.
+        raise ToolBlocked("INVALID_PATH", "workspace path components must not end with '.' or ' '")
 
     base = workspace_root(root)
     # Resolve the base to its real location first: comparing a resolved target against an

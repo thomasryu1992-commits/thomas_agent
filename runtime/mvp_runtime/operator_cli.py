@@ -27,8 +27,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .approval_store import ApprovalStore
 from .control import ControlStore
-from .errors import MvpRuntimeError
+from .errors import MvpRuntimeError, OperatorBlocked
 from .operator import (
     OperatorChannel,
     OperatorIdentity,
@@ -81,6 +82,7 @@ def main(
     working_memory: Any | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    approval_store: ApprovalStore | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
 ) -> int:
@@ -109,6 +111,10 @@ def main(
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
     control_store = control_store if control_store is not None else ControlStore.default()
+    # R9: without the approval store, Thomas's /approve over the deployed loop would fall
+    # through to the pipeline and be analyzed as a business idea. The production entrypoint
+    # must wire the documented answer path, not only the tests.
+    approval_store = approval_store if approval_store is not None else ApprovalStore.default()
     control_mode = control_store.load().mode
     sys.stderr.write(
         f"OPERATOR: listening for the registered operator (ledger: {store.root}; control: {control_mode})\n"
@@ -118,14 +124,38 @@ def main(
     total_dropped = 0
     channel_egress = False
     batch = 0
+    # Transient transport errors (a long-poll timeout, a network blip during getUpdates or
+    # sendMessage) are routine for a continuous service — one must never kill the loop.
+    # Continuous mode (--max-batches 0) retries forever with capped exponential backoff;
+    # finite mode caps consecutive retries so a smoke test cannot hang on a dead network.
+    transport_failures = 0
+    max_transport_retries = None if args.max_batches == 0 else 3
     try:
         while args.max_batches == 0 or batch < args.max_batches:
-            summary = run_operator_once(
-                channel, registration, long_poll_seconds=args.long_poll_seconds,
-                provider=provider, search_tool=search_tool, working_memory=working_memory,
-                store=store, control_store=control_store,
-                independent_validation=args.independent_validation, repo_root=repo_root,
-            )
+            try:
+                summary = run_operator_once(
+                    channel, registration, long_poll_seconds=args.long_poll_seconds,
+                    provider=provider, search_tool=search_tool, working_memory=working_memory,
+                    store=store, control_store=control_store, approval_store=approval_store,
+                    independent_validation=args.independent_validation, repo_root=repo_root,
+                )
+            except OperatorBlocked as exc:
+                if exc.reason_code != "CHANNEL_TRANSPORT":
+                    # Anything but a transport blip (missing token, malformed offset state,
+                    # persist failure) is a real fail-closed condition: stop, don't spin.
+                    sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
+                    return EXIT_BLOCKED
+                transport_failures += 1
+                if max_transport_retries is not None and transport_failures > max_transport_retries:
+                    sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason} (retries exhausted)\n")
+                    return EXIT_BLOCKED
+                delay = min(60.0, 2.0 ** min(transport_failures, 6))
+                sys.stderr.write(
+                    f"OPERATOR: transient channel error; retry {transport_failures} in {delay:.0f}s\n"
+                )
+                sleep(delay)
+                continue
+            transport_failures = 0
             total_handled += summary["handled"]
             total_dropped += summary["dropped"]
             channel_egress = channel_egress or bool(summary.get("network_egress"))

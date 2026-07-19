@@ -77,3 +77,12 @@ def test_cli_known_options_are_not_rejected(capsys):
     rc = cli.main(["--independent-validation", "--write-output", "x.md", ""])
     assert rc == cli.EXIT_USAGE
     assert "EMPTY_REQUEST" in capsys.readouterr().err
+
+
+def test_cli_single_dash_unknown_option_is_usage_block(capsys):
+    # One dash short is still a mistyped flag — it must not fold into the request text
+    # (the e1609db fix covered only the double-dash form).
+    rc = cli.main(["-i", "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"])
+    assert rc == cli.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized option" in err and "'-i'" in err
