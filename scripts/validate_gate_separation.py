@@ -66,18 +66,23 @@ def validate_workflow_scope_policy() -> None:
     }
     if not isinstance(jobs, dict) or set(jobs) != required_jobs:
         fail("Architecture scope workflow must contain exactly the classifier and four canonical Gate jobs")
-    # Scoped gates yield to the full Release Gate: its check list is a superset of every
-    # scope, so running both per pipeline executed each validator twice for no coverage.
-    if jobs["active-gate"].get("if") != "needs.classify-changes.outputs.full != 'true'":
-        fail("Active Gate job must yield to the full Release Gate (which reruns every active check)")
-    if jobs["deferred-gate"].get("if") != (
-            "needs.classify-changes.outputs.deferred == 'true' && needs.classify-changes.outputs.full != 'true'"):
-        fail("Deferred Gate job must use the canonical deferred classifier output and yield to the full Gate")
-    if jobs["legacy-gate"].get("if") != (
-            "needs.classify-changes.outputs.legacy == 'true' && needs.classify-changes.outputs.full != 'true'"):
-        fail("Legacy Gate job must use the canonical legacy classifier output and yield to the full Gate")
+    if jobs["deferred-gate"].get("if") != "needs.classify-changes.outputs.deferred == 'true'":
+        fail("Deferred Gate job must use the canonical deferred classifier output")
+    if jobs["legacy-gate"].get("if") != "needs.classify-changes.outputs.legacy == 'true'":
+        fail("Legacy Gate job must use the canonical legacy classifier output")
     if jobs["full-gate"].get("if") != "needs.classify-changes.outputs.full == 'true'":
         fail("Full Gate job must use the canonical full classifier output")
+
+    # Scoped gates yield to the full Release Gate at STEP level: its check list is a
+    # superset of every scope, so running both per pipeline executed each validator twice.
+    # Step-level (not job-level) so the jobs still complete for required-check policies.
+    for job_name in ("active-gate", "deferred-gate", "legacy-gate"):
+        steps = jobs[job_name].get("steps")
+        if not isinstance(steps, list):
+            fail(f"{job_name} must define steps")
+        gate_steps = [s for s in steps if "run_architecture_gate.py" in str(s.get("run", ""))]
+        if len(gate_steps) != 1 or gate_steps[0].get("if") != "needs.classify-changes.outputs.full != 'true'":
+            fail(f"{job_name}'s gate step must yield to the full Release Gate (step-level full != 'true')")
 
     commands = collect_run_commands(active)
     required_commands = (
