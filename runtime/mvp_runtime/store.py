@@ -110,22 +110,36 @@ class LedgerStore:
             for kind in _RECORD_KINDS
             if kind in records
         ]
-        jsonl.append_lines(self._root / RECORDS_FILE, rows, write_code="LEDGER_WRITE_FAILED", label="the record ledger")
+        self._append_locked(RECORDS_FILE, rows, "the record ledger")
 
     def append_block(self, entry: Mapping[str, Any]) -> None:
-        jsonl.append_lines(self._root / BLOCKS_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the block ledger")
+        self._append_locked(BLOCKS_FILE, [dict(entry)], "the block ledger")
 
     def append_control(self, entry: Mapping[str, Any]) -> None:
         """Durably record one operator emergency-console event (pause/kill/resume/stop)."""
-        jsonl.append_lines(self._root / CONTROL_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the control ledger")
+        self._append_locked(CONTROL_FILE, [dict(entry)], "the control ledger")
 
     def append_memory_event(self, entry: Mapping[str, Any]) -> None:
         """Durably record one memory maintenance event (e.g. working-memory retention/deletion)."""
-        jsonl.append_lines(self._root / MEMORY_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the memory ledger")
+        self._append_locked(MEMORY_FILE, [dict(entry)], "the memory ledger")
 
     def append_scheduler_event(self, entry: Mapping[str, Any]) -> None:
         """Durably record one scheduler event (a schedule fired, or was skipped by the kill switch)."""
-        jsonl.append_lines(self._root / SCHEDULER_FILE, [dict(entry)], write_code="LEDGER_WRITE_FAILED", label="the scheduler ledger")
+        self._append_locked(SCHEDULER_FILE, [dict(entry)], "the scheduler ledger")
+
+    def _append_locked(self, filename: str, rows: list[Mapping[str, Any]], label: str) -> None:
+        """Append under this file's own cross-process lock.
+
+        The deployment is multi-process (the operator loop plus ``docker exec`` CLIs and
+        scheduler ticks on one volume), and a record row can be tens of KB — far past the
+        stdio buffer — so one logical line reaches the file in several write syscalls.
+        Only the audit file was locked; interleaved partial lines from two unlocked
+        writers would corrupt these stores, every later read would fail closed, and there
+        is no sanctioned repair path. Per-file sidecar locks, so writers to different
+        files never serialize against each other."""
+        jsonl_path = self._root / filename
+        with locked(self._root / (filename + ".lock"), code="LEDGER_WRITE_FAILED", label=label):
+            jsonl.append_lines(jsonl_path, rows, write_code="LEDGER_WRITE_FAILED", label=label)
 
     def last_audit_hash(self) -> str | None:
         """Return the last persisted event's ``event_sha256`` (the chain tip), or None.
@@ -154,9 +168,12 @@ class LedgerStore:
     def read_audit_events(self) -> list[dict[str, Any]]:
         """Every persisted audit event, in append order. Fails closed on a corrupt ledger.
 
-        The ledger has always been written and never read back beyond its tip; this is what
-        lets the operator console verify the chain it has been building all along."""
-        return jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger")
+        Reads under the same lock the appender holds: a multi-event segment is flushed in
+        several buffered writes, so an unlocked read racing an append could see a torn
+        final line and report LEDGER_UNREADABLE — alarming the operator about tampering
+        that never happened — when waiting out the append reads a whole chain."""
+        with self._audit_lock():
+            return jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger")
 
     def health(self) -> list[dict[str, Any]]:
         """Report each ledger file's readability without failing on a bad one.
