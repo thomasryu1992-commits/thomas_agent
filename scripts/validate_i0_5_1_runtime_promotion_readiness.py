@@ -80,10 +80,9 @@ def assert_gate_integration() -> None:
     if "validate_i0_5_1_runtime_promotion_readiness.py" not in repo_gate:
         raise AssertionError("Repository Gate must include I0.5.1 readiness validation")
 
-    focused_gate = (ROOT / "scripts/run_i0_5_read_only_runtime_gate.py").read_text(encoding="utf-8")
-    if "validate_i0_5_1_runtime_promotion_readiness.py" not in focused_gate:
-        raise AssertionError("I0.5 focused gate must include I0.5.1 readiness validation")
-
+    # (The focused I0.5 gate wrapper was removed with the other orphan one-shot wrappers:
+    # the canonical gates — gate_matrix + run_repository_release_gate — are the only
+    # executable composition, so there is no second gate to keep in sync any more.)
     release_evidence = (ROOT / "scripts/lib/release_gate_evidence.py").read_text(encoding="utf-8")
     if '".github/workflows"' not in release_evidence:
         raise AssertionError("GitHub workflow source must be included in repository source fingerprint")
