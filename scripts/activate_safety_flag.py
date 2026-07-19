@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Operator helper: activate an OFF-by-default safety flag locally (per-machine).
 
-The MVP keeps ``model_invocation`` and ``network_access`` OFF; a network-capable
-provider or the read-only web-search tool is only reachable once a local, integrity-
-checked activation record exists (see ``runtime/mvp_runtime/safety_gate.py`` and CLAUDE.md
-"Safety flags are gated"). This script is the turnkey way an operator writes that record:
-it records an operator-decision evidence file, mints the tamper-evident activation record
-via ``safety_gate.build_activation_record`` (which computes the ``content_sha256``), and
-writes it to the gitignored per-machine path the gate reads.
+The MVP keeps every governed safety flag OFF — ``model_invocation``, ``network_access``,
+``filesystem_write`` (R8), and ``approval_consumption`` (R10); the capable implementation
+is only reachable once a local, integrity-checked activation record exists (see
+``runtime/mvp_runtime/safety_gate.py`` and CLAUDE.md "Safety flags are gated"). This
+script is the turnkey way an operator writes that record: it records an operator-decision
+evidence file, appends the activation to the durable ledger (the activation itself is
+audited, not just its later uses), mints the tamper-evident activation record via
+``safety_gate.build_activation_record`` (which computes the ``content_sha256``), and
+writes it to the gitignored per-machine path the gate reads. TTL is capped at 30 days —
+a longer standing enablement is a governance change, not an activation. Deleting the
+written record is a live revocation: every gated capability re-checks it at egress.
 
 It never touches any secret: the provider/tool reads its API key from its own env var at
 call time; the activation record only authorizes the flag, it does not carry the key.
@@ -41,10 +45,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from runtime.mvp_runtime import safety_gate  # noqa: E402
-from runtime.mvp_runtime.errors import SafetyGateBlocked  # noqa: E402
+from runtime.mvp_runtime.errors import MvpRuntimeError, SafetyGateBlocked  # noqa: E402
+from runtime.mvp_runtime.events import stamped_event  # noqa: E402
+from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 GOV_STATE_REL = ".runtime_governance_state"
 EVIDENCE_DIR_REL = f"{GOV_STATE_REL}/safety_flag_evidence"
+
+# The longest grant this script will mint. Enabling a capability is a per-decision,
+# expiring act — an uncapped --ttl-minutes let one careless flag turn "OFF by default"
+# into a de-facto standing grant (10 years in a one-liner). 30 days matches the longest
+# grant actually used in deployment; a longer standing enablement is a governance change,
+# not an activation, and must not be expressible here.
+MAX_TTL_MINUTES = 30 * 24 * 60
 
 
 def _fmt(dt: datetime) -> str:
@@ -56,10 +69,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--provider-id", required=True,
                         help="the provider/tool the activation authorizes, e.g. brave_search / google_ai_studio")
     parser.add_argument("--flags", required=True,
-                        help="comma-separated safety flags to enable (model_invocation, network_access)")
+                        help="comma-separated safety flags to enable (model_invocation, "
+                             "network_access, filesystem_write, approval_consumption)")
     parser.add_argument("--authority-level", required=True, help="P0..P6 authority level for the activation")
     parser.add_argument("--reason", required=True, help="operator-decision reason recorded as evidence")
-    parser.add_argument("--ttl-minutes", type=int, default=120, help="activation lifetime in minutes (default 120)")
+    parser.add_argument("--ttl-minutes", type=int, default=120,
+                        help=f"activation lifetime in minutes (default 120, max {MAX_TTL_MINUTES} = 30 days)")
     parser.add_argument("--root", type=Path, default=ROOT,
                         help="repository root (default: this repo); the record is written under <root>/.runtime_governance_state")
     return parser.parse_args(argv)
@@ -70,6 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     flags = [f.strip() for f in args.flags.split(",") if f.strip()]
     if not flags:
         print("ERROR: --flags must list at least one safety flag", file=sys.stderr)
+        return 2
+
+    if not 1 <= args.ttl_minutes <= MAX_TTL_MINUTES:
+        print(f"ERROR TTL_OUT_OF_RANGE: --ttl-minutes must be 1..{MAX_TTL_MINUTES} "
+              f"(30 days), got {args.ttl_minutes}; a standing enablement is a governance "
+              "change, not an activation", file=sys.stderr)
         return 2
 
     root = args.root.resolve()
@@ -106,7 +127,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return 2
 
-    # 3) Write it to this provider's own gitignored path. One grant per provider, so
+    # 3) Record the activation to the durable ledger BEFORE the grant goes live. Enabling
+    #    a capability was the one governance transition with no audit trail at all — the
+    #    ledger only ever saw the later *uses*. Event-first is the fail-closed order: a
+    #    live grant always has its event, and if the record write below fails instead,
+    #    the ledger names an activation that never took effect (loud, not dangerous).
+    ledger = LedgerStore(root / LEDGER_REL)
+    try:
+        ledger.append_control(stamped_event(
+            "safety_flag_activation_event.v0", action="safety_flag_activated",
+            provider_id=args.provider_id, flags=flags,
+            authority_level=args.authority_level, evidence_ref=evidence_ref,
+            activated_at=activated_at, expires_at=expires_at,
+            activation_sha256=record["content_sha256"], created_at=activated_at,
+        ))
+    except MvpRuntimeError as exc:
+        print(f"ERROR {exc.reason_code}: the activation could not be recorded to the durable "
+              f"ledger ({exc.reason}); an unauditable activation is refused (fail-closed)",
+              file=sys.stderr)
+        return 1
+
+    # 4) Write it to this provider's own gitignored path. One grant per provider, so
     #    activating a second provider leaves the first exactly as it was.
     try:
         activation_path = safety_gate.activation_path(root, args.provider_id)
@@ -116,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     activation_path.parent.mkdir(parents=True, exist_ok=True)
     activation_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 4) Verify the gate now authorizes it (fail loudly if not).
+    # 5) Verify the gate now authorizes it (fail loudly if not).
     try:
         safety_gate.authorize(flags, provider_id=args.provider_id, now=activated_at, root=root)
     except SafetyGateBlocked as exc:
@@ -126,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Activated {args.provider_id} [{', '.join(flags)}] until {expires_at}")
     print(f"  activation: {activation_path.relative_to(root).as_posix()}")
     print(f"  evidence:   {evidence_ref}")
-    print("Both files are gitignored (local, per-machine). Never commit them.")
+    print(f"  audited:    safety_flag_activated -> {LEDGER_REL}/control_events.jsonl")
+    print("The activation/evidence files are gitignored (local, per-machine). Never commit them.")
+    print("To revoke before expiry: delete the activation file — every gated capability")
+    print("re-checks it at egress, so a running process stops at its next call.")
     return 0
 
 

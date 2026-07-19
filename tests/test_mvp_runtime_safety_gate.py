@@ -196,6 +196,45 @@ def test_assert_passes_for_valid_grant():
     assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)  # no raise
 
 
+def test_deleting_the_activation_record_revokes_a_live_grant(tmp_path):
+    """The whole point of the re-stat: a long-running process holding a grant must stop at
+    its next egress once the operator deletes the record — expiry was previously the only
+    thing that could stop it."""
+    _write_activation(tmp_path, _valid_record(tmp_path))
+    auth = authorize(FLAGS, provider_id=PROVIDER, now=NOW, root=tmp_path)
+    assert auth.activation_path is not None
+    assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)  # live
+
+    activation_path(tmp_path, PROVIDER).unlink()                                     # revoke
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)
+    assert exc.value.reason_code == "ACTIVATION_REVOKED"
+
+
+def test_replacing_the_activation_record_invalidates_the_old_grant(tmp_path):
+    """A replaced/edited record no longer matches the granted hash: the old in-memory
+    Authorization must not keep operating on the strength of a grant that changed."""
+    _write_activation(tmp_path, _valid_record(tmp_path))
+    auth = authorize(FLAGS, provider_id=PROVIDER, now=NOW, root=tmp_path)
+
+    _write_activation(tmp_path, _valid_record(tmp_path, expires_at="2027-06-30T00:00:00Z"))
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)
+    assert exc.value.reason_code == "ACTIVATION_CHANGED"
+    # The current record itself still authorizes fresh — re-authorize is the remedy.
+    fresh = authorize(FLAGS, provider_id=PROVIDER, now=NOW, root=tmp_path)
+    assert_authorization(fresh, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)
+
+
+def test_corrupting_the_activation_record_stops_a_live_grant(tmp_path):
+    _write_activation(tmp_path, _valid_record(tmp_path))
+    auth = authorize(FLAGS, provider_id=PROVIDER, now=NOW, root=tmp_path)
+    activation_path(tmp_path, PROVIDER).write_text("{not json", encoding="utf-8")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)
+    assert exc.value.reason_code == "ACTIVATION_CHANGED"
+
+
 # --- select_gated: the chokepoint every gated capability shares ---------------------
 
 

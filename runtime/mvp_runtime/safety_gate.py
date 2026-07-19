@@ -83,7 +83,11 @@ class Authorization:
 
     Produced only by :func:`authorize` after a valid activation record is verified.
     Frozen so it cannot be mutated after the grant; carries the activation self-hash
-    so the same grant is re-checkable at egress time.
+    AND the record's path, so :func:`assert_authorization` re-checks the grant on disk
+    at egress time — deleting or replacing the activation record is a live revocation,
+    not something a long-running process outlives. ``activation_path`` is ``None`` only
+    for hand-built in-process test authorizations (the documented seam); every grant
+    :func:`authorize` produces carries it.
     """
 
     flags: tuple[str, ...]
@@ -91,6 +95,7 @@ class Authorization:
     activation_sha256: str
     expires_at: str
     evidence_ref: str
+    activation_path: str | None = None
 
 
 def activation_path(root: Path, provider_id: str) -> Path:
@@ -283,6 +288,7 @@ def authorize(
         activation_sha256=activation_sha256,
         expires_at=str(expires_at),
         evidence_ref=str(record["evidence_ref"]),
+        activation_path=str(activation_path(root, provider_id)),
     )
 
 
@@ -295,7 +301,12 @@ def assert_authorization(
 ) -> None:
     """Egress-time re-check: the socket-opening path calls this immediately before it
     would open a network connection. Fails closed unless it holds a genuine, unexpired
-    :class:`Authorization` covering the required flags for this provider."""
+    :class:`Authorization` covering the required flags for this provider — and, for a
+    grant produced by :func:`authorize`, unless the activation record still exists on
+    disk with exactly the authorized content. That last check is what makes deleting a
+    grant an actual revocation: a long-lived process (the operator loop holds its grant
+    for the loop's whole lifetime) re-reads the record at every egress, so removing or
+    replacing the file stops it at the next call rather than at expiry."""
     if not isinstance(authorization, Authorization):
         raise SafetyGateBlocked(
             "NOT_AUTHORIZED",
@@ -308,6 +319,27 @@ def assert_authorization(
         raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"authorization does not enable required flags: {missing}")
     if now >= authorization.expires_at:
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "authorization has expired since it was granted")
+    if authorization.activation_path is not None:
+        record_path = Path(authorization.activation_path)
+        if not record_path.is_file():
+            raise SafetyGateBlocked(
+                "ACTIVATION_REVOKED",
+                "the activation record backing this authorization is gone — "
+                "deleting a grant revokes it (fail-closed)",
+            )
+        current: str | None
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            payload = {k: v for k, v in record.items() if k != _HASH_FIELD} if isinstance(record, dict) else None
+            current = integrity.sha256_record(payload) if payload is not None else None
+        except (OSError, ValueError, IntegrityError):
+            current = None
+        if current != authorization.activation_sha256:
+            raise SafetyGateBlocked(
+                "ACTIVATION_CHANGED",
+                "the activation record no longer matches the granted authorization "
+                "(replaced, edited, or corrupt) — re-authorize against the current record",
+            )
 
 
 def select_gated(
