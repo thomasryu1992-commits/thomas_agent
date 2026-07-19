@@ -164,6 +164,15 @@ def main() -> int:
         "## 3. Append-Only Rule",
     )
 
+    # audit_event.v0.2 (extended fingerprint payload) is additive over v0.1 with identical
+    # top-level required fields, so the same contract doc anchors both live schemas.
+    compare_required(
+        "docs/runtime-contracts/AUDIT_EVENT_CONTRACT_V0.1.md",
+        "schemas/audit_event.v0.2.schema.json",
+        "## 2. Required Fields",
+        "## 3. Append-Only Rule",
+    )
+
 
 
 

@@ -25,8 +25,19 @@ from .memory import missing_origin_fields
 from .paths import repo_root as _repo_root
 from .validation import AUDIT_OUTCOME, stricter_result
 
-AUDIT_EVENT_SCHEMA_VERSION = "audit_event.v0.1"
-FINGERPRINT_SCHEMA = "audit_event_fingerprint_payload.v0.1"
+# v0.2 (additive over v0.1): the fingerprint payload now covers actor detail, subject
+# identity, payload_ref, and sensitivity — the record fields whose editing v0.1
+# verification could not detect. Old v0.1 events in existing ledgers remain verifiable
+# (see _ALLOWED_SCHEMA_PAIRS and the payload-conditional comparison in verify).
+AUDIT_EVENT_SCHEMA_VERSION = "audit_event.v0.2"
+FINGERPRINT_SCHEMA = "audit_event_fingerprint_payload.v0.2"
+
+# (record schema_version, fingerprint payload schema / integrity.hash_schema) pairs this
+# runtime has ever produced — verification accepts exactly these, matched as a pair.
+_ALLOWED_SCHEMA_PAIRS = {
+    ("audit_event.v0.1", "audit_event_fingerprint_payload.v0.1"),
+    (AUDIT_EVENT_SCHEMA_VERSION, FINGERPRINT_SCHEMA),
+}
 
 
 def _fingerprint(record: Mapping[str, Any], label: str) -> str:
@@ -74,14 +85,23 @@ def _make_event(
         "core_context_binding_id": ccb,
         "event_type": event_type,
         "actor_ref": f"{actor['actor_type']}:{actor['actor_id']}",
+        # v0.2: actor detail, subject identity, payload_ref, and sensitivity are inside
+        # the fingerprint, so editing them in the stored record is detectable.
+        "actor_role_id": actor.get("role_id"),
+        "actor_role_version": actor.get("role_version"),
+        "actor_assignment_id": actor.get("assignment_id"),
+        "subject_type": subject_type,
+        "subject_id": subject_id,
         "subject_ref": subject_ref,
         "subject_fingerprint": subject_fingerprint,
         "event_summary": summary,
         "outcome": outcome,
         "reason_codes": reason_codes,
+        "payload_ref": subject_ref,
         "payload_sha256": payload_sha256,
         "evidence_refs": evidence_refs,
         "related_record_refs": related_record_refs,
+        "sensitivity": task["context"]["data_sensitivity"],
         "parent_audit_event_ids": [previous_audit_id] if previous_audit_id else [],
         "previous_event_sha256": previous_hash,
         "sequence_number": sequence,
@@ -723,6 +743,15 @@ def _record_view(record: Mapping[str, Any]) -> dict[str, Any]:
         "core_context_binding_id": record.get("core_context_binding_id"),
         "event_type": record.get("event_type"),
         "actor_ref": f"{actor.get('actor_type')}:{actor.get('actor_id')}",
+        # v0.2 payload fields; absent from a v0.1 payload, where the comparison skips them
+        # (a payload key cannot be REMOVED undetected — it is under the self-hash).
+        "actor_role_id": actor.get("role_id"),
+        "actor_role_version": actor.get("role_version"),
+        "actor_assignment_id": actor.get("assignment_id"),
+        "subject_type": subject.get("subject_type"),
+        "subject_id": subject.get("subject_id"),
+        "payload_ref": event.get("payload_ref"),
+        "sensitivity": record.get("sensitivity"),
         "subject_ref": subject.get("subject_ref"),
         "subject_fingerprint": subject.get("subject_fingerprint"),
         "event_summary": event.get("event_summary"),
@@ -736,6 +765,18 @@ def _record_view(record: Mapping[str, Any]) -> dict[str, Any]:
         "sequence_number": lineage.get("sequence_number"),
         "created_at": record.get("created_at"),
     }
+
+
+# The v0.1 payload key set: the minimum any payload must carry. A payload missing one of
+# these is structurally invalid (keys cannot be silently dropped — the self-hash covers
+# them — so this only fires on malformed input, not on tampering, which check 1 catches).
+_CORE_PAYLOAD_KEYS = frozenset({
+    "schema_version", "audit_event_id", "trace_id", "task_id", "task_revision",
+    "core_context_binding_id", "event_type", "actor_ref", "subject_ref",
+    "subject_fingerprint", "event_summary", "outcome", "reason_codes", "payload_sha256",
+    "evidence_refs", "related_record_refs", "parent_audit_event_ids",
+    "previous_event_sha256", "sequence_number", "created_at",
+})
 
 
 def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -797,9 +838,15 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             _break("AUDIT_EVENT_HASH_MISMATCH",
                    "event_sha256 does not match its own fingerprint payload (payload edited)")
 
-        # 2. the payload must describe the record it is embedded in
+        # 2. the payload must describe the record it is embedded in. Compared over the keys
+        # the payload actually carries (a v0.1 payload lacks the v0.2 fields), plus a
+        # structural floor: every payload must at least carry the v0.1 core set.
+        missing_core = sorted(_CORE_PAYLOAD_KEYS - set(payload))
+        if missing_core:
+            _break("AUDIT_STRUCTURE_INVALID",
+                   f"fingerprint payload is missing core fields: {missing_core}")
         view = _record_view(record)
-        mismatched = sorted(k for k, v in view.items() if payload.get(k) != v)
+        mismatched = sorted(k for k, v in view.items() if k in payload and payload[k] != v)
         if mismatched:
             _break("AUDIT_PAYLOAD_RECORD_MISMATCH",
                    f"record fields disagree with the fingerprinted payload: {mismatched}")
@@ -822,10 +869,9 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if record.get("runtime_effect") != audit_event_runtime_effect():
             _break("AUDIT_DECLARATION_MISMATCH",
                    "runtime_effect is not the canonical EVIDENCE_ONLY block (a grant flag was edited)")
-        if record.get("schema_version") != AUDIT_EVENT_SCHEMA_VERSION:
-            _break("AUDIT_DECLARATION_MISMATCH", "record schema_version was altered")
-        if integrity_block.get("hash_schema") != FINGERPRINT_SCHEMA:
-            _break("AUDIT_DECLARATION_MISMATCH", "integrity.hash_schema was altered")
+        if (record.get("schema_version"), integrity_block.get("hash_schema")) not in _ALLOWED_SCHEMA_PAIRS:
+            _break("AUDIT_DECLARATION_MISMATCH",
+                   "record schema_version / integrity.hash_schema is not a version pair this runtime produces")
         if record.get("event", {}).get("payload_ref") != record.get("subject", {}).get("subject_ref"):
             _break("AUDIT_DECLARATION_MISMATCH", "event.payload_ref no longer matches subject.subject_ref")
 

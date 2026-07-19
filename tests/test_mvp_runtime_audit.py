@@ -18,7 +18,9 @@ from runtime.read_only_kernel import integrity, schema_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
-AUDIT_SCHEMA = REPO_ROOT / "schemas" / "audit_event.v0.1.schema.json"
+from runtime.mvp_runtime.audit import AUDIT_EVENT_SCHEMA_VERSION
+
+AUDIT_SCHEMA = REPO_ROOT / "schemas" / f"{AUDIT_EVENT_SCHEMA_VERSION}.schema.json"
 NOW = "2026-07-15T09:00:00Z"
 
 requires_local_core = pytest.mark.skipif(not LOCAL_POINTER.is_file(), reason="no local Core activation")
