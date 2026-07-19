@@ -317,6 +317,11 @@ def parse_command(text: Any) -> tuple[str, str | None] | None:
         return None
     head, _, rest = stripped.partition(" ")
     verb = head.lstrip("/").strip().lower()
+    if stripped.startswith("/") and "@" in verb:
+        # Telegram clients append the bot's username to a command picked from the command
+        # menu (``/kill@thomas_bot``). The suffix is addressing, not part of the verb — an
+        # unstripped ``kill@...`` would miss COMMANDS and the emergency verb would not fire.
+        verb = verb.split("@", 1)[0]
     verb = _ALIASES.get(verb, verb)
     if verb not in COMMANDS:
         return None
