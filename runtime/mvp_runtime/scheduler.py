@@ -32,6 +32,7 @@ from . import jsonl, memory, timeutil
 from .events import stamped_event
 from .control import ControlStore
 from .errors import SchedulerBlocked
+from .filelock import locked
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
 from .store import LedgerStore
@@ -120,7 +121,12 @@ def build_schedule(
 
 
 class ScheduleStore:
-    """Local JSONL store of schedules. Mutations rewrite the file atomically (small N)."""
+    """Local JSONL store of schedules. Mutations rewrite the file atomically (small N).
+
+    Every read-modify-write runs under a cross-process sidecar lock: the tick loop and a
+    ``docker exec`` operator command (disable/remove) share this file, and an unlocked
+    full-file rewrite silently reverted whichever of them wrote first — an operator's
+    disable could vanish mid-batch and the schedule kept firing with no trace."""
 
     def __init__(self, root: Path):
         self._path = Path(root) / SCHEDULES_REL
@@ -137,37 +143,75 @@ class ScheduleStore:
         rows = jsonl.read_objects(self._path, read_code="SCHEDULES_UNREADABLE", label="the schedule store")
         return [Schedule.from_record(r) for r in rows]
 
+    def _lock(self):
+        return locked(self._path.with_name(".schedules.lock"),
+                      code="SCHEDULES_WRITE_FAILED", label="the schedule store")
+
     def _save(self, schedules: list[Schedule]) -> None:
         jsonl.write_objects(self._path, [s.as_record() for s in schedules],
                             write_code="SCHEDULES_WRITE_FAILED", label="the schedule store")
 
     def add(self, schedule: Schedule) -> None:
-        self._save([*self.list(), schedule])
+        with self._lock():
+            self._save([*self.list(), schedule])
 
     def remove(self, schedule_id: str) -> bool:
-        schedules = self.list()
-        kept = [s for s in schedules if s.schedule_id != schedule_id]
-        if len(kept) == len(schedules):
-            return False
-        self._save(kept)
-        return True
+        with self._lock():
+            schedules = self.list()
+            kept = [s for s in schedules if s.schedule_id != schedule_id]
+            if len(kept) == len(schedules):
+                return False
+            self._save(kept)
+            return True
 
     def set_enabled(self, schedule_id: str, enabled: bool) -> bool:
-        schedules = self.list()
-        found = False
-        updated: list[Schedule] = []
-        for s in schedules:
-            if s.schedule_id == schedule_id:
-                found = True
-                updated.append(replace(s, enabled=enabled))
-            else:
-                updated.append(s)
-        if found:
-            self._save(updated)
-        return found
+        with self._lock():
+            schedules = self.list()
+            found = False
+            updated: list[Schedule] = []
+            for s in schedules:
+                if s.schedule_id == schedule_id:
+                    found = True
+                    updated.append(replace(s, enabled=enabled))
+                else:
+                    updated.append(s)
+            if found:
+                self._save(updated)
+            return found
 
-    def replace_all(self, schedules: list[Schedule]) -> None:
-        self._save(schedules)
+    def claim_due(self, schedule_id: str, *, now: str) -> Schedule | None:
+        """Atomically re-check and claim one due occurrence.
+
+        Under the store lock: re-read the schedule's CURRENT state; only if it still
+        exists, is enabled, and is due does its ``next_run_at`` advance. Returns the
+        claimed (pre-advance) schedule, else None — a concurrent operator disable/remove,
+        or another process's claim, wins instead of being reverted by a stale batch
+        rewrite. This is the per-schedule replacement for the old whole-list
+        ``replace_all`` the tick loop used to blind-write mid-batch."""
+        with self._lock():
+            schedules = self.list()
+            for index, s in enumerate(schedules):
+                if s.schedule_id != schedule_id:
+                    continue
+                if not (s.enabled and s.next_run_at <= now):
+                    return None
+                schedules[index] = replace(s, next_run_at=timeutil.plus_seconds(now, s.interval_seconds))
+                self._save(schedules)
+                return s
+            return None
+
+    def record_result(self, schedule_id: str, *, last_run_at: str, last_status: str) -> None:
+        """Record a fire's outcome on the schedule's CURRENT state (no-op if removed).
+
+        Touches only ``last_run_at``/``last_status`` — never ``enabled`` or
+        ``next_run_at`` — so it cannot revert a concurrent operator action."""
+        with self._lock():
+            schedules = self.list()
+            for index, s in enumerate(schedules):
+                if s.schedule_id == schedule_id:
+                    schedules[index] = replace(s, last_run_at=last_run_at, last_status=last_status)
+                    self._save(schedules)
+                    return
 
 
 def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) -> dict[str, Any]:
@@ -218,7 +262,13 @@ def run_due(
     per-machine one under ``repo_root`` is used — absent state means ACTIVE, but the check never
     silently defaults to allowed (the old ``else True`` was the fail-open direction). Executed
     schedules run sequentially (overlap-safe). Returns a summary ``{fired, skipped, results}``.
-    Fail-closed on an unreadable schedule store."""
+    Fail-closed on an unreadable schedule store.
+
+    The batch snapshot below is for iteration only. Every state change goes through the
+    store's per-schedule, locked operations (``claim_due`` / ``record_result``) against the
+    file's CURRENT content — the old pattern kept mutating the stale snapshot and
+    ``replace_all``-ing it back, which silently reverted an operator's concurrent
+    disable/remove and kept the schedule firing with no trace."""
     schedules = store.list()
     if control_store is None:
         control_store = ControlStore(repo_root if repo_root is not None else _repo_root())
@@ -226,39 +276,36 @@ def run_due(
     fired = 0
     skipped = 0
     results: list[dict[str, Any]] = []
-    updated: list[Schedule] = list(schedules)
 
-    for index, schedule in enumerate(schedules):
-        due = schedule.enabled and schedule.next_run_at <= now
-        if not due:
+    for schedule in schedules:
+        if not (schedule.enabled and schedule.next_run_at <= now):
             continue
 
         if not control_store.load().execution_allowed:
             # kill_blocks: scheduler_execution — skip, drop the occurrence, advance cadence.
+            if store.claim_due(schedule.schedule_id, now=now) is None:
+                continue                    # removed/disabled meanwhile: nothing to skip
             skipped += 1
             status = "skipped_not_active"
             if ledger is not None:
                 ledger.append_scheduler_event(_scheduler_event("skipped", schedule, now=now, status=status))
-            updated[index] = replace(schedule, next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds))
-            store.replace_all(updated)
             results.append({"schedule_id": schedule.schedule_id, "action": "skipped", "status": status})
             continue
 
-        # Claim the occurrence durably BEFORE executing. Deferring all state to one
-        # end-of-batch write meant a failure on a LATER schedule left this one's
-        # next_run_at un-advanced — it re-fired (a duplicate full pipeline run, duplicate
-        # model call) on the next tick. Claim-first is the at-most-once direction, matching
-        # the kill-skip rule above: a crash drops the occurrence, never doubles it.
-        updated[index] = replace(schedule, next_run_at=timeutil.plus_seconds(now, schedule.interval_seconds))
-        store.replace_all(updated)
+        # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
+        # occurrence, never doubles it). claim_due re-checks the current state under the
+        # store lock, so an operator disable/remove that landed after the snapshot wins
+        # here instead of being run anyway.
+        claimed = store.claim_due(schedule.schedule_id, now=now)
+        if claimed is None:
+            continue
 
-        status = _execute(schedule, now=now, ledger=ledger, working_memory=working_memory,
+        status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                           provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
         fired += 1
         if ledger is not None:
-            ledger.append_scheduler_event(_scheduler_event("fired", schedule, now=now, status=status))
-        updated[index] = replace(updated[index], last_run_at=now, last_status=status)
-        store.replace_all(updated)
-        results.append({"schedule_id": schedule.schedule_id, "action": "fired", "status": status})
+            ledger.append_scheduler_event(_scheduler_event("fired", claimed, now=now, status=status))
+        store.record_result(claimed.schedule_id, last_run_at=now, last_status=status)
+        results.append({"schedule_id": claimed.schedule_id, "action": "fired", "status": status})
 
     return {"fired": fired, "skipped": skipped, "results": results}
