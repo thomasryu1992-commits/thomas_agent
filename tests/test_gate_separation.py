@@ -118,13 +118,19 @@ class GateSeparationTests(unittest.TestCase):
             set(jobs),
             {"classify-changes", "active-gate", "deferred-gate", "legacy-gate", "full-gate"},
         )
+        # Scoped gates yield to the full Release Gate (a superset of every scope), so a
+        # full-scope change runs each validator once, not twice.
+        self.assertEqual(
+            jobs["active-gate"]["if"],
+            "needs.classify-changes.outputs.full != 'true'",
+        )
         self.assertEqual(
             jobs["deferred-gate"]["if"],
-            "needs.classify-changes.outputs.deferred == 'true'",
+            "needs.classify-changes.outputs.deferred == 'true' && needs.classify-changes.outputs.full != 'true'",
         )
         self.assertEqual(
             jobs["legacy-gate"]["if"],
-            "needs.classify-changes.outputs.legacy == 'true'",
+            "needs.classify-changes.outputs.legacy == 'true' && needs.classify-changes.outputs.full != 'true'",
         )
         self.assertEqual(
             jobs["full-gate"]["if"],

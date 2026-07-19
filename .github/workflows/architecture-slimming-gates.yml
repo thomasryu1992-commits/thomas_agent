@@ -53,6 +53,10 @@ jobs:
 
   active-gate:
     name: Active Architecture Gate
+    needs: classify-changes
+    # The full Release Gate already runs every active check; running both per pipeline
+    # executed each active validator twice on every full-scope change.
+    if: needs.classify-changes.outputs.full != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -81,7 +85,7 @@ jobs:
   deferred-gate:
     name: Deferred Architecture Gate
     needs: classify-changes
-    if: needs.classify-changes.outputs.deferred == 'true'
+    if: needs.classify-changes.outputs.deferred == 'true' && needs.classify-changes.outputs.full != 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -104,7 +108,7 @@ jobs:
   legacy-gate:
     name: Legacy Compatibility Gate
     needs: classify-changes
-    if: needs.classify-changes.outputs.legacy == 'true'
+    if: needs.classify-changes.outputs.legacy == 'true' && needs.classify-changes.outputs.full != 'true'
     runs-on: ubuntu-latest
 
     steps:
