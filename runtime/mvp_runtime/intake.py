@@ -105,7 +105,14 @@ def _validate_timestamp(value: str) -> str:
 def _clean_str_list(value: Sequence[str] | None, default: Sequence[str], field: str) -> list[str]:
     if value is not None and isinstance(value, (str, bytes)):
         raise TaskIntakeBlocked("INVALID_LIST", f"{field} must be a list of strings, not a single string")
-    items = list(default) if value is None else list(value)
+    # A non-iterable (constraints=5) used to reach list() and escape as a raw TypeError,
+    # past build_task's typed-error contract and past run_task's `except MvpRuntimeError` —
+    # the process died with a traceback instead of returning a BLOCK. Caught rather than
+    # type-checked so every iterable that used to work still does.
+    try:
+        items = list(default) if value is None else list(value)
+    except TypeError as exc:
+        raise TaskIntakeBlocked("INVALID_LIST", f"{field} must be a list of strings") from exc
     if len(items) > MAX_LIST_ITEMS:
         raise TaskIntakeBlocked("TOO_MANY_ITEMS", f"{field} exceeds {MAX_LIST_ITEMS} entries")
     for item in items:

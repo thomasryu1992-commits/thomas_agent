@@ -196,6 +196,31 @@ def test_assert_passes_for_valid_grant():
     assert_authorization(auth, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)  # no raise
 
 
+@pytest.mark.parametrize("bad", ["brave\n", "Brave", "../evil", "a/b", "", "-leading"])
+def test_provider_id_pattern_is_anchored_at_both_ends(tmp_path, bad):
+    """`$` also matches before a trailing newline, so "brave\\n" passed the pattern and
+    would have produced a grant filename containing a newline."""
+    with pytest.raises(SafetyGateBlocked) as exc:
+        activation_path(tmp_path, bad)
+    assert exc.value.reason_code == "INVALID_PROVIDER_ID"
+
+
+@pytest.mark.parametrize("reserved", ["con", "nul", "com1", "lpt9", "aux.json"])
+def test_windows_reserved_device_names_are_refused(tmp_path, reserved):
+    """Windows resolves these to devices wherever they appear as a basename, so a grant
+    filed under one would not be a normal file. Named explicitly rather than left to fail
+    confusingly at open() time."""
+    with pytest.raises(SafetyGateBlocked) as exc:
+        activation_path(tmp_path, reserved)
+    assert exc.value.reason_code == "INVALID_PROVIDER_ID"
+
+
+def test_real_provider_ids_still_resolve(tmp_path):
+    for provider in ("google_ai_studio", "brave_search", "telegram", "workspace.writer",
+                     "approval_consumption"):
+        assert activation_path(tmp_path, provider).name == f"{provider}.json"
+
+
 def test_deleting_the_activation_record_revokes_a_live_grant(tmp_path):
     """The whole point of the re-stat: a long-running process holding a grant must stop at
     its next egress once the operator deletes the record — expiry was previously the only
