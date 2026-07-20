@@ -22,6 +22,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from . import schema_cache
 from .authority import audit_event_runtime_effect
 from .errors import AuditError
+from .events import stamped_event
 from .memory import missing_origin_fields
 from .paths import repo_root as _repo_root
 from .validation import AUDIT_OUTCOME, stricter_result
@@ -726,6 +727,40 @@ def rechain_events(events: Sequence[MutableMapping[str, Any]], previous_hash: st
             raise AuditError("EVENT_FINGERPRINT_FAILED", str(exc)) from exc
         integrity_block["event_sha256"] = event_sha256
         previous = event_sha256
+
+
+AUDIT_GAP_TYPE = "audit_gap.v0"
+
+
+def build_audit_gap_record(
+    gap_kind: str,
+    *,
+    reason_code: str,
+    subject_ref: str,
+    now: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    """A durable marker that something happened whose audit event could NOT be written.
+
+    Two paths deliberately keep going when their audit append fails — the R9 ask and
+    Thomas's answer, because losing his decision to protect a log is the wrong trade — but
+    that left the gap recorded nowhere: a stderr line and a chat suffix, both gone the
+    moment the terminal scrolls. This is the durable half. It goes to the **blocks** ledger
+    for the same reason pre-binding blocks do: it is a real event that cannot be expressed
+    as an ``audit_event`` (here because writing one is exactly what failed), and it is a
+    different file, so an audit ledger that is locked or corrupt does not take this with it.
+
+    ``recovery`` surfaces these, so "the trail has a known hole here" is answerable later
+    rather than depending on someone having read a warning at the time.
+    """
+    return stamped_event(
+        AUDIT_GAP_TYPE,
+        gap_kind=gap_kind,              # e.g. approval_request | approval_decision
+        reason_code=reason_code,        # why the audit append failed
+        subject_ref=subject_ref,        # what is unaudited (an approval id, a trace id)
+        detail=detail,
+        created_at=now,
+    )
 
 
 # --- verification ------------------------------------------------------------------
