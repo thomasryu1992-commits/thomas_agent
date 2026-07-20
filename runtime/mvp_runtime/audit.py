@@ -734,11 +734,23 @@ def rechain_events(events: Sequence[MutableMapping[str, Any]], previous_hash: st
 # duplicates the record's fields, so agreement between them is not redundant — it is the
 # check that catches the obvious attack: edit the visible record and leave the payload
 # alone, and a self-hash-only check still passes.
+def _block(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    """A record's sub-object, or an empty one when the field is the wrong shape.
+
+    Tampering produces records that are valid JSON with wrong *types* (``"event": 5``), and
+    ``record.get("event", {}).get(...)`` raises AttributeError on those — so the verifier
+    crashed on precisely the input it exists to detect, and (only ControlBlocked being
+    caught upstream) took the operator loop with it. A wrong-shaped block reads as empty,
+    which then fails the payload-vs-record comparison as a reported break."""
+    value = record.get(key)
+    return value if isinstance(value, Mapping) else {}
+
+
 def _record_view(record: Mapping[str, Any]) -> dict[str, Any]:
-    actor = record.get("actor", {})
-    subject = record.get("subject", {})
-    event = record.get("event", {})
-    lineage = record.get("lineage", {})
+    actor = _block(record, "actor")
+    subject = _block(record, "subject")
+    event = _block(record, "event")
+    lineage = _block(record, "lineage")
     return {
         "audit_event_id": record.get("audit_event_id"),
         "trace_id": record.get("trace_id"),
@@ -819,7 +831,10 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     previous_id: str | None = None
 
     for index, record in enumerate(events):
-        integrity_block = record.get("integrity", {}) if isinstance(record, Mapping) else {}
+        # Both guards matter: the record itself may not be an object, and its `integrity`
+        # field may be present with the wrong shape. Either way the event is reported as
+        # structurally invalid below rather than raising out of the verifier.
+        integrity_block = _block(record, "integrity") if isinstance(record, Mapping) else {}
         payload = integrity_block.get("event_fingerprint_payload")
         claimed = integrity_block.get("event_sha256")
         event_id = record.get("audit_event_id") if isinstance(record, Mapping) else None
@@ -877,13 +892,13 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if (record.get("schema_version"), integrity_block.get("hash_schema")) not in _ALLOWED_SCHEMA_PAIRS:
             _break("AUDIT_DECLARATION_MISMATCH",
                    "record schema_version / integrity.hash_schema is not a version pair this runtime produces")
-        if record.get("event", {}).get("payload_ref") != record.get("subject", {}).get("subject_ref"):
+        if _block(record, "event").get("payload_ref") != _block(record, "subject").get("subject_ref"):
             _break("AUDIT_DECLARATION_MISMATCH", "event.payload_ref no longer matches subject.subject_ref")
 
         # 4. linkage. The first event of the ledger must be a true genesis: a non-null
         # previous hash there dangles into deleted history, i.e. events were removed from
         # the FRONT — detectable for free, unlike tail truncation (see docstring).
-        actual_previous = record.get("lineage", {}).get("previous_event_sha256")
+        actual_previous = _block(record, "lineage").get("previous_event_sha256")
         if index == 0 and actual_previous is not None:
             _break("AUDIT_PREVIOUS_HASH_MISMATCH",
                    "the first event carries a previous_event_sha256; events before the start "
