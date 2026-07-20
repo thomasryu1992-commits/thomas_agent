@@ -69,8 +69,10 @@ def test_handles_registered_message_and_replies(capsys, tmp_path):
               working_memory=WorkingMemoryStore(tmp_path / "wm"))
     assert rc == 0
     assert "handled 1, dropped 1" in capsys.readouterr().out
-    assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-1"
-    assert "Key findings" in ch.sent[0][1]
+    # The received-working ack, then the answer — both on the verified chat.
+    assert [c for c, _ in ch.sent] == ["chat-1", "chat-1"]
+    assert "분석 중" in ch.sent[0][1]
+    assert "Key findings" in ch.sent[1][1]
 
 
 @requires_local_core

@@ -143,10 +143,20 @@ def handle_operator_message(
     approval_store: Any | None = None,
     independent_validation: bool = False,
     repo_root: Path | None = None,
+    ack: Any | None = None,
 ) -> OperatorReply:
     """Verify an inbound operator message and, only if it is from the registered operator,
     handle it. An unverified message is refused with a generic reason and no task runs. Never
     raises for a fail-closed condition — those become a REFUSED reply.
+
+    ``ack`` (optional, ``Callable[[str], None]``) is called with a short "received, working"
+    notice at exactly one point: after EVERY refusal path (identity gate, empty request,
+    console/approval command routing, unknown-command refusal, kill switch) and immediately
+    before the pipeline runs. A pipeline run holds the channel for the length of a model
+    call, and to the operator that silence was indistinguishable from a dead service. The
+    ack is a ``CONTROL_CHANNEL_RESPONSE`` (ALLOW) on the already-verified channel, and it is
+    **best-effort**: a failed ack send must never cost the run itself, so failures are
+    swallowed here rather than propagated.
 
     When ``control_store`` is provided, an emergency-console command (``/status`` ``/pause``
     ``/kill`` ``/resume`` ``/stop <task_id>``) is handled as a control action rather than a
@@ -257,6 +267,14 @@ def handle_operator_message(
                 accepted=False, status="REFUSED", reason_code=reason_code,
             )
 
+    # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
+    # the model call takes tens of seconds and the operator otherwise stares at silence.
+    if ack is not None:
+        try:
+            ack("접수했습니다 — 분석 중입니다. 모델 호출에 수십 초 걸릴 수 있습니다.")
+        except OperatorBlocked:
+            pass    # best-effort: the notice is a courtesy, the run is the job
+
     result = run_task(
         text,
         provider=provider,
@@ -277,9 +295,15 @@ def handle_operator_message(
         return OperatorReply(text=result["final_response"], accepted=True, status="COMPLETED", trace_id=trace_id)
 
     block = result.get("block") or {"reason_code": "BLOCKED"}
+    reason_code = block.get("reason_code", "BLOCKED")
+    reply_text = f"Your request was not completed ({reason_code})."
+    if reason_code == "PROVIDER_ERROR":
+        # The one BLOCK an operator can fix by doing nothing: free-tier providers throttle
+        # and time out transiently, so say the actionable thing instead of only the code.
+        reply_text += " 일시적인 모델 제공자 오류일 수 있습니다 — 잠시 후 같은 요청을 다시 보내보세요."
     return OperatorReply(
-        text=f"Your request was not completed ({block.get('reason_code', 'BLOCKED')}).",
-        accepted=True, status="BLOCKED", reason_code=block.get("reason_code"), trace_id=trace_id,
+        text=reply_text,
+        accepted=True, status="BLOCKED", reason_code=reason_code, trace_id=trace_id,
     )
 
 
@@ -554,6 +578,10 @@ def run_operator_once(
             working_memory=working_memory, now=now, store=store, control_store=control_store,
             approval_store=approval_store,
             independent_validation=independent_validation, repo_root=repo_root,
+            # The received-working notice, sent back on the same verified chat the request
+            # came from. handle_operator_message fires it only once every refusal path has
+            # passed, and swallows a send failure (the notice is a courtesy, not the job).
+            ack=lambda text, _chat=message.chat_id: channel.send(_chat, text),
         )
         try:
             channel.send(message.chat_id, reply.text)
