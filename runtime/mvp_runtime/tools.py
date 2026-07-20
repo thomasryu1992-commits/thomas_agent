@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from runtime.read_only_kernel import integrity
 
@@ -63,7 +63,6 @@ class SearchResult:
     latency_ms: int = 0
 
 
-@runtime_checkable
 class SearchTool(Protocol):
     tool_id: str
     tool_version: str
