@@ -168,6 +168,15 @@ class LedgerStore:
         except (KeyError, TypeError) as exc:
             raise PersistenceError("LEDGER_UNREADABLE", f"could not read the audit ledger tip: {exc}") from exc
 
+    def read_blocks(self) -> list[dict[str, Any]]:
+        """Every persisted block entry, in append order (pre-binding blocks, recorded audit
+        gaps, operator probe notes). Fails closed on a corrupt file; `recovery` treats an
+        unreadable store as its own finding rather than propagating this."""
+        with locked(self._root / (BLOCKS_FILE + ".lock"),
+                    code="LEDGER_WRITE_FAILED", label="the block ledger"):
+            return jsonl.read_objects(self._root / BLOCKS_FILE,
+                                      read_code="LEDGER_UNREADABLE", label="the block ledger")
+
     def read_audit_events(self) -> list[dict[str, Any]]:
         """Every persisted audit event, in append order. Fails closed on a corrupt ledger.
 

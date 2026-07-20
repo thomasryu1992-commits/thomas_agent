@@ -22,6 +22,7 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -50,6 +51,9 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
+
+# The one timestamp form `next_run_at <= now` is a correct time comparison for.
+_TIMESTAMP_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 
 
 @dataclass(frozen=True)
@@ -86,11 +90,37 @@ class Schedule:
 
     @classmethod
     def from_record(cls, r: Mapping[str, Any]) -> "Schedule":
+        """Rebuild a Schedule from its stored row, or fail closed with a typed error.
+
+        Two failure modes this guards, both from a hand-edited or partially-written
+        schedules file. A missing/garbage field used to escape as a raw KeyError/ValueError,
+        past scheduler_cli's ``except MvpRuntimeError``, so the CLI died with a traceback
+        instead of a BLOCK. Worse, ``next_run_at: null`` became the string ``"None"``,
+        which sorts ABOVE every real timestamp — so ``next_run_at <= now`` was never true
+        and the schedule silently never fired, with no error anywhere. A dormant schedule
+        that looks healthy is the worst of the two; both are refused here."""
+        try:
+            schedule_id = str(r["schedule_id"])
+            kind = str(r["kind"])
+            interval_seconds = int(r["interval_seconds"])
+            next_run_at = r["next_run_at"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SchedulerBlocked(
+                "SCHEDULE_RECORD_INVALID",
+                f"stored schedule is missing or has a malformed required field: {exc}",
+            ) from exc
+        if not (isinstance(next_run_at, str) and _TIMESTAMP_PATTERN.match(next_run_at)):
+            raise SchedulerBlocked(
+                "SCHEDULE_RECORD_INVALID",
+                f"schedule {schedule_id} has next_run_at={next_run_at!r}; it must be the "
+                "fixed UTC form YYYY-MM-DDThh:mm:ssZ, which is the only form the due "
+                "comparison is correct for",
+            )
         return cls(
-            schedule_id=str(r["schedule_id"]), kind=str(r["kind"]), request=str(r.get("request", "")),
-            interval_seconds=int(r["interval_seconds"]), enabled=bool(r.get("enabled", True)),
+            schedule_id=schedule_id, kind=kind, request=str(r.get("request", "")),
+            interval_seconds=interval_seconds, enabled=bool(r.get("enabled", True)),
             created_by=str(r.get("created_by", "unknown")), created_at=str(r.get("created_at", "")),
-            next_run_at=str(r["next_run_at"]), reason=str(r.get("reason", "")),
+            next_run_at=next_run_at, reason=str(r.get("reason", "")),
             last_run_at=r.get("last_run_at"), last_status=r.get("last_status"),
         )
 

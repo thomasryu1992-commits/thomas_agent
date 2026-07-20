@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from runtime.read_only_kernel import integrity
 
@@ -55,6 +55,14 @@ WRITE_TOOL_CLASS = "write"
 MAX_CONTENT_BYTES = 1_000_000  # 1 MB — an analysis artifact, not a data dump
 MAX_PATH_CHARS = 200
 
+# Windows device names. Reserved on every platform here so a path is legal or not for the
+# same reason everywhere, and so the workspace record can never name a device.
+_RESERVED_BASENAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
 # Opting into the real disk-writing writer. As with the model provider and the search
 # tool, the env var alone is NOT sufficient: the Safety-Flag Gate must authorize
 # filesystem_write before a disk-capable writer is ever built (see select_writer).
@@ -72,7 +80,6 @@ class WriteResult:
     created: bool
 
 
-@runtime_checkable
 class WorkspaceWriter(Protocol):
     tool_id: str
     tool_version: str
@@ -133,6 +140,11 @@ class RealWorkspaceWriter:
             raise ToolBlocked("TARGET_EXISTS", "target file already exists; create-only write refused") from exc
         except OSError as exc:
             raise ToolError("WRITE_FAILED", f"could not write workspace file: {exc.strerror}") from exc
+        except ValueError as exc:
+            # open() raises ValueError (not OSError) for some targets — notably a Windows
+            # console device. resolve_target refuses those by name now, so this is the
+            # backstop that keeps every failure of this write typed rather than raw.
+            raise ToolError("WRITE_FAILED", f"could not write workspace file: {exc}") from exc
         return len(data)
 
 
@@ -174,6 +186,14 @@ def resolve_target(relative_path: Any, *, root: Path | None = None) -> Path:
         # would name a file that does not exist on disk. Refuse on every platform so the
         # record always matches the artifact.
         raise ToolBlocked("INVALID_PATH", "workspace path components must not end with '.' or ' '")
+    if any(part.split(".", 1)[0].lower() in _RESERVED_BASENAMES for part in candidate.parts):
+        # Windows resolves these to DEVICES wherever they appear as a basename, extension or
+        # not: "CON.md" is the console, not a file. Without this the outcomes were confusing
+        # rather than wrong — CON/NUL report exists()=True and blocked as TARGET_EXISTS
+        # (a lie: nothing exists), COM1 reached open() and failed as WRITE_FAILED, and a
+        # console device could raise ValueError, which RealWorkspaceWriter.write does not
+        # catch, escaping untyped. Named explicitly so the refusal says what is true.
+        raise ToolBlocked("INVALID_PATH", "workspace path must not use a reserved device name")
 
     base = workspace_root(root)
     # Resolve the base to its real location first: comparing a resolved target against an

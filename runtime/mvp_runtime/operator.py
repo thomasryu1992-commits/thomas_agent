@@ -26,12 +26,13 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from . import approval, control, safety_gate, timeutil
-from .audit import build_approval_decision_audit
+from .audit import build_approval_decision_audit, build_audit_gap_record
 from .control import ControlStore
 from .errors import ApprovalBlocked, AuditError, ControlBlocked, OperatorBlocked, PersistenceError
+from .events import stamped_event
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
 from .safety_gate import NETWORK_ACCESS, Authorization
@@ -216,8 +217,19 @@ def handle_operator_message(
                         genesis_previous_hash=store.last_audit_hash(), repo_root=repo_root,
                     ))
                 except (PersistenceError, AuditError) as exc:
-                    # The decision is already durable in the approval store; note the audit
-                    # gap rather than losing Thomas's answer.
+                    # The decision is already durable in the approval store; losing Thomas's
+                    # answer to protect a log would be the wrong trade. But the gap must not
+                    # live only in a chat suffix — record it durably (a different ledger
+                    # file, so a broken audit ledger does not take it too) so `recovery` can
+                    # answer "the trail has a known hole here" later.
+                    try:
+                        store.append_block(build_audit_gap_record(
+                            "approval_decision", reason_code=exc.reason_code,
+                            subject_ref=approval_id or "unknown",
+                            now=now or timeutil.utc_now_iso(), detail=exc.reason,
+                        ))
+                    except PersistenceError:
+                        pass          # already failing to write; the reply still says so
                     return OperatorReply(
                         text=outcome["reply"] + f"\n(WARNING: decision audit failed: {exc.reason_code})",
                         accepted=True, status="APPROVAL", reason_code=outcome["action"],
@@ -274,7 +286,6 @@ def handle_operator_message(
 # --- R4.2: the channel transport (mock default; real Telegram behind the gate) ----------
 
 
-@runtime_checkable
 class OperatorChannel(Protocol):
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]: ...
     def send(self, chat_id: str, text: str) -> None: ...
@@ -430,7 +441,15 @@ class TelegramChannel:
         for update in payload.get("result", []):
             if not isinstance(update, dict):
                 continue
-            self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
+            # A non-int update_id (null, a string, an object) would make int() raise
+            # TypeError/ValueError — not an OperatorBlocked, so the loop's handler misses
+            # it and the whole service dies with a traceback. Skip the malformed update
+            # instead; the cursor does not advance past it, so nothing is silently claimed.
+            try:
+                update_id = int(update.get("update_id"))
+            except (TypeError, ValueError):
+                continue
+            self._offset = max(self._offset, update_id + 1)
             messages.append(_message_from_update(update))
         if self._offset != before:
             self._save_offset()
@@ -546,6 +565,20 @@ def run_operator_once(
             # is lost, and the summary reports it.
             send_failures += 1
         handled.append(reply)
+    if dropped and store is not None:
+        # An unverified sender is still silently dropped — no reply, no engagement, no
+        # info leak — but "somebody probed this bot" is worth being able to answer later,
+        # and it lived only in an in-memory counter. ONE entry per batch carrying the
+        # count, not one per message: a per-message record would make a spammer a
+        # disk-fill vector, and the count answers the question just as well.
+        try:
+            store.append_block(stamped_event(
+                "operator_probe.v0", action="unverified_messages_dropped",
+                dropped=dropped, channel=PRIMARY_CHANNEL,
+                created_at=now or timeutil.utc_now_iso(),
+            ))
+        except PersistenceError:
+            pass          # a diagnostic note must never break the loop
     return {
         "handled": len(handled),
         "dropped": dropped,

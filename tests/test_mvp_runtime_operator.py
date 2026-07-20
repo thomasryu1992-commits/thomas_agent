@@ -316,6 +316,24 @@ def test_telegram_offset_persists_across_restarts(monkeypatch, tmp_path):
     assert calls[1]["offset"] == "11"
 
 
+def test_malformed_update_id_is_skipped_not_fatal(monkeypatch):
+    """int(None) raises TypeError, which is not OperatorBlocked — the loop's handler
+    misses it and the whole service dies with a traceback. The malformed update is
+    skipped and the cursor does not advance past it, so nothing is silently claimed."""
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    _patch_urlopen(monkeypatch, {"ok": True, "result": [
+        {"update_id": None, "message": {"from": {"id": 12345},
+                                        "chat": {"id": 777, "type": "private"}, "text": "a"}},
+        {"update_id": "abc", "message": {"from": {"id": 12345},
+                                         "chat": {"id": 777, "type": "private"}, "text": "b"}},
+        _UPDATE,
+    ]})
+    channel = TelegramChannel(authorization=_TG_AUTH)
+    msgs = channel.poll()
+    assert [m.text for m in msgs] == ["분석해줘"]      # only the well-formed update
+    assert channel._offset == 11                      # advanced past that one only
+
+
 def test_telegram_malformed_offset_state_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setenv(TOKEN_ENV, "test-token")
     state = tmp_path / "telegram_offset.json"

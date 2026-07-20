@@ -84,6 +84,41 @@ def test_store_add_list_remove_toggle(tmp_path):
     assert store.remove("nope") is False
 
 
+@pytest.mark.parametrize("row, why", [
+    ({"kind": KIND_TASK, "interval_seconds": 60, "next_run_at": T1}, "missing schedule_id"),
+    ({"schedule_id": "s1", "interval_seconds": 60, "next_run_at": T1}, "missing kind"),
+    ({"schedule_id": "s1", "kind": KIND_TASK, "next_run_at": T1}, "missing interval"),
+    ({"schedule_id": "s1", "kind": KIND_TASK, "interval_seconds": "soon", "next_run_at": T1}, "garbage interval"),
+    ({"schedule_id": "s1", "kind": KIND_TASK, "interval_seconds": 60}, "missing next_run_at"),
+])
+def test_malformed_schedule_record_fails_closed_with_a_typed_error(tmp_path, row, why):
+    """A raw KeyError/ValueError escaped scheduler_cli's `except MvpRuntimeError`, so the
+    CLI died with a traceback instead of a BLOCK."""
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(SchedulerBlocked) as exc:
+        store.list()
+    assert exc.value.reason_code == "SCHEDULE_RECORD_INVALID", why
+
+
+@pytest.mark.parametrize("bad", [None, "None", "2026-07-16", "2026-07-16T09:00:00+00:00", 12345])
+def test_a_non_canonical_next_run_at_is_refused_not_silently_dormant(tmp_path, bad):
+    """The dangerous one: `next_run_at: null` became the string "None", which sorts ABOVE
+    every real timestamp — so `next_run_at <= now` was never true and the schedule silently
+    never fired, with no error anywhere. A dormant schedule that looks healthy is worse
+    than a loud one."""
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps({
+        "schedule_id": "s1", "kind": KIND_TASK, "request": "x",
+        "interval_seconds": 60, "next_run_at": bad,
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(SchedulerBlocked) as exc:
+        store.list()
+    assert exc.value.reason_code == "SCHEDULE_RECORD_INVALID"
+
+
 def test_store_corrupt_fails_closed(tmp_path):
     store = ScheduleStore(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)

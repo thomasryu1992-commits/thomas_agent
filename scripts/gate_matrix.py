@@ -219,14 +219,40 @@ def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
+# Directories whose contents are governed by the deferred Gate. A changed path under one
+# of these that matches NO pattern above is treated as deferred anyway: the pattern list is
+# a hand-maintained keyword allowlist, so a new artifact under a name nobody anticipated
+# would otherwise skip its Gate silently — a fail-OPEN default in the one place whose whole
+# job is deciding what gets checked. Running a Gate that turns out to be unnecessary costs
+# CI minutes; skipping one that was necessary costs the property it was protecting.
+_DEFERRED_FALLBACK_PREFIXES = (
+    "deferred/",
+    "generated/deferred/",
+    "schemas/",
+    "docs/runtime-contracts/",
+    "05_REGISTRIES/",
+    "examples/",
+)
+
+
 def classify_ci_scopes(paths: Iterable[str]) -> dict[str, bool]:
     """Classify changed paths without changing Gate composition or authority."""
     normalized = {_normalize_ci_path(path) for path in paths if path and path.strip()}
+    known = {
+        scope: {path for path in normalized if _matches_any(path, patterns)}
+        for scope, patterns in CI_SCOPE_PATH_PATTERNS.items()
+    }
+    classified = set().union(*known.values()) if known else set()
+    # Unclassified paths in a governed directory default INTO the deferred Gate.
+    unmatched_governed = {
+        path for path in normalized - classified
+        if path.startswith(_DEFERRED_FALLBACK_PREFIXES)
+    }
     result = {
         "active": True,
-        "deferred": any(_matches_any(path, CI_SCOPE_PATH_PATTERNS["deferred"]) for path in normalized),
-        "legacy": any(_matches_any(path, CI_SCOPE_PATH_PATTERNS["legacy"]) for path in normalized),
-        "full": any(_matches_any(path, CI_SCOPE_PATH_PATTERNS["full"]) for path in normalized),
+        "deferred": bool(known["deferred"]) or bool(unmatched_governed),
+        "legacy": bool(known["legacy"]),
+        "full": bool(known["full"]),
     }
     if result["full"]:
         # Shared Gate/CI infrastructure changes require every scoped Gate plus the
