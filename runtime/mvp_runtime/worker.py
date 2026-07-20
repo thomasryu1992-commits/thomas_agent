@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
@@ -72,7 +72,6 @@ class ProviderResult:
     usage_reported: bool = True
 
 
-@runtime_checkable
 class Provider(Protocol):
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult: ...
 

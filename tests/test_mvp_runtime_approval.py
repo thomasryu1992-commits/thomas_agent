@@ -290,6 +290,46 @@ def test_apply_command_refuses_when_the_bound_decision_is_missing(tmp_path):
 
 
 @requires_local_core
+def test_answering_a_timed_out_ask_retires_it(tmp_path):
+    """The lifecycle has always claimed --(ttl)--> EXPIRED and nothing ever performed it,
+    so `pending()` listed dead asks forever. Answering one is the unambiguous moment to
+    retire it: an explicit operator action on that exact approval, never a write hidden
+    inside a read. The refusal itself is unchanged — an expired approval is not decidable."""
+    store = ApprovalStore(tmp_path)
+    permdec = _permdec()
+    req = approval.build_approval_request(permdec, now=NOW)
+    store.append([req])
+    store.append_permission_decision(permdec)
+    assert [a["approval_id"] for a in store.pending()] == [req["approval_id"]]
+
+    with pytest.raises(ApprovalBlocked) as exc:
+        approval.apply_command(store, "approve", req["approval_id"],
+                               verification=VERIFIED, now="2026-07-16T23:59:00Z")
+    assert exc.value.reason_code == "APPROVAL_EXPIRED"
+
+    assert store.get(req["approval_id"])["status"] == approval.STATUS_EXPIRED
+    assert store.pending() == []            # the dead ask stops being listed
+    # EXPIRED is a retirement, not a verdict: nobody approved or rejected it.
+    assert store.get(req["approval_id"])["approver"]["approved_by"] is None
+
+
+@requires_local_core
+def test_a_retired_approval_cannot_then_be_decided(tmp_path):
+    """Retiring must not become a second bite: EXPIRED is not PENDING."""
+    store = ApprovalStore(tmp_path)
+    permdec = _permdec()
+    req = approval.build_approval_request(permdec, now=NOW)
+    store.append([req])
+    store.append_permission_decision(permdec)
+    late = "2026-07-16T23:59:00Z"
+    for expected in ("APPROVAL_EXPIRED", "NOT_PENDING"):
+        with pytest.raises(ApprovalBlocked) as exc:
+            approval.apply_command(store, "approve", req["approval_id"],
+                                   verification=VERIFIED, now=late)
+        assert exc.value.reason_code == expected
+
+
+@requires_local_core
 def test_apply_command_records_and_stores_the_decision(tmp_path):
     store = ApprovalStore(tmp_path)
     permdec = _permdec()

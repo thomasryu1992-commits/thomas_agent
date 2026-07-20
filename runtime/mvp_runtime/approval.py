@@ -276,7 +276,12 @@ def record_decision(
 
 
 def expire(approval: Mapping[str, Any], *, now: str) -> dict[str, Any]:
-    """Mark a PENDING approval EXPIRED. Not a decision — nobody answered in time."""
+    """Mark a PENDING approval EXPIRED. Not a decision — nobody answered in time.
+
+    Retirement, not a verdict: the record keeps an empty approver block, because nobody
+    approved or rejected it. :func:`apply_command` calls this when Thomas answers an ask
+    that has already timed out — the refusal stands, and the dead ask stops appearing in
+    ``pending()`` forever after."""
     _require_pending(approval)
     if not is_expired(approval, now=now):
         raise ApprovalBlocked("NOT_EXPIRED", "approval has not reached its expiry")
@@ -448,6 +453,20 @@ def apply_command(
         raise ApprovalBlocked(
             "PERMISSION_DECISION_MISSING",
             f"the decision {approval['permission_decision_id']} this approval binds to is not on record",
+        )
+
+    # Answering a timed-out ask retires it. The refusal below is unchanged — an expired
+    # approval is dead, not decidable — but the record now transitions to EXPIRED instead
+    # of sitting PENDING forever, which is what the lifecycle has always claimed
+    # (`--(ttl)--> EXPIRED`) and nothing ever performed. This is the one moment a retirement
+    # is unambiguously right: an explicit operator action on that exact approval, so it is
+    # never a write hidden inside a read.
+    if approval.get("status") == STATUS_PENDING and is_expired(approval, now=now):
+        store.append([expire(approval, now=now)])
+        raise ApprovalBlocked(
+            "APPROVAL_EXPIRED",
+            f"approval expired at {approval['validity']['expires_at']}; it can no longer be "
+            "decided (now recorded EXPIRED — ask again for a fresh one)",
         )
 
     granted = verb == CMD_APPROVE

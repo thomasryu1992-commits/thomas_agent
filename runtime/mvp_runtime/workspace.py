@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from runtime.read_only_kernel import integrity
 
@@ -80,7 +80,6 @@ class WriteResult:
     created: bool
 
 
-@runtime_checkable
 class WorkspaceWriter(Protocol):
     tool_id: str
     tool_version: str

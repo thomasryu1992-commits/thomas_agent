@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from . import approval, control, safety_gate, timeutil
 from .audit import build_approval_decision_audit, build_audit_gap_record
@@ -286,7 +286,6 @@ def handle_operator_message(
 # --- R4.2: the channel transport (mock default; real Telegram behind the gate) ----------
 
 
-@runtime_checkable
 class OperatorChannel(Protocol):
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]: ...
     def send(self, chat_id: str, text: str) -> None: ...
