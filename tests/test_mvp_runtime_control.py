@@ -223,6 +223,108 @@ def test_unverified_sender_never_reaches_control(tmp_path):
     assert store.load().mode == KILLED
 
 
+# --- deleting the state file must not clear a stop ----------------------------
+
+def test_missing_state_file_still_means_active_on_a_fresh_deployment(tmp_path):
+    """The reason missing=ACTIVE exists: a fresh deployment must not be bricked by the
+    mere absence of a control file. With no ledger history, nothing contradicts ACTIVE."""
+    assert ControlStore(tmp_path).load().mode == ACTIVE
+
+
+def test_deleting_the_state_file_does_not_resume_a_killed_runtime(tmp_path):
+    """Corrupting the file failed closed to KILLED while *removing* it silently cleared
+    the kill — an unauthenticated, unaudited resume that a volume remount or a cleanup
+    script performs by accident. The durable control-event ledger is consulted instead."""
+    store = ControlStore(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, ledger=ledger)
+    assert store.load().mode == KILLED
+
+    store.path.unlink()                              # the deletion
+    recovered = store.load()
+    assert recovered.mode == KILLED and recovered.fail_closed is True
+    assert "control-event ledger" in recovered.reason
+
+
+def test_deleting_the_state_file_after_a_resume_is_active(tmp_path):
+    """The ledger's LAST word decides: a kill that was properly resumed leaves the
+    runtime ACTIVE, so a later deletion must not resurrect the stop."""
+    store = ControlStore(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, ledger=ledger)
+    control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW, ledger=ledger)
+    store.path.unlink()
+    assert store.load().mode == ACTIVE
+
+
+def test_unreadable_control_ledger_with_no_state_file_fails_closed(tmp_path):
+    """Uncertainty about a safety state is not permission."""
+    store = ControlStore(tmp_path)
+    ledger_dir = tmp_path / ".runtime_governance_state" / "runtime_ledger"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "control_events.jsonl").write_text("{not json\n", encoding="utf-8")
+    assert store.load().mode == KILLED
+
+
+# --- transition guards --------------------------------------------------------
+
+def test_pause_does_not_downgrade_a_kill(tmp_path):
+    """`pause` is not the verb for clearing a kill — only `resume` is, and only for the
+    authenticated operator. Downgrading KILLED to PAUSED moved a safety state in the
+    permissive direction on a command that never asked to."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    outcome = control.apply_command(store, control.CMD_PAUSE, actor="op", now=NOW)
+    assert outcome["changed"] is False and outcome["mode"] == KILLED
+    assert store.load().mode == KILLED
+
+
+def test_resume_keeps_pending_stop_requests(tmp_path):
+    """Stop requests are operator intent about specific tasks, not part of the pause they
+    were recorded during; the old default-empty tuple discarded them with no event."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_STOP, actor="op", now=NOW, arg="task-9")
+    control.apply_command(store, control.CMD_PAUSE, actor="op", now=NOW)
+    control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW)
+    state = store.load()
+    assert state.mode == ACTIVE and state.stop_requested_task_ids == ("task-9",)
+
+
+# --- diagnostics must survive the corruption they exist to report -------------
+
+def test_recovery_uses_the_flag_not_the_reason_prose(tmp_path):
+    """`recovery` detected the corrupt case by substring-matching the reason, so an
+    operator kill with --reason "fail-closed test" printed the wrong guidance."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW,
+                          reason="fail-closed test of the kill path")
+    text = control.recovery_lines(store.load(), None)
+    assert "an operator stop is in effect" in text
+    assert "unreadable/corrupt" not in text
+
+    store.path.write_text("{broken", encoding="utf-8")
+    corrupt_text = control.recovery_lines(store.load(), None)
+    assert "unreadable/corrupt" in corrupt_text
+
+
+def test_audit_renders_a_corrupt_event_instead_of_crashing(tmp_path):
+    """A tampered line can be valid JSON with the wrong shapes. The naive
+    event.get("event", {}).get(...) chain raised AttributeError on those — the diagnostic
+    died exactly when needed and took the operator loop with it."""
+    ledger = LedgerStore(tmp_path / "ledger")
+    ledger.root.mkdir(parents=True, exist_ok=True)
+    (ledger.root / "audit_events.jsonl").write_text(
+        json.dumps({"audit_event_id": "ae1", "event": 5, "integrity": "nope"}) + "\n"
+        + json.dumps({"audit_event_id": "ae2", "event": {"outcome": "RECORDED",
+                                                        "reason_codes": ["X"]},
+                      "integrity": {}}) + "\n",
+        encoding="utf-8",
+    )
+    text = control.audit_lines(ledger)
+    assert "BROKEN" in text                      # reported...
+    assert "MALFORMED EVENT BLOCK" in text       # ...and the bad line still renders
+
+
 # --- policy drift gate --------------------------------------------------------
 
 def test_console_verbs_stay_within_the_policy_grant():

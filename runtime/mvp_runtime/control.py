@@ -35,7 +35,7 @@ from typing import Any
 
 from runtime.read_only_kernel import integrity
 
-from . import timeutil
+from . import jsonl, timeutil
 from .events import stamped_event
 from .audit import verify_audit_chain
 from .errors import ControlBlocked, MvpRuntimeError
@@ -81,6 +81,11 @@ class ControlState:
     updated_at: str = ""
     reason: str = "default active state (no operator stop in effect)"
     stop_requested_task_ids: tuple[str, ...] = ()
+    # True when this state was *derived* by failing closed (unreadable file, or a missing
+    # file whose last ledger event said the runtime was stopped) rather than read from a
+    # written state. `recovery` used to detect that by substring-matching the reason prose,
+    # so an operator kill with `--reason "fail-closed test"` printed the wrong guidance.
+    fail_closed: bool = False
 
     @classmethod
     def active_default(cls, *, now: str | None = None) -> "ControlState":
@@ -166,14 +171,31 @@ def audit_lines(ledger: Any | None, *, limit: int = AUDIT_TAIL_DEFAULT) -> str:
     if tail:
         lines.append(f"  last {len(tail)} event(s):")
         for event in tail:
-            detail = event.get("event", {})
-            lines.append(
-                f"   {event.get('created_at')}  {event.get('event_type')}  "
-                f"{detail.get('outcome')}  {','.join(detail.get('reason_codes', [])[:3])}"
-            )
+            lines.append("   " + _event_summary(event))
     else:
         lines.append("  (no events recorded yet)")
     return "\n".join(lines)
+
+
+def _event_summary(event: Any) -> str:
+    """One rendered line for an audit event, tolerant of a corrupt-but-parseable record.
+
+    A tampered line can be valid JSON with the wrong *shapes* (``"event": 5``), and the
+    naive ``event.get("event", {}).get(...)`` chain raised AttributeError on it — so the
+    diagnostic died exactly when it was needed, and (since only ControlBlocked is caught
+    upstream) took the operator loop down with it. The rendering of a malformed record is
+    a malformed-record line, never an exception."""
+    if not isinstance(event, dict):
+        return "(unreadable event: not an object)"
+    detail = event.get("event")
+    detail = detail if isinstance(detail, dict) else {}
+    codes = detail.get("reason_codes")
+    codes = [str(c) for c in codes[:3]] if isinstance(codes, list) else []
+    shape = "" if isinstance(event.get("event"), dict) else "  [MALFORMED EVENT BLOCK]"
+    return (
+        f"{event.get('created_at')}  {event.get('event_type')}  "
+        f"{detail.get('outcome')}  {','.join(codes)}{shape}"
+    )
 
 
 def recovery_lines(state: ControlState, ledger: Any | None) -> str:
@@ -200,12 +222,16 @@ def recovery_lines(state: ControlState, ledger: Any | None) -> str:
         f"control state: {state.mode} — execution {'allowed' if state.execution_allowed else 'BLOCKED'}",
         f"  reason: {state.reason}",
     ]
-    if state.mode == KILLED and "fail-closed" in (state.reason or ""):
+    if state.fail_closed:
         # The one genuinely stuck state the live runtime has, and its exit is already built.
         lines.append("  -> the control state is unreadable/corrupt, so it reads as KILLED (fail-closed).")
         lines.append("     `resume` (as the authenticated operator) writes a fresh ACTIVE state and clears it.")
     elif not state.execution_allowed:
         lines.append("  -> an operator stop is in effect. `resume` clears it; only Thomas may.")
+
+    if state.fail_closed and state.reason and "no control-state file" in state.reason:
+        lines.append("     (the state FILE is missing; the mode above was recovered from the")
+        lines.append("      control-event ledger, so a deleted state file did not clear the stop.)")
 
     lines.append("")
     if ledger is None:
@@ -254,12 +280,29 @@ class ControlStore:
     def load(self) -> ControlState:
         """Return the current control state. Fail-closed on uncertainty.
 
-        Missing file -> ACTIVE (no stop order in effect). Present but unreadable, non-object,
-        or carrying an unknown mode -> KILLED (a corrupt safety state must not silently permit
-        execution); the returned state names the corruption so `status` can report it and an
-        operator can recover."""
+        Present but unreadable, non-object, or carrying an unknown mode -> KILLED (a corrupt
+        safety state must not silently permit execution); the returned state names the
+        corruption so `status` can report it and an operator can recover.
+
+        **Missing file** still means ACTIVE for a genuinely fresh deployment — but only
+        after consulting the durable control-event ledger. Deleting the state file was
+        otherwise an unauthenticated, unaudited resume of a KILLED runtime: corrupting the
+        file failed closed to KILLED while *removing* it silently cleared the kill, and a
+        volume remount or a stray cleanup script does exactly that. See
+        :meth:`_mode_from_ledger`."""
         if not self._path.is_file():
-            return ControlState.active_default()
+            recovered = self._mode_from_ledger()
+            if recovered is None:
+                return ControlState.active_default()
+            return ControlState(
+                mode=recovered, updated_by="system", updated_at="",
+                reason=(
+                    f"fail-closed: no control-state file, but the control-event ledger's last "
+                    f"event is {recovered}; deleting the state file does not clear an operator "
+                    "stop (resume, as the authenticated operator, to clear it)"
+                ),
+                fail_closed=True,
+            )
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -276,6 +319,30 @@ class ControlStore:
             stop_requested_task_ids=ids,
         )
 
+    def _mode_from_ledger(self) -> str | None:
+        """The mode the durable control-event ledger says was last in effect, or None when
+        the ledger genuinely has nothing to say (a fresh deployment).
+
+        This is what makes "missing file = ACTIVE" safe. The ledger is the durable record
+        of every transition, on the same volume as the state file, so it answers the one
+        question deletion was otherwise able to erase: was a stop in effect? Returns None
+        only when the ledger is ABSENT (nothing ever happened here); an unreadable ledger
+        returns KILLED, because uncertainty about a safety state is not permission.
+        """
+        ledger_path = self._path.parent / "runtime_ledger" / "control_events.jsonl"
+        if not ledger_path.is_file():
+            return None                     # fresh deployment: no history to contradict ACTIVE
+        try:
+            events = jsonl.read_objects(
+                ledger_path, read_code="LEDGER_UNREADABLE", label="the control ledger")
+        except MvpRuntimeError:
+            return KILLED                   # cannot rule out a stop => do not permit execution
+        for event in reversed(events):
+            mode = event.get("resulting_mode") if isinstance(event, dict) else None
+            if mode in _MODES:
+                return None if mode == ACTIVE else mode
+        return None
+
     @staticmethod
     def _corrupt_killed(detail: str) -> ControlState:
         return ControlState(
@@ -283,6 +350,7 @@ class ControlStore:
             updated_by="system",
             updated_at="",
             reason=f"fail-closed: {detail}; manual recovery required (resume to clear)",
+            fail_closed=True,
         )
 
     def save(self, state: ControlState) -> None:
@@ -395,6 +463,16 @@ def apply_command(
         }
 
     if command == CMD_PAUSE:
+        if current.mode == KILLED:
+            # A kill is the stronger stop, and `pause` is not the verb for clearing one —
+            # only `resume` is, and only for the authenticated operator. Downgrading
+            # KILLED to PAUSED here changed a safety state in the permissive direction on
+            # a command that never asked to.
+            return {
+                "reply": ("Runtime is KILLED, which already blocks everything /pause would. "
+                          "Left as KILLED — /resume (authenticated operator) is the only way out."),
+                "mode": KILLED, "changed": False, "action": CMD_PAUSE,
+            }
         new_state = ControlState(mode=PAUSED, updated_by=actor, updated_at=stamp,
                                  reason=reason or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids)
         verb_reply = "Paused. New task requests are refused until /resume."
@@ -403,8 +481,13 @@ def apply_command(
                                  reason=reason or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids)
         verb_reply = "KILLED. All new/pending execution is blocked; only status and audit reads remain. /resume to clear."
     else:  # CMD_RESUME
+        # Pending stop requests survive the resume: they are operator intent about specific
+        # tasks, not part of the pause/kill they happened to be recorded during. Dropping
+        # them silently (the old default-empty tuple) discarded that intent with no event
+        # saying so.
         new_state = ControlState(mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                                 reason=reason or "resumed by operator")
+                                 reason=reason or "resumed by operator",
+                                 stop_requested_task_ids=current.stop_requested_task_ids)
         verb_reply = "Resumed. The runtime is ACTIVE and will accept task requests again."
 
     store.save(new_state)

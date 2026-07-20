@@ -430,7 +430,15 @@ class TelegramChannel:
         for update in payload.get("result", []):
             if not isinstance(update, dict):
                 continue
-            self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
+            # A non-int update_id (null, a string, an object) would make int() raise
+            # TypeError/ValueError — not an OperatorBlocked, so the loop's handler misses
+            # it and the whole service dies with a traceback. Skip the malformed update
+            # instead; the cursor does not advance past it, so nothing is silently claimed.
+            try:
+                update_id = int(update.get("update_id"))
+            except (TypeError, ValueError):
+                continue
+            self._offset = max(self._offset, update_id + 1)
             messages.append(_message_from_update(update))
         if self._offset != before:
             self._save_offset()
