@@ -72,8 +72,6 @@ class _DryRunConsumer:
     so an un-gated attempt is a fail-closed BLOCK, not a silent no-op that looks like success.
     """
 
-    capable = False
-
     def consume(self, candidate: Mapping[str, Any], **_: Any) -> dict[str, Any]:
         raise ApprovalBlocked(
             "CONSUMPTION_DISABLED",
@@ -91,8 +89,6 @@ class _CapableConsumer:
     and audit stay with :func:`consume_approval`, which orders them so an unauditable
     consumption fails closed before anything is written.
     """
-
-    capable = True
 
     def __init__(self, authorization: safety_gate.Authorization):
         self._authorization = authorization

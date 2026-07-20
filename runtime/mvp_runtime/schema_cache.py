@@ -67,8 +67,11 @@ def _validators_for(directory: Path) -> dict[str, Draft202012Validator]:
 def validate_against_schema(value: Any, schema_path: Path, label: str) -> int:
     """Drop-in replacement for the kernel's function, minus the per-call directory re-read.
 
-    Returns the number of schemas in the (possibly cached) registry, mirroring the
-    kernel's read-count contract closely enough for the callers, all of which ignore it.
+    Returns the number of schemas in the (possibly cached) registry. No caller reads it —
+    it is kept because *drop-in* is the point: the kernel's ``validate_against_schema``
+    returns a read count, and a substitute that changed the signature would stop being
+    substitutable for it, which is the property that lets this exist outside the frozen
+    kernel at all.
     """
     schema_path = Path(schema_path)
     if not schema_path.is_file():

@@ -178,6 +178,14 @@ def build_activation_record(
     write any file and does not enable anything by itself — the operator records the
     approval evidence and writes the returned object to ``activation_path(root,
     provider_id)`` as a deliberate, local governance step, one grant per provider.
+
+    ``authority_level`` is **evidence, not an enforcement input** — deliberately. It
+    records the P-level the operator was acting at when they enabled the flag, and the
+    gate only checks that it is a real P0..P6 (a record claiming "P9" is malformed). It is
+    not compared against a per-flag minimum because no such policy exists to compare
+    against, and inventing one here would put authority policy in the runtime instead of
+    the Governance Policy. Note it is inside the self-hash, so it also cannot be dropped
+    from the record without invalidating every activation already minted on a live machine.
     """
     bad = [f for f in flags if f not in _KNOWN_FLAGS]
     if bad:
