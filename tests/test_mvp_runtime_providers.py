@@ -150,6 +150,36 @@ def test_happy_path_parses_structured_analysis(monkeypatch):
     assert result.input_tokens == 12 and result.output_tokens == 34
 
 
+def test_latency_is_measured_not_hardcoded(monkeypatch):
+    """Every audited invocation used to claim 0 ms egress — a metric that is only ever
+    wrong, and useless exactly when a slow provider is what the operator is chasing."""
+    monkeypatch.setenv(API_ENV, "k")
+    clock = iter([100.0, 100.25])          # monotonic() before / after the round trip
+    monkeypatch.setattr("runtime.mvp_runtime.providers.time.monotonic", lambda: next(clock))
+    _patch_urlopen(monkeypatch, _gemini_response(_ANALYSIS))
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.latency_ms == 250
+
+
+def test_absent_usage_metadata_is_recorded_as_unmetered(monkeypatch):
+    """Token accounting is the provider's self-report: no usageMetadata yields 0/0, which
+    passes every budget check trivially. The record must say the call was unmetered rather
+    than let it read as a genuinely free one."""
+    monkeypatch.setenv(API_ENV, "k")
+    payload = json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps(_ANALYSIS)}]}}]})
+    _patch_urlopen(monkeypatch, payload)
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.input_tokens == 0 and result.output_tokens == 0
+    assert result.usage_reported is False
+
+    _patch_urlopen(monkeypatch, _gemini_response(_ANALYSIS))
+    reported = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert reported.usage_reported is True
+
+
 def test_code_fenced_json_is_parsed(monkeypatch):
     monkeypatch.setenv(API_ENV, "k")
     fenced = "```json\n" + json.dumps(_ANALYSIS) + "\n```"

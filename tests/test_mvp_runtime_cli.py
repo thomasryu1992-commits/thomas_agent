@@ -69,6 +69,46 @@ def test_cli_refuses_new_execution_while_not_active(tmp_path, capsys, command, c
     assert not ledger.exists()          # refused at the door: no run, no ledger writes
 
 
+class _PersistFailsStore(LedgerStore):
+    """A ledger whose record append always fails — the shape of a full disk or a lost
+    volume mount, which is exactly when an honest report matters."""
+
+    def append_records(self, trace_id, records):
+        from runtime.mvp_runtime.errors import PersistenceError
+
+        raise PersistenceError("LEDGER_WRITE_FAILED", "disk full")
+
+
+@requires_local_core
+def test_cli_never_claims_the_ledger_recorded_when_it_did_not(tmp_path, capsys):
+    """Checking only block.stage claimed "LEDGER: recorded" over real persistence
+    failures — telling the operator an audit trail exists when none does, in a system
+    whose whole trust story is "no durable audit => no trust"."""
+    rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
+                  store=_PersistFailsStore(tmp_path / "ledger"),
+                  working_memory=WorkingMemoryStore(tmp_path / "memory"),
+                  control_store=ControlStore(tmp_path))
+    assert rc == cli.EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "LEDGER: NOT recorded" in err and "LEDGER_WRITE_FAILED" in err
+    assert "LEDGER: recorded" not in err.replace("LEDGER: NOT recorded", "")
+
+
+@requires_local_core
+def test_cli_reports_a_write_that_survived_a_persistence_failure(tmp_path, capsys):
+    """EXECUTE_AND_REPORT's REPORT half cannot be conditional on what happens after the
+    write: the file is on disk, so a persistence failure must not silence the report."""
+    rc = cli.main(["--write-output", "reports/idea.md",
+                   "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
+                  store=_PersistFailsStore(tmp_path / "ledger"),
+                  working_memory=WorkingMemoryStore(tmp_path / "memory"),
+                  control_store=ControlStore(tmp_path))
+    assert rc == cli.EXIT_BLOCKED          # the run is not delivered without durable audit
+    err = capsys.readouterr().err
+    assert "WRITE dry-run" in err and "reports/idea.md" in err   # ...but the write is reported
+    assert "LEDGER: NOT recorded" in err
+
+
 def test_cli_empty_argv_is_usage_block(capsys):
     rc = cli.main([""])
     assert rc == cli.EXIT_USAGE

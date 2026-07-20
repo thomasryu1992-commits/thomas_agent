@@ -24,11 +24,12 @@ MockProvider), and no tool/program execution.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
 from . import timeutil
+from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError
@@ -78,6 +79,22 @@ def _block_record(*, stage: str, reason_code: str, message: str, raw_request: st
     )
 
 
+def _write_report(write_use: Mapping[str, Any]) -> dict[str, Any]:
+    """The operator-facing report of one controlled write (the REPORT of EXECUTE_AND_REPORT).
+
+    Built the moment the write happens so every return path carries it — a write that
+    succeeded and then hit a persistence failure is still a file on disk, and saying so is
+    the whole point of the disposition."""
+    return {
+        "relative_path": write_use["relative_path"],
+        "target_ref": write_use["target_ref"],
+        "bytes_written": write_use["bytes_written"],
+        "content_sha256": write_use["content_sha256"],
+        "filesystem_write": write_use["filesystem_write"],
+        "disposition": "EXECUTE_AND_REPORT",
+    }
+
+
 def _persist(store: LedgerStore, records: dict[str, Any]) -> None:
     """Append all produced records + audit trail + any block entry (fail-closed)."""
     trace = records.get("received_task", {}).get("identity", {}).get("trace_id")
@@ -111,7 +128,11 @@ def _finalize_block(
         if store is not None:
             _persist(store, records)
     except MvpRuntimeError as secondary:
+        # Both places: the block detail keeps the local context, and the run-level field is
+        # THE signal a caller reads to answer "is this run's evidence durable?" — the CLI
+        # used to check only the block stage and printed "LEDGER: recorded" over this path.
         result["block"]["persist_error"] = secondary.reason_code
+        result["persist_error"] = secondary.reason_code
     return result
 
 
@@ -168,6 +189,11 @@ def run_task(
         "now": now,
         "final_response": None,
         "block": None,
+        # THE run-level answer to "is this run's evidence durable?" — None means every
+        # record and audit event this run produced was persisted (or no store was given).
+        # Every persistence failure path sets it, so a caller never has to know which of
+        # the four failure shapes it is looking at to report the truth.
+        "persist_error": None,
         "records": {},
     }
     records = result["records"]
@@ -177,11 +203,20 @@ def run_task(
         genesis = store.last_audit_hash() if store is not None else None
     except PersistenceError as exc:
         result["block"] = {"stage": "persistence", "reason_code": exc.reason_code, "message": exc.reason}
+        result["persist_error"] = exc.reason_code
         return result
 
     received_task: dict[str, Any] | None = None
     try:
-        task = build_task(raw_request, now=now, **intake_kwargs)
+        # The task allocation must cover every agent the plan will invoke: with R7 on,
+        # two assignments each granted one model call under a task allocated exactly one
+        # is the contract's "an assignment cannot exceed the parent's remaining budget"
+        # breach, which the runtime was silently committing on every validated run.
+        task = build_task(
+            raw_request, now=now,
+            planned_agents=2 if independent_validation else 1,
+            **intake_kwargs,
+        )
         received_task = task
         records["received_task"] = task
 
@@ -257,6 +292,27 @@ def run_task(
                 now=now, root=repo_root,
             )
             records["write_use"] = write_use
+            # Report the write the moment it happens, not only on the delivered path. The
+            # file is already on disk; if persistence fails after this, the run BLOCKs and
+            # used to return no `write` key at all — an artifact existed that nothing
+            # reported and nothing audited. The REPORT half of EXECUTE_AND_REPORT cannot
+            # be conditional on what happens next.
+            result["write"] = _write_report(write_use)
+
+        # What the run actually spent, against the allocation it ran under. The task and
+        # assignment records are allocations built before execution, so their zeroed usage
+        # can never answer this — the contract's usage_must_be_recorded_for_audit invariant
+        # had no record satisfying it until this one.
+        records["budget_usage"] = recorded_usage_budget(
+            plan["task"].get("execution_budget", {}).get("limits", {}),
+            agent_invocations=2 if validator_invocation is not None else 1,
+            model_calls=2 if validator_invocation is not None else 1,
+            tokens_used=(
+                int(invocation.get("tokens_used", 0))
+                + int((validator_invocation or {}).get("tokens_used", 0))
+            ),
+            validation_cycles=2 if independent_validation_result is not None else 1,
+        )
 
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
@@ -281,6 +337,7 @@ def run_task(
                 _persist(store, records)
             except PersistenceError as exc:
                 result["block"] = {"stage": "persistence", "reason_code": exc.reason_code, "message": exc.reason}
+                result["persist_error"] = exc.reason_code
                 return result
         # Accumulate this run's candidates into working memory for later runs. Best-effort:
         # working memory is enrichment, not the audit of record, so a write failure is noted
@@ -293,18 +350,6 @@ def run_task(
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(agent_output)
-        # The "report" half of EXECUTE_AND_REPORT: the write is never silent. The audit
-        # trail is its durable record; this surfaces it to whoever is listening (the CLI
-        # prints it, the operator loop reports it over the control channel).
-        if write_use is not None:
-            result["write"] = {
-                "relative_path": write_use["relative_path"],
-                "target_ref": write_use["target_ref"],
-                "bytes_written": write_use["bytes_written"],
-                "content_sha256": write_use["content_sha256"],
-                "filesystem_write": write_use["filesystem_write"],
-                "disposition": "EXECUTE_AND_REPORT",
-            }
     else:
         # Validation withheld delivery; the trail already concludes BLOCKED. Persist best-effort.
         if store is not None:

@@ -138,17 +138,28 @@ def main(
                       working_memory=working_memory, channel="manual", store=store,
                       independent_validation=independent_validation,
                       write_path=write_path, writer=writer)
-    if (result.get("block") or {}).get("stage") != "persistence":
+    # One field answers "is this run's evidence durable?" for every failure shape. Checking
+    # only the block stage claimed "LEDGER: recorded" over two real persistence failures —
+    # a secondary failure while recording a block, and a failure on the validation-withheld
+    # path — telling the operator an audit trail exists when none does.
+    persist_error = result.get("persist_error")
+    if persist_error is None:
         sys.stderr.write(f"LEDGER: recorded to {store.root}\n")
+    else:
+        sys.stderr.write(
+            f"LEDGER: NOT recorded ({persist_error}) — this run has no durable audit trail\n"
+        )
+    # EXECUTE_AND_REPORT: a write is never silent, and never conditional on what happened
+    # after it. If persistence failed once the file existed, the run BLOCKs — and the file
+    # is still on disk, so it is still reported here.
+    write = result.get("write")
+    if write is not None:
+        kind = "created" if write["filesystem_write"] else "dry-run (no file written)"
+        sys.stderr.write(
+            f"WRITE {kind}: {write['target_ref']} ({write['bytes_written']} bytes) "
+            f"[EXECUTE_AND_REPORT]\n"
+        )
     if result["status"] == "COMPLETED":
-        # EXECUTE_AND_REPORT: a write is never silent — report it even on the happy path.
-        write = result.get("write")
-        if write is not None:
-            kind = "created" if write["filesystem_write"] else "dry-run (no file written)"
-            sys.stderr.write(
-                f"WRITE {kind}: {write['target_ref']} ({write['bytes_written']} bytes) "
-                f"[EXECUTE_AND_REPORT]\n"
-            )
         sys.stdout.write(result["final_response"] + "\n")
         return EXIT_OK
 
