@@ -70,6 +70,10 @@ class ProviderResult:
     # and every budget check passes trivially — the record must say which it was rather
     # than let an unmetered call look like a free one.
     usage_reported: bool = True
+    # How many transient-status retries (503 overloaded / 429 throttled) this result took.
+    # The budget contract allows max_retry_count: 1 and its usage must be recorded — a
+    # retried call that reads as first-try would hide provider instability from the ledger.
+    retries: int = 0
 
 
 class Provider(Protocol):
@@ -373,6 +377,8 @@ def run_analysis_worker(
         # False => the provider reported no usage; tokens_used is a floor of 0, not a
         # measurement, and the budget check below it passed vacuously.
         "usage_reported": bool(result.usage_reported),
+        # Transient-status retries (503/429) this call took; the budget usage records it.
+        "retry_count": int(result.retries),
         "latency_ms": int(result.latency_ms),
         "finish_reason": result.finish_reason,
         # Whether this invocation crossed the network boundary (audited downstream).

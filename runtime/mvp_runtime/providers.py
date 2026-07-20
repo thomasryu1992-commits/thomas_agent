@@ -46,6 +46,16 @@ GOOGLE_AI_STUDIO = "google_ai_studio"
 DEFAULT_HOSTED_MODEL = "gemini-flash-latest"
 _NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
+# The two HTTP statuses that mean "not now", not "no": 503 (the model pool is overloaded —
+# observed live 2026-07-20) and 429 (free-tier throttle). Exactly ONE retry after a short
+# backoff, matching the budget contract's max_retry_count: 1. Timeouts are deliberately
+# NOT retryable: a hung call already consumed the full max_runtime_seconds, so retrying it
+# could double the worst-case wall clock, whereas a 503/429 answer arrives in about a
+# second and the retry stays well inside the budget's intent.
+_RETRYABLE_HTTP = frozenset({429, 503})
+_MAX_RETRIES = 1
+_RETRY_BACKOFF_SECONDS = 5
+
 
 def select_provider(*, now: str | None = None, root: Path | None = None) -> Provider:
     """Choose the worker's provider — the enforced Safety-Flag Gate chokepoint.
@@ -138,19 +148,35 @@ class GoogleAIStudioProvider:
         # Measure the real round trip. A hard-coded 0 made every audited invocation claim a
         # 0 ms egress — a metric that is only ever wrong, and useless exactly when a slow
         # or hanging provider is what the operator is investigating. Monotonic, so a clock
-        # adjustment mid-call cannot produce a negative or absurd duration.
+        # adjustment mid-call cannot produce a negative or absurd duration. Latency covers
+        # every attempt including the backoff — it is what the operator actually waited.
         started = time.monotonic()
-        try:
-            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
-            # Deliberately generic — never echo the URL or key.
-            raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+        retries = 0
+        while True:
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                # Order matters: HTTPError IS a URLError, so it must be caught first for
+                # the status code to be readable. The code is safe to name in the error
+                # (it is the server's answer, never the URL or the key).
+                if exc.code in _RETRYABLE_HTTP and retries < _MAX_RETRIES:
+                    retries += 1
+                    time.sleep(_RETRY_BACKOFF_SECONDS)
+                    continue
+                suffix = f" after {retries} retry" if retries else ""
+                raise ProviderError(
+                    "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{suffix}"
+                ) from None
+            except (TimeoutError, urllib.error.URLError):
+                # Deliberately generic — never echo the URL or key.
+                raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        return self._parse(raw, latency_ms=latency_ms)
+        return self._parse(raw, latency_ms=latency_ms, retries=retries)
 
-    def _parse(self, raw: str, *, latency_ms: int = 0) -> ProviderResult:
+    def _parse(self, raw: str, *, latency_ms: int = 0, retries: int = 0) -> ProviderResult:
         try:
             data: dict[str, Any] = json.loads(raw)
             text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -182,4 +208,5 @@ class GoogleAIStudioProvider:
             # yields 0/0, which passes every budget check trivially. Record that the call
             # was unmetered rather than let it read as a genuinely free one.
             usage_reported=bool(usage),
+            retries=retries,
         )
