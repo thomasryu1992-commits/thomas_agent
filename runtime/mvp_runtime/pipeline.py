@@ -312,6 +312,10 @@ def run_task(
                 + int((validator_invocation or {}).get("tokens_used", 0))
             ),
             validation_cycles=2 if independent_validation_result is not None else 1,
+            retry_count=(
+                int(invocation.get("retry_count", 0))
+                + int((validator_invocation or {}).get("retry_count", 0))
+            ),
         )
 
         records["audit_trail"] = build_pipeline_audit(

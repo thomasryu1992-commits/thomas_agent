@@ -150,6 +150,75 @@ def test_happy_path_parses_structured_analysis(monkeypatch):
     assert result.input_tokens == 12 and result.output_tokens == 34
 
 
+def _patch_urlopen_sequence(monkeypatch, outcomes):
+    """Pop one outcome per call: an Exception is raised, anything else is the payload.
+    Returns the list of backoff sleeps taken (providers.time.sleep is stubbed)."""
+    remaining = list(outcomes)
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout):
+        outcome = remaining.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _FakeResp(outcome)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("runtime.mvp_runtime.providers.time.sleep", lambda s: sleeps.append(s))
+    return sleeps
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    import io
+    return urllib.error.HTTPError("https://redacted.invalid", code, "err", {}, io.BytesIO(b"{}"))
+
+
+@pytest.mark.parametrize("status", [503, 429])
+def test_a_transient_status_is_retried_once_and_succeeds(monkeypatch, status):
+    """503 (overloaded — observed live 2026-07-20) and 429 (throttled) mean "not now",
+    not "no": one short-backoff retry turns a transient blip into a delivered answer."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [_http_error(status), _gemini_response(_ANALYSIS)])
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.analysis["summary"] == "A concise analysis."
+    assert result.retries == 1                       # honestly recorded, not hidden
+    assert sleeps == [5]                             # one backoff, then the retry
+
+
+def test_a_persistent_transient_status_fails_after_one_retry(monkeypatch):
+    """Exactly one retry (the budget contract's max_retry_count: 1) — a persistently
+    overloaded provider becomes a typed BLOCK naming the status, never a retry loop."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [_http_error(503), _http_error(503)])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert "HTTP 503" in exc.value.reason and "after 1 retry" in exc.value.reason
+    assert "redacted.invalid" not in exc.value.reason        # the URL is never echoed
+    assert sleeps == [5]
+
+
+@pytest.mark.parametrize("outcome", [_http_error(400), _http_error(404), TimeoutError("hang")])
+def test_non_transient_failures_are_not_retried(monkeypatch, outcome):
+    """A 4xx is "no" and a timeout already consumed the full runtime budget — retrying
+    either would spend time on an answer that will not change."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [outcome])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert sleeps == []                              # no backoff, no second attempt
+
+
+def test_first_try_success_records_zero_retries(monkeypatch):
+    monkeypatch.setenv(API_ENV, "k")
+    _patch_urlopen_sequence(monkeypatch, [_gemini_response(_ANALYSIS)])
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.retries == 0
+
+
 def test_latency_is_measured_not_hardcoded(monkeypatch):
     """Every audited invocation used to claim 0 ms egress — a metric that is only ever
     wrong, and useless exactly when a slow provider is what the operator is chasing."""
