@@ -64,8 +64,17 @@ ACTIVATIONS_DIR_REL = ".runtime_governance_state/safety_flag_activations"
 # provider_id becomes a filename, so it is confined like any caller-supplied path segment:
 # lowercase alnum start, then alnum/underscore/dot/hyphen. This admits every real provider
 # id (google_ai_studio, brave_search, telegram, workspace.writer) and admits no separator,
-# no traversal, and no absolute path.
-_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+# no traversal, and no absolute path. `\Z`, not `$`: `$` also matches before a trailing
+# newline, so "brave\n" passed and would have created a filename containing a newline.
+_PROVIDER_ID_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
+# Windows resolves these names to devices wherever they appear as a basename, with or
+# without an extension, so a grant filed under one would not be a normal file. Refused
+# by name rather than left to fail in a confusing way at open() time.
+_RESERVED_BASENAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
 # The one timestamp form the gate's lexicographic comparisons are correct for.
 _TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
@@ -109,6 +118,11 @@ def activation_path(root: Path, provider_id: str) -> Path:
         raise SafetyGateBlocked(
             "INVALID_PROVIDER_ID",
             f"provider id {provider_id!r} is not a valid activation name",
+        )
+    if provider_id.split(".", 1)[0] in _RESERVED_BASENAMES:
+        raise SafetyGateBlocked(
+            "INVALID_PROVIDER_ID",
+            f"provider id {provider_id!r} is a reserved device name on Windows",
         )
     base = (root / ACTIVATIONS_DIR_REL).resolve()
     path = (base / f"{provider_id}.json").resolve()

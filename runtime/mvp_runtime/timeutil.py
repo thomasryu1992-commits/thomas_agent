@@ -22,14 +22,29 @@ def utc_now_iso() -> str:
 def parse_iso(value: str) -> datetime:
     """Parse an RFC3339 UTC timestamp, accepting the ``Z`` suffix.
 
-    Raises ``ValueError`` (via ``datetime.fromisoformat``) on a malformed value;
-    callers that need a typed failure catch it and re-raise their own error.
+    Raises ``ValueError`` on a malformed value; callers that need a typed failure catch it
+    and re-raise their own error. A **naive** value (no offset at all) is rejected rather
+    than assumed UTC: every timestamp this runtime stores is compared lexicographically
+    against the fixed ``Z`` form, and silently treating a bare local time as UTC produces
+    an expiry that is wrong by the machine's offset — in the never-expires direction for a
+    negative one.
     """
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"timestamp {value!r} has no UTC offset; expected the RFC3339 Z form")
+    return parsed
 
 
 def format_iso(dt: datetime) -> str:
-    """Format a datetime as ``YYYY-MM-DDThh:mm:ssZ`` (seconds precision, UTC ``Z``)."""
+    """Format a datetime as ``YYYY-MM-DDThh:mm:ssZ`` (seconds precision, UTC ``Z``).
+
+    Converts to UTC first. Stamping ``Z`` on a non-UTC datetime without converting it
+    labels the wrong instant as UTC — ``plus_minutes("...+09:00", 60)`` used to return a
+    time nine hours off, and every expiry check in the runtime is a string compare that
+    trusts the label.
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
     return dt.strftime(_ISO_FORMAT)
 
 

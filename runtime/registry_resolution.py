@@ -79,6 +79,22 @@ def _normalize_sha256_digest(value: str | None, label: str) -> str:
     return digest.lower()
 
 
+def _require_expected_hash(expected_hash: str | None, target: str) -> str:
+    """A registry entry with no ``definition_sha256`` is refused, not waved through.
+
+    The old ``if expected_hash and ...`` guard meant deleting the field silently disabled
+    verification for that entry — the exact "missing or uncertain" case the fail-closed
+    rule says must BLOCK, reachable by one local edit to a YAML file. Every live entry
+    carries a hash, so this only ever fires on a registry that stopped being verifiable.
+    """
+    if not (isinstance(expected_hash, str) and expected_hash.strip()):
+        raise RegistryResolutionError(
+            f"registry entry for {target} carries no definition_sha256; "
+            "an unverifiable definition is refused (fail-closed)"
+        )
+    return expected_hash
+
+
 def load_markdown_yaml_front_matter(
     *,
     path: Path,
@@ -86,14 +102,19 @@ def load_markdown_yaml_front_matter(
 ) -> dict[str, Any]:
     if not path.is_file():
         raise RegistryResolutionError(f"definition path does not exist: {path}")
+    expected_hash = _require_expected_hash(expected_hash, str(path))
 
-    actual_hash = raw_file_sha256(path)
-    if expected_hash and actual_hash != expected_hash:
+    # Hash and parse the SAME bytes. Reading twice left a window in which the content that
+    # was verified is not the content that gets parsed — small, but the hash check exists
+    # precisely to rule that out.
+    raw = path.read_bytes()
+    actual_hash = sha256(raw).hexdigest()
+    if actual_hash != expected_hash:
         raise RegistryResolutionError(
             f"definition hash mismatch for {path}: expected={expected_hash} actual={actual_hash}"
         )
 
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = raw.decode("utf-8").splitlines()
     if not lines or lines[0].strip() != "---":
         raise RegistryResolutionError(f"missing YAML front matter: {path}")
     try:
@@ -150,9 +171,10 @@ def _load_structured_definition(
     definition = definitions.get(definition_path)
     if definition is None:
         raise RegistryResolutionError(f"missing parsed definition: {definition_path}")
+    expected_hash = _require_expected_hash(expected_hash, definition_path)
     result = deepcopy(dict(_require_mapping(definition, definition_path)))
     actual_hash = canonical_sha256(result)
-    if expected_hash and actual_hash != expected_hash:
+    if actual_hash != expected_hash:
         raise RegistryResolutionError(
             f"definition hash mismatch for {definition_path}: expected={expected_hash} actual={actual_hash}"
         )

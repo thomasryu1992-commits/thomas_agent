@@ -160,6 +160,22 @@ def test_list_passed_as_string_blocks():
     assert exc.value.reason_code == "INVALID_LIST"
 
 
+@pytest.mark.parametrize("value", [5, 3.5, object()])
+def test_non_iterable_list_fails_closed_not_typeerror(value):
+    # Regression, same class as the set() one below: a non-iterable reached list() and
+    # escaped as a raw TypeError — past build_task's typed-error contract AND past
+    # run_task's `except MvpRuntimeError`, so the process died with a traceback instead
+    # of returning a BLOCK.
+    with pytest.raises(TaskIntakeBlocked) as exc:
+        _build(constraints=value)
+    assert exc.value.reason_code == "INVALID_LIST"
+
+
+def test_other_iterables_are_still_accepted():
+    # Caught rather than type-checked, so a tuple/set of strings keeps working.
+    assert _build(constraints=("a", "b"))["scope"]["constraints"] == ["a", "b"]
+
+
 def test_unhashable_core_rule_item_fails_closed_not_typeerror():
     # Regression: active_core_rule_ids with an unhashable element used to raise a
     # raw TypeError at set(); it must fail closed with a precise BLOCK code.
