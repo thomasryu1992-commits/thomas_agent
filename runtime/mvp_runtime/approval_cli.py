@@ -30,7 +30,7 @@ from typing import Any
 
 from . import approval, consumption, timeutil
 from .approval_store import ApprovalStore
-from .audit import build_approval_request_audit
+from .audit import build_approval_request_audit, build_audit_gap_record
 from .binding import bind_task_to_core
 from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from .errors import MvpRuntimeError
@@ -38,6 +38,22 @@ from .intake import build_task
 from .permission import build_memory_promotion_permission_decision
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore, find_candidate
+
+
+def _record_audit_gap(ledger: LedgerStore, gap_kind: str, exc: MvpRuntimeError, *,
+                      subject_ref: str, now: str) -> None:
+    """Durably note that something happened whose audit event could not be written.
+
+    Best-effort by construction: this runs *because* a ledger write already failed, so it
+    may fail too. The stderr warning stays either way — this only adds the durable half
+    when it can."""
+    try:
+        ledger.append_block(build_audit_gap_record(
+            gap_kind, reason_code=exc.reason_code, subject_ref=subject_ref,
+            now=now, detail=exc.reason,
+        ))
+    except MvpRuntimeError:
+        sys.stderr.write("WARNING: the audit gap itself could not be recorded\n")
 
 
 def _find_candidate(candidate_id: str) -> dict[str, Any]:
@@ -81,8 +97,10 @@ def _request(args: argparse.Namespace) -> int:
         ))
         sys.stderr.write(f"LEDGER: approval request audited to {ledger.root}\n")
     except MvpRuntimeError as exc:
-        # The ask is already durable in the approval store; report the audit gap rather
-        # than pretending the request was never made.
+        # The ask is already durable in the approval store, so it stands — but the gap must
+        # not live only in a stderr line nobody keeps. Record it durably (different file, so
+        # a broken audit ledger does not take this with it) and let `recovery` surface it.
+        _record_audit_gap(ledger, "approval_request", exc, subject_ref=request["approval_id"], now=now)
         sys.stderr.write(f"WARNING: request audit failed ({exc.reason_code}); the request stands\n")
 
     sys.stdout.write(approval.request_message(request, permission_decision) + "\n")

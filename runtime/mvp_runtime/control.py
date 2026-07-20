@@ -37,7 +37,7 @@ from runtime.read_only_kernel import integrity
 
 from . import jsonl, timeutil
 from .events import stamped_event
-from .audit import verify_audit_chain
+from .audit import AUDIT_GAP_TYPE, verify_audit_chain
 from .errors import ControlBlocked, MvpRuntimeError
 from .paths import repo_root as _repo_root
 
@@ -129,6 +129,23 @@ def _audit_limit(arg: Any) -> int:
     except (TypeError, ValueError):
         return AUDIT_TAIL_DEFAULT
     return max(1, min(requested, AUDIT_TAIL_MAX))
+
+
+def _audit_gap_summary(ledger: Any) -> list[dict[str, Any]]:
+    """Recorded audit gaps from the block ledger, newest last; empty on any read problem.
+
+    Deliberately silent on failure: this enriches a diagnosis, and `recovery` already
+    reports an unreadable store in its own section — raising here would break the exact
+    command an operator runs when things are broken."""
+    read = getattr(ledger, "read_blocks", None)
+    if read is None:
+        return []
+    try:
+        entries = read()
+    except MvpRuntimeError:
+        return []
+    return [e for e in entries
+            if isinstance(e, dict) and e.get("record_type") == AUDIT_GAP_TYPE]
 
 
 def audit_lines(ledger: Any | None, *, limit: int = AUDIT_TAIL_DEFAULT) -> str:
@@ -246,6 +263,19 @@ def recovery_lines(state: ControlState, ledger: Any | None) -> str:
                      + (f"  ({entry['detail']})" if entry["detail"] and entry["status"] != "ABSENT" else ""))
         if entry["status"] == "CORRUPT":
             corrupt.append(entry["kind"])
+
+    gaps = _audit_gap_summary(ledger)
+    if gaps:
+        lines.append("")
+        lines.append(f"KNOWN AUDIT GAPS: {len(gaps)} recorded.")
+        lines.append("  Something happened whose audit event could not be written (the record")
+        lines.append("  itself is durable; only its trail entry is missing). These are recorded")
+        lines.append("  deliberately, so the hole is answerable instead of silent:")
+        for gap in gaps[-5:]:
+            lines.append(f"   {gap.get('created_at')}  {gap.get('gap_kind')}  "
+                         f"{gap.get('reason_code')}  {gap.get('subject_ref')}")
+        if len(gaps) > 5:
+            lines.append(f"   ... and {len(gaps) - 5} more")
 
     lines.append("")
     if corrupt:
