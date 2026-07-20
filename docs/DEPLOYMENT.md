@@ -74,6 +74,12 @@ Omit the `MVP_OPERATOR_CHANNEL` / `MVP_HOSTED_PROVIDER` env vars (and their secr
 network-free mock loop — a safe smoke test that touches no network and answers with the
 deterministic mock analysis.
 
+`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain
+(`google_ai_studio,groq` — pass `GROQ_API_KEY` too). Every member needs its own
+safety-flag activation on the mounted state volume; a chain with an unknown or
+unauthorized member fails closed at startup rather than silently shrinking. The next
+member is tried only when the previous one answers 503/429 even after its own retry.
+
 ## Emergency controls on a running service
 
 The operator console works two ways against the same mounted control state, so a `kill` from

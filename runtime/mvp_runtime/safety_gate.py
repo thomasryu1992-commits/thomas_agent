@@ -400,3 +400,56 @@ def select_gated(
     # Opted in — the gate must pass before the capable implementation is even constructed.
     authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
     return gated_factory(authorization)
+
+
+def select_gated_chain(
+    *,
+    env_var: str,
+    factories: dict[str, Callable[[Authorization], T]],
+    flags: Sequence[str],
+    default_factory: Callable[[], T],
+    now: str | None = None,
+    root: Path | None = None,
+) -> list[T]:
+    """Chain-aware gate chokepoint: the env var may name SEVERAL providers, comma-separated
+    in failover order, each with its own grant.
+
+    Same safety property as :func:`select_gated` — every capable implementation is built
+    only from an :class:`Authorization` its own grant produced — extended with one rule for
+    the plural case: **a chain never silently shrinks.** The single-value semantics match
+    ``select_gated`` exactly (unset/unrecognized value -> the inert default; a known value
+    -> its gate must open). But the moment the operator writes a comma they are being
+    explicit, so in a multi-value list ANY unknown name or ANY member whose gate does not
+    open fails the WHOLE selection closed: a typo'd or unauthorized fallback must surface
+    at startup, not at 3am when the primary goes down and the chain quietly has one link.
+
+    Returns the built implementations in the order named (length 1 for the single/default
+    cases). The caller decides how to compose them — composition is capability logic, not
+    gate logic.
+    """
+    stamp = now or _utc_now_iso()
+    choice = os.environ.get(env_var, "").strip().lower()
+    if not choice:
+        return [default_factory()]
+    names = [part.strip() for part in choice.split(",") if part.strip()]
+    if len(names) == 1 and names[0] not in factories:
+        # Single unrecognized opt-in falls back to inert, exactly like select_gated —
+        # never to any capable path.
+        return [default_factory()]
+    unknown = [name for name in names if name not in factories]
+    if unknown:
+        raise SafetyGateBlocked(
+            "UNKNOWN_PROVIDER",
+            f"failover chain names unknown provider(s) {unknown}; "
+            f"known: {sorted(factories)} (fail-closed — a chain never silently shrinks)",
+        )
+    if len(set(names)) != len(names):
+        raise SafetyGateBlocked(
+            "DUPLICATE_PROVIDER", f"failover chain names a provider twice: {names}"
+        )
+    # Authorize EVERY member before constructing ANY member: a chain that cannot fully
+    # open must not leave already-built capable implementations behind.
+    authorizations = [
+        authorize(flags, provider_id=name, now=stamp, root=root) for name in names
+    ]
+    return [factories[name](auth) for name, auth in zip(names, authorizations)]
