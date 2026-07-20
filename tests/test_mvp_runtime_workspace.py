@@ -309,3 +309,22 @@ def test_resolve_target_rejects_trailing_dot_or_space_components(bad, root):
     with pytest.raises(ToolBlocked) as exc:
         resolve_target(bad, root=root)
     assert exc.value.reason_code == "INVALID_PATH"
+
+
+@pytest.mark.parametrize("bad", ["CON", "con.md", "NUL.txt", "com1", "LPT9.md", "sub/aux.md"])
+def test_resolve_target_rejects_windows_reserved_device_names(bad, root):
+    """Windows resolves these to DEVICES wherever they appear as a basename, extension or
+    not. Without the check the outcomes were confusing rather than wrong: CON/NUL report
+    exists()=True and blocked as TARGET_EXISTS (a lie — nothing exists), COM1 reached
+    open() and failed as WRITE_FAILED, and a console device can raise ValueError, which
+    the writer did not catch. Refused by name on every platform so the reason is true."""
+    with pytest.raises(ToolBlocked) as exc:
+        resolve_target(bad, root=root)
+    assert exc.value.reason_code == "INVALID_PATH"
+
+
+@pytest.mark.parametrize("ok", ["console.md", "connection.txt", "sub/context.md", "nulls.md"])
+def test_resolve_target_allows_names_that_merely_start_with_a_device_name(ok, root):
+    """The check is on the basename before the extension, not a prefix match: "console.md"
+    is an ordinary file."""
+    assert resolve_target(ok, root=root).name == ok.rsplit("/", 1)[-1]
