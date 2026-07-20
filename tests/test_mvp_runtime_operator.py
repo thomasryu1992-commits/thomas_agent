@@ -266,8 +266,10 @@ def test_run_once_handles_registered_and_replies():
     ch = MockOperatorChannel(inbound=[_msg(), _msg(sender_id="tg-99999")])
     summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
     assert summary["handled"] == 1 and summary["dropped"] == 1
-    assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-777"
-    assert "Key findings" in ch.sent[0][1]
+    # Two sends for the one accepted task: the received-working ack, then the answer.
+    assert [c for c, _ in ch.sent] == ["chat-777", "chat-777"]
+    assert "분석 중" in ch.sent[0][1]
+    assert "Key findings" in ch.sent[1][1]
 
 
 @requires_local_core
@@ -394,9 +396,12 @@ def test_telegram_send_chunks_long_replies(monkeypatch):
 
 # --- a failed send must not abort the rest of an already-claimed batch --------
 
-class _FirstSendFailsChannel(MockOperatorChannel):
+class _ResultSendFailsChannel(MockOperatorChannel):
+    """Fails the RESULT delivery (never the working ack, which is best-effort anyway) —
+    the shape of a reply Telegram rejects after the work is already done."""
+
     def send(self, chat_id: str, text: str) -> None:
-        if not self.sent:
+        if "분석 결과" in text:
             self.sent.append((chat_id, "<DELIVERY FAILED>"))
             raise OperatorBlocked("CHANNEL_TRANSPORT", "telegram sendMessage returned an error response")
         super().send(chat_id, text)
@@ -413,7 +418,7 @@ def test_run_once_send_failure_does_not_abort_the_batch(tmp_path, monkeypatch):
         lambda *a, **k: {"status": "COMPLETED", "final_response": "분석 결과", "records": {}},
     )
     control_store = ControlStore(tmp_path / "control")
-    ch = _FirstSendFailsChannel(inbound=[_msg(text="이 사업 아이디어를 분석해줘"), _msg(text="/kill")])
+    ch = _ResultSendFailsChannel(inbound=[_msg(text="이 사업 아이디어를 분석해줘"), _msg(text="/kill")])
     summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW, control_store=control_store)
     assert summary["handled"] == 2 and summary["send_failures"] == 1
     assert control_store.load().mode == KILLED          # the queued /kill still fired
@@ -453,6 +458,101 @@ def test_botname_suffixed_kill_fires_the_emergency_verb(tmp_path, monkeypatch):
     )
     assert reply.accepted is True and reply.status == "CONTROL"
     assert control_store.load().mode == KILLED
+
+
+# --- the received-working ack --------------------------------------------------
+
+def test_ack_is_sent_before_the_pipeline_runs(tmp_path, monkeypatch):
+    """A pipeline run holds the channel for a model call's length; to the operator that
+    silence was indistinguishable from a dead service. The ack fires after every refusal
+    path and before run_task, on the same verified chat."""
+    import runtime.mvp_runtime.operator as operator_mod
+    order: list[str] = []
+
+    def fake_run_task(text, **kwargs):
+        order.append("run_task")
+        return {"status": "COMPLETED", "final_response": "분석 결과", "records": {}}
+    monkeypatch.setattr(operator_mod, "run_task", fake_run_task)
+
+    ch = MockOperatorChannel(inbound=[_msg()])
+    original_send = ch.send
+
+    def tracking_send(chat_id, text):
+        order.append("send")
+        original_send(chat_id, text)
+    ch.send = tracking_send
+
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
+    assert summary["handled"] == 1
+    assert order == ["send", "run_task", "send"]          # ack -> pipeline -> result
+    assert [c for c, _ in ch.sent] == ["chat-777", "chat-777"]
+    assert "분석 중" in ch.sent[0][1]                       # the notice
+    assert ch.sent[1][1] == "분석 결과"                     # then the answer
+
+
+def test_no_ack_for_refused_or_command_messages(tmp_path, monkeypatch):
+    """The ack means "the pipeline is about to run" — a refusal, a console command, or an
+    approval answer must produce exactly its one reply, never a working notice."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+    from runtime.mvp_runtime.control import ControlStore
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    control_store = ControlStore(tmp_path / "control")
+
+    for text in ("/status", "/killl", "/approve approval_nope"):
+        ch = MockOperatorChannel(inbound=[_msg(text=text)])
+        run_operator_once(ch, REG, provider=MockProvider(), now=NOW,
+                          control_store=control_store,
+                          approval_store=ApprovalStore(tmp_path / "approvals"))
+        assert len(ch.sent) == 1, text                    # one reply, no ack
+        assert "분석 중" not in ch.sent[0][1], text
+
+    # Unverified senders still get nothing at all.
+    ch = MockOperatorChannel(inbound=[_msg(sender_id="tg-99999")])
+    run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
+    assert ch.sent == []
+
+
+def test_a_failed_ack_does_not_cost_the_run(tmp_path, monkeypatch):
+    """The notice is a courtesy, the run is the job: an ack send failure is swallowed and
+    the pipeline result is still produced and delivered."""
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "COMPLETED", "final_response": "분석 결과", "records": {}},
+    )
+
+    class _AckFailsChannel(MockOperatorChannel):
+        def send(self, chat_id, text):
+            if "분석 중" in text:
+                raise OperatorBlocked("CHANNEL_TRANSPORT", "telegram sendMessage returned an error response")
+            super().send(chat_id, text)
+
+    ch = _AckFailsChannel(inbound=[_msg()])
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
+    assert summary["handled"] == 1 and summary["send_failures"] == 0
+    assert [t for _, t in ch.sent] == ["분석 결과"]         # the answer still arrived
+
+
+def test_provider_error_reply_carries_the_retry_hint(monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "BLOCKED", "records": {},
+                         "block": {"stage": "pipeline", "reason_code": "PROVIDER_ERROR",
+                                   "message": "hosted provider request failed or timed out"}},
+    )
+    reply = handle_operator_message(_msg(), registration=REG, provider=MockProvider(), now=NOW)
+    assert reply.status == "BLOCKED" and reply.reason_code == "PROVIDER_ERROR"
+    assert "다시 보내" in reply.text                        # actionable, not just a code
+    # Other block codes stay terse — the hint is only for the one transient case.
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "BLOCKED", "records": {},
+                         "block": {"stage": "pipeline", "reason_code": "OUT_OF_MVP_SCOPE", "message": "x"}},
+    )
+    other = handle_operator_message(_msg(), registration=REG, provider=MockProvider(), now=NOW)
+    assert "다시 보내" not in other.text
 
 
 # --- R9 over the loop: /approve must reach the approval path ------------------
