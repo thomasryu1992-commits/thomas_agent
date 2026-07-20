@@ -146,12 +146,18 @@ def build_task(
     data_sensitivity: str = "INTERNAL",
     now: str | None = None,
     created_by: str | None = None,
+    planned_agents: int = 1,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build and validate a RECEIVED ``task.v0.3`` record. Fail-closed.
 
     Raises ``TaskIntakeBlocked`` on any missing/invalid input, a secret-bearing
     key, or a schema violation. Never returns an unvalidated record.
+
+    ``planned_agents`` sizes the task's execution-budget allocation (1 = the specialist
+    alone, 2 = R7's independent validator too). Each assignment gets a single agent's
+    share, and the contract forbids an assignment exceeding the parent task's remaining
+    budget — so the task allocation has to cover the team the plan will actually invoke.
     """
     raw_request = _require_text(raw_request, "EMPTY_REQUEST", "raw_request", max_len=MAX_REQUEST_CHARS)
     requester_id = _require_text(requester_id, "MISSING_REQUESTER", "requester_id", max_len=200)
@@ -268,7 +274,7 @@ def build_task(
             "rejection_criteria": list(DEFAULT_REJECTION_CRITERIA),
             "validation_output_refs": [],
         },
-        "execution_budget": default_execution_budget(),
+        "execution_budget": default_execution_budget(agents=planned_agents),
         "results": {
             "agent_output_refs": [],
             "program_result_refs": [],

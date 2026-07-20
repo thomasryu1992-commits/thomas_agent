@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -224,16 +225,21 @@ class WebSearchTool:
             method="GET",
             headers={"Accept": "application/json", "X-Subscription-Token": api_key},
         )
+        # Measure the real round trip; a hard-coded 0 is a metric that is only ever wrong
+        # (see providers.HostedProvider.generate). Monotonic, so a clock adjustment
+        # mid-call cannot produce a negative duration.
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
             raise ToolError("TOOL_TRANSPORT", "search request failed or timed out") from None
+        latency_ms = int((time.monotonic() - started) * 1000)
 
-        return self._parse(query, raw, count)
+        return self._parse(query, raw, count, latency_ms=latency_ms)
 
-    def _parse(self, query: str, raw: str, count: int) -> SearchResult:
+    def _parse(self, query: str, raw: str, count: int, *, latency_ms: int = 0) -> SearchResult:
         try:
             data: dict[str, Any] = json.loads(raw)
             results = data["web"]["results"]
@@ -255,4 +261,4 @@ class WebSearchTool:
                 snippet=str(item.get("description", "")),
                 source=self.provider_id,
             ))
-        return SearchResult(query=query, hits=hits, tool_version=self.tool_version, latency_ms=0)
+        return SearchResult(query=query, hits=hits, tool_version=self.tool_version, latency_ms=latency_ms)

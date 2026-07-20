@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -134,16 +135,22 @@ class GoogleAIStudioProvider:
             method="POST",
             headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         )
+        # Measure the real round trip. A hard-coded 0 made every audited invocation claim a
+        # 0 ms egress — a metric that is only ever wrong, and useless exactly when a slow
+        # or hanging provider is what the operator is investigating. Monotonic, so a clock
+        # adjustment mid-call cannot produce a negative or absurd duration.
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
             raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+        latency_ms = int((time.monotonic() - started) * 1000)
 
-        return self._parse(raw)
+        return self._parse(raw, latency_ms=latency_ms)
 
-    def _parse(self, raw: str) -> ProviderResult:
+    def _parse(self, raw: str, *, latency_ms: int = 0) -> ProviderResult:
         try:
             data: dict[str, Any] = json.loads(raw)
             text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -169,6 +176,10 @@ class GoogleAIStudioProvider:
             model_version=self._model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            latency_ms=0,
+            latency_ms=latency_ms,
             finish_reason=finish_reason,
+            # Token accounting is the provider's self-report: an absent usageMetadata block
+            # yields 0/0, which passes every budget check trivially. Record that the call
+            # was unmetered rather than let it read as a genuinely free one.
+            usage_reported=bool(usage),
         )
