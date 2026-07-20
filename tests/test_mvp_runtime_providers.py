@@ -78,6 +78,186 @@ def test_select_provider_hosted_with_activation_returns_hosted(monkeypatch, tmp_
     assert isinstance(provider, GoogleAIStudioProvider)
 
 
+def test_select_provider_unknown_single_value_falls_back_to_mock(monkeypatch):
+    """Single unrecognized opt-in falls back to inert, exactly as before the chain."""
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "bogus_vendor")
+    assert isinstance(select_provider(), MockProvider)
+
+
+# --- the failover chain (selection) ------------------------------------------
+
+def _grant(tmp_path, provider_id):
+    evidence_rel = f".runtime_governance_state/{provider_id}_approval.md"
+    (tmp_path / ".runtime_governance_state").mkdir(exist_ok=True)
+    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
+    record = build_activation_record(
+        flags=[MODEL_INVOCATION, NETWORK_ACCESS], provider_id=provider_id,
+        activated_at="2026-07-01T00:00:00Z", expires_at="2026-12-31T23:59:59Z",
+        evidence_ref=evidence_rel, authority_level="P4",
+    )
+    path = safety_gate.activation_path(tmp_path, provider_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_chain_with_both_grants_builds_ordered_failover(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.providers import FailoverProvider, GroqProvider
+
+    _grant(tmp_path, "google_ai_studio")
+    _grant(tmp_path, "groq")
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,groq")
+    provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(provider, FailoverProvider)
+    assert isinstance(provider._providers[0], GoogleAIStudioProvider)
+    assert isinstance(provider._providers[1], GroqProvider)
+    assert provider.model_id == "google_ai_studio+groq"
+
+
+def test_chain_member_without_its_own_grant_fails_the_whole_selection(monkeypatch, tmp_path):
+    """A chain never silently shrinks: a fallback whose gate does not open must surface
+    at startup, not at 3am when the primary goes down and the chain quietly has one link."""
+    _grant(tmp_path, "google_ai_studio")          # groq grant deliberately absent
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,groq")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+
+def test_chain_with_a_typo_fails_closed_not_shrunk(monkeypatch, tmp_path):
+    _grant(tmp_path, "google_ai_studio")
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,grok")   # typo'd fallback
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "UNKNOWN_PROVIDER"
+
+
+def test_chain_with_a_duplicate_is_refused(monkeypatch, tmp_path):
+    _grant(tmp_path, "google_ai_studio")
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,google_ai_studio")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "DUPLICATE_PROVIDER"
+
+
+# --- the failover chain (runtime behavior) ------------------------------------
+
+class _StubProvider:
+    def __init__(self, model_id, outcome):
+        self.model_id = model_id
+        self.model_version = model_id
+        self.network_egress = True
+        self._outcome = outcome
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        self.calls += 1
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+def _result(model_id):
+    from runtime.mvp_runtime.worker import ProviderResult
+    return ProviderResult(analysis={"summary": "s", "key_findings": [], "facts": []},
+                          model_id=model_id, model_version=model_id,
+                          input_tokens=1, output_tokens=1, latency_ms=1)
+
+
+def test_failover_switches_only_on_unavailable(monkeypatch):
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    primary = _StubProvider("google_ai_studio",
+                            ProviderError("PROVIDER_UNAVAILABLE", "hosted provider returned HTTP 503 after 1 retry"))
+    fallback = _StubProvider("groq", _result("groq"))
+    result = FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=30)
+    assert result.model_id == "groq"              # the SERVING member is named in the record
+    assert primary.calls == 1 and fallback.calls == 1
+
+
+@pytest.mark.parametrize("code", ["PROVIDER_TRANSPORT", "MALFORMED_RESPONSE", "NO_API_KEY"])
+def test_failover_does_not_switch_on_non_unavailable_failures(code):
+    """A timeout already ate the runtime budget and a 4xx/parse failure will not change
+    with a different vendor — those propagate immediately."""
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    primary = _StubProvider("google_ai_studio", ProviderError(code, "nope"))
+    fallback = _StubProvider("groq", _result("groq"))
+    with pytest.raises(ProviderError) as exc:
+        FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=30)
+    assert exc.value.reason_code == code
+    assert fallback.calls == 0                    # never consulted
+
+
+def test_failover_exhausted_is_typed_and_names_the_chain_outcome():
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    a = _StubProvider("google_ai_studio", ProviderError("PROVIDER_UNAVAILABLE", "HTTP 503 after 1 retry"))
+    b = _StubProvider("groq", ProviderError("PROVIDER_UNAVAILABLE", "HTTP 429 after 1 retry"))
+    with pytest.raises(ProviderError) as exc:
+        FailoverProvider([a, b]).generate("p", max_output_tokens=100, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_UNAVAILABLE"
+    assert "every provider" in exc.value.reason and "HTTP 429" in exc.value.reason
+
+
+# --- the Groq adapter ----------------------------------------------------------
+
+def _groq_response(analysis: dict) -> str:
+    return json.dumps({
+        "choices": [{"message": {"content": json.dumps(analysis)}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 21, "completion_tokens": 43},
+    })
+
+
+def test_groq_happy_path_parses_openai_shape(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    _patch_urlopen_sequence(monkeypatch, [_groq_response(_ANALYSIS)])
+    result = GroqProvider(authorization=_groq_auth()).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.model_id == "groq"
+    assert result.analysis["summary"] == "A concise analysis."
+    assert result.input_tokens == 21 and result.output_tokens == 43
+    assert result.usage_reported is True
+
+
+def test_groq_retries_a_503_once(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [_http_error(503), _groq_response(_ANALYSIS)])
+    result = GroqProvider(authorization=_groq_auth()).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.retries == 1 and sleeps == [5]
+
+
+def test_groq_without_key_fails_closed(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(ProviderError) as exc:
+        GroqProvider(authorization=_groq_auth()).generate("p", max_output_tokens=10, timeout_seconds=10)
+    assert exc.value.reason_code == "NO_API_KEY"
+
+
+def test_groq_without_authorization_fails_closed(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        GroqProvider().generate("p", max_output_tokens=10, timeout_seconds=10)
+    assert exc.value.reason_code == "NOT_AUTHORIZED"
+
+
+def _groq_auth():
+    from runtime.mvp_runtime.safety_gate import Authorization
+    return Authorization(
+        flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="groq",
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    )
+
+
 # --- Egress self-guard in generate() ----------------------------------------
 
 def test_generate_without_authorization_fails_closed(monkeypatch):
@@ -186,13 +366,15 @@ def test_a_transient_status_is_retried_once_and_succeeds(monkeypatch, status):
 
 def test_a_persistent_transient_status_fails_after_one_retry(monkeypatch):
     """Exactly one retry (the budget contract's max_retry_count: 1) — a persistently
-    overloaded provider becomes a typed BLOCK naming the status, never a retry loop."""
+    overloaded provider becomes a typed PROVIDER_UNAVAILABLE naming the status, never a
+    retry loop. UNAVAILABLE (not TRANSPORT) is what lets a failover chain distinguish
+    "not now" from "no"."""
     monkeypatch.setenv(API_ENV, "k")
     sleeps = _patch_urlopen_sequence(monkeypatch, [_http_error(503), _http_error(503)])
     with pytest.raises(ProviderError) as exc:
         GoogleAIStudioProvider(authorization=_AUTH).generate(
             "analyze", max_output_tokens=8000, timeout_seconds=30)
-    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert exc.value.reason_code == "PROVIDER_UNAVAILABLE"
     assert "HTTP 503" in exc.value.reason and "after 1 retry" in exc.value.reason
     assert "redacted.invalid" not in exc.value.reason        # the URL is never echoed
     assert sleeps == [5]

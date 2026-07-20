@@ -46,8 +46,13 @@ def gate_banners(*, channel: Any = None, provider: Any = None,
         if isinstance(channel, TelegramChannel):
             sys.stderr.write("SAFETY_GATE: network-capable operator channel authorized (network_access)\n")
     if provider is not None:
-        from .providers import GoogleAIStudioProvider
-        if isinstance(provider, GoogleAIStudioProvider):
+        from .providers import FailoverProvider, GoogleAIStudioProvider, GroqProvider
+        if isinstance(provider, FailoverProvider):
+            sys.stderr.write(
+                f"SAFETY_GATE: network-capable provider failover chain authorized "
+                f"({provider.model_id}; model_invocation, network_access per member)\n"
+            )
+        elif isinstance(provider, (GoogleAIStudioProvider, GroqProvider)):
             sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
     if search_tool is not None:
         from .tools import WebSearchTool

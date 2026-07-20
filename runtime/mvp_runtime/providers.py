@@ -44,6 +44,9 @@ HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
 GOOGLE_AI_STUDIO = "google_ai_studio"
 # The default hosted model. Not "gemini-2.5-flash": that 404s for newly issued keys.
 DEFAULT_HOSTED_MODEL = "gemini-flash-latest"
+GROQ = "groq"
+GROQ_MODEL_ENV = "MVP_GROQ_MODEL"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 _NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
 # The two HTTP statuses that mean "not now", not "no": 503 (the model pool is overloaded —
@@ -57,6 +60,46 @@ _MAX_RETRIES = 1
 _RETRY_BACKOFF_SECONDS = 5
 
 
+def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: int) -> tuple[str, int, int]:
+    """POST and return ``(raw_body, latency_ms, retries)`` — the one HTTP path every
+    hosted adapter shares, so the retry rule and the two typed failure classes cannot
+    drift between vendors.
+
+    - ``PROVIDER_UNAVAILABLE``: 503/429 still failing after the single retry. This is the
+      provider saying "not now" — the failure class a failover chain may switch on.
+    - ``PROVIDER_TRANSPORT``: everything else (4xx, network failure, timeout). "No", not
+      "not now" — switching providers would spend time on an answer that will not change
+      (4xx) or double the worst-case wall clock (timeout already ate max_runtime_seconds).
+
+    Errors name the HTTP status (the server's answer, safe) — never the URL or the key.
+    """
+    started = time.monotonic()
+    retries = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            # Order matters: HTTPError IS a URLError; catch it first to read the status.
+            if exc.code in _RETRYABLE_HTTP and retries < _MAX_RETRIES:
+                retries += 1
+                time.sleep(_RETRY_BACKOFF_SECONDS)
+                continue
+            suffix = f" after {retries} retry" if retries else ""
+            if exc.code in _RETRYABLE_HTTP:
+                raise ProviderError(
+                    "PROVIDER_UNAVAILABLE", f"hosted provider returned HTTP {exc.code}{suffix}"
+                ) from None
+            raise ProviderError(
+                "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{suffix}"
+            ) from None
+        except (TimeoutError, urllib.error.URLError):
+            # Deliberately generic — never echo the URL or key.
+            raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+    return raw, int((time.monotonic() - started) * 1000), retries
+
+
 def select_provider(*, now: str | None = None, root: Path | None = None) -> Provider:
     """Choose the worker's provider — the enforced Safety-Flag Gate chokepoint.
 
@@ -67,23 +110,34 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     alone is NOT sufficient: with no valid activation this fails closed
     (:class:`SafetyGateBlocked`) rather than silently opening a network path.
 
-    The gate ordering lives in ``safety_gate.select_gated``, shared with the search tool,
-    operator channel, and workspace writer. The model name is read inside the gated factory
-    — it only matters once the gate has already opened.
+    The env var also accepts an ordered, comma-separated **failover chain**
+    (``MVP_HOSTED_PROVIDER=google_ai_studio,groq``): each member needs its OWN grant, a
+    chain with an unknown or unauthorized member fails closed entirely (it never silently
+    shrinks), and at run time the next member is tried only when the previous one is
+    UNAVAILABLE (503/429 even after its own retry) — never on a timeout or a 4xx.
+
+    The gate ordering lives in ``safety_gate.select_gated_chain``, shared semantics with
+    the search tool, operator channel, and workspace writer. Model names are read inside
+    the gated factories — they only matter once the gate has already opened.
     """
-    return safety_gate.select_gated(
+    chain = safety_gate.select_gated_chain(
         env_var=HOSTED_PROVIDER_ENV,
-        opt_in_value=GOOGLE_AI_STUDIO,
+        factories={
+            GOOGLE_AI_STUDIO: lambda authorization: GoogleAIStudioProvider(
+                model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
+                authorization=authorization,
+            ),
+            GROQ: lambda authorization: GroqProvider(
+                model=os.environ.get(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL).strip(),
+                authorization=authorization,
+            ),
+        },
         flags=_NETWORK_FLAGS,
-        provider_id=GOOGLE_AI_STUDIO,
         default_factory=MockProvider,
-        gated_factory=lambda authorization: GoogleAIStudioProvider(
-            model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
-            authorization=authorization,
-        ),
         now=now,
         root=root,
     )
+    return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -145,34 +199,10 @@ class GoogleAIStudioProvider:
             method="POST",
             headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         )
-        # Measure the real round trip. A hard-coded 0 made every audited invocation claim a
-        # 0 ms egress — a metric that is only ever wrong, and useless exactly when a slow
-        # or hanging provider is what the operator is investigating. Monotonic, so a clock
-        # adjustment mid-call cannot produce a negative or absurd duration. Latency covers
-        # every attempt including the backoff — it is what the operator actually waited.
-        started = time.monotonic()
-        retries = 0
-        while True:
-            try:
-                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                    raw = response.read().decode("utf-8")
-                break
-            except urllib.error.HTTPError as exc:
-                # Order matters: HTTPError IS a URLError, so it must be caught first for
-                # the status code to be readable. The code is safe to name in the error
-                # (it is the server's answer, never the URL or the key).
-                if exc.code in _RETRYABLE_HTTP and retries < _MAX_RETRIES:
-                    retries += 1
-                    time.sleep(_RETRY_BACKOFF_SECONDS)
-                    continue
-                suffix = f" after {retries} retry" if retries else ""
-                raise ProviderError(
-                    "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{suffix}"
-                ) from None
-            except (TimeoutError, urllib.error.URLError):
-                # Deliberately generic — never echo the URL or key.
-                raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
-        latency_ms = int((time.monotonic() - started) * 1000)
+        # Latency is measured inside the shared helper and covers every attempt including
+        # the backoff — it is what the operator actually waited (monotonic, so a clock
+        # adjustment mid-call cannot produce a negative duration).
+        raw, latency_ms, retries = _post_json_with_retry(request, timeout_seconds=timeout_seconds)
 
         return self._parse(raw, latency_ms=latency_ms, retries=retries)
 
@@ -210,3 +240,133 @@ class GoogleAIStudioProvider:
             usage_reported=bool(usage),
             retries=retries,
         )
+
+
+class GroqProvider:
+    """Groq provider via the OpenAI-compatible chat-completions endpoint.
+
+    The failover alternative CLAUDE.md's locked decision has always named. Same shape as
+    :class:`GoogleAIStudioProvider`: gate-authorized per its own ``groq`` grant, key read
+    from ``api_key_env`` **by name** at call time (sent in the Authorization header —
+    never stored, logged, or echoed), egress re-verified at the moment of the call, and
+    the shared retry/latency/typed-failure HTTP path.
+    """
+
+    model_id = GROQ
+    network_egress = True  # makes an outbound HTTPS call — audited as network egress
+    _ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_GROQ_MODEL,
+        api_key_env: str = "GROQ_API_KEY",
+        authorization: Authorization | None = None,
+    ):
+        self._model = model
+        self._api_key_env = api_key_env  # the NAME of the env var, never the value
+        self.model_version = model
+        # Egress authorization from the Safety-Flag Gate. Without it, generate() refuses
+        # to open a socket — so a directly-constructed provider cannot bypass the gate.
+        self._authorization = authorization
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.model_id,
+            now=timeutil.utc_now_iso(),
+        )
+        api_key = os.environ.get(self._api_key_env)
+        if not api_key:
+            raise ProviderError("NO_API_KEY", f"environment variable {self._api_key_env} is not set")
+
+        body = json.dumps({
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt + _RESPONSE_INSTRUCTION}],
+            "max_tokens": int(max_output_tokens),
+            "response_format": {"type": "json_object"},
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            self._ENDPOINT,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        raw, latency_ms, retries = _post_json_with_retry(request, timeout_seconds=timeout_seconds)
+        return self._parse(raw, latency_ms=latency_ms, retries=retries)
+
+    def _parse(self, raw: str, *, latency_ms: int = 0, retries: int = 0) -> ProviderResult:
+        try:
+            data: dict[str, Any] = json.loads(raw)
+            text = data["choices"][0]["message"]["content"]
+            analysis = json.loads(_strip_code_fences(text))
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
+        if not isinstance(analysis, dict) or any(k not in analysis for k in ("summary", "key_findings", "facts")):
+            raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
+
+        try:
+            usage = data.get("usage", {}) if isinstance(data, dict) else {}
+            usage = usage if isinstance(usage, dict) else {}
+            input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            output_tokens = int(usage.get("completion_tokens", 0) or 0)
+            finish_reason = str((data.get("choices", [{}]) or [{}])[0].get("finish_reason", "stop"))
+        except (AttributeError, KeyError, IndexError, ValueError, TypeError):
+            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned unparseable usage metadata") from None
+        return ProviderResult(
+            analysis=analysis,
+            model_id=self.model_id,
+            model_version=self._model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+            finish_reason=finish_reason,
+            usage_reported=bool(usage),
+            retries=retries,
+        )
+
+
+class FailoverProvider:
+    """Ordered failover across gate-authorized providers.
+
+    Composition only — every member was already built from its own
+    :class:`safety_gate.Authorization` by ``select_gated_chain``, so this class holds no
+    authority of its own and adds none. The next member is tried on exactly ONE failure
+    class: ``PROVIDER_UNAVAILABLE`` (503/429 persisting through the member's own retry —
+    the provider saying "not now", the failure class observed live 2026-07-20). A timeout
+    already consumed the full ``max_runtime_seconds`` and a 4xx/parse failure will not
+    change with a different vendor's answer, so those propagate immediately.
+
+    The returned :class:`ProviderResult` carries the SERVING member's ``model_id``/
+    ``model_version``, so the invocation record and audit trail always name who actually
+    answered — a failover that reads as the primary would hide instability from the ledger.
+    """
+
+    network_egress = True  # every member is a network provider by construction
+
+    def __init__(self, providers: list[Any]):
+        if len(providers) < 2:
+            raise ProviderError("INVALID_CHAIN", "a failover chain needs at least two providers")
+        self._providers = list(providers)
+        # Named for banners/diagnostics; the serving member's id lands in each result.
+        self.model_id = "+".join(getattr(p, "model_id", "?") for p in self._providers)
+        self.model_version = self.model_id
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        last: ProviderError | None = None
+        for provider in self._providers:
+            try:
+                return provider.generate(
+                    prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds
+                )
+            except ProviderError as exc:
+                if exc.reason_code != "PROVIDER_UNAVAILABLE":
+                    raise
+                last = exc
+        # Every member said "not now". Typed, and it names the whole chain's outcome.
+        raise ProviderError(
+            "PROVIDER_UNAVAILABLE",
+            f"every provider in the failover chain is unavailable (last: {last.reason})",
+        ) from None
