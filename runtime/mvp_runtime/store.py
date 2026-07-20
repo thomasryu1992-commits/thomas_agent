@@ -13,7 +13,9 @@ Three files, each append-only (one JSON object per line):
   returns the tip so a new run chains onto the previous run's last event, making the
   ledger tamper-evident *across* runs, not just within one.
 - ``records.jsonl`` — the non-audit records produced by a run, each tagged with its kind
-  and the run's trace id.
+  and the run's trace id. Includes ``budget_usage``: what the run actually spent against
+  its allocation (the task/assignment budgets are pre-execution allocations, so their
+  usage blocks are zero by construction and cannot carry this).
 - ``blocks.jsonl`` — lightweight block entries for runs that fail *before* a Core binding
   exists. Such a failure cannot be expressed as an ``audit_event.v0.1`` (that schema
   requires a bound task with a ``core_context_binding_id``), so a minimal, still-durable
@@ -56,6 +58,7 @@ _RECORD_KINDS = (
     "write_permission_decision", "tool_use",
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
+    "budget_usage",
 )
 
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as

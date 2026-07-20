@@ -65,6 +65,11 @@ class ProviderResult:
     output_tokens: int
     latency_ms: int
     finish_reason: str = "stop"
+    # False when the provider returned no usage metadata at all. Token accounting is
+    # post-hoc and provider-self-reported, so absent usage silently reads as "0 tokens"
+    # and every budget check passes trivially — the record must say which it was rather
+    # than let an unmetered call look like a free one.
+    usage_reported: bool = True
 
 
 @runtime_checkable
@@ -366,6 +371,9 @@ def run_analysis_worker(
         "input_tokens": int(result.input_tokens),
         "output_tokens": int(result.output_tokens),
         "tokens_used": tokens_used,
+        # False => the provider reported no usage; tokens_used is a floor of 0, not a
+        # measurement, and the budget check below it passed vacuously.
+        "usage_reported": bool(result.usage_reported),
         "latency_ms": int(result.latency_ms),
         "finish_reason": result.finish_reason,
         # Whether this invocation crossed the network boundary (audited downstream).
