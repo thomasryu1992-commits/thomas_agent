@@ -124,11 +124,22 @@ def test_provider_error_blocks_the_run():
 
 
 @requires_local_core
-def test_search_tool_error_blocks_the_run():
-    # A failing read-only search fails the whole run closed (no silent skip).
+def test_search_tool_error_degrades_the_run_not_blocks():
+    """Search is enrichment, not the task (explicit decision with the 2026-07-21 Tavily
+    rollout): a failing backend — quota exhausted, transport, malformed — degrades the
+    run to no live evidence, recorded and audited, never a blocked analysis. Inverts the
+    original fail-closed behavior; 'recorded and audited' is what keeps it non-silent."""
     r = run_task(REQUEST, provider=MockProvider(), search_tool=_ErrorSearchTool(), now=NOW)
-    assert r["status"] == "BLOCKED"
-    assert r["block"]["reason_code"] == "TOOL_ERROR"
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    tool_use = r["records"]["tool_use"]
+    assert tool_use["degraded"] is True
+    assert tool_use["degraded_reason_code"] == "TOOL_ERROR"
+    assert tool_use["result_count"] == 0 and tool_use["sources"] == []
+    tool_events = [e for e in r["records"]["audit_trail"]
+                   if "TOOL_USED" in e["event"]["reason_codes"]]
+    assert len(tool_events) == 1
+    assert "SEARCH_DEGRADED" in tool_events[0]["event"]["reason_codes"]
+    assert "TOOL_ERROR" in tool_events[0]["event"]["reason_codes"]
 
 
 @requires_local_core

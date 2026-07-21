@@ -32,12 +32,12 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError
+from .errors import MvpRuntimeError, PersistenceError, ToolBlocked
 from .intake import build_task
 from .memory import retrieve_working_memory
 from .prime import plan_task
 from .store import LedgerStore
-from .tools import MockSearchTool, SearchTool, run_search
+from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
 from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
@@ -302,8 +302,16 @@ def run_task(
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
+        # Search is enrichment, not the task: a backend failure (quota exhausted,
+        # transport, malformed response) DEGRADES the run to no live evidence — recorded
+        # and audited (SEARCH_DEGRADED), never a blocked analysis. The R7.2
+        # triage-degradation precedent, decided with the Tavily rollout.
         query = plan["task"].get("request", {}).get("normalized_goal") or raw_request
-        search_hits, tool_use = run_search(query, tool=search_tool, now=now)
+        try:
+            search_hits, tool_use = run_search(query, tool=search_tool, now=now)
+        except ToolBlocked as exc:
+            search_hits = []
+            tool_use = degraded_search_record(search_tool, query, exc.reason_code, now=now)
         records["tool_use"] = tool_use
 
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).

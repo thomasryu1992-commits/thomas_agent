@@ -322,6 +322,7 @@ def build_pipeline_audit(
             f"in_memory:{search_permission_decision['permission_decision_id']}"
             if search_permission_decision else f"in_memory:task:{tid}"
         )
+        degraded = bool(tool_use.get("degraded"))
         steps.append(dict(
             event_type="OTHER",
             actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
@@ -330,9 +331,13 @@ def build_pipeline_audit(
             subject_ref=f"in_memory:tool_use:{tid}", subject_fingerprint=tool_fp,
             summary=(f"Read-only tool used: {tool_use.get('tool_id')} ({tool_use.get('tool_class')}) — "
                      f"{tool_use.get('result_count')} results from {tool_use.get('sources')}, "
-                     f"network_egress={tool_egress}."),
+                     f"network_egress={tool_egress}, degraded={degraded}."),
             outcome="RECORDED",
-            reason_codes=["TOOL_USED", "NETWORK_EGRESS" if tool_egress else "NO_NETWORK_EGRESS"],
+            # A degraded search (backend failure -> run continues with no live evidence)
+            # must be visible on the chain, with the failure's own reason code beside it.
+            reason_codes=(["TOOL_USED", "NETWORK_EGRESS" if tool_egress else "NO_NETWORK_EGRESS"]
+                          + (["SEARCH_DEGRADED", str(tool_use.get("degraded_reason_code"))]
+                             if degraded else [])),
             related_record_refs=[search_permdec_ref],
             evidence_refs=[f"in_memory:tool_use:{tid}"], payload_sha256=tool_fp,
         ))
