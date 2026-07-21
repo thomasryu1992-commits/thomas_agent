@@ -117,6 +117,31 @@ def test_request_stores_a_pending_ask_and_audits_it(monkeypatch, tmp_path, capsy
 
 
 @requires_local_core
+def test_request_shows_past_decision_history(monkeypatch, tmp_path, capsys):
+    """Stage 2 of preference inference over the real CLI: a new ask carries the summary
+    of Thomas's past decisions on the same action type, reasons verbatim."""
+    astore, wm, ledger = _patch_defaults(monkeypatch, tmp_path)
+    first = _seed_candidate(wm, content="첫 번째 후보 내용")
+    assert main(["request", "--candidate-id", first["candidate_id"]]) == EXIT_OK
+    capsys.readouterr()
+    first_id = astore.pending()[0]["approval_id"]
+    approval.apply_command(
+        astore, "reject", first_id, now=timeutil.utc_now_iso(),
+        verification=approval.Verification(
+            approved_by="Thomas", method="telegram_private_control_channel",
+            verification_ref=f"telegram:private_chat:test:{first_id}"),
+        reason="일반 분석 지식이라 승격 가치가 낮음",
+    )
+
+    second = _seed_candidate(wm, content="두 번째 후보 내용")
+    assert main(["request", "--candidate-id", second["candidate_id"]]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "과거 유사 결정 (memory.validated.promote): 승인 0 / 거절 1" in out
+    assert "일반 분석 지식이라 승격 가치가 낮음" in out
+    assert "결정은 이 요청 자체로 판단해 주세요" in out
+
+
+@requires_local_core
 def test_consume_refuses_when_the_safety_flag_is_off(monkeypatch, tmp_path, capsys):
     """The consume verb is gated exactly like every other capability: without the opt-in
     env + activation, the CLI must refuse loudly and promote nothing."""

@@ -24,3 +24,6 @@ THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
 # are per-machine runtime output, never shared source, so a controlled write can never
 # reach a commit.
 workspace/
+
+# pytest --basetemp target (CLAUDE.md workaround for the pytest-of-thomas PermissionError)
+.pytest_tmp/

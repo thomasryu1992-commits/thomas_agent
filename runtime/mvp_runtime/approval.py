@@ -379,12 +379,86 @@ def format_request(approval: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def request_message(approval: Mapping[str, Any], permission_decision: Mapping[str, Any]) -> str:
-    """``format_request`` with the decision's own reasons folded in for display."""
+def request_message(
+    approval: Mapping[str, Any],
+    permission_decision: Mapping[str, Any],
+    *,
+    history: Mapping[str, Any] | None = None,
+) -> str:
+    """``format_request`` with the decision's own reasons folded in for display.
+
+    ``history`` (stage 2 of preference inference) appends a summary of Thomas's past
+    decisions on the same action type — see :func:`decision_history`. Advisory display
+    only: it informs the ask, it never answers it."""
     enriched = dict(approval)
     enriched["_decision_reasons"] = permission_decision.get("decision", {}).get("decision_reasons", [])
     enriched["_risk_reasons"] = permission_decision.get("risk", {}).get("risk_reasons", [])
-    return format_request(enriched)
+    message = format_request(enriched)
+    history_block = format_decision_history(history) if history is not None else ""
+    return message + history_block
+
+
+# Decided states that carry a preference signal. CONSUMED is an approval Thomas granted
+# and later spent — for inference it counts as approved; EXPIRED carries no decision.
+_HISTORY_APPROVED_STATUSES = frozenset({STATUS_APPROVED, STATUS_CONSUMED})
+_HISTORY_DECIDED_STATUSES = _HISTORY_APPROVED_STATUSES | {STATUS_REJECTED}
+
+
+def decision_history(store: "Any", approval: Mapping[str, Any], *, limit: int = 3) -> dict[str, Any]:
+    """Summarize Thomas's past decisions on the SAME action type as this new ask.
+
+    Stage 2 of preference inference: the append-only approval store already accumulates
+    every decision with its reason (stage 1); this reads them back — a read of the
+    runtime's own state, like ``pending()``/``show`` — so a new Approval Request can show
+    the pattern next to the ask. Latest state per approval wins (the store's ``current()``
+    semantics); the new request itself is excluded; boilerplate default reasons are
+    flagged so a bare verdict is never mistaken for an articulated preference.
+    """
+    action_type = approval.get("approved_action_snapshot", {}).get("action_type")
+    decided = [
+        a for a in store.current().values()
+        if a.get("approval_id") != approval.get("approval_id")
+        and a.get("status") in _HISTORY_DECIDED_STATUSES
+        and a.get("approved_action_snapshot", {}).get("action_type") == action_type
+    ]
+    decided.sort(key=lambda a: str(a.get("decision", {}).get("decided_at", "")), reverse=True)
+    recent = [
+        {
+            "status": (STATUS_APPROVED if a["status"] in _HISTORY_APPROVED_STATUSES else STATUS_REJECTED),
+            "decided_at": a.get("decision", {}).get("decided_at"),
+            "reason": a.get("decision", {}).get("decision_reason"),
+            "boilerplate": a.get("decision", {}).get("decision_reason") in _DEFAULT_DECISION_REASONS,
+        }
+        for a in decided[:limit]
+    ]
+    return {
+        "action_type": action_type,
+        "approved": sum(1 for a in decided if a["status"] in _HISTORY_APPROVED_STATUSES),
+        "rejected": sum(1 for a in decided if a["status"] == STATUS_REJECTED),
+        "recent": recent,
+    }
+
+
+def format_decision_history(history: Mapping[str, Any]) -> str:
+    """Render :func:`decision_history` for the request message; empty when no history.
+
+    Ends with an advisory line because the summary exists to inform Thomas, never to
+    nudge an automatic outcome — inferred patterns must not become auto-approval."""
+    approved = int(history.get("approved", 0))
+    rejected = int(history.get("rejected", 0))
+    if approved + rejected == 0:
+        return ""
+    lines = [
+        "",
+        f"과거 유사 결정 ({history.get('action_type')}): 승인 {approved} / 거절 {rejected}",
+    ]
+    for item in history.get("recent", []):
+        stamp = str(item.get("decided_at") or "?")[:10]
+        reason = item.get("reason")
+        shown = "(이유 미기재)" if item.get("boilerplate") or not reason else str(reason)
+        lines.append(f"- [{item.get('status')} {stamp}] {shown}")
+    lines.append("(참고용 이력입니다 — 결정은 이 요청 자체로 판단해 주세요.)")
+    return "\n" + "\n".join(lines)
 
 
 def approval_fingerprint(approval: Mapping[str, Any]) -> str:
@@ -397,6 +471,13 @@ def approval_fingerprint(approval: Mapping[str, Any]) -> str:
 CMD_APPROVE = "approve"
 CMD_REJECT = "reject"
 _COMMANDS = frozenset({CMD_APPROVE, CMD_REJECT})
+
+# The boilerplate recorded when Thomas answers without his own reason. One authority:
+# apply_command records these, and the decision-history summary uses the same strings to
+# tell a real preference signal apart from a bare verdict.
+DEFAULT_APPROVE_REASON = "Approved by Thomas on the verified control channel."
+DEFAULT_REJECT_REASON = "Rejected by Thomas on the verified control channel."
+_DEFAULT_DECISION_REASONS = frozenset({DEFAULT_APPROVE_REASON, DEFAULT_REJECT_REASON})
 
 
 def parse_approval_command(text: Any) -> tuple[str, str | None, str | None] | None:
@@ -479,10 +560,7 @@ def apply_command(
         )
 
     granted = verb == CMD_APPROVE
-    default_reason = (
-        "Approved by Thomas on the verified control channel."
-        if granted else "Rejected by Thomas on the verified control channel."
-    )
+    default_reason = DEFAULT_APPROVE_REASON if granted else DEFAULT_REJECT_REASON
     decided = record_decision(
         approval, permission_decision,
         granted=granted,
