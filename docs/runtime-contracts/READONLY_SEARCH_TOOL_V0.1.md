@@ -60,6 +60,33 @@ Without step 1 the run fails closed (`ACTIVATION_MISSING`); without step 2 it fa
 (`NO_API_KEY`); the default (no `MVP_SEARCH_TOOL`) uses the network-free mock. The backend
 is swappable — only the endpoint/parse and provider id in `WebSearchTool` are Brave-specific.
 
+### Tavily backend (2026-07-21)
+
+After Brave dropped its free tier for new users, **Tavily** became the recommended free
+backend (`TavilySearchTool`): the Researcher plan is recurring free — 1,000 credits/month,
+no payment method — which keeps the "free hosted APIs only" locked decision intact. Same
+gate posture, own provider id and grant:
+
+```bash
+python scripts/activate_safety_flag.py --provider-id tavily_search --flags network_access \
+    --authority-level P1 --reason "Operator decision: enable read-only Tavily search."
+export TAVILY_API_KEY=...
+MVP_SEARCH_TOOL=tavily_search python -m runtime.mvp_runtime.cli "..."
+```
+
+One backend at a time — a search failover chain was considered and deliberately not built.
+
+### Degradation (search is enrichment, not the task)
+
+A backend failure at run time — quota exhausted, transport error, malformed response —
+**degrades the run instead of blocking it** (explicit Thomas decision with the Tavily
+rollout): the analysis proceeds with no live evidence, the `tool_use` record carries
+`degraded: true` + the failure's reason code, and the `TOOL_USED` audit event adds
+`SEARCH_DEGRADED` + that code to the chain. The R7.2 triage-degradation precedent:
+recorded and audited, never silent, and exhausting a free tier can never turn into a paid
+call or a dead agent. Selection-time failures are unchanged and still fail closed
+(`ACTIVATION_MISSING` etc.) — a misconfigured gate is not a degraded search.
+
 ## Key modules
 
 - `runtime/mvp_runtime/tools.py` — `SearchTool` protocol, `MockSearchTool`, `WebSearchTool`,

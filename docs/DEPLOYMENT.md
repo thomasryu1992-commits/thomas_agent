@@ -44,7 +44,9 @@ or a registration). To process real requests, provide the same local state a wor
   the active approved Core the pipeline binds each task to.
 - `safety_flag_activations/<provider_id>.json` — **one grant per provider**, each required to
   enable that provider: `telegram` for the real control-channel transport, `google_ai_studio`
-  for the hosted model, `brave_search` for real search, `workspace.writer` for real writes.
+  for the hosted model, `tavily_search` (or `brave_search`) for real search, `workspace.writer`
+  for real writes. Real search is selected with `MVP_SEARCH_TOOL=tavily_search` +
+  `TAVILY_API_KEY`; a backend failure at run time degrades the run (audited), never blocks it.
   Build each with `scripts/activate_safety_flag.py --provider-id ...`; the referenced
   `safety_flag_evidence/` file must be mounted too, since the gate verifies it exists.
   Granting one provider never grants another — a bare image still fails closed on every
