@@ -569,3 +569,37 @@ def test_run_once_routes_approve_to_the_approval_path_not_the_pipeline(tmp_path,
                                 approval_store=ApprovalStore(tmp_path / "approvals"))
     assert summary["handled"] == 1
     assert ch.sent and "no approval with id" in ch.sent[0][1]
+
+
+@requires_local_core
+def test_free_text_after_the_id_becomes_the_recorded_decision_reason(tmp_path):
+    """Over the deployed loop, `/reject <id> <free text>` must land Thomas's own words in
+    the durable decision record — the accumulated reasons are what later preference
+    inference reads, so boilerplate-only capture here would starve it."""
+    from runtime.mvp_runtime import approval, permission
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+    from runtime.mvp_runtime.binding import bind_task_to_core
+    from runtime.mvp_runtime.intake import build_task
+
+    task = build_task("이 사업 아이디어를 분석해줘", now=NOW)
+    _, bound = bind_task_to_core(task, now=NOW)
+    candidate = {
+        "candidate_id": "memcand_reason01",
+        "candidate_type": "operating_preference",
+        "content": "Thomas prefers cash-flow first framing in business analyses.",
+    }
+    permdec = permission.build_memory_promotion_permission_decision(bound, candidate, now=NOW)
+    request = approval.build_approval_request(permdec, now=NOW)
+    astore = ApprovalStore(tmp_path / "approvals")
+    astore.append([request])
+    astore.append_permission_decision(permdec)
+
+    ch = MockOperatorChannel(
+        inbound=[_msg(text=f"/reject {request['approval_id']} 근거 문서가 부족함")])
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW,
+                                approval_store=astore)
+    assert summary["handled"] == 1
+    decided = astore.get(request["approval_id"])
+    assert decided["status"] == "REJECTED"
+    assert decided["decision"]["decision_reason"] == "근거 문서가 부족함"
+    assert ch.sent and "Reason recorded: 근거 문서가 부족함" in ch.sent[0][1]

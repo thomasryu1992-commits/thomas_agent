@@ -106,7 +106,8 @@ def _request(args: argparse.Namespace) -> int:
     sys.stdout.write(approval.request_message(request, permission_decision) + "\n")
     sys.stderr.write(
         f"\nSTORED: {request['approval_id']} is PENDING until {request['validity']['expires_at']}.\n"
-        "Send it to Thomas on the verified control channel; he answers with /approve or /reject.\n"
+        "Send it to Thomas on the verified control channel; he answers with /approve <id> [reason] "
+        "or /reject <id> [reason].\n"
     )
     return EXIT_OK
 

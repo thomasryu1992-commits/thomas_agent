@@ -206,11 +206,12 @@ def handle_operator_message(
     if approval_store is not None:
         approval_command = approval.parse_approval_command(text)
         if approval_command is not None:
-            verb, approval_id = approval_command
+            verb, approval_id, reason = approval_command
             try:
                 outcome = approval.apply_command(
                     approval_store, verb, approval_id, now=now or timeutil.utc_now_iso(),
                     repo_root=repo_root,
+                    reason=reason,
                     verification=approval.Verification(
                         approved_by=registration.approver,
                         method=approval.TELEGRAM_VERIFICATION_METHOD,
@@ -253,7 +254,7 @@ def handle_operator_message(
         # included — is the fail-open direction.
         return OperatorReply(
             text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
-                  "/audit /recovery /approve <id> /reject <id>"),
+                  "/audit /recovery /approve <id> [reason] /reject <id> [reason]"),
             accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
         )
 
