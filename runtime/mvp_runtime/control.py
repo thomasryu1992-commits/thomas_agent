@@ -414,6 +414,19 @@ def _control_event(action: str, state: ControlState, *, now: str, task_id: str |
     )
 
 
+def command_verb(head: str, *, slash_seen: bool) -> str:
+    """Normalize one control-channel command token: strip the optional leading slash,
+    lowercase, and drop a Telegram ``@botname`` suffix. Telegram clients append the bot's
+    username to a command picked from the command menu (``/kill@thomas_bot``) — the suffix
+    is addressing, not part of the verb, and an unstripped ``kill@...`` would miss the
+    verb table. One tokenizer shared by the console and approval parsers, so the two
+    channels can never drift on what counts as a verb."""
+    verb = head.lstrip("/").strip().lower()
+    if slash_seen and "@" in verb:
+        verb = verb.split("@", 1)[0]
+    return verb
+
+
 def parse_command(text: Any) -> tuple[str, str | None] | None:
     """Parse an operator console command, or return None if the text is not a command.
 
@@ -425,12 +438,7 @@ def parse_command(text: Any) -> tuple[str, str | None] | None:
     if not stripped:
         return None
     head, _, rest = stripped.partition(" ")
-    verb = head.lstrip("/").strip().lower()
-    if stripped.startswith("/") and "@" in verb:
-        # Telegram clients append the bot's username to a command picked from the command
-        # menu (``/kill@thomas_bot``). The suffix is addressing, not part of the verb — an
-        # unstripped ``kill@...`` would miss COMMANDS and the emergency verb would not fire.
-        verb = verb.split("@", 1)[0]
+    verb = command_verb(head, slash_seen=stripped.startswith("/"))
     verb = _ALIASES.get(verb, verb)
     if verb not in COMMANDS:
         return None

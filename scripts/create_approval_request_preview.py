@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Operator tool (STATUS: manual-only, no automated caller).
+
+Builds a schema-valid Approval Request *preview* record for inspection — referenced from
+``docs/runtime-contracts/APPROVAL_FLOW_V0.1.md`` as the way to look at the record shape
+without going through the live ask path (``approval_cli request``). Nothing in CI, the
+gates, or the runtime invokes it; if the live flow's rendering ever fully supersedes it,
+it can be retired with just that doc reference.
+"""
 from __future__ import annotations
 
 import argparse

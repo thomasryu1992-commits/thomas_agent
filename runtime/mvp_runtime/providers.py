@@ -179,6 +179,60 @@ def select_validator_provider(*, now: str | None = None, root: Path | None = Non
     return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 
 
+_REQUIRED_ANALYSIS_KEYS = ("summary", "key_findings", "facts")
+
+
+def _parse_hosted_response(
+    raw: str,
+    *,
+    model_id: str,
+    model_version: str,
+    latency_ms: int,
+    retries: int,
+    extract_text: Any,
+    extract_usage: Any,
+) -> ProviderResult:
+    """Shared fail-closed parse for a hosted provider's response.
+
+    Only the vendor JSON paths differ between adapters; the fence-stripping, the
+    required-analysis-field check, both MALFORMED_RESPONSE guards, and the
+    ProviderResult construction were near-identical copies. ``extract_text(data)``
+    returns the model's text; ``extract_usage(data)`` returns
+    ``(usage_dict, input_tokens, output_tokens, finish_reason)`` — any vendor-shape
+    surprise inside either fails closed as MALFORMED_RESPONSE, never escapes raw.
+    """
+    try:
+        data: dict[str, Any] = json.loads(raw)
+        text = extract_text(data)
+        analysis = json.loads(_strip_code_fences(text))
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
+    if not isinstance(analysis, dict) or any(k not in analysis for k in _REQUIRED_ANALYSIS_KEYS):
+        raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
+
+    # Usage metadata is provider-supplied too: parsing it must fail closed as
+    # MALFORMED_RESPONSE like the body above, not escape as a raw TypeError that
+    # crashes the CLI/loop instead of BLOCKing the run.
+    try:
+        usage, input_tokens, output_tokens, finish_reason = extract_usage(data)
+    except (AttributeError, KeyError, IndexError, ValueError, TypeError):
+        raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned unparseable usage metadata") from None
+    return ProviderResult(
+        analysis=analysis,
+        model_id=model_id,
+        model_version=model_version,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=latency_ms,
+        finish_reason=finish_reason,
+        # Token accounting is the provider's self-report: an absent usage block yields
+        # 0/0, which passes every budget check trivially. Record that the call was
+        # unmetered rather than let it read as a genuinely free one.
+        usage_reported=bool(usage),
+        retries=retries,
+    )
+
+
 def _strip_code_fences(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
@@ -247,38 +301,25 @@ class GoogleAIStudioProvider:
         return self._parse(raw, latency_ms=latency_ms, retries=retries)
 
     def _parse(self, raw: str, *, latency_ms: int = 0, retries: int = 0) -> ProviderResult:
-        try:
-            data: dict[str, Any] = json.loads(raw)
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            analysis = json.loads(_strip_code_fences(text))
-        except (KeyError, IndexError, ValueError, TypeError):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
-        if not isinstance(analysis, dict) or any(k not in analysis for k in ("summary", "key_findings", "facts")):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
+        def extract_text(data: dict[str, Any]) -> str:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
 
-        # Usage metadata is provider-supplied too: parsing it must fail closed as
-        # MALFORMED_RESPONSE like the body above, not escape as a raw TypeError that
-        # crashes the CLI/loop instead of BLOCKing the run.
-        try:
+        def extract_usage(data: dict[str, Any]) -> tuple[dict[str, Any], int, int, str]:
+            # An ABSENT usage block is a real (unmetered) case; a PRESENT non-dict one is
+            # vendor junk and must fail closed — the .get on it raises into the helper's
+            # MALFORMED_RESPONSE guard. The two vendors used to disagree on this.
             usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
-            input_tokens = int(usage.get("promptTokenCount", 0) or 0)
-            output_tokens = int(usage.get("candidatesTokenCount", 0) or 0)
-            finish_reason = str((data.get("candidates", [{}]) or [{}])[0].get("finishReason", "stop"))
-        except (AttributeError, KeyError, IndexError, ValueError, TypeError):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned unparseable usage metadata") from None
-        return ProviderResult(
-            analysis=analysis,
-            model_id=self.model_id,
-            model_version=self._model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            latency_ms=latency_ms,
-            finish_reason=finish_reason,
-            # Token accounting is the provider's self-report: an absent usageMetadata block
-            # yields 0/0, which passes every budget check trivially. Record that the call
-            # was unmetered rather than let it read as a genuinely free one.
-            usage_reported=bool(usage),
-            retries=retries,
+            return (
+                usage,
+                int(usage.get("promptTokenCount", 0) or 0),
+                int(usage.get("candidatesTokenCount", 0) or 0),
+                str((data.get("candidates", [{}]) or [{}])[0].get("finishReason", "stop")),
+            )
+
+        return _parse_hosted_response(
+            raw, model_id=self.model_id, model_version=self._model,
+            latency_ms=latency_ms, retries=retries,
+            extract_text=extract_text, extract_usage=extract_usage,
         )
 
 
@@ -339,33 +380,24 @@ class GroqProvider:
         return self._parse(raw, latency_ms=latency_ms, retries=retries)
 
     def _parse(self, raw: str, *, latency_ms: int = 0, retries: int = 0) -> ProviderResult:
-        try:
-            data: dict[str, Any] = json.loads(raw)
-            text = data["choices"][0]["message"]["content"]
-            analysis = json.loads(_strip_code_fences(text))
-        except (KeyError, IndexError, ValueError, TypeError):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
-        if not isinstance(analysis, dict) or any(k not in analysis for k in ("summary", "key_findings", "facts")):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
+        def extract_text(data: dict[str, Any]) -> str:
+            return data["choices"][0]["message"]["content"]
 
-        try:
+        def extract_usage(data: dict[str, Any]) -> tuple[dict[str, Any], int, int, str]:
+            # Same stance as the Google adapter: absent usage = unmetered, present junk
+            # fails closed (this adapter used to quietly coerce junk to unmetered).
             usage = data.get("usage", {}) if isinstance(data, dict) else {}
-            usage = usage if isinstance(usage, dict) else {}
-            input_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            output_tokens = int(usage.get("completion_tokens", 0) or 0)
-            finish_reason = str((data.get("choices", [{}]) or [{}])[0].get("finish_reason", "stop"))
-        except (AttributeError, KeyError, IndexError, ValueError, TypeError):
-            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned unparseable usage metadata") from None
-        return ProviderResult(
-            analysis=analysis,
-            model_id=self.model_id,
-            model_version=self._model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            latency_ms=latency_ms,
-            finish_reason=finish_reason,
-            usage_reported=bool(usage),
-            retries=retries,
+            return (
+                usage,
+                int(usage.get("prompt_tokens", 0) or 0),
+                int(usage.get("completion_tokens", 0) or 0),
+                str((data.get("choices", [{}]) or [{}])[0].get("finish_reason", "stop")),
+            )
+
+        return _parse_hosted_response(
+            raw, model_id=self.model_id, model_version=self._model,
+            latency_ms=latency_ms, retries=retries,
+            extract_text=extract_text, extract_usage=extract_usage,
         )
 
 

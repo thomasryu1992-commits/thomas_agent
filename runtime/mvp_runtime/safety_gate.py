@@ -32,7 +32,9 @@ from runtime.read_only_kernel.integrity import IntegrityError
 
 from .authority import rank_of
 from .errors import SafetyGateBlocked
+from .paths import RESERVED_BASENAMES
 from .paths import repo_root as _repo_root
+from .timeutil import FIXED_UTC_PATTERN
 from .timeutil import utc_now_iso as _utc_now_iso
 
 # The capability a gated selection returns (a Provider, SearchTool, OperatorChannel, ...).
@@ -67,19 +69,11 @@ ACTIVATIONS_DIR_REL = ".runtime_governance_state/safety_flag_activations"
 # no traversal, and no absolute path. `\Z`, not `$`: `$` also matches before a trailing
 # newline, so "brave\n" passed and would have created a filename containing a newline.
 _PROVIDER_ID_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
-# Windows resolves these names to devices wherever they appear as a basename, with or
-# without an extension, so a grant filed under one would not be a normal file. Refused
-# by name rather than left to fail in a confusing way at open() time.
-_RESERVED_BASENAMES = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
-# The one timestamp form the gate's lexicographic comparisons are correct for.
-# `\A…\Z`, not `^…$`, for exactly the reason documented at _PROVIDER_ID_PATTERN above:
-# `$` also matches before a trailing newline, so "…Z\n" would have passed the very
-# check that exists to keep the expiry compares byte-exact.
-_TIMESTAMP_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+# Windows device names — one authority in paths.py, shared with the workspace writer.
+_RESERVED_BASENAMES = RESERVED_BASENAMES
+# The one timestamp form the gate's lexicographic expiry compares are correct for —
+# single authority in timeutil (anchor rationale documented there).
+_TIMESTAMP_PATTERN = FIXED_UTC_PATTERN
 
 ACTIVATION_MARKER = "safety_flag_activation.v0"
 _HASH_FIELD = "content_sha256"

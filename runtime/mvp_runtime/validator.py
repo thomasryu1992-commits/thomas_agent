@@ -47,7 +47,7 @@ from .validation import (
     ValidationError,
     stricter_result,
 )
-from .worker import Provider, ProviderResult
+from .worker import Provider, ProviderResult, _str_list
 
 VALIDATOR_WORKER_ID = "mvp.independent_validation.llm"
 VALIDATOR_WORKER_VERSION = "0.1.0"
@@ -165,10 +165,6 @@ def build_validator_prompt(task: Mapping[str, Any], agent_output: Mapping[str, A
         "Put your findings in key_findings, actionable revision requests (REVISE/BLOCK "
         "only) in next_actions, and remaining risks in risks."
     )
-
-
-def _str_list(value: Any) -> list[str]:
-    return [x for x in value if isinstance(x, str) and x.strip()] if isinstance(value, list) else []
 
 
 def _verdict_of(analysis: Mapping[str, Any]) -> tuple[str, str, bool]:

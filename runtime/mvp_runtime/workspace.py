@@ -41,6 +41,7 @@ from runtime.read_only_kernel import integrity
 from . import safety_gate, timeutil
 from .control import ControlStore
 from .errors import ToolBlocked, ToolError
+from .paths import RESERVED_BASENAMES
 from .paths import repo_root as _repo_root
 from .safety_gate import FILESYSTEM_WRITE, Authorization
 
@@ -55,13 +56,10 @@ WRITE_TOOL_CLASS = "write"
 MAX_CONTENT_BYTES = 1_000_000  # 1 MB — an analysis artifact, not a data dump
 MAX_PATH_CHARS = 200
 
-# Windows device names. Reserved on every platform here so a path is legal or not for the
-# same reason everywhere, and so the workspace record can never name a device.
-_RESERVED_BASENAMES = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
+# Windows device names — one authority in paths.py, shared with the safety gate.
+# Reserved on every platform here so a path is legal or not for the same reason
+# everywhere, and so the workspace record can never name a device.
+_RESERVED_BASENAMES = RESERVED_BASENAMES
 
 # Opting into the real disk-writing writer. As with the model provider and the search
 # tool, the env var alone is NOT sufficient: the Safety-Flag Gate must authorize

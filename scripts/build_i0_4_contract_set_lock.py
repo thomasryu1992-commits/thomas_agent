@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""One-shot generator (STATUS: dormant by design, no automated caller).
+
+Regenerates ``generated/legacy/i0_4_consolidation/I0_4_CONTRACT_SET_LOCK.yaml`` from the
+frozen I0.4 contract-set index. The committed lock is the artifact of record; this script
+exists only to rebuild it if the frozen set were ever deliberately changed — a legacy
+governance decision, not a routine operation. Kept because the lock's ``generated_by``
+names it; nothing in CI, the gates, or the runtime invokes it.
+"""
 from __future__ import annotations
 import argparse, hashlib, yaml
 from datetime import datetime, timezone
