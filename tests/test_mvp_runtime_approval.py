@@ -476,6 +476,49 @@ def test_request_message_appends_history_only_when_given(tmp_path):
 # --- the store --------------------------------------------------------------------
 
 
+def test_store_appends_serialize_under_the_sidecar_lock(tmp_path):
+    """The approval store is written concurrently by the operator loop (/approve) and
+    docker-exec CLIs (approval_cli request), and a row embeds its whole action snapshot —
+    large enough to flush in several syscalls. Appends must hold the per-file sidecar
+    lock like every other shared store; this store was the one left unlocked."""
+    import threading
+
+    from runtime.mvp_runtime.filelock import locked
+
+    store = ApprovalStore(tmp_path)
+    store.append([{"approval_id": "approval_lock_a", "status": "PENDING"}])
+    assert (tmp_path / "approvals.jsonl.lock").is_file()
+    store.append_permission_decision({"permission_decision_id": "permdec_lock_a"})
+    assert (tmp_path / "permission_decisions.jsonl.lock").is_file()
+
+    order: list[str] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with locked(tmp_path / "approvals.jsonl.lock", code="LOCK_TEST", label="test"):
+            order.append("holder_in")
+            entered.set()
+            release.wait(timeout=10)
+            order.append("holder_out")
+
+    def writer():
+        entered.wait(timeout=10)
+        store.append([{"approval_id": "approval_lock_b", "status": "PENDING"}])
+        order.append("append_done")
+
+    threads = [threading.Thread(target=holder), threading.Thread(target=writer)]
+    for t in threads:
+        t.start()
+    entered.wait(timeout=10)
+    threading.Timer(0.3, release.set).start()
+    for t in threads:
+        t.join(timeout=30)
+    # The append could not interleave with the held lock — it waited for the release.
+    assert order == ["holder_in", "holder_out", "append_done"]
+    assert store.get("approval_lock_b") is not None
+
+
 @requires_local_core
 def test_store_current_is_latest_wins_and_pending_excludes_decided(tmp_path):
     store = ApprovalStore(tmp_path)
