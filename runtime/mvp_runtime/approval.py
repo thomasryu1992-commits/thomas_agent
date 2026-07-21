@@ -369,6 +369,8 @@ def format_request(approval: Mapping[str, Any]) -> str:
         f"Action Fingerprint: {approval['action_fingerprint']}",
         "",
         f"가능한 선택:  /approve {approval['approval_id']}  |  /reject {approval['approval_id']}",
+        "(id 뒤에 이유를 적으면 결정 기록에 남습니다 — 예: /reject "
+        f"{approval['approval_id']} 근거 문서가 부족함)",
         "",
         "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
         "승인 후 소비(consume)는 별도의 운영자 단계이며, approval_consumption 세이프티",
@@ -397,12 +399,18 @@ CMD_REJECT = "reject"
 _COMMANDS = frozenset({CMD_APPROVE, CMD_REJECT})
 
 
-def parse_approval_command(text: Any) -> tuple[str, str | None] | None:
-    """Parse ``/approve <approval_id>`` or ``/reject <approval_id>``; None if not one.
+def parse_approval_command(text: Any) -> tuple[str, str | None, str | None] | None:
+    """Parse ``/approve <approval_id> [reason...]`` / ``/reject <approval_id> [reason...]``.
 
+    Returns ``(verb, approval_id, reason)``; None if the text is not an approval command.
     The id is mandatory in practice (see :func:`apply_command`) — the Governance Policy
     requires the answer to name the approval (``approval_id_or_fingerprint_code_required``),
     so a bare "/approve" is an ambiguous expression and must not decide anything.
+
+    Everything after the id is Thomas's own free-text reason, recorded verbatim as the
+    decision's ``decision_reason``. Without it the store accumulates only the boilerplate
+    "decided on the verified channel" — capturing the *why* is what makes the decision
+    history usable for later preference inference.
     """
     if not isinstance(text, str):
         return None
@@ -417,7 +425,8 @@ def parse_approval_command(text: Any) -> tuple[str, str | None] | None:
         verb = verb.split("@", 1)[0]
     if verb not in _COMMANDS:
         return None
-    return verb, (rest.strip() or None)
+    approval_ref, _, reason = rest.strip().partition(" ")
+    return verb, (approval_ref or None), (reason.strip() or None)
 
 
 def apply_command(
@@ -488,6 +497,9 @@ def apply_command(
         f"{decided['status']}: {snapshot['action_type']} on {snapshot['target_ref']}\n"
         f"Approval {decided['approval_id']} is now {decided['status']} and is single-use."
     )
+    if reason:
+        # Echo the recorded reason so Thomas sees his own words made it into the record.
+        reply += f"\nReason recorded: {decided['decision']['decision_reason']}"
     if granted:
         reply += (
             "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically. "

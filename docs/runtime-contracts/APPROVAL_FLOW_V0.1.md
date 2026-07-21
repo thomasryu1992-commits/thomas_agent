@@ -119,8 +119,14 @@ binds to — while leaving it **not executable**:
 |---|---|
 | Local console (ask) | `python -m runtime.mvp_runtime.approval_cli request --candidate-id memcand_...` |
 | Local console (read) | `... approval_cli list` / `... approval_cli show <approval_id>` |
-| Control channel (answer) | `/approve <approval_id>` · `/reject <approval_id>` |
+| Control channel (answer) | `/approve <approval_id> [reason…]` · `/reject <approval_id> [reason…]` |
 | Local console (spend, R10) | `... approval_cli consume <approval_id>` (gated by the `approval_consumption` safety flag) |
+
+Free text after the id is Thomas's own decision reason, recorded verbatim as the decision's
+`decision_reason` and echoed back in the reply. Without one, the boilerplate default
+("Approved/Rejected by Thomas on the verified control channel.") is recorded instead — the
+decision is equally valid either way, but the accumulated *reasons* are what later
+decision-pattern / preference inference reads, so giving one is encouraged.
 
 Answering from the local console is deliberately impossible: only the verified Telegram
 private channel can prove the answer is Thomas's

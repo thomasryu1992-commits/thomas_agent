@@ -241,13 +241,17 @@ def test_an_approved_approval_authorizes_no_execution_on_its_own():
 @pytest.mark.parametrize(
     "text,expected",
     [
-        ("/approve approval_abc", ("approve", "approval_abc")),
-        ("/reject approval_abc", ("reject", "approval_abc")),
-        ("approve approval_abc", ("approve", "approval_abc")),
-        ("  /APPROVE  approval_abc  ", ("approve", "approval_abc")),
-        ("/approve", ("approve", None)),
+        ("/approve approval_abc", ("approve", "approval_abc", None)),
+        ("/reject approval_abc", ("reject", "approval_abc", None)),
+        ("approve approval_abc", ("approve", "approval_abc", None)),
+        ("  /APPROVE  approval_abc  ", ("approve", "approval_abc", None)),
+        ("/approve", ("approve", None, None)),
         # Telegram appends the bot username to menu-picked commands.
-        ("/approve@thomas_agent_bot approval_abc", ("approve", "approval_abc")),
+        ("/approve@thomas_agent_bot approval_abc", ("approve", "approval_abc", None)),
+        # Free text after the id is Thomas's own decision reason, verbatim.
+        ("/reject approval_abc 근거 문서가 부족함", ("reject", "approval_abc", "근거 문서가 부족함")),
+        ("/approve approval_abc  looks safe, low blast radius  ",
+         ("approve", "approval_abc", "looks safe, low blast radius")),
     ],
 )
 def test_parse_approval_command(text, expected):
@@ -343,6 +347,30 @@ def test_apply_command_records_and_stores_the_decision(tmp_path):
     assert store.get(req["approval_id"])["status"] == "APPROVED"
     # Append-only: the PENDING request survives alongside the decision.
     assert [r["status"] for r in store.read_all()] == ["PENDING", "APPROVED"]
+    # No explicit reason → the boilerplate default, and no reason echo in the reply.
+    assert store.get(req["approval_id"])["decision"]["decision_reason"] == (
+        "Approved by Thomas on the verified control channel."
+    )
+    assert "Reason recorded" not in outcome["reply"]
+
+
+@requires_local_core
+def test_an_explicit_reason_is_recorded_verbatim_and_echoed(tmp_path):
+    """Thomas's own words are the material for later preference inference — they must land
+    in the durable record exactly as given, and the reply must confirm they did."""
+    store = ApprovalStore(tmp_path)
+    permdec = _permdec()
+    req = approval.build_approval_request(permdec, now=NOW)
+    store.append([req])
+    store.append_permission_decision(permdec)
+
+    outcome = approval.apply_command(store, "reject", req["approval_id"],
+                                     verification=VERIFIED, now=LATER,
+                                     reason="근거 문서가 부족함")
+    assert outcome["action"] == "REJECTED"
+    decided = store.get(req["approval_id"])
+    assert decided["decision"]["decision_reason"] == "근거 문서가 부족함"
+    assert "Reason recorded: 근거 문서가 부족함" in outcome["reply"]
 
 
 # --- the store --------------------------------------------------------------------
