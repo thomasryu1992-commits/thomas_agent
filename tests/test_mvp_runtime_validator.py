@@ -228,6 +228,10 @@ def test_prompt_states_the_calibrated_bar():
     assert "PASS is the default" in prompt
     assert "material defects" in prompt
     assert "belong in risks alongside a PASS" in prompt
+    # v3: missing INPUT data is the requester's limitation, not an output defect — the
+    # live reviewer re-labelled data demands (COGS, taxes) as material omissions under v2.
+    assert "ONLY against the information available in the request" in prompt
+    assert "never grounds for REVISE" in prompt
 
 
 # --- planning + E2E (need a local Core) ---------------------------------------
