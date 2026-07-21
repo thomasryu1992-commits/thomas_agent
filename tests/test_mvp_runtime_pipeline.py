@@ -124,6 +124,19 @@ def test_provider_error_blocks_the_run():
 
 
 @requires_local_core
+def test_final_response_lists_the_sources_the_analysis_cites():
+    """The analysis cites evidence as [S1]..[SN] (the worker's numbering); the delivered
+    response must resolve those citations — same order as the prompt, so the numbers line
+    up by construction. Citations that resolved to nothing were the gap."""
+    r = run_task(REQUEST, provider=MockProvider(), now=NOW)
+    assert r["status"] == "COMPLETED"
+    hits = r["records"]["tool_use"]["hits"]
+    assert hits                                       # mock search returns deterministic hits
+    assert "## Sources" in r["final_response"]
+    assert f"[S1] {hits[0]['title']} — {hits[0]['url']}" in r["final_response"]
+
+
+@requires_local_core
 def test_search_tool_error_degrades_the_run_not_blocks():
     """Search is enrichment, not the task (explicit decision with the 2026-07-21 Tavily
     rollout): a failing backend — quota exhausted, transport, malformed — degrades the

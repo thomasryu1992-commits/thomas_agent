@@ -76,6 +76,15 @@ MVP_SEARCH_TOOL=tavily_search python -m runtime.mvp_runtime.cli "..."
 
 One backend at a time — a search failover chain was considered and deliberately not built.
 
+### Source traceability (2026-07-21)
+
+The `tool_use` record stores the **hits themselves** (title/url/snippet/source — exactly
+what `output_sha256` hashes, making that hash verifiable), and the delivered response
+renders a **Sources** section resolving the `[S1]..[SN]` citations the analysis makes
+(same order as the worker prompt's numbering, so they line up by construction). Before
+this, the ledger held only the hash and the reader received citations that resolved to
+nothing.
+
 ### Degradation (search is enrichment, not the task)
 
 A backend failure at run time — quota exhausted, transport error, malformed response —

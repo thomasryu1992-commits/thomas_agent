@@ -136,6 +136,11 @@ def run_search(
         "input_sha256": input_sha256,
         "result_count": len(hits),
         "sources": sorted({h["source"] for h in hits}),
+        # The hits themselves, exactly as fed to the specialist prompt (and exactly what
+        # output_sha256 hashes — storing them makes that hash verifiable). Without them
+        # the ledger held only the hash, so an analysis citing [S1] could never be
+        # resolved back to WHAT S1 was.
+        "hits": hits,
         "output_sha256": output_sha256,
         "latency_ms": int(result.latency_ms),
         "read_only": True,
@@ -207,6 +212,7 @@ def degraded_search_record(tool: SearchTool, query: str, reason_code: str, *, no
         "input_sha256": integrity.sha256_record({"tool_id": getattr(tool, "tool_id", SEARCH_TOOL_ID), "query": query}),
         "result_count": 0,
         "sources": [],
+        "hits": [],
         "output_sha256": integrity.sha256_record({"hits": []}),
         "latency_ms": 0,
         "read_only": True,

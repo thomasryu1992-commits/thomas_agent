@@ -53,7 +53,12 @@ record it claims to fingerprint catches it. (The existing verifier named above h
 blind spot. It is deferred code, so this is a note, not a fix.)
 
 **Known limit, stated rather than hidden:** a *prefix* of a valid chain is itself a valid
-chain, so link verification cannot by itself detect a truncated tail.
+chain, so link verification cannot by itself detect a truncated tail. **Mitigated
+(2026-07-21) by an external anchor:** every `/status` reply now carries the chain's
+current tip hash (`audit_tip:`), so a status answered over Telegram leaves the tip in an
+off-machine chat history. A later tip that does not descend from an anchored one is the
+truncation signal. Reading the tip never takes status down (`kill_allows:
+read_only_status`) — an unreadable ledger reports as `audit_tip: unavailable (...)`.
 
 A corrupt ledger is **reported, not raised**. The operator reaching for `audit` is often
 already in trouble; failing with the thing they are diagnosing helps nobody.

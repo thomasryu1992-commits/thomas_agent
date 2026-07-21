@@ -50,14 +50,25 @@ from .workspace import DryRunWriter, WorkspaceWriter, run_write
 AUTO_VALIDATION = "auto"
 
 
-def render_response(agent_output: dict[str, Any], *, independently_validated: bool = False) -> str:
+def render_response(
+    agent_output: dict[str, Any],
+    *,
+    independently_validated: bool = False,
+    search_hits: list[dict[str, Any]] | None = None,
+) -> str:
     """Render a human-readable final response from a validated Agent Output.
 
     ``independently_validated`` states what actually happened to THIS run: a delivered
     response only exists when the stricter merged outcome PASSed, so if the independent
     reviewer ran, it passed — and the footer must say so. The old constant footer told
     the reader "not independently verified" on exactly the runs where a second agent had
-    reviewed and passed the analysis (the architecture review's P1-3)."""
+    reviewed and passed the analysis (the architecture review's P1-3).
+
+    ``search_hits`` renders a Sources section: the analysis cites evidence as [S1]..[SN]
+    (the worker numbers the hits that way in its prompt), and without this section the
+    reader received citations that resolved to nothing. Same order as the prompt, so the
+    numbers line up by construction. Mock hits render too — an honest display of what the
+    evidence actually was."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
     findings = rso.get("key_findings", [])
@@ -70,6 +81,13 @@ def render_response(agent_output: dict[str, Any], *, independently_validated: bo
         lines += ["## Recommendation", f"{rec['action']} — {rec['reason']}", ""]
     if agent_output.get("uncertainty"):
         lines += ["## Uncertainty", *[f"- {u}" for u in agent_output["uncertainty"]], ""]
+    if search_hits:
+        lines.append("## Sources")
+        lines += [
+            f"- [S{index}] {hit.get('title', '')} — {hit.get('url', '')}"
+            for index, hit in enumerate(search_hits, start=1)
+        ]
+        lines.append("")
     lines.append(
         "_Read-only analysis; automatically validated and independently reviewed (PASS)._"
         if independently_validated else
@@ -360,6 +378,7 @@ def run_task(
                 render_response(
                     agent_output,
                     independently_validated=independent_validation_result is not None,
+                    search_hits=search_hits,
                 ),
                 writer=writer if writer is not None else DryRunWriter(),
                 now=now, root=repo_root,
@@ -436,6 +455,7 @@ def run_task(
         result["final_response"] = render_response(
             agent_output,
             independently_validated=independent_validation_result is not None,
+            search_hits=search_hits,
         )
     else:
         # Validation withheld delivery; the trail already concludes BLOCKED. Persist best-effort.

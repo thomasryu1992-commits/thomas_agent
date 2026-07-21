@@ -21,11 +21,17 @@ REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
 
 
 class FakeLedger:
-    def __init__(self):
+    def __init__(self, tip="sha256:" + "ab" * 32):
         self.control: list[dict] = []
+        self._tip = tip
 
     def append_control(self, entry):
         self.control.append(entry)
+
+    def last_audit_hash(self):
+        if isinstance(self._tip, Exception):
+            raise self._tip
+        return self._tip
 
 
 def _store(tmp_path):
@@ -122,6 +128,35 @@ def test_status_is_read_only_no_event(tmp_path):
     assert out["changed"] is False
     assert "mode: ACTIVE" in out["reply"]
     assert ledger.control == []
+
+
+def test_status_carries_the_audit_tip_as_an_external_anchor(tmp_path):
+    """The chain's documented blind spot: a PREFIX of a valid chain verifies clean, so a
+    truncated tail is invisible to /audit alone. Every /status answered over Telegram now
+    leaves the tip hash in an off-machine chat history — a later tip that does not descend
+    from an anchored one is the truncation signal."""
+    store = _store(tmp_path)
+    tip = "sha256:" + "cd" * 32
+    out = control.apply_command(store, control.CMD_STATUS, actor="op", now=NOW,
+                                ledger=FakeLedger(tip=tip))
+    assert f"audit_tip: {tip}" in out["reply"]
+
+    # An empty ledger says so; no ledger wired keeps the plain status (no tip line).
+    out_empty = control.apply_command(store, control.CMD_STATUS, actor="op", now=NOW,
+                                      ledger=FakeLedger(tip=None))
+    assert "audit_tip: none (empty ledger)" in out_empty["reply"]
+    assert "audit_tip" not in control.status_lines(store.load())
+
+
+def test_status_still_answers_when_the_ledger_tip_is_unreadable(tmp_path):
+    """kill_allows: read_only_status — reading the anchor must never take status down."""
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    store = _store(tmp_path)
+    broken = FakeLedger(tip=PersistenceError("LEDGER_UNREADABLE", "torn line"))
+    out = control.apply_command(store, control.CMD_STATUS, actor="op", now=NOW, ledger=broken)
+    assert "mode: ACTIVE" in out["reply"]
+    assert "audit_tip: unavailable (LEDGER_UNREADABLE)" in out["reply"]
 
 
 def test_stop_requires_task_id(tmp_path):
