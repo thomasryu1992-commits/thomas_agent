@@ -1111,41 +1111,37 @@ Control Channel의 등록 정보 변경은 Thomas 승인과 서버 설정 변경
 
 ---
 
-## 11.3 Initial Commands
+## 11.3 Commands
+
+구현된 명령 (authoritative: `runtime/mvp_runtime/control.py` `COMMANDS` +
+`approval.py`의 `/approve`/`/reject` — 정책과의 일치는
+`tests/test_mvp_runtime_control.py`의 드리프트 게이트가 검증한다):
 
 ```text
 /status
-현재 실행 중인 업무 확인
+런타임 상태·컨트롤 모드 확인 (PAUSED/KILLED 중에도 응답)
 
-/task
-새로운 업무 생성
+/pause · /resume · /kill
+런타임 전체 일시정지 / 재개 / 비상 정지 (등록된 운영자만)
 
-/report [task_id]
-최근 업무 또는 특정 업무 결과 확인
+/stop <task_id>
+특정 작업 중지 요청 기록 (장기 실행 작업 도입 시 적용)
 
-/approve <approval_id>
-특정 승인 요청 승인
+/audit · /recovery
+감사 체인 전체 검증 / 원장 진단 (읽기 전용; PAUSED/KILLED 중에도 응답)
 
-/reject <approval_id>
-특정 승인 요청 거절
+/approve <approval_id> [이유] · /reject <approval_id> [이유]
+승인 요청 결정 — 이유는 결정 기록에 원문 그대로 남는다
 
-/modify <approval_id>
-승인하지 않고 행동 또는 계획의 변경 요청
+(명령이 아닌 메시지는 분석 요청으로 처리되며, 맨 앞에 !중요 를 붙이면
+priority HIGH로 접수되어 auto 정책에서 독립 검증이 함께 실행된다.)
+```
 
-/pause <task_id>
-특정 작업 일시 중지
+아래는 초기 설계의 **미구현 후보** 명령이다 — 현재 보내면 Unknown command로
+거부되며(파이프라인으로 흘러가지 않음), 도입 여부는 별도 결정 사항이다:
 
-/resume <task_id>
-특정 작업 재개
-
-/cancel <task_id>
-특정 작업 취소
-
-/memory
-저장된 기억 조회
-
-/help
-사용 가능한 명령 확인
+```text
+/task /report /modify /cancel /memory /help
 ```
 
 ---

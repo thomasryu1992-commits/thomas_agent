@@ -114,7 +114,7 @@ def main(
     control_store = control_store if control_store is not None else ControlStore.default()
     state = control_store.load()
     if not state.execution_allowed:
-        reason_code = "RUNTIME_KILLED" if state.mode == control.KILLED else "RUNTIME_PAUSED"
+        reason_code = state.refusal_reason_code()
         sys.stderr.write(
             f"BLOCKED {reason_code}: runtime is {state.mode}; new requests are blocked "
             "(an authenticated operator resume clears it)\n"

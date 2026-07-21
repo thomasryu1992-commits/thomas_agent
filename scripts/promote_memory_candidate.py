@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
     # memory, so a PAUSED/KILLED runtime must refuse — exactly as the R10 consume does.
     state = control_store.load()
     if not state.execution_allowed:
-        print(f"ERROR KILL_SWITCH_ACTIVE: runtime is {state.mode}; "
+        print(f"ERROR {state.refusal_reason_code()}: runtime is {state.mode}; "
               "promotion mutates validated memory and is refused while not ACTIVE", file=sys.stderr)
         return 1
 

@@ -76,7 +76,10 @@ _RESERVED_BASENAMES = frozenset(
     | {f"lpt{i}" for i in range(1, 10)}
 )
 # The one timestamp form the gate's lexicographic comparisons are correct for.
-_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+# `\A…\Z`, not `^…$`, for exactly the reason documented at _PROVIDER_ID_PATTERN above:
+# `$` also matches before a trailing newline, so "…Z\n" would have passed the very
+# check that exists to keep the expiry compares byte-exact.
+_TIMESTAMP_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 
 ACTIVATION_MARKER = "safety_flag_activation.v0"
 _HASH_FIELD = "content_sha256"

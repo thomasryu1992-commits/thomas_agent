@@ -243,7 +243,7 @@ def run_write(
     state = store.load()
     if not state.execution_allowed:
         raise ToolBlocked(
-            "KILL_SWITCH_ACTIVE",
+            state.refusal_reason_code(),
             f"runtime is {state.mode}; kill_blocks tool_write forbids the write",
         )
 

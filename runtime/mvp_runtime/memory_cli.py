@@ -65,7 +65,7 @@ def main(
         state = control_store.load()
         if not state.execution_allowed:
             sys.stderr.write(
-                f"BLOCKED KILL_SWITCH_ACTIVE: runtime is {state.mode}; "
+                f"BLOCKED {state.refusal_reason_code()}: runtime is {state.mode}; "
                 "prune deletes data and is refused while not ACTIVE\n"
             )
             return EXIT_BLOCKED

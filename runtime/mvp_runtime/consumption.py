@@ -154,7 +154,7 @@ def consume_approval(
     state = control.load()
     if not state.execution_allowed:
         raise ApprovalBlocked(
-            "KILL_SWITCH_ACTIVE",
+            state.refusal_reason_code(),
             f"runtime is {state.mode}; kill_blocks forbids consuming an approval",
         )
 

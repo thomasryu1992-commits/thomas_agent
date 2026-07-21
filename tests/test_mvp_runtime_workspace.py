@@ -173,7 +173,8 @@ def test_run_write_is_blocked_while_not_active(mode, root):
     with pytest.raises(ToolBlocked) as exc:
         run_write("a.md", "content", writer=RealWorkspaceWriter(authorization=_AUTH),
                   now=NOW, root=root, control_store=store)
-    assert exc.value.reason_code == "KILL_SWITCH_ACTIVE"
+    # One refusal vocabulary at every door, mode-aware (architecture review P2-4).
+    assert exc.value.reason_code == ("RUNTIME_KILLED" if mode == control.KILLED else "RUNTIME_PAUSED")
     assert not (workspace_root(root) / "a.md").exists()
 
 
@@ -184,7 +185,7 @@ def test_run_write_is_blocked_when_control_state_is_corrupt(root):
     store.path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ToolBlocked) as exc:
         run_write("a.md", "content", writer=DryRunWriter(), now=NOW, root=root, control_store=store)
-    assert exc.value.reason_code == "KILL_SWITCH_ACTIVE"
+    assert exc.value.reason_code == "RUNTIME_KILLED"
 
 
 # --- the gate ---------------------------------------------------------------------

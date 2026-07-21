@@ -89,3 +89,46 @@ def test_ordinary_source_changes_do_not_trigger_the_deferred_gate():
 def test_shared_infrastructure_still_escalates_to_every_gate():
     result = classify_ci_scopes(["scripts/gate_matrix.py"])
     assert result["full"] and result["deferred"] and result["legacy"]
+
+
+# --- execution budget: the factory vs the canonical contract structure --------
+
+
+def _budget_contract() -> dict:
+    return yaml.safe_load(
+        (repo_root() / "docs" / "runtime-contracts" / "EXECUTION_BUDGET_SCHEMA.yaml")
+        .read_text(encoding="utf-8")
+    )
+
+
+def test_budget_factory_emits_exactly_the_canonical_field_sets():
+    """budgets.py, the contract YAML, the operating policy, and the closed schema all
+    restate the execution-budget shape — the one active-path constant duplication with no
+    drift gate (2026-07-21 architecture review P2-7). The contract's canonical_object is
+    the structure authority: a field added or renamed in one place only must fail here."""
+    from runtime.mvp_runtime.budgets import default_execution_budget, recorded_usage_budget
+
+    canonical = _budget_contract()["canonical_object"]
+    allocation = default_execution_budget()
+    assert set(allocation["limits"]) == set(canonical["limits"])
+    assert set(allocation["usage"]) == set(canonical["usage"])
+
+    usage = recorded_usage_budget(
+        allocation["limits"], agent_invocations=1, model_calls=1, tokens_used=10,
+    )
+    # recorded usage deliberately omits runtime_seconds/cost_used measurements but must
+    # still CARRY every canonical usage field (zeroed), so readers see one shape.
+    assert set(usage["usage"]) == set(canonical["usage"])
+    assert set(usage["limits"]) == set(canonical["limits"])
+
+
+def test_budget_factory_stays_within_the_policy_ceilings():
+    """MVP_OPERATING_POLICY §13.4 states the policy ceilings (legacy field names mapped
+    by the contract's legacy_mapping). Lower is explicitly allowed ('Task 특성에 따라 더
+    낮은 한도를 설정할 수 있다'); exceeding one silently is the drift this pins."""
+    from runtime.mvp_runtime.budgets import default_execution_budget
+
+    limits = default_execution_budget()["limits"]
+    assert limits["max_retry_count"] <= 3            # §13.4 max_retry_count_per_step
+    assert limits["max_runtime_seconds"] <= 30 * 60  # §13.4 max_task_runtime_minutes
+    assert limits["max_parallel_workers"] <= 1       # MVP runs agents sequentially
