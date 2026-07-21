@@ -18,6 +18,27 @@ Enabled per run with `--independent-validation` (one-shot CLI, operator loop). D
 — every existing behavior is unchanged. This matches the role's activation condition
 `prime_requests_validation_without_lowering_policy`: turning it on adds review, never removes any.
 
+### R7.1 — selective ("auto") policy and the validator's own provider
+
+`--independent-validation auto` reviews **only when the task warrants it**
+(`validation.independent_validation_required`): the classification's risk level mandates a
+second reviewer (ORANGE/RED, policy §3.4) **or the operator marked the request important** —
+priority HIGH/URGENT, set per request with a leading `!중요` / `!important` token over the
+control channel (stripped before intake; a standalone token, so `!중요한 ...` prose is not a
+marker) or `--important` on the one-shot CLI. Everyday GREEN/NORMAL runs spend one model
+call, not two. The decision is resolved **before intake** (the task budget must cover the
+team the plan invokes); a post-plan drift check fails closed (`VALIDATION_POLICY_DRIFT`) if a
+future dynamic classification ever changes the answer after budgeting. The bare flag (or
+`always`) keeps the R7 review-every-run behavior.
+
+`MVP_VALIDATOR_PROVIDER` (e.g. `groq`, or a comma-separated failover chain) gives the
+validator **its own gated provider**, so the review runs on a different free quota than the
+analysis — and a different model family makes the second opinion more independent, not less.
+Exactly the same Safety-Flag Gate rules as `MVP_HOSTED_PROVIDER`: every member needs its own
+local grant, an unknown/unauthorized member fails the whole selection closed at startup, and
+the env var alone opens nothing. Unset keeps the R7 pairing (mock validator for a mock
+specialist, else the specialist's provider).
+
 1. Prime plans the two-agent team: the validator gets its **own** PermissionDecision
    (`SIMULATION_VALIDATION` scope, P2 ANALYZE — a distinct ALLOW action) and its **own**
    `role_assignment.v0.2` (own actor id, own budget); the task routing records both agents.
@@ -78,4 +99,9 @@ the operator; re-submitting is the operator's call.
 ```bash
 python -m runtime.mvp_runtime.cli --independent-validation "이 사업 아이디어를 분석해줘: ..."
 python -m runtime.mvp_runtime.operator_cli --independent-validation
+
+# R7.1: review only ORANGE/RED-risk tasks and operator-marked important requests,
+# with the validator on its own provider quota:
+MVP_VALIDATOR_PROVIDER=groq python -m runtime.mvp_runtime.operator_cli --independent-validation auto
+python -m runtime.mvp_runtime.cli --independent-validation=auto --important "이 사업 아이디어를 분석해줘: ..."
 ```

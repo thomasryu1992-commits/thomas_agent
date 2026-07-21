@@ -283,3 +283,83 @@ def test_e2e_default_off_has_no_validator_records():
     assert "validator_assignment" not in result["records"]
     events = result["records"]["audit_trail"]
     assert len([e for e in events if e["event_type"] == "VALIDATION_COMPLETED"]) == 1
+
+
+# --- R7.1: selective ("auto") validation --------------------------------------
+
+
+def test_independent_validation_required_truth_table():
+    from runtime.mvp_runtime.validation import independent_validation_required
+
+    assert independent_validation_required("NORMAL", "GREEN") is False
+    assert independent_validation_required("LOW", "GREEN") is False
+    assert independent_validation_required("HIGH", "GREEN") is True     # operator-marked
+    assert independent_validation_required("URGENT", "GREEN") is True
+    assert independent_validation_required("NORMAL", "ORANGE") is True  # policy §3.4
+    assert independent_validation_required("NORMAL", "RED") is True
+    # Unknown values match neither trigger — they never turn the reviewer ON by accident.
+    assert independent_validation_required(None, None) is False
+
+
+@requires_local_core
+def test_auto_policy_skips_the_validator_for_a_normal_green_run():
+    """Everyday GREEN/NORMAL runs spend one model call, not two."""
+    result = run_task(REQUEST, independent_validation="auto", now=NOW)
+    assert result["status"] == "COMPLETED"
+    assert "independent_validation_result" not in result["records"]
+    assert result["records"]["task"]["routing"]["assigned_role_ids"] == ["general.specialist"]
+    events = result["records"]["audit_trail"]
+    assert len([e for e in events if e["event_type"] == "VALIDATION_COMPLETED"]) == 1
+
+
+@requires_local_core
+def test_auto_policy_validates_an_important_request():
+    """priority HIGH (the operator's importance marker) adds the reviewer to this run —
+    and the record still says the GOVERNANCE requirement was false (operator-requested,
+    not risk-mandated)."""
+    result = run_task(REQUEST, independent_validation="auto", priority="HIGH", now=NOW)
+    assert result["status"] == "COMPLETED"
+    assert result["records"]["task"]["classification"]["priority"] == "HIGH"
+    ival = result["records"]["independent_validation_result"]
+    assert ival["validation"]["validation_mode"] == "INDEPENDENT"
+    assert ival["validator"]["independent_required"] is False
+    events = result["records"]["audit_trail"]
+    assert len([e for e in events if e["event_type"] == "VALIDATION_COMPLETED"]) == 2
+
+
+@requires_local_core
+def test_auto_policy_validates_when_risk_requires_it(monkeypatch):
+    """ORANGE/RED classification mandates the reviewer (policy §3.4) with no marker."""
+    import runtime.mvp_runtime.planner as planner_mod
+
+    monkeypatch.setattr(planner_mod, "MVP_RISK_LEVEL", "ORANGE")
+    result = run_task(REQUEST, independent_validation="auto", now=NOW)
+    assert result["status"] == "COMPLETED"
+    ival = result["records"]["independent_validation_result"]
+    assert ival["validator"]["independent_required"] is True
+
+
+@requires_local_core
+def test_auto_policy_drift_fails_closed(monkeypatch):
+    """If a (future) dynamic classification changes the auto decision after the budget
+    was sized, the run must BLOCK rather than run mis-budgeted or under-reviewed."""
+    import runtime.mvp_runtime.pipeline as pipeline_mod
+
+    real_plan = pipeline_mod.plan_task
+
+    def drifted_plan(task, **kwargs):
+        plan = real_plan(task, **kwargs)
+        plan["task"]["classification"]["risk_level"] = "RED"
+        return plan
+
+    monkeypatch.setattr(pipeline_mod, "plan_task", drifted_plan)
+    result = run_task(REQUEST, independent_validation="auto", now=NOW)
+    assert result["status"] == "BLOCKED"
+    assert result["block"]["reason_code"] == "VALIDATION_POLICY_DRIFT"
+
+
+@requires_local_core
+def test_explicit_true_still_validates_every_run():
+    """The R7 all-on behavior is unchanged by R7.1 — bool True ignores priority/risk."""
+    result = run_task(REQUEST, independent_validation=True, now=NOW)
+    assert "independent_validation_result" in result["records"]

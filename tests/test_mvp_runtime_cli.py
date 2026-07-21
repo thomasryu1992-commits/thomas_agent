@@ -35,6 +35,38 @@ def test_cli_runs_pipeline_and_emits_response(capsys, tmp_path):
     assert "Read-only analysis" in out
 
 
+def _validation_event_count(ledger_root: Path) -> int:
+    import json
+
+    path = ledger_root / "audit_events.jsonl"
+    return sum(
+        1 for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("event_type") == "VALIDATION_COMPLETED"
+    )
+
+
+@requires_local_core
+def test_cli_auto_validation_with_important_adds_the_reviewer(tmp_path):
+    """R7.1 over the one-shot CLI: --independent-validation=auto alone skips the reviewer
+    on a GREEN/NORMAL run (one validation event); adding --important raises priority and
+    brings the second reviewer back (two validation events)."""
+    rc = cli.main(["--independent-validation=auto", "--important",
+                   "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
+                  store=LedgerStore(tmp_path / "l1"),
+                  working_memory=WorkingMemoryStore(tmp_path / "m1"),
+                  control_store=ControlStore(tmp_path))
+    assert rc == cli.EXIT_OK
+    assert _validation_event_count(tmp_path / "l1") == 2
+
+    rc = cli.main(["--independent-validation=auto",
+                   "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
+                  store=LedgerStore(tmp_path / "l2"),
+                  working_memory=WorkingMemoryStore(tmp_path / "m2"),
+                  control_store=ControlStore(tmp_path))
+    assert rc == cli.EXIT_OK
+    assert _validation_event_count(tmp_path / "l2") == 1
+
+
 @requires_local_core
 def test_cli_run_does_not_touch_the_machine_ledger_or_working_memory(tmp_path):
     # Regression: main() used to hardcode the repo-local stores, so this suite appended

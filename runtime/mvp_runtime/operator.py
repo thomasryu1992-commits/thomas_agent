@@ -57,6 +57,11 @@ TELEGRAM = "telegram"
 # network_access safety flag (not model_invocation).
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
+# R7.1: a request whose FIRST token is one of these is marked important — its task is
+# intaken at HIGH priority, which under the "auto" validation policy adds the independent
+# reviewer to that request. Matched case-insensitively as a standalone leading token.
+IMPORTANT_MARKERS = ("!중요", "!important")
+
 
 @dataclass(frozen=True)
 class OperatorIdentity:
@@ -141,7 +146,8 @@ def handle_operator_message(
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
-    independent_validation: bool = False,
+    independent_validation: bool | str = False,
+    validator_provider: Provider | None = None,
     repo_root: Path | None = None,
     ack: Any | None = None,
 ) -> OperatorReply:
@@ -268,11 +274,30 @@ def handle_operator_message(
                 accepted=False, status="REFUSED", reason_code=reason_code,
             )
 
+    # R7.1: a leading importance marker raises the task's priority, which (under the
+    # "auto" validation policy) adds the independent reviewer to exactly this request.
+    # The marker must be its own leading token — "!중요한 아이디어..." is prose, not a flag.
+    priority = "NORMAL"
+    head, _, rest = text.partition(" ")
+    if head.lower() in IMPORTANT_MARKERS:
+        priority = "HIGH"
+        text = rest.strip()
+        if not text:
+            return OperatorReply(
+                text=f"'{head}' 뒤에 분석할 요청을 함께 보내주세요 (예: {head} 이 사업 아이디어를 분석해줘: ...).",
+                accepted=False, status="REFUSED", reason_code="EMPTY_REQUEST",
+            )
+
     # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
     # the model call takes tens of seconds and the operator otherwise stares at silence.
     if ack is not None:
+        marker_note = ""
+        if priority == "HIGH":
+            # Truthful note: the marker adds the reviewer only when a validation policy
+            # is active ("auto" or always-on); otherwise it is recorded priority only.
+            marker_note = " (중요 표시: 독립 검증 포함)" if independent_validation else " (중요 표시 적용)"
         try:
-            ack("접수했습니다 — 분석 중입니다. 모델 호출에 수십 초 걸릴 수 있습니다.")
+            ack("접수했습니다 — 분석 중입니다. 모델 호출에 수십 초 걸릴 수 있습니다." + marker_note)
         except OperatorBlocked:
             pass    # best-effort: the notice is a courtesy, the run is the job
 
@@ -285,6 +310,8 @@ def handle_operator_message(
         store=store,
         repo_root=repo_root,
         independent_validation=independent_validation,
+        validator_provider=validator_provider,
+        priority=priority,
         channel="telegram",
         requester_type="real_thomas",
         requester_id=registration.operator_id,
@@ -549,7 +576,8 @@ def run_operator_once(
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
-    independent_validation: bool = False,
+    independent_validation: bool | str = False,
+    validator_provider: Provider | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Poll one batch, handle each verified message, and send its reply. ``long_poll_seconds``
@@ -578,7 +606,8 @@ def run_operator_once(
             message, registration=registration, provider=provider, search_tool=search_tool,
             working_memory=working_memory, now=now, store=store, control_store=control_store,
             approval_store=approval_store,
-            independent_validation=independent_validation, repo_root=repo_root,
+            independent_validation=independent_validation,
+            validator_provider=validator_provider, repo_root=repo_root,
             # The received-working notice, sent back on the same verified chat the request
             # came from. handle_operator_message fires it only once every refusal path has
             # passed, and swallows a send failure (the notice is a courtesy, not the job).

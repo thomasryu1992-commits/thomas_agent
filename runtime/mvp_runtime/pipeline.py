@@ -32,17 +32,22 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError
+from .errors import MvpRuntimeError, PersistenceError, PlannerBlocked
 from .intake import build_task
 from .memory import retrieve_working_memory
+from . import planner
 from .prime import plan_task
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, run_search
-from .validation import validate_agent_output
+from .validation import independent_validation_required, validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .worker import MockProvider, Provider, run_analysis_worker
 from .working_memory import WorkingMemoryStore
 from .workspace import DryRunWriter, WorkspaceWriter, run_write
+
+# R7.1: the selective-validation policy value for ``independent_validation`` — validate
+# only when the task's classification requires it (see independent_validation_required).
+AUTO_VALIDATION = "auto"
 
 
 def render_response(agent_output: dict[str, Any]) -> str:
@@ -145,7 +150,7 @@ def run_task(
     now: str | None = None,
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
-    independent_validation: bool = False,
+    independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     write_path: str | None = None,
     writer: WorkspaceWriter | None = None,
@@ -171,6 +176,12 @@ def run_task(
     deterministic ``MockValidatorProvider`` when the specialist uses the mock provider, and
     to the same (gated) provider otherwise — one Safety-Flag Gate governs both agents.
 
+    ``independent_validation`` also accepts :data:`AUTO_VALIDATION` (``"auto"``, R7.1):
+    the reviewer runs only when :func:`independent_validation_required` says so — the
+    classification's risk level mandates it (ORANGE/RED, policy §3.4) or the operator
+    marked the request important (``priority`` HIGH/URGENT). Everyday GREEN/NORMAL runs
+    then spend one model call, not two.
+
     ``write_path`` (R8, opt-in) additionally creates the rendered response as a file at
     that workspace-relative path — the runtime's first EXECUTE_AND_REPORT action. Supplying
     it plans a WORKSPACE_REVERSIBLE_WRITE grant; the write itself happens only if validation
@@ -183,6 +194,19 @@ def run_task(
     if validator_provider is None:
         validator_provider = MockValidatorProvider() if isinstance(provider, MockProvider) else provider
     now = now if now is not None else timeutil.utc_now_iso()
+
+    # R7.1: resolve the "auto" policy into a per-task yes/no BEFORE intake — the task's
+    # budget allocation must cover exactly the team the plan will invoke. The intake
+    # priority is a caller input and the MVP risk classification is deterministic
+    # (planner.MVP_RISK_LEVEL), so the decision is known here; a post-plan drift check
+    # below fails closed if a future dynamic classification breaks that assumption.
+    auto_policy = independent_validation == AUTO_VALIDATION
+    if auto_policy:
+        independent_validation = independent_validation_required(
+            intake_kwargs.get("priority", "NORMAL"), planner.MVP_RISK_LEVEL
+        )
+    else:
+        independent_validation = bool(independent_validation)
     result: dict[str, Any] = {
         "status": "BLOCKED",
         "delivered": False,
@@ -225,6 +249,18 @@ def run_task(
             independent_validation=independent_validation,
             controlled_write=write_path is not None,
         )
+        if auto_policy:
+            # The budget above was sized from the pre-intake decision; if the classified
+            # priority/risk now demand a different answer, the allocation is wrong for the
+            # team — fail closed rather than run mis-budgeted or under-reviewed.
+            classified = plan["task"].get("classification", {})
+            if independent_validation_required(
+                classified.get("priority"), classified.get("risk_level")
+            ) != independent_validation:
+                raise PlannerBlocked(
+                    "VALIDATION_POLICY_DRIFT",
+                    "classification changed the auto-validation decision after budgeting",
+                )
         records.update({
             "task": plan["task"], "binding": plan["binding"],
             "permission_decision": plan["permission_decision"],

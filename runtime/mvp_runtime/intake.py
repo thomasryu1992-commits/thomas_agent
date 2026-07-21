@@ -53,6 +53,7 @@ _ALLOWED_CONTROL_CHARS = {"\t", "\n", "\r"}
 _ALLOWED_CHANNELS = {"telegram", "scheduler", "agent", "system", "api", "manual"}
 _ALLOWED_REQUESTER_TYPES = {"real_thomas", "thomas_prime", "scheduler", "agent", "system"}
 _ALLOWED_SENSITIVITY = {"PUBLIC", "INTERNAL", "PRIVATE", "SENSITIVE", "RESTRICTED"}
+_ALLOWED_PRIORITIES = {"LOW", "NORMAL", "HIGH", "URGENT"}  # task.v0.3 classification enum
 
 # Minimal set of active Core rules loaded at intake for the MVP business-analysis
 # use case. Membership is only *finally* validated once a Core Context Binding is
@@ -144,6 +145,7 @@ def build_task(
     expected_outputs: Sequence[str] | None = None,
     active_core_rule_ids: Sequence[str] | None = None,
     data_sensitivity: str = "INTERNAL",
+    priority: str = "NORMAL",
     now: str | None = None,
     created_by: str | None = None,
     planned_agents: int = 1,
@@ -168,6 +170,8 @@ def build_task(
         raise TaskIntakeBlocked("INVALID_REQUESTER_TYPE", f"requester_type must be one of {sorted(_ALLOWED_REQUESTER_TYPES)}")
     if data_sensitivity not in _ALLOWED_SENSITIVITY:
         raise TaskIntakeBlocked("INVALID_SENSITIVITY", f"data_sensitivity must be one of {sorted(_ALLOWED_SENSITIVITY)}")
+    if priority not in _ALLOWED_PRIORITIES:
+        raise TaskIntakeBlocked("INVALID_PRIORITY", f"priority must be one of {sorted(_ALLOWED_PRIORITIES)}")
     if not isinstance(authenticated, bool):
         raise TaskIntakeBlocked("INVALID_AUTHENTICATED", "authenticated must be a bool (no coercion)")
 
@@ -234,7 +238,7 @@ def build_task(
             "classification_status": "UNCLASSIFIED",
             "execution_mode": None,
             "complexity": None,
-            "priority": "NORMAL",
+            "priority": priority,
             "risk_level": None,
             "classification_reasons": [],
         },
