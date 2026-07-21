@@ -605,6 +605,38 @@ def test_provider_error_reply_carries_the_retry_hint(monkeypatch):
     assert "다시 보내" not in other.text
 
 
+def test_validation_revise_reply_carries_the_reviewers_reasons(monkeypatch):
+    """The reviewer's revision requests ARE the deliverable of a withheld run — over the
+    live channel they used to be dropped, leaving a bare VALIDATION_REVISE code."""
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "BLOCKED", "records": {},
+                         "block": {"stage": "validation", "reason_code": "VALIDATION_REVISE",
+                                   "message": ("All automatic output checks passed.; "
+                                               "Start with one pilot store first; "
+                                               "Seek professional financial advice")}},
+    )
+    reply = handle_operator_message(_msg(), registration=REG, provider=MockProvider(), now=NOW)
+    assert reply.status == "BLOCKED" and reply.reason_code == "VALIDATION_REVISE"
+    assert "- Start with one pilot store first" in reply.text
+    assert "- Seek professional financial advice" in reply.text
+    assert "다시 보내주시면 새로 분석합니다" in reply.text
+
+
+def test_other_block_replies_include_their_message_verbatim(monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(
+        operator_mod, "run_task",
+        lambda *a, **k: {"status": "BLOCKED", "records": {},
+                         "block": {"stage": "pipeline", "reason_code": "OUT_OF_MVP_SCOPE",
+                                   "message": "task scope must carry the constraint"}},
+    )
+    reply = handle_operator_message(_msg(), registration=REG, provider=MockProvider(), now=NOW)
+    assert "task scope must carry the constraint" in reply.text
+    assert "새로 분석합니다" not in reply.text     # the resubmit guidance is validation-only
+
+
 # --- R9 over the loop: /approve must reach the approval path ------------------
 
 def test_run_once_routes_approve_to_the_approval_path_not_the_pipeline(tmp_path, monkeypatch):

@@ -325,10 +325,22 @@ def handle_operator_message(
     block = result.get("block") or {"reason_code": "BLOCKED"}
     reason_code = block.get("reason_code", "BLOCKED")
     reply_text = f"Your request was not completed ({reason_code})."
+    detail = str(block.get("message") or "").strip()
+    if detail:
+        # The block's reasons ARE the deliverable of a withheld run: for a
+        # VALIDATION_REVISE/BLOCK they carry the reviewer's actionable revision requests,
+        # which this reply used to drop, leaving Thomas a bare code and nothing to act
+        # on. The recipient is the verified operator, so there is nothing to redact.
+        if reason_code.startswith("VALIDATION_"):
+            # The validation message is "; "-joined reasons — render them as a list.
+            detail = "\n".join(f"- {p.strip()}" for p in detail.split(";") if p.strip())
+        reply_text += "\n" + detail
     if reason_code == "PROVIDER_ERROR":
         # The one BLOCK an operator can fix by doing nothing: free-tier providers throttle
         # and time out transiently, so say the actionable thing instead of only the code.
-        reply_text += " 일시적인 모델 제공자 오류일 수 있습니다 — 잠시 후 같은 요청을 다시 보내보세요."
+        reply_text += "\n일시적인 모델 제공자 오류일 수 있습니다 — 잠시 후 같은 요청을 다시 보내보세요."
+    elif reason_code in ("VALIDATION_REVISE", "VALIDATION_BLOCK"):
+        reply_text += "\n위 지적을 반영해 요청을 보완해서 다시 보내주시면 새로 분석합니다."
     return OperatorReply(
         text=reply_text,
         accepted=True, status="BLOCKED", reason_code=reason_code, trace_id=trace_id,
