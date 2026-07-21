@@ -1,0 +1,1 @@
+{"action": "unverified_messages_dropped", "channel": "telegram_private", "created_at": "2026-07-21T08:42:49Z", "dropped": 1, "integrity": {"event_sha256": "sha256:55c5cab9be9054bf887bbad463d9cfa938b24be197e208afd0d6b54b64c2a785"}, "record_type": "operator_probe.v0"}

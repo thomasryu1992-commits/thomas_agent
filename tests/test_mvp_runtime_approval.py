@@ -373,6 +373,106 @@ def test_an_explicit_reason_is_recorded_verbatim_and_echoed(tmp_path):
     assert "Reason recorded: 근거 문서가 부족함" in outcome["reply"]
 
 
+# --- stage 2: decision history on a new ask ----------------------------------------
+
+
+def _decided_store(tmp_path, decisions):
+    """A store holding one decided approval per (verb, reason) pair, distinct candidates."""
+    store = ApprovalStore(tmp_path)
+    for index, (verb, reason) in enumerate(decisions):
+        candidate = dict(CANDIDATE, candidate_id=f"memcand_hist{index:04d}",
+                         content=f"Preference-history fixture fact {index}.")
+        permdec = _permdec(candidate)
+        req = approval.build_approval_request(permdec, now=NOW)
+        store.append([req])
+        store.append_permission_decision(permdec)
+        approval.apply_command(store, verb, req["approval_id"],
+                               verification=VERIFIED, now=LATER, reason=reason)
+    return store
+
+
+@requires_local_core
+def test_decision_history_summarizes_past_same_action_decisions(tmp_path):
+    store = _decided_store(tmp_path, [
+        ("approve", None),
+        ("reject", "근거 문서가 부족함"),
+        ("reject", None),
+    ])
+    new_request = _request()
+    store.append([new_request])
+
+    history = approval.decision_history(store, new_request)
+    assert history["approved"] == 1 and history["rejected"] == 2
+    assert len(history["recent"]) == 3
+    # The articulated reason survives verbatim; bare verdicts are flagged, so a
+    # boilerplate line can never be mistaken for a stated preference.
+    articulated = [r for r in history["recent"] if not r["boilerplate"]]
+    assert [r["reason"] for r in articulated] == ["근거 문서가 부족함"]
+    # The new (PENDING) request itself is not part of its own history.
+    assert history["approved"] + history["rejected"] == 3
+
+
+@requires_local_core
+def test_decision_history_counts_consumed_as_approved_and_skips_undecided(tmp_path):
+    store = _decided_store(tmp_path, [("approve", "쓸모 있는 지식")])
+    # Latest-wins: the approved grant was later spent — still an approval Thomas gave.
+    approved = [a for a in store.current().values() if a["status"] == "APPROVED"][0]
+    store.append([dict(approved, status="CONSUMED")])
+    # A PENDING ask and an EXPIRED one carry no decision — excluded.
+    pending_permdec = _permdec(dict(CANDIDATE, content="undecided one"))
+    store.append([approval.build_approval_request(pending_permdec, now=NOW)])
+
+    new_request = _request()
+    history = approval.decision_history(store, new_request)
+    assert history["approved"] == 1 and history["rejected"] == 0
+    assert history["recent"][0]["status"] == "APPROVED"
+
+
+@requires_local_core
+def test_decision_history_respects_the_limit(tmp_path):
+    store = _decided_store(tmp_path, [("reject", f"이유 {i}") for i in range(5)])
+    history = approval.decision_history(store, _request(), limit=2)
+    assert history["rejected"] == 5            # counts cover everything
+    assert len(history["recent"]) == 2         # detail is capped
+
+
+def test_format_decision_history_renders_counts_reasons_and_advisory():
+    text = approval.format_decision_history({
+        "action_type": "memory.validated.promote",
+        "approved": 1, "rejected": 2,
+        "recent": [
+            {"status": "REJECTED", "decided_at": "2026-07-21T03:13:20Z",
+             "reason": "근거 문서가 부족함", "boilerplate": False},
+            {"status": "APPROVED", "decided_at": "2026-07-18T10:00:00Z",
+             "reason": approval.DEFAULT_APPROVE_REASON, "boilerplate": True},
+        ],
+    })
+    assert "승인 1 / 거절 2" in text
+    assert "[REJECTED 2026-07-21] 근거 문서가 부족함" in text
+    assert "[APPROVED 2026-07-18] (이유 미기재)" in text
+    # Advisory by design: the history informs the ask, it never answers it.
+    assert "결정은 이 요청 자체로 판단해 주세요" in text
+
+
+def test_format_decision_history_is_empty_without_decisions():
+    assert approval.format_decision_history(
+        {"action_type": "x", "approved": 0, "rejected": 0, "recent": []}) == ""
+
+
+@requires_local_core
+def test_request_message_appends_history_only_when_given(tmp_path):
+    permdec = _permdec()
+    req = approval.build_approval_request(permdec, now=NOW)
+    bare = approval.request_message(req, permdec)
+    assert "과거 유사 결정" not in bare
+
+    store = _decided_store(tmp_path, [("reject", "테스트 사유")])
+    history = approval.decision_history(store, req)
+    with_history = approval.request_message(req, permdec, history=history)
+    assert with_history.startswith(bare)
+    assert "과거 유사 결정" in with_history and "테스트 사유" in with_history
+
+
 # --- the store --------------------------------------------------------------------
 
 

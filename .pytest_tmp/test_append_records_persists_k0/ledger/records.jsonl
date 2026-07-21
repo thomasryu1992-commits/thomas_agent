@@ -1,0 +1,3 @@
+{"kind": "task", "record": {"x": 1}, "trace_id": "trace-1"}
+{"kind": "write_permission_decision", "record": {"d": 1}, "trace_id": "trace-1"}
+{"kind": "write_use", "record": {"w": 1}, "trace_id": "trace-1"}

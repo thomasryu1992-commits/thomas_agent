@@ -1,0 +1,1 @@
+{"action": "stop", "actor": "local_console", "created_at": "2026-07-16T09:00:00Z", "integrity": {"event_sha256": "sha256:a70762fdf8fa4608093fb98d13bd96c1054420c64fb87618a630d1ab6f362257"}, "reason": "stop requested for task task-42", "record_type": "operator_control_event.v0", "resulting_mode": "ACTIVE", "task_id": "task-42"}

@@ -1,0 +1,1 @@
+{"action": "fired", "created_at": "2026-07-17T09:00:00Z", "integrity": {"event_sha256": "sha256:44f3951a17b309c7a6e71d2fb5fd2e7476799a552eb0c134946e6501f98cd2f9"}, "kind": "memory_prune", "record_type": "scheduler_event.v0", "schedule_id": "schedule_1771ac1e38f566b7aa82", "status": "pruned:1"}

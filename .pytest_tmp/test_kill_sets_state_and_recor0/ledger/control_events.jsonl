@@ -1,0 +1,1 @@
+{"action": "kill", "actor": "local_console", "created_at": "2026-07-16T09:00:00Z", "integrity": {"event_sha256": "sha256:db09d3f371adda1ac5aa2853543be8f58c3ba3462e56e64cabafe7cd2edc1596"}, "reason": "halt now", "record_type": "operator_control_event.v0", "resulting_mode": "KILLED"}

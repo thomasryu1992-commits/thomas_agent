@@ -128,6 +128,15 @@ Free text after the id is Thomas's own decision reason, recorded verbatim as the
 decision is equally valid either way, but the accumulated *reasons* are what later
 decision-pattern / preference inference reads, so giving one is encouraged.
 
+Stage 2 of that inference reads the accumulation back: a new Approval Request renders a
+**decision-history summary** for the same action type — approve/reject counts, the most
+recent decisions with their reasons verbatim (boilerplate defaults shown as `(이유
+미기재)`, so a bare verdict is never mistaken for a stated preference; CONSUMED counts as
+approved, EXPIRED carries no decision). It is advisory display only and ends by saying so —
+the history informs the ask, it never answers it, and inferred patterns must never become
+auto-approval. A history read failure never blocks the ask (the request goes out with a
+조회 실패 note instead).
+
 Answering from the local console is deliberately impossible: only the verified Telegram
 private channel can prove the answer is Thomas's
 (`local_operator_console.new_high_risk_approval_creation_allowed: false`). *Consuming*, by

@@ -1,0 +1,2 @@
+{"candidate_id": "memcand_a", "candidate_type": "reusable_knowledge", "content": "alpha", "created_at": "2026-07-16T09:00:00Z", "evidence_refs": ["model:analysis"], "promotable": false, "scope": "task_working_memory", "status": "CANDIDATE", "validated": false}
+{"candidate_id": "memcand_b", "candidate_type": "reusable_knowledge", "content": "beta", "created_at": "2026-07-16T09:00:00Z", "evidence_refs": ["model:analysis"], "promotable": false, "scope": "task_working_memory", "status": "CANDIDATE", "validated": false}

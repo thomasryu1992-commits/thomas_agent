@@ -103,7 +103,19 @@ def _request(args: argparse.Namespace) -> int:
         _record_audit_gap(ledger, "approval_request", exc, subject_ref=request["approval_id"], now=now)
         sys.stderr.write(f"WARNING: request audit failed ({exc.reason_code}); the request stands\n")
 
-    sys.stdout.write(approval.request_message(request, permission_decision) + "\n")
+    # Stage 2 of preference inference: show Thomas his past decisions on this action type
+    # next to the new ask. Advisory enrichment only — a history read failure must not
+    # block the ask itself, but it must not be silent either.
+    history = None
+    history_failure = ""
+    try:
+        history = approval.decision_history(store, request)
+    except MvpRuntimeError as exc:
+        history_failure = f"\n과거 유사 결정: 조회 실패 ({exc.reason_code}) — 이력 없이 요청합니다\n"
+
+    sys.stdout.write(approval.request_message(request, permission_decision, history=history) + "\n")
+    if history_failure:
+        sys.stdout.write(history_failure)
     sys.stderr.write(
         f"\nSTORED: {request['approval_id']} is PENDING until {request['validity']['expires_at']}.\n"
         "Send it to Thomas on the verified control channel; he answers with /approve <id> [reason] "

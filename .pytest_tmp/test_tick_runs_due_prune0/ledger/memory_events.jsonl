@@ -1,0 +1,1 @@
+{"action": "prune_working_memory", "created_at": "2026-07-17T09:00:00Z", "integrity": {"event_sha256": "sha256:ecb852b273250f443a89b1fe3fe0bd6eaec3a53f0102af2ba25271f66b7f522a"}, "reason": "scheduled:schedule_1771ac1e38f566b7aa82", "record_type": "working_memory_retention_event.v0", "removed_candidate_ids": ["stale"], "removed_count": 1}

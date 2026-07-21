@@ -1,0 +1,1 @@
+{"action": "pause", "actor": "tg-12345", "created_at": "2026-07-16T09:00:00Z", "integrity": {"event_sha256": "sha256:ea23310308695bf2de14187f6880da3889697fbfb163b826c9cd11cb1d5a02b1"}, "reason": "paused by operator", "record_type": "operator_control_event.v0", "resulting_mode": "PAUSED"}
