@@ -51,7 +51,7 @@ from .worker import Provider, ProviderResult
 
 VALIDATOR_WORKER_ID = "mvp.independent_validation.llm"
 VALIDATOR_WORKER_VERSION = "0.1.0"
-VALIDATOR_PROMPT_VERSION = "mvp_independent_validation.v1"
+VALIDATOR_PROMPT_VERSION = "mvp_independent_validation.v2"
 
 # The verdict order, its next-state map, and stricter_result live in validation.py —
 # one source for every module that ranks PASS/REVISE/BLOCK. ``stricter_result`` is
@@ -121,7 +121,16 @@ def _output_digest(agent_output: Mapping[str, Any]) -> str:
 
 def build_validator_prompt(task: Mapping[str, Any], agent_output: Mapping[str, Any]) -> str:
     """The independent review prompt: goal + original request + the output under review.
-    Deliberately excludes the specialist's prompt/search/memory context (fresh look)."""
+    Deliberately excludes the specialist's prompt/search/memory context (fresh look).
+
+    Calibrated (v2): an LLM asked to review will always find SOMETHING improvable, so
+    without an explicit bar every high-stakes analysis draws an endless REVISE ratchet —
+    observed live: three rounds of faithfully-incorporated revisions each met new demands
+    (deeper simulations, then sensitivity analysis, then more competitor data), so the
+    important requests were exactly the ones never answered. The bar is therefore stated
+    outright: PASS is the default when the acceptance criteria are met; REVISE is only
+    for material defects that make the output misleading or unusable; "a deeper analysis
+    is possible" is not a defect and belongs in risks under a PASS."""
     scope = task.get("scope", {})
     return (
         "You are an independent validation reviewer. Review the output below against the goal "
@@ -131,12 +140,18 @@ def build_validator_prompt(task: Mapping[str, Any], agent_output: Mapping[str, A
         "--- OUTPUT UNDER REVIEW ---\n"
         f"{_output_digest(agent_output)}\n"
         "--- END OUTPUT ---\n"
-        "Check: objective alignment, evidence for factual claims, logical consistency, "
-        "omissions, undisclosed uncertainty, risks, and output completeness.\n"
-        "Render your verdict in recommendation.action as exactly one of PASS, REVISE, or BLOCK "
-        "(REVISE = fixable deficiencies; BLOCK = unusable or unsupported by evidence). "
-        "Put your findings in key_findings, actionable revision requests in next_actions, "
-        "and remaining risks in risks."
+        "Acceptance criteria: the output addresses the stated goal, factual claims carry "
+        "evidence, the reasoning is internally consistent, material omissions are absent, "
+        "and uncertainty is disclosed rather than hidden.\n"
+        "Render your verdict in recommendation.action as exactly one of PASS, REVISE, or "
+        "BLOCK. PASS is the default whenever the acceptance criteria are met — perfection "
+        "is not the bar, and an analysis is not defective because a deeper one is "
+        "imaginable. Reserve REVISE for material defects that would mislead the reader or "
+        "make the output unusable for its goal, and BLOCK for output that is unusable or "
+        "unsupported by evidence. Suggestions for further depth (more data, more "
+        "scenarios, more validation) belong in risks alongside a PASS, not in a REVISE.\n"
+        "Put your findings in key_findings, actionable revision requests (REVISE/BLOCK "
+        "only) in next_actions, and remaining risks in risks."
     )
 
 
