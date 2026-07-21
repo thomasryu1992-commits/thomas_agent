@@ -208,6 +208,27 @@ def _groq_response(analysis: dict) -> str:
     })
 
 
+def test_every_hosted_call_names_itself_in_the_user_agent(monkeypatch):
+    """urllib's default UA trips Cloudflare's bot rules in front of api.groq.com (observed
+    live 2026-07-21: HTTP 403 "error code: 1010"). Both adapters send the stable product
+    identifier — identification, not evasion."""
+    from runtime.mvp_runtime.providers import _USER_AGENT, GroqProvider
+
+    monkeypatch.setenv(API_ENV, "k")
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    seen: list[str] = []
+
+    def capture_urlopen(request, timeout):
+        seen.append(request.get_header("User-agent"))
+        payload = _gemini_response(_ANALYSIS) if "googleapis" in request.full_url else _groq_response(_ANALYSIS)
+        return _FakeResp(payload)
+    monkeypatch.setattr("urllib.request.urlopen", capture_urlopen)
+
+    GoogleAIStudioProvider(authorization=_AUTH).generate("p", max_output_tokens=100, timeout_seconds=10)
+    GroqProvider(authorization=_groq_auth()).generate("p", max_output_tokens=100, timeout_seconds=10)
+    assert seen == [_USER_AGENT, _USER_AGENT]
+
+
 def test_groq_happy_path_parses_openai_shape(monkeypatch):
     from runtime.mvp_runtime.providers import GroqProvider
 

@@ -59,6 +59,13 @@ _RETRYABLE_HTTP = frozenset({429, 503})
 _MAX_RETRIES = 1
 _RETRY_BACKOFF_SECONDS = 5
 
+# Sent on every hosted call. urllib's default ("Python-urllib/3.12") trips Cloudflare's
+# bot rules in front of api.groq.com — observed live 2026-07-21 as HTTP 403 "error code:
+# 1010" — so an honest, stable product identifier goes on both adapters. This is
+# identification, not evasion: the runtime names itself instead of wearing a library
+# default that bot filters treat as anonymous scripting.
+_USER_AGENT = "thomas-agent-mvp/0.1"
+
 
 def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: int) -> tuple[str, int, int]:
     """POST and return ``(raw_body, latency_ms, retries)`` — the one HTTP path every
@@ -197,7 +204,8 @@ class GoogleAIStudioProvider:
             self._ENDPOINT.format(model=self._model),
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key,
+                     "User-Agent": _USER_AGENT},
         )
         # Latency is measured inside the shared helper and covers every attempt including
         # the backoff — it is what the operator actually waited (monotonic, so a clock
@@ -292,7 +300,8 @@ class GroqProvider:
             self._ENDPOINT,
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}",
+                     "User-Agent": _USER_AGENT},
         )
         raw, latency_ms, retries = _post_json_with_retry(request, timeout_seconds=timeout_seconds)
         return self._parse(raw, latency_ms=latency_ms, retries=retries)
