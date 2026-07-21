@@ -1,2 +1,0 @@
-{"audit_event_id": "ae1", "event": 5, "integrity": "nope"}
-{"audit_event_id": "ae2", "event": {"outcome": "RECORDED", "reason_codes": ["X"]}, "integrity": {}}
