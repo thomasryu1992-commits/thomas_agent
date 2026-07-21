@@ -257,7 +257,7 @@ def test_operator_tool_refuses_while_killed(tmp_path, capsys):
         store=store, ledger=ledger, control_store=cs, now=NOW,
     )
     assert rc == 1
-    assert "KILL_SWITCH_ACTIVE" in capsys.readouterr().err
+    assert "RUNTIME_KILLED" in capsys.readouterr().err
     assert store.read_validated() == []
     assert _read_audit(ledger) == []
     assert find_candidate(store, "memcand_x1") is not None              # nothing retired

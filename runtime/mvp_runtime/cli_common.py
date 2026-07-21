@@ -39,26 +39,23 @@ def report_block(exc: MvpRuntimeError) -> int:
 def gate_banners(*, channel: Any = None, provider: Any = None,
                  search_tool: Any = None, writer: Any = None) -> None:
     """Write the operator-visible SAFETY_GATE notice for each network/disk-capable
-    implementation actually selected. Imports are function-local so a CLI that never
-    passes a capability does not import its module (and no import cycles form)."""
-    if channel is not None:
-        from .operator import TelegramChannel
-        if isinstance(channel, TelegramChannel):
-            sys.stderr.write("SAFETY_GATE: network-capable operator channel authorized (network_access)\n")
-    if provider is not None:
-        from .providers import FailoverProvider, GoogleAIStudioProvider, GroqProvider
-        if isinstance(provider, FailoverProvider):
-            sys.stderr.write(
-                f"SAFETY_GATE: network-capable provider failover chain authorized "
-                f"({provider.model_id}; model_invocation, network_access per member)\n"
-            )
-        elif isinstance(provider, (GoogleAIStudioProvider, GroqProvider)):
-            sys.stderr.write("SAFETY_GATE: network-capable provider authorized (model_invocation, network_access)\n")
-    if search_tool is not None:
-        from .tools import WebSearchTool
-        if isinstance(search_tool, WebSearchTool):
-            sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
-    if writer is not None:
-        from .workspace import RealWorkspaceWriter
-        if isinstance(writer, RealWorkspaceWriter):
-            sys.stderr.write("SAFETY_GATE: disk-writing workspace writer authorized (filesystem_write)\n")
+    implementation actually selected.
+
+    Keyed on the capability attributes every implementation already declares
+    (``network_egress`` for channels/providers/tools, ``filesystem_write`` for writers)
+    rather than an isinstance ladder of concrete classes: the ladder reintroduced the
+    exact failure this module exists to prevent — a newly added capable implementation
+    silently printing no authorization notice until someone remembered to extend the
+    list. An attribute-declared capability banners itself by construction; the mocks
+    declare False and stay silent."""
+    if getattr(channel, "network_egress", False):
+        sys.stderr.write("SAFETY_GATE: network-capable operator channel authorized (network_access)\n")
+    if getattr(provider, "network_egress", False):
+        sys.stderr.write(
+            f"SAFETY_GATE: network-capable provider authorized "
+            f"({provider.model_id}; model_invocation, network_access)\n"
+        )
+    if getattr(search_tool, "network_egress", False):
+        sys.stderr.write("SAFETY_GATE: network-capable search tool authorized (network_access)\n")
+    if getattr(writer, "filesystem_write", False):
+        sys.stderr.write("SAFETY_GATE: disk-writing workspace writer authorized (filesystem_write)\n")

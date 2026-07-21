@@ -268,7 +268,7 @@ def handle_operator_message(
         # A task request is refused while the runtime is not ACTIVE (kill blocks new execution).
         state = control_store.load()
         if not state.execution_allowed:
-            reason_code = "RUNTIME_KILLED" if state.mode == control.KILLED else "RUNTIME_PAUSED"
+            reason_code = state.refusal_reason_code()
             return OperatorReply(
                 text=f"Runtime is {state.mode}; new requests are blocked. Send /resume to continue (or /status).",
                 accepted=False, status="REFUSED", reason_code=reason_code,

@@ -69,7 +69,7 @@ def test_prune_refused_while_killed_or_paused(tmp_path, capsys):
     control.apply_command(control_store, "kill", actor="op", now=NOW)
     rc = main(["prune"], store=store, ledger=ledger, control_store=control_store, now=NOW)
     assert rc != 0
-    assert "KILL_SWITCH_ACTIVE" in capsys.readouterr().err
+    assert "RUNTIME_KILLED" in capsys.readouterr().err
     assert [e["candidate_id"] for e in store.read_all()] == ["stale"]   # nothing deleted
     assert not (ledger.root / "memory_events.jsonl").exists()           # no event either
 

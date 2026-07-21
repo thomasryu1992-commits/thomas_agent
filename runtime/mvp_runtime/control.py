@@ -96,6 +96,17 @@ class ControlState:
         """Only ACTIVE lets the runtime start a task; PAUSED and KILLED both refuse."""
         return self.mode == ACTIVE
 
+    def refusal_reason_code(self) -> str:
+        """The ONE reason-code vocabulary for a kill-switch refusal, mode-aware.
+
+        Every execution door refuses the same governance condition
+        (``execution_allowed`` False), but half of them said KILL_SWITCH_ACTIVE and the
+        other half RUNTIME_KILLED/RUNTIME_PAUSED — an operator grepping the ledger or
+        stderr for a paused-run refusal had to know both spellings. One helper, one
+        vocabulary, and it keeps the mode distinction (a kill and a pause are different
+        operator actions with different resume stories)."""
+        return "RUNTIME_KILLED" if self.mode == KILLED else "RUNTIME_PAUSED"
+
     def as_record(self) -> dict[str, Any]:
         return {
             "record_type": RECORD_TYPE,

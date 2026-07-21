@@ -77,7 +77,8 @@ promote a second time: two VALIDATED entries from one single-use approval.
 
 Spending a grant mutates VALIDATED memory, so it is an execution the emergency stop must
 reach (`kill_switch.kill_blocks: new_execution` / `pending_execution`). Consumption checks the
-runtime control state **first**, before any other work, and refuses with `KILL_SWITCH_ACTIVE`
+runtime control state **first**, before any other work, and refuses mode-aware with
+`RUNTIME_KILLED` / `RUNTIME_PAUSED` (the unified kill-switch refusal vocabulary)
 while PAUSED or KILLED — the same binding `workspace.run_write` has for `tool_write` and the
 scheduler has for `scheduler_execution`. Only the authenticated operator can resume
 (`agent_can_disable_or_bypass: false`).

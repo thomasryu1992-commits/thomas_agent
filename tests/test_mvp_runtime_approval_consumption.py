@@ -350,7 +350,8 @@ def test_consume_is_refused_while_the_runtime_is_not_active(tmp_path, mode):
         consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
                          ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT),
                          control_store=control)
-    assert exc.value.reason_code == "KILL_SWITCH_ACTIVE"
+    # One refusal vocabulary at every door, mode-aware (architecture review P2-4).
+    assert exc.value.reason_code == ("RUNTIME_KILLED" if mode == "KILLED" else "RUNTIME_PAUSED")
     # Nothing was spent or promoted.
     assert astore.get(approval_id)["status"] == "APPROVED"
     assert wm.read_validated() == []

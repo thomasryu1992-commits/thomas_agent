@@ -104,7 +104,7 @@ def main(
         return report_block(exc)
 
     gate_banners(channel=channel, provider=provider, search_tool=search_tool)
-    if validator_provider is not None:
+    if getattr(validator_provider, "network_egress", False):
         sys.stderr.write("SAFETY_GATE: validator provider authorized separately "
                          f"(model: {getattr(validator_provider, 'model_id', 'unknown')})\n")
 
