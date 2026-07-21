@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import jsonl
+from .filelock import locked
 from .paths import repo_root as _repo_root
 
 STORE_REL = ".runtime_governance_state/approvals"
@@ -47,13 +48,23 @@ class ApprovalStore:
 
     def append(self, approvals: Iterable[Mapping[str, Any]]) -> None:
         """Append approval records. A decision appends the decided record — it never edits
-        the request, so the trail keeps both."""
+        the request, so the trail keeps both.
+
+        Appends under a per-file cross-process lock, like every other shared store: the
+        deployment writes this file from the operator loop (/approve) AND ``docker exec``
+        CLIs (approval_cli request) concurrently, and an approval row embeds its whole
+        action snapshot — large enough to reach the file in several write syscalls, so
+        two unlocked writers could interleave partial lines and corrupt the store. This
+        was the exact hardening the ledger got in QA wave 6; the approval store was the
+        one shared store left out."""
         records = [dict(a) for a in approvals]
         if not records:
             return
-        jsonl.append_lines(
-            self.path, records, write_code="APPROVAL_WRITE_FAILED", label="approval store"
-        )
+        with locked(self.path.with_name(APPROVALS_FILE + ".lock"),
+                    code="APPROVAL_WRITE_FAILED", label="approval store"):
+            jsonl.append_lines(
+                self.path, records, write_code="APPROVAL_WRITE_FAILED", label="approval store"
+            )
 
     def read_all(self) -> list[dict[str, Any]]:
         """Every appended record in order. Fail-closed on a corrupt store."""
@@ -89,10 +100,14 @@ class ApprovalStore:
         return self._root / PERMISSION_DECISIONS_FILE
 
     def append_permission_decision(self, permission_decision: Mapping[str, Any]) -> None:
-        jsonl.append_lines(
-            self.permission_path, [dict(permission_decision)],
-            write_code="APPROVAL_WRITE_FAILED", label="approval permission-decision store",
-        )
+        # Same lock rationale as append(); its own sidecar so the two files' writers
+        # never serialize against each other (the ledger's per-file pattern).
+        with locked(self.permission_path.with_name(PERMISSION_DECISIONS_FILE + ".lock"),
+                    code="APPROVAL_WRITE_FAILED", label="approval permission-decision store"):
+            jsonl.append_lines(
+                self.permission_path, [dict(permission_decision)],
+                write_code="APPROVAL_WRITE_FAILED", label="approval permission-decision store",
+            )
 
     def get_permission_decision(self, permission_decision_id: str) -> dict[str, Any] | None:
         """The decision an approval binds to, so a later answer can be re-validated against

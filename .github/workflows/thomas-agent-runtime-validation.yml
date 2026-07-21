@@ -51,5 +51,17 @@ jobs:
       # gate, kill switch, consumption, workspace confinement) lives in the MVP runtime
       # and is covered only by pytest. A release tag going green without ever executing
       # that suite was a QA finding — full validation now means both.
+      #
+      # The ephemeral Core matters here as much as in the PR pipeline: without it the
+      # ~26 requires_local_core test files (binding, planning, the full pipeline — the
+      # highest-value integration tests) silently SKIP, so "full validation" was
+      # exercising strictly less than every PR run did.
+      - name: Activate an ephemeral Core for the test run
+        shell: bash
+        run: |
+          git config user.email "ci-tests@thomas-agent.local"
+          git config user.name "Thomas Agent CI"
+          python scripts/ci_activate_core_for_tests.py
+
       - name: Run the MVP runtime test suite
         run: python -m pytest tests/ -q
