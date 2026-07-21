@@ -9,9 +9,17 @@ now, so the format cannot drift between producers and validators of the same fie
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 _ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+# The one timestamp form the runtime's lexicographic comparisons (expiries, next_run_at)
+# are correct for. `\A…\Z`, not `^…$`: `$` also matches before a trailing newline, so
+# "…Z\n" would pass the very check that exists to keep those compares byte-exact.
+# One authority — safety_gate.py and scheduler.py used to carry their own copies (one of
+# them with the `$` footgun).
+FIXED_UTC_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 
 
 def utc_now_iso() -> str:

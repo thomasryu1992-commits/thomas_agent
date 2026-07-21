@@ -44,6 +44,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from . import schema_cache
 from . import timeutil
 from .authority import permission_decision_runtime_effect
+from .control import command_verb
 from .errors import ApprovalBlocked
 from .paths import repo_root as _repo_root
 
@@ -461,11 +462,6 @@ def format_decision_history(history: Mapping[str, Any]) -> str:
     return "\n" + "\n".join(lines)
 
 
-def approval_fingerprint(approval: Mapping[str, Any]) -> str:
-    """A hash over the approval record, for audit payload binding."""
-    return integrity.sha256_record(dict(approval))
-
-
 # --- control-channel commands ------------------------------------------------------
 
 CMD_APPROVE = "approve"
@@ -499,11 +495,9 @@ def parse_approval_command(text: Any) -> tuple[str, str | None, str | None] | No
     if not stripped:
         return None
     head, _, rest = stripped.partition(" ")
-    verb = head.lstrip("/").strip().lower()
-    if stripped.startswith("/") and "@" in verb:
-        # Telegram appends the bot username to menu-picked commands (``/approve@bot <id>``);
-        # the suffix is addressing, not part of the verb.
-        verb = verb.split("@", 1)[0]
+    # One tokenizer with the console parser (control.command_verb): leading slash,
+    # lowercasing, and the Telegram @botname suffix are handled identically there.
+    verb = command_verb(head, slash_seen=stripped.startswith("/"))
     if verb not in _COMMANDS:
         return None
     approval_ref, _, reason = rest.strip().partition(" ")

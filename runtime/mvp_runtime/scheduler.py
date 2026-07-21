@@ -22,7 +22,6 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -52,8 +51,9 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE})
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
 
-# The one timestamp form `next_run_at <= now` is a correct time comparison for.
-_TIMESTAMP_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+# The one timestamp form `next_run_at <= now` is a correct time comparison for —
+# single authority in timeutil (anchor rationale documented there).
+_TIMESTAMP_PATTERN = timeutil.FIXED_UTC_PATTERN
 
 
 @dataclass(frozen=True)
