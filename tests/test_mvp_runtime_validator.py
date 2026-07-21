@@ -473,3 +473,22 @@ def test_explicit_true_still_validates_every_run():
     """The R7 all-on behavior is unchanged by R7.1 — bool True ignores priority/risk."""
     result = run_task(REQUEST, independent_validation=True, now=NOW)
     assert "independent_validation_result" in result["records"]
+
+
+@requires_local_core
+def test_delivered_footer_tells_the_truth_about_the_review():
+    """A delivered response only exists when the merged outcome PASSed, so if the
+    reviewer ran, it passed — and the footer must say so. The constant footer used to
+    claim 'not independently verified' on exactly the reviewed-and-passed runs."""
+    reviewed = run_task(REQUEST, independent_validation=True, now=NOW)
+    assert "independently reviewed (PASS)" in reviewed["final_response"]
+    assert "not independently verified" not in reviewed["final_response"]
+
+    plain = run_task(REQUEST, now=NOW)
+    assert "not independently verified" in plain["final_response"]
+
+    # Under "auto": the footer follows what actually ran, not the policy flag.
+    skipped = run_task(REQUEST, independent_validation="auto", now=NOW)   # mock triage: NORMAL
+    assert "not independently verified" in skipped["final_response"]
+    marked = run_task(REQUEST, independent_validation="auto", priority="HIGH", now=NOW)
+    assert "independently reviewed (PASS)" in marked["final_response"]
