@@ -29,22 +29,32 @@ from typing import Any
 # ``subtasks_and_new_assignments_cannot_increase_parent_remaining_budget`` breach.
 MODEL_CALLS_PER_AGENT = 1
 TOKENS_PER_AGENT = 8000
+# R7.2: the orchestrator triage is one deliberately small model call (a short request in,
+# one importance label out) made by Prime, not by an agent — so it gets its own modest
+# token allowance rather than an agent's share.
+TRIAGE_TOKEN_ALLOWANCE = 2000
+TRIAGE_TIMEOUT_SECONDS = 30
 
 
-def default_execution_budget(*, agents: int = 1) -> dict[str, Any]:
+def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[str, Any]:
     """A fresh ``execution_budget.v0.1`` allocation with zeroed usage.
 
     ``agents`` is the number of agents the plan will invoke under this budget: 1 for a task
     the specialist handles alone, 2 when R7's independent validator also runs. An
     *assignment* is always a single agent's share, so callers building an assignment leave
     it at 1 and only the task-level allocation scales.
+
+    ``triage_calls`` (R7.2) additionally allocates for the orchestrator's importance-triage
+    model call under the "auto" validation policy. It is an allocation ceiling, not a
+    claim: a run whose triage turns out unnecessary simply spends less than it allocated.
     """
     agents = max(1, int(agents))
+    triage_calls = max(0, int(triage_calls))
     return {
         "schema_version": "execution_budget.v0.1",
         "limits": {
             "max_agent_invocations": agents,
-            "max_model_calls": MODEL_CALLS_PER_AGENT * agents,
+            "max_model_calls": MODEL_CALLS_PER_AGENT * agents + triage_calls,
             # Zero by governance, not by omission: the R3 read-only search is an
             # INTERNAL_READ ALLOW action, not a registered Tool execution (TOOL_REGISTRY
             # keeps `search.readonly` disabled and R3 deliberately avoided `tool_request`).
@@ -57,7 +67,7 @@ def default_execution_budget(*, agents: int = 1) -> dict[str, Any]:
             "max_retry_count": 1,
             "max_parallel_workers": 1,
             "max_runtime_seconds": 120,
-            "token_budget": TOKENS_PER_AGENT * agents,
+            "token_budget": TOKENS_PER_AGENT * agents + TRIAGE_TOKEN_ALLOWANCE * triage_calls,
             "cost_budget": 0,
             "cost_currency": "USD",
         },

@@ -62,9 +62,18 @@ SEARCH_REQUIRED_PERMISSION_LEVEL = "P1"  # READ — a read-only lookup, one leve
 
 # Governance scope + level for the R7 independent validation action. A distinct ALLOW-tier
 # scope (SIMULATION_VALIDATION) both matches the action semantically and keeps the validator's
-# permission_decision_id distinct from the specialist's (the id seed includes the scope).
+# permission_decision_id distinct from the specialist's (the id seed includes the scope
+# and the action_type).
 VALIDATION_PERMISSION_SCOPE = "SIMULATION_VALIDATION"
 VALIDATION_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only review of an internal output
+
+# Governance scope + level for the R7.2 orchestrator triage: Prime's own short model call
+# that judges whether a request is important enough to warrant the independent reviewer.
+# It is internal analysis of the request — the same ALLOW-tier effect class as the
+# specialist's analysis (a distinct action_type keeps the decision ids apart) — at P2
+# ANALYZE, read-only, granting nothing.
+TRIAGE_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"
+TRIAGE_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only importance assessment
 
 # Governance scope + level for the R8 controlled write. The Governance Policy already
 # prices WORKSPACE_REVERSIBLE_WRITE at EXECUTE_AND_REPORT, making this the runtime's first
@@ -166,6 +175,18 @@ _VALIDATION_ACTION = _ActionSpec(
     authority_reason="Independent validation within the assigned Task scope and the validator role's ceiling.",
     decision_reason="Authority is sufficient and the review is a read-only assessment of an internal artifact.",
     constraint="Review only; the validator never modifies the original output and grants nothing.",
+)
+
+_TRIAGE_ACTION = _ActionSpec(
+    action_type="internal.analysis.triage",
+    target_suffix="triage",
+    tool_id=None,
+    data_scope=("task.request",),
+    normalized_parameters={"assessment": "importance", "visibility": "internal"},
+    risk_reason="Read-only importance assessment of the request; no external, financial, or runtime effect.",
+    authority_reason="Orchestrator classification support within the assigned Task scope and authority ceiling.",
+    decision_reason="Authority is sufficient and the triage is a read-only assessment of the request itself.",
+    constraint="Assessment only; the verdict adds review, never removes any check, and grants nothing.",
 )
 
 
@@ -316,9 +337,14 @@ def build_permission_decision(
         approval_id = integrity.short_id("approval", {"action_fingerprint": action_fingerprint})
 
     decision = disposition  # exactly the policy minimum for this scope
+    # The id seed includes the action_type as well as the scope: two governed actions on
+    # one task may legitimately share an effect class (R7.2's orchestrator triage is
+    # INTERNAL_ANALYSIS exactly like the specialist's analysis), and "one decision per
+    # action" must hold by construction, not by every scope being unique.
     permdec_id = integrity.short_id(
         "permdec",
-        {"task_id": task_id, "task_revision": revision, "ccb": ccb, "scope": permission_scope, "expires_at": expires_at},
+        {"task_id": task_id, "task_revision": revision, "ccb": ccb, "scope": permission_scope,
+         "action_type": action.action_type, "expires_at": expires_at},
     )
 
     record: dict[str, Any] = {
@@ -410,6 +436,34 @@ def build_search_permission_decision(
         ttl_minutes=ttl_minutes,
         repo_root=repo_root,
         action=_SEARCH_ACTION,
+    )
+
+
+def build_triage_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the ALLOW PermissionDecision for the R7.2 orchestrator triage.
+
+    A thin wrapper over :func:`build_permission_decision` fixing the triage scope
+    (``INTERNAL_ANALYSIS``), least-privilege level (P2 ANALYZE), and the triage action
+    spec. Fails closed identically. Prime's importance-judging model call acts under this
+    decision — a governed action of its own, never a side effect of planning."""
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRIAGE_PERMISSION_SCOPE,
+        required_permission_level=TRIAGE_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=_TRIAGE_ACTION,
     )
 
 

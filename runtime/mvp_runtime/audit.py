@@ -212,6 +212,9 @@ def build_pipeline_audit(
     now: str,
     tool_use: Mapping[str, Any] | None = None,
     search_permission_decision: Mapping[str, Any] | None = None,
+    triage_result: Mapping[str, Any] | None = None,
+    triage_invocation: Mapping[str, Any] | None = None,
+    triage_permission_decision: Mapping[str, Any] | None = None,
     independent_validation_result: Mapping[str, Any] | None = None,
     validator_invocation: Mapping[str, Any] | None = None,
     validator_permission_decision: Mapping[str, Any] | None = None,
@@ -237,6 +240,13 @@ def build_pipeline_audit(
     ``validator_invocation``), its model call and its INDEPENDENT validation verdict are
     each recorded, and the final task state derives from the **stricter** of the automatic
     and independent results (stricter_rule_wins).
+
+    R7.2: when the orchestrator triage ran (``triage_result``), one TRIAGE event records
+    Prime's importance verdict — the model call and the judgement in one event, since the
+    verdict IS the call's entire product — referencing its own INTERNAL_ANALYSIS
+    PermissionDecision. A degraded triage (provider failure / unusable verdict) is the
+    same event with ``TRIAGE_DEGRADED``: the decision to skip the reviewer must be on the
+    chain especially when it was made by fallback.
 
     R8: when a controlled write ran (``write_use``), a WORKSPACE_WRITE event records it —
     the durable half of the EXECUTE_AND_REPORT obligation, referencing its
@@ -273,6 +283,37 @@ def build_pipeline_audit(
             evidence_refs=[f"in_memory:{permission_decision['permission_decision_id']}"], payload_sha256=perm_fp,
         ),
     ]
+
+    # R7.2: the orchestrator triage — Prime's own governed model call whose verdict
+    # decides whether the planned reviewer runs. Emitted before the tool/model events
+    # because it ran before them.
+    if triage_result is not None:
+        tri_fp = _fingerprint(dict(triage_result), "triage_result")
+        degraded = bool(triage_result.get("degraded"))
+        tri_egress = bool((triage_invocation or {}).get("network_egress"))
+        triage_permdec_ref = (
+            f"in_memory:{triage_permission_decision['permission_decision_id']}"
+            if triage_permission_decision else f"in_memory:task:{tid}"
+        )
+        model_note = (
+            f"model {triage_invocation.get('model_id')} ({triage_invocation.get('tokens_used')} tokens)"
+            if triage_invocation else "no model answer (provider failed)"
+        )
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("thomas_prime", "thomas.prime"),
+            subject_type="TRIAGE_RESULT", subject_id=triage_result["triage_id"],
+            subject_ref=f"in_memory:{triage_result['triage_id']}", subject_fingerprint=tri_fp,
+            summary=(f"Orchestrator triage verdict: {triage_result.get('verdict')} — "
+                     f"{model_note}, degraded={degraded}, network_egress={tri_egress}."),
+            outcome="RECORDED",
+            reason_codes=(["TRIAGE", str(triage_result.get("verdict"))]
+                          + (["TRIAGE_DEGRADED"] if degraded else [])
+                          + (["MODEL_INVOKED"] if triage_invocation else [])
+                          + ["NETWORK_EGRESS" if tri_egress else "NO_NETWORK_EGRESS"]),
+            related_record_refs=[triage_permdec_ref],
+            evidence_refs=[f"in_memory:{triage_result['triage_id']}"], payload_sha256=tri_fp,
+        ))
 
     if tool_use is not None:
         tool_fp = _fingerprint(dict(tool_use), "tool_use")

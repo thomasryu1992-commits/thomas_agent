@@ -241,7 +241,37 @@ def test_plan_task_without_flag_is_unchanged():
     task = build_task(REQUEST, now=NOW)
     plan = plan_task(task, now=NOW)
     assert "validator_assignment" not in plan
+    assert "triage_permission_decision" not in plan
     assert plan["task"]["routing"]["assigned_role_ids"] == ["general.specialist"]
+
+
+@requires_local_core
+def test_plan_task_auto_plans_triage_with_a_distinct_decision():
+    """R7.2: under "auto" on a GREEN/NORMAL task, Prime plans the triage as its own
+    governed action — a PermissionDecision distinct from every other grant in the plan
+    (the specialist's shares its INTERNAL_ANALYSIS scope; the action_type separates them)."""
+    task = build_task(REQUEST, now=NOW, planned_triage_calls=1, planned_agents=2)
+    plan = plan_task(task, now=NOW, independent_validation="auto")
+    triage_permdec = plan["triage_permission_decision"]
+    assert triage_permdec["decision"]["permission_decision"] == "ALLOW"
+    ids = {
+        plan["permission_decision"]["permission_decision_id"],
+        plan["search_permission_decision"]["permission_decision_id"],
+        plan["validator_permission_decision"]["permission_decision_id"],
+        triage_permdec["permission_decision_id"],
+    }
+    assert len(ids) == 4
+    # The team is planned under "auto" too — running it is the pipeline's decision.
+    assert "validator_assignment" in plan
+
+
+@requires_local_core
+def test_plan_task_auto_plans_no_triage_when_already_required():
+    """An important intake priority already decides the review — no triage is owed."""
+    task = build_task(REQUEST, now=NOW, priority="HIGH", planned_agents=2)
+    plan = plan_task(task, now=NOW, independent_validation="auto")
+    assert "triage_permission_decision" not in plan
+    assert "validator_assignment" in plan
 
 
 @requires_local_core
@@ -302,14 +332,25 @@ def test_independent_validation_required_truth_table():
 
 
 @requires_local_core
-def test_auto_policy_skips_the_validator_for_a_normal_green_run():
-    """Everyday GREEN/NORMAL runs spend one model call, not two."""
+def test_auto_policy_triage_normal_skips_the_planned_reviewer():
+    """R7.2: on a GREEN/NORMAL run the orchestrator triage judges (mock: NORMAL) and the
+    planned reviewer does not run — one agent model call, plus the small triage call."""
     result = run_task(REQUEST, independent_validation="auto", now=NOW)
     assert result["status"] == "COMPLETED"
     assert "independent_validation_result" not in result["records"]
-    assert result["records"]["task"]["routing"]["assigned_role_ids"] == ["general.specialist"]
+    # The team is PLANNED (buildable) either way; the triage decides what RUNS.
+    assert "validator_assignment" in result["records"]
+    triage = result["records"]["triage_result"]
+    assert triage["verdict"] == "NORMAL" and triage["degraded"] is False
+    assert result["records"]["triage_invocation"]["model_id"] == "mock.triage"
+    assert "triage_permission_decision" in result["records"]
     events = result["records"]["audit_trail"]
     assert len([e for e in events if e["event_type"] == "VALIDATION_COMPLETED"]) == 1
+    triage_events = [e for e in events if "TRIAGE" in e["event"]["reason_codes"]]
+    assert len(triage_events) == 1 and "NORMAL" in triage_events[0]["event"]["reason_codes"]
+    # Budget honesty: specialist + triage = 2 model calls, but only 1 agent invocation.
+    usage = result["records"]["budget_usage"]["usage"]
+    assert usage["model_calls"] == 2 and usage["agent_invocations"] == 1
 
 
 @requires_local_core
@@ -323,6 +364,9 @@ def test_auto_policy_validates_an_important_request():
     ival = result["records"]["independent_validation_result"]
     assert ival["validation"]["validation_mode"] == "INDEPENDENT"
     assert ival["validator"]["independent_required"] is False
+    # The classification already decided — no triage call is owed, none is planned.
+    assert "triage_result" not in result["records"]
+    assert "triage_permission_decision" not in result["records"]
     events = result["records"]["audit_trail"]
     assert len([e for e in events if e["event_type"] == "VALIDATION_COMPLETED"]) == 2
 
@@ -339,23 +383,73 @@ def test_auto_policy_validates_when_risk_requires_it(monkeypatch):
     assert ival["validator"]["independent_required"] is True
 
 
+class _SequencedProvider:
+    """Answers each successive call with the next fixed verdict — the triage and the
+    review share one provider, so their answers must be independently controllable."""
+
+    model_id = "fake.sequence"
+    model_version = "0.0.1"
+    network_egress = False
+
+    def __init__(self, actions):
+        self._actions = list(actions)
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        action = self._actions.pop(0)
+        analysis = {
+            "summary": "sequenced", "key_findings": ["finding"], "facts": [],
+            "inferences": [], "assumptions": [], "uncertainty": [], "risks": [],
+            "recommendation": {"action": action, "reason": f"sequenced {action}"},
+            "limitations": [], "next_actions": [], "evidence_quality": "ok",
+            "unresolved_questions": [],
+        }
+        return ProviderResult(analysis=analysis, model_id=self.model_id,
+                              model_version=self.model_version,
+                              input_tokens=10, output_tokens=10, latency_ms=0)
+
+
+class _FailingProvider:
+    model_id = "fake.failing"
+    model_version = "0.0.1"
+    network_egress = False
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        from runtime.mvp_runtime.errors import ProviderError
+        raise ProviderError("PROVIDER_UNAVAILABLE", "synthetic outage")
+
+
 @requires_local_core
-def test_auto_policy_drift_fails_closed(monkeypatch):
-    """If a (future) dynamic classification changes the auto decision after the budget
-    was sized, the run must BLOCK rather than run mis-budgeted or under-reviewed."""
-    import runtime.mvp_runtime.pipeline as pipeline_mod
+def test_auto_policy_triage_high_runs_the_planned_reviewer():
+    """R7.2: the orchestrator's HIGH verdict is what brings the reviewer in — no marker,
+    no risk mandate, just Prime's own judgement. Call 1 = triage (HIGH), call 2 = review
+    (PASS), both on the validator/triage provider."""
+    result = run_task(REQUEST, independent_validation="auto",
+                      validator_provider=_SequencedProvider(["HIGH", "PASS"]), now=NOW)
+    assert result["status"] == "COMPLETED"
+    assert result["records"]["triage_result"]["verdict"] == "HIGH"
+    ival = result["records"]["independent_validation_result"]
+    assert ival["validation"]["result"] == "PASS"
+    # Operator/governance did not require it — the orchestrator chose it.
+    assert ival["validator"]["independent_required"] is False
+    usage = result["records"]["budget_usage"]["usage"]
+    assert usage["model_calls"] == 3 and usage["agent_invocations"] == 2
 
-    real_plan = pipeline_mod.plan_task
 
-    def drifted_plan(task, **kwargs):
-        plan = real_plan(task, **kwargs)
-        plan["task"]["classification"]["risk_level"] = "RED"
-        return plan
-
-    monkeypatch.setattr(pipeline_mod, "plan_task", drifted_plan)
-    result = run_task(REQUEST, independent_validation="auto", now=NOW)
-    assert result["status"] == "BLOCKED"
-    assert result["block"]["reason_code"] == "VALIDATION_POLICY_DRIFT"
+@requires_local_core
+def test_auto_policy_triage_failure_degrades_and_is_recorded():
+    """A broken triage provider must neither block the analysis nor silently double its
+    spend: the verdict degrades to NORMAL, the reviewer is skipped, and the degradation
+    is on the record and the audit chain."""
+    result = run_task(REQUEST, independent_validation="auto",
+                      validator_provider=_FailingProvider(), now=NOW)
+    assert result["status"] == "COMPLETED"
+    triage = result["records"]["triage_result"]
+    assert triage["verdict"] == "NORMAL" and triage["degraded"] is True
+    assert "triage_invocation" not in result["records"]
+    assert "independent_validation_result" not in result["records"]
+    triage_events = [e for e in result["records"]["audit_trail"]
+                     if "TRIAGE" in e["event"]["reason_codes"]]
+    assert len(triage_events) == 1 and "TRIAGE_DEGRADED" in triage_events[0]["event"]["reason_codes"]
 
 
 @requires_local_core
