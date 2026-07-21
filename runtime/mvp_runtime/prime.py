@@ -34,9 +34,11 @@ from .permission import (
     MVP_TTL_MINUTES,
     build_permission_decision,
     build_search_permission_decision,
+    build_triage_permission_decision,
     build_validation_permission_decision,
     build_write_permission_decision,
 )
+from .validation import independent_validation_required
 from .planner import (
     VALIDATOR_REQUIRED_CAPABILITIES,
     VALIDATOR_REQUIRED_PERMISSION_LEVEL,
@@ -117,7 +119,7 @@ def plan_task(
     *,
     now: str,
     repo_root: Path | None = None,
-    independent_validation: bool = False,
+    independent_validation: bool | str = False,
     controlled_write: bool = False,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
@@ -131,6 +133,12 @@ def plan_task(
     keys ``validator_role``, ``validator_permission_decision``, ``validator_assignment``.
     Prime requests validation without lowering any policy (a role activation condition);
     the validator reviews, it never performs the original task.
+
+    ``independent_validation="auto"`` (R7.2) plans the same team, and — when the
+    classification does not already require the review — also a ``triage_permission_decision``
+    authorizing the orchestrator's importance-triage model call. Planning never invokes a
+    model; the pipeline runs the triage and decides from its verdict whether the planned
+    reviewer actually runs.
 
     ``controlled_write`` (R8, opt-in) additionally plans the workspace write as its own
     governed action, adding ``write_permission_decision`` — a WORKSPACE_REVERSIBLE_WRITE
@@ -179,7 +187,26 @@ def plan_task(
         repo_root=root,
     )
 
+    # R7.2 (the "auto" policy): when the classification does not already decide the review
+    # (GREEN risk and no important priority), Prime plans an orchestrator triage — its own
+    # governed ALLOW action whose verdict will supply the missing importance signal. The
+    # pipeline runs it; a plan only ever produces records. When the classification already
+    # requires the review, no triage is planned: the decision is made, no call is owed.
+    triage_permission_decision = None
+    if independent_validation == "auto" and not independent_validation_required(
+        decision["classification"]["priority"], decision["classification"]["risk_level"]
+    ):
+        triage_permission_decision = build_triage_permission_decision(
+            bound,
+            role_permission_ceiling=role["permission_ceiling"],
+            now=now,
+            repo_root=root,
+        )
+
     # R7 (opt-in): plan the independent validator as a second, separately-governed agent.
+    # Under "auto" the team is always PLANNED (planning is free and deterministic — the
+    # R9 buildable-vs-executable precedent); whether the reviewer RUNS is the pipeline's
+    # decision from the classification or the triage verdict.
     validator_role = validator_permission_decision = validator_assignment = None
     if independent_validation:
         validator_role = select_role(
@@ -241,6 +268,8 @@ def plan_task(
             "validator_permission_decision": validator_permission_decision,
             "validator_assignment": validator_assignment,
         })
+    if triage_permission_decision is not None:
+        plan["triage_permission_decision"] = triage_permission_decision
     if controlled_write:
         plan["write_permission_decision"] = write_permission_decision
     return plan

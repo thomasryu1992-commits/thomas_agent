@@ -149,6 +149,7 @@ def build_task(
     now: str | None = None,
     created_by: str | None = None,
     planned_agents: int = 1,
+    planned_triage_calls: int = 0,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build and validate a RECEIVED ``task.v0.3`` record. Fail-closed.
@@ -160,6 +161,8 @@ def build_task(
     alone, 2 = R7's independent validator too). Each assignment gets a single agent's
     share, and the contract forbids an assignment exceeding the parent task's remaining
     budget — so the task allocation has to cover the team the plan will actually invoke.
+    ``planned_triage_calls`` (R7.2) additionally covers the orchestrator's importance
+    triage under the "auto" validation policy — a ceiling, not a claim.
     """
     raw_request = _require_text(raw_request, "EMPTY_REQUEST", "raw_request", max_len=MAX_REQUEST_CHARS)
     requester_id = _require_text(requester_id, "MISSING_REQUESTER", "requester_id", max_len=200)
@@ -278,7 +281,9 @@ def build_task(
             "rejection_criteria": list(DEFAULT_REJECTION_CRITERIA),
             "validation_output_refs": [],
         },
-        "execution_budget": default_execution_budget(agents=planned_agents),
+        "execution_budget": default_execution_budget(
+            agents=planned_agents, triage_calls=planned_triage_calls
+        ),
         "results": {
             "agent_output_refs": [],
             "program_result_refs": [],

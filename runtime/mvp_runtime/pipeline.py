@@ -32,14 +32,14 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError, PlannerBlocked
+from .errors import MvpRuntimeError, PersistenceError
 from .intake import build_task
 from .memory import retrieve_working_memory
-from . import planner
 from .prime import plan_task
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, run_search
-from .validation import independent_validation_required, validate_agent_output
+from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
+from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .worker import MockProvider, Provider, run_analysis_worker
 from .working_memory import WorkingMemoryStore
@@ -176,11 +176,16 @@ def run_task(
     deterministic ``MockValidatorProvider`` when the specialist uses the mock provider, and
     to the same (gated) provider otherwise — one Safety-Flag Gate governs both agents.
 
-    ``independent_validation`` also accepts :data:`AUTO_VALIDATION` (``"auto"``, R7.1):
-    the reviewer runs only when :func:`independent_validation_required` says so — the
-    classification's risk level mandates it (ORANGE/RED, policy §3.4) or the operator
-    marked the request important (``priority`` HIGH/URGENT). Everyday GREEN/NORMAL runs
-    then spend one model call, not two.
+    ``independent_validation`` also accepts :data:`AUTO_VALIDATION` (``"auto"``): the
+    reviewer runs only when the task warrants it. The classification decides first —
+    ORANGE/RED risk mandates the review (policy §3.4), an operator-marked important
+    priority (HIGH/URGENT) requests it. When neither decides (R7.2), the **orchestrator
+    judges**: Prime plans a governed triage action and one deliberately small model call
+    on the (cheap) validator/triage provider returns HIGH or NORMAL. Everyday NORMAL
+    verdicts spend the small triage call instead of a full second review; a triage
+    failure degrades to NORMAL and is recorded (``TRIAGE_DEGRADED``), never a block —
+    the reviewer is an enhancement, and a broken triage must neither stop the analysis
+    nor silently double every run's spend.
 
     ``write_path`` (R8, opt-in) additionally creates the rendered response as a file at
     that workspace-relative path — the runtime's first EXECUTE_AND_REPORT action. Supplying
@@ -193,19 +198,20 @@ def run_task(
     search_tool = search_tool if search_tool is not None else MockSearchTool()
     if validator_provider is None:
         validator_provider = MockValidatorProvider() if isinstance(provider, MockProvider) else provider
+    # R7.2: the orchestrator triage rides the validator's (cheap) provider; the mock
+    # pairing stays mock so default runs remain deterministic and network-free.
+    triage_provider = (
+        MockTriageProvider() if isinstance(validator_provider, MockValidatorProvider)
+        else validator_provider
+    )
     now = now if now is not None else timeutil.utc_now_iso()
 
-    # R7.1: resolve the "auto" policy into a per-task yes/no BEFORE intake — the task's
-    # budget allocation must cover exactly the team the plan will invoke. The intake
-    # priority is a caller input and the MVP risk classification is deterministic
-    # (planner.MVP_RISK_LEVEL), so the decision is known here; a post-plan drift check
-    # below fails closed if a future dynamic classification breaks that assumption.
+    # R7.2: under "auto" the reviewer decision may come from the orchestrator's triage,
+    # which runs only after planning — so the allocation covers the LARGEST team this
+    # plan may invoke (an allocation is a ceiling, not a claim; the spend is recorded in
+    # budget_usage), and `validate_run` is settled before the specialist runs.
     auto_policy = independent_validation == AUTO_VALIDATION
-    if auto_policy:
-        independent_validation = independent_validation_required(
-            intake_kwargs.get("priority", "NORMAL"), planner.MVP_RISK_LEVEL
-        )
-    else:
+    if not auto_policy:
         independent_validation = bool(independent_validation)
     result: dict[str, Any] = {
         "status": "BLOCKED",
@@ -238,7 +244,8 @@ def run_task(
         # breach, which the runtime was silently committing on every validated run.
         task = build_task(
             raw_request, now=now,
-            planned_agents=2 if independent_validation else 1,
+            planned_agents=2 if (auto_policy or independent_validation) else 1,
+            planned_triage_calls=1 if auto_policy else 0,
             **intake_kwargs,
         )
         received_task = task
@@ -246,34 +253,42 @@ def run_task(
 
         plan = plan_task(
             task, now=now, repo_root=repo_root,
-            independent_validation=independent_validation,
+            independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
         )
-        if auto_policy:
-            # The budget above was sized from the pre-intake decision; if the classified
-            # priority/risk now demand a different answer, the allocation is wrong for the
-            # team — fail closed rather than run mis-budgeted or under-reviewed.
-            classified = plan["task"].get("classification", {})
-            if independent_validation_required(
-                classified.get("priority"), classified.get("risk_level")
-            ) != independent_validation:
-                raise PlannerBlocked(
-                    "VALIDATION_POLICY_DRIFT",
-                    "classification changed the auto-validation decision after budgeting",
-                )
         records.update({
             "task": plan["task"], "binding": plan["binding"],
             "permission_decision": plan["permission_decision"],
             "search_permission_decision": plan["search_permission_decision"],
             "role_assignment": plan["role_assignment"],
         })
-        if independent_validation:
+        if "validator_assignment" in plan:
             records["validator_permission_decision"] = plan["validator_permission_decision"]
             records["validator_assignment"] = plan["validator_assignment"]
         if write_path is not None:
             # Persist the grant that authorizes the write, not just the audit event that
             # reports it: the ledger must hold the decision the action was taken under.
             records["write_permission_decision"] = plan["write_permission_decision"]
+
+        # R7.2: settle whether the planned reviewer RUNS. The classification decides
+        # first (an important priority or ORANGE/RED risk = no triage owed); otherwise
+        # the orchestrator's governed triage call judges the request itself.
+        triage_result = triage_invocation = None
+        if auto_policy:
+            triage_permdec = plan.get("triage_permission_decision")
+            if triage_permdec is None:
+                validate_run = True     # classification already required the review
+            else:
+                records["triage_permission_decision"] = triage_permdec
+                triage_result, triage_invocation = run_triage(
+                    plan["task"], provider=triage_provider, created_at=now,
+                )
+                records["triage_result"] = triage_result
+                if triage_invocation is not None:
+                    records["triage_invocation"] = triage_invocation
+                validate_run = triage_result["verdict"] == VERDICT_HIGH
+        else:
+            validate_run = bool(independent_validation)
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
@@ -303,7 +318,7 @@ def run_task(
         # Skipped when the automatic checks already BLOCK — the outcome is decided and a
         # model call would be spent for nothing. The stricter result decides delivery.
         independent_validation_result = validator_invocation = None
-        if independent_validation and validation["validation"]["result"] != "BLOCK":
+        if validate_run and validation["validation"]["result"] != "BLOCK":
             independent_validation_result, validator_invocation = run_validation_worker(
                 plan["task"], plan["validator_assignment"], agent_output,
                 provider=validator_provider, created_at=now, repo_root=repo_root,
@@ -342,10 +357,14 @@ def run_task(
         records["budget_usage"] = recorded_usage_budget(
             plan["task"].get("execution_budget", {}).get("limits", {}),
             agent_invocations=2 if validator_invocation is not None else 1,
-            model_calls=2 if validator_invocation is not None else 1,
+            # The R7.2 triage is Prime's model call, not an agent's — it counts toward
+            # model_calls/tokens but never toward agent_invocations.
+            model_calls=(2 if validator_invocation is not None else 1)
+                        + (1 if triage_invocation is not None else 0),
             tokens_used=(
                 int(invocation.get("tokens_used", 0))
                 + int((validator_invocation or {}).get("tokens_used", 0))
+                + int((triage_invocation or {}).get("tokens_used", 0))
             ),
             validation_cycles=2 if independent_validation_result is not None else 1,
             retry_count=(
@@ -357,6 +376,9 @@ def run_task(
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
             now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
+            triage_result=triage_result,
+            triage_invocation=triage_invocation,
+            triage_permission_decision=plan.get("triage_permission_decision"),
             independent_validation_result=independent_validation_result,
             validator_invocation=validator_invocation,
             validator_permission_decision=plan.get("validator_permission_decision"),

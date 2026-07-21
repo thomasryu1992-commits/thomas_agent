@@ -18,18 +18,33 @@ Enabled per run with `--independent-validation` (one-shot CLI, operator loop). D
 — every existing behavior is unchanged. This matches the role's activation condition
 `prime_requests_validation_without_lowering_policy`: turning it on adds review, never removes any.
 
-### R7.1 — selective ("auto") policy and the validator's own provider
+### R7.1/R7.2 — selective ("auto") policy and the validator's own provider
 
-`--independent-validation auto` reviews **only when the task warrants it**
-(`validation.independent_validation_required`): the classification's risk level mandates a
-second reviewer (ORANGE/RED, policy §3.4) **or the operator marked the request important** —
-priority HIGH/URGENT, set per request with a leading `!중요` / `!important` token over the
-control channel (stripped before intake; a standalone token, so `!중요한 ...` prose is not a
-marker) or `--important` on the one-shot CLI. Everyday GREEN/NORMAL runs spend one model
-call, not two. The decision is resolved **before intake** (the task budget must cover the
-team the plan invokes); a post-plan drift check fails closed (`VALIDATION_POLICY_DRIFT`) if a
-future dynamic classification ever changes the answer after budgeting. The bare flag (or
-`always`) keeps the R7 review-every-run behavior.
+`--independent-validation auto` reviews **only when the task warrants it**, decided in
+order:
+
+1. **Classification** (`validation.independent_validation_required`): ORANGE/RED risk
+   mandates the review (policy §3.4); an operator-marked important priority (HIGH/URGENT,
+   via a leading `!중요` / `!important` token on the control channel — standalone token,
+   stripped before intake — or `--important` on the one-shot CLI) requests it. Either way
+   no triage is owed: the decision is made before any model call.
+2. **Orchestrator triage (R7.2)** otherwise: Prime plans a governed triage action — its
+   own `INTERNAL_ANALYSIS` P2 ALLOW PermissionDecision, built like the search and
+   validation grants — and the pipeline spends one deliberately small model call (the
+   request in, one label out; `TRIAGE_TOKEN_ALLOWANCE` on the task budget) on the
+   validator/triage provider. A **HIGH** verdict runs the planned reviewer; **NORMAL**
+   skips it. The verdict, its reason, and the call are recorded (`triage_result` /
+   `triage_invocation` / `triage_permission_decision`) and audited as one `TRIAGE` trail
+   event referencing the decision.
+
+Under "auto" the two-agent team is always **planned** (planning is free and deterministic —
+the R9 buildable-vs-executable precedent); the triage decides what **runs**, and the task
+budget allocates the ceiling (2 agents + the triage call), with the actual spend in
+`budget_usage`. Fail direction — **degraded, not blocked, and recorded**: a triage provider
+failure or unusable verdict degrades to NORMAL with `TRIAGE_DEGRADED` on the audit chain;
+the reviewer is an enhancement, so a broken triage must neither stop the analysis nor
+silently double every run's spend. The bare flag (or `always`) keeps the R7
+review-every-run behavior.
 
 `MVP_VALIDATOR_PROVIDER` (e.g. `groq`, or a comma-separated failover chain) gives the
 validator **its own gated provider**, so the review runs on a different free quota than the

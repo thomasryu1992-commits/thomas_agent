@@ -55,6 +55,7 @@ _RECORD_KINDS = (
     "received_task", "task", "binding", "permission_decision",
     "search_permission_decision", "role_assignment",
     "validator_permission_decision", "validator_assignment",
+    "triage_permission_decision", "triage_result", "triage_invocation",
     "write_permission_decision", "tool_use",
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
