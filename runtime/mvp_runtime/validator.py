@@ -51,7 +51,7 @@ from .worker import Provider, ProviderResult
 
 VALIDATOR_WORKER_ID = "mvp.independent_validation.llm"
 VALIDATOR_WORKER_VERSION = "0.1.0"
-VALIDATOR_PROMPT_VERSION = "mvp_independent_validation.v2"
+VALIDATOR_PROMPT_VERSION = "mvp_independent_validation.v3"
 
 # The verdict order, its next-state map, and stricter_result live in validation.py —
 # one source for every module that ranks PASS/REVISE/BLOCK. ``stricter_result`` is
@@ -130,7 +130,14 @@ def build_validator_prompt(task: Mapping[str, Any], agent_output: Mapping[str, A
     important requests were exactly the ones never answered. The bar is therefore stated
     outright: PASS is the default when the acceptance criteria are met; REVISE is only
     for material defects that make the output misleading or unusable; "a deeper analysis
-    is possible" is not a defect and belongs in risks under a PASS."""
+    is possible" is not a defect and belongs in risks under a PASS.
+
+    Calibrated again (v3): under v2 the live reviewer re-labelled its demands as material
+    omissions — "lacks COGS", "impact of taxes" — all data the REQUESTER never supplied.
+    An analysis cannot contain inputs that do not exist; judging it defective for their
+    absence conflates request completeness with output quality. v3 states the input
+    boundary: the output is judged only against the information available in the request,
+    and missing source data is a limitation to disclose, never a revision to demand."""
     scope = task.get("scope", {})
     return (
         "You are an independent validation reviewer. Review the output below against the goal "
@@ -150,6 +157,11 @@ def build_validator_prompt(task: Mapping[str, Any], agent_output: Mapping[str, A
         "make the output unusable for its goal, and BLOCK for output that is unusable or "
         "unsupported by evidence. Suggestions for further depth (more data, more "
         "scenarios, more validation) belong in risks alongside a PASS, not in a REVISE.\n"
+        "Judge the output ONLY against the information available in the request. Source "
+        "data the requester did not supply (internal cost figures, third-party records, "
+        "market datasets) cannot appear in the output; its absence is a limitation to "
+        "disclose, never a defect of the output and never grounds for REVISE. Do not "
+        "demand the collection of new data as a revision.\n"
         "Put your findings in key_findings, actionable revision requests (REVISE/BLOCK "
         "only) in next_actions, and remaining risks in risks."
     )
