@@ -118,8 +118,17 @@ class ControlState:
         }
 
 
-def status_lines(state: ControlState) -> str:
-    """A short human-readable status report (the read-only `status` command output)."""
+def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
+    """A short human-readable status report (the read-only `status` command output).
+
+    When a ``ledger`` is given, the reply carries the audit chain's current tip hash.
+    That one line is the cheap external anchor for the chain's documented blind spot: a
+    PREFIX of a valid chain verifies clean, so on-machine tampering that truncates the
+    tail is invisible to `/audit` alone — but every `/status` answered over Telegram
+    leaves the tip in an off-machine chat history, and a later tip that does not descend
+    from an anchored one is the truncation signal. Reading the tip must never take the
+    status answer down with it (`kill_allows: read_only_status`): an unreadable ledger
+    reports as exactly that."""
     lines = [
         f"mode: {state.mode}",
         f"execution: {'allowed' if state.execution_allowed else 'BLOCKED'}",
@@ -129,6 +138,13 @@ def status_lines(state: ControlState) -> str:
     ]
     if state.stop_requested_task_ids:
         lines.append("stop_requested_task_ids: " + ", ".join(state.stop_requested_task_ids))
+    if ledger is not None:
+        try:
+            tip = ledger.last_audit_hash()
+        except MvpRuntimeError as exc:
+            lines.append(f"audit_tip: unavailable ({exc.reason_code})")
+        else:
+            lines.append(f"audit_tip: {tip or 'none (empty ledger)'}")
     return "\n".join(lines)
 
 
@@ -469,7 +485,8 @@ def apply_command(
     current = store.load()
 
     if command == CMD_STATUS:
-        return {"reply": status_lines(current), "mode": current.mode, "changed": False, "action": CMD_STATUS}
+        return {"reply": status_lines(current, ledger=ledger),
+                "mode": current.mode, "changed": False, "action": CMD_STATUS}
 
     # `audit` and `recovery` are read-only, like `status`, and for the same reason they must
     # keep working while PAUSED/KILLED: `kill_allows: [read_only_status, audit_read]`. They

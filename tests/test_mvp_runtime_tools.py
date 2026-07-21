@@ -60,6 +60,9 @@ def test_search_returns_hits_and_evidence_record():
     assert hits and all({"title", "url", "snippet", "source"} <= set(h) for h in hits)
     assert record["tool_id"] == "search.readonly" and record["tool_class"] == "read"
     assert record["read_only"] is True and record["external_action"] is False
+    # The record carries the hits themselves (what output_sha256 hashes): the ledger used
+    # to hold only the hash, so an analysis citing [S1] could never be resolved back.
+    assert record["hits"] == hits
     assert record["input_sha256"].startswith("sha256:") and record["output_sha256"].startswith("sha256:")
     assert record["result_count"] == len(hits)
     assert record["sources"] == ["mock.search"]
