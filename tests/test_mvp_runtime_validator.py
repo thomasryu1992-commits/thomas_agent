@@ -218,6 +218,18 @@ def test_prompt_reviews_output_not_specialist_context():
     assert "working memory" not in prompt.lower()
 
 
+def test_prompt_states_the_calibrated_bar():
+    """The v2 calibration exists because the live reviewer REVISE-ratcheted three faithful
+    revisions in a row: without an explicit bar, "improvable" reads as "defective" and
+    important requests are exactly the ones never delivered. The bar must be in the
+    prompt, stated as PASS-by-default with REVISE reserved for material defects."""
+    prompt = build_validator_prompt(_fake_task(), _fake_output())
+    assert "Acceptance criteria" in prompt
+    assert "PASS is the default" in prompt
+    assert "material defects" in prompt
+    assert "belong in risks alongside a PASS" in prompt
+
+
 # --- planning + E2E (need a local Core) ---------------------------------------
 
 @requires_local_core
