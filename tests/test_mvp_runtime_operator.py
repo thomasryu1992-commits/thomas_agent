@@ -446,6 +446,56 @@ def test_unknown_slash_command_refused_even_without_stores(monkeypatch):
     assert reply.accepted is False and reply.reason_code == "UNKNOWN_COMMAND"
 
 
+# --- R7.1: the importance marker ----------------------------------------------
+
+def _capture_run_task(monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    captured = {}
+
+    def fake_run_task(text, **kwargs):
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return {"status": "COMPLETED", "final_response": "ok", "records": {}}
+
+    monkeypatch.setattr(operator_mod, "run_task", fake_run_task)
+    return captured
+
+
+def test_important_marker_raises_priority_and_is_stripped(monkeypatch):
+    captured = _capture_run_task(monkeypatch)
+    reply = handle_operator_message(
+        _msg(text="!중요 이 사업 아이디어를 분석해줘: 구독 모델"),
+        registration=REG, now=NOW, independent_validation="auto",
+    )
+    assert reply.accepted is True
+    assert captured["text"] == "이 사업 아이디어를 분석해줘: 구독 모델"
+    assert captured["kwargs"]["priority"] == "HIGH"
+    assert captured["kwargs"]["independent_validation"] == "auto"
+
+
+def test_english_marker_is_case_insensitive(monkeypatch):
+    captured = _capture_run_task(monkeypatch)
+    handle_operator_message(_msg(text="!IMPORTANT analyze this idea"), registration=REG, now=NOW)
+    assert captured["text"] == "analyze this idea"
+    assert captured["kwargs"]["priority"] == "HIGH"
+
+
+def test_marker_must_be_a_standalone_token(monkeypatch):
+    """'!중요한 아이디어...' is prose that happens to start with the marker's characters —
+    it must run unchanged at NORMAL priority."""
+    captured = _capture_run_task(monkeypatch)
+    handle_operator_message(_msg(text="!중요한 아이디어를 분석해줘"), registration=REG, now=NOW)
+    assert captured["text"] == "!중요한 아이디어를 분석해줘"
+    assert captured["kwargs"]["priority"] == "NORMAL"
+
+
+def test_bare_marker_is_refused_not_run(monkeypatch):
+    import runtime.mvp_runtime.operator as operator_mod
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("run_task must not run"))
+    reply = handle_operator_message(_msg(text="!중요"), registration=REG, now=NOW)
+    assert reply.accepted is False and reply.reason_code == "EMPTY_REQUEST"
+
+
 def test_botname_suffixed_kill_fires_the_emergency_verb(tmp_path, monkeypatch):
     """Telegram appends the bot username to menu-picked commands: /kill@bot must KILL,
     never be analyzed as a business idea."""

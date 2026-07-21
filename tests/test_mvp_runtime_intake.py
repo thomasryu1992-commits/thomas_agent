@@ -122,6 +122,17 @@ def test_invalid_sensitivity_blocks():
     assert exc.value.reason_code == "INVALID_SENSITIVITY"
 
 
+def test_priority_is_carried_into_the_classification():
+    assert _build()["classification"]["priority"] == "NORMAL"
+    assert _build(priority="HIGH")["classification"]["priority"] == "HIGH"
+
+
+def test_invalid_priority_blocks():
+    with pytest.raises(TaskIntakeBlocked) as exc:
+        _build(priority="CRITICAL")
+    assert exc.value.reason_code == "INVALID_PRIORITY"
+
+
 def test_duplicate_core_rules_block():
     with pytest.raises(TaskIntakeBlocked) as exc:
         _build(active_core_rule_ids=["MVP_RULE_005", "MVP_RULE_005"])

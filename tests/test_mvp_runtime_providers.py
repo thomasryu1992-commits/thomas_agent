@@ -16,8 +16,10 @@ import pytest
 from runtime.mvp_runtime.errors import ProviderError, SafetyGateBlocked
 from runtime.mvp_runtime.providers import (
     HOSTED_PROVIDER_ENV,
+    VALIDATOR_PROVIDER_ENV,
     GoogleAIStudioProvider,
     select_provider,
+    select_validator_provider,
 )
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import (
@@ -137,6 +139,44 @@ def test_chain_with_a_duplicate_is_refused(monkeypatch, tmp_path):
     with pytest.raises(SafetyGateBlocked) as exc:
         select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
     assert exc.value.reason_code == "DUPLICATE_PROVIDER"
+
+
+# --- R7.1: the validator's own provider selection ------------------------------
+
+def test_select_validator_provider_unset_returns_none(monkeypatch):
+    """None (not a mock) — the pipeline keeps its default validator pairing."""
+    monkeypatch.delenv(VALIDATOR_PROVIDER_ENV, raising=False)
+    assert select_validator_provider() is None
+
+
+def test_select_validator_provider_env_alone_fails_closed(monkeypatch, tmp_path):
+    """Same gate as the specialist: the env var without a local grant opens nothing."""
+    monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
+    with pytest.raises(SafetyGateBlocked):
+        select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+
+
+def test_select_validator_provider_with_grant_returns_hosted(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    _grant(tmp_path, "groq")
+    monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
+    validator = select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(validator, GroqProvider)
+
+
+def test_validator_selection_is_independent_of_the_specialist_chain(monkeypatch, tmp_path):
+    """Two env vars, two gate passes: authorizing the validator's provider must not
+    change what the specialist selection yields, and vice versa."""
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    _grant(tmp_path, "groq")
+    monkeypatch.delenv(HOSTED_PROVIDER_ENV, raising=False)
+    monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
+    assert isinstance(select_provider(now="2026-07-15T00:00:00Z", root=tmp_path), MockProvider)
+    assert isinstance(
+        select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path), GroqProvider
+    )
 
 
 # --- the failover chain (runtime behavior) ------------------------------------

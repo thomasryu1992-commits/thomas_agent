@@ -55,6 +55,22 @@ def stricter_result(a: str, b: str) -> str:
     return a if SEVERITY[a] >= SEVERITY[b] else b
 
 
+# The risk levels whose classification REQUIRES an independent validation (policy §3.4).
+# One authority: the automatic validation record, the independent validation record, and
+# the pipeline's auto policy must all agree on which risks mandate the second reviewer.
+INDEPENDENT_RISK_LEVELS = frozenset({"ORANGE", "RED"})
+# The priorities the operator uses to mark a request important enough for the second
+# reviewer even at GREEN risk (the `!중요` / `!important` intake marker maps here).
+IMPORTANT_PRIORITIES = frozenset({"HIGH", "URGENT"})
+
+
+def independent_validation_required(priority: Any, risk_level: Any) -> bool:
+    """The R7.1 auto-validation decision: review when governance mandates it (ORANGE/RED
+    risk) or the operator declared the task important (HIGH/URGENT priority). Pure and
+    fail-open-free: unknown values simply do not match either trigger set."""
+    return risk_level in INDEPENDENT_RISK_LEVELS or priority in IMPORTANT_PRIORITIES
+
+
 class ValidationError(MvpRuntimeError):
     """The validator could not produce a valid validation_result (internal fault)."""
 
@@ -153,7 +169,7 @@ def validate_agent_output(
     ]
 
     risk_level = task.get("classification", {}).get("risk_level")
-    independent_required = risk_level in {"ORANGE", "RED"}
+    independent_required = risk_level in INDEPENDENT_RISK_LEVELS
 
     seed = {
         "agent_output_id": agent_output.get("agent_output_id"),

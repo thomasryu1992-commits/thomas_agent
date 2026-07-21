@@ -38,7 +38,8 @@ from .operator import (
     run_operator_once,
     select_operator_channel,
 )
-from .providers import select_provider
+from .pipeline import AUTO_VALIDATION
+from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
@@ -53,10 +54,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "(real long-poll; 0 = return immediately). Use e.g. 25 for continuous runs.")
     parser.add_argument("--sleep-seconds", type=float, default=0.0,
                         help="extra pause between poll batches (default 0; unneeded with --long-poll-seconds)")
-    parser.add_argument("--independent-validation", action="store_true",
-                        help="R7: add the independent validation agent to every handled request "
-                             "(a second reviewer; the stricter verdict decides delivery)")
+    parser.add_argument("--independent-validation", nargs="?", const="always",
+                        choices=("always", "auto"), default=None,
+                        help="R7: add the independent validation agent (a second reviewer; the "
+                             "stricter verdict decides delivery). Bare flag or 'always' = every "
+                             "request; 'auto' (R7.1) = only ORANGE/RED-risk tasks and requests "
+                             "the operator marks important (!중요 / !important prefix)")
     return parser.parse_args(argv)
+
+
+def _validation_policy(arg: str | None) -> bool | str:
+    """Map the CLI argument onto run_task's ``independent_validation`` value."""
+    if arg is None:
+        return False
+    return True if arg == "always" else AUTO_VALIDATION
 
 
 def main(
@@ -65,6 +76,7 @@ def main(
     channel: OperatorChannel | None = None,
     registration: OperatorIdentity | None = None,
     provider: Any | None = None,
+    validator_provider: Any | None = None,
     search_tool: Any | None = None,
     working_memory: Any | None = None,
     store: LedgerStore | None = None,
@@ -84,10 +96,17 @@ def main(
         channel = channel if channel is not None else select_operator_channel(root=repo_root)
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
+        # R7.1: the validator's own (gated) provider — None keeps the pipeline pairing.
+        # Selected here even when validation is off so a misconfigured env fails at
+        # startup, not on the first important request at 3am.
+        validator_provider = validator_provider if validator_provider is not None else select_validator_provider()
     except MvpRuntimeError as exc:
         return report_block(exc)
 
     gate_banners(channel=channel, provider=provider, search_tool=search_tool)
+    if validator_provider is not None:
+        sys.stderr.write("SAFETY_GATE: validator provider authorized separately "
+                         f"(model: {getattr(validator_provider, 'model_id', 'unknown')})\n")
 
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
@@ -118,7 +137,8 @@ def main(
                     channel, registration, long_poll_seconds=args.long_poll_seconds,
                     provider=provider, search_tool=search_tool, working_memory=working_memory,
                     store=store, control_store=control_store, approval_store=approval_store,
-                    independent_validation=args.independent_validation, repo_root=repo_root,
+                    independent_validation=_validation_policy(args.independent_validation),
+                    validator_provider=validator_provider, repo_root=repo_root,
                 )
             except OperatorBlocked as exc:
                 if exc.reason_code != "CHANNEL_TRANSPORT":

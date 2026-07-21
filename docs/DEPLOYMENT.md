@@ -80,6 +80,11 @@ safety-flag activation on the mounted state volume; a chain with an unknown or
 unauthorized member fails closed at startup rather than silently shrinking. The next
 member is tried only when the previous one answers 503/429 even after its own retry.
 
+R7.1: append `--independent-validation auto` to the container command to review only
+important/high-risk requests (the operator marks one with a leading `!중요` /
+`!important` token), and set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`) to run the reviewer
+on its own gated provider/quota — same grant rules as `MVP_HOSTED_PROVIDER`.
+
 ## Emergency controls on a running service
 
 The operator console works two ways against the same mounted control state, so a `kill` from

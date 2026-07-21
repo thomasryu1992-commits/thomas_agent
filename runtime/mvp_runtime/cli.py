@@ -27,8 +27,8 @@ from . import control
 from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
-from .pipeline import run_task
-from .providers import select_provider
+from .pipeline import AUTO_VALIDATION, run_task
+from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
@@ -68,8 +68,16 @@ def main(
     """
     force_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
-    independent_validation = "--independent-validation" in argv
-    argv = [a for a in argv if a != "--independent-validation"]
+    independent_validation: bool | str = False
+    if "--independent-validation=auto" in argv:
+        independent_validation = AUTO_VALIDATION
+    elif "--independent-validation" in argv:
+        independent_validation = True
+    argv = [a for a in argv if a not in ("--independent-validation", "--independent-validation=auto")]
+    # R7.1: mark this request important — intake priority HIGH, which under the "auto"
+    # validation policy adds the independent reviewer to this run.
+    important = "--important" in argv
+    argv = [a for a in argv if a != "--important"]
     write_path, argv, usage_error = _extract_write_path(argv)
     if usage_error is not None:
         sys.stderr.write(f"BLOCKED USAGE: {usage_error}\n")
@@ -85,7 +93,7 @@ def main(
     if unknown:
         sys.stderr.write(
             f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
-            "(known options: --independent-validation, --write-output PATH); "
+            "(known options: --independent-validation[=auto], --important, --write-output PATH); "
             "pipe the request on stdin if it must start with '-'\n"
         )
         return EXIT_USAGE
@@ -118,6 +126,8 @@ def main(
     # authorizes it; otherwise select_provider fails closed and the run is BLOCKED here.
     try:
         provider = select_provider()
+        # R7.1: the validator's own (gated) provider — None keeps the pipeline pairing.
+        validator_provider = select_validator_provider()
         # The read-only search tool goes through the same Safety-Flag Gate: default is the
         # network-free MockSearchTool; a real network tool requires a valid activation.
         search_tool = select_search_tool()
@@ -137,6 +147,8 @@ def main(
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
                       working_memory=working_memory, channel="manual", store=store,
                       independent_validation=independent_validation,
+                      validator_provider=validator_provider,
+                      priority="HIGH" if important else "NORMAL",
                       write_path=write_path, writer=writer)
     # One field answers "is this run's evidence durable?" for every failure shape. Checking
     # only the block stage claimed "LEDGER: recorded" over two real persistence failures —

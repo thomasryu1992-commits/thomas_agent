@@ -40,6 +40,7 @@ _RESPONSE_INSTRUCTION = (
 
 
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
+VALIDATOR_PROVIDER_ENV = "MVP_VALIDATOR_PROVIDER"
 HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
 GOOGLE_AI_STUDIO = "google_ai_studio"
 # The default hosted model. Not "gemini-2.5-flash": that 404s for newly issued keys.
@@ -129,16 +130,47 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     """
     chain = safety_gate.select_gated_chain(
         env_var=HOSTED_PROVIDER_ENV,
-        factories={
-            GOOGLE_AI_STUDIO: lambda authorization: GoogleAIStudioProvider(
-                model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
-                authorization=authorization,
-            ),
-            GROQ: lambda authorization: GroqProvider(
-                model=os.environ.get(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL).strip(),
-                authorization=authorization,
-            ),
-        },
+        factories=_hosted_factories(),
+        flags=_NETWORK_FLAGS,
+        default_factory=MockProvider,
+        now=now,
+        root=root,
+    )
+    return chain[0] if len(chain) == 1 else FailoverProvider(chain)
+
+
+def _hosted_factories() -> dict[str, Any]:
+    """The gated hosted-provider factories, shared by the specialist and validator
+    selections — one catalogue, so a provider cannot exist for one selection and not the
+    other, and both read the model-name env vars only after their gate has opened."""
+    return {
+        GOOGLE_AI_STUDIO: lambda authorization: GoogleAIStudioProvider(
+            model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
+            authorization=authorization,
+        ),
+        GROQ: lambda authorization: GroqProvider(
+            model=os.environ.get(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL).strip(),
+            authorization=authorization,
+        ),
+    }
+
+
+def select_validator_provider(*, now: str | None = None, root: Path | None = None) -> Provider | None:
+    """Choose the independent validator's own provider (R7.1) — or ``None`` to keep the
+    pipeline's default pairing (mock validator for a mock specialist, else the specialist's
+    provider).
+
+    Opt-in via ``MVP_VALIDATOR_PROVIDER`` (e.g. ``groq``, or a comma-separated failover
+    chain), so the review can run on a different free quota than the analysis. Exactly the
+    same Safety-Flag Gate chokepoint and grant requirements as ``MVP_HOSTED_PROVIDER``:
+    every named member needs its own local activation, an unknown/unauthorized member
+    fails the whole selection closed, and the env var alone never opens a network path.
+    """
+    if not os.environ.get(VALIDATOR_PROVIDER_ENV, "").strip():
+        return None
+    chain = safety_gate.select_gated_chain(
+        env_var=VALIDATOR_PROVIDER_ENV,
+        factories=_hosted_factories(),
         flags=_NETWORK_FLAGS,
         default_factory=MockProvider,
         now=now,

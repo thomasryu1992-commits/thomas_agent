@@ -40,6 +40,7 @@ from .authority import validation_result_permission_boundary, validation_result_
 from .errors import ProviderError, WorkerBlocked
 from .paths import repo_root as _repo_root
 from .validation import (
+    INDEPENDENT_RISK_LEVELS,
     NEXT_STATE,
     SEVERITY,
     VALIDATION_RESULT_SCHEMA_VERSION,
@@ -266,7 +267,7 @@ def run_validation_worker(
             "validator_role_id": validator_assignment.get("role_id"),
             "validator_role_version": validator_assignment.get("role_version"),
             "validator_execution_context_id": integrity.short_id("valctx", seed),
-            "independent_required": task.get("classification", {}).get("risk_level") in {"ORANGE", "RED"},
+            "independent_required": task.get("classification", {}).get("risk_level") in INDEPENDENT_RISK_LEVELS,
             "independence_verified": bool(independence_verified),
         },
         "validation": {

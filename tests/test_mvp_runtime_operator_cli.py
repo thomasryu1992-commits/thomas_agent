@@ -38,6 +38,17 @@ def test_missing_registration_fails_closed(tmp_path):
     assert rc == 2
 
 
+def test_independent_validation_argument_mapping():
+    """Bare flag = every request (R7 behavior unchanged); 'auto' = the R7.1 selective
+    policy; absent = off."""
+    from runtime.mvp_runtime.operator_cli import _parse_args, _validation_policy
+
+    assert _validation_policy(_parse_args([]).independent_validation) is False
+    assert _validation_policy(_parse_args(["--independent-validation"]).independent_validation) is True
+    assert _validation_policy(_parse_args(["--independent-validation", "always"]).independent_validation) is True
+    assert _validation_policy(_parse_args(["--independent-validation", "auto"]).independent_validation) == "auto"
+
+
 def test_empty_channel_is_a_clean_noop(capsys):
     ch = MockOperatorChannel()
     rc = main([], channel=ch, registration=REG, provider=MockProvider())
