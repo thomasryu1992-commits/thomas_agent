@@ -27,6 +27,8 @@ Three files, each append-only (one JSON object per line):
   likewise standalone rather than task-bound.
 - ``scheduler_events.jsonl`` — scheduler events (a schedule fired, or was skipped by the kill
   switch), likewise standalone.
+- ``programization_events.jsonl`` — operator programization-review events (a pattern moved
+  UNDER_REVIEW/CLOSED, a program candidate drafted), likewise standalone.
 
 Fail-closed: any write or read failure raises :class:`PersistenceError`. Secrets are never
 written — the records are already metadata-only and secret-scanned upstream.
@@ -49,6 +51,7 @@ BLOCKS_FILE = "blocks.jsonl"
 CONTROL_FILE = "control_events.jsonl"
 MEMORY_FILE = "memory_events.jsonl"
 SCHEDULER_FILE = "scheduler_events.jsonl"
+PROGRAMIZATION_FILE = "programization_events.jsonl"
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -135,6 +138,10 @@ class LedgerStore:
     def append_scheduler_event(self, entry: Mapping[str, Any]) -> None:
         """Durably record one scheduler event (a schedule fired, or was skipped by the kill switch)."""
         self._append_locked(SCHEDULER_FILE, [dict(entry)], "the scheduler ledger")
+
+    def append_programization_event(self, entry: Mapping[str, Any]) -> None:
+        """Durably record one operator programization-review event (transition / candidate draft)."""
+        self._append_locked(PROGRAMIZATION_FILE, [dict(entry)], "the programization ledger")
 
     def _append_locked(self, filename: str, rows: list[Mapping[str, Any]], label: str) -> None:
         """Append under this file's own cross-process lock.
