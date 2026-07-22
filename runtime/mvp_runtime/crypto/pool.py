@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
@@ -26,6 +28,72 @@ from .strategy import SpecParseError, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
+
+
+# --- candidate identity (single source) ----------------------------------------
+
+def derive_candidate_id(record: Mapping[str, Any]) -> str:
+    """The globally unique id of one candidate: its lineage, not its display name.
+
+    ``strategy_id`` restarts at S001 every factory generation, so it can never key a
+    lookup. The id derives from (generation_id, strategy_rule_hash,
+    evidence_input_sha256) — the exact strategy content in its exact generation with
+    its exact evidence window — so legacy rows without a stored ``candidate_id``
+    derive the same id on every read and the append-only store is never rewritten."""
+    return integrity.short_id("cand", {
+        "generation_id": record.get("generation_id"),
+        "strategy_rule_hash": record.get("strategy_rule_hash"),
+        "evidence_input_sha256": record.get("evidence_input_sha256"),
+    })
+
+
+def candidate_id(record: Mapping[str, Any]) -> str:
+    stored = record.get("candidate_id")
+    if isinstance(stored, str) and stored:
+        return stored
+    return derive_candidate_id(record)
+
+
+def resolve_candidates(selectors: list[str], root: Path | None = None) -> list[dict[str, Any]]:
+    """Resolve operator selectors to candidate records, fail-closed.
+
+    A selector is a ``candidate_id`` (exact) or a ``strategy_id`` (convenience). A
+    strategy_id matching candidates from more than one lineage refuses with
+    ``CANDIDATE_AMBIGUOUS`` — never silently the newest — and an unmatched selector
+    refuses with ``UNKNOWN_CANDIDATE``. Returned records are stamped with their
+    ``candidate_id``; re-appends of the same lineage collapse latest-wins."""
+    by_cid: dict[str, dict[str, Any]] = {}
+    for record in read_candidates(root):
+        cid = candidate_id(record)
+        by_cid[cid] = {**record, "candidate_id": cid}
+
+    resolved: list[dict[str, Any]] = []
+    missing: list[str] = []
+    ambiguous: dict[str, list[str]] = {}
+    for selector in selectors:
+        if selector in by_cid:
+            resolved.append(by_cid[selector])
+            continue
+        matches = [r for r in by_cid.values() if r.get("strategy_id") == selector]
+        if not matches:
+            missing.append(selector)
+        elif len(matches) > 1:
+            ambiguous[selector] = sorted(r["candidate_id"] for r in matches)
+        else:
+            resolved.append(matches[0])
+    if missing:
+        raise ToolError("UNKNOWN_CANDIDATE", f"unknown candidate selectors: {missing}")
+    if ambiguous:
+        raise ToolError(
+            "CANDIDATE_AMBIGUOUS",
+            f"strategy ids matching multiple lineages, use candidate ids: {ambiguous}",
+        )
+    seen: set[str] = set()
+    for record in resolved:
+        if record["candidate_id"] in seen:
+            raise ToolError("DUPLICATE_SELECTOR", f"candidate selected twice: {record['candidate_id']}")
+        seen.add(record["candidate_id"])
+    return resolved
 
 
 def pool_path(root: Path | None = None) -> Path:

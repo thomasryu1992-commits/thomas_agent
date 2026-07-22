@@ -181,6 +181,9 @@ def test_run_factory_produces_evidence_backed_candidates():
         assert c["provenance"] == "mvp_factory" and c["status"] == "BACKTESTED"
         assert c["backtest_evidence"]["strategy_rule_hash"] == c["strategy_rule_hash"]
         assert c["evidence_input_sha256"].startswith("sha256:")
+        # Stored candidate_id equals the lineage-derived one (the promotion key).
+        assert c["candidate_id"] == pool.derive_candidate_id(c)
+    assert len({c["candidate_id"] for c in result["candidates"]}) == len(result["candidates"])
 
 
 def test_run_factory_is_reproducible_from_inputs():
@@ -230,7 +233,7 @@ def _seed_candidates(tmp_path):
 
 def test_promotion_installs_selected_candidates(tmp_path):
     ids = _seed_candidates(tmp_path)
-    summary = run_promotion(strategy_ids=ids[:2], promoted_by="Thomas", reason="reviewed",
+    summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
                             keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
@@ -243,9 +246,9 @@ def test_promotion_installs_selected_candidates(tmp_path):
 
 def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
-    run_promotion(strategy_ids=ids[:1], promoted_by="Thomas", reason="r",
+    run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
                   keep_active=False, root=tmp_path, now=NOW, without_approval=True)
-    run_promotion(strategy_ids=ids[1:2], promoted_by="Thomas", reason="r",
+    run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
                   keep_active=True, root=tmp_path, now=NOW, without_approval=True)
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
@@ -260,7 +263,7 @@ def test_promotion_refused_while_killed(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc:
-        run_promotion(strategy_ids=ids[:1], promoted_by="Thomas", reason="r",
+        run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW)
     assert "BLOCKED" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
@@ -269,5 +272,5 @@ def test_promotion_refused_while_killed(tmp_path):
 def test_promotion_refuses_unknown_candidate(tmp_path):
     _seed_candidates(tmp_path)
     with pytest.raises(SystemExit):
-        run_promotion(strategy_ids=["S_NOPE"], promoted_by="Thomas", reason="r",
+        run_promotion(selectors=["S_NOPE"], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW)

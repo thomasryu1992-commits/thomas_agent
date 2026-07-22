@@ -47,14 +47,14 @@ def _spec_dict(**overrides):
     return base
 
 
-def _seed_candidates(tmp_path, *specs):
+def _seed_candidates(tmp_path, *specs, generation_id="GEN-001"):
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
         records.append({
             "strategy_id": spec.strategy_id,
             "strategy_rule_hash": spec.strategy_rule_hash,
-            "generation_id": "GEN-001",
+            "generation_id": generation_id,
             "status": "BACKTESTED",
             "champion_score": 0.5,
             "strategy_spec": spec.to_dict(),
@@ -108,9 +108,9 @@ def test_request_refuses_unknown_candidate(tmp_path):
 def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.strategy_pool.promotion",
                    expires="2999-01-01T00:00:00Z"):
     if content is None:
-        candidates = {c["strategy_id"]: c for c in pool.read_candidates(tmp_path)}
+        record = pool.resolve_candidates(["S1"], tmp_path)[0]
         content = promotion_content_sha256(
-            ["S1"], [candidates["S1"]["strategy_rule_hash"]], keep_active=False
+            [record["candidate_id"]], [record["strategy_rule_hash"]], keep_active=False
         )
     return {
         "approval_id": "approval_test",
@@ -123,7 +123,7 @@ def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.
 def test_verify_accepts_matching_approved(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     verified = verify_promotion_approval(
-        _fake_approval(tmp_path), strategy_ids=["S1"], keep_active=False, root=tmp_path, now=NOW,
+        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
     )
     assert verified["approval_id"] == "approval_test"
 
@@ -140,7 +140,7 @@ def test_verify_fails_closed(tmp_path, mutation, code):
     with pytest.raises(ApprovalBlocked) as exc:
         verify_promotion_approval(
             _fake_approval(tmp_path, **mutation),
-            strategy_ids=["S1"], keep_active=False, root=tmp_path, now=NOW,
+            selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
         )
     assert exc.value.reason_code == code
 
@@ -148,7 +148,7 @@ def test_verify_fails_closed(tmp_path, mutation, code):
 def test_verify_missing_approval_fails(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(ApprovalBlocked) as exc:
-        verify_promotion_approval(None, strategy_ids=["S1"], keep_active=False, root=tmp_path, now=NOW)
+        verify_promotion_approval(None, selectors=["S1"], keep_active=False, root=tmp_path, now=NOW)
     assert exc.value.reason_code == "APPROVAL_MISSING"
 
 
@@ -157,22 +157,44 @@ def test_verify_rejects_mode_flip(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(ApprovalBlocked) as exc:
         verify_promotion_approval(
-            _fake_approval(tmp_path), strategy_ids=["S1"], keep_active=True, root=tmp_path, now=NOW,
+            _fake_approval(tmp_path), selectors=["S1"], keep_active=True, root=tmp_path, now=NOW,
         )
     assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
 
 
-def test_verify_rejects_changed_candidate_rules(tmp_path):
-    # Approval taken, then the candidate's rules changed in the store: the re-derived
-    # hash differs (the R10 hot-path revalidation posture, without the spend).
+def test_verify_refuses_ambiguous_strategy_id_after_regeneration(tmp_path):
+    # Approval taken by strategy_id, then a NEW lineage with the same display id
+    # lands in the store: the selector no longer names one candidate — refused
+    # outright (never silently the newest, the pre-candidate_id last-wins bug).
     _seed_candidates(tmp_path, _spec_dict())
     approval = _fake_approval(tmp_path)
     changed = _spec_dict(entry_rules={"operator": "AND", "conditions": [
         {"feature": "adx", "comparison": ">=", "value": 30.0}]})
-    _seed_candidates(tmp_path, changed)  # latest-wins: S1 now has different rules... appended later
-    # read_candidates keeps both; _resolve_candidates maps by id (dict → last wins).
+    _seed_candidates(tmp_path, changed, generation_id="GEN-002")
     with pytest.raises(ApprovalBlocked) as exc:
-        verify_promotion_approval(approval, strategy_ids=["S1"], keep_active=False, root=tmp_path, now=NOW)
+        verify_promotion_approval(approval, selectors=["S1"], keep_active=False, root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "CANDIDATE_AMBIGUOUS"
+
+
+def test_verify_by_candidate_id_survives_regeneration(tmp_path):
+    # The same scenario selected by candidate_id: the approved lineage is unchanged,
+    # so the approval still verifies — the new same-named candidate cannot ride it,
+    # and the old one is not orphaned by the newcomer.
+    seeded = _seed_candidates(tmp_path, _spec_dict())
+    approved_cid = pool.candidate_id(seeded[0])
+    approval = _fake_approval(tmp_path)
+    changed = _spec_dict(entry_rules={"operator": "AND", "conditions": [
+        {"feature": "adx", "comparison": ">=", "value": 30.0}]})
+    _seed_candidates(tmp_path, changed, generation_id="GEN-002")
+    verified = verify_promotion_approval(
+        approval, selectors=[approved_cid], keep_active=False, root=tmp_path, now=NOW,
+    )
+    assert verified["approval_id"] == "approval_test"
+    # The new lineage's own cid does NOT satisfy the approval — it binds content.
+    new_cid = next(pool.candidate_id(c) for c in pool.read_candidates(tmp_path)
+                   if pool.candidate_id(c) != approved_cid)
+    with pytest.raises(ApprovalBlocked) as exc:
+        verify_promotion_approval(approval, selectors=[new_cid], keep_active=False, root=tmp_path, now=NOW)
     assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
 
 
@@ -181,26 +203,62 @@ def test_verify_rejects_changed_candidate_rules(tmp_path):
 def test_promotion_requires_approval_or_explicit_escape(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(SystemExit) as exc:
-        run_promotion(strategy_ids=["S1"], promoted_by="Thomas", reason="r",
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW)
     assert "--approval-id" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
 
 def test_promotion_with_escape_is_audited_as_such(tmp_path):
-    _seed_candidates(tmp_path, _spec_dict())
-    summary = run_promotion(strategy_ids=["S1"], promoted_by="Thomas", reason="r",
+    seeded = _seed_candidates(tmp_path, _spec_dict())
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                             keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     assert summary["without_approval_escape"] is True and summary["approval_verified"] is False
-    assert pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_id"] == "S1"
+    assert summary["promoted_candidate_ids"] == [pool.candidate_id(seeded[0])]
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    assert entry["strategy_id"] == "S1"
+    assert entry["candidate_id"] == pool.candidate_id(seeded[0])  # lineage rides into the pool
 
 
 def test_promotion_with_bad_approval_refused(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(SystemExit) as exc:
-        run_promotion(strategy_ids=["S1"], promoted_by="Thomas", reason="r",
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW, approval_id="approval_missing")
     assert "APPROVAL_MISSING" in str(exc.value)
+
+
+def test_promotion_ambiguous_strategy_id_refused(tmp_path):
+    # Two generations both named S1: a bare strategy id must refuse, and the
+    # explicit candidate_id must promote EXACTLY the selected lineage's rules.
+    old = _seed_candidates(tmp_path, _spec_dict())
+    changed = _spec_dict(entry_rules={"operator": "AND", "conditions": [
+        {"feature": "adx", "comparison": ">=", "value": 30.0}]})
+    _seed_candidates(tmp_path, changed, generation_id="GEN-002")
+
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "CANDIDATE_AMBIGUOUS" in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
+
+    old_cid = pool.candidate_id(old[0])
+    summary = run_promotion(selectors=[old_cid], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert summary["promoted_candidate_ids"] == [old_cid]
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    assert entry["strategy_rule_hash"] == old[0]["strategy_rule_hash"]  # not the newest
+
+
+def test_legacy_candidate_rows_derive_a_stable_id(tmp_path):
+    # Rows written before candidate_id existed derive the same id on every read —
+    # the append-only store is never rewritten, and the derived id resolves.
+    seeded = _seed_candidates(tmp_path, _spec_dict())
+    assert "candidate_id" not in seeded[0]
+    first, second = pool.candidate_id(seeded[0]), pool.candidate_id(seeded[0])
+    assert first == second and first.startswith("cand")
+    resolved = pool.resolve_candidates([first], tmp_path)
+    assert resolved[0]["strategy_id"] == "S1" and resolved[0]["candidate_id"] == first
 
 
 # --- robustness ranking (C8b scorer) ------------------------------------------

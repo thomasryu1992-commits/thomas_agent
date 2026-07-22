@@ -747,6 +747,7 @@ def build_trial_permission_decision(
 def build_strategy_promotion_permission_decision(
     bound_task: Mapping[str, Any],
     *,
+    candidate_ids: list[str],
     strategy_ids: list[str],
     rule_hashes: list[str],
     keep_active: bool,
@@ -769,9 +770,11 @@ def build_strategy_promotion_permission_decision(
     this same content hash and never consumes it (no consumption implementation for
     this scope — the pre-R10 posture, kept by design).
     """
-    if not strategy_ids or not all(isinstance(s, str) and s for s in strategy_ids):
-        raise PlannerBlocked("INVALID_PROMOTION", "promotion needs at least one candidate strategy id")
-    if len(rule_hashes) != len(strategy_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
+    if not candidate_ids or not all(isinstance(c, str) and c for c in candidate_ids):
+        raise PlannerBlocked("INVALID_PROMOTION", "promotion needs at least one candidate id")
+    if len(strategy_ids) != len(candidate_ids) or not all(isinstance(s, str) and s for s in strategy_ids):
+        raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its display strategy id")
+    if len(rule_hashes) != len(candidate_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
         raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its rule hash")
 
     action = _ActionSpec(
@@ -780,6 +783,8 @@ def build_strategy_promotion_permission_decision(
         tool_id=None,
         data_scope=("crypto.strategy_candidates", "crypto.active_strategy_pool"),
         normalized_parameters={
+            # candidate_ids are the binding identity; strategy_ids ride as display names.
+            "candidate_ids": sorted(candidate_ids),
             "strategy_ids": sorted(strategy_ids),
             "rule_hashes": sorted(rule_hashes),
             "keep_active": bool(keep_active),
