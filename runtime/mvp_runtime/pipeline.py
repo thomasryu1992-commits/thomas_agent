@@ -200,8 +200,8 @@ def run_task(
     caller supplies the store.
 
     ``programization`` (opt-in) records one repetition observation per COMPLETED+PASS run
-    and folds it into the pattern counter (Programization Review Policy). Ten valid
-    independent repetitions raise a **review trigger only** — audited as
+    and folds it into the pattern counter (Programization Review Policy). Threshold-many
+    valid independent repetitions raise a **review trigger only** — audited as
     PROGRAMIZATION_REVIEW_TRIGGERED, never creating or activating a Program. Best-effort:
     counting is enrichment, so a counter failure is noted on the result
     (``programization_error``) but never withholds a delivered run.
@@ -411,7 +411,7 @@ def run_task(
             result["write"] = _write_report(write_use)
 
         # Programization repetition counter (opt-in, PASS only): one observation per
-        # completed run, folded into its pattern. Ten valid independent repetitions raise
+        # completed run, folded into its pattern. Threshold-many valid repetitions raise
         # a review trigger ONLY (audited below) — no Program is created or activated.
         # Best-effort like working-memory accumulation: the counter is enrichment, so a
         # failure is noted on the result, never blocks a delivered run.

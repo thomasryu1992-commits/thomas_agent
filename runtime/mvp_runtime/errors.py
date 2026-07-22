@@ -95,7 +95,7 @@ class ProgramizationBlocked(MvpRuntimeError):
 
     Raised on an observation missing its task identity/binding or on a record that fails
     its closed schema. Fail-closed in the not-counting direction: an uncertain observation
-    is never counted toward the ten-repetition review trigger. The counter is enrichment —
+    is never counted toward the repetition review trigger. The counter is enrichment —
     the pipeline treats this as best-effort and never blocks a delivered run on it."""
 
 

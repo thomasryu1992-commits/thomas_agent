@@ -29,6 +29,16 @@ evidence → ACCEPTED (requires shadow PASS) or REJECTED; ACCEPTED/REJECTED are 
 The runtime never runs the shadow — Programs are unregistered and unregistered execution
 is BLOCK — it enforces and records the operator's limited comparison.
 
+Program request (explicit Thomas decision 2026-07-22; requires an ACCEPTED candidate):
+
+    python -m runtime.mvp_runtime.programization_cli request <candidate_id> \
+        --program-id schema.validator --program-version 0.1.0 --by thomas --reason "..."
+
+The request is **invocation evidence, never invocation**: while the registry has no
+active Programs it is honest fail-closed BLOCK evidence (registry-ineligible,
+allowlist-empty, budget-zero) binding a real BLOCK PermissionDecision, anchored to the
+pattern's real originating task. One request per candidate.
+
 A candidate grants **nothing** at every stage, ACCEPTED included:
 ``activation_eligibility`` stays
 ``candidate_only_pending_program_registry_and_permission_policy`` and
@@ -51,6 +61,7 @@ from . import timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError, ProgramizationBlocked
+from .program_request import build_request_event, create_program_request
 from .programization import (
     ProgramizationStore,
     build_candidate_event,
@@ -71,9 +82,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         prog="programization_cli",
         description="Programization review handling (status/review/candidate/close + candidate lifecycle).")
     parser.add_argument("command", choices=["status", "review", "candidate", "close",
-                                            *_CANDIDATE_ACTIONS, "shadow"])
+                                            *_CANDIDATE_ACTIONS, "shadow", "request"])
     parser.add_argument("target", nargs="?", default=None,
-                        help="pattern_id (review/candidate/close) or candidate_id (lifecycle commands)")
+                        help="pattern_id (review/candidate/close) or candidate_id (lifecycle/request commands)")
     parser.add_argument("--by", default="", help="operator identity recorded on the review event")
     parser.add_argument("--reason", default="", help="operator reason recorded on the review event")
     parser.add_argument("--input", default=None, help="candidate only: YAML/JSON file with the review substance")
@@ -81,6 +92,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="shadow only: the limited-comparison outcome")
     parser.add_argument("--comparison-ref", default="", help="shadow only: reference to the comparison evidence")
     parser.add_argument("--result", default="", help="shadow only: what the comparison showed")
+    parser.add_argument("--program-id", default="", help="request only: the program the request names")
+    parser.add_argument("--program-version", default="", help="request only: the exact program version")
+    parser.add_argument("--operation", default="program.invoke", help="request only: the invocation operation type")
     return parser.parse_args(argv)
 
 
@@ -159,6 +173,29 @@ def main(
             )
             ledger.append_programization_event(event)
             sys.stdout.write(f"{args.target}: {before.get('review_status')} -> {pattern['review_status']}\n")
+            return EXIT_OK
+
+        if args.command == "request":
+            if not (args.program_id and args.program_version):
+                raise ProgramizationBlocked(
+                    "REQUEST_INPUT_INVALID", "request requires --program-id and --program-version")
+            request = create_program_request(
+                store, args.target,
+                program_id=args.program_id, program_version=args.program_version,
+                operation_type=args.operation,
+                requested_by=args.by, reason=args.reason, now=stamp,
+            )
+            event = build_request_event(
+                request, candidate_id=args.target,
+                requested_by=args.by.strip(), reason=args.reason.strip(), now=stamp,
+            )
+            ledger.append_programization_event(event)
+            verdict = request["validation"]
+            sys.stdout.write(
+                f"created program request {request['program_request_id']} for {args.target}: "
+                f"{verdict['review_result']} ({', '.join(verdict['block_reasons'])}). "
+                "Invocation evidence only — registration/activation stay APPROVAL_REQUIRED.\n"
+            )
             return EXIT_OK
 
         if args.command in _CANDIDATE_ACTIONS or args.command == "shadow":

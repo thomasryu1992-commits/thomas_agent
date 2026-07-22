@@ -128,9 +128,15 @@ _EXECUTABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT})
 # it is the object an Approval Request binds to. Building the decision still performs nothing:
 # an APPROVAL_REQUIRED action executes only when its APPROVED approval is later *consumed*
 # (R10), a separate step gated behind the `approval_consumption` safety flag (see
-# consumption.py) — never as a side effect of the decision. BLOCK stays unbuildable: a BLOCK
-# means do not, and there is nothing to record a request against.
-_BUILDABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT, APPROVAL_REQUIRED})
+# consumption.py) — never as a side effect of the decision. BLOCK is buildable ONLY as
+# refusal evidence bound into a resource-request record (explicit Thomas decision
+# 2026-07-22, program-request path): the Program/Tool Request contracts *require* the
+# refused invocation to reference its refusing PermissionDecision, so for exactly the two
+# resource-refusal scopes a BLOCK record documents "this invocation was evaluated and
+# refused". Everywhere else BLOCK stays unbuildable: a BLOCK means do not, and there is
+# nothing to record a request against. A BLOCK decision is never executable.
+_BUILDABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT, APPROVAL_REQUIRED, "BLOCK"})
+_BLOCK_EVIDENCE_SCOPES = frozenset({"UNREGISTERED_RESOURCE_EXECUTION", "DISABLED_RESOURCE_EXECUTION"})
 # The EXECUTE_AND_REPORT scopes the MVP actually implements. Kept as an explicit allowlist
 # so widening the disposition gate does not silently admit the other scopes governance
 # prices at EXECUTE_AND_REPORT (GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST, ...).
@@ -167,6 +173,9 @@ class _ActionSpec:
     # An action on something that is not a task-internal artifact names its own target
     # (e.g. a memory candidate) instead of the internal:{task_id}:{suffix} form.
     target_ref: str | None = None
+    # A program-invocation action names the program it would invoke (resource-refusal
+    # evidence); every other action leaves this None, keeping existing fingerprints stable.
+    program_id: str | None = None
     # The exact content the action is bound to, when it has one. Part of the action
     # fingerprint, so the approved action cannot be swapped for a different payload.
     content_sha256: str | None = None
@@ -318,6 +327,13 @@ def build_permission_decision(
             "NOT_ALLOWED",
             f"scope {permission_scope} is APPROVAL_REQUIRED but the MVP implements no such action",
         )
+    if disposition == "BLOCK" and permission_scope not in _BLOCK_EVIDENCE_SCOPES:
+        # BLOCK records exist only as resource-refusal evidence (program/tool requests);
+        # any other BLOCK scope stays a refusal raised, never a record built.
+        raise PlannerBlocked(
+            "NOT_ALLOWED",
+            f"scope {permission_scope} is BLOCK; a BLOCK decision is only buildable as resource-refusal evidence",
+        )
 
     created = _parse_ts(now)
     expires_at = timeutil.format_iso(created + timedelta(minutes=ttl_minutes))
@@ -330,7 +346,11 @@ def build_permission_decision(
     authority_sufficient = authority_invariant_holds(
         required_permission_level, effective_level, granted_level, role_permission_ceiling
     )
-    if not authority_sufficient:
+    if not authority_sufficient and disposition != "BLOCK":
+        # For every performable disposition an insufficient authority refuses the build.
+        # A BLOCK refusal-evidence record instead RECORDS the insufficiency: it is part of
+        # why the invocation is refused, and the schema requires exactly this pairing
+        # (authority_sufficient: false => permission_decision: BLOCK).
         raise PlannerBlocked(
             "AUTHORITY_INSUFFICIENT",
             f"authority invariant fails: required {required_permission_level} exceeds role ceiling {role_permission_ceiling}",
@@ -347,7 +367,7 @@ def build_permission_decision(
         "action_type": action.action_type,
         "target_ref": action.target_ref or f"internal:{task_id}:{action.target_suffix}",
         "tool_id": action.tool_id,
-        "program_id": None,
+        "program_id": action.program_id,
         "data_scope": list(action.data_scope),
         "content_sha256": action.content_sha256,
         "amount_decimal": None,
@@ -442,6 +462,60 @@ def build_permission_decision(
     if issues:
         raise PlannerBlocked("PERMISSION_SEMANTICS_INVALID", "; ".join(issues[:5]))
     return record
+
+
+def build_resource_refusal_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    program_id: str,
+    program_version: str,
+    permission_scope: str,
+    required_permission_level: str,
+    role_permission_ceiling: str,
+    target_ref: str,
+    content_sha256: str | None,
+    normalized_parameters: Mapping[str, Any],
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the BLOCK PermissionDecision a resource request binds as refusal evidence.
+
+    The Program Request contract requires the refused invocation to reference the
+    PermissionDecision that refused it; this is the only door that builds a BLOCK record
+    (scopes limited to ``_BLOCK_EVIDENCE_SCOPES``), and the record performs nothing — a
+    BLOCK is never executable, and ``runtime_effect`` stays REVIEW_ONLY like every
+    decision. ``bound_task`` may be a synthetic mapping carrying a REAL originating task's
+    identity (the promotion-audit lineage precedent)."""
+    if permission_scope not in _BLOCK_EVIDENCE_SCOPES:
+        raise PlannerBlocked(
+            "NOT_ALLOWED",
+            f"refusal evidence is only buildable for {sorted(_BLOCK_EVIDENCE_SCOPES)}, got {permission_scope!r}",
+        )
+    action = _ActionSpec(
+        action_type="resource.program.invoke",
+        target_suffix="program_request",
+        tool_id=None,
+        program_id=f"{program_id}@{program_version}",
+        data_scope=("programization.review",),
+        normalized_parameters=dict(normalized_parameters),
+        risk_reason="Requested Program invocation: unregistered/disabled resource execution is BLOCK by policy.",
+        authority_reason="Authority evaluated for the record; resource eligibility is refused regardless.",
+        decision_reason="Policy prices unregistered/disabled resource execution as BLOCK; the request is refusal evidence.",
+        constraint="Refusal evidence only: no execution, enablement, registry mutation, or permission expansion.",
+        target_ref=target_ref,
+        content_sha256=content_sha256,
+        risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=permission_scope,
+        required_permission_level=required_permission_level,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id="mvp.programization.review",
+        repo_root=repo_root,
+        action=action,
+    )
 
 
 def build_search_permission_decision(

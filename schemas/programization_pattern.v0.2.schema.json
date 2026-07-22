@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "programization_pattern.v0.2.schema.json",
+  "title": "Programization Pattern v0.2",
+  "description": "Identical to v0.1 except review_trigger_count: 10 -> 5 (explicit Thomas decision 2026-07-22). v0.1 stays valid for historical records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pattern_id",
+    "pattern_signature",
+    "valid_observation_ids",
+    "valid_repetition_count",
+    "review_trigger_count",
+    "review_status",
+    "last_updated_at_utc"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "programization_pattern.v0.2"
+    },
+    "pattern_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pattern_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_type",
+        "role_id",
+        "input_schema_sha256",
+        "ordered_step_signature_sha256",
+        "output_schema_sha256",
+        "environment_version"
+      ],
+      "properties": {
+        "task_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input_schema_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ordered_step_signature_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "output_schema_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "environment_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "valid_observation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "valid_repetition_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "review_trigger_count": {
+      "const": 5
+    },
+    "review_status": {
+      "enum": [
+        "NOT_TRIGGERED",
+        "TRIGGERED",
+        "UNDER_REVIEW",
+        "CLOSED"
+      ]
+    },
+    "last_updated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "valid_repetition_count": {
+            "minimum": 5
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review_status": {
+            "enum": [
+              "TRIGGERED",
+              "UNDER_REVIEW",
+              "CLOSED"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

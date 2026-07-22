@@ -105,7 +105,7 @@ def test_synthetic_run_is_observed_but_never_counted(tmp_path):
     assert triggered is False
 
 
-def test_ten_valid_repetitions_trigger_review_exactly_once(tmp_path):
+def test_threshold_valid_repetitions_trigger_review_exactly_once(tmp_path):
     store = ProgramizationStore(tmp_path / "prog")
     for i in range(1, REVIEW_TRIGGER_COUNT):
         _, pattern, triggered = _observe(store, _task(i))
@@ -139,6 +139,31 @@ def test_corrupt_store_fails_closed(tmp_path):
     with pytest.raises(PersistenceError) as exc:
         _observe(ProgramizationStore(root), _task(1))
     assert exc.value.reason_code == "PROGRAMIZATION_UNREADABLE"
+
+
+def test_v01_pattern_rows_migrate_forward_on_next_touch(tmp_path):
+    """A pre-amendment v0.1 row (threshold 10) migrates to v0.2/5 on its next touch: the
+    next valid observation re-evaluates the trigger at 5, and an operator transition
+    normalizes the row. Historical v0.1 rows stay untouched in the file."""
+    store = ProgramizationStore(tmp_path / "prog")
+    # Seed enough valid observations to sit between the new (5) and old (10) thresholds,
+    # then rewrite the latest pattern row as a legacy v0.1 row (as a pre-amendment store
+    # would have left it: NOT_TRIGGERED at count 6 under threshold 10).
+    for i in range(1, 7):
+        _, pattern, _ = _observe(store, _task(i))
+    legacy = {**pattern, "schema_version": "programization_pattern.v0.1",
+              "review_trigger_count": 10, "review_status": "NOT_TRIGGERED"}
+    store.append_pattern(legacy)
+
+    _, migrated, triggered = _observe(store, _task(7))
+    assert triggered is True                              # 7 >= 5 under the new threshold
+    assert migrated["schema_version"] == "programization_pattern.v0.2"
+    assert migrated["review_trigger_count"] == REVIEW_TRIGGER_COUNT
+    assert migrated["review_status"] == "TRIGGERED"
+
+    p = transition_review(store, migrated["pattern_id"], "UNDER_REVIEW",
+                          reviewed_by="thomas", reason="r", now=NOW)
+    assert p["schema_version"] == "programization_pattern.v0.2"
 
 
 def test_pattern_rows_are_latest_wins_and_not_churned_by_invalid(tmp_path):
@@ -452,7 +477,7 @@ def test_mock_run_records_synthetic_observation(tmp_path):
 
 
 @requires_local_core
-def test_ten_real_runs_put_review_trigger_on_the_audit_chain(tmp_path):
+def test_threshold_real_runs_put_review_trigger_on_the_audit_chain(tmp_path):
     from runtime.mvp_runtime.pipeline import run_task
     from runtime.mvp_runtime.worker import MockProvider
 
