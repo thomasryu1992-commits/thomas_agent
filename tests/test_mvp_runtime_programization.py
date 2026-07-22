@@ -18,6 +18,8 @@ from runtime.mvp_runtime.programization import (
     build_pattern_signature,
     create_program_candidate,
     observe_completed_run,
+    record_shadow_result,
+    transition_candidate,
     transition_review,
 )
 
@@ -252,6 +254,127 @@ def test_candidate_input_is_fail_closed(tmp_path):
                                  created_by="thomas", reason="r", now=NOW)
     assert exc.value.reason_code == "SECRET_IN_CANDIDATE"
     assert store.read_candidates() == []                   # nothing persisted
+
+
+# --- candidate shadow-validation path ----------------------------------------
+
+def _draft_candidate(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    candidate = create_program_candidate(store, pattern_id, _REVIEW_INPUT,
+                                         created_by="thomas", reason="r", now=NOW)
+    return store, candidate["candidate_id"]
+
+
+def _t(store, cid, action):
+    return transition_candidate(store, cid, action, reviewed_by="thomas", reason="r")
+
+
+def _shadow(store, cid, outcome, **kw):
+    kw.setdefault("comparison_ref", "shadow-cmp-001")
+    kw.setdefault("result", "limited comparison against the agent baseline")
+    return record_shadow_result(store, cid, outcome, reviewed_by="thomas", reason="r", **kw)
+
+
+def test_candidate_lifecycle_happy_path(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    assert _t(store, cid, "ready")["status"] == "REVIEW_READY"
+    c = _t(store, cid, "validate")
+    assert c["status"] == "VALIDATING"
+    assert c["shadow_validation"] == {"status": "RUNNING", "comparison_ref": None, "result": None}
+    c = _shadow(store, cid, "PASS")
+    assert c["status"] == "VALIDATING"                     # outcome recorded, decision separate
+    assert c["shadow_validation"]["status"] == "PASS"
+    c = _t(store, cid, "accept")
+    assert c["status"] == "ACCEPTED"
+    # ACCEPTED still grants nothing — the schema constants survived every transition.
+    assert c["permission_expansion"] is False
+    assert c["activation_eligibility"] == "candidate_only_pending_program_registry_and_permission_policy"
+    # Terminal: nothing moves an ACCEPTED candidate.
+    with pytest.raises(ProgramizationBlocked) as exc:
+        _t(store, cid, "reject")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+
+
+def test_accept_requires_recorded_shadow_pass(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:      # from DRAFT: wrong status entirely
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+    _t(store, cid, "ready")
+    _t(store, cid, "validate")
+    with pytest.raises(ProgramizationBlocked) as exc:      # VALIDATING but shadow still RUNNING
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "ACCEPT_REQUIRES_SHADOW_PASS"
+    _shadow(store, cid, "FAIL")
+    with pytest.raises(ProgramizationBlocked) as exc:      # a FAILed shadow can never be accepted
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "ACCEPT_REQUIRES_SHADOW_PASS"
+    assert _t(store, cid, "reject")["status"] == "REJECTED"
+
+
+def test_shadow_outcome_needs_running_shadow_and_evidence(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:      # DRAFT: no shadow started
+        _shadow(store, cid, "PASS")
+    assert exc.value.reason_code == "SHADOW_NOT_RUNNING"
+    _t(store, cid, "ready")
+    _t(store, cid, "validate")
+    with pytest.raises(ProgramizationBlocked) as exc:
+        _shadow(store, cid, "MAYBE")
+    assert exc.value.reason_code == "SHADOW_OUTCOME_INVALID"
+    for broken in ({"comparison_ref": " "}, {"result": ""}):
+        with pytest.raises(ProgramizationBlocked) as exc:
+            _shadow(store, cid, "PASS", **broken)
+        assert exc.value.reason_code == "SHADOW_EVIDENCE_MISSING"
+    _shadow(store, cid, "PASS")
+    with pytest.raises(ProgramizationBlocked) as exc:      # outcome is single-shot: no re-recording
+        _shadow(store, cid, "FAIL")
+    assert exc.value.reason_code == "SHADOW_NOT_RUNNING"
+
+
+def test_candidate_actions_fail_closed_on_identity_and_unknown_id(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, cid, "ready", reviewed_by="", reason="r")
+    assert exc.value.reason_code == "MISSING_OPERATOR"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, "progcand_missing", "ready", reviewed_by="thomas", reason="r")
+    assert exc.value.reason_code == "CANDIDATE_NOT_FOUND"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, cid, "promote", reviewed_by="thomas", reason="r")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+
+
+def test_cli_candidate_lifecycle_and_ledger_events(tmp_path, capsys):
+    import json
+
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.programization_cli import main
+    from runtime.mvp_runtime.store import LedgerStore
+    store, cid = _draft_candidate(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control = ControlStore(tmp_path)
+
+    for argv in (
+        ["ready", cid, "--by", "thomas", "--reason", "substance complete"],
+        ["validate", cid, "--by", "thomas", "--reason", "start limited comparison"],
+        ["shadow", cid, "--outcome", "PASS", "--comparison-ref", "shadow-cmp-001",
+         "--result", "equivalent quality, lower cost", "--by", "thomas", "--reason", "comparison done"],
+        ["accept", cid, "--by", "thomas", "--reason", "convincing"],
+    ):
+        assert main(argv, store=store, ledger=ledger, control_store=control, now=NOW) == 0
+
+    latest = store.latest_candidates()[cid]
+    assert latest["status"] == "ACCEPTED" and latest["shadow_validation"]["status"] == "PASS"
+    events = [json.loads(line) for line in
+              (ledger.root / "programization_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["action"] for e in events] == [
+        "candidate_ready", "candidate_validate", "shadow_pass", "candidate_accept"]
+    assert all(e["candidate_id"] == cid for e in events)
+    assert events[-1]["shadow_status"] == "PASS"           # the evidence state the decision saw
+    assert main(["status"], store=store, ledger=ledger, control_store=control, now=NOW) == 0
+    assert "ACCEPTED" in capsys.readouterr().out
 
 
 # --- review CLI ---------------------------------------------------------------
