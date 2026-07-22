@@ -31,6 +31,7 @@ from .pipeline import AUTO_VALIDATION, run_task
 from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
+from .programization import ProgramizationStore
 from .working_memory import WorkingMemoryStore
 from .workspace import select_writer
 
@@ -57,14 +58,16 @@ def main(
     *,
     store: LedgerStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
+    programization: ProgramizationStore | None = None,
     control_store: ControlStore | None = None,
 ) -> int:
     """Run one request end-to-end. Returns the process exit code.
 
-    ``store`` / ``working_memory`` default to the repo-local per-machine ones. They are
-    injectable so a test can drive the real entry point without appending synthetic runs
-    to the operator's ledger and — more importantly — without seeding working memory,
-    which retrieval feeds back as context into subsequent real runs.
+    ``store`` / ``working_memory`` / ``programization`` default to the repo-local
+    per-machine ones. They are injectable so a test can drive the real entry point without
+    appending synthetic runs to the operator's ledger and — more importantly — without
+    seeding working memory, which retrieval feeds back as context into subsequent real
+    runs, or the programization counter, which real repetitions accumulate toward.
     """
     force_utf8_io()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -144,8 +147,12 @@ def main(
     working_memory = (
         working_memory if working_memory is not None else WorkingMemoryStore.default()
     )
+    programization = (
+        programization if programization is not None else ProgramizationStore.default()
+    )
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
-                      working_memory=working_memory, channel="manual", store=store,
+                      working_memory=working_memory, programization=programization,
+                      channel="manual", store=store,
                       independent_validation=independent_validation,
                       validator_provider=validator_provider,
                       priority="HIGH" if important else "NORMAL",
