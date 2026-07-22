@@ -1,6 +1,3122 @@
 {
  "description": "Source-implementation outputs for C3 pure-Python parity (see gen scripts in PR)",
  "candles_symbol": "BTCUSDT",
+ "feeds": {
+  "funding": [
+   {
+    "timestamp": "2026-01-01T00:00:00Z",
+    "funding_rate": -0.00011112
+   },
+   {
+    "timestamp": "2026-01-01T08:00:00Z",
+    "funding_rate": -4.374e-05
+   },
+   {
+    "timestamp": "2026-01-01T16:00:00Z",
+    "funding_rate": 0.00058547
+   },
+   {
+    "timestamp": "2026-01-02T00:00:00Z",
+    "funding_rate": -0.00060504
+   },
+   {
+    "timestamp": "2026-01-02T08:00:00Z",
+    "funding_rate": 0.00060942
+   },
+   {
+    "timestamp": "2026-01-02T16:00:00Z",
+    "funding_rate": 0.00037902
+   },
+   {
+    "timestamp": "2026-01-03T00:00:00Z",
+    "funding_rate": -0.00064106
+   },
+   {
+    "timestamp": "2026-01-03T08:00:00Z",
+    "funding_rate": 0.00076174
+   },
+   {
+    "timestamp": "2026-01-03T16:00:00Z",
+    "funding_rate": 0.00024045
+   },
+   {
+    "timestamp": "2026-01-04T00:00:00Z",
+    "funding_rate": -0.00073958
+   },
+   {
+    "timestamp": "2026-01-04T08:00:00Z",
+    "funding_rate": -0.00069585
+   },
+   {
+    "timestamp": "2026-01-04T16:00:00Z",
+    "funding_rate": 0.00061759
+   },
+   {
+    "timestamp": "2026-01-05T00:00:00Z",
+    "funding_rate": -0.00031984
+   },
+   {
+    "timestamp": "2026-01-05T08:00:00Z",
+    "funding_rate": 0.00089384
+   },
+   {
+    "timestamp": "2026-01-05T16:00:00Z",
+    "funding_rate": 0.00066142
+   },
+   {
+    "timestamp": "2026-01-06T00:00:00Z",
+    "funding_rate": -0.00018833
+   },
+   {
+    "timestamp": "2026-01-06T08:00:00Z",
+    "funding_rate": 0.0007791
+   },
+   {
+    "timestamp": "2026-01-06T16:00:00Z",
+    "funding_rate": 0.00053535
+   },
+   {
+    "timestamp": "2026-01-07T00:00:00Z",
+    "funding_rate": 0.00022025
+   },
+   {
+    "timestamp": "2026-01-07T08:00:00Z",
+    "funding_rate": -5.658e-05
+   },
+   {
+    "timestamp": "2026-01-07T16:00:00Z",
+    "funding_rate": 0.00080023
+   },
+   {
+    "timestamp": "2026-01-08T00:00:00Z",
+    "funding_rate": 0.00059055
+   },
+   {
+    "timestamp": "2026-01-08T08:00:00Z",
+    "funding_rate": 0.00065886
+   },
+   {
+    "timestamp": "2026-01-08T16:00:00Z",
+    "funding_rate": 0.0002096
+   },
+   {
+    "timestamp": "2026-01-09T00:00:00Z",
+    "funding_rate": -0.00046171
+   },
+   {
+    "timestamp": "2026-01-09T08:00:00Z",
+    "funding_rate": 0.00015916
+   },
+   {
+    "timestamp": "2026-01-09T16:00:00Z",
+    "funding_rate": -0.00029339
+   },
+   {
+    "timestamp": "2026-01-10T00:00:00Z",
+    "funding_rate": 0.00049439
+   },
+   {
+    "timestamp": "2026-01-10T08:00:00Z",
+    "funding_rate": -0.00065594
+   },
+   {
+    "timestamp": "2026-01-10T16:00:00Z",
+    "funding_rate": 7.739e-05
+   },
+   {
+    "timestamp": "2026-01-11T00:00:00Z",
+    "funding_rate": -0.00075736
+   },
+   {
+    "timestamp": "2026-01-11T08:00:00Z",
+    "funding_rate": 0.00070622
+   },
+   {
+    "timestamp": "2026-01-11T16:00:00Z",
+    "funding_rate": 2.694e-05
+   },
+   {
+    "timestamp": "2026-01-12T00:00:00Z",
+    "funding_rate": -0.00038497
+   },
+   {
+    "timestamp": "2026-01-12T08:00:00Z",
+    "funding_rate": -0.00017827
+   },
+   {
+    "timestamp": "2026-01-12T16:00:00Z",
+    "funding_rate": -0.00075383
+   },
+   {
+    "timestamp": "2026-01-13T00:00:00Z",
+    "funding_rate": -0.00010194
+   },
+   {
+    "timestamp": "2026-01-13T08:00:00Z",
+    "funding_rate": -0.00065662
+   },
+   {
+    "timestamp": "2026-01-13T16:00:00Z",
+    "funding_rate": -0.00015107
+   },
+   {
+    "timestamp": "2026-01-14T00:00:00Z",
+    "funding_rate": 0.00022337
+   },
+   {
+    "timestamp": "2026-01-21T00:00:00Z",
+    "funding_rate": -0.00088237
+   },
+   {
+    "timestamp": "2026-01-21T08:00:00Z",
+    "funding_rate": 0.00078167
+   },
+   {
+    "timestamp": "2026-01-21T16:00:00Z",
+    "funding_rate": 0.00075709
+   },
+   {
+    "timestamp": "2026-01-22T00:00:00Z",
+    "funding_rate": 0.00090096
+   },
+   {
+    "timestamp": "2026-01-22T08:00:00Z",
+    "funding_rate": 0.00049765
+   },
+   {
+    "timestamp": "2026-01-22T16:00:00Z",
+    "funding_rate": -0.00041062
+   },
+   {
+    "timestamp": "2026-01-23T00:00:00Z",
+    "funding_rate": 0.00024024
+   },
+   {
+    "timestamp": "2026-01-23T08:00:00Z",
+    "funding_rate": -0.00039284
+   },
+   {
+    "timestamp": "2026-01-23T16:00:00Z",
+    "funding_rate": -0.00095058
+   },
+   {
+    "timestamp": "2026-01-24T00:00:00Z",
+    "funding_rate": -0.00076441
+   },
+   {
+    "timestamp": "2026-01-24T08:00:00Z",
+    "funding_rate": -0.00092556
+   },
+   {
+    "timestamp": "2026-01-24T16:00:00Z",
+    "funding_rate": 6.26e-06
+   },
+   {
+    "timestamp": "2026-01-25T00:00:00Z",
+    "funding_rate": 0.00042872
+   },
+   {
+    "timestamp": "2026-01-25T08:00:00Z",
+    "funding_rate": -0.00030092
+   },
+   {
+    "timestamp": "2026-01-25T16:00:00Z",
+    "funding_rate": 6.06e-05
+   },
+   {
+    "timestamp": "2026-01-26T00:00:00Z",
+    "funding_rate": -8.995e-05
+   },
+   {
+    "timestamp": "2026-01-26T08:00:00Z",
+    "funding_rate": -0.00025071
+   },
+   {
+    "timestamp": "2026-01-26T16:00:00Z",
+    "funding_rate": -0.00058707
+   },
+   {
+    "timestamp": "2026-01-27T00:00:00Z",
+    "funding_rate": -0.00024753
+   },
+   {
+    "timestamp": "2026-01-27T08:00:00Z",
+    "funding_rate": -0.00091307
+   },
+   {
+    "timestamp": "2026-01-27T16:00:00Z",
+    "funding_rate": 9.711e-05
+   },
+   {
+    "timestamp": "2026-01-28T00:00:00Z",
+    "funding_rate": 0.00042642
+   },
+   {
+    "timestamp": "2026-01-28T08:00:00Z",
+    "funding_rate": 0.00087906
+   },
+   {
+    "timestamp": "2026-01-28T16:00:00Z",
+    "funding_rate": 0.0004418
+   },
+   {
+    "timestamp": "2026-01-29T00:00:00Z",
+    "funding_rate": 0.00060163
+   },
+   {
+    "timestamp": "2026-01-29T08:00:00Z",
+    "funding_rate": 0.00014709
+   },
+   {
+    "timestamp": "2026-01-29T16:00:00Z",
+    "funding_rate": 0.00056476
+   },
+   {
+    "timestamp": "2026-01-30T00:00:00Z",
+    "funding_rate": -0.0006788
+   },
+   {
+    "timestamp": "2026-01-30T08:00:00Z",
+    "funding_rate": 0.00021489
+   },
+   {
+    "timestamp": "2026-01-30T16:00:00Z",
+    "funding_rate": 0.0003315
+   },
+   {
+    "timestamp": "2026-01-31T00:00:00Z",
+    "funding_rate": 0.00078576
+   },
+   {
+    "timestamp": "2026-01-31T08:00:00Z",
+    "funding_rate": 0.00049594
+   },
+   {
+    "timestamp": "2026-01-31T16:00:00Z",
+    "funding_rate": -0.00011166
+   },
+   {
+    "timestamp": "2026-02-01T00:00:00Z",
+    "funding_rate": -0.00097175
+   },
+   {
+    "timestamp": "2026-02-01T08:00:00Z",
+    "funding_rate": 0.00022195
+   },
+   {
+    "timestamp": "2026-02-01T16:00:00Z",
+    "funding_rate": 0.00089366
+   },
+   {
+    "timestamp": "2026-02-02T00:00:00Z",
+    "funding_rate": 0.00022646
+   },
+   {
+    "timestamp": "2026-02-02T08:00:00Z",
+    "funding_rate": -0.00089905
+   },
+   {
+    "timestamp": "2026-02-02T16:00:00Z",
+    "funding_rate": -0.00044837
+   },
+   {
+    "timestamp": "2026-02-03T00:00:00Z",
+    "funding_rate": -0.00052458
+   },
+   {
+    "timestamp": "2026-02-03T08:00:00Z",
+    "funding_rate": -5.21e-06
+   },
+   {
+    "timestamp": "2026-02-03T16:00:00Z",
+    "funding_rate": -0.00098113
+   },
+   {
+    "timestamp": "2026-02-04T00:00:00Z",
+    "funding_rate": -0.00033429
+   },
+   {
+    "timestamp": "2026-02-04T08:00:00Z",
+    "funding_rate": 0.00019764
+   },
+   {
+    "timestamp": "2026-02-04T16:00:00Z",
+    "funding_rate": -0.00042939
+   },
+   {
+    "timestamp": "2026-02-05T00:00:00Z",
+    "funding_rate": -0.00024792
+   },
+   {
+    "timestamp": "2026-02-05T08:00:00Z",
+    "funding_rate": 0.00031732
+   },
+   {
+    "timestamp": "2026-02-05T16:00:00Z",
+    "funding_rate": -0.00067197
+   },
+   {
+    "timestamp": "2026-02-06T00:00:00Z",
+    "funding_rate": -0.00093423
+   },
+   {
+    "timestamp": "2026-02-06T08:00:00Z",
+    "funding_rate": 0.00082964
+   },
+   {
+    "timestamp": "2026-02-06T16:00:00Z",
+    "funding_rate": -0.00042117
+   },
+   {
+    "timestamp": "2026-02-07T00:00:00Z",
+    "funding_rate": -0.00048165
+   },
+   {
+    "timestamp": "2026-02-07T08:00:00Z",
+    "funding_rate": 0.00032178
+   },
+   {
+    "timestamp": "2026-02-07T16:00:00Z",
+    "funding_rate": -0.00026567
+   },
+   {
+    "timestamp": "2026-02-08T00:00:00Z",
+    "funding_rate": 0.0008414
+   },
+   {
+    "timestamp": "2026-02-08T08:00:00Z",
+    "funding_rate": 0.00039264
+   },
+   {
+    "timestamp": "2026-02-08T16:00:00Z",
+    "funding_rate": 0.00017612
+   },
+   {
+    "timestamp": "2026-02-09T00:00:00Z",
+    "funding_rate": 0.00020873
+   },
+   {
+    "timestamp": "2026-02-09T08:00:00Z",
+    "funding_rate": -0.00013972
+   },
+   {
+    "timestamp": "2026-02-09T16:00:00Z",
+    "funding_rate": -0.00067966
+   },
+   {
+    "timestamp": "2026-02-10T00:00:00Z",
+    "funding_rate": 0.00096566
+   },
+   {
+    "timestamp": "2026-02-10T08:00:00Z",
+    "funding_rate": 0.00081066
+   },
+   {
+    "timestamp": "2026-02-10T16:00:00Z",
+    "funding_rate": 0.00024104
+   },
+   {
+    "timestamp": "2026-02-11T00:00:00Z",
+    "funding_rate": 8.67e-06
+   },
+   {
+    "timestamp": "2026-02-11T08:00:00Z",
+    "funding_rate": 0.00097256
+   },
+   {
+    "timestamp": "2026-02-11T16:00:00Z",
+    "funding_rate": 0.00055099
+   },
+   {
+    "timestamp": "2026-02-12T00:00:00Z",
+    "funding_rate": 0.00083286
+   },
+   {
+    "timestamp": "2026-02-12T08:00:00Z",
+    "funding_rate": 0.00073142
+   },
+   {
+    "timestamp": "2026-02-12T16:00:00Z",
+    "funding_rate": -0.00028085
+   },
+   {
+    "timestamp": "2026-02-13T00:00:00Z",
+    "funding_rate": 0.00021985
+   },
+   {
+    "timestamp": "2026-02-13T08:00:00Z",
+    "funding_rate": 9.044e-05
+   },
+   {
+    "timestamp": "2026-02-13T16:00:00Z",
+    "funding_rate": -0.00040402
+   },
+   {
+    "timestamp": "2026-02-14T00:00:00Z",
+    "funding_rate": 0.00014721
+   },
+   {
+    "timestamp": "2026-02-14T08:00:00Z",
+    "funding_rate": -0.00021133
+   },
+   {
+    "timestamp": "2026-02-14T16:00:00Z",
+    "funding_rate": 0.00085584
+   },
+   {
+    "timestamp": "2026-02-15T00:00:00Z",
+    "funding_rate": 0.00075772
+   },
+   {
+    "timestamp": "2026-02-15T08:00:00Z",
+    "funding_rate": -0.0004471
+   },
+   {
+    "timestamp": "2026-02-15T16:00:00Z",
+    "funding_rate": 0.00016754
+   },
+   {
+    "timestamp": "2026-02-16T00:00:00Z",
+    "funding_rate": -0.00055971
+   },
+   {
+    "timestamp": "2026-02-16T08:00:00Z",
+    "funding_rate": -2.36e-05
+   },
+   {
+    "timestamp": "2026-02-16T16:00:00Z",
+    "funding_rate": -0.00070342
+   },
+   {
+    "timestamp": "2026-02-17T00:00:00Z",
+    "funding_rate": -0.00099625
+   },
+   {
+    "timestamp": "2026-02-17T08:00:00Z",
+    "funding_rate": 0.00018619
+   },
+   {
+    "timestamp": "2026-02-17T16:00:00Z",
+    "funding_rate": -0.00076124
+   },
+   {
+    "timestamp": "2026-02-18T00:00:00Z",
+    "funding_rate": 0.00066521
+   },
+   {
+    "timestamp": "2026-02-18T08:00:00Z",
+    "funding_rate": 0.000245
+   },
+   {
+    "timestamp": "2026-02-18T16:00:00Z",
+    "funding_rate": 0.00015374
+   },
+   {
+    "timestamp": "2026-02-19T00:00:00Z",
+    "funding_rate": -0.00014718
+   },
+   {
+    "timestamp": "2026-02-19T08:00:00Z",
+    "funding_rate": -5.501e-05
+   },
+   {
+    "timestamp": "2026-02-19T16:00:00Z",
+    "funding_rate": 0.00074555
+   },
+   {
+    "timestamp": "2026-02-20T00:00:00Z",
+    "funding_rate": 0.00047107
+   },
+   {
+    "timestamp": "2026-02-20T08:00:00Z",
+    "funding_rate": -0.00057452
+   },
+   {
+    "timestamp": "2026-02-20T16:00:00Z",
+    "funding_rate": 0.00060264
+   },
+   {
+    "timestamp": "2026-02-21T00:00:00Z",
+    "funding_rate": 0.00095156
+   },
+   {
+    "timestamp": "2026-02-21T08:00:00Z",
+    "funding_rate": -0.00078523
+   },
+   {
+    "timestamp": "2026-02-21T16:00:00Z",
+    "funding_rate": 0.00093372
+   },
+   {
+    "timestamp": "2026-02-22T00:00:00Z",
+    "funding_rate": -0.0004067
+   },
+   {
+    "timestamp": "2026-02-22T08:00:00Z",
+    "funding_rate": 0.00039315
+   },
+   {
+    "timestamp": "2026-02-22T16:00:00Z",
+    "funding_rate": -0.00026232
+   },
+   {
+    "timestamp": "2026-02-23T00:00:00Z",
+    "funding_rate": 0.00070856
+   },
+   {
+    "timestamp": "2026-02-23T08:00:00Z",
+    "funding_rate": 0.00080631
+   },
+   {
+    "timestamp": "2026-02-23T16:00:00Z",
+    "funding_rate": -0.00023737
+   },
+   {
+    "timestamp": "2026-02-24T00:00:00Z",
+    "funding_rate": -0.00056018
+   },
+   {
+    "timestamp": "2026-02-24T08:00:00Z",
+    "funding_rate": 8.769e-05
+   },
+   {
+    "timestamp": "2026-02-24T16:00:00Z",
+    "funding_rate": -0.00072153
+   },
+   {
+    "timestamp": "2026-02-25T00:00:00Z",
+    "funding_rate": 0.00056605
+   },
+   {
+    "timestamp": "2026-02-25T08:00:00Z",
+    "funding_rate": 0.00084324
+   },
+   {
+    "timestamp": "2026-02-25T16:00:00Z",
+    "funding_rate": -0.00075498
+   },
+   {
+    "timestamp": "2026-02-26T00:00:00Z",
+    "funding_rate": -0.00073414
+   },
+   {
+    "timestamp": "2026-02-26T08:00:00Z",
+    "funding_rate": -0.00079416
+   },
+   {
+    "timestamp": "2026-02-26T16:00:00Z",
+    "funding_rate": 0.00056416
+   },
+   {
+    "timestamp": "2026-02-27T00:00:00Z",
+    "funding_rate": 0.00063657
+   },
+   {
+    "timestamp": "2026-02-27T08:00:00Z",
+    "funding_rate": -0.00063744
+   },
+   {
+    "timestamp": "2026-02-27T16:00:00Z",
+    "funding_rate": 0.00057101
+   },
+   {
+    "timestamp": "2026-02-28T00:00:00Z",
+    "funding_rate": 0.00071883
+   },
+   {
+    "timestamp": "2026-02-28T08:00:00Z",
+    "funding_rate": 0.00054412
+   },
+   {
+    "timestamp": "2026-02-28T16:00:00Z",
+    "funding_rate": 0.00031555
+   },
+   {
+    "timestamp": "2026-03-01T00:00:00Z",
+    "funding_rate": -0.00070765
+   },
+   {
+    "timestamp": "2026-03-01T08:00:00Z",
+    "funding_rate": -0.00070919
+   },
+   {
+    "timestamp": "2026-03-01T16:00:00Z",
+    "funding_rate": -0.00071339
+   },
+   {
+    "timestamp": "2026-03-02T00:00:00Z",
+    "funding_rate": -0.00031506
+   },
+   {
+    "timestamp": "2026-03-02T08:00:00Z",
+    "funding_rate": -0.0006465
+   },
+   {
+    "timestamp": "2026-03-02T16:00:00Z",
+    "funding_rate": 8.839e-05
+   },
+   {
+    "timestamp": "2026-03-03T00:00:00Z",
+    "funding_rate": -0.00016828
+   },
+   {
+    "timestamp": "2026-03-03T08:00:00Z",
+    "funding_rate": 0.00031497
+   },
+   {
+    "timestamp": "2026-03-03T16:00:00Z",
+    "funding_rate": 0.00057399
+   },
+   {
+    "timestamp": "2026-03-04T00:00:00Z",
+    "funding_rate": -0.00061052
+   },
+   {
+    "timestamp": "2026-03-04T08:00:00Z",
+    "funding_rate": -0.00013324
+   },
+   {
+    "timestamp": "2026-03-04T16:00:00Z",
+    "funding_rate": -0.00041874
+   },
+   {
+    "timestamp": "2026-03-05T00:00:00Z",
+    "funding_rate": -0.00074204
+   },
+   {
+    "timestamp": "2026-03-05T08:00:00Z",
+    "funding_rate": -0.00057052
+   },
+   {
+    "timestamp": "2026-03-05T16:00:00Z",
+    "funding_rate": 8.809e-05
+   },
+   {
+    "timestamp": "2026-03-06T00:00:00Z",
+    "funding_rate": -0.00024547
+   },
+   {
+    "timestamp": "2026-03-06T08:00:00Z",
+    "funding_rate": -0.00079067
+   },
+   {
+    "timestamp": "2026-03-06T16:00:00Z",
+    "funding_rate": 0.00091774
+   },
+   {
+    "timestamp": "2026-03-07T00:00:00Z",
+    "funding_rate": -0.00068051
+   },
+   {
+    "timestamp": "2026-03-07T08:00:00Z",
+    "funding_rate": 0.00015289
+   },
+   {
+    "timestamp": "2026-03-07T16:00:00Z",
+    "funding_rate": -0.000546
+   },
+   {
+    "timestamp": "2026-03-08T00:00:00Z",
+    "funding_rate": -0.00070546
+   },
+   {
+    "timestamp": "2026-03-08T08:00:00Z",
+    "funding_rate": 0.00070746
+   },
+   {
+    "timestamp": "2026-03-08T16:00:00Z",
+    "funding_rate": 0.00048551
+   },
+   {
+    "timestamp": "2026-03-09T00:00:00Z",
+    "funding_rate": -0.00092178
+   },
+   {
+    "timestamp": "2026-03-09T08:00:00Z",
+    "funding_rate": 0.0004884
+   },
+   {
+    "timestamp": "2026-03-09T16:00:00Z",
+    "funding_rate": 5.162e-05
+   },
+   {
+    "timestamp": "2026-03-10T00:00:00Z",
+    "funding_rate": -0.00082351
+   },
+   {
+    "timestamp": "2026-03-10T08:00:00Z",
+    "funding_rate": 0.00066029
+   },
+   {
+    "timestamp": "2026-03-10T16:00:00Z",
+    "funding_rate": 0.00057569
+   },
+   {
+    "timestamp": "2026-03-11T00:00:00Z",
+    "funding_rate": -0.00045707
+   },
+   {
+    "timestamp": "2026-03-11T08:00:00Z",
+    "funding_rate": -8.802e-05
+   },
+   {
+    "timestamp": "2026-03-11T16:00:00Z",
+    "funding_rate": -0.00017968
+   },
+   {
+    "timestamp": "2026-03-12T00:00:00Z",
+    "funding_rate": -1.542e-05
+   },
+   {
+    "timestamp": "2026-03-12T08:00:00Z",
+    "funding_rate": 0.00068374
+   },
+   {
+    "timestamp": "2026-03-12T16:00:00Z",
+    "funding_rate": -0.00018883
+   },
+   {
+    "timestamp": "2026-03-13T00:00:00Z",
+    "funding_rate": 0.00097657
+   },
+   {
+    "timestamp": "2026-03-13T08:00:00Z",
+    "funding_rate": -0.00036348
+   },
+   {
+    "timestamp": "2026-03-13T16:00:00Z",
+    "funding_rate": -0.00076881
+   },
+   {
+    "timestamp": "2026-03-14T00:00:00Z",
+    "funding_rate": 0.00088654
+   },
+   {
+    "timestamp": "2026-03-14T08:00:00Z",
+    "funding_rate": 0.00043776
+   },
+   {
+    "timestamp": "2026-03-14T16:00:00Z",
+    "funding_rate": -8.309e-05
+   },
+   {
+    "timestamp": "2026-03-15T00:00:00Z",
+    "funding_rate": 0.0001469
+   },
+   {
+    "timestamp": "2026-03-15T08:00:00Z",
+    "funding_rate": 0.00091643
+   },
+   {
+    "timestamp": "2026-03-15T16:00:00Z",
+    "funding_rate": -7.858e-05
+   },
+   {
+    "timestamp": "2026-03-16T00:00:00Z",
+    "funding_rate": 0.00022255
+   },
+   {
+    "timestamp": "2026-03-16T08:00:00Z",
+    "funding_rate": 0.00089159
+   },
+   {
+    "timestamp": "2026-03-16T16:00:00Z",
+    "funding_rate": -8.979e-05
+   },
+   {
+    "timestamp": "2026-03-17T00:00:00Z",
+    "funding_rate": 0.00037128
+   },
+   {
+    "timestamp": "2026-03-17T08:00:00Z",
+    "funding_rate": -0.00083831
+   },
+   {
+    "timestamp": "2026-03-17T16:00:00Z",
+    "funding_rate": 0.00090839
+   },
+   {
+    "timestamp": "2026-03-18T00:00:00Z",
+    "funding_rate": -0.00091111
+   },
+   {
+    "timestamp": "2026-03-18T08:00:00Z",
+    "funding_rate": 0.00040106
+   },
+   {
+    "timestamp": "2026-03-18T16:00:00Z",
+    "funding_rate": 0.00062067
+   },
+   {
+    "timestamp": "2026-03-19T00:00:00Z",
+    "funding_rate": -0.00071386
+   },
+   {
+    "timestamp": "2026-03-19T08:00:00Z",
+    "funding_rate": 0.00036756
+   },
+   {
+    "timestamp": "2026-03-19T16:00:00Z",
+    "funding_rate": 0.00058205
+   },
+   {
+    "timestamp": "2026-03-20T00:00:00Z",
+    "funding_rate": 0.00069881
+   },
+   {
+    "timestamp": "2026-03-20T08:00:00Z",
+    "funding_rate": -0.00046448
+   },
+   {
+    "timestamp": "2026-03-20T16:00:00Z",
+    "funding_rate": -0.00027479
+   },
+   {
+    "timestamp": "2026-03-21T00:00:00Z",
+    "funding_rate": -0.00024506
+   },
+   {
+    "timestamp": "2026-03-21T08:00:00Z",
+    "funding_rate": -0.00093225
+   },
+   {
+    "timestamp": "2026-03-21T16:00:00Z",
+    "funding_rate": -0.00093146
+   },
+   {
+    "timestamp": "2026-03-22T00:00:00Z",
+    "funding_rate": -0.00094498
+   },
+   {
+    "timestamp": "2026-03-22T08:00:00Z",
+    "funding_rate": -0.00095324
+   },
+   {
+    "timestamp": "2026-03-22T16:00:00Z",
+    "funding_rate": 0.0007833
+   },
+   {
+    "timestamp": "2026-03-23T00:00:00Z",
+    "funding_rate": -0.00064542
+   },
+   {
+    "timestamp": "2026-03-23T08:00:00Z",
+    "funding_rate": 0.00086551
+   },
+   {
+    "timestamp": "2026-03-23T16:00:00Z",
+    "funding_rate": 6.215e-05
+   },
+   {
+    "timestamp": "2026-03-24T00:00:00Z",
+    "funding_rate": -0.00032849
+   },
+   {
+    "timestamp": "2026-03-24T08:00:00Z",
+    "funding_rate": 0.00096878
+   },
+   {
+    "timestamp": "2026-03-24T16:00:00Z",
+    "funding_rate": -0.00043072
+   },
+   {
+    "timestamp": "2026-03-25T00:00:00Z",
+    "funding_rate": -0.00071216
+   },
+   {
+    "timestamp": "2026-03-25T08:00:00Z",
+    "funding_rate": -0.00088217
+   },
+   {
+    "timestamp": "2026-03-25T16:00:00Z",
+    "funding_rate": -0.00021794
+   },
+   {
+    "timestamp": "2026-03-26T00:00:00Z",
+    "funding_rate": -0.00034569
+   },
+   {
+    "timestamp": "2026-03-26T08:00:00Z",
+    "funding_rate": -0.00012617
+   },
+   {
+    "timestamp": "2026-03-26T16:00:00Z",
+    "funding_rate": 0.00077361
+   },
+   {
+    "timestamp": "2026-03-27T00:00:00Z",
+    "funding_rate": 0.00035754
+   },
+   {
+    "timestamp": "2026-03-27T08:00:00Z",
+    "funding_rate": 0.0002527
+   },
+   {
+    "timestamp": "2026-03-27T16:00:00Z",
+    "funding_rate": -0.00058616
+   },
+   {
+    "timestamp": "2026-03-28T00:00:00Z",
+    "funding_rate": -0.00035125
+   },
+   {
+    "timestamp": "2026-03-28T08:00:00Z",
+    "funding_rate": -0.0002999
+   },
+   {
+    "timestamp": "2026-03-28T16:00:00Z",
+    "funding_rate": 0.00048006
+   },
+   {
+    "timestamp": "2026-03-29T00:00:00Z",
+    "funding_rate": 5.052e-05
+   },
+   {
+    "timestamp": "2026-03-29T08:00:00Z",
+    "funding_rate": 0.00015155
+   },
+   {
+    "timestamp": "2026-03-29T16:00:00Z",
+    "funding_rate": 0.00093162
+   },
+   {
+    "timestamp": "2026-03-30T00:00:00Z",
+    "funding_rate": -0.00089953
+   },
+   {
+    "timestamp": "2026-03-30T08:00:00Z",
+    "funding_rate": 0.00053254
+   },
+   {
+    "timestamp": "2026-03-30T16:00:00Z",
+    "funding_rate": -9.596e-05
+   },
+   {
+    "timestamp": "2026-03-31T00:00:00Z",
+    "funding_rate": -0.0002728
+   },
+   {
+    "timestamp": "2026-03-31T08:00:00Z",
+    "funding_rate": 0.00033528
+   },
+   {
+    "timestamp": "2026-03-31T16:00:00Z",
+    "funding_rate": 0.0004298
+   },
+   {
+    "timestamp": "2026-04-01T00:00:00Z",
+    "funding_rate": 0.00051376
+   },
+   {
+    "timestamp": "2026-04-01T08:00:00Z",
+    "funding_rate": -0.00072817
+   },
+   {
+    "timestamp": "2026-04-01T16:00:00Z",
+    "funding_rate": 0.0003334
+   },
+   {
+    "timestamp": "2026-04-02T00:00:00Z",
+    "funding_rate": -3.075e-05
+   },
+   {
+    "timestamp": "2026-04-02T08:00:00Z",
+    "funding_rate": 0.00043244
+   },
+   {
+    "timestamp": "2026-04-02T16:00:00Z",
+    "funding_rate": -0.00041457
+   },
+   {
+    "timestamp": "2026-04-03T00:00:00Z",
+    "funding_rate": 0.00054423
+   },
+   {
+    "timestamp": "2026-04-03T08:00:00Z",
+    "funding_rate": -0.00024784
+   },
+   {
+    "timestamp": "2026-04-03T16:00:00Z",
+    "funding_rate": 0.00014397
+   },
+   {
+    "timestamp": "2026-04-04T00:00:00Z",
+    "funding_rate": -0.00093511
+   },
+   {
+    "timestamp": "2026-04-04T08:00:00Z",
+    "funding_rate": -0.0004786
+   },
+   {
+    "timestamp": "2026-04-04T16:00:00Z",
+    "funding_rate": 0.0006906
+   },
+   {
+    "timestamp": "2026-04-05T00:00:00Z",
+    "funding_rate": 0.00029817
+   },
+   {
+    "timestamp": "2026-04-05T08:00:00Z",
+    "funding_rate": 0.00091317
+   },
+   {
+    "timestamp": "2026-04-05T16:00:00Z",
+    "funding_rate": -9.861e-05
+   },
+   {
+    "timestamp": "2026-04-06T00:00:00Z",
+    "funding_rate": 0.00064244
+   },
+   {
+    "timestamp": "2026-04-06T08:00:00Z",
+    "funding_rate": 0.00039001
+   },
+   {
+    "timestamp": "2026-04-06T16:00:00Z",
+    "funding_rate": -2.726e-05
+   },
+   {
+    "timestamp": "2026-04-07T00:00:00Z",
+    "funding_rate": -0.00046943
+   },
+   {
+    "timestamp": "2026-04-07T08:00:00Z",
+    "funding_rate": 2.161e-05
+   },
+   {
+    "timestamp": "2026-04-07T16:00:00Z",
+    "funding_rate": -0.00046789
+   },
+   {
+    "timestamp": "2026-04-08T00:00:00Z",
+    "funding_rate": -0.00049212
+   },
+   {
+    "timestamp": "2026-04-08T08:00:00Z",
+    "funding_rate": 0.00047551
+   },
+   {
+    "timestamp": "2026-04-08T16:00:00Z",
+    "funding_rate": 0.00044357
+   },
+   {
+    "timestamp": "2026-04-09T00:00:00Z",
+    "funding_rate": 0.00078082
+   },
+   {
+    "timestamp": "2026-04-09T08:00:00Z",
+    "funding_rate": -0.00061941
+   },
+   {
+    "timestamp": "2026-04-09T16:00:00Z",
+    "funding_rate": -0.00083133
+   },
+   {
+    "timestamp": "2026-04-10T00:00:00Z",
+    "funding_rate": -0.00056522
+   },
+   {
+    "timestamp": "2026-04-10T08:00:00Z",
+    "funding_rate": -0.00075264
+   },
+   {
+    "timestamp": "2026-04-10T16:00:00Z",
+    "funding_rate": -0.00098623
+   },
+   {
+    "timestamp": "2026-04-11T00:00:00Z",
+    "funding_rate": -0.00012774
+   },
+   {
+    "timestamp": "2026-04-11T08:00:00Z",
+    "funding_rate": -0.00020885
+   },
+   {
+    "timestamp": "2026-04-11T16:00:00Z",
+    "funding_rate": -0.00057117
+   },
+   {
+    "timestamp": "2026-04-12T00:00:00Z",
+    "funding_rate": -0.00061916
+   },
+   {
+    "timestamp": "2026-04-12T08:00:00Z",
+    "funding_rate": -0.00016024
+   },
+   {
+    "timestamp": "2026-04-12T16:00:00Z",
+    "funding_rate": 0.00024
+   },
+   {
+    "timestamp": "2026-04-13T00:00:00Z",
+    "funding_rate": -1.845e-05
+   },
+   {
+    "timestamp": "2026-04-13T08:00:00Z",
+    "funding_rate": -0.00085581
+   },
+   {
+    "timestamp": "2026-04-13T16:00:00Z",
+    "funding_rate": 0.00034305
+   },
+   {
+    "timestamp": "2026-04-14T00:00:00Z",
+    "funding_rate": 0.00071094
+   },
+   {
+    "timestamp": "2026-04-14T08:00:00Z",
+    "funding_rate": -0.00065373
+   },
+   {
+    "timestamp": "2026-04-14T16:00:00Z",
+    "funding_rate": 0.00010152
+   },
+   {
+    "timestamp": "2026-04-15T00:00:00Z",
+    "funding_rate": -0.00052124
+   },
+   {
+    "timestamp": "2026-04-15T08:00:00Z",
+    "funding_rate": 0.00061571
+   },
+   {
+    "timestamp": "2026-04-15T16:00:00Z",
+    "funding_rate": 0.00061243
+   },
+   {
+    "timestamp": "2026-04-16T00:00:00Z",
+    "funding_rate": -0.00063559
+   },
+   {
+    "timestamp": "2026-04-16T08:00:00Z",
+    "funding_rate": -0.00024172
+   },
+   {
+    "timestamp": "2026-04-16T16:00:00Z",
+    "funding_rate": 0.00018248
+   },
+   {
+    "timestamp": "2026-04-17T00:00:00Z",
+    "funding_rate": 0.00094088
+   },
+   {
+    "timestamp": "2026-04-17T08:00:00Z",
+    "funding_rate": -3.295e-05
+   },
+   {
+    "timestamp": "2026-04-17T16:00:00Z",
+    "funding_rate": -0.00035413
+   },
+   {
+    "timestamp": "2026-04-18T00:00:00Z",
+    "funding_rate": 0.00097204
+   },
+   {
+    "timestamp": "2026-04-18T08:00:00Z",
+    "funding_rate": -0.00081742
+   },
+   {
+    "timestamp": "2026-04-18T16:00:00Z",
+    "funding_rate": -0.00035453
+   },
+   {
+    "timestamp": "2026-04-19T00:00:00Z",
+    "funding_rate": -0.00056693
+   },
+   {
+    "timestamp": "2026-04-19T08:00:00Z",
+    "funding_rate": 0.00048876
+   },
+   {
+    "timestamp": "2026-04-19T16:00:00Z",
+    "funding_rate": -0.00072974
+   },
+   {
+    "timestamp": "2026-04-20T00:00:00Z",
+    "funding_rate": -0.00073714
+   },
+   {
+    "timestamp": "2026-04-20T08:00:00Z",
+    "funding_rate": -0.00061494
+   },
+   {
+    "timestamp": "2026-04-20T16:00:00Z",
+    "funding_rate": 0.00024674
+   },
+   {
+    "timestamp": "2026-04-21T00:00:00Z",
+    "funding_rate": -0.0006632
+   },
+   {
+    "timestamp": "2026-04-21T08:00:00Z",
+    "funding_rate": 0.00064379
+   },
+   {
+    "timestamp": "2026-04-21T16:00:00Z",
+    "funding_rate": 0.00095962
+   },
+   {
+    "timestamp": "2026-04-22T00:00:00Z",
+    "funding_rate": 0.00037254
+   },
+   {
+    "timestamp": "2026-04-22T08:00:00Z",
+    "funding_rate": -0.00096419
+   },
+   {
+    "timestamp": "2026-04-22T16:00:00Z",
+    "funding_rate": -0.00026414
+   },
+   {
+    "timestamp": "2026-04-23T00:00:00Z",
+    "funding_rate": -0.00033198
+   },
+   {
+    "timestamp": "2026-04-23T08:00:00Z",
+    "funding_rate": 0.00042518
+   },
+   {
+    "timestamp": "2026-04-23T16:00:00Z",
+    "funding_rate": 0.00033608
+   },
+   {
+    "timestamp": "2026-04-24T00:00:00Z",
+    "funding_rate": 0.00020229
+   },
+   {
+    "timestamp": "2026-04-24T08:00:00Z",
+    "funding_rate": 0.00022879
+   },
+   {
+    "timestamp": "2026-04-24T16:00:00Z",
+    "funding_rate": -0.00034155
+   },
+   {
+    "timestamp": "2026-04-25T00:00:00Z",
+    "funding_rate": -1.923e-05
+   },
+   {
+    "timestamp": "2026-04-25T08:00:00Z",
+    "funding_rate": -0.00052399
+   },
+   {
+    "timestamp": "2026-04-25T16:00:00Z",
+    "funding_rate": 0.00070593
+   },
+   {
+    "timestamp": "2026-04-26T00:00:00Z",
+    "funding_rate": 0.0007119
+   },
+   {
+    "timestamp": "2026-04-26T08:00:00Z",
+    "funding_rate": -0.00031001
+   },
+   {
+    "timestamp": "2026-04-26T16:00:00Z",
+    "funding_rate": 0.00013343
+   },
+   {
+    "timestamp": "2026-04-27T00:00:00Z",
+    "funding_rate": -0.00086717
+   },
+   {
+    "timestamp": "2026-04-27T08:00:00Z",
+    "funding_rate": -0.00082434
+   },
+   {
+    "timestamp": "2026-04-27T16:00:00Z",
+    "funding_rate": 0.00010582
+   },
+   {
+    "timestamp": "2026-04-28T00:00:00Z",
+    "funding_rate": 0.00081349
+   },
+   {
+    "timestamp": "2026-04-28T08:00:00Z",
+    "funding_rate": -0.0001424
+   },
+   {
+    "timestamp": "2026-04-28T16:00:00Z",
+    "funding_rate": -0.00045224
+   },
+   {
+    "timestamp": "2026-04-29T00:00:00Z",
+    "funding_rate": -0.00034466
+   },
+   {
+    "timestamp": "2026-04-29T08:00:00Z",
+    "funding_rate": 0.00053797
+   },
+   {
+    "timestamp": "2026-04-29T16:00:00Z",
+    "funding_rate": 8.992e-05
+   },
+   {
+    "timestamp": "2026-04-30T00:00:00Z",
+    "funding_rate": -0.0007906
+   },
+   {
+    "timestamp": "2026-04-30T08:00:00Z",
+    "funding_rate": -0.00044985
+   },
+   {
+    "timestamp": "2026-04-30T16:00:00Z",
+    "funding_rate": 0.00054321
+   },
+   {
+    "timestamp": "2026-05-01T00:00:00Z",
+    "funding_rate": 0.00052964
+   },
+   {
+    "timestamp": "2026-05-01T08:00:00Z",
+    "funding_rate": 0.00062032
+   },
+   {
+    "timestamp": "2026-05-01T16:00:00Z",
+    "funding_rate": 0.00038129
+   },
+   {
+    "timestamp": "2026-05-02T00:00:00Z",
+    "funding_rate": 0.00055128
+   },
+   {
+    "timestamp": "2026-05-02T08:00:00Z",
+    "funding_rate": 0.00085837
+   },
+   {
+    "timestamp": "2026-05-02T16:00:00Z",
+    "funding_rate": -0.00074904
+   },
+   {
+    "timestamp": "2026-05-03T00:00:00Z",
+    "funding_rate": 0.00098381
+   },
+   {
+    "timestamp": "2026-05-03T08:00:00Z",
+    "funding_rate": 0.00054196
+   },
+   {
+    "timestamp": "2026-05-03T16:00:00Z",
+    "funding_rate": -0.00054969
+   },
+   {
+    "timestamp": "2026-05-04T00:00:00Z",
+    "funding_rate": 0.00080184
+   },
+   {
+    "timestamp": "2026-05-04T08:00:00Z",
+    "funding_rate": -0.00037328
+   },
+   {
+    "timestamp": "2026-05-04T16:00:00Z",
+    "funding_rate": 0.0006629
+   },
+   {
+    "timestamp": "2026-05-05T00:00:00Z",
+    "funding_rate": 7.282e-05
+   },
+   {
+    "timestamp": "2026-05-05T08:00:00Z",
+    "funding_rate": 0.00017725
+   },
+   {
+    "timestamp": "2026-05-05T16:00:00Z",
+    "funding_rate": -0.00063586
+   },
+   {
+    "timestamp": "2026-05-06T00:00:00Z",
+    "funding_rate": 1.35e-06
+   },
+   {
+    "timestamp": "2026-05-06T08:00:00Z",
+    "funding_rate": -0.00050098
+   },
+   {
+    "timestamp": "2026-05-06T16:00:00Z",
+    "funding_rate": -0.00061134
+   },
+   {
+    "timestamp": "2026-05-07T00:00:00Z",
+    "funding_rate": -0.00066046
+   },
+   {
+    "timestamp": "2026-05-07T08:00:00Z",
+    "funding_rate": -0.00032782
+   },
+   {
+    "timestamp": "2026-05-07T16:00:00Z",
+    "funding_rate": -0.0006006
+   },
+   {
+    "timestamp": "2026-05-08T00:00:00Z",
+    "funding_rate": -0.00066547
+   },
+   {
+    "timestamp": "2026-05-08T08:00:00Z",
+    "funding_rate": 0.00047489
+   },
+   {
+    "timestamp": "2026-05-08T16:00:00Z",
+    "funding_rate": -0.00035096
+   },
+   {
+    "timestamp": "2026-05-09T00:00:00Z",
+    "funding_rate": 0.00038952
+   },
+   {
+    "timestamp": "2026-05-09T08:00:00Z",
+    "funding_rate": 0.00098747
+   },
+   {
+    "timestamp": "2026-05-09T16:00:00Z",
+    "funding_rate": -9.46e-05
+   },
+   {
+    "timestamp": "2026-05-10T00:00:00Z",
+    "funding_rate": 0.00049714
+   },
+   {
+    "timestamp": "2026-05-10T08:00:00Z",
+    "funding_rate": 0.00051243
+   },
+   {
+    "timestamp": "2026-05-10T16:00:00Z",
+    "funding_rate": 0.00019771
+   },
+   {
+    "timestamp": "2026-05-11T00:00:00Z",
+    "funding_rate": 0.00099823
+   },
+   {
+    "timestamp": "2026-05-11T08:00:00Z",
+    "funding_rate": -0.00069074
+   },
+   {
+    "timestamp": "2026-05-11T16:00:00Z",
+    "funding_rate": 0.00095849
+   },
+   {
+    "timestamp": "2026-05-12T00:00:00Z",
+    "funding_rate": 0.00015326
+   },
+   {
+    "timestamp": "2026-05-12T08:00:00Z",
+    "funding_rate": 0.00022614
+   },
+   {
+    "timestamp": "2026-05-12T16:00:00Z",
+    "funding_rate": 0.00077316
+   },
+   {
+    "timestamp": "2026-05-13T00:00:00Z",
+    "funding_rate": -0.00068392
+   },
+   {
+    "timestamp": "2026-05-13T08:00:00Z",
+    "funding_rate": 9.773e-05
+   },
+   {
+    "timestamp": "2026-05-13T16:00:00Z",
+    "funding_rate": -9.214e-05
+   },
+   {
+    "timestamp": "2026-05-14T00:00:00Z",
+    "funding_rate": 0.00067211
+   },
+   {
+    "timestamp": "2026-05-14T08:00:00Z",
+    "funding_rate": -0.00053993
+   },
+   {
+    "timestamp": "2026-05-14T16:00:00Z",
+    "funding_rate": -0.00083787
+   },
+   {
+    "timestamp": "2026-05-15T00:00:00Z",
+    "funding_rate": -0.00084415
+   },
+   {
+    "timestamp": "2026-05-15T08:00:00Z",
+    "funding_rate": 5.114e-05
+   },
+   {
+    "timestamp": "2026-05-15T16:00:00Z",
+    "funding_rate": 0.00013426
+   },
+   {
+    "timestamp": "2026-05-16T00:00:00Z",
+    "funding_rate": 0.00083299
+   },
+   {
+    "timestamp": "2026-05-16T08:00:00Z",
+    "funding_rate": 0.00073378
+   },
+   {
+    "timestamp": "2026-05-16T16:00:00Z",
+    "funding_rate": 0.00052017
+   },
+   {
+    "timestamp": "2026-05-17T00:00:00Z",
+    "funding_rate": -0.00032398
+   },
+   {
+    "timestamp": "2026-05-17T08:00:00Z",
+    "funding_rate": 0.0008208
+   },
+   {
+    "timestamp": "2026-05-17T16:00:00Z",
+    "funding_rate": 0.00024196
+   },
+   {
+    "timestamp": "2026-05-18T00:00:00Z",
+    "funding_rate": -0.00093342
+   },
+   {
+    "timestamp": "2026-05-18T08:00:00Z",
+    "funding_rate": 9.297e-05
+   },
+   {
+    "timestamp": "2026-05-18T16:00:00Z",
+    "funding_rate": 0.0008697
+   },
+   {
+    "timestamp": "2026-05-19T00:00:00Z",
+    "funding_rate": 0.00034031
+   },
+   {
+    "timestamp": "2026-05-19T08:00:00Z",
+    "funding_rate": 0.00096984
+   },
+   {
+    "timestamp": "2026-05-19T16:00:00Z",
+    "funding_rate": -0.00039029
+   },
+   {
+    "timestamp": "2026-05-20T00:00:00Z",
+    "funding_rate": -0.0001741
+   },
+   {
+    "timestamp": "2026-05-20T08:00:00Z",
+    "funding_rate": 0.00082777
+   },
+   {
+    "timestamp": "2026-05-20T16:00:00Z",
+    "funding_rate": 8.312e-05
+   },
+   {
+    "timestamp": "2026-05-21T00:00:00Z",
+    "funding_rate": -0.00096893
+   },
+   {
+    "timestamp": "2026-05-21T08:00:00Z",
+    "funding_rate": 0.00022853
+   },
+   {
+    "timestamp": "2026-05-21T16:00:00Z",
+    "funding_rate": 0.00072177
+   },
+   {
+    "timestamp": "2026-05-22T00:00:00Z",
+    "funding_rate": 0.00043661
+   },
+   {
+    "timestamp": "2026-05-22T08:00:00Z",
+    "funding_rate": -0.00054727
+   },
+   {
+    "timestamp": "2026-05-22T16:00:00Z",
+    "funding_rate": -0.00093888
+   },
+   {
+    "timestamp": "2026-05-23T00:00:00Z",
+    "funding_rate": -5.529e-05
+   },
+   {
+    "timestamp": "2026-05-23T08:00:00Z",
+    "funding_rate": 0.00023741
+   },
+   {
+    "timestamp": "2026-05-23T16:00:00Z",
+    "funding_rate": 0.00092911
+   },
+   {
+    "timestamp": "2026-05-24T00:00:00Z",
+    "funding_rate": -0.00032785
+   },
+   {
+    "timestamp": "2026-05-24T08:00:00Z",
+    "funding_rate": 0.00056204
+   },
+   {
+    "timestamp": "2026-05-24T16:00:00Z",
+    "funding_rate": -0.00056317
+   },
+   {
+    "timestamp": "2026-05-25T00:00:00Z",
+    "funding_rate": -0.00048494
+   },
+   {
+    "timestamp": "2026-05-25T08:00:00Z",
+    "funding_rate": 0.00032983
+   },
+   {
+    "timestamp": "2026-05-25T16:00:00Z",
+    "funding_rate": 4.806e-05
+   },
+   {
+    "timestamp": "2026-05-26T00:00:00Z",
+    "funding_rate": 0.00018305
+   },
+   {
+    "timestamp": "2026-05-26T08:00:00Z",
+    "funding_rate": 5.597e-05
+   },
+   {
+    "timestamp": "2026-05-26T16:00:00Z",
+    "funding_rate": 8.471e-05
+   },
+   {
+    "timestamp": "2026-05-27T00:00:00Z",
+    "funding_rate": 0.00030505
+   },
+   {
+    "timestamp": "2026-05-27T08:00:00Z",
+    "funding_rate": -0.00068648
+   },
+   {
+    "timestamp": "2026-05-27T16:00:00Z",
+    "funding_rate": -0.00010858
+   },
+   {
+    "timestamp": "2026-05-28T00:00:00Z",
+    "funding_rate": -0.00063642
+   },
+   {
+    "timestamp": "2026-05-28T08:00:00Z",
+    "funding_rate": 0.00054567
+   },
+   {
+    "timestamp": "2026-05-28T16:00:00Z",
+    "funding_rate": -0.00096628
+   },
+   {
+    "timestamp": "2026-05-29T00:00:00Z",
+    "funding_rate": 0.00042068
+   },
+   {
+    "timestamp": "2026-05-29T08:00:00Z",
+    "funding_rate": 0.00021708
+   },
+   {
+    "timestamp": "2026-05-29T16:00:00Z",
+    "funding_rate": -0.0006061
+   },
+   {
+    "timestamp": "2026-05-30T00:00:00Z",
+    "funding_rate": -0.00024361
+   },
+   {
+    "timestamp": "2026-05-30T08:00:00Z",
+    "funding_rate": -0.00030196
+   },
+   {
+    "timestamp": "2026-05-30T16:00:00Z",
+    "funding_rate": -0.00087985
+   },
+   {
+    "timestamp": "2026-05-31T00:00:00Z",
+    "funding_rate": -0.00031108
+   },
+   {
+    "timestamp": "2026-05-31T08:00:00Z",
+    "funding_rate": 0.00045702
+   },
+   {
+    "timestamp": "2026-05-31T16:00:00Z",
+    "funding_rate": 0.00075601
+   },
+   {
+    "timestamp": "2026-06-01T00:00:00Z",
+    "funding_rate": 0.00012249
+   },
+   {
+    "timestamp": "2026-06-01T08:00:00Z",
+    "funding_rate": -0.00086881
+   },
+   {
+    "timestamp": "2026-06-01T16:00:00Z",
+    "funding_rate": -0.0005571
+   },
+   {
+    "timestamp": "2026-06-02T00:00:00Z",
+    "funding_rate": -0.00012796
+   },
+   {
+    "timestamp": "2026-06-02T08:00:00Z",
+    "funding_rate": -0.00096163
+   },
+   {
+    "timestamp": "2026-06-02T16:00:00Z",
+    "funding_rate": 0.00059597
+   },
+   {
+    "timestamp": "2026-06-03T00:00:00Z",
+    "funding_rate": -0.00092395
+   },
+   {
+    "timestamp": "2026-06-03T08:00:00Z",
+    "funding_rate": 0.00099296
+   },
+   {
+    "timestamp": "2026-06-03T16:00:00Z",
+    "funding_rate": -0.000145
+   },
+   {
+    "timestamp": "2026-06-04T00:00:00Z",
+    "funding_rate": 0.00032863
+   },
+   {
+    "timestamp": "2026-06-04T08:00:00Z",
+    "funding_rate": 0.00010026
+   },
+   {
+    "timestamp": "2026-06-04T16:00:00Z",
+    "funding_rate": -0.00065999
+   },
+   {
+    "timestamp": "2026-06-05T00:00:00Z",
+    "funding_rate": 0.00040043
+   },
+   {
+    "timestamp": "2026-06-05T08:00:00Z",
+    "funding_rate": -0.00012574
+   },
+   {
+    "timestamp": "2026-06-05T16:00:00Z",
+    "funding_rate": 0.00020519
+   },
+   {
+    "timestamp": "2026-06-06T00:00:00Z",
+    "funding_rate": 0.00016337
+   },
+   {
+    "timestamp": "2026-06-06T08:00:00Z",
+    "funding_rate": 0.00090047
+   },
+   {
+    "timestamp": "2026-06-06T16:00:00Z",
+    "funding_rate": -0.00018254
+   },
+   {
+    "timestamp": "2026-06-07T00:00:00Z",
+    "funding_rate": 0.00028304
+   },
+   {
+    "timestamp": "2026-06-07T08:00:00Z",
+    "funding_rate": -0.00067355
+   },
+   {
+    "timestamp": "2026-06-07T16:00:00Z",
+    "funding_rate": -0.00080617
+   },
+   {
+    "timestamp": "2026-06-08T00:00:00Z",
+    "funding_rate": 0.0008136
+   },
+   {
+    "timestamp": "2026-06-08T08:00:00Z",
+    "funding_rate": 0.00050927
+   },
+   {
+    "timestamp": "2026-06-08T16:00:00Z",
+    "funding_rate": -0.00028658
+   },
+   {
+    "timestamp": "2026-06-09T00:00:00Z",
+    "funding_rate": -0.00045473
+   },
+   {
+    "timestamp": "2026-06-09T08:00:00Z",
+    "funding_rate": 0.00068765
+   },
+   {
+    "timestamp": "2026-06-09T16:00:00Z",
+    "funding_rate": -3.697e-05
+   },
+   {
+    "timestamp": "2026-06-10T00:00:00Z",
+    "funding_rate": -0.00053925
+   },
+   {
+    "timestamp": "2026-06-10T08:00:00Z",
+    "funding_rate": -0.00019714
+   },
+   {
+    "timestamp": "2026-06-10T16:00:00Z",
+    "funding_rate": -0.00039044
+   },
+   {
+    "timestamp": "2026-06-11T00:00:00Z",
+    "funding_rate": -0.00010033
+   },
+   {
+    "timestamp": "2026-06-11T08:00:00Z",
+    "funding_rate": -0.00030571
+   },
+   {
+    "timestamp": "2026-06-11T16:00:00Z",
+    "funding_rate": -0.00046323
+   },
+   {
+    "timestamp": "2026-06-12T00:00:00Z",
+    "funding_rate": 0.00089283
+   },
+   {
+    "timestamp": "2026-06-12T08:00:00Z",
+    "funding_rate": 0.00073527
+   },
+   {
+    "timestamp": "2026-06-12T16:00:00Z",
+    "funding_rate": -0.00097534
+   },
+   {
+    "timestamp": "2026-06-13T00:00:00Z",
+    "funding_rate": 0.00017246
+   },
+   {
+    "timestamp": "2026-06-13T08:00:00Z",
+    "funding_rate": 0.00028173
+   },
+   {
+    "timestamp": "2026-06-13T16:00:00Z",
+    "funding_rate": 0.00059253
+   },
+   {
+    "timestamp": "2026-06-14T00:00:00Z",
+    "funding_rate": -0.00042234
+   },
+   {
+    "timestamp": "2026-06-14T08:00:00Z",
+    "funding_rate": -0.00021652
+   },
+   {
+    "timestamp": "2026-06-14T16:00:00Z",
+    "funding_rate": -1.061e-05
+   },
+   {
+    "timestamp": "2026-06-15T00:00:00Z",
+    "funding_rate": 0.00031498
+   },
+   {
+    "timestamp": "2026-06-15T08:00:00Z",
+    "funding_rate": -0.00051074
+   },
+   {
+    "timestamp": "2026-06-15T16:00:00Z",
+    "funding_rate": 0.00052239
+   },
+   {
+    "timestamp": "2026-06-16T00:00:00Z",
+    "funding_rate": 0.00048427
+   },
+   {
+    "timestamp": "2026-06-16T08:00:00Z",
+    "funding_rate": -0.00014987
+   },
+   {
+    "timestamp": "2026-06-16T16:00:00Z",
+    "funding_rate": -4.573e-05
+   },
+   {
+    "timestamp": "2026-06-17T00:00:00Z",
+    "funding_rate": 0.00020157
+   },
+   {
+    "timestamp": "2026-06-17T08:00:00Z",
+    "funding_rate": 0.00085334
+   },
+   {
+    "timestamp": "2026-06-17T16:00:00Z",
+    "funding_rate": -0.00051704
+   },
+   {
+    "timestamp": "2026-06-18T00:00:00Z",
+    "funding_rate": -0.00067155
+   },
+   {
+    "timestamp": "2026-06-18T08:00:00Z",
+    "funding_rate": -0.00037026
+   },
+   {
+    "timestamp": "2026-06-18T16:00:00Z",
+    "funding_rate": 0.00089491
+   },
+   {
+    "timestamp": "2026-06-19T00:00:00Z",
+    "funding_rate": 0.00052488
+   },
+   {
+    "timestamp": "2026-06-19T08:00:00Z",
+    "funding_rate": 0.00091815
+   },
+   {
+    "timestamp": "2026-06-19T16:00:00Z",
+    "funding_rate": 2.804e-05
+   },
+   {
+    "timestamp": "2026-06-20T00:00:00Z",
+    "funding_rate": 0.00060079
+   },
+   {
+    "timestamp": "2026-06-20T08:00:00Z",
+    "funding_rate": 0.00087266
+   },
+   {
+    "timestamp": "2026-06-20T16:00:00Z",
+    "funding_rate": 0.00030428
+   },
+   {
+    "timestamp": "2026-06-21T00:00:00Z",
+    "funding_rate": -3.244e-05
+   },
+   {
+    "timestamp": "2026-06-21T08:00:00Z",
+    "funding_rate": 0.00019433
+   },
+   {
+    "timestamp": "2026-06-21T16:00:00Z",
+    "funding_rate": -0.00056896
+   },
+   {
+    "timestamp": "2026-06-22T00:00:00Z",
+    "funding_rate": 0.00079793
+   },
+   {
+    "timestamp": "2026-06-22T08:00:00Z",
+    "funding_rate": 0.0001562
+   },
+   {
+    "timestamp": "2026-06-22T16:00:00Z",
+    "funding_rate": -0.00080273
+   },
+   {
+    "timestamp": "2026-06-23T00:00:00Z",
+    "funding_rate": 0.00082378
+   },
+   {
+    "timestamp": "2026-06-23T08:00:00Z",
+    "funding_rate": 0.0006938
+   },
+   {
+    "timestamp": "2026-06-23T16:00:00Z",
+    "funding_rate": -0.00042249
+   },
+   {
+    "timestamp": "2026-06-24T00:00:00Z",
+    "funding_rate": 0.00081395
+   },
+   {
+    "timestamp": "2026-06-24T08:00:00Z",
+    "funding_rate": 0.00087867
+   },
+   {
+    "timestamp": "2026-06-24T16:00:00Z",
+    "funding_rate": 0.00060557
+   },
+   {
+    "timestamp": "2026-06-25T00:00:00Z",
+    "funding_rate": -0.00047749
+   },
+   {
+    "timestamp": "2026-06-25T08:00:00Z",
+    "funding_rate": 0.00090303
+   },
+   {
+    "timestamp": "2026-06-25T16:00:00Z",
+    "funding_rate": 2.767e-05
+   },
+   {
+    "timestamp": "2026-06-26T00:00:00Z",
+    "funding_rate": -0.00020743
+   },
+   {
+    "timestamp": "2026-06-26T08:00:00Z",
+    "funding_rate": 0.00033645
+   },
+   {
+    "timestamp": "2026-06-26T16:00:00Z",
+    "funding_rate": -0.00034658
+   },
+   {
+    "timestamp": "2026-06-27T00:00:00Z",
+    "funding_rate": -0.00094362
+   },
+   {
+    "timestamp": "2026-06-27T08:00:00Z",
+    "funding_rate": -3e-08
+   },
+   {
+    "timestamp": "2026-06-27T16:00:00Z",
+    "funding_rate": 0.00069573
+   },
+   {
+    "timestamp": "2026-06-28T00:00:00Z",
+    "funding_rate": -0.00056541
+   },
+   {
+    "timestamp": "2026-06-28T08:00:00Z",
+    "funding_rate": 0.00071522
+   },
+   {
+    "timestamp": "2026-06-28T16:00:00Z",
+    "funding_rate": 6.039e-05
+   },
+   {
+    "timestamp": "2026-06-29T00:00:00Z",
+    "funding_rate": 0.00039902
+   },
+   {
+    "timestamp": "2026-06-29T08:00:00Z",
+    "funding_rate": 0.00061566
+   },
+   {
+    "timestamp": "2026-06-29T16:00:00Z",
+    "funding_rate": 0.00073824
+   },
+   {
+    "timestamp": "2026-06-30T00:00:00Z",
+    "funding_rate": 0.00044958
+   },
+   {
+    "timestamp": "2026-06-30T08:00:00Z",
+    "funding_rate": -4.649e-05
+   },
+   {
+    "timestamp": "2026-06-30T16:00:00Z",
+    "funding_rate": 0.00039514
+   },
+   {
+    "timestamp": "2026-07-01T00:00:00Z",
+    "funding_rate": 0.00048933
+   },
+   {
+    "timestamp": "2026-07-01T08:00:00Z",
+    "funding_rate": -0.00058582
+   },
+   {
+    "timestamp": "2026-07-01T16:00:00Z",
+    "funding_rate": -0.00033702
+   },
+   {
+    "timestamp": "2026-07-02T00:00:00Z",
+    "funding_rate": -0.00026961
+   },
+   {
+    "timestamp": "2026-07-02T08:00:00Z",
+    "funding_rate": 0.00010095
+   },
+   {
+    "timestamp": "2026-07-02T16:00:00Z",
+    "funding_rate": -0.00040067
+   },
+   {
+    "timestamp": "2026-07-03T00:00:00Z",
+    "funding_rate": 0.00021431
+   },
+   {
+    "timestamp": "2026-07-03T08:00:00Z",
+    "funding_rate": 0.0002471
+   },
+   {
+    "timestamp": "2026-07-03T16:00:00Z",
+    "funding_rate": 0.00040682
+   },
+   {
+    "timestamp": "2026-07-04T00:00:00Z",
+    "funding_rate": 0.00068992
+   },
+   {
+    "timestamp": "2026-07-04T08:00:00Z",
+    "funding_rate": -0.00072089
+   },
+   {
+    "timestamp": "2026-07-04T16:00:00Z",
+    "funding_rate": -0.0003806
+   },
+   {
+    "timestamp": "2026-07-05T00:00:00Z",
+    "funding_rate": 0.00049059
+   },
+   {
+    "timestamp": "2026-07-05T08:00:00Z",
+    "funding_rate": -0.00067169
+   },
+   {
+    "timestamp": "2026-07-05T16:00:00Z",
+    "funding_rate": 0.00038557
+   },
+   {
+    "timestamp": "2026-07-06T00:00:00Z",
+    "funding_rate": 0.00094219
+   },
+   {
+    "timestamp": "2026-07-06T08:00:00Z",
+    "funding_rate": 0.00059618
+   }
+  ],
+  "liquidations": [
+   {
+    "timestamp": "2026-01-01T00:00:00Z",
+    "long_liquidation": 542.402,
+    "short_liquidation": 478.784
+   },
+   {
+    "timestamp": "2026-01-02T00:00:00Z",
+    "long_liquidation": 609.211,
+    "short_liquidation": 365.327
+   },
+   {
+    "timestamp": "2026-01-03T00:00:00Z",
+    "long_liquidation": 46.331,
+    "short_liquidation": 424.6
+   },
+   {
+    "timestamp": "2026-01-04T00:00:00Z",
+    "long_liquidation": 593.663,
+    "short_liquidation": 174.916
+   },
+   {
+    "timestamp": "2026-01-05T00:00:00Z",
+    "long_liquidation": 457.091,
+    "short_liquidation": 747.984
+   },
+   {
+    "timestamp": "2026-01-06T00:00:00Z",
+    "long_liquidation": 496.902,
+    "short_liquidation": 140.113
+   },
+   {
+    "timestamp": "2026-01-07T00:00:00Z",
+    "long_liquidation": 932.992,
+    "short_liquidation": 867.887
+   },
+   {
+    "timestamp": "2026-01-08T00:00:00Z",
+    "long_liquidation": 946.219,
+    "short_liquidation": 755.657
+   },
+   {
+    "timestamp": "2026-01-09T00:00:00Z",
+    "long_liquidation": 264.522,
+    "short_liquidation": 381.337
+   },
+   {
+    "timestamp": "2026-01-10T00:00:00Z",
+    "long_liquidation": 816.935,
+    "short_liquidation": 248.759
+   },
+   {
+    "timestamp": "2026-01-11T00:00:00Z",
+    "long_liquidation": 422.511,
+    "short_liquidation": 598.264
+   },
+   {
+    "timestamp": "2026-01-12T00:00:00Z",
+    "long_liquidation": 839.971,
+    "short_liquidation": 262.395
+   },
+   {
+    "timestamp": "2026-01-13T00:00:00Z",
+    "long_liquidation": 128.762,
+    "short_liquidation": 222.604
+   },
+   {
+    "timestamp": "2026-01-14T00:00:00Z",
+    "long_liquidation": 920.142,
+    "short_liquidation": 257.128
+   },
+   {
+    "timestamp": "2026-01-15T00:00:00Z",
+    "long_liquidation": 781.671,
+    "short_liquidation": 752.247
+   },
+   {
+    "timestamp": "2026-01-16T00:00:00Z",
+    "long_liquidation": 723.642,
+    "short_liquidation": 439.817
+   },
+   {
+    "timestamp": "2026-01-17T00:00:00Z",
+    "long_liquidation": 480.597,
+    "short_liquidation": 101.359
+   },
+   {
+    "timestamp": "2026-01-18T00:00:00Z",
+    "long_liquidation": 690.848,
+    "short_liquidation": 694.831
+   },
+   {
+    "timestamp": "2026-01-19T00:00:00Z",
+    "long_liquidation": 769.627,
+    "short_liquidation": 348.014
+   },
+   {
+    "timestamp": "2026-01-20T00:00:00Z",
+    "long_liquidation": 718.164,
+    "short_liquidation": 107.932
+   },
+   {
+    "timestamp": "2026-01-21T00:00:00Z",
+    "long_liquidation": 950.278,
+    "short_liquidation": 2.054
+   },
+   {
+    "timestamp": "2026-01-22T00:00:00Z",
+    "long_liquidation": 345.501,
+    "short_liquidation": 819.764
+   },
+   {
+    "timestamp": "2026-01-23T00:00:00Z",
+    "long_liquidation": 912.003,
+    "short_liquidation": 711.931
+   },
+   {
+    "timestamp": "2026-01-24T00:00:00Z",
+    "long_liquidation": 99.286,
+    "short_liquidation": 729.838
+   },
+   {
+    "timestamp": "2026-01-25T00:00:00Z",
+    "long_liquidation": 364.121,
+    "short_liquidation": 987.834
+   },
+   {
+    "timestamp": "2026-01-26T00:00:00Z",
+    "long_liquidation": 190.087,
+    "short_liquidation": 296.511
+   },
+   {
+    "timestamp": "2026-01-27T00:00:00Z",
+    "long_liquidation": 198.895,
+    "short_liquidation": 875.793
+   },
+   {
+    "timestamp": "2026-01-28T00:00:00Z",
+    "long_liquidation": 959.835,
+    "short_liquidation": 279.897
+   },
+   {
+    "timestamp": "2026-01-29T00:00:00Z",
+    "long_liquidation": 711.979,
+    "short_liquidation": 931.809
+   },
+   {
+    "timestamp": "2026-01-30T00:00:00Z",
+    "long_liquidation": 386.358,
+    "short_liquidation": 880.906
+   },
+   {
+    "timestamp": "2026-01-31T00:00:00Z",
+    "long_liquidation": 119.061,
+    "short_liquidation": 457.117
+   },
+   {
+    "timestamp": "2026-02-01T00:00:00Z",
+    "long_liquidation": 264.108,
+    "short_liquidation": 160.493
+   },
+   {
+    "timestamp": "2026-02-02T00:00:00Z",
+    "long_liquidation": 247.393,
+    "short_liquidation": 662.004
+   },
+   {
+    "timestamp": "2026-02-03T00:00:00Z",
+    "long_liquidation": 459.852,
+    "short_liquidation": 995.63
+   },
+   {
+    "timestamp": "2026-02-04T00:00:00Z",
+    "long_liquidation": 729.931,
+    "short_liquidation": 289.233
+   },
+   {
+    "timestamp": "2026-02-05T00:00:00Z",
+    "long_liquidation": 510.122,
+    "short_liquidation": 78.694
+   },
+   {
+    "timestamp": "2026-02-06T00:00:00Z",
+    "long_liquidation": 212.823,
+    "short_liquidation": 946.759
+   },
+   {
+    "timestamp": "2026-02-07T00:00:00Z",
+    "long_liquidation": 971.979,
+    "short_liquidation": 70.059
+   },
+   {
+    "timestamp": "2026-02-08T00:00:00Z",
+    "long_liquidation": 92.635,
+    "short_liquidation": 512.548
+   },
+   {
+    "timestamp": "2026-02-09T00:00:00Z",
+    "long_liquidation": 175.983,
+    "short_liquidation": 595.714
+   },
+   {
+    "timestamp": "2026-02-10T00:00:00Z",
+    "long_liquidation": 120.81,
+    "short_liquidation": 366.807
+   },
+   {
+    "timestamp": "2026-02-11T00:00:00Z",
+    "long_liquidation": 906.445,
+    "short_liquidation": 768.773
+   },
+   {
+    "timestamp": "2026-02-12T00:00:00Z",
+    "long_liquidation": 283.185,
+    "short_liquidation": 577.274
+   },
+   {
+    "timestamp": "2026-02-13T00:00:00Z",
+    "long_liquidation": 801.538,
+    "short_liquidation": 88.239
+   },
+   {
+    "timestamp": "2026-02-14T00:00:00Z",
+    "long_liquidation": 436.541,
+    "short_liquidation": 432.781
+   },
+   {
+    "timestamp": "2026-02-15T00:00:00Z",
+    "long_liquidation": 794.291,
+    "short_liquidation": 475.412
+   },
+   {
+    "timestamp": "2026-02-16T00:00:00Z",
+    "long_liquidation": 75.474,
+    "short_liquidation": 812.491
+   },
+   {
+    "timestamp": "2026-02-17T00:00:00Z",
+    "long_liquidation": 366.865,
+    "short_liquidation": 23.275
+   },
+   {
+    "timestamp": "2026-02-18T00:00:00Z",
+    "long_liquidation": 870.178,
+    "short_liquidation": 955.104
+   },
+   {
+    "timestamp": "2026-02-19T00:00:00Z",
+    "long_liquidation": 432.99,
+    "short_liquidation": 820.247
+   },
+   {
+    "timestamp": "2026-02-20T00:00:00Z",
+    "long_liquidation": 706.088,
+    "short_liquidation": 629.595
+   },
+   {
+    "timestamp": "2026-02-21T00:00:00Z",
+    "long_liquidation": 758.886,
+    "short_liquidation": 605.817
+   },
+   {
+    "timestamp": "2026-02-22T00:00:00Z",
+    "long_liquidation": 619.354,
+    "short_liquidation": 674.151
+   },
+   {
+    "timestamp": "2026-02-23T00:00:00Z",
+    "long_liquidation": 478.071,
+    "short_liquidation": 914.569
+   },
+   {
+    "timestamp": "2026-02-24T00:00:00Z",
+    "long_liquidation": 943.169,
+    "short_liquidation": 110.312
+   },
+   {
+    "timestamp": "2026-02-25T00:00:00Z",
+    "long_liquidation": 390.416,
+    "short_liquidation": 349.509
+   },
+   {
+    "timestamp": "2026-02-26T00:00:00Z",
+    "long_liquidation": 58.268,
+    "short_liquidation": 994.294
+   },
+   {
+    "timestamp": "2026-02-27T00:00:00Z",
+    "long_liquidation": 406.674,
+    "short_liquidation": 493.236
+   },
+   {
+    "timestamp": "2026-02-28T00:00:00Z",
+    "long_liquidation": 15.765,
+    "short_liquidation": 475.002
+   },
+   {
+    "timestamp": "2026-03-01T00:00:00Z",
+    "long_liquidation": 548.447,
+    "short_liquidation": 274.353
+   },
+   {
+    "timestamp": "2026-03-02T00:00:00Z",
+    "long_liquidation": 215.004,
+    "short_liquidation": 845.126
+   },
+   {
+    "timestamp": "2026-03-03T00:00:00Z",
+    "long_liquidation": 305.651,
+    "short_liquidation": 115.646
+   },
+   {
+    "timestamp": "2026-03-04T00:00:00Z",
+    "long_liquidation": 972.897,
+    "short_liquidation": 906.667
+   },
+   {
+    "timestamp": "2026-03-05T00:00:00Z",
+    "long_liquidation": 673.901,
+    "short_liquidation": 305.027
+   },
+   {
+    "timestamp": "2026-03-06T00:00:00Z",
+    "long_liquidation": 984.788,
+    "short_liquidation": 977.616
+   },
+   {
+    "timestamp": "2026-03-07T00:00:00Z",
+    "long_liquidation": 334.075,
+    "short_liquidation": 688.519
+   },
+   {
+    "timestamp": "2026-03-08T00:00:00Z",
+    "long_liquidation": 612.913,
+    "short_liquidation": 875.882
+   },
+   {
+    "timestamp": "2026-03-09T00:00:00Z",
+    "long_liquidation": 56.486,
+    "short_liquidation": 225.163
+   },
+   {
+    "timestamp": "2026-03-10T00:00:00Z",
+    "long_liquidation": 463.83,
+    "short_liquidation": 377.588
+   },
+   {
+    "timestamp": "2026-03-11T00:00:00Z",
+    "long_liquidation": 253.084,
+    "short_liquidation": 434.943
+   },
+   {
+    "timestamp": "2026-03-12T00:00:00Z",
+    "long_liquidation": 44.637,
+    "short_liquidation": 167.756
+   },
+   {
+    "timestamp": "2026-03-13T00:00:00Z",
+    "long_liquidation": 680.766,
+    "short_liquidation": 196.432
+   },
+   {
+    "timestamp": "2026-03-14T00:00:00Z",
+    "long_liquidation": 30.923,
+    "short_liquidation": 52.824
+   },
+   {
+    "timestamp": "2026-03-15T00:00:00Z",
+    "long_liquidation": 568.844,
+    "short_liquidation": 195.75
+   },
+   {
+    "timestamp": "2026-03-16T00:00:00Z",
+    "long_liquidation": 697.211,
+    "short_liquidation": 83.98
+   },
+   {
+    "timestamp": "2026-03-17T00:00:00Z",
+    "long_liquidation": 620.067,
+    "short_liquidation": 976.025
+   },
+   {
+    "timestamp": "2026-03-18T00:00:00Z",
+    "long_liquidation": 481.306,
+    "short_liquidation": 719.639
+   },
+   {
+    "timestamp": "2026-03-19T00:00:00Z",
+    "long_liquidation": 32.566,
+    "short_liquidation": 302.147
+   },
+   {
+    "timestamp": "2026-03-20T00:00:00Z",
+    "long_liquidation": 557.606,
+    "short_liquidation": 332.773
+   },
+   {
+    "timestamp": "2026-03-21T00:00:00Z",
+    "long_liquidation": 204.201,
+    "short_liquidation": 825.577
+   },
+   {
+    "timestamp": "2026-03-22T00:00:00Z",
+    "long_liquidation": 972.758,
+    "short_liquidation": 890.906
+   },
+   {
+    "timestamp": "2026-03-23T00:00:00Z",
+    "long_liquidation": 296.69,
+    "short_liquidation": 513.895
+   },
+   {
+    "timestamp": "2026-03-24T00:00:00Z",
+    "long_liquidation": 436.614,
+    "short_liquidation": 497.771
+   },
+   {
+    "timestamp": "2026-03-25T00:00:00Z",
+    "long_liquidation": 215.065,
+    "short_liquidation": 47.515
+   },
+   {
+    "timestamp": "2026-03-26T00:00:00Z",
+    "long_liquidation": 285.818,
+    "short_liquidation": 423.296
+   },
+   {
+    "timestamp": "2026-03-27T00:00:00Z",
+    "long_liquidation": 802.373,
+    "short_liquidation": 800.47
+   },
+   {
+    "timestamp": "2026-03-28T00:00:00Z",
+    "long_liquidation": 90.873,
+    "short_liquidation": 240.674
+   },
+   {
+    "timestamp": "2026-03-29T00:00:00Z",
+    "long_liquidation": 866.383,
+    "short_liquidation": 52.224
+   },
+   {
+    "timestamp": "2026-03-30T00:00:00Z",
+    "long_liquidation": 404.398,
+    "short_liquidation": 223.261
+   },
+   {
+    "timestamp": "2026-03-31T00:00:00Z",
+    "long_liquidation": 771.339,
+    "short_liquidation": 331.786
+   },
+   {
+    "timestamp": "2026-04-01T00:00:00Z",
+    "long_liquidation": 911.293,
+    "short_liquidation": 365.958
+   },
+   {
+    "timestamp": "2026-04-02T00:00:00Z",
+    "long_liquidation": 131.975,
+    "short_liquidation": 2.729
+   },
+   {
+    "timestamp": "2026-04-03T00:00:00Z",
+    "long_liquidation": 737.975,
+    "short_liquidation": 266.559
+   },
+   {
+    "timestamp": "2026-04-04T00:00:00Z",
+    "long_liquidation": 980.927,
+    "short_liquidation": 222.654
+   },
+   {
+    "timestamp": "2026-04-05T00:00:00Z",
+    "long_liquidation": 429.002,
+    "short_liquidation": 339.616
+   },
+   {
+    "timestamp": "2026-04-06T00:00:00Z",
+    "long_liquidation": 382.874,
+    "short_liquidation": 793.851
+   },
+   {
+    "timestamp": "2026-04-07T00:00:00Z",
+    "long_liquidation": 115.83,
+    "short_liquidation": 959.397
+   },
+   {
+    "timestamp": "2026-04-08T00:00:00Z",
+    "long_liquidation": 728.423,
+    "short_liquidation": 593.86
+   },
+   {
+    "timestamp": "2026-04-09T00:00:00Z",
+    "long_liquidation": 923.881,
+    "short_liquidation": 563.287
+   },
+   {
+    "timestamp": "2026-04-10T00:00:00Z",
+    "long_liquidation": 776.908,
+    "short_liquidation": 42.81
+   },
+   {
+    "timestamp": "2026-04-21T00:00:00Z",
+    "long_liquidation": 845.919,
+    "short_liquidation": 526.262
+   },
+   {
+    "timestamp": "2026-04-22T00:00:00Z",
+    "long_liquidation": 626.024,
+    "short_liquidation": 979.541
+   },
+   {
+    "timestamp": "2026-04-23T00:00:00Z",
+    "long_liquidation": 330.099,
+    "short_liquidation": 549.237
+   },
+   {
+    "timestamp": "2026-04-24T00:00:00Z",
+    "long_liquidation": 624.1,
+    "short_liquidation": 356.798
+   },
+   {
+    "timestamp": "2026-04-25T00:00:00Z",
+    "long_liquidation": 82.775,
+    "short_liquidation": 852.383
+   },
+   {
+    "timestamp": "2026-04-26T00:00:00Z",
+    "long_liquidation": 796.641,
+    "short_liquidation": 389.32
+   },
+   {
+    "timestamp": "2026-04-27T00:00:00Z",
+    "long_liquidation": 670.617,
+    "short_liquidation": 603.819
+   },
+   {
+    "timestamp": "2026-04-28T00:00:00Z",
+    "long_liquidation": 905.799,
+    "short_liquidation": 806.407
+   },
+   {
+    "timestamp": "2026-04-29T00:00:00Z",
+    "long_liquidation": 841.168,
+    "short_liquidation": 380.825
+   },
+   {
+    "timestamp": "2026-04-30T00:00:00Z",
+    "long_liquidation": 998.356,
+    "short_liquidation": 959.615
+   },
+   {
+    "timestamp": "2026-05-01T00:00:00Z",
+    "long_liquidation": 127.822,
+    "short_liquidation": 850.222
+   },
+   {
+    "timestamp": "2026-05-02T00:00:00Z",
+    "long_liquidation": 269.486,
+    "short_liquidation": 428.069
+   },
+   {
+    "timestamp": "2026-05-03T00:00:00Z",
+    "long_liquidation": 961.882,
+    "short_liquidation": 854.95
+   },
+   {
+    "timestamp": "2026-05-04T00:00:00Z",
+    "long_liquidation": 934.473,
+    "short_liquidation": 429.728
+   },
+   {
+    "timestamp": "2026-05-05T00:00:00Z",
+    "long_liquidation": 824.895,
+    "short_liquidation": 990.252
+   },
+   {
+    "timestamp": "2026-05-06T00:00:00Z",
+    "long_liquidation": 367.353,
+    "short_liquidation": 24.541
+   },
+   {
+    "timestamp": "2026-05-07T00:00:00Z",
+    "long_liquidation": 437.95,
+    "short_liquidation": 984.69
+   },
+   {
+    "timestamp": "2026-05-08T00:00:00Z",
+    "long_liquidation": 395.834,
+    "short_liquidation": 290.294
+   },
+   {
+    "timestamp": "2026-05-09T00:00:00Z",
+    "long_liquidation": 867.451,
+    "short_liquidation": 181.701
+   },
+   {
+    "timestamp": "2026-05-10T00:00:00Z",
+    "long_liquidation": 198.206,
+    "short_liquidation": 259.589
+   },
+   {
+    "timestamp": "2026-05-11T00:00:00Z",
+    "long_liquidation": 103.689,
+    "short_liquidation": 89.577
+   },
+   {
+    "timestamp": "2026-05-12T00:00:00Z",
+    "long_liquidation": 95.511,
+    "short_liquidation": 105.001
+   },
+   {
+    "timestamp": "2026-05-13T00:00:00Z",
+    "long_liquidation": 257.912,
+    "short_liquidation": 447.531
+   },
+   {
+    "timestamp": "2026-05-14T00:00:00Z",
+    "long_liquidation": 484.645,
+    "short_liquidation": 739.274
+   },
+   {
+    "timestamp": "2026-05-15T00:00:00Z",
+    "long_liquidation": 525.627,
+    "short_liquidation": 802.539
+   },
+   {
+    "timestamp": "2026-05-16T00:00:00Z",
+    "long_liquidation": 5.326,
+    "short_liquidation": 170.625
+   },
+   {
+    "timestamp": "2026-05-17T00:00:00Z",
+    "long_liquidation": 985.577,
+    "short_liquidation": 515.725
+   },
+   {
+    "timestamp": "2026-05-18T00:00:00Z",
+    "long_liquidation": 462.568,
+    "short_liquidation": 500.882
+   },
+   {
+    "timestamp": "2026-05-19T00:00:00Z",
+    "long_liquidation": 580.135,
+    "short_liquidation": 289.54
+   },
+   {
+    "timestamp": "2026-05-20T00:00:00Z",
+    "long_liquidation": 912.242,
+    "short_liquidation": 575.04
+   },
+   {
+    "timestamp": "2026-05-21T00:00:00Z",
+    "long_liquidation": 15.733,
+    "short_liquidation": 812.337
+   },
+   {
+    "timestamp": "2026-05-22T00:00:00Z",
+    "long_liquidation": 802.199,
+    "short_liquidation": 687.001
+   },
+   {
+    "timestamp": "2026-05-23T00:00:00Z",
+    "long_liquidation": 946.363,
+    "short_liquidation": 603.599
+   },
+   {
+    "timestamp": "2026-05-24T00:00:00Z",
+    "long_liquidation": 826.333,
+    "short_liquidation": 802.855
+   },
+   {
+    "timestamp": "2026-05-25T00:00:00Z",
+    "long_liquidation": 477.163,
+    "short_liquidation": 921.552
+   },
+   {
+    "timestamp": "2026-05-26T00:00:00Z",
+    "long_liquidation": 799.637,
+    "short_liquidation": 704.132
+   },
+   {
+    "timestamp": "2026-05-27T00:00:00Z",
+    "long_liquidation": 665.344,
+    "short_liquidation": 947.308
+   },
+   {
+    "timestamp": "2026-05-28T00:00:00Z",
+    "long_liquidation": 439.331,
+    "short_liquidation": 554.295
+   },
+   {
+    "timestamp": "2026-05-29T00:00:00Z",
+    "long_liquidation": 601.082,
+    "short_liquidation": 261.565
+   },
+   {
+    "timestamp": "2026-05-30T00:00:00Z",
+    "long_liquidation": 722.722,
+    "short_liquidation": 15.167
+   },
+   {
+    "timestamp": "2026-05-31T00:00:00Z",
+    "long_liquidation": 429.851,
+    "short_liquidation": 183.205
+   },
+   {
+    "timestamp": "2026-06-01T00:00:00Z",
+    "long_liquidation": 327.505,
+    "short_liquidation": 349.488
+   },
+   {
+    "timestamp": "2026-06-02T00:00:00Z",
+    "long_liquidation": 128.735,
+    "short_liquidation": 912.287
+   },
+   {
+    "timestamp": "2026-06-03T00:00:00Z",
+    "long_liquidation": 831.859,
+    "short_liquidation": 243.734
+   },
+   {
+    "timestamp": "2026-06-04T00:00:00Z",
+    "long_liquidation": 141.84,
+    "short_liquidation": 911.473
+   },
+   {
+    "timestamp": "2026-06-05T00:00:00Z",
+    "long_liquidation": 48.039,
+    "short_liquidation": 640.652
+   },
+   {
+    "timestamp": "2026-06-06T00:00:00Z",
+    "long_liquidation": 158.0,
+    "short_liquidation": 501.131
+   },
+   {
+    "timestamp": "2026-06-07T00:00:00Z",
+    "long_liquidation": 716.912,
+    "short_liquidation": 56.739
+   },
+   {
+    "timestamp": "2026-06-08T00:00:00Z",
+    "long_liquidation": 532.254,
+    "short_liquidation": 581.09
+   },
+   {
+    "timestamp": "2026-06-09T00:00:00Z",
+    "long_liquidation": 654.091,
+    "short_liquidation": 555.486
+   },
+   {
+    "timestamp": "2026-06-10T00:00:00Z",
+    "long_liquidation": 578.415,
+    "short_liquidation": 8.973
+   },
+   {
+    "timestamp": "2026-06-11T00:00:00Z",
+    "long_liquidation": 757.5,
+    "short_liquidation": 876.075
+   },
+   {
+    "timestamp": "2026-06-12T00:00:00Z",
+    "long_liquidation": 698.769,
+    "short_liquidation": 727.677
+   },
+   {
+    "timestamp": "2026-06-13T00:00:00Z",
+    "long_liquidation": 659.261,
+    "short_liquidation": 576.596
+   },
+   {
+    "timestamp": "2026-06-14T00:00:00Z",
+    "long_liquidation": 587.262,
+    "short_liquidation": 462.697
+   },
+   {
+    "timestamp": "2026-06-15T00:00:00Z",
+    "long_liquidation": 89.581,
+    "short_liquidation": 210.832
+   },
+   {
+    "timestamp": "2026-06-16T00:00:00Z",
+    "long_liquidation": 59.667,
+    "short_liquidation": 794.437
+   },
+   {
+    "timestamp": "2026-06-17T00:00:00Z",
+    "long_liquidation": 21.681,
+    "short_liquidation": 687.414
+   },
+   {
+    "timestamp": "2026-06-18T00:00:00Z",
+    "long_liquidation": 986.097,
+    "short_liquidation": 1.06
+   },
+   {
+    "timestamp": "2026-06-19T00:00:00Z",
+    "long_liquidation": 312.46,
+    "short_liquidation": 20.906
+   },
+   {
+    "timestamp": "2026-06-20T00:00:00Z",
+    "long_liquidation": 933.335,
+    "short_liquidation": 647.021
+   },
+   {
+    "timestamp": "2026-06-21T00:00:00Z",
+    "long_liquidation": 903.906,
+    "short_liquidation": 102.141
+   },
+   {
+    "timestamp": "2026-06-22T00:00:00Z",
+    "long_liquidation": 975.117,
+    "short_liquidation": 140.761
+   },
+   {
+    "timestamp": "2026-06-23T00:00:00Z",
+    "long_liquidation": 355.234,
+    "short_liquidation": 810.652
+   },
+   {
+    "timestamp": "2026-06-24T00:00:00Z",
+    "long_liquidation": 998.394,
+    "short_liquidation": 13.36
+   },
+   {
+    "timestamp": "2026-06-25T00:00:00Z",
+    "long_liquidation": 243.189,
+    "short_liquidation": 897.808
+   },
+   {
+    "timestamp": "2026-06-26T00:00:00Z",
+    "long_liquidation": 729.064,
+    "short_liquidation": 113.695
+   },
+   {
+    "timestamp": "2026-06-27T00:00:00Z",
+    "long_liquidation": 735.176,
+    "short_liquidation": 940.261
+   },
+   {
+    "timestamp": "2026-06-28T00:00:00Z",
+    "long_liquidation": 652.997,
+    "short_liquidation": 213.853
+   },
+   {
+    "timestamp": "2026-06-29T00:00:00Z",
+    "long_liquidation": 737.41,
+    "short_liquidation": 265.716
+   },
+   {
+    "timestamp": "2026-06-30T00:00:00Z",
+    "long_liquidation": 49.366,
+    "short_liquidation": 561.822
+   },
+   {
+    "timestamp": "2026-07-01T00:00:00Z",
+    "long_liquidation": 401.714,
+    "short_liquidation": 675.906
+   },
+   {
+    "timestamp": "2026-07-02T00:00:00Z",
+    "long_liquidation": 875.031,
+    "short_liquidation": 437.676
+   },
+   {
+    "timestamp": "2026-07-03T00:00:00Z",
+    "long_liquidation": 167.35,
+    "short_liquidation": 757.859
+   },
+   {
+    "timestamp": "2026-07-04T00:00:00Z",
+    "long_liquidation": 320.349,
+    "short_liquidation": 780.45
+   },
+   {
+    "timestamp": "2026-07-05T00:00:00Z",
+    "long_liquidation": 277.622,
+    "short_liquidation": 366.445
+   },
+   {
+    "timestamp": "2026-07-06T00:00:00Z",
+    "long_liquidation": 417.443,
+    "short_liquidation": 694.42
+   },
+   {
+    "timestamp": "2026-07-07T00:00:00Z",
+    "long_liquidation": 382.918,
+    "short_liquidation": 448.549
+   },
+   {
+    "timestamp": "2026-07-08T00:00:00Z",
+    "long_liquidation": 223.53,
+    "short_liquidation": 718.703
+   },
+   {
+    "timestamp": "2026-07-09T00:00:00Z",
+    "long_liquidation": 58.699,
+    "short_liquidation": 493.883
+   },
+   {
+    "timestamp": "2026-07-10T00:00:00Z",
+    "long_liquidation": 490.387,
+    "short_liquidation": 516.276
+   },
+   {
+    "timestamp": "2026-07-11T00:00:00Z",
+    "long_liquidation": 127.967,
+    "short_liquidation": 197.766
+   },
+   {
+    "timestamp": "2026-07-12T00:00:00Z",
+    "long_liquidation": 74.029,
+    "short_liquidation": 482.874
+   },
+   {
+    "timestamp": "2026-07-13T00:00:00Z",
+    "long_liquidation": 26.901,
+    "short_liquidation": 851.325
+   },
+   {
+    "timestamp": "2026-07-14T00:00:00Z",
+    "long_liquidation": 149.916,
+    "short_liquidation": 329.846
+   },
+   {
+    "timestamp": "2026-07-15T00:00:00Z",
+    "long_liquidation": 102.228,
+    "short_liquidation": 873.415
+   },
+   {
+    "timestamp": "2026-07-16T00:00:00Z",
+    "long_liquidation": 366.138,
+    "short_liquidation": 404.651
+   },
+   {
+    "timestamp": "2026-07-17T00:00:00Z",
+    "long_liquidation": 368.714,
+    "short_liquidation": 778.36
+   },
+   {
+    "timestamp": "2026-07-18T00:00:00Z",
+    "long_liquidation": 539.62,
+    "short_liquidation": 488.189
+   },
+   {
+    "timestamp": "2026-07-19T00:00:00Z",
+    "long_liquidation": 331.95,
+    "short_liquidation": 525.308
+   }
+  ]
+ },
  "features": {
   "ma20": [
    null,
@@ -4243,6 +7359,1218 @@
    "UNCLEAR",
    "UNCLEAR",
    "UNCLEAR"
+  ],
+  "funding_rate": [
+   -0.00011112,
+   -0.00060504,
+   -0.00064106,
+   -0.00073958,
+   -0.00031984,
+   -0.00018833,
+   0.00022025,
+   0.00059055,
+   -0.00046171,
+   0.00049439,
+   -0.00075736,
+   -0.00038497,
+   -0.00010194,
+   0.00022337,
+   0.00022337,
+   0.00022337,
+   0.00022337,
+   0.00022337,
+   0.00022337,
+   0.00022337,
+   -0.00088237,
+   0.00090096,
+   0.00024024,
+   -0.00076441,
+   0.00042872,
+   -8.995e-05,
+   -0.00024753,
+   0.00042642,
+   0.00060163,
+   -0.0006788,
+   0.00078576,
+   -0.00097175,
+   0.00022646,
+   -0.00052458,
+   -0.00033429,
+   -0.00024792,
+   -0.00093423,
+   -0.00048165,
+   0.0008414,
+   0.00020873,
+   0.00096566,
+   8.67e-06,
+   0.00083286,
+   0.00021985,
+   0.00014721,
+   0.00075772,
+   -0.00055971,
+   -0.00099625,
+   0.00066521,
+   -0.00014718,
+   0.00047107,
+   0.00095156,
+   -0.0004067,
+   0.00070856,
+   -0.00056018,
+   0.00056605,
+   -0.00073414,
+   0.00063657,
+   0.00071883,
+   -0.00070765,
+   -0.00031506,
+   -0.00016828,
+   -0.00061052,
+   -0.00074204,
+   -0.00024547,
+   -0.00068051,
+   -0.00070546,
+   -0.00092178,
+   -0.00082351,
+   -0.00045707,
+   -1.542e-05,
+   0.00097657,
+   0.00088654,
+   0.0001469,
+   0.00022255,
+   0.00037128,
+   -0.00091111,
+   -0.00071386,
+   0.00069881,
+   -0.00024506,
+   -0.00094498,
+   -0.00064542,
+   -0.00032849,
+   -0.00071216,
+   -0.00034569,
+   0.00035754,
+   -0.00035125,
+   5.052e-05,
+   -0.00089953,
+   -0.0002728,
+   0.00051376,
+   -3.075e-05,
+   0.00054423,
+   -0.00093511,
+   0.00029817,
+   0.00064244,
+   -0.00046943,
+   -0.00049212,
+   0.00078082,
+   -0.00056522,
+   -0.00012774,
+   -0.00061916,
+   -1.845e-05,
+   0.00071094,
+   -0.00052124,
+   -0.00063559,
+   0.00094088,
+   0.00097204,
+   -0.00056693,
+   -0.00073714,
+   -0.0006632,
+   0.00037254,
+   -0.00033198,
+   0.00020229,
+   -1.923e-05,
+   0.0007119,
+   -0.00086717,
+   0.00081349,
+   -0.00034466,
+   -0.0007906,
+   0.00052964,
+   0.00055128,
+   0.00098381,
+   0.00080184,
+   7.282e-05,
+   1.35e-06,
+   -0.00066046,
+   -0.00066547,
+   0.00038952,
+   0.00049714,
+   0.00099823,
+   0.00015326,
+   -0.00068392,
+   0.00067211,
+   -0.00084415,
+   0.00083299,
+   -0.00032398,
+   -0.00093342,
+   0.00034031,
+   -0.0001741,
+   -0.00096893,
+   0.00043661,
+   -5.529e-05,
+   -0.00032785,
+   -0.00048494,
+   0.00018305,
+   0.00030505,
+   -0.00063642,
+   0.00042068,
+   -0.00024361,
+   -0.00031108,
+   0.00012249,
+   -0.00012796,
+   -0.00092395,
+   0.00032863,
+   0.00040043,
+   0.00016337,
+   0.00028304,
+   0.0008136,
+   -0.00045473,
+   -0.00053925,
+   -0.00010033,
+   0.00089283,
+   0.00017246,
+   -0.00042234,
+   0.00031498,
+   0.00048427,
+   0.00020157,
+   -0.00067155,
+   0.00052488,
+   0.00060079,
+   -3.244e-05,
+   0.00079793,
+   0.00082378,
+   0.00081395,
+   -0.00047749,
+   -0.00020743,
+   -0.00094362,
+   -0.00056541,
+   0.00039902,
+   0.00044958,
+   0.00048933,
+   -0.00026961,
+   0.00021431,
+   0.00068992,
+   0.00049059,
+   0.00094219,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618,
+   0.00059618
+  ],
+  "funding_zscore": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   1.4158259751052082,
+   -1.0956092373132658,
+   -0.3094774019859858,
+   0.2911189319334108,
+   0.9515729905777998,
+   0.8930884219884432,
+   0.8444003137448373,
+   0.8030269360861745,
+   0.7672888598712575,
+   0.7360031362086312,
+   0.7083089362474412,
+   -1.7404477125728728,
+   1.997367835313345,
+   0.6120021774820745,
+   -1.3991669877755584,
+   1.0013881072409374,
+   -0.0585979844300421,
+   -0.37954127561526096,
+   1.0125203693099938,
+   1.3165021186730614,
+   -1.2956879038004094,
+   1.6179473249039162,
+   -1.7680243072765767,
+   0.5272449477227507,
+   -0.9090581502217046,
+   -0.5281008790128351,
+   -0.3523018232234568,
+   -1.6338889296132413,
+   -0.737633061572975,
+   1.7525102385497233,
+   0.5412672396001794,
+   1.878074188974955,
+   0.10399458861424032,
+   1.580326032394719,
+   0.4466842712625682,
+   0.30807114195472435,
+   1.4052730432123124,
+   -1.01486077243467,
+   -1.7444379418401668,
+   1.2301380673513709,
+   -0.2294798116142098,
+   0.8784455895264125,
+   1.6868070623158842,
+   -0.7287530605253887,
+   1.2419285870506218,
+   -1.0032235068136208,
+   0.9880652841736706,
+   -1.2996620101730225,
+   1.1078324078516182,
+   1.2263238726319954,
+   -1.2565680411077804,
+   -0.5630180518164029,
+   -0.3018793005010565,
+   -1.0679043849968868,
+   -1.2739121510903175,
+   -0.39509224061566633,
+   -1.14634940123933,
+   -1.1692329877651695,
+   -1.5127331657027991,
+   -1.3142030658227533,
+   -0.6707198611081147,
+   0.09873842579694825,
+   1.786167386674149,
+   1.5904378451459078,
+   0.32406901915777964,
+   0.4505206930395467,
+   0.7006966286377851,
+   -1.4913660472420918,
+   -1.1350266015660133,
+   1.2684431812934553,
+   -0.3427894919703801,
+   -1.5141895546655857,
+   -0.9913012829874128,
+   -0.4477425498439424,
+   -1.0905337530302879,
+   -0.46018794119233036,
+   0.742011946758711,
+   -0.47634318323245367,
+   0.21801440646918308,
+   -1.4116038699137132,
+   -0.32484004980775494,
+   1.0315540434526227,
+   0.08426776647031746,
+   1.0768404911148708,
+   -1.4812881885055675,
+   0.6537159680269804,
+   1.2362578255983239,
+   -0.6880307258663789,
+   -0.7218654182994273,
+   1.4744121471823024,
+   -0.8517444210224208,
+   -0.09197446332758713,
+   -0.9446128268862106,
+   0.08759786519062898,
+   1.3316619081380106,
+   -0.8076090734639434,
+   -0.9936453887121712,
+   1.6951362301158615,
+   1.725732185509931,
+   -0.870773059112863,
+   -1.134513626981466,
+   -1.0134337444503365,
+   0.719088516943329,
+   -0.4629214269423868,
+   0.4362325004676579,
+   0.0676964021686219,
+   1.2815390761574668,
+   -1.3298631774854144,
+   1.4345349798659628,
+   -0.4591759120386196,
+   -1.1684143879690732,
+   0.9692588365658016,
+   1.0181571473644775,
+   1.6974734251359749,
+   1.3713181645701773,
+   0.19241201064534402,
+   0.0744022690883739,
+   -0.9933672752662793,
+   -0.9819058795899764,
+   0.7328484480082162,
+   0.8896091823091686,
+   1.6923236757527462,
+   0.3101903852717589,
+   -1.0399015117433383,
+   1.144992226967136,
+   -1.297613882921569,
+   1.3738199420985495,
+   -0.48720250676449645,
+   -1.4503114910107238,
+   0.5986574006961003,
+   -0.22427491811176525,
+   -1.4778602603598874,
+   0.7839878733319677,
+   0.0059571939158601095,
+   -0.4288440490487498,
+   -0.6731372571609741,
+   0.42537054449762446,
+   0.6119372984309572,
+   -0.9459247397190969,
+   0.8090670674626231,
+   -0.2919881368753303,
+   -0.39226941815118044,
+   0.3484448373624719,
+   -0.07947770192183003,
+   -1.3973365546189878,
+   0.7053874937499578,
+   0.8319116988547828,
+   0.41680723853306734,
+   0.6304251549389566,
+   1.5348389673930134,
+   -0.6413982332660787,
+   -0.780869273664723,
+   -0.03016515396984122,
+   1.6298993555076988,
+   0.3943210390820893,
+   -0.6170959987663741,
+   0.6250697446126086,
+   0.8964484730215231,
+   0.39672830155017824,
+   -1.1236217153572223,
+   0.9392733060163051,
+   1.0543888570386328,
+   -0.022132770818593755,
+   1.4386330617491523,
+   1.4567848075346104,
+   1.4159328133519635,
+   -0.7932710646937735,
+   -0.34464025197586917,
+   -1.613059865720542,
+   -0.9395381600908865,
+   0.7227805500324036,
+   0.7942422912926916,
+   0.8463476141678068,
+   -0.4875732245454365,
+   0.3489825910722765,
+   1.1669048239352056,
+   0.8120678572462551,
+   1.567188023410196,
+   0.9510206588471534,
+   0.9338901429282019,
+   0.9163543635728308,
+   0.9137974411634027,
+   0.8992875172205763,
+   0.8976882662062409,
+   0.8816806783132011,
+   0.8736046711182235,
+   0.8750683369864172,
+   0.8574966665551972,
+   0.8401357038612665,
+   0.8461664415099281,
+   0.8289174378912085
+  ],
+  "long_liquidation": [
+   542.402,
+   609.211,
+   46.331,
+   593.663,
+   457.091,
+   496.902,
+   932.992,
+   946.219,
+   264.522,
+   816.935,
+   422.511,
+   839.971,
+   128.762,
+   920.142,
+   781.671,
+   723.642,
+   480.597,
+   690.848,
+   769.627,
+   718.164,
+   950.278,
+   345.501,
+   912.003,
+   99.286,
+   364.121,
+   190.087,
+   198.895,
+   959.835,
+   711.979,
+   386.358,
+   119.061,
+   264.108,
+   247.393,
+   459.852,
+   729.931,
+   510.122,
+   212.823,
+   971.979,
+   92.635,
+   175.983,
+   120.81,
+   906.445,
+   283.185,
+   801.538,
+   436.541,
+   794.291,
+   75.474,
+   366.865,
+   870.178,
+   432.99,
+   706.088,
+   758.886,
+   619.354,
+   478.071,
+   943.169,
+   390.416,
+   58.268,
+   406.674,
+   15.765,
+   548.447,
+   215.004,
+   305.651,
+   972.897,
+   673.901,
+   984.788,
+   334.075,
+   612.913,
+   56.486,
+   463.83,
+   253.084,
+   44.637,
+   680.766,
+   30.923,
+   568.844,
+   697.211,
+   620.067,
+   481.306,
+   32.566,
+   557.606,
+   204.201,
+   972.758,
+   296.69,
+   436.614,
+   215.065,
+   285.818,
+   802.373,
+   90.873,
+   866.383,
+   404.398,
+   771.339,
+   911.293,
+   131.975,
+   737.975,
+   980.927,
+   429.002,
+   382.874,
+   115.83,
+   728.423,
+   923.881,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   776.908,
+   845.919,
+   626.024,
+   330.099,
+   624.1,
+   82.775,
+   796.641,
+   670.617,
+   905.799,
+   841.168,
+   998.356,
+   127.822,
+   269.486,
+   961.882,
+   934.473,
+   824.895,
+   367.353,
+   437.95,
+   395.834,
+   867.451,
+   198.206,
+   103.689,
+   95.511,
+   257.912,
+   484.645,
+   525.627,
+   5.326,
+   985.577,
+   462.568,
+   580.135,
+   912.242,
+   15.733,
+   802.199,
+   946.363,
+   826.333,
+   477.163,
+   799.637,
+   665.344,
+   439.331,
+   601.082,
+   722.722,
+   429.851,
+   327.505,
+   128.735,
+   831.859,
+   141.84,
+   48.039,
+   158.0,
+   716.912,
+   532.254,
+   654.091,
+   578.415,
+   757.5,
+   698.769,
+   659.261,
+   587.262,
+   89.581,
+   59.667,
+   21.681,
+   986.097,
+   312.46,
+   933.335,
+   903.906,
+   975.117,
+   355.234,
+   998.394,
+   243.189,
+   729.064,
+   735.176,
+   652.997,
+   737.41,
+   49.366,
+   401.714,
+   875.031,
+   167.35,
+   320.349,
+   277.622,
+   417.443,
+   382.918,
+   223.53,
+   58.699,
+   490.387,
+   127.967,
+   74.029,
+   26.901,
+   149.916,
+   102.228,
+   366.138,
+   368.714,
+   539.62,
+   331.95
+  ],
+  "short_liquidation": [
+   478.784,
+   365.327,
+   424.6,
+   174.916,
+   747.984,
+   140.113,
+   867.887,
+   755.657,
+   381.337,
+   248.759,
+   598.264,
+   262.395,
+   222.604,
+   257.128,
+   752.247,
+   439.817,
+   101.359,
+   694.831,
+   348.014,
+   107.932,
+   2.054,
+   819.764,
+   711.931,
+   729.838,
+   987.834,
+   296.511,
+   875.793,
+   279.897,
+   931.809,
+   880.906,
+   457.117,
+   160.493,
+   662.004,
+   995.63,
+   289.233,
+   78.694,
+   946.759,
+   70.059,
+   512.548,
+   595.714,
+   366.807,
+   768.773,
+   577.274,
+   88.239,
+   432.781,
+   475.412,
+   812.491,
+   23.275,
+   955.104,
+   820.247,
+   629.595,
+   605.817,
+   674.151,
+   914.569,
+   110.312,
+   349.509,
+   994.294,
+   493.236,
+   475.002,
+   274.353,
+   845.126,
+   115.646,
+   906.667,
+   305.027,
+   977.616,
+   688.519,
+   875.882,
+   225.163,
+   377.588,
+   434.943,
+   167.756,
+   196.432,
+   52.824,
+   195.75,
+   83.98,
+   976.025,
+   719.639,
+   302.147,
+   332.773,
+   825.577,
+   890.906,
+   513.895,
+   497.771,
+   47.515,
+   423.296,
+   800.47,
+   240.674,
+   52.224,
+   223.261,
+   331.786,
+   365.958,
+   2.729,
+   266.559,
+   222.654,
+   339.616,
+   793.851,
+   959.397,
+   593.86,
+   563.287,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   42.81,
+   526.262,
+   979.541,
+   549.237,
+   356.798,
+   852.383,
+   389.32,
+   603.819,
+   806.407,
+   380.825,
+   959.615,
+   850.222,
+   428.069,
+   854.95,
+   429.728,
+   990.252,
+   24.541,
+   984.69,
+   290.294,
+   181.701,
+   259.589,
+   89.577,
+   105.001,
+   447.531,
+   739.274,
+   802.539,
+   170.625,
+   515.725,
+   500.882,
+   289.54,
+   575.04,
+   812.337,
+   687.001,
+   603.599,
+   802.855,
+   921.552,
+   704.132,
+   947.308,
+   554.295,
+   261.565,
+   15.167,
+   183.205,
+   349.488,
+   912.287,
+   243.734,
+   911.473,
+   640.652,
+   501.131,
+   56.739,
+   581.09,
+   555.486,
+   8.973,
+   876.075,
+   727.677,
+   576.596,
+   462.697,
+   210.832,
+   794.437,
+   687.414,
+   1.06,
+   20.906,
+   647.021,
+   102.141,
+   140.761,
+   810.652,
+   13.36,
+   897.808,
+   113.695,
+   940.261,
+   213.853,
+   265.716,
+   561.822,
+   675.906,
+   437.676,
+   757.859,
+   780.45,
+   366.445,
+   694.42,
+   448.549,
+   718.703,
+   493.883,
+   516.276,
+   197.766,
+   482.874,
+   851.325,
+   329.846,
+   873.415,
+   404.651,
+   778.36,
+   488.189,
+   525.308
+  ],
+  "liquidation_total": [
+   1021.186,
+   974.538,
+   470.93100000000004,
+   768.579,
+   1205.075,
+   637.015,
+   1800.879,
+   1701.8760000000002,
+   645.8589999999999,
+   1065.694,
+   1020.7750000000001,
+   1102.366,
+   351.366,
+   1177.27,
+   1533.9180000000001,
+   1163.459,
+   581.956,
+   1385.679,
+   1117.641,
+   826.096,
+   952.332,
+   1165.2649999999999,
+   1623.9340000000002,
+   829.124,
+   1351.955,
+   486.598,
+   1074.688,
+   1239.732,
+   1643.788,
+   1267.264,
+   576.178,
+   424.601,
+   909.397,
+   1455.482,
+   1019.164,
+   588.816,
+   1159.582,
+   1042.038,
+   605.183,
+   771.6970000000001,
+   487.617,
+   1675.218,
+   860.4590000000001,
+   889.777,
+   869.322,
+   1269.703,
+   887.965,
+   390.14,
+   1825.2820000000002,
+   1253.237,
+   1335.683,
+   1364.703,
+   1293.505,
+   1392.6399999999999,
+   1053.481,
+   739.925,
+   1052.562,
+   899.91,
+   490.767,
+   822.8,
+   1060.1299999999999,
+   421.297,
+   1879.564,
+   978.9279999999999,
+   1962.404,
+   1022.594,
+   1488.795,
+   281.649,
+   841.418,
+   688.027,
+   212.393,
+   877.198,
+   83.747,
+   764.594,
+   781.191,
+   1596.092,
+   1200.945,
+   334.71299999999997,
+   890.379,
+   1029.778,
+   1863.664,
+   810.585,
+   934.385,
+   262.58,
+   709.114,
+   1602.843,
+   331.547,
+   918.6070000000001,
+   627.659,
+   1103.125,
+   1277.251,
+   134.704,
+   1004.5340000000001,
+   1203.5810000000001,
+   768.6179999999999,
+   1176.725,
+   1075.227,
+   1322.283,
+   1487.1680000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   819.7180000000001,
+   1372.181,
+   1605.565,
+   879.336,
+   980.898,
+   935.158,
+   1185.961,
+   1274.436,
+   1712.2060000000001,
+   1221.993,
+   1957.971,
+   978.044,
+   697.5550000000001,
+   1816.8319999999999,
+   1364.201,
+   1815.147,
+   391.894,
+   1422.64,
+   686.1279999999999,
+   1049.152,
+   457.79499999999996,
+   193.266,
+   200.512,
+   705.443,
+   1223.9189999999999,
+   1328.166,
+   175.951,
+   1501.3020000000001,
+   963.45,
+   869.675,
+   1487.282,
+   828.0699999999999,
+   1489.1999999999998,
+   1549.962,
+   1629.188,
+   1398.7150000000001,
+   1503.7689999999998,
+   1612.652,
+   993.626,
+   862.6469999999999,
+   737.889,
+   613.056,
+   676.9929999999999,
+   1041.022,
+   1075.593,
+   1053.3129999999999,
+   688.691,
+   659.131,
+   773.6510000000001,
+   1113.344,
+   1209.577,
+   587.3879999999999,
+   1633.575,
+   1426.446,
+   1235.857,
+   1049.9589999999998,
+   300.413,
+   854.104,
+   709.095,
+   987.1569999999999,
+   333.366,
+   1580.356,
+   1006.0469999999999,
+   1115.878,
+   1165.886,
+   1011.754,
+   1140.997,
+   842.759,
+   1675.437,
+   866.8499999999999,
+   1003.126,
+   611.188,
+   1077.62,
+   1312.7069999999999,
+   925.2090000000001,
+   1100.799,
+   644.067,
+   1111.8629999999998,
+   831.467,
+   942.233,
+   552.582,
+   1006.663,
+   325.733,
+   556.903,
+   878.226,
+   479.762,
+   975.6429999999999,
+   770.789,
+   1147.074,
+   1027.809,
+   857.258
+  ],
+  "liquidation_spike_ratio": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   1.0354956337342804,
+   0.9925849556155468,
+   1.0655363573703682,
+   0.35780262145038527,
+   1.1820480916826006,
+   1.4866113509135006,
+   1.118657736479515,
+   0.5744295536680512,
+   1.3403728344280257,
+   1.0765037137164022,
+   0.8039019552107375,
+   0.9299905275595933,
+   1.1308384232648299,
+   1.5374561681430927,
+   0.7920679901569939,
+   1.2766448038373743,
+   0.4692472925889586,
+   1.0349736093388893,
+   1.1857067133910597,
+   1.5417370239318302,
+   1.1811635551152926,
+   0.5451731916255818,
+   0.40940667719529245,
+   0.8801386831116649,
+   1.3919244375978552,
+   0.9753656246394066,
+   0.5704279998996783,
+   1.119636457752752,
+   1.0059790515220532,
+   0.590536498619283,
+   0.7576989662184931,
+   0.48493691923560117,
+   1.6400043345489541,
+   0.8454711558609733,
+   0.876783722815664,
+   0.8593654114400645,
+   1.248236800387903,
+   0.8753187485728791,
+   0.38957854427172733,
+   1.7925601317773583,
+   1.2251157901618872,
+   1.2977322983495865,
+   1.3159507615834942,
+   1.2278183861727625,
+   1.3064411929883926,
+   0.99109365634243,
+   0.6947612266437739,
+   1.0024019660054042,
+   0.8703187112517119,
+   0.4760574530951965,
+   0.8019174286246706,
+   1.0324320170887447,
+   0.41580565431023875,
+   1.8007445468279581,
+   0.9414546769618923,
+   1.8718560341899568,
+   0.9780384229230139,
+   1.3996474771795964,
+   0.27039716814387665,
+   0.8121107267571479,
+   0.6658370481969687,
+   0.20852944567178255,
+   0.8661406064980756,
+   0.08528533074184276,
+   0.7796633806000404,
+   0.8059691846739542,
+   1.6098618892754422,
+   1.2082285885650184,
+   0.3429888756847342,
+   0.9267028608316759,
+   1.0771134750422937,
+   1.8982054161734587,
+   0.8191675825963789,
+   0.9438017250839215,
+   0.27177565990520947,
+   0.7386884868291662,
+   1.6351468633229975,
+   0.34404142871160504,
+   0.9556730268202088,
+   0.6526799696185028,
+   1.1392473198345106,
+   1.2979065335278286,
+   0.14130651586642523,
+   1.0505955550885007,
+   1.2505610781344942,
+   0.8002946881335257,
+   1.227597678999802,
+   1.1173460289696278,
+   1.3479654349613046,
+   1.5265766056052315,
+   0.8489959654675342,
+   0.8581679579034781,
+   0.8680735142682018,
+   0.8768726843265825,
+   0.8877542230430204,
+   0.8922720681892062,
+   0.8907247802146564,
+   0.8952550166982091,
+   0.8968259273607739,
+   0.8904168097617,
+   0.8904764327773821,
+   1.4805902632524213,
+   1.6892414751153504,
+   0.9450546261770382,
+   1.0541623916348621,
+   1.0276969966140523,
+   1.2986552934886655,
+   1.4021198476274115,
+   1.8262629125892325,
+   1.2928984195633453,
+   2.01736908384102,
+   0.9920621557202164,
+   0.7101409559883537,
+   1.7865701458530645,
+   1.3258434732618425,
+   1.7293541224434856,
+   0.3821395740187214,
+   1.381257900066228,
+   0.6616547026261691,
+   1.008641449322947,
+   0.4450125399059973,
+   0.19417554543941454,
+   0.20395591804982208,
+   0.7209170814395338,
+   1.226663856645461,
+   1.314829187911918,
+   0.17924817335484886,
+   1.4938318845249692,
+   0.9578013664414118,
+   0.8604357953084212,
+   1.4603803912283972,
+   0.8203282830809489,
+   1.4367205354541275,
+   1.4797679918947204,
+   1.5428676996544415,
+   1.3089842598834178,
+   1.3987367652804163,
+   1.485166386686619,
+   0.9206496555149966,
+   0.8086488882592865,
+   0.6927630131026825,
+   0.5778064005110622,
+   0.6397884083506387,
+   0.9797139687168978,
+   1.0073972624653533,
+   0.982231939128892,
+   0.6437890687244605,
+   0.6180118300897129,
+   0.7260148020305228,
+   1.0390655861060518,
+   1.120722780613529,
+   0.5522707073073752,
+   1.5351023302882973,
+   1.3268160464779908,
+   1.1441121564058605,
+   0.9699527392858299,
+   0.2821378746624612,
+   0.8085295348558281,
+   0.6842532672431303,
+   0.9569108100114291,
+   0.33366093624798704,
+   1.5629103260673387,
+   0.988907123292104,
+   1.1121932370739798,
+   1.1666481012056316,
+   1.0289593318843717,
+   1.1429846961059162,
+   0.8541505150074796,
+   1.6647004809540769,
+   0.8644265973229369,
+   0.9895590465163562,
+   0.597991207125894,
+   1.0365610896463453,
+   1.2481098514885554,
+   0.884705602731002,
+   1.0572057144018403,
+   0.6130487209954845,
+   1.0662202642522929,
+   0.7993581269616056,
+   0.9045846569612925,
+   0.5401977082436151,
+   0.9806776508548967,
+   0.32468491708764113,
+   0.566322748209056,
+   0.9069326119449795,
+   0.5050293666573288,
+   1.038574375722531,
+   0.8354813756208562,
+   1.23922567112381,
+   1.1064309427464787,
+   0.9204680901360329
   ]
  },
  "strategy_rule_hashes": {

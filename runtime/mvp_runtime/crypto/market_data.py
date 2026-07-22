@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -57,6 +58,18 @@ _NETWORK_FLAGS = (NETWORK_ACCESS,)
 # The degraded-run reason code the pipeline audits when a live backend fails and the
 # cycle continues without live data (C3 wiring; the SEARCH_DEGRADED analog).
 MARKET_DATA_DEGRADED = "MARKET_DATA_DEGRADED"
+
+# C9 derivative feeds. Funding rides the SAME binance_futures grant (another public
+# endpoint of the already-authorized provider); liquidations come from Coinalyze,
+# which is its own provider with its own key and its own per-machine grant — one
+# grant per provider, exactly like the model failover chain.
+FUNDING_DEGRADED = "FUNDING_DEGRADED"
+LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
+LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
+COINALYZE = "coinalyze_market_data"
+FUNDING_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/fundingRate call
+FUNDING_MAX_PAGES = 4      # 8h cadence: 4 pages ≈ 3.6 years — beyond any window we replay
+DEFAULT_FUNDING_RECORDS = 1600  # ≥ 3 events/day × MAX_CANDLES days, with head-room
 
 # Closed vocabulary, identical on both collectors and on Binance's interval strings.
 TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
@@ -148,6 +161,16 @@ class MockMarketDataCollector:
             is_synthetic=True,
             latency_ms=0,
         )
+
+    def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        """Deterministic 8h funding events on the same anchor grid (C9 mock feed)."""
+        step = timedelta(hours=8)
+        rows: list[dict[str, Any]] = []
+        for i in range(min(records, 600)):
+            moment = self._ANCHOR + i * step
+            rate = round((_frac(f"{symbol}|funding|{i}") - 0.5) * 0.002, 8)
+            rows.append({"timestamp": timeutil.format_iso(moment), "funding_rate": rate})
+        return rows
 
 
 def _require_symbol(symbol: Any) -> str:
@@ -410,3 +433,170 @@ class BinanceFuturesCollector:
         # far-future epochs (OSError 22), and a venue-supplied timestamp is input.
         epoch = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=epoch_ms)
         return timeutil.format_iso(epoch)
+
+    def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        """Real 8h funding events (public ``/fapi/v1/fundingRate``), oldest first.
+
+        Pages backward past the 1000-row cap exactly like the source collector:
+        walk ``endTime`` to just before the oldest event seen, stop when the venue
+        runs out, refuse to spin without backward progress. Same grant as candles —
+        another public endpoint of the already-authorized provider."""
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        collected: list[dict[str, Any]] = []
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < records and pages < FUNDING_MAX_PAGES:
+            pages += 1
+            params: dict[str, Any] = {
+                "symbol": symbol, "limit": min(FUNDING_PAGE_LIMIT, records - len(collected)),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"https://fapi.binance.com/fapi/v1/fundingRate?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                raise ToolError("TOOL_TRANSPORT", "funding request failed or timed out") from None
+            try:
+                payload = json.loads(raw)
+                page = [
+                    {"timestamp": self._iso(int(item["fundingTime"])),
+                     "funding_time_ms": int(item["fundingTime"]),
+                     "funding_rate": float(item["fundingRate"])}
+                    for item in payload
+                ]
+            except (TypeError, ValueError, KeyError):
+                raise ToolError("MALFORMED_RESULT", "funding backend returned an unparseable response") from None
+            if not page:
+                break
+            oldest = min(item["funding_time_ms"] for item in page)
+            collected = page + collected
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
+        rows = sorted(collected, key=lambda r: r["funding_time_ms"])[-records:]
+        return [{"timestamp": r["timestamp"], "funding_rate": r["funding_rate"]} for r in rows]
+
+
+# --- C9 liquidation feed (Coinalyze — its own provider, key, and grant) -------
+
+class LiquidationFeed(Protocol):
+    feed_id: str
+
+    def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]: ...
+
+
+class NoLiquidationFeed:
+    """Default: the feed is ABSENT (not degraded) — features keep the source's
+    legacy no-series constants, exactly the pre-C9 behavior."""
+
+    feed_id = "none"
+    network_egress = False
+
+    def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        raise ToolError("FEED_ABSENT", "no liquidation feed is configured")
+
+
+class CoinalyzeLiquidationFeed:
+    """Coinalyze daily long/short liquidation aggregates for the Binance perp.
+
+    Its own provider (``coinalyze_market_data``): own API key (read by NAME at call
+    time, sent in the ``api_key`` header, never logged) and own per-machine grant —
+    authorizing Binance never authorizes Coinalyze. The still-forming current day is
+    dropped (the source loader's rule): a partial day's liquidation total would read
+    as a artificially quiet day."""
+
+    feed_id = COINALYZE
+    provider_id = COINALYZE
+    network_egress = True
+    _ENDPOINT = "https://api.coinalyze.net/v1/liquidation-history"
+
+    def __init__(self, *, api_key_env: str = "COINALYZE_API_KEY",
+                 authorization: Authorization | None = None):
+        self._api_key_env = api_key_env  # the NAME of the env var, never the value
+        self._authorization = authorization
+
+    def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        api_key = os.environ.get(self._api_key_env)
+        if not api_key:
+            raise ToolError("NO_API_KEY", f"environment variable {self._api_key_env} is not set")
+        now_s = int(time.time())
+        params = urllib.parse.urlencode({
+            "symbols": f"{symbol}_PERP.A",  # Coinalyze's code for a Binance USDT perp
+            "interval": "daily",
+            # Explicit range: the API's default window is hour-based and silently
+            # truncates a daily request (the source client's documented pitfall).
+            "from": now_s - (int(days) + 2) * 86400,
+            "to": now_s,
+        })
+        request = urllib.request.Request(
+            f"{self._ENDPOINT}?{params}", method="GET",
+            headers={"Accept": "application/json", "api_key": api_key},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError):
+            # Deliberately generic — never echo the URL or key.
+            raise ToolError("TOOL_TRANSPORT", "liquidation request failed or timed out") from None
+        return self._parse(raw, days, now_s=now_s)
+
+    def _parse(self, raw: str, days: int, *, now_s: int) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "liquidation backend returned an unparseable response") from None
+        if isinstance(payload, dict) and "data" in payload:
+            payload = payload["data"]
+        if not isinstance(payload, list):
+            raise ToolError("MALFORMED_RESULT", "liquidation backend returned an unparseable response")
+        rows: list[dict[str, Any]] = []
+        day_start_today = (now_s // 86400) * 86400
+        for item in payload:
+            for h in (item.get("history") or []) if isinstance(item, dict) else []:
+                try:
+                    t = int(h["t"])
+                    t_s = t // 1000 if t > 10_000_000_000 else t
+                    if t_s >= day_start_today:
+                        continue  # still-forming current day — dropped
+                    rows.append({
+                        "timestamp": BinanceFuturesCollector._iso(t_s * 1000),
+                        "long_liquidation": float(h.get("l") or 0.0),
+                        "short_liquidation": float(h.get("s") or 0.0),
+                    })
+                except (TypeError, ValueError, KeyError):
+                    raise ToolError("MALFORMED_RESULT",
+                                    "liquidation backend returned an unparseable response") from None
+        rows.sort(key=lambda r: r["timestamp"])
+        return rows[-days:]
+
+
+def select_liquidation_feed(*, now: str | None = None, root: Path | None = None) -> LiquidationFeed:
+    """Choose the liquidation feed — the enforced Safety-Flag Gate chokepoint.
+
+    Defaults to :class:`NoLiquidationFeed` (feed absent → the features keep the
+    source's legacy constants). The real Coinalyze feed is returned ONLY when both
+    (a) the caller opts in via ``MVP_LIQUIDATION_FEED=coinalyze_market_data`` AND
+    (b) the gate authorizes ``network_access`` for that provider's own local
+    activation record. The env var alone fails closed."""
+    return safety_gate.select_gated(
+        env_var=LIQUIDATION_FEED_ENV,
+        opt_in_value=COINALYZE,
+        flags=_NETWORK_FLAGS,
+        provider_id=COINALYZE,
+        default_factory=NoLiquidationFeed,
+        gated_factory=lambda authorization: CoinalyzeLiquidationFeed(authorization=authorization),
+        now=now,
+        root=root,
+    )

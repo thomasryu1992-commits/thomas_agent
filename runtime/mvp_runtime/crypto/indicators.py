@@ -211,10 +211,12 @@ def roc(close: Series, period: int) -> Series:
     return out
 
 
-def zscore(series: Series, window: int) -> Series:
-    """Rolling z-score (pandas parity: min_periods=window, zero-variance → None)."""
-    mean = rolling_mean(series, window, min_periods=window)
-    std = rolling_std(series, window, min_periods=window)
+def zscore(series: Series, window: int, min_periods: int | None = None) -> Series:
+    """Rolling z-score (pandas parity: zero-variance → None). ``min_periods``
+    defaults to the window; the funding z-score uses the source's looser 10."""
+    min_periods = window if min_periods is None else min_periods
+    mean = rolling_mean(series, window, min_periods=min_periods)
+    std = rolling_std(series, window, min_periods=min_periods)
     out: Series = []
     for i in range(len(series)):
         value, m, s = series[i], mean[i], std[i]
