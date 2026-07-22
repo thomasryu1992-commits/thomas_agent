@@ -37,8 +37,9 @@ from .market_data import (
     collect_market_data,
     degraded_market_data_record,
 )
+from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle
-from .paper import PaperStore, read_outcomes, run_paper_update
+from .paper import PaperStore, build_entry_plan, read_outcomes, route_entries, run_paper_update
 
 CYCLE_VERSION = "crypto_cycle.v0.1"
 
@@ -166,6 +167,26 @@ def run_crypto_cycle(
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
 
+    # 4b) counterfactuals (C11) — purely observational: settle every open shadow
+    # with the same exit math, and when the guards refused an actionable signal
+    # THIS cycle, shadow the plan the router would have taken (tagged with the
+    # refusing reasons). Persisted only through the real gated store.
+    blocked_plan = None
+    if not bool(verdict.get("allow_new_position")) and paper_summary.get("opened") is None:
+        cf_route = route_entries(active_pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
+        blocked_plan = build_entry_plan(cf_route, feature_row, now=now)
+    candles_for_cf = snapshot.get("candles") or []
+    counterfactual_summary = run_counterfactual_update(
+        blocked_plan=blocked_plan,
+        block_reasons=list(verdict.get("problems") or []),
+        last_candle=candles_for_cf[-1] if candles_for_cf else None,
+        last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
+        timeframe=timeframe,
+        now=now,
+        root=root,
+        persist=bool(getattr(store, "filesystem_write", False)),
+    )
+
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
     try:
@@ -214,6 +235,7 @@ def run_crypto_cycle(
         "paper_records": paper_records,
         "lifecycle_decisions": lifecycle_decisions,
         "lifecycle_applied": lifecycle_applied,
+        "counterfactual": counterfactual_summary,
         "report_status": report.get("status") if report else None,
         "report_text": report_text,
         "created_at": now,
