@@ -37,6 +37,28 @@ BB_PERIOD = 20
 BB_STD = 2.0
 PERCENTILE_WINDOW = 100
 ROC_FAST = 4
+VOLUME_Z_WINDOW = 20
+ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
+
+
+def classify_market_regime(row: dict[str, Any], adx_threshold: float = ADX_TREND_THRESHOLD) -> str:
+    """Port of the source regime classifier (features/regime.py), row-wise."""
+    close, ma20, ma50, adx = row.get("close"), row.get("ma20"), row.get("ma50"), row.get("adx")
+    atr_pct = row.get("atr_percentile")
+    if close is None or ma20 is None or ma50 is None or adx is None:
+        return "UNCLEAR"
+    if atr_pct is not None:
+        if atr_pct >= 0.80:
+            return "HIGH_VOLATILITY"
+        if atr_pct <= 0.20 and adx < adx_threshold:
+            return "LOW_VOLATILITY"
+    if close > ma20 > ma50 and adx >= adx_threshold:
+        return "TREND_UP"
+    if close < ma20 < ma50 and adx >= adx_threshold:
+        return "TREND_DOWN"
+    if adx < adx_threshold:
+        return "RANGE"
+    return "UNCLEAR"
 
 # The minimum candle count for a fully-warmed row: bb_width_percentile needs
 # BB_PERIOD - 1 warm-up plus max(10, PERCENTILE_WINDOW // 5) observations.
@@ -62,10 +84,16 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     atr = indicators.atr(highs, lows, closes, ATR_PERIOD)
     rsi = indicators.rsi(closes, RSI_PERIOD)
     adx = indicators.adx(highs, lows, closes, ADX_PERIOD)
-    _, _, macd_hist = indicators.macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    macd_line, macd_signal, macd_hist = indicators.macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
     bb_upper, bb_lower, bb_width_pct, bb_percent_b = indicators.bollinger(closes, BB_PERIOD, BB_STD)
     bb_width_percentile = indicators.rolling_percentile(bb_width_pct, PERCENTILE_WINDOW)
     roc_4 = indicators.roc(closes, ROC_FAST)
+    volume_zscore = indicators.zscore(volumes, VOLUME_Z_WINDOW)
+    atr_pct_of_price = [
+        (a / c if (a is not None and isinstance(c, (int, float)) and c != 0) else None)
+        for a, c in zip(atr, closes)
+    ]
+    atr_percentile = indicators.rolling_percentile(atr_pct_of_price, PERCENTILE_WINDOW)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -82,9 +110,14 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "ema20": ema20[i],
             "ema50": ema50[i],
             "atr": atr[i],
+            "atr_pct_of_price": atr_pct_of_price[i],
+            "atr_percentile": atr_percentile[i],
             "rsi": rsi[i],
             "adx": adx[i],
+            "macd": macd_line[i],
+            "macd_signal": macd_signal[i],
             "macd_hist": macd_hist[i],
+            "volume_zscore": volume_zscore[i],
             "bb_upper": bb_upper[i],
             "bb_lower": bb_lower[i],
             "bb_width_pct": bb_width_pct[i],
@@ -102,6 +135,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "mark_index_basis_bps": 0.0,
             "liquidation_spike_ratio": 0.0,
         }
+        row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (
             "WARMUP"
             if any(row[k] is None for k in ("close", "atr", "rsi", "adx"))

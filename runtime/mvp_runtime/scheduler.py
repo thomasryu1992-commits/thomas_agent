@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 from . import jsonl, memory, timeutil
 from .events import stamped_event
 from .control import ControlStore
-from .errors import SchedulerBlocked
+from .errors import SchedulerBlocked, ToolBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
@@ -47,7 +47,11 @@ RECORD_TYPE = "schedule.v0"
 KIND_TASK = "analysis_task"
 KIND_PRUNE = "memory_prune"
 KIND_CRYPTO = "crypto_pipeline"
-KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO})
+KIND_FACTORY = "crypto_factory"
+KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY})
+
+# History depth for a factory backtest window (venue cap 500 in market_data).
+FACTORY_CANDLES = 500
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -287,6 +291,38 @@ def _execute(
         if ledger is not None:
             ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
         return cycle_status_line(record)
+    if schedule.kind == KIND_FACTORY:
+        # One factory run (C8): generate + backtest candidates over a deep candle
+        # window, append them to the candidates store. ALLOW-tier record creation —
+        # the factory can never touch the active pool (promotion is the operator
+        # door). A degraded backend simply skips the run: candidates mined from no
+        # data would be evidence-free noise.
+        from .crypto import pool as crypto_pool
+        from .crypto.factory import run_factory
+        from .crypto.market_data import collect_market_data, select_market_data_collector
+
+        parts = schedule.request.split()
+        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
+        timeframe = parts[1] if len(parts) >= 2 else "1d"
+        collector = select_market_data_collector(now=now, root=repo_root)
+        try:
+            snapshot, _ = collect_market_data(
+                symbol, timeframe, collector=collector, now=now, limit=FACTORY_CANDLES
+            )
+        except ToolBlocked as exc:
+            if exc.reason_code == "TOOL_ERROR":
+                return "skipped_market_data_degraded"
+            raise
+        result = run_factory(
+            snapshot,
+            active_pool=crypto_pool.load_active_pool(repo_root),
+            existing_candidates=crypto_pool.read_candidates(repo_root),
+            now=now,
+        )
+        crypto_pool.append_candidates(result["candidates"], root=repo_root)
+        if ledger is not None:
+            ledger.append_records(result["generation_id"], {"crypto_factory": result})
+        return f"generated={result['accepted_count']} gen={result['generation_id']}"
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,

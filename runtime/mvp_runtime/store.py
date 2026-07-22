@@ -62,6 +62,7 @@ _RECORD_KINDS = (
     "budget_usage",
     "trial_report",
     "crypto_cycle",
+    "crypto_factory",
     "programization_observation", "programization_pattern",
 )
 

@@ -211,6 +211,20 @@ def roc(close: Series, period: int) -> Series:
     return out
 
 
+def zscore(series: Series, window: int) -> Series:
+    """Rolling z-score (pandas parity: min_periods=window, zero-variance → None)."""
+    mean = rolling_mean(series, window, min_periods=window)
+    std = rolling_std(series, window, min_periods=window)
+    out: Series = []
+    for i in range(len(series)):
+        value, m, s = series[i], mean[i], std[i]
+        if not _is_num(value) or m is None or s is None or s == 0:
+            out.append(None)
+        else:
+            out.append((value - m) / s)
+    return out
+
+
 def rolling_percentile(series: Series, window: int = 100) -> Series:
     """Percentile rank of the window's last value (pandas ``rank(pct=True)``,
     average method over the window's non-None values; min_periods as the source:
