@@ -108,6 +108,17 @@ TRIAL_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — a one-shot isolated trial r
 TRIAL_WORK_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"
 TRIAL_WORK_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only trial execution
 
+# Governance scope + level for strategy-pool promotion (Crypto Pipeline C8b) — the third
+# APPROVAL_REQUIRED action. Installing candidates into the active pool changes what the
+# runtime trades, which the Governance Policy prices at APPROVAL_REQUIRED under
+# RUNTIME_GOVERNANCE (already in the policy's scope list and TTL table — no policy edit).
+# Approved by Thomas 2026-07-22 (crypto pipeline cutover conversation): RUNTIME_GOVERNANCE
+# joins the askable scopes. P4 INTERNAL_MODIFY is the honest level: promotion REPLACES the
+# active-pool pointer. Consumption stays UNIMPLEMENTED for this scope — the approved ask is
+# verified (never spent) by the operator promotion door, the pre-R10 posture kept by design.
+STRATEGY_PROMOTION_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
+STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — replaces the active pool
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -130,7 +141,12 @@ _EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
 # assert an ask it could never honour. Refuse rather than record a fiction.
 # CANDIDATE_ROLE_TRIAL joined by explicit Thomas decision (2026-07-22, research/translation
 # trial rollout); its consumption implementation is trial.run_trial.
-_APPROVAL_REQUIRED_SCOPES = frozenset({MEMORY_PROMOTION_PERMISSION_SCOPE, TRIAL_PERMISSION_SCOPE})
+# RUNTIME_GOVERNANCE joined by explicit Thomas decision (2026-07-22, crypto pipeline C8b);
+# it has NO consumption implementation — an APPROVED promotion ask is verified, never
+# spent, by scripts/promote_strategy_candidates.py (the pre-R10 operator door, kept).
+_APPROVAL_REQUIRED_SCOPES = frozenset({
+    MEMORY_PROMOTION_PERMISSION_SCOPE, TRIAL_PERMISSION_SCOPE, STRATEGY_PROMOTION_PERMISSION_SCOPE,
+})
 
 
 @dataclass(frozen=True)
@@ -645,6 +661,71 @@ def build_trial_permission_decision(
         permission_scope=TRIAL_PERMISSION_SCOPE,
         required_permission_level=TRIAL_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_strategy_promotion_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    strategy_ids: list[str],
+    rule_hashes: list[str],
+    keep_active: bool,
+    content_sha256: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to promote
+    strategy candidates into the active pool (Crypto Pipeline C8b).
+
+    The action is bound to the exact promotion: the candidate ids, their rule hashes,
+    and the add-vs-replace mode all ride in the content hash, so an approval of THIS
+    promotion cannot be re-pointed at different strategies or a different pool effect
+    (``action_identity.invalidated_by_any_material_field_change``). Building this
+    record performs nothing; executing the approved promotion is the operator door
+    (``scripts/promote_strategy_candidates.py``), which VERIFIES the approval against
+    this same content hash and never consumes it (no consumption implementation for
+    this scope — the pre-R10 posture, kept by design).
+    """
+    if not strategy_ids or not all(isinstance(s, str) and s for s in strategy_ids):
+        raise PlannerBlocked("INVALID_PROMOTION", "promotion needs at least one candidate strategy id")
+    if len(rule_hashes) != len(strategy_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
+        raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its rule hash")
+
+    action = _ActionSpec(
+        action_type="crypto.strategy_pool.promotion",
+        target_suffix="strategy_pool_promotion",
+        tool_id=None,
+        data_scope=("crypto.strategy_candidates", "crypto.active_strategy_pool"),
+        normalized_parameters={
+            "strategy_ids": sorted(strategy_ids),
+            "rule_hashes": sorted(rule_hashes),
+            "keep_active": bool(keep_active),
+        },
+        risk_reason="Changes what the runtime paper-trades; requires explicit Thomas approval per policy.",
+        authority_reason="Prime may prepare a strategy-pool promotion for Thomas review; the decision is Thomas's.",
+        decision_reason="RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a pool change.",
+        constraint=(
+            "Paper-stage pool change only: no order capability, no live/testnet effect, no "
+            "governance-state change beyond the active strategy pool; full audit required."
+        ),
+        target_ref="active_strategy_pool:paper",
+        content_sha256=content_sha256,
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=STRATEGY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
         now=now,
         actor_id=actor_id,
         ttl_minutes=ttl_minutes,
