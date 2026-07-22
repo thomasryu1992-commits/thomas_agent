@@ -188,6 +188,23 @@ def test_tampered_pool_refuses_routing_not_the_cycle(tmp_path):
     assert record["cycle_id"].startswith("crypto_cycle")
 
 
+def test_foreign_symbol_cycle_leaves_position_and_reports_mismatch(tmp_path):
+    _install_pool(tmp_path, _always_spec())
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    _cycle(tmp_path, FakeExchangeCollector(), store)
+    opened = load_open_position(tmp_path)
+    assert opened is not None
+
+    # An ETH cycle whose candle sweeps the BTC stop must refuse, not mis-settle.
+    sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0}
+    record = _cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
+                    now="2026-07-23T12:00:00Z", symbol="ETHUSDT")
+    assert "POSITION_CONTEXT_MISMATCH" in record["reason_codes"]
+    assert record["settled"] is None and record["opened"] is None
+    assert paper.read_outcomes(tmp_path) == []
+    assert load_open_position(tmp_path)["position_id"] == opened["position_id"]
+
+
 def test_status_line_summarizes(tmp_path):
     _install_pool(tmp_path, _always_spec())
     record = _cycle(tmp_path, FakeExchangeCollector(),

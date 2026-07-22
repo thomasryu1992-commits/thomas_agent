@@ -164,6 +164,8 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, verdict,
         store=store, now=now, root=root, control_store=control_store,
     )
+    if paper_summary.get("settle_refused"):
+        reason_codes.append(paper_summary["settle_refused"]["reason_code"])
 
     # 4b) counterfactuals (C11) — purely observational: settle every open shadow
     # with the same exit math, and when the guards refused an actionable signal
