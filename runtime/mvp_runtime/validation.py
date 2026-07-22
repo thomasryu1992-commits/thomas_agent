@@ -23,7 +23,7 @@ the user; PASS means the output may be delivered.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
@@ -86,8 +86,15 @@ def validate_agent_output(
     *,
     now: str,
     repo_root: Path | None = None,
+    required_role_output_keys: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Validate an Agent Output. Returns a schema-valid ``validation_result.v0.1``.
+
+    ``required_role_output_keys`` names the role's own declared output fields (a candidate
+    trial passes the role's output contract keys); None keeps the default business-analysis
+    requirement (``key_findings``). A declared key must be present and non-None — and a
+    string-typed value must be non-blank — or the result is REVISE; an empty array is a
+    legitimate disclosed "none found".
 
     Never raises on a BLOCK/REVISE outcome (those are results, not errors); raises
     ``ValidationError`` only if it cannot build a valid validation record.
@@ -136,16 +143,31 @@ def validate_agent_output(
 
     # 3) Required sections present.
     rso = agent_output.get("role_specific_output", {})
+    if required_role_output_keys is None:
+        missing_keys = [] if rso.get("key_findings") else ["key_findings"]
+    else:
+        missing_keys = [
+            k for k in required_role_output_keys
+            if rso.get(k) is None or (isinstance(rso.get(k), str) and not rso.get(k).strip())
+        ]
     sections_ok = bool(
         (agent_output.get("goal") or "").strip()
         and (agent_output.get("summary") or "").strip()
         and agent_output.get("facts")
-        and rso.get("key_findings")
+        and not missing_keys
     )
+    if required_role_output_keys is None:
+        # The default path keeps its original wording — these strings are user-facing
+        # result_reasons and part of the recorded evidence shape.
+        ok_note = "Goal, summary, facts, and key findings are present."
+        fail_note = "Missing required sections (goal / summary / facts / key_findings)."
+    else:
+        ok_note = "Goal, summary, facts, and role output fields are present."
+        fail_note = ("Missing required sections (goal / summary / facts"
+                     + (f" / role output: {', '.join(missing_keys)}" if missing_keys else "")
+                     + ").")
     checks.append(_check(
-        "required_sections", "PASS" if sections_ok else "REVISE", [ref],
-        "Goal, summary, facts, and key findings are present." if sections_ok
-        else "Missing required sections (goal / summary / facts / key_findings).",
+        "required_sections", "PASS" if sections_ok else "REVISE", [ref], ok_note if sections_ok else fail_note,
     ))
 
     # 4) Grounding — facts carry evidence and there is at least one evidence entry.

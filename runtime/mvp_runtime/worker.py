@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
@@ -259,6 +259,24 @@ def _normalize_recommendation(value: Any) -> dict[str, str] | None:
     return None
 
 
+def _role_specific_output(analysis: Mapping[str, Any], role_output_keys: Sequence[str] | None) -> dict[str, Any]:
+    """The role's own output block. Default (None) keeps the business-analysis shape
+    byte-identical; a trial passes the candidate role's declared output-contract keys, whose
+    values come from the provider analysis as-is (missing key -> None; presence is judged by
+    validation, not silently patched here). ``key_findings`` is always included — the
+    independent validator's review digest reads it for every role."""
+    if role_output_keys is None:
+        return {
+            "key_findings": _str_list(analysis.get("key_findings")),
+            "evidence_quality": analysis["evidence_quality"] if isinstance(analysis.get("evidence_quality"), str) else "",
+            "unresolved_questions": _str_list(analysis.get("unresolved_questions")),
+        }
+    output: dict[str, Any] = {"key_findings": _str_list(analysis.get("key_findings"))}
+    for key in role_output_keys:
+        output[key] = analysis.get(key)
+    return output
+
+
 def run_analysis_worker(
     task: Mapping[str, Any],
     assignment: Mapping[str, Any],
@@ -268,12 +286,22 @@ def run_analysis_worker(
     search_hits: list[Mapping[str, Any]] | None = None,
     memory_entries: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
+    prompt_override: str | None = None,
+    role_output_keys: Sequence[str] | None = None,
+    worker_id: str = WORKER_ID,
+    prompt_version: str = PROMPT_VERSION,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one specialist model call and return ``(agent_output, invocation_metadata)``.
 
     ``search_hits`` (read-only web results) and ``memory_entries`` (prior working-memory
     candidates) are context the specialist may use: both are added to the prompt and recorded
     as evidence on the output (``web_search`` / ``working_memory`` types).
+
+    ``prompt_override`` / ``role_output_keys`` / ``worker_id`` / ``prompt_version`` let a
+    non-analysis role run through the same worker (the candidate-role trial): the prompt is
+    supplied by the caller, and ``role_specific_output`` carries the role's own declared
+    output fields (taken from the provider analysis by key) alongside ``key_findings``.
+    Defaults keep the business-analysis behavior byte-identical.
 
     Fails closed (``WorkerBlocked``) on missing model budget, provider error/timeout,
     token-budget breach, malformed analysis, or a schema-invalid Agent Output.
@@ -292,7 +320,9 @@ def run_analysis_worker(
     if not isinstance(max_model_calls, int) or max_model_calls < 1:
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
-    prompt = build_prompt(task, assignment, search_hits, memory_entries)
+    prompt = prompt_override if prompt_override is not None else build_prompt(
+        task, assignment, search_hits, memory_entries
+    )
     try:
         result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
     except (ProviderError, TimeoutError) as exc:
@@ -308,10 +338,10 @@ def run_analysis_worker(
         "task_id": identity.get("task_id"),
         "task_revision": identity.get("task_revision"),
         "assignment_id": assignment.get("assignment_id"),
-        "worker_id": WORKER_ID,
+        "worker_id": worker_id,
         "worker_version": WORKER_VERSION,
         "model_id": result.model_id,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
     }
     # R5: propose working-memory candidates from the analysis, honoring the assignment's
     # memory scope (creation gate + allowed types). Proposals only — never promoted.
@@ -351,11 +381,7 @@ def run_analysis_worker(
         "next_actions": _str_list(analysis.get("next_actions")),
         "memory_candidates": memory_candidates,
         "escalation_required": False,
-        "role_specific_output": {
-            "key_findings": _str_list(analysis.get("key_findings")),
-            "evidence_quality": analysis["evidence_quality"] if isinstance(analysis.get("evidence_quality"), str) else "",
-            "unresolved_questions": _str_list(analysis.get("unresolved_questions")),
-        },
+        "role_specific_output": _role_specific_output(analysis, role_output_keys),
         "created_at": created_at,
     }
 
@@ -366,11 +392,11 @@ def run_analysis_worker(
         raise WorkerBlocked("OUTPUT_SCHEMA_INVALID", str(exc)) from exc
 
     invocation_metadata = {
-        "worker_id": WORKER_ID,
+        "worker_id": worker_id,
         "worker_version": WORKER_VERSION,
         "model_id": result.model_id,
         "model_version": result.model_version,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
         "input_tokens": int(result.input_tokens),
         "output_tokens": int(result.output_tokens),
         "tokens_used": tokens_used,

@@ -741,6 +741,60 @@ def build_approval_consumption_audit(
     return [event]
 
 
+def build_trial_consumption_audit(
+    approval: Mapping[str, Any],
+    *,
+    trial_task_id: str,
+    now: str,
+    genesis_previous_hash: str | None = None,
+    repo_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Audit that a CANDIDATE_ROLE_TRIAL approval was CONSUMED — the one-time grant was
+    spent to hold exactly one isolated candidate-role trial run.
+
+    The trial-scope sibling of :func:`build_approval_consumption_audit`: same guards (the
+    approval must be CONSUMED with a verified Thomas approver), same one-event shape, but
+    the durable outcome it points at is the trial task whose own pipeline trail follows on
+    the chain — a trial produces records and a verdict, never a validated-memory entry.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    approval_id = approval["approval_id"]
+    snapshot = approval["approved_action_snapshot"]
+    approver = approval.get("approver", {})
+    if approval.get("status") != "CONSUMED":
+        raise AuditError("APPROVAL_NOT_CONSUMED",
+                         "only a CONSUMED approval can be reported as consumed")
+    if approver.get("verification_status") != "VERIFIED":
+        raise AuditError("APPROVAL_UNVERIFIED",
+                         "a consumed approval must carry a verified approver to be audited")
+    if not (isinstance(trial_task_id, str) and trial_task_id):
+        raise AuditError("CONSUMPTION_SUBJECT_INVALID",
+                         "trial consumption audit requires the trial task id it authorized")
+    fp = _fingerprint(dict(approval), "approval")
+    event, _ = _make_event(
+        root=root, task=_approval_synthetic_task(approval), now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", approver.get("approved_by") or "Thomas"),
+        subject_type="APPROVAL", subject_id=approval_id,
+        subject_ref=f"approval:{approval_id}", subject_fingerprint=fp,
+        summary=(f"Approval {approval_id} CONSUMED: {snapshot['action_type']} on "
+                 f"{snapshot['target_ref']} spent for one isolated trial run "
+                 f"(task {trial_task_id}); no role activated or promoted."),
+        outcome="RECORDED",
+        reason_codes=["APPROVAL_CONSUMED", "CANDIDATE_ROLE_TRIAL", "ONE_TIME_USE",
+                      "CONSUMED", "NO_ACTIVATION"],
+        related_record_refs=[f"approval:{approval_id}",
+                             f"in_memory:{approval['permission_decision_id']}"],
+        evidence_refs=[f"in_memory:task:{trial_task_id}", f"approval:{approval_id}"],
+        payload_sha256=fp,
+        sequence=1,
+        previous_hash=genesis_previous_hash, previous_audit_id=None,
+        id_seed_extra={"approval_id": approval_id, "kind": "trial_consumption",
+                       "trial_task_id": trial_task_id},
+    )
+    return [event]
+
+
 def rechain_events(events: Sequence[MutableMapping[str, Any]], previous_hash: str | None) -> None:
     """Re-anchor a pre-built chain segment onto the CURRENT ledger tip, in place.
 

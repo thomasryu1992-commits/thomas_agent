@@ -38,12 +38,20 @@ def build_role_assignment(
     created_at: str,
     expires_at: str,
     repo_root: Path | None = None,
+    assignment_mode: str = "normal",
+    trial_authorization_ref: str | None = None,
 ) -> dict[str, Any]:
     """Build and schema-validate a role_assignment.v0.2. Fail-closed.
 
     ``role`` is a resolved registry entry (from planner.select_role); the assignment's
     authority/permission mirror the PermissionDecision, and role-owned criteria are read
     from the hash-verified Role Definition.
+
+    ``assignment_mode="candidate_trial"`` (with the mandatory ``trial_authorization_ref``
+    naming the consumed Thomas approval) builds the Candidate Trial Policy's isolated
+    assignment: the memory scope is closed entirely — no readable scopes, no candidate
+    creation — because a trial must leave no persistent runtime change behind. The
+    schema independently requires the authorization ref whenever the mode is trial.
     """
     root = repo_root if repo_root is not None else _repo_root()
     identity = bound_task.get("identity", {})
@@ -98,6 +106,21 @@ def build_role_assignment(
     memory_policy = definition.get("memory_policy", {})
     validation_policy = definition.get("validation_policy", {})
 
+    if assignment_mode not in ("normal", "candidate_trial"):
+        raise PlannerBlocked("INVALID_ASSIGNMENT_MODE", f"unknown assignment_mode {assignment_mode!r}")
+    trial = assignment_mode == "candidate_trial"
+    if trial and not (isinstance(trial_authorization_ref, str) and trial_authorization_ref.strip()):
+        # Fail fast with a typed error; the schema conditional would reject it anyway.
+        raise PlannerBlocked(
+            "NO_TRIAL_AUTHORIZATION",
+            "a candidate_trial assignment must name the consumed Thomas approval",
+        )
+    if not trial and trial_authorization_ref is not None:
+        raise PlannerBlocked(
+            "UNEXPECTED_TRIAL_AUTHORIZATION",
+            "a normal assignment must not carry a trial authorization ref",
+        )
+
     seed = {"task_id": task_id, "task_revision": identity.get("task_revision"), "role_id": role_id, "ccb": ccb}
     assignment_id = integrity.short_id("assignment", seed)
     actor_instance_id = integrity.short_id("agent", seed)
@@ -105,7 +128,7 @@ def build_role_assignment(
     assignment: dict[str, Any] = {
         "schema_version": ROLE_ASSIGNMENT_SCHEMA_VERSION,
         "assignment_id": assignment_id,
-        "assignment_mode": "normal",
+        "assignment_mode": assignment_mode,
         "trace_id": trace_id,
         "task_id": task_id,
         "core_context_binding_id": ccb,
@@ -127,12 +150,17 @@ def build_role_assignment(
         "input_refs": list(context.get("input_refs", [])),
         "context_refs": list(context.get("context_refs", [])),
         "active_core_rule_ids": list(context.get("active_core_rule_ids", [])),
+        # An isolated trial closes the memory scope entirely (no reads, no candidates):
+        # "isolated trial context" + "no persistent runtime change" are trial requirements,
+        # not preferences, so they are structural here rather than left to the pipeline.
         "memory_scope": {
             "readable_memory_refs": [],
-            "readable_scopes": list(memory_policy.get("readable_scopes", [])),
+            "readable_scopes": [] if trial else list(memory_policy.get("readable_scopes", [])),
             "prohibited_scopes": list(memory_policy.get("prohibited_scopes", [])),
-            "memory_candidate_creation_allowed": bool(memory_policy.get("candidate_creation_allowed", False)),
-            "allowed_candidate_types": list(memory_policy.get("allowed_candidate_types", [])),
+            "memory_candidate_creation_allowed": (
+                False if trial else bool(memory_policy.get("candidate_creation_allowed", False))
+            ),
+            "allowed_candidate_types": [] if trial else list(memory_policy.get("allowed_candidate_types", [])),
             "validated_memory_write_allowed": False,
             "core_memory_write_allowed": False,
         },
@@ -159,7 +187,7 @@ def build_role_assignment(
         "execution_budget": default_execution_budget(),
         "constraints": list(scope.get("constraints", [])),
         "escalation_target": "thomas_prime",
-        "trial_authorization_ref": None,
+        "trial_authorization_ref": trial_authorization_ref,
         "expires_at": expires_at,
         "created_at": created_at,
     }

@@ -116,6 +116,43 @@ def load_resolved_roles(repo_root: Path | None = None) -> dict[str, Any]:
         raise PlannerBlocked("ROLE_DEFINITION_INVALID", str(exc)) from exc
 
 
+def select_candidate_role(
+    resolved_roles: Mapping[str, Any],
+    *,
+    role_id: str,
+    version: str | None = None,
+) -> dict[str, Any]:
+    """Select one CANDIDATE role for an explicit trial assignment — never normal routing.
+
+    The inverse gate of :func:`select_role`: the entry must exist, its status must be
+    exactly ``candidate``, and it must be non-routable. When ``version`` is given it must
+    match exactly (the Candidate Trial Policy's ``exact_candidate_role_version``). An
+    ACTIVE role is refused with its own code — a trial of an already-activated role is a
+    contradiction, and the caller should route normally instead. Fails closed otherwise.
+    """
+    for role in resolved_roles.get("roles", []):
+        if role.get("role_id") != role_id:
+            continue
+        status = role.get("status")
+        if status == "active":
+            raise PlannerBlocked(
+                "ROLE_ALREADY_ACTIVE", f"role {role_id} is active; a candidate trial does not apply"
+            )
+        if status != "candidate" or role.get("routable") is not False:
+            raise PlannerBlocked(
+                "NOT_A_CANDIDATE",
+                f"role {role_id} is {status!r} (routable={role.get('routable')!r}); "
+                "only a non-routable candidate role can be trialled",
+            )
+        if version is not None and role.get("version") != version:
+            raise PlannerBlocked(
+                "CANDIDATE_VERSION_MISMATCH",
+                f"role {role_id} is at version {role.get('version')}, trial requires exactly {version}",
+            )
+        return role
+    raise PlannerBlocked("UNKNOWN_ROLE", f"no role with id {role_id} in the registry")
+
+
 def select_role(
     resolved_roles: Mapping[str, Any],
     *,
