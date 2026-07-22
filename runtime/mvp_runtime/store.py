@@ -61,12 +61,14 @@ _RECORD_KINDS = (
     "independent_validation_result", "validator_invocation", "write_use",
     "budget_usage",
     "trial_report",
+    "programization_observation", "programization_pattern",
 )
 
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as
 # record rows: the audit trail and block entry have their own files, and retrieved memory
 # is read-only context (already durable in the working-memory store, not a run product).
-_NON_RECORD_KEYS = frozenset({"audit_trail", "block_record", "memory_retrieved"})
+_NON_RECORD_KEYS = frozenset({"audit_trail", "block_record", "memory_retrieved",
+                              "validated_memory_retrieved"})
 
 
 class LedgerStore:

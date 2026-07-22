@@ -27,6 +27,7 @@ from . import scheduler, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
+from .programization import ProgramizationStore
 from .providers import select_provider
 from .scheduler import ScheduleStore
 from .store import LedgerStore
@@ -118,6 +119,7 @@ def main(
         # tick
         control_store = control_store if control_store is not None else ControlStore.default()
         working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
+        programization = ProgramizationStore.default()
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
         gate_banners(provider=provider, search_tool=search_tool)
@@ -130,7 +132,8 @@ def main(
             while args.max_ticks == 0 or tick < args.max_ticks:
                 summary = scheduler.run_due(
                     store, now=now or timeutil.utc_now_iso(), control_store=control_store, ledger=ledger,
-                    working_memory=working_memory, provider=provider, search_tool=search_tool, repo_root=repo_root,
+                    working_memory=working_memory, programization=programization,
+                    provider=provider, search_tool=search_tool, repo_root=repo_root,
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]

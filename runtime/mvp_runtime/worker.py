@@ -148,11 +148,25 @@ def _memory_context(memory_entries: list[Mapping[str, Any]] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _validated_context(validated_entries: list[Mapping[str, Any]] | None) -> str:
+    """An operator-validated-memory block appended to the prompt. Empty when none exists.
+
+    Framed differently from the candidate block: VALIDATED entries were explicitly
+    promoted by the operator, so the model may rely on them (cite by [V#])."""
+    if not validated_entries:
+        return ""
+    lines = ["\nValidated memory (operator-approved reusable knowledge; cite by [V#]):"]
+    for index, entry in enumerate(validated_entries, start=1):
+        lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+    return "\n".join(lines) + "\n"
+
+
 def build_prompt(
     task: Mapping[str, Any],
     assignment: Mapping[str, Any],
     search_hits: list[Mapping[str, Any]] | None = None,
     memory_entries: list[Mapping[str, Any]] | None = None,
+    validated_entries: list[Mapping[str, Any]] | None = None,
 ) -> str:
     scope = task.get("scope", {})
     role_scope = assignment.get("role_scope", {})
@@ -166,6 +180,7 @@ def build_prompt(
         f"Expected outputs: {outputs}\n"
         f"Active Core rules in scope: {rules}\n"
         f"Evaluate the business idea in this priority order: {priorities}.\n"
+        f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
@@ -176,11 +191,21 @@ def build_prompt(
 def _build_evidence(
     search_hits: list[Mapping[str, Any]] | None,
     memory_entries: list[Mapping[str, Any]] | None = None,
+    validated_entries: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Evidence backing the output: the model's own reasoning, each read-only search hit
-    (source-attributed), and each prior working-memory candidate the run drew on — so what the
-    output leaned on is auditable."""
+    (source-attributed), each prior working-memory candidate, and each VALIDATED memory
+    entry the run drew on — so what the output leaned on is auditable."""
     evidence: list[dict[str, Any]] = [{"ref": "model:analysis", "type": "model_reasoning"}]
+    for entry in validated_entries or []:
+        validated_id = entry.get("validated_memory_id")
+        if not isinstance(validated_id, str) or not validated_id:
+            continue
+        evidence.append({
+            "ref": f"validated_memory:{validated_id}",
+            "type": "validated_memory",
+            "candidate_type": entry.get("candidate_type", ""),
+        })
     for index, hit in enumerate(search_hits or [], start=1):
         url = hit.get("url")
         if not isinstance(url, str) or not url:
@@ -285,6 +310,7 @@ def run_analysis_worker(
     created_at: str,
     search_hits: list[Mapping[str, Any]] | None = None,
     memory_entries: list[Mapping[str, Any]] | None = None,
+    validated_entries: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
     prompt_override: str | None = None,
     role_output_keys: Sequence[str] | None = None,
@@ -293,9 +319,10 @@ def run_analysis_worker(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one specialist model call and return ``(agent_output, invocation_metadata)``.
 
-    ``search_hits`` (read-only web results) and ``memory_entries`` (prior working-memory
-    candidates) are context the specialist may use: both are added to the prompt and recorded
-    as evidence on the output (``web_search`` / ``working_memory`` types).
+    ``search_hits`` (read-only web results), ``memory_entries`` (prior working-memory
+    candidates), and ``validated_entries`` (operator-promoted VALIDATED memory) are context
+    the specialist may use: all are added to the prompt and recorded as evidence on the
+    output (``web_search`` / ``working_memory`` / ``validated_memory`` types).
 
     ``prompt_override`` / ``role_output_keys`` / ``worker_id`` / ``prompt_version`` let a
     non-analysis role run through the same worker (the candidate-role trial): the prompt is
@@ -321,7 +348,7 @@ def run_analysis_worker(
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
     prompt = prompt_override if prompt_override is not None else build_prompt(
-        task, assignment, search_hits, memory_entries
+        task, assignment, search_hits, memory_entries, validated_entries
     )
     try:
         result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
@@ -369,7 +396,7 @@ def run_analysis_worker(
         "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
         "summary": analysis["summary"],
         "facts": _normalize_facts(analysis.get("facts")),
-        "evidence": _build_evidence(search_hits, memory_entries),
+        "evidence": _build_evidence(search_hits, memory_entries, validated_entries),
         "inferences": _normalize_inferences(analysis.get("inferences")),
         "assumptions": _str_list(analysis.get("assumptions")),
         "uncertainty": _str_list(analysis.get("uncertainty")),

@@ -90,6 +90,15 @@ class MemoryBlocked(MvpRuntimeError):
     auto-promote to validated/core memory."""
 
 
+class ProgramizationBlocked(MvpRuntimeError):
+    """A programization observation could not be recorded (counter increment refused).
+
+    Raised on an observation missing its task identity/binding or on a record that fails
+    its closed schema. Fail-closed in the not-counting direction: an uncertain observation
+    is never counted toward the ten-repetition review trigger. The counter is enrichment —
+    the pipeline treats this as best-effort and never blocks a delivered run on it."""
+
+
 class ControlBlocked(MvpRuntimeError):
     """An operator emergency-console command could not be applied (R4).
 
