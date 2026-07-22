@@ -64,6 +64,8 @@ STATUS_NO_ENTRY = "NO_ENTRY"
 STATUS_BLOCKED = "BLOCKED"
 BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
 POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
+SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
+SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
@@ -314,6 +316,11 @@ def build_outcome_record(
         "supporting_strategy_ids": list(position.get("supporting_strategy_ids") or []),
         "provenance": "mvp_paper_kernel",
     }
+    # Idempotency key: one position settles exactly once, so the settlement's
+    # identity derives from the position alone — a retried settlement of the same
+    # position mints the SAME settlement_id (unlike outcome_id, which varies with
+    # close reason and clock), making duplicates detectable.
+    record["settlement_id"] = integrity.short_id("settle", {"position_id": position.get("position_id")})
     record["record_sha256"] = integrity.sha256_record(record)
     return record
 
@@ -364,6 +371,17 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     return outcomes
 
 
+def already_settled(position_id: str, root: Path | None = None) -> bool:
+    """Whether an outcome for this position is already durably recorded.
+
+    The settlement dup check: a crash between outcome-append and position-clear
+    leaves an OPEN position whose outcome exists — re-settling it would double the
+    trade in the history the risk guard and feedback read. Raises (via
+    :func:`read_outcomes`) when the history is unreadable: unverifiable is never
+    treated as not-settled."""
+    return any(o.get("position_id") == position_id for o in read_outcomes(root))
+
+
 class PaperStore(Protocol):
     tool_id: str
     tool_version: str
@@ -371,6 +389,7 @@ class PaperStore(Protocol):
     def save_position(self, position: Mapping[str, Any]) -> None: ...
     def clear_position(self) -> None: ...
     def append_outcome(self, record: Mapping[str, Any]) -> None: ...
+    def settle_position(self, outcome: Mapping[str, Any]) -> None: ...
 
 
 class DryRunPaperStore:
@@ -391,6 +410,9 @@ class DryRunPaperStore:
         return None
 
     def append_outcome(self, record: Mapping[str, Any]) -> None:
+        return None
+
+    def settle_position(self, outcome: Mapping[str, Any]) -> None:
         return None
 
 
@@ -448,6 +470,23 @@ class RealPaperStore:
             with open(path, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
 
+    def settle_position(self, outcome: Mapping[str, Any]) -> None:
+        """Outcome-append + position-clear as ONE serialized step.
+
+        Holding the position lock across both writes serializes concurrent settlers
+        (CLI manual exit vs. scheduler cycle) and shrinks the crash window between
+        the two files to the minimum JSONL allows; a crash inside the window leaves
+        outcome-written/position-OPEN, which the chokepoint's ``already_settled``
+        check recovers instead of re-settling. Lock order is position → outcomes,
+        the only nesting in this module."""
+        self._assert()
+        position_path = self._dir() / POSITION_FILENAME
+        with locked(position_path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
+            self.append_outcome(outcome)
+            tmp = position_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"status": "CLOSED"}), encoding="utf-8")
+            tmp.replace(position_path)
+
 
 def select_paper_store(*, now: str | None = None, root: Path | None = None) -> PaperStore:
     """Choose the paper store — the enforced Safety-Flag Gate chokepoint.
@@ -491,7 +530,10 @@ def run_paper_update(
     settlement — an already-open position must always be able to close. A position
     whose (symbol, timeframe) does not match the snapshot's is left untouched with a
     ``POSITION_CONTEXT_MISMATCH`` refusal recorded: only the position's own context
-    may settle it, and the occupied slot blocks any open.
+    may settle it, and the occupied slot blocks any open. Settlement is idempotent:
+    a position whose outcome is already durable (a crash between append and clear)
+    is recovered — cleared without a second outcome (``SETTLEMENT_ALREADY_RECORDED``)
+    — and an unreadable history refuses the settlement (``SETTLEMENT_UNVERIFIABLE``).
     """
     control = control_store if control_store is not None else ControlStore(root or _repo_root())
     state = control.load()
@@ -508,7 +550,10 @@ def run_paper_update(
     symbol = str(snapshot.get("symbol") or "")
 
     records: list[dict[str, Any]] = []
-    summary: dict[str, Any] = {"settled": None, "opened": None, "route_status": None, "settle_refused": None}
+    summary: dict[str, Any] = {
+        "settled": None, "opened": None, "route_status": None,
+        "settle_refused": None, "settle_recovered": None,
+    }
 
     def _event(operation: str, detail: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -545,28 +590,54 @@ def run_paper_update(
         summary["settle_refused"] = refusal
         records.append(_event("settle_refused", {**refusal, "read_only": True}))
     elif position is not None:
-        max_hold = MAX_HOLD_BARS.get(timeframe, DEFAULT_MAX_HOLD_BARS)
-        reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
-        if reason is not None:
-            outcome = build_outcome_record(position, reason, exit_price, result_r, now=now)
-            store.append_outcome(outcome)
+        position_id = position.get("position_id")
+        # Idempotency first: a crash between outcome-append and position-clear left
+        # this position OPEN with its outcome already durable. Finish the
+        # interrupted settlement (clear only, never a second outcome) before any
+        # settlement math — a settled corpse must not advance holding or re-settle.
+        # An unreadable history refuses instead: unverifiable is never not-settled.
+        recovered = refused = False
+        if isinstance(position_id, str) and position_id and getattr(store, "filesystem_write", False):
+            try:
+                recovered = already_settled(position_id, root)
+            except ToolError as exc:
+                refusal = {
+                    "reason_code": SETTLEMENT_UNVERIFIABLE,
+                    "cause_reason_code": exc.reason_code,
+                    "position_id": position_id,
+                }
+                summary["settle_refused"] = refusal
+                records.append(_event("settle_refused", {**refusal, "read_only": True}))
+                refused = True
+        if recovered:
             store.clear_position()
-            summary["settled"] = {
-                "position_id": position.get("position_id"),
-                "close_reason": reason,
-                "result_R": outcome["result_R"],
-                "outcome_id": outcome["outcome_id"],
-            }
-            records.append(_event("settle", {
-                "position_id": position.get("position_id"),
-                "close_reason": reason,
-                "result_R": outcome["result_R"],
-                "outcome_id": outcome["outcome_id"],
-                "outcome_sha256": outcome["record_sha256"],
-            }))
-            position = None
-        else:
-            store.save_position(position)  # persist advanced holding_candles
+            recovery = {"reason_code": SETTLEMENT_ALREADY_RECORDED, "position_id": position_id}
+            summary["settle_recovered"] = recovery
+            records.append(_event("settle_recovered", recovery))
+            position = None  # the slot is honestly free again
+        elif not refused:
+            max_hold = MAX_HOLD_BARS.get(timeframe, DEFAULT_MAX_HOLD_BARS)
+            reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
+            if reason is not None:
+                outcome = build_outcome_record(position, reason, exit_price, result_r, now=now)
+                store.settle_position(outcome)
+                summary["settled"] = {
+                    "position_id": position_id,
+                    "close_reason": reason,
+                    "result_R": outcome["result_R"],
+                    "outcome_id": outcome["outcome_id"],
+                }
+                records.append(_event("settle", {
+                    "position_id": position_id,
+                    "close_reason": reason,
+                    "result_R": outcome["result_R"],
+                    "outcome_id": outcome["outcome_id"],
+                    "settlement_id": outcome["settlement_id"],
+                    "outcome_sha256": outcome["record_sha256"],
+                }))
+                position = None
+            else:
+                store.save_position(position)  # persist advanced holding_candles
 
     # 2) Maybe open — only with no open position AND an allowing verdict.
     route = route_entries(pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
