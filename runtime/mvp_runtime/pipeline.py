@@ -34,7 +34,7 @@ from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError, ToolBlocked
 from .intake import build_task
-from .memory import retrieve_working_memory
+from .memory import retrieve_validated_memory, retrieve_working_memory
 from .prime import plan_task
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
@@ -192,9 +192,10 @@ def run_task(
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
     network tool is chosen via the Safety-Flag Gate by the caller).
 
-    ``working_memory`` (opt-in) makes prior working-memory candidates available as context
-    and accumulates this run's candidates for later runs. Omitting it keeps the run pure and
-    deterministic — memory only accumulates when a caller supplies the store.
+    ``working_memory`` (opt-in) makes prior working-memory candidates and operator-promoted
+    VALIDATED memory available as context and accumulates this run's candidates for later
+    runs. Omitting it keeps the run pure and deterministic — memory only accumulates when a
+    caller supplies the store.
 
     ``independent_validation`` (R7, opt-in) adds the second agent of the minimal dynamic
     team: an independent validator (``validation.independent``) reviews the specialist's
@@ -340,9 +341,18 @@ def run_task(
         )
         records["memory_retrieved"] = memory_entries
 
+        # Operator-promoted VALIDATED memory feeds back too — the read leg of the loop the
+        # role's memory_policy already grants (readable scope: related_validated_memory).
+        validated_entries = (
+            retrieve_validated_memory(plan["role_assignment"], working_memory)
+            if working_memory is not None else []
+        )
+        records["validated_memory_retrieved"] = validated_entries
+
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=provider, created_at=now,
-            search_hits=search_hits, memory_entries=memory_entries, repo_root=repo_root,
+            search_hits=search_hits, memory_entries=memory_entries,
+            validated_entries=validated_entries, repo_root=repo_root,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
