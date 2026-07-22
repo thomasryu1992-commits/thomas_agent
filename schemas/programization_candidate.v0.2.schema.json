@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "programization_candidate.v0.2.schema.json",
+  "title": "Programization Candidate v0.2",
+  "description": "Identical to v0.1 except valid_repetition_count minimum: 10 -> 5, matching the programization_pattern.v0.2 trigger threshold (explicit Thomas decision 2026-07-22).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "pattern_id",
+    "valid_repetition_count",
+    "deterministic_slice",
+    "agent_retained_responsibilities",
+    "baseline_metrics",
+    "candidate_metrics",
+    "defined_exceptions",
+    "shadow_validation",
+    "rollback",
+    "activation_eligibility",
+    "permission_expansion",
+    "status",
+    "created_at_utc"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "programization_candidate.v0.2"
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pattern_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "valid_repetition_count": {
+      "type": "integer",
+      "minimum": 5
+    },
+    "deterministic_slice": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "agent_retained_responsibilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "baseline_metrics": {
+      "type": "object"
+    },
+    "candidate_metrics": {
+      "type": "object"
+    },
+    "defined_exceptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "shadow_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "comparison_ref",
+        "result"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "NOT_STARTED",
+            "RUNNING",
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "comparison_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "procedure_ref"
+      ],
+      "properties": {
+        "available": {
+          "const": true
+        },
+        "procedure_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "activation_eligibility": {
+      "const": "candidate_only_pending_program_registry_and_permission_policy"
+    },
+    "permission_expansion": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "REVIEW_READY",
+        "VALIDATING",
+        "ACCEPTED",
+        "REJECTED"
+      ]
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

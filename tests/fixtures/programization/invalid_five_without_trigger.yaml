@@ -1,0 +1,21 @@
+# Invalid under programization_pattern.v0.2: five valid repetitions reached the trigger
+# threshold, so review_status may no longer be NOT_TRIGGERED.
+schema_version: programization_pattern.v0.2
+pattern_id: progpattern-invalid-five
+pattern_signature:
+  task_type: business_idea_analysis
+  role_id: general.specialist
+  input_schema_sha256: sha256:1231414d9b48c167b76974a569a3cb23f9b620688f4487fd8751744dd3435a04
+  ordered_step_signature_sha256: sha256:8587c3975b2ea9ad8d52ccbe8e3d9289be71b69bcabb96fe46a9772fd91bfe97
+  output_schema_sha256: sha256:8587c3975b2ea9ad8d52ccbe8e3d9289be71b69bcabb96fe46a9772fd91bfe97
+  environment_version: mvp_runtime/0.1.0
+valid_observation_ids:
+- progobs-001
+- progobs-002
+- progobs-003
+- progobs-004
+- progobs-005
+valid_repetition_count: 5
+review_trigger_count: 5
+review_status: NOT_TRIGGERED
+last_updated_at_utc: '2026-07-22T00:00:00Z'

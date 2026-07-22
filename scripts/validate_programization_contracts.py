@@ -53,8 +53,18 @@ def main() -> int:
             True,
         ),
         (
+            "examples/programization/programization_pattern_v0.2.yaml",
+            "schemas/programization_pattern.v0.2.schema.json",
+            True,
+        ),
+        (
             "examples/programization/programization_candidate_v0.1.yaml",
             "schemas/programization_candidate.v0.1.schema.json",
+            True,
+        ),
+        (
+            "examples/programization/programization_candidate_v0.2.yaml",
+            "schemas/programization_candidate.v0.2.schema.json",
             True,
         ),
         (
@@ -70,6 +80,11 @@ def main() -> int:
         (
             "tests/fixtures/programization/invalid_ten_without_trigger.yaml",
             "schemas/programization_pattern.v0.1.schema.json",
+            False,
+        ),
+        (
+            "tests/fixtures/programization/invalid_five_without_trigger.yaml",
+            "schemas/programization_pattern.v0.2.schema.json",
             False,
         ),
         (
