@@ -220,6 +220,8 @@ def build_pipeline_audit(
     validator_permission_decision: Mapping[str, Any] | None = None,
     write_use: Mapping[str, Any] | None = None,
     write_permission_decision: Mapping[str, Any] | None = None,
+    programization_pattern: Mapping[str, Any] | None = None,
+    programization_triggered: bool = False,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -456,6 +458,30 @@ def build_pipeline_audit(
             ],
             related_record_refs=[write_permdec_ref],
             evidence_refs=[f"in_memory:write_use:{tid}"], payload_sha256=write_fp,
+        ))
+
+    # Programization: the run whose observation lifted a pattern's valid-repetition count
+    # to the threshold records the review trigger on the chain. Ten valid repetitions are
+    # a REVIEW opportunity only (`ten_valid_repetitions_result:
+    # PROGRAMIZATION_REVIEW_TRIGGER_ONLY`) — the event asserts that no Program was
+    # created, registered, or activated.
+    if programization_triggered and programization_pattern is not None:
+        pattern_fp = _fingerprint(dict(programization_pattern), "programization_pattern")
+        pattern_id = str(programization_pattern.get("pattern_id"))
+        count = programization_pattern.get("valid_repetition_count")
+        steps.append(dict(
+            event_type="PROGRAMIZATION_REVIEW_TRIGGERED",
+            actor=_actor("system", "mvp.programization.counter"),
+            subject_type="PROGRAMIZATION_PATTERN", subject_id=pattern_id,
+            subject_ref=f"in_memory:{pattern_id}", subject_fingerprint=pattern_fp,
+            summary=(f"Programization review triggered: pattern {pattern_id} reached "
+                     f"{count} valid independent repetitions. Review opportunity only — "
+                     "no Program was created or activated."),
+            outcome="RECORDED",
+            reason_codes=["PROGRAMIZATION_REVIEW_TRIGGERED", f"COUNT_{count}",
+                          "REVIEW_ONLY", "NO_PROGRAM_CREATED"],
+            related_record_refs=[f"in_memory:{pattern_id}"],
+            evidence_refs=[f"in_memory:{pattern_id}"], payload_sha256=pattern_fp,
         ))
 
     steps.append(dict(
