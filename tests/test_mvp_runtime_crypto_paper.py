@@ -458,6 +458,87 @@ def test_matching_context_still_settles(tmp_path):
     assert summary["settled"]["close_reason"] == "stop_loss"
 
 
+SL_CANDLE = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
+             "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+
+
+def test_settlement_carries_a_position_derived_idempotency_key(tmp_path):
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    opened = load_open_position(tmp_path)
+    summary, records = run_paper_update(
+        _snapshot(SL_CANDLE), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(),
+        store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    outcome = read_outcomes(tmp_path)[0]
+    from runtime.read_only_kernel import integrity
+    # settlement_id derives from the position alone: a retry would mint the SAME id.
+    assert outcome["settlement_id"] == integrity.short_id(
+        "settle", {"position_id": opened["position_id"]})
+    assert records[0]["settlement_id"] == outcome["settlement_id"]
+
+
+def test_crash_between_append_and_clear_recovers_without_second_outcome(tmp_path):
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    opened = load_open_position(tmp_path)
+    # Simulate crash window A: the outcome got durably written, the clear was lost.
+    store = _real_store(tmp_path)
+    store.append_outcome(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    assert load_open_position(tmp_path) is not None  # position still OPEN — the corpse
+
+    summary, records = run_paper_update(
+        _snapshot(SL_CANDLE), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(allow=False),
+        store=store, now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settle_recovered"]["reason_code"] == "SETTLEMENT_ALREADY_RECORDED"
+    assert summary["settled"] is None
+    assert records[0]["operation"] == "settle_recovered"
+    assert len(read_outcomes(tmp_path)) == 1  # never a second outcome for one position
+    assert load_open_position(tmp_path) is None  # the interrupted settlement finished
+
+
+def test_recovered_slot_can_open_in_the_same_cycle(tmp_path):
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    opened = load_open_position(tmp_path)
+    store = _real_store(tmp_path)
+    store.append_outcome(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    # Matching row again: after recovery the slot is honestly free, so a fresh
+    # position may open this very cycle (the settle-then-reopen order).
+    calm = {"open_time": "2026-07-22T00:00:00Z", "open": 105.0, "high": 106.0, "low": 104.0,
+            "close": 105.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+    summary, _ = run_paper_update(
+        _snapshot(calm), ROW, _pool(_pool_entry()), _verdict(),
+        store=store, now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settle_recovered"] is not None
+    assert summary["opened"] is not None
+    assert load_open_position(tmp_path)["position_id"] != opened["position_id"]
+
+
+def test_unreadable_history_refuses_settlement(tmp_path):
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    opened = load_open_position(tmp_path)
+    outcomes_path = paper.state_dir(tmp_path) / "paper_outcomes.jsonl"
+    outcomes_path.write_text("{broken\n", encoding="utf-8")
+    # The candle sweeps the stop, but not-settled cannot be proven: refuse, touch nothing.
+    summary, records = run_paper_update(
+        _snapshot(SL_CANDLE), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(),
+        store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settled"] is None
+    assert summary["settle_refused"]["reason_code"] == "SETTLEMENT_UNVERIFIABLE"
+    assert summary["settle_refused"]["cause_reason_code"] == "OUTCOME_HISTORY_UNREADABLE"
+    assert summary["opened"] is None  # occupied slot still blocks any open
+    assert load_open_position(tmp_path)["position_id"] == opened["position_id"]
+
+
 def test_settlement_runs_even_under_no_trade_verdict(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
