@@ -15,10 +15,12 @@ from runtime.mvp_runtime.errors import PersistenceError
 from runtime.mvp_runtime.memory import (
     CANDIDATE_STATUS,
     MAX_CANDIDATES,
+    VALIDATED_STATUS,
     build_memory_candidates,
+    retrieve_validated_memory,
     retrieve_working_memory,
 )
-from runtime.mvp_runtime.working_memory import ENTRIES_FILE, WorkingMemoryStore
+from runtime.mvp_runtime.working_memory import ENTRIES_FILE, VALIDATED_FILE, WorkingMemoryStore
 
 from tests._helpers import requires_local_core
 NOW = "2026-07-16T09:00:00Z"
@@ -150,6 +152,79 @@ def test_retrieve_capped_and_recent(tmp_path):
     store.append([_entry(f"memcand_{i}", f"c{i}", created_at=f"2026-07-16T09:{i:02d}:00Z") for i in range(9)])
     got = retrieve_working_memory(_readable_assignment(), store, limit=3)
     assert [e["candidate_id"] for e in got] == ["memcand_6", "memcand_7", "memcand_8"]  # 3 most recent
+
+
+# --- VALIDATED-memory retrieval (the read leg of the promotion loop) --------
+
+
+def _validated_entry(vid, content, *, scope="related_validated_memory",
+                     status=VALIDATED_STATUS, promoted_at=NOW):
+    return {"validated_memory_id": vid, "source_candidate_id": "memcand_src",
+            "candidate_type": "reusable_knowledge", "scope": scope, "status": status,
+            "disposition": "EXECUTE_AND_REPORT", "content": content,
+            "evidence_refs": ["working_memory:memcand_src"], "promoted_by": "thomas",
+            "promotion_reason": "test", "promoted_at": promoted_at}
+
+
+def test_retrieve_validated_reads_scoped_entries(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append_validated([
+        _validated_entry("valmem_1", "keep me", promoted_at="2026-07-16T09:00:00Z"),
+        _validated_entry("valmem_2", "wrong scope", scope="task_working_memory"),
+        _validated_entry("valmem_3", "wrong status", status=CANDIDATE_STATUS),
+        _validated_entry("valmem_4", "keep me too", promoted_at="2026-07-16T10:00:00Z"),
+    ])
+    got = retrieve_validated_memory(_readable_assignment(), store)
+    assert [e["validated_memory_id"] for e in got] == ["valmem_1", "valmem_4"]
+
+
+def test_retrieve_validated_none_when_scope_not_readable(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append_validated([_validated_entry("valmem_1", "x")])
+    a = _readable_assignment(readable_scopes=["task_working_memory"])  # validated scope not readable
+    assert retrieve_validated_memory(a, store) == []
+
+
+def test_retrieve_validated_none_when_scope_prohibited(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append_validated([_validated_entry("valmem_1", "x")])
+    a = _readable_assignment(prohibited_scopes=["related_validated_memory"])
+    assert retrieve_validated_memory(a, store) == []
+
+
+def test_retrieve_validated_capped_and_recent(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append_validated([
+        _validated_entry(f"valmem_{i}", f"v{i}", promoted_at=f"2026-07-16T09:{i:02d}:00Z")
+        for i in range(9)
+    ])
+    got = retrieve_validated_memory(_readable_assignment(), store, limit=3)
+    assert [e["validated_memory_id"] for e in got] == ["valmem_6", "valmem_7", "valmem_8"]
+
+
+def test_retrieve_validated_empty_store_reads_clean(tmp_path):
+    store = WorkingMemoryStore(tmp_path / "wm")
+    assert retrieve_validated_memory(_readable_assignment(), store) == []
+
+
+def test_retrieve_validated_corrupt_store_fails_closed(tmp_path):
+    root = tmp_path / "wm"
+    root.mkdir()
+    (root / VALIDATED_FILE).write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(PersistenceError) as exc:
+        retrieve_validated_memory(_readable_assignment(), WorkingMemoryStore(root))
+    assert exc.value.reason_code == "VALIDATED_MEMORY_UNREADABLE"
+
+
+def test_prompt_carries_validated_block_distinct_from_candidates():
+    from runtime.mvp_runtime.worker import build_prompt
+    prompt = build_prompt({}, {}, None,
+                          [_entry("memcand_1", "unverified hunch")],
+                          [_validated_entry("valmem_1", "trusted fact")])
+    assert "[V1]" in prompt and "trusted fact" in prompt
+    assert "[M1]" in prompt and "unverified hunch" in prompt
+    assert "operator-approved" in prompt          # validated is framed as reliable
+    assert "unverified" in prompt                 # candidates stay framed as unverified
 
 
 @requires_local_core

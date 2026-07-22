@@ -39,6 +39,7 @@ from .operator import (
     select_operator_channel,
 )
 from .pipeline import AUTO_VALIDATION
+from .programization import ProgramizationStore
 from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
@@ -110,6 +111,7 @@ def main(
 
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
+    programization = ProgramizationStore.default()
     control_store = control_store if control_store is not None else ControlStore.default()
     # R9: without the approval store, Thomas's /approve over the deployed loop would fall
     # through to the pipeline and be analyzed as a business idea. The production entrypoint
@@ -136,6 +138,7 @@ def main(
                 summary = run_operator_once(
                     channel, registration, long_poll_seconds=args.long_poll_seconds,
                     provider=provider, search_tool=search_tool, working_memory=working_memory,
+                    programization=programization,
                     store=store, control_store=control_store, approval_store=approval_store,
                     independent_validation=_validation_policy(args.independent_validation),
                     validator_provider=validator_provider, repo_root=repo_root,
