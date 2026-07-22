@@ -268,6 +268,50 @@ def test_read_outcomes_corrupt_line_raises(tmp_path):
     assert exc.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
 
 
+def test_read_outcomes_tampered_native_record_raises(tmp_path):
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    outcome = build_outcome_record(_position(), "stop_loss", 102.0, -1.0, now=NOW)
+    tampered = {**outcome, "result_R": 5.0}  # edited AFTER the self-hash was minted
+    (path / "paper_outcomes.jsonl").write_text(
+        json.dumps(tampered) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        read_outcomes(tmp_path)
+    assert exc.value.reason_code == "OUTCOME_HISTORY_TAMPERED"
+
+
+def test_read_outcomes_native_roundtrip_verifies(tmp_path):
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    outcome = build_outcome_record(_position(), "stop_loss", 102.0, -1.0, now=NOW)
+    (path / "paper_outcomes.jsonl").write_text(json.dumps(outcome) + "\n", encoding="utf-8")
+    assert read_outcomes(tmp_path)[0]["outcome_id"] == outcome["outcome_id"]
+
+
+@pytest.mark.parametrize("field", ["outcome_id", "settlement_id"])
+def test_read_outcomes_duplicate_ids_raise(field, tmp_path):
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    # No provenance => no self-hash check; the duplicate id alone must trip.
+    record = {"outcome_closed": True, "result_R": 1.0, field: "dup_1"}
+    (path / "paper_outcomes.jsonl").write_text(
+        json.dumps(record) + "\n" + json.dumps(record) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        read_outcomes(tmp_path)
+    assert exc.value.reason_code == "OUTCOME_HISTORY_DUPLICATE"
+
+
+def test_read_outcomes_imported_records_skip_hash_recompute(tmp_path):
+    # Imported rows carry the SOURCE's hash over pre-import fields; recomputing it
+    # here would poison every import. Their tamper evidence is the audited batch.
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    imported = {"outcome_id": "orig_1", "outcome_closed": True, "result_R": 1.5,
+                "provenance": "crypto_ai_system_import", "record_sha256": "sha256:source-scheme"}
+    (path / "paper_outcomes.jsonl").write_text(json.dumps(imported) + "\n", encoding="utf-8")
+    assert read_outcomes(tmp_path) == [imported]
+
+
 def test_load_position_missing_is_none(tmp_path):
     assert load_open_position(tmp_path) is None
 

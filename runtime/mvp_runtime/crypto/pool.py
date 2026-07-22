@@ -185,6 +185,14 @@ def update_statuses(
 
 
 def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
+    """All candidate rows, oldest first — a VERIFIED read.
+
+    Any row carrying a ``record_sha256`` (everything :func:`append_candidates` has
+    written since the store began stamping) must recompute it exactly; a mismatch
+    raises ``CANDIDATES_TAMPERED`` so promotion asks/executions fail closed rather
+    than binding Thomas's approval to silently edited evidence. Rows persisted
+    before stamping existed have no hash to check — documented gap, closed for
+    every new row."""
     path = candidates_path(root)
     if not path.is_file():
         return []
@@ -200,17 +208,32 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
             record = json.loads(line)
         except ValueError as exc:
             raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates line {i + 1} is not valid JSON") from exc
-        if isinstance(record, dict):
-            rows.append(record)
+        if not isinstance(record, dict):
+            continue
+        stored = record.get("record_sha256")
+        if stored is not None:
+            body = {k: v for k, v in record.items() if k != "record_sha256"}
+            if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+                raise ToolError(
+                    "CANDIDATES_TAMPERED", f"strategy candidates line {i + 1} fails its self-hash"
+                )
+        rows.append(record)
     return rows
 
 
 def append_candidates(records: list[dict[str, Any]], *, root: Path | None = None) -> int:
-    """Append candidate records (operator/import door). Returns the count written."""
+    """Append candidate records (operator/import door). Returns the count written.
+
+    The store stamps each row's ``record_sha256`` at append time (over the full row,
+    import marks included), so tamper evidence starts the moment a row becomes
+    durable — provenance-independent, unlike the outcomes store's build-time hash."""
     path = candidates_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code="CANDIDATES_LOCKED", label="strategy candidates"):
         with open(path, "a", encoding="utf-8", newline="\n") as handle:
             for record in records:
-                handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
+                row = dict(record)
+                if "record_sha256" not in row:
+                    row["record_sha256"] = integrity.sha256_record(row)
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return len(records)

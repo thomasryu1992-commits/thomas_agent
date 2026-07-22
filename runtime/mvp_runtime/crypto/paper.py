@@ -348,13 +348,23 @@ def load_open_position(root: Path | None = None) -> dict[str, Any] | None:
 
 
 def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
-    """All persisted outcomes, oldest first. Missing store = honestly empty; an
-    unreadable line raises so the caller fails the risk guard closed
-    (``guards.risk_guard_unreadable``), never trades on a silently-truncated history."""
+    """All persisted outcomes, oldest first — a VERIFIED read. Missing store =
+    honestly empty; any unreadable, tampered, or duplicated record raises so the
+    caller fails the risk guard closed (``guards.risk_guard_unreadable``) — the
+    guard and feedback never learn from a history that cannot prove itself.
+
+    Verification per record: a native record (provenance ``mvp_paper_kernel``, whose
+    self-hash :func:`build_outcome_record` wrote) must recompute its
+    ``record_sha256`` exactly; ``outcome_id`` and ``settlement_id`` must be unique
+    across the whole store (a settlement_id duplicate is the double-settlement
+    signature). Imported records carry the source's own hash over pre-import fields,
+    so their tamper evidence is the audited import batch, not a per-record recompute."""
     path = state_dir(root) / OUTCOMES_FILENAME
     if not path.is_file():
         return []
     outcomes: list[dict[str, Any]] = []
+    seen_outcome_ids: set[str] = set()
+    seen_settlement_ids: set[str] = set()
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -366,8 +376,28 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             record = json.loads(line)
         except ValueError as exc:
             raise ToolError("OUTCOME_HISTORY_UNREADABLE", f"paper outcomes line {i + 1} is not valid JSON") from exc
-        if isinstance(record, dict):
-            outcomes.append(record)
+        if not isinstance(record, dict):
+            continue
+        if record.get("provenance") == "mvp_paper_kernel":
+            stored = record.get("record_sha256")
+            body = {k: v for k, v in record.items() if k != "record_sha256"}
+            if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+                raise ToolError(
+                    "OUTCOME_HISTORY_TAMPERED", f"paper outcomes line {i + 1} fails its self-hash"
+                )
+        outcome_id = record.get("outcome_id")
+        if isinstance(outcome_id, str) and outcome_id:
+            if outcome_id in seen_outcome_ids:
+                raise ToolError("OUTCOME_HISTORY_DUPLICATE", f"duplicate outcome_id: {outcome_id}")
+            seen_outcome_ids.add(outcome_id)
+        settlement_id = record.get("settlement_id")
+        if isinstance(settlement_id, str) and settlement_id:
+            if settlement_id in seen_settlement_ids:
+                raise ToolError(
+                    "OUTCOME_HISTORY_DUPLICATE", f"duplicate settlement_id: {settlement_id}"
+                )
+            seen_settlement_ids.add(settlement_id)
+        outcomes.append(record)
     return outcomes
 
 
