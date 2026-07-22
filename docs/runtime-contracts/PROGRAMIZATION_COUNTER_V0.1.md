@@ -92,8 +92,32 @@ the first two records real.
 - **Kill-switch bound:** `status` answers while PAUSED/KILLED (read-only door); `review` /
   `candidate` / `close` are refused — the memory-prune door rule.
 
+## Candidate shadow-validation path (increment 3; explicit Thomas decision 2026-07-22)
+
+`transition_candidate` / `record_shadow_result` + the CLI's `ready` / `validate` /
+`shadow` / `accept` / `reject` commands:
+
+- **Forward-only lifecycle:** DRAFT → REVIEW_READY → VALIDATING (shadow → RUNNING) →
+  shadow PASS/FAIL recorded → ACCEPTED or REJECTED. ACCEPTED/REJECTED are terminal;
+  `reject` is allowed from any pre-terminal status.
+- **The runtime never runs the shadow.** Programs are unregistered and
+  `unregistered_or_disabled_resource_execution` is BLOCK, so the shadow/limited comparison
+  (policy §5) is performed by Thomas; the runtime enforces its evidence discipline: an
+  outcome can only be recorded while the candidate is VALIDATING with the shadow RUNNING
+  (started by `validate` — an outcome cannot appear from nowhere), it requires a non-empty
+  `comparison_ref` + `result`, and it is single-shot (no re-recording; a wrong outcome is
+  a new decision, not an edit).
+- **`accept` requires shadow PASS** (`ACCEPT_REQUIRES_SHADOW_PASS`) — acceptance by
+  assertion is impossible; a FAILed shadow can only be rejected.
+- **Acceptance grants nothing.** `activation_eligibility` and `permission_expansion` are
+  closed-schema constants, so an ACCEPTED candidate is a review milestone, not a
+  capability: registry and activation stay APPROVAL_REQUIRED and unreachable from here.
+- Same discipline as every review action: operator identity + reason required,
+  kill-switch bound, each action a tamper-evident `programization_review_event.v0` (with
+  the shadow status the decision was made against) on the programization ledger stream;
+  candidate rows are append-only latest-wins, schema-validated before persisting.
+
 ## Next (separate Thomas decisions)
 
-Candidate lifecycle beyond DRAFT (REVIEW_READY/VALIDATING/ACCEPTED/REJECTED, shadow
-validation), program request records, registry entries, and any activation are each their
-own explicit approval — none is reachable from this CLI.
+Program request records, registry entries, and any activation are each their own explicit
+approval — none is reachable from this CLI.
