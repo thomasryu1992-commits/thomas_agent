@@ -163,6 +163,8 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, verdict,
         store=store, now=now, root=root, control_store=control_store,
     )
+    if paper_summary.get("settle_refused"):
+        reason_codes.append(paper_summary["settle_refused"]["reason_code"])
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
