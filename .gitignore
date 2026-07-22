@@ -27,3 +27,6 @@ workspace/
 
 # pytest --basetemp target (CLAUDE.md workaround for the pytest-of-thomas PermissionError)
 .pytest_tmp/
+
+# Compose secrets/per-host overrides (docker-compose.yml reads it; never commit values)
+.env

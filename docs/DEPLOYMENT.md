@@ -1,12 +1,20 @@
-# Server Deployment (R4.5)
+# Server Deployment (R4.5 / L3b)
 
 **Status:** Active (MVP runtime). **Normative authority:** None — `governance/GOVERNANCE_POLICY.yaml`
-and `runtime/mvp_runtime/` remain authoritative; this describes how to run the operator service.
+and `runtime/mvp_runtime/` remain authoritative; this describes how to run the deployed services.
 
-The MVP ships as a container that runs the operator control-channel loop
-(`runtime/mvp_runtime/operator_cli.py`) as a long-lived service: poll Telegram → verify the
-registered operator → run the single-agent pipeline → reply. The same emergency console
-(`/pause` `/kill` `/resume` `/status`) governs the running service.
+The MVP deploys as **two services from one image**, sharing one mounted state volume
+(`docker-compose.yml` at the repo root is the committed source of this topology):
+
+- **operator** — the control-channel loop (`runtime/mvp_runtime/operator_cli.py`): poll
+  Telegram → verify the registered operator → run the single-agent pipeline → reply. The same
+  emergency console (`/pause` `/kill` `/resume` `/status`) governs the running service.
+- **scheduler** — the tick loop (`runtime/mvp_runtime/scheduler_cli.py tick`): fires due
+  schedules (scheduled analysis, the crypto pipeline cycle, the strategy factory, memory
+  prune). **Without this service nothing scheduled ever runs** — the operator loop does not
+  tick schedules. Run at most ONE scheduler per state volume (the deployment contract is a
+  single tick process; the stores are cross-process locked, but parallel crypto workers are
+  out of scope).
 
 ## What the image contains — and deliberately does not
 
@@ -57,7 +65,39 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 `/app/.runtime_governance_state`. The Core activation/approval records additionally mount over
 `/app/THOMAS_CORE/activations` and `/app/THOMAS_CORE/approvals`.
 
-## Run
+## Run (compose — the deployed topology)
+
+Secrets and per-host paths come from a gitignored `.env` next to `docker-compose.yml`
+(compose reads it automatically). Typical `.env` for the current live host:
+
+```text
+MVP_OPERATOR_CHANNEL=telegram
+TELEGRAM_BOT_TOKEN=...
+MVP_HOSTED_PROVIDER=google_ai_studio,groq
+GOOGLE_AI_STUDIO_API_KEY=...
+GROQ_API_KEY=...
+MVP_VALIDATOR_PROVIDER=groq
+MVP_MARKET_DATA=binance_futures
+MVP_PAPER_TRADING=real
+# THOMAS_STATE_DIR=/srv/thomas/state          # defaults to ./.runtime_governance_state
+```
+
+```bash
+docker compose up -d --build
+docker compose ps            # both healthy: thomas-operator + thomas-scheduler
+docker compose logs -f scheduler
+```
+
+With an empty `.env` both services run the network-free mock paths — a safe smoke test:
+every env var alone fails closed without its mounted safety-flag grant, so a bare checkout
+cannot open a network socket or write paper state. The crypto gates (`MVP_MARKET_DATA`,
+`MVP_PAPER_TRADING`, `MVP_LIQUIDATION_FEED`) belong to the **scheduler** service; the
+operator service never trades.
+
+The compose operator runs with `--independent-validation auto` (review only
+important/high-risk requests — the R7.1 policy).
+
+### Run (plain docker — single service, e.g. a smoke test)
 
 ```bash
 docker run -d --name thomas-operator \
@@ -69,12 +109,13 @@ docker run -d --name thomas-operator \
   -v /srv/thomas/state:/app/.runtime_governance_state \
   -v /srv/thomas/core/activations:/app/THOMAS_CORE/activations:ro \
   -v /srv/thomas/core/approvals:/app/THOMAS_CORE/approvals:ro \
-  thomas-agent-operator
+  thomas-agent-runtime
 ```
 
 Omit the `MVP_OPERATOR_CHANNEL` / `MVP_HOSTED_PROVIDER` env vars (and their secrets) to run the
 network-free mock loop — a safe smoke test that touches no network and answers with the
-deterministic mock analysis.
+deterministic mock analysis. Remember that a plain operator container runs NO schedules — the
+scheduler service is what fires them.
 
 `MVP_HOSTED_PROVIDER` also accepts an ordered failover chain
 (`google_ai_studio,groq` — pass `GROQ_API_KEY` too). Every member needs its own
@@ -105,10 +146,21 @@ A `KILLED` state blocks all new/pending execution; only `/status` and audit read
 only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 
+## Health, logs, shutdown
+
+- **Healthcheck** (compose): `console_cli status` against the mounted control state — exits
+  nonzero when the state volume is unreadable. A KILLED runtime still answers: killed is
+  *halted*, not *unhealthy*, and resuming is the operator's decision, never the orchestrator's.
+- **Logs** rotate via the json-file driver (10 MB × 3 files per service).
+- **Shutdown**: `docker compose stop` sends SIGTERM with a 30 s grace period — enough for an
+  in-flight tick to finish its current fire; the claim-before-execute rule means a harder kill
+  drops (never doubles) the in-flight occurrence, and since L3a a fire that fails inside a
+  living process is recorded as a durable `failed` event.
+
 ## Notes
 
 - The base image is `python:3.12-slim` to match CI's Python 3.12.
-- The service runs as a non-root user (uid 10001); the mounted state directory must be writable
+- The services run as a non-root user (uid 10001); the mounted state directory must be writable
   by that uid.
 - Production runtime dependencies are pinned in `requirements-runtime.txt` (YAML + JSON Schema
   only); regenerate it in lockstep with `requirements-validation.lock`.
