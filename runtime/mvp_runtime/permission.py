@@ -93,6 +93,21 @@ WRITE_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — creates a new internal arti
 MEMORY_PROMOTION_PERMISSION_SCOPE = "SENSITIVE_MEMORY_GOVERNANCE"
 MEMORY_PROMOTION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates validated memory
 
+# Governance scope + level for the Candidate Role Trial authorization — the second
+# APPROVAL_REQUIRED action (the Governance Policy prices candidate_role_trial at
+# APPROVAL_REQUIRED, and the Candidate Trial Policy requires explicit Thomas approval).
+# Approved by Thomas 2026-07-22: CANDIDATE_ROLE_TRIAL joins SENSITIVE_MEMORY_GOVERNANCE as
+# an askable/consumable scope. P3 CREATE is the honest level: the trial creates new
+# internal records (an assignment, an output, a report) and mutates nothing persistent.
+TRIAL_PERMISSION_SCOPE = "CANDIDATE_ROLE_TRIAL"
+TRIAL_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — a one-shot isolated trial run + its records
+
+# The trial run's own work is internal read-only analysis by the candidate role — the same
+# ALLOW-tier effect class as the specialist's analysis, at P2 ANALYZE. A distinct
+# action_type keeps its decision id apart from a normal analysis on the same task.
+TRIAL_WORK_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"
+TRIAL_WORK_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only trial execution
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -109,11 +124,13 @@ _BUILDABLE_DISPOSITIONS = frozenset({"ALLOW", EXECUTE_AND_REPORT, APPROVAL_REQUI
 # so widening the disposition gate does not silently admit the other scopes governance
 # prices at EXECUTE_AND_REPORT (GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST, ...).
 _EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
-# Likewise for APPROVAL_REQUIRED: only the scope the runtime can actually ask about. The
+# Likewise for APPROVAL_REQUIRED: only the scopes the runtime can actually ask about. The
 # other APPROVAL_REQUIRED scopes (PUBLICATION, EXTERNAL_COMMUNICATION, FINANCIAL_*, ...)
 # name actions the runtime has no implementation for, so a request record for one would
 # assert an ask it could never honour. Refuse rather than record a fiction.
-_APPROVAL_REQUIRED_SCOPES = frozenset({MEMORY_PROMOTION_PERMISSION_SCOPE})
+# CANDIDATE_ROLE_TRIAL joined by explicit Thomas decision (2026-07-22, research/translation
+# trial rollout); its consumption implementation is trial.run_trial.
+_APPROVAL_REQUIRED_SCOPES = frozenset({MEMORY_PROMOTION_PERMISSION_SCOPE, TRIAL_PERMISSION_SCOPE})
 
 
 @dataclass(frozen=True)
@@ -550,6 +567,130 @@ def build_memory_promotion_permission_decision(
         repo_root=repo_root,
         action=action,
         approval_id=approval_id,
+    )
+
+
+def trial_content_sha256(role: Mapping[str, Any], trial_request: str) -> str:
+    """The content hash binding a trial approval to the EXACT role version + definition
+    bytes + trial task text. Any drift in any of them after Thomas approved — a role
+    edit, a version bump, a swapped task — changes this hash, so the fingerprint check
+    at consumption time refuses the spend."""
+    return integrity.sha256_record({
+        "role_id": role.get("role_id"),
+        "role_version": role.get("version"),
+        "definition_sha256": role.get("definition_sha256"),
+        "trial_request": trial_request,
+    })
+
+
+def build_trial_permission_decision(
+    bound_task: Mapping[str, Any],
+    role: Mapping[str, Any],
+    *,
+    trial_request: str,
+    now: str,
+    role_permission_ceiling: str = TRIAL_REQUIRED_PERMISSION_LEVEL,
+    approval_id: str | None = None,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for one Candidate Role Trial —
+    the ask that a specific candidate role may run ONE isolated trial task.
+
+    The action is bound to the exact candidate: role id + version in the target, and the
+    role version, definition hash, and trial task text in the content hash — so an
+    approval of *this* trial cannot be re-pointed at a different role revision or task
+    (``action_identity.invalidated_by_any_material_field_change``). The trial request text
+    also rides in ``normalized_parameters`` so the consumption step can run exactly the
+    approved task without a side channel.
+
+    Building this record runs nothing: the decision is APPROVAL_REQUIRED, and acting on
+    the eventual grant is ``trial.run_trial`` — a separate, gated, single-use consumption.
+    """
+    role_id = role.get("role_id")
+    role_version = role.get("version")
+    definition_sha256 = role.get("definition_sha256")
+    if not (isinstance(role_id, str) and role_id and isinstance(role_version, str) and role_version):
+        raise PlannerBlocked("INVALID_ROLE", "trial role must carry role_id and version")
+    if not (isinstance(definition_sha256, str) and definition_sha256):
+        raise PlannerBlocked("INVALID_ROLE", "trial role must carry its definition_sha256")
+    if not (isinstance(trial_request, str) and trial_request.strip()):
+        raise PlannerBlocked("INVALID_TRIAL_REQUEST", "a trial needs a non-empty trial task text")
+
+    action = _ActionSpec(
+        action_type="role.candidate.trial",
+        target_suffix="candidate_trial",
+        tool_id=None,
+        data_scope=(f"role.candidate.{role_id}", "task.request"),
+        normalized_parameters={
+            "assignment_mode": "candidate_trial",
+            "isolated_trial_context": True,
+            "role_version": role_version,
+            "trial_request": trial_request,
+        },
+        risk_reason="Runs a non-activated candidate role once; requires explicit Thomas approval per policy.",
+        authority_reason="Prime may prepare a candidate-role trial for Thomas review; the decision is Thomas's.",
+        decision_reason="candidate_role_trial is APPROVAL_REQUIRED; only Thomas may authorize a trial run.",
+        constraint=(
+            "Isolated single trial run: no external action, no memory read/write, no workspace "
+            "write, no persistent runtime change; independent validation and full audit required."
+        ),
+        target_ref=f"candidate_role:{role_id}@{role_version}",
+        content_sha256=trial_content_sha256(role, trial_request),
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRIAL_PERMISSION_SCOPE,
+        required_permission_level=TRIAL_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_trial_work_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the ALLOW PermissionDecision the candidate role's trial WORK runs under.
+
+    The trial authorization above is Thomas's APPROVAL_REQUIRED grant to hold the trial at
+    all; the work itself — one read-only internal analysis by the candidate role — is the
+    same ALLOW-tier effect class as a normal specialist run, at P2 ANALYZE, and gets its
+    own least-privilege decision exactly like the validator's or the triage's. A distinct
+    action_type keeps the decision id apart from a normal analysis."""
+    action = _ActionSpec(
+        action_type="internal.analysis.candidate_trial",
+        target_suffix="candidate_trial_work",
+        tool_id=None,
+        data_scope=("task.request",),
+        normalized_parameters={"assignment_mode": "candidate_trial", "visibility": "internal"},
+        risk_reason="Isolated internal trial analysis; no external, financial, or runtime effect.",
+        authority_reason="Trial execution within the approved trial scope and the candidate role's ceiling.",
+        decision_reason="Authority is sufficient and the trial work is internal, isolated, and read-only.",
+        constraint="No external action, tool/program execution, memory access, or runtime mutation.",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRIAL_WORK_PERMISSION_SCOPE,
+        required_permission_level=TRIAL_WORK_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
     )
 
 

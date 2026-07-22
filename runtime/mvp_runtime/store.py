@@ -60,6 +60,7 @@ _RECORD_KINDS = (
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
     "budget_usage",
+    "trial_report",
 )
 
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as

@@ -47,6 +47,7 @@ from .authority import permission_decision_runtime_effect
 from .control import command_verb
 from .errors import ApprovalBlocked
 from .paths import repo_root as _repo_root
+from .permission import TRIAL_PERMISSION_SCOPE
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
@@ -351,6 +352,7 @@ def format_request(approval: Mapping[str, Any]) -> str:
     """
     snapshot = approval["approved_action_snapshot"]
     permdec_reasons = approval.get("_decision_reasons") or []
+    trial = snapshot.get("permission_scope") == TRIAL_PERMISSION_SCOPE
     lines = [
         "Approval Request",
         "",
@@ -365,7 +367,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
         f"요청 이유: {'; '.join(permdec_reasons) if permdec_reasons else '—'}",
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
         "예상 비용: 없음",
-        "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다",
+        ("되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
+         if trial else
+         "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",
         "",
@@ -374,9 +378,17 @@ def format_request(approval: Mapping[str, Any]) -> str:
         f"{approval['approval_id']} 근거 문서가 부족함)",
         "",
         "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
-        "승인 후 소비(consume)는 별도의 운영자 단계이며, approval_consumption 세이프티",
-        "플래그가 켜진 기기에서만 이 승인 하나에 묶인 승격을 1회 수행합니다.",
     ]
+    if trial:
+        lines += [
+            "승인 후 소비(trial run)는 별도의 운영자 단계이며, approval_consumption 세이프티",
+            "플래그가 켜진 기기에서만 이 승인 하나에 묶인 격리 트라이얼을 1회 실행합니다.",
+        ]
+    else:
+        lines += [
+            "승인 후 소비(consume)는 별도의 운영자 단계이며, approval_consumption 세이프티",
+            "플래그가 켜진 기기에서만 이 승인 하나에 묶인 승격을 1회 수행합니다.",
+        ]
     return "\n".join(lines)
 
 
@@ -573,9 +585,16 @@ def apply_command(
         # Echo the recorded reason so Thomas sees his own words made it into the record.
         reply += f"\nReason recorded: {decided['decision']['decision_reason']}"
     if granted:
-        reply += (
-            "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically. "
-            "Consume it as a separate operator step (approval_cli consume <id>) to perform the "
-            "single bound promotion; consumption is gated by the approval_consumption safety flag."
-        )
+        if snapshot.get("permission_scope") == TRIAL_PERMISSION_SCOPE:
+            reply += (
+                "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically. "
+                "Run the single bound trial as a separate operator step (trial_cli run <id>); "
+                "consumption is gated by the approval_consumption safety flag."
+            )
+        else:
+            reply += (
+                "\nThis approval is REVIEW_ONLY — the runtime will not act on it automatically. "
+                "Consume it as a separate operator step (approval_cli consume <id>) to perform the "
+                "single bound promotion; consumption is gated by the approval_consumption safety flag."
+            )
     return {"action": decided["status"], "approval": decided, "reply": reply}
