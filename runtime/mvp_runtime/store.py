@@ -61,6 +61,7 @@ _RECORD_KINDS = (
     "independent_validation_result", "validator_invocation", "write_use",
     "budget_usage",
     "trial_report",
+    "crypto_cycle",
 )
 
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as
