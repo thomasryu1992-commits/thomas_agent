@@ -32,6 +32,8 @@ def _assert_series_equal(name: str, actual: list, expected: list) -> None:
     for i, (a, e) in enumerate(zip(actual, expected)):
         if e is None:
             assert a is None, f"{name}[{i}]: expected None (pandas NaN), got {a}"
+        elif isinstance(e, str):  # categorical parity (market_regime labels)
+            assert a == e, f"{name}[{i}]: {a!r} != {e!r}"
         else:
             assert a is not None, f"{name}[{i}]: expected {e}, got None"
             assert math.isclose(a, e, rel_tol=1e-9, abs_tol=1e-12), f"{name}[{i}]: {a} != {e}"

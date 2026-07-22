@@ -62,6 +62,7 @@ _RECORD_KINDS = (
     "budget_usage",
     "trial_report",
     "crypto_cycle",
+    "crypto_factory",
 )
 
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as
