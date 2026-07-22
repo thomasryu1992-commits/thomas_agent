@@ -32,10 +32,11 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError, ToolBlocked
+from .errors import MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked
 from .intake import build_task
-from .memory import retrieve_working_memory
+from .memory import retrieve_validated_memory, retrieve_working_memory
 from .prime import plan_task
+from .programization import ProgramizationStore, observe_completed_run
 from .store import LedgerStore
 from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
@@ -175,6 +176,7 @@ def run_task(
     provider: Provider | None = None,
     search_tool: SearchTool | None = None,
     working_memory: WorkingMemoryStore | None = None,
+    programization: ProgramizationStore | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
@@ -192,9 +194,17 @@ def run_task(
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
     network tool is chosen via the Safety-Flag Gate by the caller).
 
-    ``working_memory`` (opt-in) makes prior working-memory candidates available as context
-    and accumulates this run's candidates for later runs. Omitting it keeps the run pure and
-    deterministic — memory only accumulates when a caller supplies the store.
+    ``working_memory`` (opt-in) makes prior working-memory candidates and operator-promoted
+    VALIDATED memory available as context and accumulates this run's candidates for later
+    runs. Omitting it keeps the run pure and deterministic — memory only accumulates when a
+    caller supplies the store.
+
+    ``programization`` (opt-in) records one repetition observation per COMPLETED+PASS run
+    and folds it into the pattern counter (Programization Review Policy). Ten valid
+    independent repetitions raise a **review trigger only** — audited as
+    PROGRAMIZATION_REVIEW_TRIGGERED, never creating or activating a Program. Best-effort:
+    counting is enrichment, so a counter failure is noted on the result
+    (``programization_error``) but never withholds a delivered run.
 
     ``independent_validation`` (R7, opt-in) adds the second agent of the minimal dynamic
     team: an independent validator (``validation.independent``) reviews the specialist's
@@ -340,9 +350,18 @@ def run_task(
         )
         records["memory_retrieved"] = memory_entries
 
+        # Operator-promoted VALIDATED memory feeds back too — the read leg of the loop the
+        # role's memory_policy already grants (readable scope: related_validated_memory).
+        validated_entries = (
+            retrieve_validated_memory(plan["role_assignment"], working_memory)
+            if working_memory is not None else []
+        )
+        records["validated_memory_retrieved"] = validated_entries
+
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=provider, created_at=now,
-            search_hits=search_hits, memory_entries=memory_entries, repo_root=repo_root,
+            search_hits=search_hits, memory_entries=memory_entries,
+            validated_entries=validated_entries, repo_root=repo_root,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
@@ -391,6 +410,37 @@ def run_task(
             # be conditional on what happens next.
             result["write"] = _write_report(write_use)
 
+        # Programization repetition counter (opt-in, PASS only): one observation per
+        # completed run, folded into its pattern. Ten valid independent repetitions raise
+        # a review trigger ONLY (audited below) — no Program is created or activated.
+        # Best-effort like working-memory accumulation: the counter is enrichment, so a
+        # failure is noted on the result, never blocks a delivered run.
+        programization_pattern = None
+        programization_triggered = False
+        if programization is not None and outcome == "PASS":
+            steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
+            if working_memory is not None:
+                steps_run.append("memory_retrieval")
+            steps_run += ["analysis_worker", "automatic_validation"]
+            if independent_validation_result is not None:
+                steps_run.append("independent_validation")
+            if write_use is not None:
+                steps_run.append("controlled_write")
+            try:
+                observation, programization_pattern, programization_triggered = observe_completed_run(
+                    programization, task=plan["task"], assignment=plan["role_assignment"],
+                    steps=steps_run,
+                    # A provider with no network egress is an in-process mock: a synthetic
+                    # run, observed but never counted (policy §4).
+                    synthetic=not bool(getattr(provider, "network_egress", False)),
+                    now=now, repo_root=repo_root,
+                )
+                records["programization_observation"] = observation
+                records["programization_pattern"] = programization_pattern
+            except (PersistenceError, ProgramizationBlocked) as exc:
+                programization_pattern = None
+                result.setdefault("programization_error", exc.reason_code)
+
         # What the run actually spent, against the allocation it ran under. The task and
         # assignment records are allocations built before execution, so their zeroed usage
         # can never answer this — the contract's usage_must_be_recorded_for_audit invariant
@@ -425,6 +475,8 @@ def run_task(
             validator_permission_decision=plan.get("validator_permission_decision"),
             write_use=write_use,
             write_permission_decision=plan.get("write_permission_decision"),
+            programization_pattern=programization_pattern,
+            programization_triggered=programization_triggered,
             genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:

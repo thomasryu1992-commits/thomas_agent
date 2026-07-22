@@ -200,6 +200,44 @@ def test_working_memory_corrupt_store_fails_closed(tmp_path):
     assert r["block"]["reason_code"] == "WORKING_MEMORY_UNREADABLE"
 
 
+@requires_local_core
+def test_promoted_memory_feeds_back_as_validated_context(tmp_path):
+    """The full loop: run -> candidate -> operator promotion -> next run reads it back."""
+    from runtime.mvp_runtime.memory import promote_candidate
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+
+    first = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now=NOW)
+    assert first["status"] == "COMPLETED"
+    assert first["records"]["validated_memory_retrieved"] == []  # nothing promoted yet
+
+    # Explicit operator promotion (never on the run path) of the first run's candidate.
+    candidate = wm.read_all()[0]
+    validated = promote_candidate(candidate, promoted_by="thomas", reason="test promotion",
+                                  now="2026-07-16T09:30:00Z")
+    wm.append_validated([validated])
+
+    second = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    assert second["status"] == "COMPLETED"
+    retrieved = second["records"]["validated_memory_retrieved"]
+    assert [e["validated_memory_id"] for e in retrieved] == [validated["validated_memory_id"]]
+    evidence = second["records"]["agent_output"]["evidence"]
+    assert {"ref": f"validated_memory:{validated['validated_memory_id']}",
+            "type": "validated_memory",
+            "candidate_type": validated["candidate_type"]} in evidence
+
+
+@requires_local_core
+def test_corrupt_validated_store_fails_closed(tmp_path):
+    from runtime.mvp_runtime.working_memory import VALIDATED_FILE, WorkingMemoryStore
+    root = tmp_path / "wm"
+    root.mkdir()
+    (root / VALIDATED_FILE).write_text("{bad json}\n", encoding="utf-8")
+    r = run_task(REQUEST, provider=MockProvider(), working_memory=WorkingMemoryStore(root), now=NOW)
+    assert r["status"] == "BLOCKED"
+    assert r["block"]["reason_code"] == "VALIDATED_MEMORY_UNREADABLE"
+
+
 # --- R8: the controlled write -----------------------------------------------
 
 
