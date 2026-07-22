@@ -155,7 +155,38 @@ record contract; creation is ALLOW per `tool_or_program_request_creation`).
 - Audited as `programization_review_event.v0` (`program_request_created`, carrying the
   BLOCK verdict + reasons) on the programization ledger stream.
 
+## Registry registration (increment 5; explicit Thomas decision 2026-07-22)
+
+`runtime/mvp_runtime/registration.py` + `scripts/register_program_candidate.py` — the
+C8b verified-never-spent pattern applied to the registry:
+
+- **Ask** (`--request`): requires the full lineage (ACCEPTED candidate **and** its
+  program request; the program id/version come from the request, never from arguments).
+  A real bound task anchors an APPROVAL_REQUIRED PermissionDecision — scope
+  `TOOL_PROGRAM_GOVERNANCE` joined `_APPROVAL_REQUIRED_SCOPES` (explicit Thomas decision
+  2026-07-22), P4, no consumption implementation — whose fingerprint binds the canonical
+  hash of the exact definition content; `approval.build_approval_request` turns it into
+  the PENDING R9 ask Thomas answers with `/approve` / `/reject`.
+- **Definition content:** Thomas authors `purpose` / `inputs` / `outputs` in an input
+  file; the runtime pins everything load-bearing — `status: candidate`,
+  `enabled: false`, `implementation_available: false`, effects all false, permission
+  level from the program request. One hash is both the approval's content binding and
+  the registry's `definition_sha256`.
+- **Apply** (`--approval-id … --confirm`): kill-switch first; the approval is *verified*
+  (APPROVED, unexpired, right action type, content hash re-derived from CURRENT lineage
+  + input — anything changed since Thomas's yes refuses) and never consumed; then the
+  definition file + registry entry are written **into the working tree**, self-checked
+  through the canonical resolver (a failed check removes the created file and leaves the
+  registry untouched), and recorded on the programization ledger stream
+  (`program_registered`). Committing the change is Thomas's PR — the runtime never
+  touches `main`. Create-only: existing id+version or definition path refuses. No
+  without-approval escape exists on this door.
+- **Registration grants nothing:** the entry is `candidate` + `enabled: false` +
+  no implementation, so `unregistered_or_disabled_resource_execution: BLOCK` still
+  refuses it at every chokepoint.
+
 ## Next (separate Thomas decisions)
 
-Registry entries (registration of a requested program) and any activation are each their
-own explicit approval — neither is reachable from this CLI.
+Program **activation** (`status: active`, `enabled: true`, a runtime implementation, and
+role/assignment allowlists) is its own explicit approval — not reachable from any door
+built so far.
