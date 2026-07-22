@@ -119,6 +119,16 @@ TRIAL_WORK_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only trial execu
 STRATEGY_PROMOTION_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
 STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — replaces the active pool
 
+# Governance scope + level for Program registry registration (explicit Thomas decision
+# 2026-07-22): adding a candidate entry (status: candidate, enabled: false) to the Program
+# Registry. Like RUNTIME_GOVERNANCE, this scope has NO consumption implementation — an
+# APPROVED registration ask is verified, never spent, by
+# scripts/register_program_candidate.py (the pre-R10 operator door). P4 is the honest
+# level: the registration modifies internal governance source (a registry index entry +
+# its definition file); it enables and activates nothing.
+REGISTRATION_PERMISSION_SCOPE = "TOOL_PROGRAM_GOVERNANCE"
+REGISTRATION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — registry candidate entry
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -150,8 +160,11 @@ _EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
 # RUNTIME_GOVERNANCE joined by explicit Thomas decision (2026-07-22, crypto pipeline C8b);
 # it has NO consumption implementation — an APPROVED promotion ask is verified, never
 # spent, by scripts/promote_strategy_candidates.py (the pre-R10 operator door, kept).
+# TOOL_PROGRAM_GOVERNANCE joined by explicit Thomas decision (2026-07-22, program
+# registration); likewise verified-never-spent, by scripts/register_program_candidate.py.
 _APPROVAL_REQUIRED_SCOPES = frozenset({
     MEMORY_PROMOTION_PERMISSION_SCOPE, TRIAL_PERMISSION_SCOPE, STRATEGY_PROMOTION_PERMISSION_SCOPE,
+    REGISTRATION_PERMISSION_SCOPE,
 })
 
 
@@ -735,6 +748,71 @@ def build_trial_permission_decision(
         permission_scope=TRIAL_PERMISSION_SCOPE,
         required_permission_level=TRIAL_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_program_registration_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    program_id: str,
+    program_version: str,
+    definition_sha256: str,
+    candidate_id: str,
+    program_request_id: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to register a
+    candidate Program in the Program Registry (explicit Thomas decision 2026-07-22).
+
+    The action binds the exact registration: program id + version, the canonical hash of
+    the definition content that would be registered, and the review lineage (the ACCEPTED
+    programization candidate and its program request). Any material change mints a
+    different fingerprint and therefore a different approval. Building this record
+    performs nothing; executing the approved registration is the operator door
+    (``scripts/register_program_candidate.py``), which VERIFIES the approval against the
+    same content hash and never consumes it. The registered entry stays
+    ``status: candidate, enabled: false`` — activation is a separate approval.
+    """
+    if not (isinstance(definition_sha256, str) and definition_sha256.startswith("sha256:")):
+        raise PlannerBlocked("INVALID_REGISTRATION", "registration needs the definition content hash")
+    action = _ActionSpec(
+        action_type="program.registry.registration",
+        target_suffix="program_registration",
+        tool_id=None,
+        program_id=f"{program_id}@{program_version}",
+        data_scope=("program.registry", "programization.review"),
+        normalized_parameters={
+            "program_id": program_id,
+            "program_version": program_version,
+            "candidate_id": candidate_id,
+            "program_request_id": program_request_id,
+        },
+        risk_reason="Adds a candidate entry to the Program Registry; requires explicit Thomas approval per policy.",
+        authority_reason="Prime may prepare a registration for Thomas review; the decision is Thomas's.",
+        decision_reason="TOOL_PROGRAM_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a registry change.",
+        constraint=(
+            "Candidate registration only: status candidate, enabled false, no runtime "
+            "implementation — no execution, enablement, or activation capability."
+        ),
+        target_ref=f"program_registry:{program_id}@{program_version}",
+        content_sha256=definition_sha256,
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=REGISTRATION_PERMISSION_SCOPE,
+        required_permission_level=REGISTRATION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=REGISTRATION_REQUIRED_PERMISSION_LEVEL,
         now=now,
         actor_id=actor_id,
         ttl_minutes=ttl_minutes,
