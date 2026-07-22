@@ -253,8 +253,8 @@ def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) 
 
 
 def _execute(
-    schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, provider: Any,
-    search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
+    schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
+    provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
 ) -> str:
     """Execute one due schedule and return a short status string."""
     if schedule.kind == KIND_PRUNE:
@@ -290,6 +290,7 @@ def _execute(
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
+        programization=programization,
         now=now, store=ledger, repo_root=repo_root, channel="scheduler", requester_type="scheduler",
         requester_id="mvp.scheduler", authenticated=True, source_ref=f"scheduler:{schedule.schedule_id}",
     )
@@ -303,6 +304,7 @@ def run_due(
     control_store: ControlStore | None = None,
     ledger: LedgerStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
+    programization: Any | None = None,
     provider: Any | None = None,
     search_tool: Any | None = None,
     repo_root: Path | None = None,
@@ -357,6 +359,7 @@ def run_due(
             continue
 
         status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
+                          programization=programization,
                           provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
         fired += 1
         if ledger is not None:
