@@ -32,10 +32,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
+from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import jsonl, schema_cache
 from .errors import ProgramizationBlocked
+from .events import stamped_event
 from .filelock import locked
 from .intake import TASK_SCHEMA_VERSION
 from .paths import repo_root as _repo_root
@@ -43,6 +45,7 @@ from .worker import AGENT_OUTPUT_SCHEMA_VERSION, WORKER_VERSION
 
 OBSERVATION_SCHEMA_VERSION = "programization_observation.v0.1"
 PATTERN_SCHEMA_VERSION = "programization_pattern.v0.1"
+CANDIDATE_SCHEMA_VERSION = "programization_candidate.v0.1"
 REVIEW_TRIGGER_COUNT = 10               # policy §1: a review trigger, never auto-conversion
 TASK_TYPE = "business_idea_analysis"    # the locked MVP use case
 ENVIRONMENT_VERSION = f"mvp_runtime/{WORKER_VERSION}"
@@ -50,7 +53,18 @@ ENVIRONMENT_VERSION = f"mvp_runtime/{WORKER_VERSION}"
 PROGRAMIZATION_REL = ".runtime_governance_state/programization"
 OBSERVATIONS_FILE = "observations.jsonl"
 PATTERNS_FILE = "patterns.jsonl"
+CANDIDATES_FILE = "candidates.jsonl"
 _LOCK = ".programization.lock"          # one lock: observe is a read-count-append critical section
+
+# Review lifecycle (operator-only, explicit Thomas decision 2026-07-22): forward-only.
+# NOT_TRIGGERED is the counter's own state (never operator-set), CLOSED is terminal —
+# reopening a closed review would be a new Thomas decision, not a CLI transition.
+_REVIEW_TRANSITIONS: dict[str, set[str]] = {
+    "TRIGGERED": {"UNDER_REVIEW", "CLOSED"},
+    "UNDER_REVIEW": {"CLOSED"},
+}
+
+REVIEW_EVENT_TYPE = "programization_review_event.v0"
 
 
 class ProgramizationStore:
@@ -104,6 +118,15 @@ class ProgramizationStore:
     def append_pattern(self, pattern: Mapping[str, Any]) -> None:
         jsonl.append_lines(self._root / PATTERNS_FILE, [pattern],
                            write_code="PROGRAMIZATION_WRITE_FAILED", label="programization patterns")
+
+    def read_candidates(self) -> list[dict[str, Any]]:
+        """Every stored program candidate record. Fail-closed on a corrupt store."""
+        return jsonl.read_objects(self._root / CANDIDATES_FILE,
+                                  read_code="PROGRAMIZATION_UNREADABLE", label="programization candidates")
+
+    def append_candidate(self, candidate: Mapping[str, Any]) -> None:
+        jsonl.append_lines(self._root / CANDIDATES_FILE, [candidate],
+                           write_code="PROGRAMIZATION_WRITE_FAILED", label="programization candidates")
 
 
 def build_pattern_signature(
@@ -259,3 +282,162 @@ def observe_completed_run(
         if valid or latest is None:
             store.append_pattern(pattern)
     return observation, pattern, triggered_now
+
+
+# --- Review handling (operator-only; explicit Thomas decision 2026-07-22) ----
+
+
+def _require_operator(actor: str, reason: str) -> tuple[str, str]:
+    """Review actions are explicit operator decisions: identity + reason, or refuse."""
+    if not (isinstance(actor, str) and actor.strip()):
+        raise ProgramizationBlocked("MISSING_OPERATOR", "a review action requires an operator identity")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise ProgramizationBlocked("MISSING_REASON", "a review action requires an operator reason")
+    return actor.strip(), reason.strip()
+
+
+def transition_review(
+    store: ProgramizationStore,
+    pattern_id: str,
+    to_status: str,
+    *,
+    reviewed_by: str,
+    reason: str,
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Move a pattern's review status forward (TRIGGERED → UNDER_REVIEW → CLOSED).
+
+    Operator-only and forward-only: the counter owns NOT_TRIGGERED/TRIGGERED, the operator
+    owns UNDER_REVIEW/CLOSED, and nothing reopens a CLOSED review. The new pattern row is
+    schema-validated and appended latest-wins under the store lock (so a concurrent
+    observation folds into the current state, never a stale one). Returns the new row."""
+    root = repo_root if repo_root is not None else _repo_root()
+    reviewed_by, reason = _require_operator(reviewed_by, reason)
+    with store.lock():
+        latest = store.latest_patterns().get(pattern_id)
+        if latest is None:
+            raise ProgramizationBlocked("PATTERN_NOT_FOUND", f"no pattern {pattern_id!r}")
+        from_status = str(latest.get("review_status"))
+        if to_status not in _REVIEW_TRANSITIONS.get(from_status, set()):
+            raise ProgramizationBlocked(
+                "INVALID_REVIEW_TRANSITION",
+                f"review transition {from_status} -> {to_status} is not allowed",
+            )
+        pattern = {**latest, "review_status": to_status, "last_updated_at_utc": now}
+        _validate(pattern, PATTERN_SCHEMA_VERSION, "programization_pattern", root)
+        store.append_pattern(pattern)
+    return pattern
+
+
+def build_review_event(
+    pattern: Mapping[str, Any],
+    *,
+    action: str,
+    from_status: str,
+    reviewed_by: str,
+    reason: str,
+    now: str,
+    candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """A tamper-evident standalone ledger event for one operator review action.
+
+    The memory-retention precedent (`stamped_event` on its own ledger stream), not a
+    task-bound audit event: a review action is an operator decision about accumulated
+    state, anchored to no single task."""
+    fields: dict[str, Any] = dict(
+        action=action, pattern_id=str(pattern.get("pattern_id")),
+        from_status=from_status, to_status=str(pattern.get("review_status")),
+        valid_repetition_count=pattern.get("valid_repetition_count"),
+        reviewed_by=reviewed_by, reason=reason, created_at=now,
+    )
+    if candidate_id is not None:
+        fields["candidate_id"] = candidate_id
+    return stamped_event(REVIEW_EVENT_TYPE, **fields)
+
+
+_CANDIDATE_INPUT_LISTS = ("deterministic_slice", "agent_retained_responsibilities", "defined_exceptions")
+
+
+def create_program_candidate(
+    store: ProgramizationStore,
+    pattern_id: str,
+    review_input: Mapping[str, Any],
+    *,
+    created_by: str,
+    reason: str,
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Create the DRAFT ``programization_candidate.v0.1`` a review produces (policy §5).
+
+    Candidate creation is ALLOW-tier (`tool_or_program_request_creation: ALLOW`) but it is
+    the *review's* outcome, so it requires the pattern to be UNDER_REVIEW and it is an
+    explicit operator action with identity + reason. The review substance —
+    ``deterministic_slice``, ``agent_retained_responsibilities``, ``defined_exceptions``,
+    ``rollback.procedure_ref``, optional baseline/candidate metrics — comes from
+    ``review_input`` (authored by Thomas); the runtime contributes only identity, the
+    pattern's count, and the schema's hard constants: ``activation_eligibility`` stays
+    ``candidate_only_pending_program_registry_and_permission_policy`` and
+    ``permission_expansion`` stays false — a candidate grants nothing
+    (`candidate_status_does_not_grant_runtime_permission`). One candidate per pattern:
+    revising or re-drafting is a later, separate decision. Fail-closed on a
+    secret-bearing input and on the closed schema."""
+    root = repo_root if repo_root is not None else _repo_root()
+    created_by, reason = _require_operator(created_by, reason)
+    if not isinstance(review_input, Mapping):
+        raise ProgramizationBlocked("CANDIDATE_INPUT_INVALID", "review input must be a mapping")
+
+    lists: dict[str, list[str]] = {}
+    for key in _CANDIDATE_INPUT_LISTS:
+        value = review_input.get(key)
+        items = [x for x in value if isinstance(x, str) and x.strip()] if isinstance(value, list) else []
+        if not items:
+            raise ProgramizationBlocked(
+                "CANDIDATE_INPUT_INVALID", f"review input requires a non-empty string list {key!r}")
+        lists[key] = items
+    rollback_ref = review_input.get("rollback_procedure_ref")
+    if not (isinstance(rollback_ref, str) and rollback_ref.strip()):
+        raise ProgramizationBlocked(
+            "CANDIDATE_INPUT_INVALID", "review input requires rollback_procedure_ref (policy §5: rollback path)")
+
+    def _metrics(key: str) -> dict[str, Any]:
+        value = review_input.get(key)
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    with store.lock():
+        latest = store.latest_patterns().get(pattern_id)
+        if latest is None:
+            raise ProgramizationBlocked("PATTERN_NOT_FOUND", f"no pattern {pattern_id!r}")
+        if latest.get("review_status") != "UNDER_REVIEW":
+            raise ProgramizationBlocked(
+                "CANDIDATE_REQUIRES_REVIEW",
+                "a program candidate is the review's outcome — the pattern must be UNDER_REVIEW",
+            )
+        if any(c.get("pattern_id") == pattern_id for c in store.read_candidates()):
+            raise ProgramizationBlocked(
+                "CANDIDATE_EXISTS", f"pattern {pattern_id!r} already has a candidate")
+
+        candidate = {
+            "schema_version": CANDIDATE_SCHEMA_VERSION,
+            "candidate_id": integrity.short_id(
+                "progcand", {"pattern_id": pattern_id, "created_by": created_by, "created_at": now}),
+            "pattern_id": pattern_id,
+            "valid_repetition_count": latest.get("valid_repetition_count"),
+            **lists,
+            "baseline_metrics": _metrics("baseline_metrics"),
+            "candidate_metrics": _metrics("candidate_metrics"),
+            "shadow_validation": {"status": "NOT_STARTED", "comparison_ref": None, "result": None},
+            "rollback": {"available": True, "procedure_ref": rollback_ref.strip()},
+            "activation_eligibility": "candidate_only_pending_program_registry_and_permission_policy",
+            "permission_expansion": False,
+            "status": "DRAFT",
+            "created_at_utc": now,
+        }
+        try:
+            integrity.scan_for_secret_bearing_keys(candidate)
+        except IntegrityError as exc:
+            raise ProgramizationBlocked("SECRET_IN_CANDIDATE", str(exc)) from exc
+        _validate(candidate, CANDIDATE_SCHEMA_VERSION, "programization_candidate", root)
+        store.append_candidate(candidate)
+    return candidate

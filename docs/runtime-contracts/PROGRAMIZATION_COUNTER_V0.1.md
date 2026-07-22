@@ -65,7 +65,35 @@ the first two records real.
   precedent). Observation rows carry a store-internal `input_sha256` sidecar the closed
   schema deliberately does not (needed to detect replayed input).
 
+## Review handling (increment 2; explicit Thomas decision 2026-07-22)
+
+`runtime/mvp_runtime/programization_cli.py` + `transition_review` / `create_program_candidate`:
+
+- **Operator transitions, forward-only:** `review` moves TRIGGERED → UNDER_REVIEW, `close`
+  moves TRIGGERED/UNDER_REVIEW → CLOSED. The counter owns NOT_TRIGGERED/TRIGGERED, the
+  operator owns UNDER_REVIEW/CLOSED, and CLOSED is terminal (reopening is a new decision).
+  The counter keeps counting during and after a review without ever touching an
+  operator-owned status. Every mutation requires an operator identity + reason and is
+  refused otherwise.
+- **Candidate creation** (`candidate` command): the review's outcome per policy §5, allowed
+  only while UNDER_REVIEW, one per pattern. Thomas authors the substance in an input file
+  (`deterministic_slice`, `agent_retained_responsibilities`, `defined_exceptions`,
+  `rollback_procedure_ref`, optional metrics); the runtime contributes identity, the
+  pattern's count, `shadow_validation: NOT_STARTED`, and the schema's hard constants —
+  `activation_eligibility: candidate_only_pending_program_registry_and_permission_policy`
+  and `permission_expansion: false`. A candidate grants **nothing**
+  (`candidate_status_does_not_grant_runtime_permission`); creation itself is ALLOW-tier
+  (`tool_or_program_request_creation: ALLOW`). Secret-bearing input and schema-invalid
+  records fail closed before anything persists.
+- **Audit:** each transition / draft appends a tamper-evident
+  `programization_review_event.v0` (`stamped_event`, the memory-retention precedent) to its
+  own ledger stream (`programization_events.jsonl`) — operator decisions about accumulated
+  state, anchored to no single task.
+- **Kill-switch bound:** `status` answers while PAUSED/KILLED (read-only door); `review` /
+  `candidate` / `close` are refused — the memory-prune door rule.
+
 ## Next (separate Thomas decisions)
 
-Review handling (`UNDER_REVIEW`/`CLOSED` transitions, candidate creation per policy §5),
-program request records, and any activation are each their own explicit approval.
+Candidate lifecycle beyond DRAFT (REVIEW_READY/VALIDATING/ACCEPTED/REJECTED, shadow
+validation), program request records, registry entries, and any activation are each their
+own explicit approval — none is reachable from this CLI.
