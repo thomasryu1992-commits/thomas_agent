@@ -103,6 +103,7 @@ def test_append_records_persists_known_kinds_and_skips_non_record_keys(tmp_path)
     store.append_records("trace-1", {
         "task": {"x": 1}, "write_permission_decision": {"d": 1}, "write_use": {"w": 1},
         "audit_trail": [], "block_record": None, "memory_retrieved": [],
+        "validated_memory_retrieved": [],
     })
     rows = _read_jsonl(store.root / RECORDS_FILE)
     assert [r["kind"] for r in rows] == ["task", "write_permission_decision", "write_use"]
