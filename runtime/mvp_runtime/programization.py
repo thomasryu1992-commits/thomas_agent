@@ -4,8 +4,9 @@ The governance already models the whole loop (``PROGRAMIZATION_REVIEW_POLICY_V0.
 ``PROGRAMIZATION_RUNTIME_RECORDS_V0.1``, closed schemas for observation/pattern records,
 and the ``PROGRAMIZATION_REVIEW_TRIGGERED`` audit event type); this module makes the first
 two records real. Each COMPLETED+PASS run may record one ``programization_observation.v0.1``
-and fold it into its pattern's ``programization_pattern.v0.1`` counter. **Ten valid
-independent observations trigger a Review opportunity only** — nothing here creates,
+and fold it into its pattern's ``programization_pattern.v0.2`` counter.
+**``REVIEW_TRIGGER_COUNT`` valid independent observations trigger a Review opportunity
+only** (5 since the 2026-07-22 policy amendment; was 10) — nothing here creates,
 registers, or activates a Program (`ten_valid_repetitions_result:
 PROGRAMIZATION_REVIEW_TRIGGER_ONLY`; activation stays APPROVAL_REQUIRED and unregistered
 execution stays BLOCK). Candidate creation (``programization_candidate.v0.1``) is the
@@ -44,9 +45,12 @@ from .paths import repo_root as _repo_root
 from .worker import AGENT_OUTPUT_SCHEMA_VERSION, WORKER_VERSION
 
 OBSERVATION_SCHEMA_VERSION = "programization_observation.v0.1"
-PATTERN_SCHEMA_VERSION = "programization_pattern.v0.1"
-CANDIDATE_SCHEMA_VERSION = "programization_candidate.v0.1"
-REVIEW_TRIGGER_COUNT = 10               # policy §1: a review trigger, never auto-conversion
+# v0.2: trigger threshold 10 -> 5, explicit Thomas decision 2026-07-22 (policy amendment).
+# v0.1 rows (threshold 10) in existing stores remain valid history; every newly built
+# pattern row is v0.2, so a store migrates forward on its next touch.
+PATTERN_SCHEMA_VERSION = "programization_pattern.v0.2"
+CANDIDATE_SCHEMA_VERSION = "programization_candidate.v0.2"   # minimum count 5 (matches v0.2 pattern)
+REVIEW_TRIGGER_COUNT = 5                # policy §1: a review trigger, never auto-conversion
 TASK_TYPE = "business_idea_analysis"    # the locked MVP use case
 ENVIRONMENT_VERSION = f"mvp_runtime/{WORKER_VERSION}"
 
@@ -54,6 +58,7 @@ PROGRAMIZATION_REL = ".runtime_governance_state/programization"
 OBSERVATIONS_FILE = "observations.jsonl"
 PATTERNS_FILE = "patterns.jsonl"
 CANDIDATES_FILE = "candidates.jsonl"
+REQUESTS_FILE = "requests.jsonl"
 _LOCK = ".programization.lock"          # one lock: observe is a read-count-append critical section
 
 # Review lifecycle (operator-only, explicit Thomas decision 2026-07-22): forward-only.
@@ -149,6 +154,15 @@ class ProgramizationStore:
     def append_candidate(self, candidate: Mapping[str, Any]) -> None:
         jsonl.append_lines(self._root / CANDIDATES_FILE, [candidate],
                            write_code="PROGRAMIZATION_WRITE_FAILED", label="programization candidates")
+
+    def read_requests(self) -> list[dict[str, Any]]:
+        """Every stored program-request wrapper row. Fail-closed on a corrupt store."""
+        return jsonl.read_objects(self._root / REQUESTS_FILE,
+                                  read_code="PROGRAMIZATION_UNREADABLE", label="programization requests")
+
+    def append_request(self, wrapper: Mapping[str, Any]) -> None:
+        jsonl.append_lines(self._root / REQUESTS_FILE, [wrapper],
+                           write_code="PROGRAMIZATION_WRITE_FAILED", label="programization requests")
 
 
 def build_pattern_signature(
@@ -346,7 +360,11 @@ def transition_review(
                 "INVALID_REVIEW_TRANSITION",
                 f"review transition {from_status} -> {to_status} is not allowed",
             )
-        pattern = {**latest, "review_status": to_status, "last_updated_at_utc": now}
+        # Normalizing schema_version/review_trigger_count migrates a v0.1 row (threshold
+        # 10) forward on its first operator touch after the 2026-07-22 threshold change.
+        pattern = {**latest, "schema_version": PATTERN_SCHEMA_VERSION,
+                   "review_trigger_count": REVIEW_TRIGGER_COUNT,
+                   "review_status": to_status, "last_updated_at_utc": now}
         _validate(pattern, PATTERN_SCHEMA_VERSION, "programization_pattern", root)
         store.append_pattern(pattern)
     return pattern
@@ -515,7 +533,10 @@ def transition_candidate(
                 "ACCEPT_REQUIRES_SHADOW_PASS",
                 f"acceptance requires a recorded shadow PASS (shadow is {shadow.get('status')})",
             )
-        candidate = {**latest, "status": to_status, "shadow_validation": shadow}
+        # schema_version normalization migrates a v0.1 candidate row forward on its first
+        # operator touch after the 2026-07-22 threshold change (like pattern rows).
+        candidate = {**latest, "schema_version": CANDIDATE_SCHEMA_VERSION,
+                     "status": to_status, "shadow_validation": shadow}
         _validate(candidate, CANDIDATE_SCHEMA_VERSION, "programization_candidate", root)
         store.append_candidate(candidate)
     return candidate
@@ -558,6 +579,7 @@ def record_shadow_result(
             )
         candidate = {
             **latest,
+            "schema_version": CANDIDATE_SCHEMA_VERSION,
             "shadow_validation": {"status": outcome, "comparison_ref": comparison_ref.strip(),
                                   "result": result.strip()},
         }

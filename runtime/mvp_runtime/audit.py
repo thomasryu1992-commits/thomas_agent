@@ -461,7 +461,7 @@ def build_pipeline_audit(
         ))
 
     # Programization: the run whose observation lifted a pattern's valid-repetition count
-    # to the threshold records the review trigger on the chain. Ten valid repetitions are
+    # to the threshold records the review trigger on the chain. Threshold repetitions are
     # a REVIEW opportunity only (`ten_valid_repetitions_result:
     # PROGRAMIZATION_REVIEW_TRIGGER_ONLY`) — the event asserts that no Program was
     # created, registered, or activated.

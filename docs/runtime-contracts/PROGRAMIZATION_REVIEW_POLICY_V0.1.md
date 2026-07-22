@@ -3,20 +3,26 @@
 **Status:** Review Ready
 **Owner:** Thomas
 **Purpose:** Define what counts as a valid repeated-work observation before a Programization Review is triggered.
+**Amendment (2026-07-22, explicit Thomas decision):** trigger threshold lowered 10 → 5.
+Pattern records move to `programization_pattern.v0.2` (`review_trigger_count: 5`); v0.1
+records (threshold 10) remain valid history. The governance key
+`memory_learning.ten_valid_repetitions_result` keeps its historical name — its value
+(`PROGRAMIZATION_REVIEW_TRIGGER_ONLY`, review-trigger-only semantics) is unchanged, and
+renaming it would ripple through the operating-policy schema for a label.
 
 ## 1. Trigger
 
 ```text
-10 independent valid repetitions
+5 independent valid repetitions
 → Programization Review
 
 not
 
-10 executions
+5 executions
 → Automatic Program conversion
 ```
 
-Ten is a review trigger, not a sufficient conversion condition.
+Five is a review trigger, not a sufficient conversion condition.
 
 ## 2. Pattern Signature
 

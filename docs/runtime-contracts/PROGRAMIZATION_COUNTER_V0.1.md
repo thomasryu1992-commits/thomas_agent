@@ -117,7 +117,45 @@ the first two records real.
   the shadow status the decision was made against) on the programization ledger stream;
   candidate rows are append-only latest-wins, schema-validated before persisting.
 
+## Threshold amendment (2026-07-22, explicit Thomas decision): 10 → 5
+
+`REVIEW_TRIGGER_COUNT` is 5. Contract change done as a version bump, not an edit:
+`programization_pattern.v0.2` (`review_trigger_count: const 5`) and
+`programization_candidate.v0.2` (`valid_repetition_count: minimum 5`); v0.1 records
+(threshold 10) stay valid history and the runtime migrates a v0.1 row forward on its next
+touch (next valid observation / next operator transition). The governance key
+`memory_learning.ten_valid_repetitions_result` keeps its historical name (value —
+review-trigger-only semantics — unchanged); renaming it would ripple the operating-policy
+schema for a label.
+
+## Program request (increment 4; explicit Thomas decision 2026-07-22)
+
+`runtime/mvp_runtime/program_request.py` + the CLI's `request` command: the chain's next
+link — **invocation evidence, never invocation** (`program_request.v0.1`, an ACTIVE
+record contract; creation is ALLOW per `tool_or_program_request_creation`).
+
+- Requires an **ACCEPTED** candidate; one request per candidate.
+- Every field computed from real state: the registry snapshot comes through the canonical
+  resolver (`runtime/registry_resolution.py`, definition-hash checked, fail-closed);
+  task lineage anchors to the pattern's last valid observation's REAL task (the
+  promotion-audit precedent); the refused invocation binds a real BLOCK
+  PermissionDecision; budget is honestly zero (no program-call budget exists).
+- While the registry has no active Programs the verdict is always fail-closed
+  **BLOCK** (`program_not_registered` / `program_not_active_and_enabled` +
+  `runtime_implementation_unavailable`, allowlists empty, budget zero) — the schema's
+  `runtime_effect` constants pin the record REVIEW_ONLY/false throughout.
+- **Permission gate widening (narrow):** BLOCK decisions are now *buildable* solely as
+  resource-refusal evidence for `UNREGISTERED_RESOURCE_EXECUTION` /
+  `DISABLED_RESOURCE_EXECUTION` (`_BLOCK_EVIDENCE_SCOPES`;
+  `build_resource_refusal_permission_decision` is the only door) — the Program Request
+  contract requires the refused invocation to reference its refusing decision. A BLOCK
+  record performs nothing and every other BLOCK scope stays unbuildable. For refusal
+  evidence an insufficient authority is *recorded* (schema:
+  `authority_sufficient: false ⇒ BLOCK`), not raised.
+- Audited as `programization_review_event.v0` (`program_request_created`, carrying the
+  BLOCK verdict + reasons) on the programization ledger stream.
+
 ## Next (separate Thomas decisions)
 
-Program request records, registry entries, and any activation are each their own explicit
-approval — none is reachable from this CLI.
+Registry entries (registration of a requested program) and any activation are each their
+own explicit approval — neither is reachable from this CLI.
