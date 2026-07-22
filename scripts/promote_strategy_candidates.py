@@ -11,15 +11,18 @@ is never auto-promotion — this script is where the human judgment lands.
 
 C8b wiring (approved by Thomas 2026-07-22): promotion goes through the R9 ask first.
 
-    # 1) List candidates, choose, then ASK Thomas (stores the PENDING approval):
+    # 1) List candidates (first column = candidate_id), choose, then ASK Thomas
+    #    (stores the PENDING approval). strategy_id restarts at S001 every generation,
+    #    so selection keys on the globally unique candidate_id; a bare strategy id is
+    #    accepted only while it matches exactly one lineage.
     python scripts/promote_strategy_candidates.py --list
-    python scripts/promote_strategy_candidates.py --request --strategy-ids S001,S003
+    python scripts/promote_strategy_candidates.py --request --candidate-ids cand_ab12,cand_cd34
 
     # 2) Thomas answers /approve <id> (or /reject) on the verified control channel.
 
     # 3) Execute the approved promotion (the approval is VERIFIED, never consumed):
     python scripts/promote_strategy_candidates.py \\
-        --strategy-ids S001,S003 --approval-id approval_abc123 \\
+        --candidate-ids cand_ab12,cand_cd34 --approval-id approval_abc123 \\
         --promoted-by Thomas --reason "GEN-069 robustness reviewed" --confirm
 
 ``--keep-active`` keeps the current pool members and adds the selected candidates;
@@ -57,12 +60,12 @@ EXIT_USAGE = 2
 EXIT_BLOCKED = 3
 
 
-def run_request(*, strategy_ids: list[str], keep_active: bool, root: Path | None = None,
+def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
                 now: str | None = None) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
-        strategy_ids, keep_active=keep_active, now=now, repo_root=root,
+        selectors, keep_active=keep_active, now=now, repo_root=root,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -79,14 +82,17 @@ def run_request(*, strategy_ids: list[str], keep_active: bool, root: Path | None
 
 
 def run_promotion(
-    *, strategy_ids: list[str], promoted_by: str, reason: str,
+    *, selectors: list[str], promoted_by: str, reason: str,
     keep_active: bool, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
-    C8b: requires either an APPROVED, unexpired, content-matching approval id or the
-    explicit ``without_approval`` escape; the door used is recorded on the ledger."""
+    ``selectors`` are candidate ids (preferred) or unambiguous strategy ids — a
+    strategy id shared by several generations refuses (``CANDIDATE_AMBIGUOUS``)
+    instead of silently promoting the newest. C8b: requires either an APPROVED,
+    unexpired, content-matching approval id or the explicit ``without_approval``
+    escape; the door used is recorded on the ledger."""
     now = now or timeutil.utc_now_iso()
 
     # Kill switch first: promotion mutates what the runtime trades.
@@ -105,26 +111,31 @@ def run_promotion(
         try:
             verified_approval = promotion_mod.verify_promotion_approval(
                 approval_store.get(approval_id),
-                strategy_ids=strategy_ids, keep_active=keep_active, root=root, now=now,
+                selectors=selectors, keep_active=keep_active, root=root, now=now,
             )
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
-    candidates = {c.get("strategy_id"): c for c in pool_store.read_candidates(root)}
-    missing = [s for s in strategy_ids if s not in candidates]
-    if missing:
-        raise SystemExit(f"BLOCKED: unknown candidate strategy ids: {missing}")
+    try:
+        candidates = pool_store.resolve_candidates(selectors, root)
+    except MvpRuntimeError as exc:
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     entries = []
     if keep_active:
         entries.extend(pool_store.load_active_pool(root).get("active_strategies") or [])
     existing_ids = {e.get("strategy_id") for e in entries}
-    for strategy_id in strategy_ids:
-        if strategy_id in existing_ids:
-            raise SystemExit(f"BLOCKED: {strategy_id} is already in the active pool")
-        c = candidates[strategy_id]
+    existing_cids = {e.get("candidate_id") for e in entries}
+    for c in candidates:
+        if c["candidate_id"] in existing_cids:
+            raise SystemExit(f"BLOCKED: candidate {c['candidate_id']} is already in the active pool")
+        if c.get("strategy_id") in existing_ids:
+            # Pool invariant: strategy_id keys routing/lifecycle, so display names
+            # stay unique in the pool even across lineages.
+            raise SystemExit(f"BLOCKED: {c.get('strategy_id')} is already in the active pool")
         entries.append({
-            "strategy_id": strategy_id,
+            "strategy_id": c.get("strategy_id"),
+            "candidate_id": c["candidate_id"],
             "status": "PAPER_ACTIVE",
             "champion_score": c.get("champion_score"),
             "strategy_rule_hash": c.get("strategy_rule_hash"),
@@ -144,9 +155,10 @@ def run_promotion(
     installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
 
     summary = {
-        "promoted_strategy_ids": strategy_ids,
-        "promoted_rule_hashes": [candidates[s].get("strategy_rule_hash") for s in strategy_ids],
-        "evidence_hashes": [candidates[s].get("evidence_input_sha256") for s in strategy_ids],
+        "promoted_candidate_ids": [c["candidate_id"] for c in candidates],
+        "promoted_strategy_ids": [c.get("strategy_id") for c in candidates],
+        "promoted_rule_hashes": [c.get("strategy_rule_hash") for c in candidates],
+        "evidence_hashes": [c.get("evidence_input_sha256") for c in candidates],
         "kept_active": keep_active,
         "pool_size": installed,
         "promoted_by": promoted_by,
@@ -167,7 +179,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true", help="list candidates and exit")
     parser.add_argument("--request", action="store_true",
                         help="ASK Thomas: build + store + audit the R9 approval request, then exit")
-    parser.add_argument("--strategy-ids", help="comma-separated candidate strategy ids to promote")
+    parser.add_argument("--candidate-ids", "--strategy-ids", dest="strategy_ids",
+                        help="comma-separated candidate ids (preferred; see --list) or "
+                             "unambiguous strategy ids — an id shared by several "
+                             "generations is refused, never resolved newest-wins")
     parser.add_argument("--keep-active", action="store_true", help="keep current pool members (add, not replace)")
     parser.add_argument("--promoted-by", help="operator identity")
     parser.add_argument("--reason", help="operator reason (the report)")
@@ -182,19 +197,20 @@ def main(argv: list[str] | None = None) -> int:
             spec = c.get("strategy_spec") or {}
             evidence = c.get("backtest_evidence") or {}
             robustness = (evidence.get("robustness") or {})
-            print(f"{c.get('strategy_id'):8} {c.get('generation_id') or '-':8} "
+            print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
+                  f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
                   f"verdict={robustness.get('verdict') or '-':11} "
                   f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}")
         return EXIT_OK
 
     if not args.strategy_ids:
-        print("BLOCKED: --strategy-ids is required (or use --list)")
+        print("BLOCKED: --candidate-ids is required (or use --list)")
         return EXIT_USAGE
-    strategy_ids = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
+    selectors = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
 
     if args.request:
-        prepared = run_request(strategy_ids=strategy_ids, keep_active=args.keep_active)
+        prepared = run_request(selectors=selectors, keep_active=args.keep_active)
         request = prepared["approval_request"]
         from runtime.mvp_runtime import approval as approval_mod  # noqa: E402 (message renderer)
         print(approval_mod.request_message(request, prepared["permission_decision"], history=None))
@@ -211,12 +227,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BLOCKED
 
     summary = run_promotion(
-        strategy_ids=strategy_ids,
+        selectors=selectors,
         promoted_by=args.promoted_by, reason=args.reason, keep_active=args.keep_active,
         approval_id=args.approval_id, without_approval=args.without_approval,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
-    print(f"PROMOTED: {summary['promoted_strategy_ids']} -> active pool "
+    print(f"PROMOTED: {summary['promoted_candidate_ids']} "
+          f"({summary['promoted_strategy_ids']}) -> active pool "
           f"({summary['pool_size']} strategies) [door: {door}]")
     return EXIT_OK
 

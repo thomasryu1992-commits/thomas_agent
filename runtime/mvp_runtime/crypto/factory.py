@@ -40,6 +40,7 @@ from runtime.read_only_kernel import integrity
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
+from .pool import derive_candidate_id
 from .robustness import score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
 
@@ -557,7 +558,7 @@ def run_factory(
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
         evidence = backtest_spec(spec, snapshot)
-        candidates.append({
+        record = {
             "strategy_id": spec.strategy_id,
             "strategy_rule_hash": spec.strategy_rule_hash,
             "generation_id": generation_id,
@@ -568,7 +569,11 @@ def run_factory(
             "evidence_input_sha256": candles_sha,
             "provenance": "mvp_factory",
             "created_at_utc": now,
-        })
+        }
+        # Stored id == derived id: strategy_id restarts every generation, so the
+        # lineage-derived candidate_id is the only key promotions may use.
+        record["candidate_id"] = derive_candidate_id(record)
+        candidates.append(record)
 
     return {
         "factory_version": "crypto_factory.v0.1",

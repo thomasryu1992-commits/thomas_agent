@@ -24,42 +24,43 @@ from runtime.read_only_kernel import integrity
 from .. import approval as approval_mod
 from .. import timeutil
 from ..binding import bind_task_to_core
-from ..errors import ApprovalBlocked
+from ..errors import ApprovalBlocked, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
-PROMOTION_HASH_VERSION = "strategy_promotion.v1"
+PROMOTION_HASH_VERSION = "strategy_promotion.v2"
 
 
-def promotion_content_sha256(strategy_ids: list[str], rule_hashes: list[str], keep_active: bool) -> str:
-    """The material identity of one promotion: which strategies, which exact rules,
-    add or replace. Any change mints a different hash — and therefore a different
-    approval (``invalidated_by_any_material_field_change``)."""
+def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], keep_active: bool) -> str:
+    """The material identity of one promotion: which candidate lineages, which exact
+    rules, add or replace. Any change mints a different hash — and therefore a
+    different approval (``invalidated_by_any_material_field_change``). v2: keyed by
+    globally unique ``candidate_id``, never the per-generation ``strategy_id``."""
     return integrity.sha256_value({
         "hash_version": PROMOTION_HASH_VERSION,
-        "strategy_ids": sorted(strategy_ids),
+        "candidate_ids": sorted(candidate_ids),
         "rule_hashes": sorted(rule_hashes),
         "keep_active": bool(keep_active),
     })
 
 
-def _resolve_candidates(strategy_ids: list[str], root: Path | None) -> list[dict[str, Any]]:
-    candidates = {c.get("strategy_id"): c for c in pool_store.read_candidates(root)}
-    missing = [s for s in strategy_ids if s not in candidates]
-    if missing:
-        raise ApprovalBlocked("UNKNOWN_CANDIDATE", f"unknown candidate strategy ids: {missing}")
-    resolved = [candidates[s] for s in strategy_ids]
+def _resolve_candidates(selectors: list[str], root: Path | None) -> list[dict[str, Any]]:
+    """Selector resolution via the store's single authority, as approval refusals."""
+    try:
+        resolved = pool_store.resolve_candidates(selectors, root)
+    except ToolError as exc:
+        raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     for c in resolved:
         if not (isinstance(c.get("strategy_rule_hash"), str) and c["strategy_rule_hash"]):
-            raise ApprovalBlocked("CANDIDATE_UNHASHED", f"candidate {c.get('strategy_id')} has no rule hash")
+            raise ApprovalBlocked("CANDIDATE_UNHASHED", f"candidate {c['candidate_id']} has no rule hash")
     return resolved
 
 
 def request_promotion(
-    strategy_ids: list[str],
+    selectors: list[str],
     *,
     keep_active: bool,
     now: str | None = None,
@@ -69,26 +70,31 @@ def request_promotion(
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
-    Returns ``{"candidates", "task", "binding", "bound_task", "permission_decision",
-    "approval_request", "content_sha256"}``; the caller persists the decision and
-    request to the approval store and audits the ask (the script does, mirroring
-    ``trial_cli``)."""
+    ``selectors`` are candidate ids (preferred) or unambiguous strategy ids; the ask
+    binds the resolved ``candidate_id`` lineages, so a later same-named candidate can
+    never ride an earlier approval. Returns ``{"candidates", "task", "binding",
+    "bound_task", "permission_decision", "approval_request", "content_sha256"}``; the
+    caller persists the decision and request to the approval store and audits the ask
+    (the script does, mirroring ``trial_cli``)."""
     now = now or timeutil.utc_now_iso()
     root = repo_root if repo_root is not None else _repo_root()
     # Candidates may live under a different root only in tests (the trial-test split:
     # real Core for binding, tmp state for stores); production passes one root.
-    candidates = _resolve_candidates(strategy_ids, candidates_root if candidates_root is not None else root)
+    candidates = _resolve_candidates(selectors, candidates_root if candidates_root is not None else root)
+    candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
-    content = promotion_content_sha256(strategy_ids, rule_hashes, keep_active)
+    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
 
+    display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
     task = build_task(
-        f"전략 승격 검토: {', '.join(sorted(strategy_ids))} ({'add' if keep_active else 'replace'})",
+        f"전략 승격 검토: {', '.join(display)} ({'add' if keep_active else 'replace'})",
         now=now, channel="manual", requester_type="real_thomas", requester_id="Thomas",
         authenticated=True, repo_root=root,
     )
     binding, bound = bind_task_to_core(task, repo_root=root, now=now)
     permission_decision = build_strategy_promotion_permission_decision(
-        bound, strategy_ids=list(strategy_ids), rule_hashes=rule_hashes,
+        bound, candidate_ids=candidate_ids,
+        strategy_ids=[str(c.get("strategy_id")) for c in candidates], rule_hashes=rule_hashes,
         keep_active=keep_active, content_sha256=content, now=now, repo_root=root,
     )
     approval_request = approval_mod.build_approval_request(
@@ -108,7 +114,7 @@ def request_promotion(
 def verify_promotion_approval(
     approval: Mapping[str, Any] | None,
     *,
-    strategy_ids: list[str],
+    selectors: list[str],
     keep_active: bool,
     root: Path | None = None,
     now: str | None = None,
@@ -136,9 +142,11 @@ def verify_promotion_approval(
         raise ApprovalBlocked(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a promotion"
         )
-    candidates = _resolve_candidates(strategy_ids, root)
+    candidates = _resolve_candidates(selectors, root)
     expected = promotion_content_sha256(
-        strategy_ids, [c["strategy_rule_hash"] for c in candidates], keep_active
+        [c["candidate_id"] for c in candidates],
+        [c["strategy_rule_hash"] for c in candidates],
+        keep_active,
     )
     if snapshot.get("content_sha256") != expected:
         raise ApprovalBlocked(
