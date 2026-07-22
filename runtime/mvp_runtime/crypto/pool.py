@@ -69,6 +69,53 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
     return len(specs)
 
 
+def update_statuses(
+    decisions: list[dict[str, Any]], *, root: Path | None = None, updated_by: str = "lifecycle_agent"
+) -> int:
+    """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
+
+    The narrowest possible pool mutation: only ``status`` and the running
+    ``lifecycle_consecutive_failures`` of named strategies change — specs, hashes,
+    scores and membership are untouched, so this can never smuggle a promotion.
+    Guards, each fail-closed: unknown strategy id refused; a CURRENTLY terminal
+    entry is immutable (reactivation is the approval door, never this); and a
+    transition record that isn't an evaluate_lifecycle decision shape is refused.
+    Returns the number of entries whose status actually changed."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    if not decisions:
+        return 0
+    path = pool_path(root)
+    with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
+        pool = load_active_pool(root)
+        entries = {e.get("strategy_id"): e for e in pool.get("active_strategies") or []}
+        changed = 0
+        for decision in decisions:
+            strategy_id = decision.get("strategy_id")
+            new_status = decision.get("new_status")
+            if not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str)):
+                raise ToolError("LIFECYCLE_DECISION_INVALID", "transition lacks strategy_id/new_status")
+            entry = entries.get(strategy_id)
+            if entry is None:
+                raise ToolError("LIFECYCLE_UNKNOWN_STRATEGY", f"no pool entry for {strategy_id}")
+            if str(entry.get("status")) in TERMINAL_STATUSES:
+                raise ToolError(
+                    "LIFECYCLE_TERMINAL_IMMUTABLE",
+                    f"{strategy_id} is terminal; reactivation is the approval door, not a transition",
+                )
+            entry["lifecycle_consecutive_failures"] = int(decision.get("consecutive_failures") or 0)
+            if new_status != entry.get("status"):
+                entry["status"] = new_status
+                entry["lifecycle_updated_at"] = decision.get("created_at_utc")
+                entry["lifecycle_decision_id"] = decision.get("strategy_lifecycle_decision_id")
+                changed += 1
+        pool["updated_by"] = updated_by
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+        return changed
+
+
 def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
     path = candidates_path(root)
     if not path.is_file():

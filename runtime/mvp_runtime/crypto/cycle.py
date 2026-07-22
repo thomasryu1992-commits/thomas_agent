@@ -37,6 +37,7 @@ from .market_data import (
     collect_market_data,
     degraded_market_data_record,
 )
+from .lifecycle import run_lifecycle
 from .paper import PaperStore, read_outcomes, run_paper_update
 
 CYCLE_VERSION = "crypto_cycle.v0.1"
@@ -141,6 +142,7 @@ def run_crypto_cycle(
 
     # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
+    outcomes: list[dict[str, Any]] | None = None
     try:
         outcomes = read_outcomes(root)
         risk = run_risk_guard(outcomes, now=now)
@@ -161,6 +163,8 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, verdict,
         store=store, now=now, root=root, control_store=control_store,
     )
+    if paper_summary.get("settle_refused"):
+        reason_codes.append(paper_summary["settle_refused"]["reason_code"])
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
@@ -170,6 +174,29 @@ def run_crypto_cycle(
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"
         if exc.reason_code not in reason_codes:
             reason_codes.append(exc.reason_code)
+
+    # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
+    # Evaluated every cycle (pure); APPLIED only through the real gated store, the
+    # same effect discipline as every other paper mutation. An unreadable outcome
+    # history skips evaluation (no honest windows to judge on).
+    lifecycle_decisions: list[dict[str, Any]] = []
+    lifecycle_applied = 0
+    if outcomes is not None:
+        lifecycle_decisions = run_lifecycle(active_pool, outcomes, now=now)
+        changed = [d for d in lifecycle_decisions if d.get("status_changed")]
+        if changed:
+            reason_codes.append("LIFECYCLE_TRANSITION")
+        if getattr(store, "filesystem_write", False) and lifecycle_decisions:
+            try:
+                lifecycle_applied = pool.update_statuses(lifecycle_decisions, root=root)
+            except ToolError as exc:
+                reason_codes.append(exc.reason_code)
+        for decision in changed:
+            report_text += (
+                f"\nlifecycle: {decision['strategy_id']} "
+                f"{decision['previous_status']} -> {decision['new_status']}"
+                + (" (manual reactivation required)" if decision["requires_manual_reactivation"] else "")
+            )
 
     record = {
         "feeds": feed_status,
@@ -185,6 +212,8 @@ def run_crypto_cycle(
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "paper_records": paper_records,
+        "lifecycle_decisions": lifecycle_decisions,
+        "lifecycle_applied": lifecycle_applied,
         "report_status": report.get("status") if report else None,
         "report_text": report_text,
         "created_at": now,
