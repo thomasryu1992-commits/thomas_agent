@@ -29,6 +29,8 @@ from . import feedback, pool
 from .features import latest_feature_row
 from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_check, run_risk_guard
 from .market_data import (
+    FUNDING_DEGRADED,
+    LIQUIDATION_DEGRADED,
     MARKET_DATA_DEGRADED,
     TIMEFRAMES,
     MarketDataCollector,
@@ -42,6 +44,55 @@ CYCLE_VERSION = "crypto_cycle.v0.1"
 # Collection failures that degrade the cycle; anything else is a config error.
 _DEGRADABLE_CODES = {"TOOL_ERROR"}
 
+# Funding events fetched per cycle: ≥3/day covers the deepest replay window.
+_FUNDING_RECORDS = 1600
+_LIQUIDATION_DAYS = 520
+
+
+def attach_feeds(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    liquidation_feed: Any | None,
+    now: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Fetch the C9 derivative feeds onto ``snapshot`` (mutating it). Degrade-only.
+
+    Funding comes from the market-data collector when it has the capability (the
+    same grant); liquidations from the separately-gated feed. Semantics per feed:
+    fetched → real series; fetch FAILED → the key is present and empty, so the
+    features are NaN-honest (indeterminate, never a constant) and the failure is a
+    reason code; feed NOT CONFIGURED → the key stays absent and the features keep
+    the source's legacy constants. Returns ``(reason_codes, feed_status)``."""
+    reason_codes: list[str] = []
+    status: dict[str, str] = {}
+    symbol = str(snapshot.get("symbol") or "")
+
+    if hasattr(collector, "funding_history"):
+        try:
+            snapshot["funding"] = collector.funding_history(symbol, records=_FUNDING_RECORDS, timeout_seconds=10)
+            status["funding"] = "ok"
+        except (ToolError, ToolBlocked):
+            snapshot["funding"] = []  # series semantics: indeterminate, never constant
+            status["funding"] = "degraded"
+            reason_codes.append(FUNDING_DEGRADED)
+    else:
+        status["funding"] = "absent"
+
+    if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
+        try:
+            snapshot["liquidations"] = liquidation_feed.liquidation_history(
+                symbol, days=_LIQUIDATION_DAYS, timeout_seconds=10
+            )
+            status["liquidations"] = "ok"
+        except (ToolError, ToolBlocked):
+            snapshot["liquidations"] = []
+            status["liquidations"] = "degraded"
+            reason_codes.append(LIQUIDATION_DEGRADED)
+    else:
+        status["liquidations"] = "absent"
+    return reason_codes, status
+
 
 def run_crypto_cycle(
     *,
@@ -53,6 +104,7 @@ def run_crypto_cycle(
     limit: int = 120,
     root: Path | None = None,
     control_store: ControlStore | None = None,
+    liquidation_feed: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -77,6 +129,12 @@ def run_crypto_cycle(
             "degraded": True, "created_at": now,
         }
         reason_codes.append(MARKET_DATA_DEGRADED)
+
+    # 1b) derivative feeds (C9) — enrichment; degrade-only, never block.
+    feed_reasons, feed_status = attach_feeds(
+        snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now,
+    )
+    reason_codes.extend(feed_reasons)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -114,6 +172,7 @@ def run_crypto_cycle(
             reason_codes.append(exc.reason_code)
 
     record = {
+        "feeds": feed_status,
         "cycle_version": CYCLE_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,

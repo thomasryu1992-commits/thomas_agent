@@ -39,6 +39,51 @@ PERCENTILE_WINDOW = 100
 ROC_FAST = 4
 VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
+FUNDING_Z_WINDOW = 100      # features.funding_z_window source default
+FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods for the funding z
+LIQ_MA_WINDOW = 50          # liquidation spike baseline window
+LIQ_MA_MIN_PERIODS = 10
+
+
+def _asof_align(
+    bar_times: list[str], events: list[dict[str, Any]], columns: tuple[str, ...]
+) -> dict[str, list]:
+    """Pure-python ``merge_asof(direction='backward')`` — each bar carries the last
+    event at or before its OPEN time (an event can never leak into earlier bars);
+    bars before the first event, or with an unparseable key, stay None (the
+    source's rule: indeterminate, never a constant)."""
+    from .. import timeutil as _timeutil
+
+    parsed_events: list[tuple[Any, dict[str, Any]]] = []
+    for event in events:
+        raw = event.get("timestamp")
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed_events.append((_timeutil.parse_iso(raw), event))
+        except (ValueError, TypeError):
+            continue
+    parsed_events.sort(key=lambda pair: pair[0])
+    out: dict[str, list] = {col: [] for col in columns}
+    cursor = 0
+    last: dict[str, Any] | None = None
+    for raw_bar in bar_times:
+        try:
+            bar_ts = _timeutil.parse_iso(raw_bar)
+        except (ValueError, TypeError):
+            for col in columns:
+                out[col].append(None)
+            continue
+        while cursor < len(parsed_events) and parsed_events[cursor][0] <= bar_ts:
+            last = parsed_events[cursor][1]
+            cursor += 1
+        for col in columns:
+            value = last.get(col) if last is not None else None
+            try:
+                out[col].append(float(value) if value is not None else None)
+            except (TypeError, ValueError):
+                out[col].append(None)
+    return out
 
 
 def classify_market_regime(row: dict[str, Any], adx_threshold: float = ADX_TREND_THRESHOLD) -> str:
@@ -95,6 +140,38 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     atr_percentile = indicators.rolling_percentile(atr_pct_of_price, PERCENTILE_WINDOW)
 
+    # C9 derivative feeds. Key PRESENT in the snapshot = series semantics (even when
+    # the fetch failed and the list is empty): values are NaN-honest — indeterminate,
+    # never a constant, so a spec referencing them fails closed to no-entry on outage.
+    # Key ABSENT = the feed is not configured: the source's legacy constants apply
+    # (funding 0-fill, spike ratio 0.0), the exact pre-C9 behavior.
+    bar_times = [c["open_time"] for c in candles]
+    has_funding_series = "funding" in snapshot
+    if has_funding_series:
+        funding_rate = _asof_align(bar_times, snapshot.get("funding") or [], ("funding_rate",))["funding_rate"]
+        funding_zscore = indicators.zscore(funding_rate, FUNDING_Z_WINDOW, FUNDING_Z_MIN_PERIODS)
+    else:
+        funding_rate = [0.0] * len(candles)
+        funding_zscore = [0.0] * len(candles)
+
+    has_liq_series = "liquidations" in snapshot
+    if has_liq_series:
+        aligned = _asof_align(bar_times, snapshot.get("liquidations") or [],
+                              ("long_liquidation", "short_liquidation"))
+        long_liq, short_liq = aligned["long_liquidation"], aligned["short_liquidation"]
+        liq_total = [
+            (l + s) if (l is not None and s is not None) else None
+            for l, s in zip(long_liq, short_liq)
+        ]
+        liq_ma = indicators.rolling_mean(liq_total, LIQ_MA_WINDOW, LIQ_MA_MIN_PERIODS)
+        liquidation_spike_ratio = [
+            (t / m) if (t is not None and m is not None and m != 0) else None
+            for t, m in zip(liq_total, liq_ma)
+        ]
+    else:
+        long_liq = short_liq = liq_total = [None] * len(candles)
+        liquidation_spike_ratio = [0.0] * len(candles)  # legacy constant, pre-C9
+
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
         close = closes[i]
@@ -127,13 +204,19 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "price_distance_ma20": (
                 (close - ma20[i]) / ma20[i] if (ma20[i] not in (None, 0)) else None
             ),
-            # No-feed fallbacks, verbatim from the source's absent-feed behavior:
-            # mark/index ffill().fillna(close) → close; basis → 0; liquidation
-            # legacy 0-fill → spike ratio 0.0.
+            # C9 feeds (series semantics when configured; legacy constants when not).
+            "funding_rate": funding_rate[i],
+            "funding_zscore": funding_zscore[i],
+            "long_liquidation": long_liq[i],
+            "short_liquidation": short_liq[i],
+            "liquidation_total": liq_total[i],
+            "liquidation_spike_ratio": liquidation_spike_ratio[i],
+            # No-feed fallbacks, verbatim from the source's absent-feed behavior —
+            # and verbatim its RUNTIME ROUTER behavior too: runtime_feature_adapter
+            # never passes mark/index frames, so basis is 0 in source live routing.
             "mark_price": close,
             "index_price": close,
             "mark_index_basis_bps": 0.0,
-            "liquidation_spike_ratio": 0.0,
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (

@@ -272,7 +272,7 @@ def _execute(
         # live revocation here exactly as everywhere else. The optional request field
         # is "SYMBOL TIMEFRAME"; empty uses the cycle defaults.
         from .crypto.cycle import cycle_status_line, run_crypto_cycle
-        from .crypto.market_data import select_market_data_collector
+        from .crypto.market_data import select_liquidation_feed, select_market_data_collector
         from .crypto.paper import select_paper_store
 
         parts = schedule.request.split()
@@ -284,6 +284,7 @@ def _execute(
         record = run_crypto_cycle(
             collector=select_market_data_collector(now=now, root=repo_root),
             store=select_paper_store(now=now, root=repo_root),
+            liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
             now=now,
             root=repo_root,
             **kwargs,
@@ -298,8 +299,13 @@ def _execute(
         # door). A degraded backend simply skips the run: candidates mined from no
         # data would be evidence-free noise.
         from .crypto import pool as crypto_pool
+        from .crypto.cycle import attach_feeds
         from .crypto.factory import run_factory
-        from .crypto.market_data import collect_market_data, select_market_data_collector
+        from .crypto.market_data import (
+            collect_market_data,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
 
         parts = schedule.request.split()
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
@@ -313,6 +319,10 @@ def _execute(
             if exc.reason_code == "TOOL_ERROR":
                 return "skipped_market_data_degraded"
             raise
+        # C9: the factory backtests on the same feed-enriched frame the router
+        # evaluates — one feature source for backtest and live (the source rule).
+        attach_feeds(snapshot, collector=collector,
+                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now)
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),
