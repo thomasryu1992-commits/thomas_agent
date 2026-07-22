@@ -142,6 +142,7 @@ def handle_operator_message(
     provider: Provider | None = None,
     search_tool: Any | None = None,
     working_memory: Any | None = None,
+    programization: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
@@ -306,6 +307,7 @@ def handle_operator_message(
         provider=provider,
         search_tool=search_tool,
         working_memory=working_memory,
+        programization=programization,
         now=now,
         store=store,
         repo_root=repo_root,
@@ -584,6 +586,7 @@ def run_operator_once(
     provider: Provider | None = None,
     search_tool: Any | None = None,
     working_memory: Any | None = None,
+    programization: Any | None = None,
     now: str | None = None,
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
@@ -616,7 +619,8 @@ def run_operator_once(
             continue
         reply = handle_operator_message(
             message, registration=registration, provider=provider, search_tool=search_tool,
-            working_memory=working_memory, now=now, store=store, control_store=control_store,
+            working_memory=working_memory, programization=programization,
+            now=now, store=store, control_store=control_store,
             approval_store=approval_store,
             independent_validation=independent_validation,
             validator_provider=validator_provider, repo_root=repo_root,

@@ -191,6 +191,41 @@ def retrieve_working_memory(
     return selected[-limit:] if limit > 0 else []
 
 
+def retrieve_validated_memory(
+    assignment: Mapping[str, Any],
+    store: Any,
+    *,
+    limit: int = MAX_RETRIEVED,
+) -> list[dict[str, Any]]:
+    """Return promoted (VALIDATED) memory entries for context, or none.
+
+    The read leg of the memory loop the governance already grants: the role's
+    ``memory_policy.readable_scopes`` includes ``related_validated_memory``, so
+    operator-promoted knowledge feeds later runs as context. Read-only and
+    governance-scoped exactly like ``retrieve_working_memory`` (reads only when the
+    assignment's ``readable_scopes`` admits the scope and it is not prohibited).
+    VALIDATED memory carries no ``expires_at`` — retention never touches it (§12.4) —
+    so there is no expiry filter; most-recent-first by promotion time, capped at
+    ``limit``. Never mutates the store. Propagates the store's fail-closed
+    ``PersistenceError`` on a corrupt store (the caller turns it into a BLOCK)."""
+    memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
+    readable = set(memory_scope.get("readable_scopes", []))
+    prohibited = set(memory_scope.get("prohibited_scopes", []))
+    if VALIDATED_SCOPE not in readable or VALIDATED_SCOPE in prohibited:
+        return []
+
+    entries = store.read_validated()
+    selected = [
+        e for e in entries
+        if isinstance(e, dict)
+        and e.get("scope") == VALIDATED_SCOPE
+        and e.get("status") == VALIDATED_STATUS
+    ]
+    # Deterministic recency order (promotion time); take the most recent `limit`.
+    selected.sort(key=lambda e: (str(e.get("promoted_at", "")), str(e.get("validated_memory_id", ""))))
+    return selected[-limit:] if limit > 0 else []
+
+
 MEMORY_EVENT_TYPE = "working_memory_retention_event.v0"
 
 
