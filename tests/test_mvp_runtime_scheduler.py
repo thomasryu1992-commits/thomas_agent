@@ -172,6 +172,50 @@ def test_two_due_schedules_both_fire_sequentially(tmp_path):
     assert sorted(c["request"] for c in ex.calls) == ["a", "b"]
 
 
+# --- a raising fire is recorded, never fatal ---------------------------------
+
+def test_raising_fire_is_recorded_and_the_batch_survives(tmp_path):
+    """One bad fire must not kill the tick loop or vanish: the failure lands as a
+    durable 'failed' scheduler event + last_status, and the NEXT schedule in the
+    same batch still fires."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60, request="boom")
+    _task_schedule(store, now=T0, interval=60, request="fine")
+    good = FakeExecutor()
+
+    def executor(request, **kwargs):
+        if request == "boom":
+            raise PersistenceError("CANDIDATES_TAMPERED", "store failed verification")
+        return good(request, **kwargs)
+
+    summary = run_due(store, now=T1, ledger=ledger, executor=executor,
+                      control_store=ControlStore(tmp_path))
+    assert summary["fired"] == 1 and summary["failed"] == 1
+    assert [c["request"] for c in good.calls] == ["fine"]  # the batch continued
+
+    by_request = {s.request: s for s in store.list()}
+    assert by_request["boom"].last_status == "failed:CANDIDATES_TAMPERED"
+    assert by_request["boom"].next_run_at == T2            # claimed: at-most-once kept
+    assert by_request["fine"].last_status == "COMPLETED"
+    events = [json.loads(line) for line in
+              (ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {e["action"] for e in events} == {"failed", "fired"}
+
+
+def test_unexpected_exception_is_recorded_with_its_type(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60)
+
+    def executor(request, **kwargs):
+        raise RuntimeError("not an MvpRuntimeError")
+
+    summary = run_due(store, now=T1, executor=executor, control_store=ControlStore(tmp_path))
+    assert summary["failed"] == 1 and summary["fired"] == 0
+    assert summary["results"][0]["status"] == "failed:UNEXPECTED:RuntimeError"
+    assert store.list()[0].last_status == "failed:UNEXPECTED:RuntimeError"
+
+
 # --- kill-switch binding (governance kill_blocks: scheduler_execution) -------
 
 @pytest.mark.parametrize("command, status", [("kill", "skipped_not_active"), ("pause", "skipped_not_active")])
@@ -327,14 +371,19 @@ def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
             return {"status": "COMPLETED"}
 
     executor = _ExplodingOnSecond()
-    with pytest.raises(PersistenceError):
-        run_due(store, now=T1, executor=executor, control_store=ControlStore(tmp_path))
+    # Since the tick-survival hardening the failure no longer propagates: it is
+    # recorded on the failing schedule and the batch completes normally.
+    summary = run_due(store, now=T1, executor=executor, control_store=ControlStore(tmp_path))
+    assert summary["fired"] == 1 and summary["failed"] == 1
 
     by_id = {s.schedule_id: s for s in store.list()}
     # The first schedule executed and its claim survived the later failure: it will NOT
     # fire again at the same tick time.
     assert executor.calls == ["first", "second"]
     assert by_id[first.schedule_id].next_run_at > T1
+    assert by_id[first.schedule_id].last_status == "COMPLETED"
     # The second schedule's occurrence was claimed too (at-most-once: a crash drops the
-    # occurrence rather than doubling it, matching the kill-skip rule).
+    # occurrence rather than doubling it, matching the kill-skip rule) — and its
+    # failure is durable state, not a dead process.
     assert by_id[second.schedule_id].next_run_at > T1
+    assert by_id[second.schedule_id].last_status == "failed:LEDGER_WRITE_FAILED"

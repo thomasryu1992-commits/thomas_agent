@@ -127,6 +127,7 @@ def main(
 
         total_fired = 0
         total_skipped = 0
+        total_failed = 0
         tick = 0
         try:
             while args.max_ticks == 0 or tick < args.max_ticks:
@@ -137,6 +138,7 @@ def main(
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]
+                total_failed += summary["failed"]
                 for r in summary["results"]:
                     sys.stderr.write(f"  {r['action']} {r['schedule_id']} -> {r['status']}\n")
                 tick += 1
@@ -144,7 +146,7 @@ def main(
                     sleep(args.interval_seconds)
         except KeyboardInterrupt:
             sys.stderr.write("\nSCHEDULER: stopped.\n")
-        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped} over {tick} tick(s)\n")
+        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped}, failed {total_failed} over {tick} tick(s)\n")
         return EXIT_OK
 
     except MvpRuntimeError as exc:
