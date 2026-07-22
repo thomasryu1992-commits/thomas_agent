@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 from . import jsonl, memory, timeutil
 from .events import stamped_event
 from .control import ControlStore
-from .errors import SchedulerBlocked, ToolBlocked
+from .errors import MvpRuntimeError, SchedulerBlocked, ToolBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
@@ -251,7 +251,7 @@ class ScheduleStore:
 
 def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) -> dict[str, Any]:
     return stamped_event(
-        SCHEDULER_EVENT_TYPE, action=action,    # "fired" | "skipped"
+        SCHEDULER_EVENT_TYPE, action=action,    # "fired" | "skipped" | "failed"
         schedule_id=schedule.schedule_id, kind=schedule.kind, status=status, created_at=now,
     )
 
@@ -365,8 +365,12 @@ def run_due(
     schedules behind it, not just the next tick. When no ``control_store`` is injected, the
     per-machine one under ``repo_root`` is used — absent state means ACTIVE, but the check never
     silently defaults to allowed (the old ``else True`` was the fail-open direction). Executed
-    schedules run sequentially (overlap-safe). Returns a summary ``{fired, skipped, results}``.
-    Fail-closed on an unreadable schedule store.
+    schedules run sequentially (overlap-safe). Returns a summary ``{fired, skipped, failed,
+    results}``. Fail-closed on an unreadable schedule store. A fire that RAISES is recorded —
+    durable "failed" scheduler event + ``last_status`` — and the loop continues to the next
+    schedule: one bad fire must neither kill the tick process (it schedules every other kind
+    too) nor vanish untraced. Occurrences stay at-most-once by design (the claim precedes the
+    execute); what changed is that a lost fire is now a *recorded* failure, never silence.
 
     The batch snapshot below is for iteration only. Every state change goes through the
     store's per-schedule, locked operations (``claim_due`` / ``record_result``) against the
@@ -379,6 +383,7 @@ def run_due(
 
     fired = 0
     skipped = 0
+    failed = 0
     results: list[dict[str, Any]] = []
 
     for schedule in schedules:
@@ -404,13 +409,28 @@ def run_due(
         if claimed is None:
             continue
 
-        status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
-                          programization=programization,
-                          provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
-        fired += 1
+        # One bad fire must not kill the tick loop (it schedules every OTHER kind
+        # too) or vanish without a trace: the occurrence is already claimed
+        # (at-most-once), so the honest record of a raised fire is a durable
+        # "failed" event + last_status, not a dead process with nothing written.
+        # KeyboardInterrupt/SystemExit still propagate (Exception excludes them).
+        try:
+            status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
+                              programization=programization,
+                              provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
+            action = "fired"
+            fired += 1
+        except MvpRuntimeError as exc:
+            status = f"failed:{exc.reason_code}"
+            action = "failed"
+            failed += 1
+        except Exception as exc:  # noqa: BLE001 — recorded, never swallowed
+            status = f"failed:UNEXPECTED:{type(exc).__name__}"
+            action = "failed"
+            failed += 1
         if ledger is not None:
-            ledger.append_scheduler_event(_scheduler_event("fired", claimed, now=now, status=status))
+            ledger.append_scheduler_event(_scheduler_event(action, claimed, now=now, status=status))
         store.record_result(claimed.schedule_id, last_run_at=now, last_status=status)
-        results.append({"schedule_id": claimed.schedule_id, "action": "fired", "status": status})
+        results.append({"schedule_id": claimed.schedule_id, "action": action, "status": status})
 
-    return {"fired": fired, "skipped": skipped, "results": results}
+    return {"fired": fired, "skipped": skipped, "failed": failed, "results": results}
