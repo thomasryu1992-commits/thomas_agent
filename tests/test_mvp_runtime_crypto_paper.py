@@ -89,12 +89,12 @@ ROW = {"timestamp": "2026-07-22T00:00:00Z", "close": 105.0, "ma20": 100.0, "adx"
 ROW_NO_MATCH = {**ROW, "close": 95.0}
 
 
-def _snapshot(last_candle=None):
+def _snapshot(last_candle=None, symbol="BTCUSDT", timeframe="1d"):
     candle = last_candle or {
         "open_time": "2026-07-21T00:00:00Z", "open": 104.0, "high": 106.0, "low": 103.0,
         "close": 105.0, "volume": 10.0, "close_time": "2026-07-22T00:00:00Z",
     }
-    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle]}
+    return {"symbol": symbol, "timeframe": timeframe, "candles": [candle]}
 
 
 # --- routing ------------------------------------------------------------------
@@ -398,6 +398,64 @@ def test_single_position_no_double_open(tmp_path):
     )
     assert summary["opened"] is None
     assert load_open_position(tmp_path)["position_id"] == first["position_id"]
+
+
+@pytest.mark.parametrize("symbol,timeframe", [("ETHUSDT", "1d"), ("BTCUSDT", "1h")])
+def test_foreign_context_cycle_refuses_settlement(symbol, timeframe, tmp_path):
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    opened = load_open_position(tmp_path)
+    # A foreign cycle whose candle trades through the BTC stop must not settle it.
+    sl_candle = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
+                 "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+    summary, records = run_paper_update(
+        _snapshot(sl_candle, symbol=symbol, timeframe=timeframe), ROW, _pool(_pool_entry()), _verdict(),
+        store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settled"] is None and summary["opened"] is None
+    assert summary["settle_refused"]["reason_code"] == "POSITION_CONTEXT_MISMATCH"
+    assert summary["settle_refused"]["snapshot_symbol"] == symbol
+    assert records[0]["operation"] == "settle_refused" and records[0]["read_only"] is True
+    assert read_outcomes(tmp_path) == []  # no outcome fabricated from foreign candles
+    untouched = load_open_position(tmp_path)
+    assert untouched["position_id"] == opened["position_id"]
+    # Foreign candles must not advance time_exit either.
+    assert untouched["holding_candles"] == opened["holding_candles"]
+
+
+def test_position_missing_context_fields_refuses_settlement(tmp_path):
+    # A legacy/hand-written position without symbol/timeframe can never prove it
+    # belongs to this cycle — refused, never settled on a guess.
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    (path / "paper_position.json").write_text(
+        json.dumps({"status": "OPEN", "position_id": "p-legacy", "direction": "LONG",
+                    "entry_price": 105.0, "stop_loss": 102.0, "take_profit": 111.0, "risk": 3.0}),
+        encoding="utf-8",
+    )
+    summary, _ = run_paper_update(
+        _snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+        store=DryRunPaperStore(), now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+    assert summary["settled"] is None and summary["opened"] is None
+    assert summary["settle_refused"]["reason_code"] == "POSITION_CONTEXT_MISMATCH"
+    assert summary["settle_refused"]["position_id"] == "p-legacy"
+
+
+def test_matching_context_still_settles(tmp_path):
+    # The guard must not break the normal single-context path (regression pin).
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    sl_candle = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
+                 "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+    summary, _ = run_paper_update(
+        _snapshot(sl_candle), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(),
+        store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settle_refused"] is None
+    assert summary["settled"]["close_reason"] == "stop_loss"
 
 
 def test_settlement_runs_even_under_no_trade_verdict(tmp_path):

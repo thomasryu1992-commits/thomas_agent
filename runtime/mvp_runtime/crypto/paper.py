@@ -63,6 +63,7 @@ STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
 STATUS_NO_ENTRY = "NO_ENTRY"
 STATUS_BLOCKED = "BLOCKED"
 BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
+POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
@@ -487,7 +488,10 @@ def run_paper_update(
     open), each carrying the store's ``filesystem_write`` capability flag. Fails
     closed (``ToolBlocked``, mode-aware reason) when the runtime is PAUSED/KILLED
     (``kill_blocks: tool_write``); a no-trade verdict skips the open, never the
-    settlement — an already-open position must always be able to close.
+    settlement — an already-open position must always be able to close. A position
+    whose (symbol, timeframe) does not match the snapshot's is left untouched with a
+    ``POSITION_CONTEXT_MISMATCH`` refusal recorded: only the position's own context
+    may settle it, and the occupied slot blocks any open.
     """
     control = control_store if control_store is not None else ControlStore(root or _repo_root())
     state = control.load()
@@ -504,7 +508,7 @@ def run_paper_update(
     symbol = str(snapshot.get("symbol") or "")
 
     records: list[dict[str, Any]] = []
-    summary: dict[str, Any] = {"settled": None, "opened": None, "route_status": None}
+    summary: dict[str, Any] = {"settled": None, "opened": None, "route_status": None, "settle_refused": None}
 
     def _event(operation: str, detail: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -520,9 +524,27 @@ def run_paper_update(
             **detail,
         }
 
-    # 1) Settle. Runs regardless of the verdict: closing is risk-reducing.
+    # 1) Settle. Runs regardless of the verdict: closing is risk-reducing — but only
+    #    in the position's own context. A cycle for a different (symbol, timeframe)
+    #    must not judge this position on candles it was never opened against: no
+    #    settlement, no holding advance, and no opening over the occupied
+    #    single-position slot. A position missing its context fields is refused too.
     position = load_open_position(root)
-    if position is not None:
+    if position is not None and (
+        str(position.get("symbol") or "") != symbol
+        or str(position.get("timeframe") or "") != timeframe
+    ):
+        refusal = {
+            "reason_code": POSITION_CONTEXT_MISMATCH,
+            "position_id": position.get("position_id"),
+            "position_symbol": position.get("symbol"),
+            "position_timeframe": position.get("timeframe"),
+            "snapshot_symbol": symbol,
+            "snapshot_timeframe": timeframe,
+        }
+        summary["settle_refused"] = refusal
+        records.append(_event("settle_refused", {**refusal, "read_only": True}))
+    elif position is not None:
         max_hold = MAX_HOLD_BARS.get(timeframe, DEFAULT_MAX_HOLD_BARS)
         reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
         if reason is not None:
