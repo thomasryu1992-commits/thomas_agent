@@ -152,8 +152,9 @@ def test_backtest_is_deterministic_and_produces_outcomes():
     b = backtest_spec(spec, snapshot)
     assert a == b
     assert a["closed_count"] > 0  # the trending fixture must actually trade
-    assert a["score_basis"] == "backtest_expectancy_v1"
-    assert a["champion_score"] == a["expectancy"]
+    assert a["score_basis"] == "robustness_score_v1"  # C8b: anti-overfit score
+    assert a["champion_score"] == a["robustness"]["robustness_score"]
+    assert a["robustness"]["verdict"] in {"ROBUST", "PROVISIONAL", "FRAGILE"}
     assert a["bars_replayed"] == 200
 
 
@@ -228,7 +229,7 @@ def _seed_candidates(tmp_path):
 def test_promotion_installs_selected_candidates(tmp_path):
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(strategy_ids=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, root=tmp_path, now=NOW)
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -241,9 +242,9 @@ def test_promotion_installs_selected_candidates(tmp_path):
 def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
     run_promotion(strategy_ids=ids[:1], promoted_by="Thomas", reason="r",
-                  keep_active=False, root=tmp_path, now=NOW)
+                  keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     run_promotion(strategy_ids=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, root=tmp_path, now=NOW)
+                  keep_active=True, root=tmp_path, now=NOW, without_approval=True)
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
 

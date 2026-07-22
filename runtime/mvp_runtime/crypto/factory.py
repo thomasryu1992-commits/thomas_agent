@@ -23,9 +23,10 @@ CANDIDATE_ROLE_TRIAL precedent).
 Determinism: generation is seeded (source rule — same seed, same batch); the factory
 derives its seed from the candle window's content hash, so a scheduled run is
 reproducible from its recorded inputs and no wall-clock randomness exists anywhere.
-``champion_score`` here is the backtest expectancy over closed simulated trades — the
-source's multi-window robustness scorer is not ported (deferred with C8b); the score's
-meaning is recorded on every candidate so nothing reads more into it than it says.
+``champion_score`` is the C8b robustness score (anti-overfit: observations-per-
+parameter dominant, regime breadth, in-window pass rate; see ``robustness.py`` for
+what the unported inputs honestly score) — raw expectancy rides alongside in the
+evidence, and ``score_basis`` names the meaning on every candidate.
 """
 
 from __future__ import annotations
@@ -39,7 +40,13 @@ from runtime.read_only_kernel import integrity
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
+from .robustness import score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
+
+# Walk-forward-lite: the replay window splits into this many equal-bar slices; a
+# slice needs this many closed trades before its sign counts toward the pass rate.
+BACKTEST_WINDOWS = 3
+MIN_TRADES_PER_WINDOW = 3
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -373,6 +380,7 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
     candles = snapshot.get("candles") or []
     outcomes: list[dict[str, Any]] = []
     position: dict[str, Any] | None = None
+    entry_regime: str | None = None
 
     for i, row in enumerate(rows):
         candle = candles[i]
@@ -387,8 +395,11 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
                     "close_reason": reason,
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
+                    "entry_regime": entry_regime,
+                    "closed_at_bar": i,
                 })
                 position = None
+                entry_regime = None
         if position is None:
             close, atr = row.get("close"), row.get("atr")
             if not (isinstance(close, (int, float)) and isinstance(atr, (int, float)) and close > 0 and atr > 0):
@@ -406,8 +417,48 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
                 "risk": abs(stop_distance),
                 "holding_candles": 0,
             }
+            entry_regime = row.get("market_regime")
 
     summary = summarize_outcomes(outcomes)
+
+    # Regime breadth: which regimes this spec actually traded in, and how many of
+    # them were profitable in aggregate (the scorer's fitted-to-one-regime signal).
+    regime_r: dict[str, float] = {}
+    for outcome in outcomes:
+        regime = str(outcome.get("entry_regime") or "UNCLEAR")
+        regime_r[regime] = regime_r.get(regime, 0.0) + outcome["result_R"]
+    regime_breakdown = {
+        "regimes_traded": sorted(regime_r),
+        "profitable_regime_count": sum(1 for total in regime_r.values() if total > 0),
+    }
+
+    # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
+    # with enough trades. temporal_stability stays None (the source walk-forward
+    # module was not ported) — the scorer treats that as absent evidence, not skip.
+    window_bars = max(1, len(rows) // BACKTEST_WINDOWS)
+    window_r: dict[int, list[float]] = {}
+    for outcome in outcomes:
+        window_r.setdefault(min(outcome["closed_at_bar"] // window_bars, BACKTEST_WINDOWS - 1), []).append(
+            outcome["result_R"]
+        )
+    counted = [values for values in window_r.values() if len(values) >= MIN_TRADES_PER_WINDOW]
+    walk_forward = {
+        "walk_forward_pass_rate": (
+            sum(1 for values in counted if sum(values) > 0) / len(counted) if counted else None
+        ),
+        "temporal_stability": None,
+        "windows": BACKTEST_WINDOWS,
+        "windows_counted": len(counted),
+    }
+
+    # Cost inputs deliberately withheld (no cost model in this port): the scorer's
+    # cost term scores 0 for every candidate — unmeasured is never credited.
+    robustness = score_robustness(
+        spec,
+        {"trade_count": summary["closed_count"]},
+        walk_forward,
+        regime_breakdown,
+    )
     return {
         "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash,
@@ -416,9 +467,13 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
         "win_count": summary["win_count"],
         "loss_count": summary["loss_count"],
         "max_drawdown": summary["max_drawdown"],
-        # The score's whole meaning, recorded where it is used: backtest expectancy.
-        "champion_score": summary["expectancy"],
-        "score_basis": "backtest_expectancy_v1",
+        "regime_breakdown": regime_breakdown,
+        "walk_forward": walk_forward,
+        "robustness": robustness,
+        # The score's whole meaning, recorded where it is used: the anti-overfit
+        # robustness score (C8b), with raw expectancy kept alongside.
+        "champion_score": robustness["robustness_score"],
+        "score_basis": "robustness_score_v1",
         "bars_replayed": len(rows),
     }
 
