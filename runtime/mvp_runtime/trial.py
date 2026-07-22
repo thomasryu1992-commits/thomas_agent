@@ -81,7 +81,7 @@ from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path,
 from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 
 TRIAL_WORKER_ID = "mvp.candidate_trial.llm"
-TRIAL_PROMPT_VERSION = "mvp_candidate_trial.v1"
+TRIAL_PROMPT_VERSION = "mvp_candidate_trial.v2"
 TRIAL_REPORT_RECORD_TYPE = "candidate_trial_report.v0"
 
 _TARGET_PREFIX = "candidate_role:"
@@ -206,11 +206,14 @@ def build_trial_prompt(task: Mapping[str, Any], assignment: Mapping[str, Any],
     contract = role_output_spec(definition)
     keys_desc = ", ".join(f"{key} ({kind})" for key, kind in contract.items())
     capabilities = ", ".join(assignment.get("role_scope", {}).get("assigned_capabilities", []))
+    quality = ", ".join(str(item) for item in definition.get("quality_criteria", []) if item)
+    quality_line = f"Quality criteria this role must satisfy: {quality}.\n" if quality else ""
     return (
         f"Candidate role trial: {definition.get('role_id')}@{definition.get('role_version')} "
         "(isolated, read-only, single run).\n"
         f"Role purpose: {definition.get('purpose', '')}\n"
         f"Assigned capabilities: {capabilities}\n"
+        f"{quality_line}"
         f"Task: {task.get('scope', {}).get('primary_objective', '')}\n"
         f"Request: {task.get('request', {}).get('raw_request', '')}\n"
         "You have no tools, no web access, and no memory context in this trial. Rely only on "

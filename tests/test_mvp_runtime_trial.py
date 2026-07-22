@@ -98,6 +98,24 @@ def test_select_candidate_role_refuses_unknown_and_active_and_wrong_version():
     assert version.value.reason_code == "CANDIDATE_VERSION_MISMATCH"
 
 
+# --- the prompt ---------------------------------------------------------------------
+
+
+def test_build_trial_prompt_includes_the_role_quality_criteria():
+    resolved = load_resolved_roles(REPO)
+    role = select_candidate_role(resolved, role_id="research.general")
+    definition = trial._load_definition(REPO, role)
+    task = {"scope": {"primary_objective": "obj"}, "request": {"raw_request": TRIAL_REQUEST}}
+    assignment = {"role_scope": {"assigned_capabilities": ["evidence_collection"]}}
+    prompt = trial.build_trial_prompt(task, assignment, definition)
+    assert "Quality criteria this role must satisfy: " in prompt
+    assert "provided_evidence_over_model_memory" in prompt
+    assert "confidence_level_stated_per_finding" in prompt
+    # A definition without the field renders no dangling criteria line.
+    bare = {k: v for k, v in definition.items() if k != "quality_criteria"}
+    assert "Quality criteria" not in trial.build_trial_prompt(task, assignment, bare)
+
+
 # --- the ask ------------------------------------------------------------------------
 
 
