@@ -193,7 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list:
-        for c in pool_store.read_candidates(None):
+        try:
+            candidates = pool_store.read_candidates(None)
+        except MvpRuntimeError as exc:
+            print(f"BLOCKED {exc.reason_code}: {exc.reason}")
+            return EXIT_BLOCKED
+        for c in candidates:
             spec = c.get("strategy_spec") or {}
             evidence = c.get("backtest_evidence") or {}
             robustness = (evidence.get("robustness") or {})

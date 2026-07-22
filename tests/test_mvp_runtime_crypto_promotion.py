@@ -250,6 +250,32 @@ def test_promotion_ambiguous_strategy_id_refused(tmp_path):
     assert entry["strategy_rule_hash"] == old[0]["strategy_rule_hash"]  # not the newest
 
 
+def test_candidate_store_stamps_and_verifies_self_hash(tmp_path):
+    _seed_candidates(tmp_path, _spec_dict())
+    row = pool.read_candidates(tmp_path)[0]
+    assert row["record_sha256"].startswith("sha256:")  # stamped at append time
+
+    # Edit the durable row (inflate the score) — the read must refuse the store.
+    path = pool.candidates_path(tmp_path)
+    import json
+    tampered = {**row, "champion_score": 0.99}
+    path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.read_candidates(tmp_path)
+    assert exc.value.reason_code == "CANDIDATES_TAMPERED"
+
+
+def test_candidate_rows_without_hash_still_read(tmp_path):
+    # Pre-stamping legacy rows have nothing to verify — they must keep resolving.
+    import json
+    path = pool.candidates_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {"strategy_id": "S9", "strategy_rule_hash": "aaa", "generation_id": "GEN-001",
+              "evidence_input_sha256": "sha256:test", "strategy_spec": _spec_dict(strategy_id="S9")}
+    path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+    assert pool.resolve_candidates(["S9"], tmp_path)[0]["strategy_id"] == "S9"
+
+
 def test_legacy_candidate_rows_derive_a_stable_id(tmp_path):
     # Rows written before candidate_id existed derive the same id on every read —
     # the append-only store is never rewritten, and the derived id resolves.
