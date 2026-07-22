@@ -1,5 +1,5 @@
 schema_version: role_registry.v0.3
-document_version: 0.6.0
+document_version: 0.7.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
@@ -34,12 +34,12 @@ roles:
   definition_path: 03_ROLE_CONTRACTS/ROLES/ACTIVE/VALIDATION_ROLE.md
   definition_sha256: ee6e627e7d4a8e3c4fb80b65659681708f71e81a2c5626b42cee9c3b75df887f
 - role_id: research.general
-  version: 0.3.0
+  version: 0.4.0
   role_type: dynamic_specialist
   status: candidate
   routable: false
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/RESEARCH_ROLE.md
-  definition_sha256: 6ad74e7924d0f00f528b07d2cf4cadcfbd155286fb6e821225a40027ae740847
+  definition_sha256: 208426050f5b56a1bbd0941f639e8c6e0096935b2fb4dbcbb54c7d7de9f1862a
 - role_id: translation.general
   version: 0.3.0
   role_type: dynamic_specialist

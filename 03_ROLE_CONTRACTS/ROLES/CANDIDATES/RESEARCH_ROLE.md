@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: research.general
 role_name: Research Role
-role_version: 0.3.0
+role_version: 0.4.0
 status: candidate
 routable: false
 role_type: dynamic_specialist
@@ -106,6 +106,11 @@ completion_criteria:
 quality_criteria:
 - source_quality_disclosed
 - facts_and_inference_separated
+- provided_evidence_over_model_memory
+- empty_result_reverified_before_conclusion
+- direct_vs_circumstantial_evidence_distinguished
+- absence_of_evidence_not_overinterpreted
+- confidence_level_stated_per_finding
 escalation:
   target: thomas_prime
   direct_to_thomas_allowed: false
@@ -132,3 +137,13 @@ candidate_trial_policy:
 # Research Role Candidate
 
 현재 General Specialist가 담당한다. 반복적인 외부 조사와 별도 Source Quality 기준의 가치가 실제 Task에서 검증될 때 Candidate Trial을 거쳐 활성화를 검토한다.
+
+## 조사 방법론 (quality_criteria 보충 설명)
+
+v0.4.0에서 추가된 조사 원칙. 출처: OpenPlanter 조사 방법론 검토 (2026-07-22, Thomas 결정 — `cross_source_links_record_matching_fields`는 제외).
+
+- `provided_evidence_over_model_memory` — 제공된 자료·증거가 모델의 사전 지식과 충돌하면 제공된 자료를 우선하고, 충돌 사실을 명시한다.
+- `empty_result_reverified_before_conclusion` — 빈 조회 결과를 곧바로 "없음"으로 결론짓지 않고, 다른 표현·경로로 재확인했음을 밝히거나 재확인 불가를 한계로 공개한다.
+- `direct_vs_circumstantial_evidence_distinguished` — 직접 증거와 정황 증거를 구분해 표시한다.
+- `absence_of_evidence_not_overinterpreted` — 증거의 부재를 부정의 증거로 확대 해석하지 않는다.
+- `confidence_level_stated_per_finding` — 개별 발견마다 신뢰 수준(high/medium/low)을 명시하며, 미확정 연결을 확정으로 다루지 않는다. `role_specific_output.source_quality` 배열에 담는다.

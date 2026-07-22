@@ -65,7 +65,59 @@ the first two records real.
   precedent). Observation rows carry a store-internal `input_sha256` sidecar the closed
   schema deliberately does not (needed to detect replayed input).
 
+## Review handling (increment 2; explicit Thomas decision 2026-07-22)
+
+`runtime/mvp_runtime/programization_cli.py` + `transition_review` / `create_program_candidate`:
+
+- **Operator transitions, forward-only:** `review` moves TRIGGERED → UNDER_REVIEW, `close`
+  moves TRIGGERED/UNDER_REVIEW → CLOSED. The counter owns NOT_TRIGGERED/TRIGGERED, the
+  operator owns UNDER_REVIEW/CLOSED, and CLOSED is terminal (reopening is a new decision).
+  The counter keeps counting during and after a review without ever touching an
+  operator-owned status. Every mutation requires an operator identity + reason and is
+  refused otherwise.
+- **Candidate creation** (`candidate` command): the review's outcome per policy §5, allowed
+  only while UNDER_REVIEW, one per pattern. Thomas authors the substance in an input file
+  (`deterministic_slice`, `agent_retained_responsibilities`, `defined_exceptions`,
+  `rollback_procedure_ref`, optional metrics); the runtime contributes identity, the
+  pattern's count, `shadow_validation: NOT_STARTED`, and the schema's hard constants —
+  `activation_eligibility: candidate_only_pending_program_registry_and_permission_policy`
+  and `permission_expansion: false`. A candidate grants **nothing**
+  (`candidate_status_does_not_grant_runtime_permission`); creation itself is ALLOW-tier
+  (`tool_or_program_request_creation: ALLOW`). Secret-bearing input and schema-invalid
+  records fail closed before anything persists.
+- **Audit:** each transition / draft appends a tamper-evident
+  `programization_review_event.v0` (`stamped_event`, the memory-retention precedent) to its
+  own ledger stream (`programization_events.jsonl`) — operator decisions about accumulated
+  state, anchored to no single task.
+- **Kill-switch bound:** `status` answers while PAUSED/KILLED (read-only door); `review` /
+  `candidate` / `close` are refused — the memory-prune door rule.
+
+## Candidate shadow-validation path (increment 3; explicit Thomas decision 2026-07-22)
+
+`transition_candidate` / `record_shadow_result` + the CLI's `ready` / `validate` /
+`shadow` / `accept` / `reject` commands:
+
+- **Forward-only lifecycle:** DRAFT → REVIEW_READY → VALIDATING (shadow → RUNNING) →
+  shadow PASS/FAIL recorded → ACCEPTED or REJECTED. ACCEPTED/REJECTED are terminal;
+  `reject` is allowed from any pre-terminal status.
+- **The runtime never runs the shadow.** Programs are unregistered and
+  `unregistered_or_disabled_resource_execution` is BLOCK, so the shadow/limited comparison
+  (policy §5) is performed by Thomas; the runtime enforces its evidence discipline: an
+  outcome can only be recorded while the candidate is VALIDATING with the shadow RUNNING
+  (started by `validate` — an outcome cannot appear from nowhere), it requires a non-empty
+  `comparison_ref` + `result`, and it is single-shot (no re-recording; a wrong outcome is
+  a new decision, not an edit).
+- **`accept` requires shadow PASS** (`ACCEPT_REQUIRES_SHADOW_PASS`) — acceptance by
+  assertion is impossible; a FAILed shadow can only be rejected.
+- **Acceptance grants nothing.** `activation_eligibility` and `permission_expansion` are
+  closed-schema constants, so an ACCEPTED candidate is a review milestone, not a
+  capability: registry and activation stay APPROVAL_REQUIRED and unreachable from here.
+- Same discipline as every review action: operator identity + reason required,
+  kill-switch bound, each action a tamper-evident `programization_review_event.v0` (with
+  the shadow status the decision was made against) on the programization ledger stream;
+  candidate rows are append-only latest-wins, schema-validated before persisting.
+
 ## Next (separate Thomas decisions)
 
-Review handling (`UNDER_REVIEW`/`CLOSED` transitions, candidate creation per policy §5),
-program request records, and any activation are each their own explicit approval.
+Program request records, registry entries, and any activation are each their own explicit
+approval — none is reachable from this CLI.

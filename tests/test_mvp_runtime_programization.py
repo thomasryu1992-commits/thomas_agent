@@ -16,7 +16,11 @@ from runtime.mvp_runtime.programization import (
     REVIEW_TRIGGER_COUNT,
     ProgramizationStore,
     build_pattern_signature,
+    create_program_candidate,
     observe_completed_run,
+    record_shadow_result,
+    transition_candidate,
+    transition_review,
 )
 
 from tests._helpers import requires_local_core
@@ -144,6 +148,291 @@ def test_pattern_rows_are_latest_wins_and_not_churned_by_invalid(tmp_path):
     _observe(store, _task(1, trace="trace_retry"))       # invalid: retry — no state change
     assert len(store.read_patterns()) == rows_after_valid
     assert store.latest_patterns()[next(iter(store.latest_patterns()))]["valid_repetition_count"] == 1
+
+
+# --- review handling (operator transitions + candidate) ----------------------
+
+def _triggered_store(tmp_path):
+    store = ProgramizationStore(tmp_path / "prog")
+    for i in range(1, REVIEW_TRIGGER_COUNT + 1):
+        _, pattern, _ = _observe(store, _task(i))
+    return store, pattern["pattern_id"]
+
+
+_REVIEW_INPUT = {
+    "deterministic_slice": ["normalize_input", "score", "render_report"],
+    "agent_retained_responsibilities": ["interpretation", "strategy", "material_exception"],
+    "defined_exceptions": ["unknown_input_schema"],
+    "rollback_procedure_ref": "rollback-analysis-draft-001",
+    "baseline_metrics": {"latency_ms": 2000},
+}
+
+
+def test_review_transitions_forward_only(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    p = transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    assert p["review_status"] == "UNDER_REVIEW"
+    p = transition_review(store, pattern_id, "CLOSED", reviewed_by="thomas", reason="r", now=NOW)
+    assert p["review_status"] == "CLOSED"
+    with pytest.raises(ProgramizationBlocked) as exc:      # CLOSED is terminal
+        transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "INVALID_REVIEW_TRANSITION"
+
+
+def test_review_requires_triggered_pattern(tmp_path):
+    store = ProgramizationStore(tmp_path / "prog")
+    _, pattern, _ = _observe(store, _task(1))              # NOT_TRIGGERED
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_review(store, pattern["pattern_id"], "UNDER_REVIEW",
+                          reviewed_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "INVALID_REVIEW_TRANSITION"
+
+
+def test_review_requires_operator_identity_and_reason(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="", reason="r", now=NOW)
+    assert exc.value.reason_code == "MISSING_OPERATOR"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason=" ", now=NOW)
+    assert exc.value.reason_code == "MISSING_REASON"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_review(store, "progpat_missing", "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "PATTERN_NOT_FOUND"
+
+
+def test_counter_keeps_counting_during_review_without_touching_status(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    _, pattern, triggered = _observe(store, _task(REVIEW_TRIGGER_COUNT + 1))
+    assert triggered is False
+    assert pattern["review_status"] == "UNDER_REVIEW"      # the operator owns this now
+    assert pattern["valid_repetition_count"] == REVIEW_TRIGGER_COUNT + 1
+
+
+def test_candidate_requires_under_review(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:      # still TRIGGERED
+        create_program_candidate(store, pattern_id, _REVIEW_INPUT,
+                                 created_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "CANDIDATE_REQUIRES_REVIEW"
+
+
+def test_candidate_created_with_schema_constants(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    candidate = create_program_candidate(store, pattern_id, _REVIEW_INPUT,
+                                         created_by="thomas", reason="r", now=NOW)
+    assert candidate["status"] == "DRAFT"
+    assert candidate["permission_expansion"] is False
+    assert candidate["activation_eligibility"] == "candidate_only_pending_program_registry_and_permission_policy"
+    assert candidate["valid_repetition_count"] == REVIEW_TRIGGER_COUNT
+    assert candidate["shadow_validation"] == {"status": "NOT_STARTED", "comparison_ref": None, "result": None}
+    assert store.read_candidates() == [candidate]          # persisted
+
+    with pytest.raises(ProgramizationBlocked) as exc:      # one candidate per pattern
+        create_program_candidate(store, pattern_id, _REVIEW_INPUT,
+                                 created_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "CANDIDATE_EXISTS"
+
+
+def test_candidate_input_is_fail_closed(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    for broken in (
+        {**_REVIEW_INPUT, "deterministic_slice": []},
+        {**_REVIEW_INPUT, "rollback_procedure_ref": ""},
+        "not a mapping",
+    ):
+        with pytest.raises(ProgramizationBlocked) as exc:
+            create_program_candidate(store, pattern_id, broken,  # type: ignore[arg-type]
+                                     created_by="thomas", reason="r", now=NOW)
+        assert exc.value.reason_code == "CANDIDATE_INPUT_INVALID"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        create_program_candidate(store, pattern_id,
+                                 {**_REVIEW_INPUT, "baseline_metrics": {"api_key": "x"}},
+                                 created_by="thomas", reason="r", now=NOW)
+    assert exc.value.reason_code == "SECRET_IN_CANDIDATE"
+    assert store.read_candidates() == []                   # nothing persisted
+
+
+# --- candidate shadow-validation path ----------------------------------------
+
+def _draft_candidate(tmp_path):
+    store, pattern_id = _triggered_store(tmp_path)
+    transition_review(store, pattern_id, "UNDER_REVIEW", reviewed_by="thomas", reason="r", now=NOW)
+    candidate = create_program_candidate(store, pattern_id, _REVIEW_INPUT,
+                                         created_by="thomas", reason="r", now=NOW)
+    return store, candidate["candidate_id"]
+
+
+def _t(store, cid, action):
+    return transition_candidate(store, cid, action, reviewed_by="thomas", reason="r")
+
+
+def _shadow(store, cid, outcome, **kw):
+    kw.setdefault("comparison_ref", "shadow-cmp-001")
+    kw.setdefault("result", "limited comparison against the agent baseline")
+    return record_shadow_result(store, cid, outcome, reviewed_by="thomas", reason="r", **kw)
+
+
+def test_candidate_lifecycle_happy_path(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    assert _t(store, cid, "ready")["status"] == "REVIEW_READY"
+    c = _t(store, cid, "validate")
+    assert c["status"] == "VALIDATING"
+    assert c["shadow_validation"] == {"status": "RUNNING", "comparison_ref": None, "result": None}
+    c = _shadow(store, cid, "PASS")
+    assert c["status"] == "VALIDATING"                     # outcome recorded, decision separate
+    assert c["shadow_validation"]["status"] == "PASS"
+    c = _t(store, cid, "accept")
+    assert c["status"] == "ACCEPTED"
+    # ACCEPTED still grants nothing — the schema constants survived every transition.
+    assert c["permission_expansion"] is False
+    assert c["activation_eligibility"] == "candidate_only_pending_program_registry_and_permission_policy"
+    # Terminal: nothing moves an ACCEPTED candidate.
+    with pytest.raises(ProgramizationBlocked) as exc:
+        _t(store, cid, "reject")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+
+
+def test_accept_requires_recorded_shadow_pass(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:      # from DRAFT: wrong status entirely
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+    _t(store, cid, "ready")
+    _t(store, cid, "validate")
+    with pytest.raises(ProgramizationBlocked) as exc:      # VALIDATING but shadow still RUNNING
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "ACCEPT_REQUIRES_SHADOW_PASS"
+    _shadow(store, cid, "FAIL")
+    with pytest.raises(ProgramizationBlocked) as exc:      # a FAILed shadow can never be accepted
+        _t(store, cid, "accept")
+    assert exc.value.reason_code == "ACCEPT_REQUIRES_SHADOW_PASS"
+    assert _t(store, cid, "reject")["status"] == "REJECTED"
+
+
+def test_shadow_outcome_needs_running_shadow_and_evidence(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:      # DRAFT: no shadow started
+        _shadow(store, cid, "PASS")
+    assert exc.value.reason_code == "SHADOW_NOT_RUNNING"
+    _t(store, cid, "ready")
+    _t(store, cid, "validate")
+    with pytest.raises(ProgramizationBlocked) as exc:
+        _shadow(store, cid, "MAYBE")
+    assert exc.value.reason_code == "SHADOW_OUTCOME_INVALID"
+    for broken in ({"comparison_ref": " "}, {"result": ""}):
+        with pytest.raises(ProgramizationBlocked) as exc:
+            _shadow(store, cid, "PASS", **broken)
+        assert exc.value.reason_code == "SHADOW_EVIDENCE_MISSING"
+    _shadow(store, cid, "PASS")
+    with pytest.raises(ProgramizationBlocked) as exc:      # outcome is single-shot: no re-recording
+        _shadow(store, cid, "FAIL")
+    assert exc.value.reason_code == "SHADOW_NOT_RUNNING"
+
+
+def test_candidate_actions_fail_closed_on_identity_and_unknown_id(tmp_path):
+    store, cid = _draft_candidate(tmp_path)
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, cid, "ready", reviewed_by="", reason="r")
+    assert exc.value.reason_code == "MISSING_OPERATOR"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, "progcand_missing", "ready", reviewed_by="thomas", reason="r")
+    assert exc.value.reason_code == "CANDIDATE_NOT_FOUND"
+    with pytest.raises(ProgramizationBlocked) as exc:
+        transition_candidate(store, cid, "promote", reviewed_by="thomas", reason="r")
+    assert exc.value.reason_code == "INVALID_CANDIDATE_TRANSITION"
+
+
+def test_cli_candidate_lifecycle_and_ledger_events(tmp_path, capsys):
+    import json
+
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.programization_cli import main
+    from runtime.mvp_runtime.store import LedgerStore
+    store, cid = _draft_candidate(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control = ControlStore(tmp_path)
+
+    for argv in (
+        ["ready", cid, "--by", "thomas", "--reason", "substance complete"],
+        ["validate", cid, "--by", "thomas", "--reason", "start limited comparison"],
+        ["shadow", cid, "--outcome", "PASS", "--comparison-ref", "shadow-cmp-001",
+         "--result", "equivalent quality, lower cost", "--by", "thomas", "--reason", "comparison done"],
+        ["accept", cid, "--by", "thomas", "--reason", "convincing"],
+    ):
+        assert main(argv, store=store, ledger=ledger, control_store=control, now=NOW) == 0
+
+    latest = store.latest_candidates()[cid]
+    assert latest["status"] == "ACCEPTED" and latest["shadow_validation"]["status"] == "PASS"
+    events = [json.loads(line) for line in
+              (ledger.root / "programization_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["action"] for e in events] == [
+        "candidate_ready", "candidate_validate", "shadow_pass", "candidate_accept"]
+    assert all(e["candidate_id"] == cid for e in events)
+    assert events[-1]["shadow_status"] == "PASS"           # the evidence state the decision saw
+    assert main(["status"], store=store, ledger=ledger, control_store=control, now=NOW) == 0
+    assert "ACCEPTED" in capsys.readouterr().out
+
+
+# --- review CLI ---------------------------------------------------------------
+
+def test_cli_review_flow_and_ledger_events(tmp_path, capsys):
+    import json
+
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.programization_cli import main
+    from runtime.mvp_runtime.store import LedgerStore
+    store, pattern_id = _triggered_store(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control = ControlStore(tmp_path)
+
+    assert main(["status"], store=store, ledger=ledger, control_store=control, now=NOW) == 0
+    assert "TRIGGERED" in capsys.readouterr().out
+
+    assert main(["review", pattern_id, "--by", "thomas", "--reason", "worth a look"],
+                store=store, ledger=ledger, control_store=control, now=NOW) == 0
+
+    input_path = tmp_path / "review.yaml"
+    input_path.write_text(
+        "deterministic_slice: [normalize_input, score]\n"
+        "agent_retained_responsibilities: [interpretation]\n"
+        "defined_exceptions: [unknown_input_schema]\n"
+        "rollback_procedure_ref: rollback-001\n",
+        encoding="utf-8",
+    )
+    assert main(["candidate", pattern_id, "--input", str(input_path), "--by", "thomas", "--reason", "review outcome"],
+                store=store, ledger=ledger, control_store=control, now=NOW) == 0
+    assert main(["close", pattern_id, "--by", "thomas", "--reason", "done"],
+                store=store, ledger=ledger, control_store=control, now=NOW) == 0
+
+    assert store.latest_patterns()[pattern_id]["review_status"] == "CLOSED"
+    assert len(store.read_candidates()) == 1
+    events = [json.loads(line) for line in
+              (ledger.root / "programization_events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["action"] for e in events] == ["review_review", "candidate_drafted", "review_close"]
+    assert all(e["record_type"] == "programization_review_event.v0" for e in events)
+    assert all(e["integrity"]["event_sha256"].startswith("sha256:") for e in events)
+
+
+def test_cli_mutations_refused_while_killed(tmp_path, capsys):
+    from runtime.mvp_runtime import control
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.programization_cli import main
+    from runtime.mvp_runtime.store import LedgerStore
+    store, pattern_id = _triggered_store(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, "kill", actor="op", now=NOW)
+
+    assert main(["review", pattern_id, "--by", "thomas", "--reason", "r"],
+                store=store, ledger=ledger, control_store=control_store, now=NOW) != 0
+    assert "RUNTIME_KILLED" in capsys.readouterr().err
+    assert store.latest_patterns()[pattern_id]["review_status"] == "TRIGGERED"   # unchanged
+    # status stays answerable while killed (read-only door)
+    assert main(["status"], store=store, ledger=ledger, control_store=control_store, now=NOW) == 0
 
 
 # --- pipeline integration (needs a local Core) ------------------------------
