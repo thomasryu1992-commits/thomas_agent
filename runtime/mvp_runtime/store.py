@@ -61,6 +61,7 @@ _RECORD_KINDS = (
     "independent_validation_result", "validator_invocation", "write_use",
     "budget_usage",
     "trial_report",
+    "crypto_cycle",
     "programization_observation", "programization_pattern",
 )
 

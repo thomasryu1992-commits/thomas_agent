@@ -42,11 +42,12 @@ SCHEDULES_REL = ".runtime_governance_state/schedules.jsonl"
 SCHEDULER_EVENT_TYPE = "scheduler_event.v0"
 RECORD_TYPE = "schedule.v0"
 
-# Schedule kinds. A task template is a request string (analysis_task) or a maintenance action
-# (memory_prune) — never a shell command.
+# Schedule kinds. A task template is a request string (analysis_task), a maintenance action
+# (memory_prune), or a governed crypto cycle (crypto_pipeline) — never a shell command.
 KIND_TASK = "analysis_task"
 KIND_PRUNE = "memory_prune"
-KINDS = frozenset({KIND_TASK, KIND_PRUNE})
+KIND_CRYPTO = "crypto_pipeline"
+KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -261,6 +262,31 @@ def _execute(
             return "skipped_no_memory_store"
         summary = memory.prune_working_memory(working_memory, ledger, now=now, reason=f"scheduled:{schedule.schedule_id}")
         return f"pruned:{summary['removed_count']}"
+    if schedule.kind == KIND_CRYPTO:
+        # One governed crypto cycle (C7). The collector and paper store are selected
+        # at fire time through their Safety-Flag chokepoints, so a deleted grant is a
+        # live revocation here exactly as everywhere else. The optional request field
+        # is "SYMBOL TIMEFRAME"; empty uses the cycle defaults.
+        from .crypto.cycle import cycle_status_line, run_crypto_cycle
+        from .crypto.market_data import select_market_data_collector
+        from .crypto.paper import select_paper_store
+
+        parts = schedule.request.split()
+        kwargs: dict[str, Any] = {}
+        if len(parts) >= 1 and parts[0]:
+            kwargs["symbol"] = parts[0]
+        if len(parts) >= 2:
+            kwargs["timeframe"] = parts[1]
+        record = run_crypto_cycle(
+            collector=select_market_data_collector(now=now, root=repo_root),
+            store=select_paper_store(now=now, root=repo_root),
+            now=now,
+            root=repo_root,
+            **kwargs,
+        )
+        if ledger is not None:
+            ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
+        return cycle_status_line(record)
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
