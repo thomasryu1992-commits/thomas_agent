@@ -70,6 +70,11 @@ NUMERIC_FEATURES = frozenset({
     "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
     "roc_4", "price_distance_ma20", "volume_zscore",
     "mark_price", "index_price", "mark_index_basis_bps", "liquidation_spike_ratio",
+    # C9: the funding series rides the default binance_futures grant, so generated
+    # specs may reference it. The liquidation columns stay OUT of the generation
+    # registry (the Coinalyze feed is gated off by default; imported specs still
+    # EVALUATE them — this set gates what the factory may mint, not the evaluator).
+    "funding_rate", "funding_zscore",
 })
 CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
     "market_regime": frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
@@ -184,6 +189,23 @@ def _bollinger_breakdown_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _funding_fade_short_entry(p: dict) -> list[dict]:
+    # Crowded longs: funding far above its rolling norm while momentum is
+    # stretched — fade the crowd short. (C9: the funding feed made this mintable.)
+    return [
+        {"feature": "funding_zscore", "comparison": ">=", "value": p["funding_z_min"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
+def _funding_fade_long_entry(p: dict) -> list[dict]:
+    # Crowded shorts: funding far below its rolling norm while momentum is washed out.
+    return [
+        {"feature": "funding_zscore", "comparison": "<=", "value": p["funding_z_max"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
 TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("trend_pullback", "long", "1h",
                      {"adx_min": ParamSpec(15.0, 30.0), "rsi_max": ParamSpec(45.0, 65.0), **_EXIT_PARAMS},
@@ -215,6 +237,12 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("bollinger_breakdown_short", "short", "1h",
                      {"percent_b_max": ParamSpec(-0.1, 0.1), "volume_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"percent_b_max": 0.0, "volume_z_min": 1.0, **_EXIT_BASE}, _bollinger_breakdown_short_entry),
+    StrategyTemplate("funding_fade_long", "long", "1h",
+                     {"funding_z_max": ParamSpec(-2.5, -1.0), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
+                     {"funding_z_max": -1.5, "rsi_max": 38.0, **_EXIT_BASE}, _funding_fade_long_entry),
+    StrategyTemplate("funding_fade_short", "short", "1h",
+                     {"funding_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _funding_fade_short_entry),
 )
 
 

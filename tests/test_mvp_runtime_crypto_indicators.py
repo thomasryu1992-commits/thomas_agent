@@ -23,7 +23,9 @@ CANDLES = json.loads((FIXTURES / "crypto_parity_candles.json").read_text(encodin
 PARITY = json.loads((FIXTURES / "crypto_indicator_parity.json").read_text(encoding="utf-8"))
 EXPECTED = PARITY["features"]
 
-SNAPSHOT = {"candles": CANDLES}
+# C9: the fixture carries synthetic feed series (with deliberate gap bands); their
+# presence engages the series semantics, so the feed columns are parity-checked too.
+SNAPSHOT = {"candles": CANDLES, **PARITY.get("feeds", {})}
 ROWS = features.build_feature_rows(SNAPSHOT)
 
 
@@ -70,11 +72,23 @@ def test_warmup_rows_marked_and_final_rows_ok():
 
 
 def test_no_feed_fallbacks_match_source_absent_feed_semantics():
-    last = ROWS[-1]
+    # Feeds NOT configured (keys absent): the source's legacy constants — and the
+    # mark/index fallback matches the source's runtime ROUTER too, which never
+    # passes mark/index frames (runtime_feature_adapter).
+    last = features.build_feature_rows({"candles": CANDLES})[-1]
     assert last["mark_price"] == last["close"]  # ffill().fillna(close)
     assert last["index_price"] == last["close"]
     assert last["mark_index_basis_bps"] == 0.0
     assert last["liquidation_spike_ratio"] == 0.0  # legacy 0-fill without a series
+    assert last["funding_rate"] == 0.0 and last["funding_zscore"] == 0.0
+
+
+def test_feed_present_but_empty_is_indeterminate_never_constant():
+    # Fetch attempted and FAILED (key present, list empty): NaN-honest — a spec
+    # referencing these fails closed to no-entry instead of evaluating a constant.
+    last = features.build_feature_rows({"candles": CANDLES, "funding": [], "liquidations": []})[-1]
+    assert last["funding_rate"] is None and last["funding_zscore"] is None
+    assert last["liquidation_spike_ratio"] is None
 
 
 def test_latest_feature_row_empty_snapshot_is_empty():

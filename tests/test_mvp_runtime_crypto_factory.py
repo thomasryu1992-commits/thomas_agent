@@ -110,8 +110,10 @@ def test_generated_specs_carry_generation_lineage():
 # --- validator ----------------------------------------------------------------
 
 def test_unknown_feature_blocks():
+    # open_interest is a real source column whose feed was never ported — it must
+    # stay unmintable (funding_zscore graduated INTO the registry with C9).
     spec = StrategySpec.from_dict(_spec_dict(entry_rules={
-        "operator": "AND", "conditions": [{"feature": "funding_zscore", "comparison": ">", "value": 1.0}],
+        "operator": "AND", "conditions": [{"feature": "open_interest", "comparison": ">", "value": 1.0}],
     }))
     verdict = validate_strategy(spec)
     assert verdict["approved_for_backtest"] is False
