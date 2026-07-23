@@ -21,6 +21,7 @@ same signal every cycle, so the open book is capped.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -28,7 +29,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
-from .paper import DEFAULT_MAX_HOLD_BARS, MAX_HOLD_BARS, settle_trade_plan, state_dir
+from .paper import position_max_hold, settle_trade_plan, state_dir
 
 COUNTERFACTUAL_TRACKER_VERSION = "counterfactual_tracker.v1"
 BOOK_FILENAME = "counterfactual_positions.json"
@@ -42,6 +43,11 @@ MAX_OPEN_COUNTERFACTUALS = 50
 MISSED_OPPORTUNITY = "MISSED_OPPORTUNITY"
 AVOIDED_LOSS = "AVOIDED_LOSS"
 NEUTRAL_BLOCK = "NEUTRAL_BLOCK"
+
+COUNTERFACTUAL_BOOK_UNVERIFIABLE = "COUNTERFACTUAL_BOOK_UNVERIFIABLE"
+COUNTERFACTUAL_HISTORY_TAMPERED = "COUNTERFACTUAL_HISTORY_TAMPERED"
+COUNTERFACTUAL_HISTORY_DUPLICATE = "COUNTERFACTUAL_HISTORY_DUPLICATE"
+NATIVE_PROVENANCE = "mvp_counterfactual_tracker"
 
 
 def classify_counterfactual(result_r: float) -> str:
@@ -59,18 +65,39 @@ def _book_path(root: Path | None) -> Path:
 
 
 def load_open_counterfactuals(root: Path | None = None) -> list[dict[str, Any]]:
+    """Open shadows, or raise if the book cannot be read.
+
+    Raising rather than returning empty is the point: the caller used to treat an
+    unreadable book as "no shadows" and then REWROTE it, destroying whatever was
+    there and hiding the loss. The cycle degrades on this (shadows are observational,
+    they must never block trading) but the book is preserved for inspection."""
     path = _book_path(root)
     if not path.is_file():
         return []
     try:
         book = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        # An unreadable OBSERVATIONAL book is dropped, not fatal: unlike the position
-        # store, nothing real can be double-opened over it — losing shadows loses
-        # calibration data only, and that loss is visible in the book rewrite.
-        return []
+    except (OSError, ValueError) as exc:
+        raise ToolError(
+            COUNTERFACTUAL_BOOK_UNVERIFIABLE,
+            f"counterfactual book unreadable: {type(exc).__name__}",
+        ) from exc
     rows = book.get("positions") if isinstance(book, dict) else None
+    if rows is None and not isinstance(book, dict):
+        raise ToolError(COUNTERFACTUAL_BOOK_UNVERIFIABLE, "counterfactual book is not an object")
     return [r for r in rows or [] if isinstance(r, dict) and r.get("status") == "OPEN"]
+
+
+def settles_in_context(plan: Mapping[str, Any], *, symbol: str, timeframe: str) -> bool:
+    """Whether this shadow may be judged by the current cycle's candles.
+
+    The guard L1a put on real positions, which the shadow book reintroduced: settling
+    a BTC shadow against ETH candles produces a fabricated hypothetical and, worse,
+    feeds it to gate calibration. A shadow missing its context cannot prove it belongs
+    to this cycle, so it is left alone too."""
+    return (
+        str(plan.get("symbol") or "") == symbol
+        and str(plan.get("timeframe") or "") == timeframe
+    )
 
 
 def _save_book(rows: list[dict[str, Any]], *, root: Path | None, now: str) -> None:
@@ -103,9 +130,14 @@ def build_shadow_plan(
         "stop_loss": entry_plan.get("stop_loss"),
         "take_profit": entry_plan.get("take_profit"),
         "risk": entry_plan.get("risk"),
+        # Exit parity rides into the shadow too: a counterfactual settled on a
+        # different time-exit than the real trade would have used measures nothing.
+        "max_holding_bars": entry_plan.get("max_holding_bars"),
         "holding_candles": 0,
         "strategy_id": entry_plan.get("strategy_id"),
+        "candidate_id": entry_plan.get("candidate_id"),
         "strategy_rule_hash": entry_plan.get("strategy_rule_hash"),
+        "strategy_generation_id": entry_plan.get("strategy_generation_id"),
         "block_reasons": sorted({str(r) for r in block_reasons if str(r)}),
         "opened_at_utc": now,
     }
@@ -139,30 +171,59 @@ def build_counterfactual_outcome_record(
         "risk": plan.get("risk"),
         "block_reasons": plan.get("block_reasons") or [],
         "strategy_id": plan.get("strategy_id"),
+        "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
+        "strategy_generation_id": plan.get("strategy_generation_id"),
         "opened_at_utc": plan.get("opened_at_utc"),
         "created_at_utc": now,
-        "provenance": "mvp_counterfactual_tracker",
+        "provenance": NATIVE_PROVENANCE,
         "kind": "counterfactual",
     }
+    # Idempotency key: one shadow settles exactly once, so it derives from the shadow
+    # alone — a retried settlement mints the SAME id and is recognised as a duplicate.
+    record["counterfactual_settlement_id"] = integrity.short_id(
+        "cf_settle", {"counterfactual_id": plan.get("counterfactual_id")}
+    )
     record["record_sha256"] = integrity.sha256_record(record)
     return record
 
 
 def _append_outcomes(records: list[dict[str, Any]], *, root: Path | None) -> None:
+    """Append settled shadows, skipping any whose settlement is already recorded.
+
+    The dup check runs under the same lock as the write, so a retry after a crash
+    between the append and the book rewrite completes the settlement instead of
+    doubling it."""
     path = state_dir(root) / OUTCOMES_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code="COUNTERFACTUAL_STORE_LOCKED", label="counterfactual outcomes"):
+        recorded = {
+            r.get("counterfactual_settlement_id")
+            for r in read_counterfactual_outcomes(root)
+            if r.get("counterfactual_settlement_id")
+        }
+        fresh = [r for r in records if r.get("counterfactual_settlement_id") not in recorded]
+        if not fresh:
+            return
         with open(path, "a", encoding="utf-8", newline="\n") as handle:
-            for record in records:
+            for record in fresh:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
+    """All shadow outcomes — a VERIFIED read, mirroring ``paper.read_outcomes``.
+
+    Native records (provenance ``mvp_counterfactual_tracker``) must recompute their
+    ``record_sha256``, and settlement ids must be unique. Imported rows carry the
+    SOURCE's hash over pre-import fields, so their tamper evidence is the audited
+    import batch, not a recompute here."""
     path = state_dir(root) / OUTCOMES_FILENAME
     if not path.is_file():
         return []
     rows: list[dict[str, Any]] = []
+    seen_settlements: set[str] = set()
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -175,8 +236,25 @@ def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any
         except ValueError as exc:
             raise ToolError("COUNTERFACTUAL_HISTORY_UNREADABLE",
                             f"counterfactual outcomes line {i + 1} is not valid JSON") from exc
-        if isinstance(record, dict):
-            rows.append(record)
+        if not isinstance(record, dict):
+            continue
+        if record.get("provenance") == NATIVE_PROVENANCE:
+            stored = record.get("record_sha256")
+            body = {k: v for k, v in record.items() if k != "record_sha256"}
+            if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+                raise ToolError(
+                    COUNTERFACTUAL_HISTORY_TAMPERED,
+                    f"counterfactual outcomes line {i + 1} fails its self-hash",
+                )
+        settlement_id = record.get("counterfactual_settlement_id")
+        if isinstance(settlement_id, str) and settlement_id:
+            if settlement_id in seen_settlements:
+                raise ToolError(
+                    COUNTERFACTUAL_HISTORY_DUPLICATE,
+                    f"duplicate counterfactual_settlement_id: {settlement_id}",
+                )
+            seen_settlements.add(settlement_id)
+        rows.append(record)
     return rows
 
 
@@ -186,20 +264,40 @@ def run_counterfactual_update(
     block_reasons: list[str],
     last_candle: Mapping[str, Any] | None,
     last_close: float | None,
+    symbol: str,
     timeframe: str,
     now: str,
     root: Path | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """One cycle's shadow-book step: settle every open shadow, then maybe open one.
+    """One cycle's shadow-book step: settle this context's shadows, then maybe open one.
+
+    Only shadows whose (symbol, timeframe) match this cycle are touched — a foreign
+    shadow is carried forward untouched, never judged on candles it was not opened
+    against and never advanced toward its time exit. An unreadable book degrades the
+    step (``COUNTERFACTUAL_BOOK_UNVERIFIABLE``) and writes NOTHING, so the damaged file
+    survives for inspection instead of being silently overwritten; shadows are
+    observational, so this must never block the cycle.
 
     ``persist=False`` (dry-run store) computes the settlement summary without
     writing — the same effect discipline as every other paper mutation."""
-    rows = load_open_counterfactuals(root)
+    try:
+        rows = load_open_counterfactuals(root)
+    except ToolError as exc:
+        return {
+            "settled": [], "opened": None, "open_count": None,
+            "degraded": exc.reason_code,
+        }
+
     still_open: list[dict[str, Any]] = []
     settled: list[dict[str, Any]] = []
+    foreign = 0
     for plan in rows:
-        max_hold = MAX_HOLD_BARS.get(str(plan.get("timeframe") or timeframe), DEFAULT_MAX_HOLD_BARS)
+        if not settles_in_context(plan, symbol=symbol, timeframe=timeframe):
+            foreign += 1
+            still_open.append(plan)          # untouched: no settle, no holding advance
+            continue
+        max_hold, _ = position_max_hold(plan, str(plan.get("timeframe") or timeframe))
         reason, exit_price, result_r = settle_trade_plan(plan, last_candle, last_close, max_hold, False)
         if reason is None:
             still_open.append(plan)
@@ -214,6 +312,9 @@ def run_counterfactual_update(
         still_open.append(opened)
 
     if persist:
+        # Outcomes first, then the book: a crash between them leaves a settled shadow
+        # still open, which the settlement-id dup check recognises and completes on the
+        # next cycle rather than settling it twice.
         if settled:
             _append_outcomes(settled, root=root)
         _save_book(still_open, root=root, now=now)
@@ -226,6 +327,7 @@ def run_counterfactual_update(
         ],
         "opened": opened.get("counterfactual_id") if opened else None,
         "open_count": len(still_open),
+        "foreign_context_skipped": foreign,
     }
 
 

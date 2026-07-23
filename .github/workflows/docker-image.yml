@@ -1,0 +1,161 @@
+name: Docker Image
+
+# Builds the deployment image and smoke-tests the properties the runtime depends on in
+# production. Runs on ubuntu-latest deliberately: that is the Linux AMD64 target the
+# service actually runs on, and the Dockerfile was never exercised by CI before this.
+#
+# Every smoke here asserts a FAIL-CLOSED property on a bare image — no secrets, no
+# per-machine state, nothing to provision. That is exactly the point: an image with no
+# mounted activation must refuse every network capability, and CI is the place to prove
+# it stays that way.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    name: Docker build + fail-closed smoke
+    runs-on: ubuntu-latest
+
+    env:
+      # Keep every compose invocation (build, up, down) pointed at the CI state dir.
+      THOMAS_STATE_DIR: ./ci-state
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate the compose topology
+        run: |
+          set -euo pipefail
+          services=$(docker compose config --services | sort)
+          echo "services:"; echo "${services}"
+          # Both halves of the deployment must exist: an operator-only deploy runs no
+          # schedules at all, which is exactly the bug L3b fixed.
+          for required in operator scheduler; do
+            echo "${services}" | grep -qx "${required}" || {
+              echo "compose is missing the '${required}' service"; exit 1; }
+          done
+
+      - name: Build the image
+        run: docker compose build
+
+      - name: Prepare a mounted state volume
+        run: |
+          set -euo pipefail
+          mkdir -p ci-state THOMAS_CORE/activations THOMAS_CORE/approvals
+          # The image runs as uid 10001 (non-root). A host dir owned by the runner is not
+          # writable by it, which is the same requirement DEPLOYMENT.md puts on a real
+          # host — so make it writable here rather than pretend the constraint is absent.
+          chmod 777 ci-state
+
+      - name: Scheduler ticks cleanly on an empty mounted volume
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" \
+                thomas-agent-runtime \
+                python -m runtime.mvp_runtime.scheduler_cli tick --max-ticks 1 --interval-seconds 0 2>&1)
+          echo "${out}"
+          echo "${out}" | grep -q "fired 0, skipped 0, failed 0" || {
+            echo "expected an empty, successful tick"; exit 1; }
+          # Alerting must announce that it is off rather than fail silently (L3c).
+          echo "${out}" | grep -q "operator alerts DISABLED (REGISTRATION_MISSING)" || {
+            echo "expected the alerts-disabled banner"; exit 1; }
+          # Proves uid 10001 could actually write to the mounted volume.
+          test -d ci-state/runtime_ledger || { echo "state volume was not written"; exit 1; }
+
+      - name: A provider env var alone must NOT open a network path
+        run: |
+          set -euo pipefail
+          code=0
+          out=$(docker run --rm -e MVP_HOSTED_PROVIDER=google_ai_studio thomas-agent-runtime \
+                python -m runtime.mvp_runtime.scheduler_cli tick --max-ticks 1 --interval-seconds 0 2>&1) || code=$?
+          echo "${out}"
+          [ "${code}" -eq 2 ] || { echo "expected fail-closed exit 2, got ${code}"; exit 1; }
+          echo "${out}" | grep -q "ACTIVATION_MISSING" || {
+            echo "expected ACTIVATION_MISSING"; exit 1; }
+
+      - name: The operator refuses to act with no registered operator
+        run: |
+          set -euo pipefail
+          code=0
+          out=$(docker run --rm thomas-agent-runtime \
+                python -m runtime.mvp_runtime.operator_cli --max-batches 1 2>&1) || code=$?
+          echo "${out}"
+          [ "${code}" -eq 2 ] || { echo "expected fail-closed exit 2, got ${code}"; exit 1; }
+          echo "${out}" | grep -q "REGISTRATION_MISSING" || {
+            echo "expected REGISTRATION_MISSING"; exit 1; }
+
+      - name: Only an explicit resume clears a kill
+        run: |
+          set -euo pipefail
+          # Every mutation of the state volume runs INSIDE a container: its files are
+          # written by uid 10001, so the runner cannot truncate them even through a
+          # world-writable directory. The state belongs to the container.
+          state() {
+            docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+              python -m runtime.mvp_runtime.console_cli "$@" 2>&1
+          }
+
+          state kill --reason "ci smoke" > /dev/null
+          # A FRESH container must still see it: the kill lives on the volume, not in
+          # process memory, so restarting the service cannot clear an emergency stop.
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: KILLED" || { echo "the kill did not persist"; exit 1; }
+
+          # Unreadable control state must never read as "go".
+          docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+            sh -c 'printf "{not json" > /app/.runtime_governance_state/operator_control_state.json'
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: KILLED" || {
+            echo "corrupt control state did not fail closed"; exit 1; }
+
+          # Nor may DELETING the state resume a killed runtime: load() consults the
+          # control-event ledger, so removing the file cannot launder a kill away.
+          docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+            rm -f /app/.runtime_governance_state/operator_control_state.json
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: KILLED" || {
+            echo "deleting the control state laundered the kill away"; exit 1; }
+
+          # The one way out is the authenticated operator saying so.
+          state resume --reason "ci smoke done" > /dev/null
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: ACTIVE" || { echo "resume did not clear the kill"; exit 1; }
+
+      - name: The scheduler service starts from its compose definition
+        run: |
+          set -euo pipefail
+          # Only the scheduler: the operator correctly fails closed without a registration,
+          # so it would crash-loop here — that refusal is asserted above instead.
+          docker compose up -d scheduler
+          for _ in $(seq 1 30); do
+            sleep 2
+            if docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking"; then
+              break
+            fi
+          done
+          docker compose logs scheduler
+          docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking" || {
+            echo "the scheduler service never started ticking"; exit 1; }
+          state=$(docker inspect -f '{{.State.Status}}' thomas-scheduler)
+          [ "${state}" = "running" ] || { echo "scheduler is ${state}, not running"; exit 1; }
+          # The compose healthcheck command itself must answer — and it now asserts the
+          # loop actually turned, not merely that a state file parses.
+          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --remove-orphans || true

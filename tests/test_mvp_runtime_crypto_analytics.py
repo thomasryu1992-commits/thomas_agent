@@ -89,14 +89,14 @@ def _plan(entry=100.0, stop=97.0, target=104.0, strategy_id="S1"):
 def test_shadow_opens_and_settles_into_own_registry(tmp_path):
     opened = counterfactual.run_counterfactual_update(
         blocked_plan=_plan(), block_reasons=["daily_loss_limit_breached"],
-        last_candle=None, last_close=None, timeframe="1d", now=NOW, root=tmp_path,
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
     )
     assert opened["opened"] is not None and opened["open_count"] == 1
 
     sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0, "close_time": "2026-07-23T00:00:00Z"}
     settled = counterfactual.run_counterfactual_update(
         blocked_plan=None, block_reasons=[], last_candle=sl_candle, last_close=98.0,
-        timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
     )
     assert settled["settled"][0]["classification"] == "AVOIDED_LOSS"
     assert settled["settled"][0]["result_R"] == -1.0
@@ -111,20 +111,119 @@ def test_shadow_opens_and_settles_into_own_registry(tmp_path):
     assert verdict["allow_new_position"] is True
 
 
+def test_shadow_settles_on_the_plan_time_exit_not_the_table(tmp_path):
+    # Exit parity for shadows: the blocked plan carries the spec's max_holding_bars=1,
+    # so one calm bar time-exits it — under the old 1d table default (48) the shadow
+    # would have measured a hold the real trade could never have had.
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "max_holding_bars": 1}, block_reasons=["x"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    calm = {"high": 101.0, "low": 99.5, "close": 100.5, "close_time": "2026-07-23T00:00:00Z"}
+    settled = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=calm, last_close=100.5,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
+    )
+    assert settled["open_count"] == 0
+    records = counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert len(records) == 1 and records[0]["close_reason"] == "time_exit"
+
+
 def test_shadow_book_is_capped(tmp_path):
     for i in range(counterfactual.MAX_OPEN_COUNTERFACTUALS + 5):
         counterfactual.run_counterfactual_update(
             blocked_plan=_plan(entry=100.0 + i, strategy_id=f"S{i}"), block_reasons=["x"],
-            last_candle=None, last_close=None, timeframe="1d",
+            last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
             now=f"2026-07-22T{i % 24:02d}:00:00Z", root=tmp_path,
         )
     assert len(counterfactual.load_open_counterfactuals(tmp_path)) == counterfactual.MAX_OPEN_COUNTERFACTUALS
 
 
+def test_a_foreign_context_shadow_is_never_settled_or_advanced(tmp_path):
+    """The L1a guard the shadow book reintroduced: an ETH cycle used to settle a BTC
+    shadow against ETH candles, fabricating a hypothetical that feeds gate calibration."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["x"], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    before = counterfactual.load_open_counterfactuals(tmp_path)[0]
+
+    sweep = {"high": 100.5, "low": 96.0, "close": 98.0, "close_time": "2026-07-23T00:00:00Z"}
+    for symbol, timeframe in (("ETHUSDT", "1d"), ("BTCUSDT", "1h")):
+        summary = counterfactual.run_counterfactual_update(
+            blocked_plan=None, block_reasons=[], last_candle=sweep, last_close=98.0,
+            symbol=symbol, timeframe=timeframe, now="2026-07-23T12:00:00Z", root=tmp_path,
+        )
+        assert summary["settled"] == [] and summary["foreign_context_skipped"] == 1
+    assert counterfactual.read_counterfactual_outcomes(tmp_path) == []
+    after = counterfactual.load_open_counterfactuals(tmp_path)[0]
+    assert after["holding_candles"] == before["holding_candles"]   # not advanced either
+
+    # Its own context still settles it.
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=sweep, last_close=98.0,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
+    )
+    assert summary["settled"][0]["classification"] == "AVOIDED_LOSS"
+
+
+def test_an_unreadable_book_degrades_and_is_preserved(tmp_path):
+    # It used to be read as "no shadows" and then overwritten, destroying the data
+    # and hiding the loss.
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "counterfactual_positions.json").write_text("{not json", encoding="utf-8")
+
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["x"], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    assert summary["degraded"] == "COUNTERFACTUAL_BOOK_UNVERIFIABLE"
+    assert summary["opened"] is None
+    # The damaged file survives for inspection rather than being silently rewritten.
+    assert (path / "counterfactual_positions.json").read_text(encoding="utf-8") == "{not json"
+
+
+def test_a_resettled_shadow_is_not_doubled(tmp_path):
+    counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["x"], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    shadow = counterfactual.load_open_counterfactuals(tmp_path)[0]
+    record = counterfactual.build_counterfactual_outcome_record(
+        shadow, close_reason="stop_loss", exit_price=97.0, result_r=-1.0, now=NOW)
+    counterfactual._append_outcomes([record], root=tmp_path)
+    counterfactual._append_outcomes([record], root=tmp_path)      # a retried settlement
+    assert len(counterfactual.read_counterfactual_outcomes(tmp_path)) == 1
+
+
+def test_a_tampered_native_shadow_outcome_is_refused(tmp_path):
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    record = counterfactual.build_counterfactual_outcome_record(
+        {**_plan(), "counterfactual_id": "cf1", "holding_candles": 1},
+        close_reason="stop_loss", exit_price=97.0, result_r=-1.0, now=NOW)
+    (path / "counterfactual_outcomes.jsonl").write_text(
+        json.dumps({**record, "result_R": 9.0}) + "\n", encoding="utf-8")
+    with pytest.raises(Exception) as exc:
+        counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert exc.value.reason_code == "COUNTERFACTUAL_HISTORY_TAMPERED"
+
+
+def test_imported_shadow_rows_skip_the_hash_recompute(tmp_path):
+    # The live store holds 53 imported counterfactuals hashed by the SOURCE scheme.
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    imported = {"counterfactual_id": "cf_import", "outcome_closed": True, "result_R": 1.0,
+                "provenance": "crypto_ai_system_import", "record_sha256": "sha256:source-scheme"}
+    (path / "counterfactual_outcomes.jsonl").write_text(json.dumps(imported) + "\n", encoding="utf-8")
+    assert counterfactual.read_counterfactual_outcomes(tmp_path) == [imported]
+
+
 def test_dry_run_persists_nothing(tmp_path):
     summary = counterfactual.run_counterfactual_update(
         blocked_plan=_plan(), block_reasons=["x"], last_candle=None, last_close=None,
-        timeframe="1d", now=NOW, root=tmp_path, persist=False,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path, persist=False,
     )
     assert summary["opened"] is not None  # computed...
     assert counterfactual.load_open_counterfactuals(tmp_path) == []  # ...not persisted

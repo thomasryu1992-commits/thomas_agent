@@ -19,11 +19,14 @@ from runtime.mvp_runtime.crypto import pool
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
+    fuse_specs,
     mutate_params,
     next_generation_id,
+    rank_fusion_parents,
     run_factory,
     templates_for_timeframe,
     validate_strategy,
+    FusionRefused,
     ParamSpec,
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
@@ -274,3 +277,236 @@ def test_promotion_refuses_unknown_candidate(tmp_path):
     with pytest.raises(SystemExit):
         run_promotion(selectors=["S_NOPE"], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW)
+
+
+# --- candidate lineage (fusion groundwork) ------------------------------------
+
+def _lineage_row(parent_ids, derivation="mutation", seed_tag="x"):
+    """A minimal candidate row claiming a derivation from ``parent_ids``."""
+    return {
+        "strategy_id": "S900",
+        "strategy_rule_hash": f"sha256:{seed_tag * 8}",
+        "generation_id": "GEN-900",
+        "evidence_input_sha256": "sha256:" + "e" * 8,
+        "derivation_type": derivation,
+        "parent_candidate_ids": parent_ids,
+    }
+
+
+def test_factory_records_are_seeded_with_empty_parents():
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["candidates"]
+    for c in result["candidates"]:
+        assert c["derivation_type"] == "seeded_template"
+        assert c["parent_candidate_ids"] == []
+
+
+def test_parented_row_roundtrips_when_parents_are_durable(tmp_path):
+    _seed_candidates(tmp_path)
+    parents = [pool.candidate_id(r) for r in pool.read_candidates(tmp_path)[:2]]
+    pool.append_candidates([_lineage_row(parents, derivation="crossover")], root=tmp_path)
+    rows = pool.read_candidates(tmp_path)
+    assert rows[-1]["parent_candidate_ids"] == parents
+    assert rows[-1]["derivation_type"] == "crossover"
+
+
+def test_legacy_rows_without_lineage_fields_still_append(tmp_path):
+    row = _lineage_row([], seed_tag="l")
+    del row["derivation_type"], row["parent_candidate_ids"]
+    assert pool.append_candidates([row], root=tmp_path) == 1
+
+
+def test_unknown_parent_refused_and_nothing_written(tmp_path):
+    _seed_candidates(tmp_path)
+    before = len(pool.read_candidates(tmp_path))
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([_lineage_row(["cand-nope"])], root=tmp_path)
+    assert "UNKNOWN_PARENT_CANDIDATE" in str(exc.value)
+    assert len(pool.read_candidates(tmp_path)) == before  # all-or-nothing
+
+
+@pytest.mark.parametrize("mutant, reason", [
+    ({"derivation_type": "alien"}, "unknown derivation_type"),
+    ({"derivation_type": "seeded_template"}, "admits 0..0 parents"),          # parents ride along
+    ({"parent_candidate_ids": None}, "list of non-empty ids"),
+    ({"parent_candidate_ids": ["p", "p"]}, "duplicate"),
+    ({"parent_candidate_ids": ["only-one"], "derivation_type": "crossover"}, "admits 2+"),
+])
+def test_incoherent_lineage_refused(tmp_path, mutant, reason):
+    _seed_candidates(tmp_path)
+    known = pool.candidate_id(pool.read_candidates(tmp_path)[0])
+    row = {**_lineage_row([known]), **mutant}
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([row], root=tmp_path)
+    assert "CANDIDATE_LINEAGE_INVALID" in str(exc.value)
+    assert reason.split()[0].lower() in str(exc.value).lower()
+
+
+def test_parents_without_derivation_type_refused(tmp_path):
+    _seed_candidates(tmp_path)
+    known = pool.candidate_id(pool.read_candidates(tmp_path)[0])
+    row = _lineage_row([known])
+    del row["derivation_type"]
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([row], root=tmp_path)
+    assert "CANDIDATE_LINEAGE_INVALID" in str(exc.value)
+
+
+# --- fusion: crossover of two proven lineages ---------------------------------
+
+def _parent_spec(strategy_id, conditions, **overrides):
+    return StrategySpec.from_dict(_spec_dict(
+        strategy_id=strategy_id,
+        entry_rules={"operator": "AND", "conditions": conditions},
+        **overrides,
+    ))
+
+
+_CLOSE_OVER_MA20 = {"feature": "close", "comparison": ">", "value_from": "ma20"}
+_MA20_OVER_MA50 = {"feature": "ma20", "comparison": ">", "value_from": "ma50"}
+
+
+def test_fusion_is_order_independent():
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20])
+    b = _parent_spec("S2", [{"feature": "adx", "comparison": ">=", "value": 25.0}])
+    left = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    right = fuse_specs(b, a, strategy_id="S9", generation_id="GEN-9")
+    assert left.to_dict() == right.to_dict()
+    assert left.strategy_rule_hash == right.strategy_rule_hash
+
+
+def test_fused_entry_is_the_deduplicated_union_under_and():
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20, {"feature": "adx", "comparison": ">=", "value": 25.0}])
+    b = _parent_spec("S2", [_CLOSE_OVER_MA20, {"feature": "rsi", "comparison": "<=", "value": 55.0}])
+    child = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert child.entry_rules.operator == "AND"
+    # The shared condition appears once; the child is strictly more selective.
+    assert sorted(c.feature for c in child.entry_rules.conditions) == ["adx", "close", "rsi"]
+    assert len(child.entry_rules.conditions) == 3
+    assert child.strategy_family == "breakout"  # shared family collapses
+
+
+@pytest.mark.parametrize("overrides, reason", [
+    ({"direction": "short"}, "direction_mismatch"),
+    ({"timeframe": "4h"}, "timeframe_mismatch"),
+    ({"symbol_scope": ["ETHUSDT"]}, "symbol_scope_mismatch"),
+])
+def test_fusion_refuses_parents_that_disagree_on_context(overrides, reason):
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20])
+    b = _parent_spec("S2", [_MA20_OVER_MA50], **overrides)
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert exc.value.reason == reason
+
+
+def test_fusion_refuses_an_or_parent():
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20])
+    b = StrategySpec.from_dict(_spec_dict(
+        strategy_id="S2",
+        entry_rules={"operator": "OR", "conditions": [_MA20_OVER_MA50, _CLOSE_OVER_MA20]},
+    ))
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert exc.value.reason == "non_and_parent"  # AND-union would change what OR meant
+
+
+def test_fusion_refuses_when_the_union_exceeds_the_condition_cap():
+    feats_a = ["close", "ma20", "ma50", "adx", "rsi"]
+    feats_b = ["macd", "atr", "volume", "roc_4"]
+    a = _parent_spec("S1", [{"feature": f, "comparison": ">=", "value": 1.0} for f in feats_a])
+    b = _parent_spec("S2", [{"feature": f, "comparison": ">=", "value": 1.0} for f in feats_b])
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert exc.value.reason == "too_many_conditions"
+
+
+def test_fusion_validates_the_child_even_when_a_parent_never_was():
+    """An imported parent may sit outside the validator's bounds; the blend is
+    checked, never clamped."""
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20])
+    b = _parent_spec("S2", [_MA20_OVER_MA50],
+                     exit_rules={"stop_model": "atr", "stop_atr": 12.0,
+                                 "target_atr": 12.0, "max_holding_bars": 10})
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert "BLOCK_INVALID_PARAMETER_RANGE" in exc.value.reason
+
+
+def test_rank_fusion_parents_orders_by_score_and_skips_the_unscorable():
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-low", "champion_score": 0.1, "strategy_spec": spec},
+        {"candidate_id": "cand-high", "champion_score": 0.9, "strategy_spec": spec},
+        {"candidate_id": "cand-unscored", "strategy_spec": spec},          # no evidence to pass on
+        {"candidate_id": "cand-specless", "champion_score": 0.5},          # nothing to fuse
+    ]
+    ranked = rank_fusion_parents(records)
+    assert [r["candidate_id"] for r in ranked] == ["cand-high", "cand-low"]
+
+
+# --- fusion through the factory door ------------------------------------------
+
+def _durable_parent(tmp_path, candidate_id, spec, score):
+    record = {
+        "candidate_id": candidate_id, "strategy_id": spec.strategy_id,
+        "strategy_rule_hash": spec.strategy_rule_hash, "generation_id": "GEN-000",
+        "status": "BACKTESTED", "champion_score": score, "strategy_spec": spec.to_dict(),
+        "backtest_evidence": {"closed_count": 9}, "evidence_input_sha256": "sha256:parentwindow",
+        "provenance": "test", "created_at_utc": NOW,
+    }
+    pool.append_candidates([record], root=tmp_path)
+    return record
+
+
+def _two_durable_parents(tmp_path):
+    _durable_parent(tmp_path, "cand-aaa", _parent_spec("S1", [_CLOSE_OVER_MA20]), 99.0)
+    _durable_parent(tmp_path, "cand-bbb", _parent_spec("S2", [_MA20_OVER_MA50]), 98.0)
+    return pool.read_candidates(tmp_path)
+
+
+def test_factory_default_mints_nothing_fused():
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["fused_count"] == 0
+    assert result["fusion_rejected"] == []
+    assert all(c["derivation_type"] == "seeded_template" for c in result["candidates"])
+
+
+def test_fused_child_carries_lineage_own_evidence_and_appends(tmp_path):
+    parents = _two_durable_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert result["fused_count"] == 1 and len(fused) == 1
+    child = fused[0]
+    assert child["parent_candidate_ids"] == ["cand-aaa", "cand-bbb"]  # sorted, order-independent
+    assert child["provenance"] == "mvp_factory_fusion"
+    # Its own evidence window and its own score — a parent's 99.0 is not inherited.
+    assert child["evidence_input_sha256"] == result["evidence_input_sha256"] != "sha256:parentwindow"
+    assert child["champion_score"] != 99.0
+    assert child["backtest_evidence"]["closed_count"] > 0
+    # The store's lineage guard accepts it: both parents were durable beforehand.
+    assert pool.append_candidates(result["candidates"], root=tmp_path) == len(result["candidates"])
+
+
+def test_fusion_is_deterministic(tmp_path):
+    parents = _two_durable_parents(tmp_path)
+    kwargs = dict(active_pool={"active_strategies": []}, existing_candidates=parents,
+                  now=NOW, count=1, fusion_pairs=1)
+    assert run_factory(_trending_snapshot(), **kwargs) == run_factory(_trending_snapshot(), **kwargs)
+
+
+def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
+    """rsi <= 5 AND rsi >= 95 parses, validates, and can never trade."""
+    _durable_parent(tmp_path, "cand-lo",
+                    _parent_spec("S1", [{"feature": "rsi", "comparison": "<=", "value": 5.0}]), 9.0)
+    _durable_parent(tmp_path, "cand-hi",
+                    _parent_spec("S2", [{"feature": "rsi", "comparison": ">=", "value": 95.0}]), 8.0)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=pool.read_candidates(tmp_path), now=NOW,
+                         count=1, fusion_pairs=1)
+    assert result["fused_count"] == 0
+    assert result["fusion_rejected"] == [
+        {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
+    ]

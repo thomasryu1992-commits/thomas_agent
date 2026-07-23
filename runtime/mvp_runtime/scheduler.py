@@ -22,6 +22,7 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -45,6 +46,14 @@ RECORD_TYPE = "schedule.v0"
 # The status prefix a raised fire records (L3a). Also the recovery signal: a fire that
 # succeeds while the PREVIOUS status carried this prefix is a schedule coming back.
 FAILED_PREFIX = "failed:"
+
+# Run lifecycle on the scheduler event stream. A fire writes ``started`` BEFORE it runs
+# and exactly one terminal event after, both carrying the same ``schedule_run_id``.
+# ``abandoned`` is the terminal a fire killed mid-flight never got to write — supplied by
+# the next startup, which is the only vantage point that can see it.
+ACTION_STARTED = "started"
+ACTION_ABANDONED = "abandoned"
+TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
 
 # Schedule kinds. A task template is a request string (analysis_task), a maintenance action
 # (memory_prune), or a governed crypto cycle (crypto_pipeline) — never a shell command.
@@ -316,11 +325,66 @@ def _notify_status_change(
         pass
 
 
-def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) -> dict[str, Any]:
+def schedule_run_id(schedule: Schedule, *, claimed_at: str) -> str:
+    """The id linking one occurrence's ``started`` event to its terminal one.
+
+    Derived from (schedule_id, claim time), so it needs no counter and cannot collide:
+    a claim advances ``next_run_at`` past ``now``, so one schedule cannot be claimed
+    twice at the same instant."""
+    return integrity.short_id("srun", {"schedule_id": schedule.schedule_id, "claimed_at": claimed_at})
+
+
+def _scheduler_event(
+    action: str, schedule: Schedule, *, now: str, status: str,
+    run_id: str | None = None, **extra: Any,
+) -> dict[str, Any]:
+    # actions: started | fired | failed | abandoned | skipped | created | gap_detected.
+    # run_id/extra are omitted when absent so non-run events keep their original shape.
+    fields = dict(extra)
+    if run_id is not None:
+        fields["schedule_run_id"] = run_id
     return stamped_event(
-        SCHEDULER_EVENT_TYPE, action=action,    # "fired" | "skipped" | "failed"
+        SCHEDULER_EVENT_TYPE, action=action,
         schedule_id=schedule.schedule_id, kind=schedule.kind, status=status, created_at=now,
+        **fields,
     )
+
+
+def abandoned_event(started: Mapping[str, Any], *, now: str) -> dict[str, Any]:
+    """The terminal event a fire killed mid-flight never wrote, supplied on the way back up.
+
+    Built from the orphaned ``started`` event rather than a live Schedule: the schedule
+    may have been removed or disabled while the runtime was down, and the run still
+    deserves an honest ending."""
+    return stamped_event(
+        SCHEDULER_EVENT_TYPE, action=ACTION_ABANDONED,
+        schedule_id=started.get("schedule_id"), kind=started.get("kind"),
+        status="abandoned_mid_run", created_at=now,
+        schedule_run_id=started.get("schedule_run_id"), started_at=started.get("created_at"),
+    )
+
+
+def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """``started`` events that never got a terminal one — fires that died mid-flight.
+
+    The one outcome no in-process guard can record: L3a catches a fire that RAISES, but a
+    process killed between the claim and the outcome writes nothing at all, so the
+    occurrence simply vanishes — ``next_run_at`` already advanced and no event explains
+    why nothing happened. Pairing starts against terminals across the stream recovers
+    exactly those. ``abandoned`` counts as terminal, so a run is reported once and a later
+    scan stays quiet. Returns the orphaned ``started`` events in append order."""
+    terminal: set[str] = set()
+    started: dict[str, dict[str, Any]] = {}
+    for event in events:
+        run_id = event.get("schedule_run_id")
+        if not (isinstance(run_id, str) and run_id):
+            continue
+        action = event.get("action")
+        if action == ACTION_STARTED:
+            started.setdefault(run_id, dict(event))
+        elif action in TERMINAL_ACTIONS:
+            terminal.add(run_id)
+    return [event for run_id, event in started.items() if run_id not in terminal]
 
 
 def _execute(
@@ -443,6 +507,12 @@ def run_due(
     operator — transitions only, the notifier de-dups and reports its own failures. The ledger
     event remains the record of truth, so a dropped alert loses no evidence.
 
+    Each executed occurrence is bracketed on the ledger: a ``started`` event before the work
+    and exactly one terminal event (``fired``/``failed``) after, sharing a ``schedule_run_id``
+    and carrying the measured ``duration_ms``. A process killed mid-fire leaves the start
+    unpaired — ``find_abandoned_runs`` recovers it on the next startup, which is the only
+    place that can, since a dead process records nothing itself.
+
     The batch snapshot below is for iteration only. Every state change goes through the
     store's per-schedule, locked operations (``claim_due`` / ``record_result``) against the
     file's CURRENT content — the old pattern kept mutating the stale snapshot and
@@ -485,7 +555,17 @@ def run_due(
         # (at-most-once), so the honest record of a raised fire is a durable
         # "failed" event + last_status, not a dead process with nothing written.
         # KeyboardInterrupt/SystemExit still propagate (Exception excludes them).
+        # Record that this occurrence STARTED, before any work happens. Written first on
+        # purpose: if this append fails the loop dies having run nothing unrecorded, and
+        # if the PROCESS dies mid-fire this orphaned event is the only evidence the
+        # occurrence was ever attempted (find_abandoned_runs pairs it up next startup).
+        run_id = schedule_run_id(claimed, claimed_at=now)
+        if ledger is not None:
+            ledger.append_scheduler_event(
+                _scheduler_event(ACTION_STARTED, claimed, now=now, status="running", run_id=run_id))
+
         previous_status = claimed.last_status
+        started_at = time.monotonic()
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization,
@@ -500,10 +580,13 @@ def run_due(
             status = f"failed:UNEXPECTED:{type(exc).__name__}"
             action = "failed"
             failed += 1
+        duration_ms = int((time.monotonic() - started_at) * 1000)
         if ledger is not None:
-            ledger.append_scheduler_event(_scheduler_event(action, claimed, now=now, status=status))
+            ledger.append_scheduler_event(_scheduler_event(
+                action, claimed, now=now, status=status, run_id=run_id, duration_ms=duration_ms))
         store.record_result(claimed.schedule_id, last_run_at=now, last_status=status)
-        results.append({"schedule_id": claimed.schedule_id, "action": action, "status": status})
+        results.append({"schedule_id": claimed.schedule_id, "action": action, "status": status,
+                        "schedule_run_id": run_id, "duration_ms": duration_ms})
         if notifier is not None:
             _notify_status_change(notifier, claimed, previous_status=previous_status,
                                   status=status, failed=(action == "failed"), now=now)

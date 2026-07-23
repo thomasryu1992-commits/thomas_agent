@@ -142,8 +142,9 @@ def test_due_schedule_fires_and_advances(tmp_path):
     updated = store.list()[0]
     assert updated.last_run_at == T1 and updated.last_status == "COMPLETED"
     assert updated.next_run_at == T2                  # advanced by another interval
-    event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
-    assert event["action"] == "fired" and event["integrity"]["event_sha256"].startswith("sha256:")
+    started, fired = _events(ledger)                  # every fire is bracketed
+    assert [started["action"], fired["action"]] == ["started", "fired"]
+    assert fired["integrity"]["event_sha256"].startswith("sha256:")
 
 
 def test_not_due_schedule_does_not_fire(tmp_path):
@@ -198,9 +199,8 @@ def test_raising_fire_is_recorded_and_the_batch_survives(tmp_path):
     assert by_request["boom"].last_status == "failed:CANDIDATES_TAMPERED"
     assert by_request["boom"].next_run_at == T2            # claimed: at-most-once kept
     assert by_request["fine"].last_status == "COMPLETED"
-    events = [json.loads(line) for line in
-              (ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert {e["action"] for e in events} == {"failed", "fired"}
+    events = _events(ledger)
+    assert [e["action"] for e in events] == ["started", "failed", "started", "fired"]
 
 
 def test_unexpected_exception_is_recorded_with_its_type(tmp_path):
@@ -280,8 +280,8 @@ def test_a_broken_notifier_never_breaks_scheduling(tmp_path):
                       control_store=ControlStore(tmp_path), notifier=RecordingNotifier(explode=True))
     assert summary["failed"] == 1                       # the fire outcome is unaffected
     assert store.list()[0].last_status == "failed:LEDGER_WRITE_FAILED"
-    event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
-    assert event["action"] == "failed"                  # the ledger is still the truth
+    # the ledger is still the truth, and the run is still properly closed
+    assert [e["action"] for e in _events(ledger)] == ["started", "failed"]
 
 
 def test_skipped_by_kill_switch_does_not_alert(tmp_path):
@@ -342,6 +342,121 @@ def test_no_gap_records_nothing(tmp_path):
     assert not (ledger.root / "scheduler_events.jsonl").exists()
 
 
+# --- per-run records (started/terminal pairing, duration, abandonment) -------
+
+def _events(ledger):
+    path = ledger.root / "scheduler_events.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_a_fire_is_bracketed_by_started_and_terminal(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    summary = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    started, terminal = _events(ledger)
+    assert started["action"] == "started" and started["status"] == "running"
+    assert terminal["action"] == "fired"
+    # Same run id links the pair; the terminal one carries the measured duration.
+    assert started["schedule_run_id"] == terminal["schedule_run_id"]
+    assert isinstance(terminal["duration_ms"], int) and terminal["duration_ms"] >= 0
+    assert summary["results"][0]["schedule_run_id"] == started["schedule_run_id"]
+
+
+def test_a_failed_fire_still_closes_its_run(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    run_due(store, now=T1, ledger=ledger, executor=_failing_executor,
+            control_store=ControlStore(tmp_path))
+    started, terminal = _events(ledger)
+    assert terminal["action"] == "failed"
+    assert started["schedule_run_id"] == terminal["schedule_run_id"]
+    assert scheduler.find_abandoned_runs(_events(ledger)) == []   # closed, not abandoned
+
+
+def test_a_skip_opens_no_run(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, "kill", actor="op", now=T0)
+    _task_schedule(store, now=T0, interval=60)
+    run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(), control_store=control_store)
+    events = _events(ledger)
+    assert [e["action"] for e in events] == ["skipped"]           # nothing ran, no run id
+    assert "schedule_run_id" not in events[0]
+    assert scheduler.find_abandoned_runs(events) == []
+
+
+def test_run_ids_are_distinct_per_occurrence(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(), control_store=ControlStore(tmp_path))
+    run_due(store, now=T2, ledger=ledger, executor=FakeExecutor(), control_store=ControlStore(tmp_path))
+    ids = {e["schedule_run_id"] for e in _events(ledger) if "schedule_run_id" in e}
+    assert len(ids) == 2
+
+
+def test_a_process_killed_mid_fire_leaves_a_detectable_orphan(tmp_path):
+    """The gap L3a could not close: a fire that never returns writes no terminal event,
+    so the occurrence vanished silently. The orphaned start is now the evidence."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+
+    def _killed(request, **kwargs):
+        raise KeyboardInterrupt       # stands in for SIGKILL: escapes run_due entirely
+
+    with pytest.raises(KeyboardInterrupt):
+        run_due(store, now=T1, ledger=ledger, executor=_killed, control_store=ControlStore(tmp_path))
+
+    events = _events(ledger)
+    assert [e["action"] for e in events] == ["started"]           # no terminal was written
+    orphans = scheduler.find_abandoned_runs(events)
+    assert len(orphans) == 1 and orphans[0]["schedule_id"] == store.list()[0].schedule_id
+
+
+def test_abandoned_is_reported_once_then_stays_quiet(tmp_path):
+    from runtime.mvp_runtime.scheduler_cli import report_abandoned_runs
+
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+
+    def _killed(request, **kwargs):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_due(store, now=T1, ledger=ledger, executor=_killed, control_store=ControlStore(tmp_path))
+
+    notifier = RecordingNotifier()
+    found = report_abandoned_runs(ledger=ledger, now=T2, alerter=notifier)
+    assert len(found) == 1
+    closing = _events(ledger)[-1]
+    assert closing["action"] == "abandoned" and closing["status"] == "abandoned_mid_run"
+    assert closing["started_at"] == T1
+    assert len(notifier.calls) == 1 and "스케줄 중단" in notifier.calls[0][1]
+
+    # A later startup must not re-report it: `abandoned` is itself terminal.
+    assert report_abandoned_runs(ledger=ledger, now=T2, alerter=notifier) == []
+    assert len(notifier.calls) == 1
+
+
+def test_abandoned_scan_survives_an_unreadable_ledger(tmp_path):
+    from runtime.mvp_runtime.scheduler_cli import report_abandoned_runs
+
+    ledger = LedgerStore(tmp_path / "ledger")
+    ledger.root.mkdir(parents=True, exist_ok=True)
+    (ledger.root / "scheduler_events.jsonl").write_text("{not json\n", encoding="utf-8")
+    # Diagnosis, not a gate: the tick loop must still start.
+    assert report_abandoned_runs(ledger=ledger, now=T2, alerter=RecordingNotifier()) == []
+
+
 # --- kill-switch binding (governance kill_blocks: scheduler_execution) -------
 
 @pytest.mark.parametrize("command, status", [("kill", "skipped_not_active"), ("pause", "skipped_not_active")])
@@ -383,9 +498,7 @@ def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
     summary = run_due(store, now=T1, control_store=control_store, ledger=ledger, executor=ex)
     assert ex.calls == ["first"]                       # the second never executed
     assert summary["fired"] == 1 and summary["skipped"] == 1
-    events = [json.loads(line) for line in
-              (ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip().splitlines()]
-    assert [e["action"] for e in events] == ["fired", "skipped"]
+    assert [e["action"] for e in _events(ledger)] == ["started", "fired", "skipped"]
 
 
 def test_operator_disable_mid_batch_survives_and_wins(tmp_path):

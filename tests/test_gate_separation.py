@@ -17,6 +17,7 @@ from scripts.gate_matrix import (
     LEGACY_COMPATIBILITY_CHECKS,
     LEGACY_COMPATIBILITY_CHECK_PATHS,
     REPOSITORY_RELEASE_CHECKS,
+    _normalize_ci_path,
     classify_ci_scopes,
 )
 
@@ -110,6 +111,21 @@ class GateSeparationTests(unittest.TestCase):
             classify_ci_scopes(["scripts/gate_matrix.py"]),
             {"active": True, "deferred": True, "legacy": True, "full": True},
         )
+
+    def test_workflow_change_selects_all_scopes_and_full(self):
+        # Regression: the only "full" pattern that starts with a dot. lstrip("./") took a
+        # character SET, so the leading dot was eaten, ".github/workflows/**" never
+        # matched, and every CI-infrastructure change skipped the full Gate unnoticed.
+        # The pre-existing test above used a dotless path, so nothing caught it.
+        self.assertEqual(
+            classify_ci_scopes([".github/workflows/docker-image.yml"]),
+            {"active": True, "deferred": True, "legacy": True, "full": True},
+        )
+
+    def test_normalization_keeps_dotfile_paths_but_drops_a_relative_prefix(self):
+        self.assertEqual(_normalize_ci_path(".github/workflows/x.yml"), ".github/workflows/x.yml")
+        self.assertEqual(_normalize_ci_path("./scripts/x.py"), "scripts/x.py")
+        self.assertEqual(_normalize_ci_path("scripts\\x.py"), "scripts/x.py")
 
     def test_architecture_workflow_routes_each_scope_conditionally(self):
         workflow = load_workflow(".github/workflows/architecture-slimming-gates.yml")

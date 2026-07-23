@@ -183,6 +183,38 @@ def test_open_position_shape_and_deterministic_id():
     assert a["intrabar_policy"] == "pessimistic_sl_first"
 
 
+def test_lineage_flows_route_to_plan_to_position_to_outcome():
+    # The chain the mid-review found broken: candidate_id stopped at the pool.
+    entry = {**_pool_entry(), "candidate_id": "cand_abc123"}
+    route = route_entries(_pool(entry), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW)
+    assert route["primary_candidate_id"] == "cand_abc123"
+    plan = build_entry_plan(route, ROW, now=NOW)
+    assert plan["candidate_id"] == "cand_abc123"
+    position = open_position(plan, now=NOW)
+    assert position["candidate_id"] == "cand_abc123"
+    outcome = build_outcome_record(position, "stop_loss", 102.0, -1.0, now=NOW)
+    assert outcome["candidate_id"] == "cand_abc123"
+
+
+def test_plan_and_position_carry_the_spec_time_exit():
+    # Exit parity: the spec was backtested with max_holding_bars=10, so the plan and
+    # the position must carry exactly that — never the timeframe table.
+    plan = build_entry_plan(_candidate_route(), ROW, now=NOW)
+    assert plan["max_holding_bars"] == 10
+    assert open_position(plan, now=NOW)["max_holding_bars"] == 10
+
+
+@pytest.mark.parametrize("stored,expected,legacy", [
+    (12, 12, False),           # the spec's own value wins
+    (None, 48, True),          # legacy position, 1d -> table default
+    (0, 48, True),             # non-positive can never be a real limit
+    (True, 48, True),          # bool is not a bar count
+])
+def test_position_max_hold_prefers_the_position_value(stored, expected, legacy):
+    position = {"max_holding_bars": stored} if stored is not None else {}
+    assert paper.position_max_hold(position, "1d") == (expected, legacy)
+
+
 # --- settlement (source math) -------------------------------------------------
 
 def _position(**overrides):
@@ -581,6 +613,129 @@ def test_unreadable_history_refuses_settlement(tmp_path):
     assert summary["settle_refused"]["cause_reason_code"] == "OUTCOME_HISTORY_UNREADABLE"
     assert summary["opened"] is None  # occupied slot still blocks any open
     assert load_open_position(tmp_path)["position_id"] == opened["position_id"]
+
+
+def _calm_candle(n):
+    # Never touches stop (102) or target (109); distinct close_time advances holding.
+    return {"open_time": f"2026-07-2{n}T00:00:00Z", "open": 105.0, "high": 106.0, "low": 104.0,
+            "close": 105.0, "volume": 9.0, "close_time": f"2026-07-2{n + 1}T00:00:00Z"}
+
+
+def test_settlement_time_exits_on_the_spec_limit_not_the_table(tmp_path):
+    """The parity bug: a spec backtested with max_holding_bars=2 used to hold 48 bars
+    live (the 1d table default), so promotion evidence and paper behavior diverged."""
+    spec = _spec_dict(exit_rules={"stop_model": "atr", "stop_atr": 1.5, "target_atr": 2.0,
+                                  "max_holding_bars": 2})
+    pool = _pool(_pool_entry(spec=spec))
+    control_store = ControlStore(tmp_path)
+    run_paper_update(_snapshot(_calm_candle(1)), ROW, pool, _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    assert load_open_position(tmp_path)["max_holding_bars"] == 2
+
+    # Two calm bars: bar 1 holds, bar 2 hits the SPEC limit and time-exits.
+    run_paper_update(_snapshot(_calm_candle(2)), ROW_NO_MATCH, pool, _verdict(allow=False),
+                     store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path,
+                     control_store=control_store)
+    summary, records = run_paper_update(
+        _snapshot(_calm_candle(3)), ROW_NO_MATCH, pool, _verdict(allow=False),
+        store=_real_store(tmp_path), now="2026-07-24T12:00:00Z", root=tmp_path, control_store=control_store,
+    )
+    assert summary["settled"]["close_reason"] == "time_exit"
+    assert records[0]["max_hold"] == 2
+    assert "max_hold_fallback" not in records[0]     # the spec value ruled, not the table
+
+
+def test_legacy_position_settles_on_the_table_and_says_so(tmp_path):
+    # A position opened before plans carried max_holding_bars: the table default
+    # applies, and the settle event names the fallback so the gap is attributable.
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True)
+    legacy = {"status": "OPEN", "position_id": "p-legacy", "symbol": "BTCUSDT", "timeframe": "1d",
+              "direction": "LONG", "entry_price": 105.0, "stop_loss": 102.0, "take_profit": 111.0,
+              "risk": 3.0, "holding_candles": 47}
+    (path / "paper_position.json").write_text(json.dumps(legacy), encoding="utf-8")
+    summary, records = run_paper_update(
+        _snapshot(_calm_candle(1)), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(allow=False),
+        store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+    # holding advanced 47 -> 48 = the 1d table default -> time_exit under the fallback.
+    assert summary["settled"]["close_reason"] == "time_exit"
+    assert records[0]["max_hold"] == 48
+    assert records[0]["max_hold_fallback"] == "LEGACY_POSITION_MAX_HOLD_FALLBACK"
+
+
+# --- concurrent settlement: the CAS lives inside the lock ---------------------
+
+def _open_one(tmp_path, control_store):
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    return load_open_position(tmp_path)
+
+
+def test_a_settler_that_lost_the_race_writes_nothing(tmp_path):
+    """The race the chokepoint check cannot close: two settlers both pass
+    already_settled() before either takes the lock. The loser must not append."""
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    outcome = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+
+    # A concurrent settler wins: it settles and clears while we hold a stale read.
+    store.settle_position(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    assert len(read_outcomes(tmp_path)) == 1
+
+    with pytest.raises(ToolError) as exc:
+        store.settle_position(outcome)
+    assert exc.value.reason_code == "SETTLEMENT_RACE_LOST"
+    assert len(read_outcomes(tmp_path)) == 1          # the loser appended nothing
+
+
+def test_a_settler_whose_position_was_replaced_loses(tmp_path):
+    # Winner settled ours AND opened a different position: the slot is occupied, but
+    # not by the position our outcome was computed for.
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    stale = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+    store.settle_position(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    store.save_position({**opened, "position_id": "p-different", "status": "OPEN"})
+
+    with pytest.raises(ToolError) as exc:
+        store.settle_position(stale)
+    assert exc.value.reason_code == "SETTLEMENT_RACE_LOST"
+    assert len(read_outcomes(tmp_path)) == 1
+    assert load_open_position(tmp_path)["position_id"] == "p-different"   # untouched
+
+
+def test_an_interrupted_settlement_completes_without_doubling(tmp_path):
+    # Crash window: the outcome is durable but the clear was lost. Re-settling the
+    # SAME position must finish the job (clear) and append nothing new.
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    outcome = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+    store.append_outcome(outcome)                      # append succeeded, clear did not
+    assert load_open_position(tmp_path) is not None
+
+    store.settle_position(outcome)                     # same settlement_id
+    assert len(read_outcomes(tmp_path)) == 1           # not doubled
+    assert load_open_position(tmp_path) is None        # and the position is closed
+
+
+def test_chokepoint_reports_a_lost_race_instead_of_claiming_a_settlement(tmp_path):
+    control_store = ControlStore(tmp_path)
+    _open_one(tmp_path, control_store)
+
+    class _LosingStore(RealPaperStore):
+        def settle_position(self, outcome):
+            raise ToolError("SETTLEMENT_RACE_LOST", "another settler won")
+
+    summary, records = run_paper_update(
+        _snapshot(SL_CANDLE), ROW, _pool(_pool_entry()), _verdict(),
+        store=_LosingStore(root=tmp_path, authorization=_AUTH), now="2026-07-23T12:00:00Z",
+        root=tmp_path, control_store=control_store,
+    )
+    assert summary["settled"] is None
+    assert summary["settle_refused"]["reason_code"] == "SETTLEMENT_RACE_LOST"
+    assert summary["opened"] is None                   # never fills a slot it lost
+    assert records[0]["operation"] == "settle_refused"
 
 
 def test_settlement_runs_even_under_no_trade_verdict(tmp_path):

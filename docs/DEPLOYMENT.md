@@ -148,14 +148,36 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
 
 ## Health, logs, shutdown
 
-- **Healthcheck** (compose): `console_cli status` against the mounted control state — exits
-  nonzero when the state volume is unreadable. A KILLED runtime still answers: killed is
-  *halted*, not *unhealthy*, and resuming is the operator's decision, never the orchestrator's.
+- **Healthcheck** (compose): each service's own **heartbeat**
+  (`python -m runtime.mvp_runtime.heartbeat_cli operator|scheduler`). Each loop stamps
+  `.runtime_governance_state/heartbeats/<service>.json` once per pass, and the probe fails
+  when that stamp is older than the loop's own cadence allows — so a wedged poll or a tick
+  hung on a provider call is finally visible. It replaced `console_cli status`, which only
+  proved the control-state file parsed and therefore reported healthy through exactly those
+  stalls. A KILLED runtime still passes: killed is *halted*, not *unhealthy*, its loop keeps
+  turning, and resuming stays the operator's decision, never the orchestrator's.
+  Check by hand with `docker compose exec scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler`.
 - **Logs** rotate via the json-file driver (10 MB × 3 files per service).
 - **Shutdown**: `docker compose stop` sends SIGTERM with a 30 s grace period — enough for an
   in-flight tick to finish its current fire; the claim-before-execute rule means a harder kill
   drops (never doubles) the in-flight occurrence, and since L3a a fire that fails inside a
   living process is recorded as a durable `failed` event.
+
+## What CI enforces about this image
+
+`.github/workflows/docker-image.yml` builds the image on ubuntu-latest — the same Linux
+AMD64 target the service runs on — and smoke-tests the properties this document relies on,
+all on a **bare image with no secrets and no provisioned state**:
+
+- both compose services exist (an operator-only deploy runs no schedules);
+- the scheduler ticks cleanly on an empty mounted volume, proving uid 10001 can write it;
+- a provider env var **alone** refuses to open a network path (`ACTIVATION_MISSING`);
+- the operator refuses to act with no registration (`REGISTRATION_MISSING`);
+- a `kill` survives the container that issued it, and a corrupt control state reads as
+  `KILLED`, never as "go";
+- the scheduler service starts from its compose definition and answers the healthcheck.
+
+So the fail-closed claims above are checked on every PR rather than trusted.
 
 ## Notes
 
