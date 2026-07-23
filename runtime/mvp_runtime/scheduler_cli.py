@@ -16,7 +16,9 @@ operator loop, and it will not run a scheduled task while the runtime is PAUSED/
 
 It also NOTIFIES the registered operator about scheduling that went wrong: a schedule that
 starts failing, one that recovers, and — on startup — schedules left overdue while the loop
-was not running at all (the failure a dead process can never report itself). Alerting needs
+was not running at all, plus occurrences that started and never finished because the
+process was killed mid-fire (the two failures a dead process can never report itself,
+recovered by pairing each ``started`` event against its terminal one). Alerting needs
 the operator registration plus an authorized channel; when either is missing the loop says
 so at startup and runs with alerts off, because a silently disabled alerter is the very
 failure this reports. Alerts never gate scheduling: the ledger event is the record of truth.
@@ -43,6 +45,7 @@ from .working_memory import WorkingMemoryStore
 
 LOCAL_ACTOR = "local_scheduler_cli"
 GAP_ALERT_KEY = "startup_gap"
+ABANDONED_ALERT_KEY = "startup_abandoned"
 
 
 class OperatorAlerter:
@@ -130,6 +133,45 @@ def report_startup_gap(
                 f"재시작 시각: {now}\n"
                 "이 구간의 회차들은 유실됐습니다(at-most-once).")
     return late
+
+
+def report_abandoned_runs(
+    *, ledger: LedgerStore | None, now: str, alerter: OperatorAlerter | None
+) -> list[dict[str, Any]]:
+    """Close out occurrences whose process died mid-fire, and report them.
+
+    A fire killed between its claim and its outcome writes no terminal event: the
+    schedule just skipped a beat with no explanation. The orphaned ``started`` event is
+    the evidence, and this is the only vantage point that can pair it — a dead process
+    diagnoses nothing. Each orphan gets its honest ending (an ``abandoned`` event, which
+    also makes this idempotent across restarts) and one operator alert.
+
+    An unreadable scheduler ledger only skips the scan, loudly: the tick loop must still
+    start. This is diagnosis, not a gate."""
+    if ledger is None:
+        return []
+    try:
+        events = ledger.read_scheduler_events()
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"SCHEDULER: abandoned-run scan SKIPPED ({exc.reason_code})\n")
+        return []
+    abandoned = scheduler.find_abandoned_runs(events)
+    for started in abandoned:
+        sys.stderr.write(f"SCHEDULER: abandoned run — {started.get('kind')} "
+                         f"({started.get('schedule_id')}) started {started.get('created_at')} "
+                         f"never finished\n")
+        ledger.append_scheduler_event(scheduler.abandoned_event(started, now=now))
+    if abandoned and alerter is not None:
+        lines = "\n".join(
+            f"- {e.get('kind')} ({e.get('schedule_id')}): {e.get('created_at')} 시작"
+            for e in abandoned
+        )
+        alerter(ABANDONED_ALERT_KEY,
+                "[스케줄 중단] 실행 도중 프로세스가 종료된 회차가 있습니다.\n"
+                f"{lines}\n\n"
+                f"확인 시각: {now}\n"
+                "해당 회차는 완료되지 않았고 재시도하지 않습니다(at-most-once).")
+    return abandoned
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -222,9 +264,12 @@ def main(
         sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
         if alerter is None:
             alerter = build_alerter(repo_root=repo_root, now=now)
-        # Before the first tick: report the scheduling that did NOT happen while this
-        # loop was down. After it, next_run_at is current and there is no gap to find.
-        report_startup_gap(store, now=now or timeutil.utc_now_iso(), ledger=ledger, alerter=alerter)
+        # Before the first tick, report what went wrong while this loop was NOT running:
+        # occurrences nothing ticked (gap), and occurrences that started but never
+        # finished (abandoned). After the first tick both are current by construction.
+        startup_stamp = now or timeutil.utc_now_iso()
+        report_startup_gap(store, now=startup_stamp, ledger=ledger, alerter=alerter)
+        report_abandoned_runs(ledger=ledger, now=startup_stamp, alerter=alerter)
 
         total_fired = 0
         total_skipped = 0
