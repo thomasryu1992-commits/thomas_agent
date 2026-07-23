@@ -651,6 +651,80 @@ def test_legacy_position_settles_on_the_table_and_says_so(tmp_path):
     assert records[0]["max_hold_fallback"] == "LEGACY_POSITION_MAX_HOLD_FALLBACK"
 
 
+# --- concurrent settlement: the CAS lives inside the lock ---------------------
+
+def _open_one(tmp_path, control_store):
+    run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                     store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
+    return load_open_position(tmp_path)
+
+
+def test_a_settler_that_lost_the_race_writes_nothing(tmp_path):
+    """The race the chokepoint check cannot close: two settlers both pass
+    already_settled() before either takes the lock. The loser must not append."""
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    outcome = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+
+    # A concurrent settler wins: it settles and clears while we hold a stale read.
+    store.settle_position(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    assert len(read_outcomes(tmp_path)) == 1
+
+    with pytest.raises(ToolError) as exc:
+        store.settle_position(outcome)
+    assert exc.value.reason_code == "SETTLEMENT_RACE_LOST"
+    assert len(read_outcomes(tmp_path)) == 1          # the loser appended nothing
+
+
+def test_a_settler_whose_position_was_replaced_loses(tmp_path):
+    # Winner settled ours AND opened a different position: the slot is occupied, but
+    # not by the position our outcome was computed for.
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    stale = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+    store.settle_position(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
+    store.save_position({**opened, "position_id": "p-different", "status": "OPEN"})
+
+    with pytest.raises(ToolError) as exc:
+        store.settle_position(stale)
+    assert exc.value.reason_code == "SETTLEMENT_RACE_LOST"
+    assert len(read_outcomes(tmp_path)) == 1
+    assert load_open_position(tmp_path)["position_id"] == "p-different"   # untouched
+
+
+def test_an_interrupted_settlement_completes_without_doubling(tmp_path):
+    # Crash window: the outcome is durable but the clear was lost. Re-settling the
+    # SAME position must finish the job (clear) and append nothing new.
+    store = _real_store(tmp_path)
+    opened = _open_one(tmp_path, ControlStore(tmp_path))
+    outcome = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
+    store.append_outcome(outcome)                      # append succeeded, clear did not
+    assert load_open_position(tmp_path) is not None
+
+    store.settle_position(outcome)                     # same settlement_id
+    assert len(read_outcomes(tmp_path)) == 1           # not doubled
+    assert load_open_position(tmp_path) is None        # and the position is closed
+
+
+def test_chokepoint_reports_a_lost_race_instead_of_claiming_a_settlement(tmp_path):
+    control_store = ControlStore(tmp_path)
+    _open_one(tmp_path, control_store)
+
+    class _LosingStore(RealPaperStore):
+        def settle_position(self, outcome):
+            raise ToolError("SETTLEMENT_RACE_LOST", "another settler won")
+
+    summary, records = run_paper_update(
+        _snapshot(SL_CANDLE), ROW, _pool(_pool_entry()), _verdict(),
+        store=_LosingStore(root=tmp_path, authorization=_AUTH), now="2026-07-23T12:00:00Z",
+        root=tmp_path, control_store=control_store,
+    )
+    assert summary["settled"] is None
+    assert summary["settle_refused"]["reason_code"] == "SETTLEMENT_RACE_LOST"
+    assert summary["opened"] is None                   # never fills a slot it lost
+    assert records[0]["operation"] == "settle_refused"
+
+
 def test_settlement_runs_even_under_no_trade_verdict(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),

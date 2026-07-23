@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -66,6 +67,7 @@ BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
 POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
 SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
+SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
@@ -521,20 +523,42 @@ class RealPaperStore:
         with locked(path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper outcomes"):
             with open(path, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
+                # A trade outcome is the one record the risk guard and feedback learn
+                # from; leaving it in an OS buffer means a power loss can drop a trade
+                # that the position file already says is closed.
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def settle_position(self, outcome: Mapping[str, Any]) -> None:
-        """Outcome-append + position-clear as ONE serialized step.
+        """Append the outcome and clear the position as ONE serialized, revalidated step.
 
-        Holding the position lock across both writes serializes concurrent settlers
-        (CLI manual exit vs. scheduler cycle) and shrinks the crash window between
-        the two files to the minimum JSONL allows; a crash inside the window leaves
-        outcome-written/position-OPEN, which the chokepoint's ``already_settled``
-        check recovers instead of re-settling. Lock order is position → outcomes,
-        the only nesting in this module."""
+        The chokepoint's ``already_settled`` check necessarily runs BEFORE the lock, so
+        by the time we hold it another settler (a manual ``docker exec`` cycle racing the
+        scheduler) may have finished the same position — both would have passed that
+        check. Everything is therefore re-derived here, under the lock:
+
+        - the position must still be OPEN and still be the one this outcome was computed
+          for (``SETTLEMENT_RACE_LOST`` otherwise: the loser writes nothing);
+        - the outcome is appended only if its ``settlement_id`` is not already recorded,
+          so finishing an interrupted settlement completes it instead of doubling it.
+
+        The clear runs in both surviving cases — a settlement whose outcome already
+        exists is precisely the crash window this closes. Lock order is position →
+        outcomes, the only nesting in this module."""
         self._assert()
         position_path = self._dir() / POSITION_FILENAME
         with locked(position_path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
-            self.append_outcome(outcome)
+            expected_id = outcome.get("position_id")
+            current = load_open_position(self._root)
+            if current is None or current.get("position_id") != expected_id:
+                raise ToolError(
+                    SETTLEMENT_RACE_LOST,
+                    f"position {expected_id} is no longer the open position; another settler won",
+                )
+            settlement_id = outcome.get("settlement_id")
+            recorded = any(o.get("settlement_id") == settlement_id for o in read_outcomes(self._root))
+            if not recorded:
+                self.append_outcome(outcome)
             tmp = position_path.with_suffix(".tmp")
             tmp.write_text(json.dumps({"status": "CLOSED"}), encoding="utf-8")
             tmp.replace(position_path)
@@ -672,7 +696,20 @@ def run_paper_update(
             reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
             if reason is not None:
                 outcome = build_outcome_record(position, reason, exit_price, result_r, now=now)
-                store.settle_position(outcome)
+                try:
+                    store.settle_position(outcome)
+                except ToolError as exc:
+                    if exc.reason_code != SETTLEMENT_RACE_LOST:
+                        raise
+                    # A concurrent settler finished this position between our check and
+                    # the lock. Its outcome stands; ours was never written. Report the
+                    # loss rather than pretend this cycle settled anything — and open
+                    # nothing: the winner is mid-cycle on the same book, and two writers
+                    # racing to fill one position slot is exactly what this closes.
+                    refusal = {"reason_code": SETTLEMENT_RACE_LOST, "position_id": position_id}
+                    summary["settle_refused"] = refusal
+                    records.append(_event("settle_refused", {**refusal, "read_only": True}))
+                    return summary, records
                 summary["settled"] = {
                     "position_id": position_id,
                     "close_reason": reason,
