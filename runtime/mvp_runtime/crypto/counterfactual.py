@@ -28,7 +28,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
-from .paper import DEFAULT_MAX_HOLD_BARS, MAX_HOLD_BARS, settle_trade_plan, state_dir
+from .paper import position_max_hold, settle_trade_plan, state_dir
 
 COUNTERFACTUAL_TRACKER_VERSION = "counterfactual_tracker.v1"
 BOOK_FILENAME = "counterfactual_positions.json"
@@ -103,6 +103,9 @@ def build_shadow_plan(
         "stop_loss": entry_plan.get("stop_loss"),
         "take_profit": entry_plan.get("take_profit"),
         "risk": entry_plan.get("risk"),
+        # Exit parity rides into the shadow too: a counterfactual settled on a
+        # different time-exit than the real trade would have used measures nothing.
+        "max_holding_bars": entry_plan.get("max_holding_bars"),
         "holding_candles": 0,
         "strategy_id": entry_plan.get("strategy_id"),
         "strategy_rule_hash": entry_plan.get("strategy_rule_hash"),
@@ -199,7 +202,7 @@ def run_counterfactual_update(
     still_open: list[dict[str, Any]] = []
     settled: list[dict[str, Any]] = []
     for plan in rows:
-        max_hold = MAX_HOLD_BARS.get(str(plan.get("timeframe") or timeframe), DEFAULT_MAX_HOLD_BARS)
+        max_hold, _ = position_max_hold(plan, str(plan.get("timeframe") or timeframe))
         reason, exit_price, result_r = settle_trade_plan(plan, last_candle, last_close, max_hold, False)
         if reason is None:
             still_open.append(plan)

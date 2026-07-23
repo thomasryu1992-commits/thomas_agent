@@ -111,6 +111,24 @@ def test_shadow_opens_and_settles_into_own_registry(tmp_path):
     assert verdict["allow_new_position"] is True
 
 
+def test_shadow_settles_on_the_plan_time_exit_not_the_table(tmp_path):
+    # Exit parity for shadows: the blocked plan carries the spec's max_holding_bars=1,
+    # so one calm bar time-exits it — under the old 1d table default (48) the shadow
+    # would have measured a hold the real trade could never have had.
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "max_holding_bars": 1}, block_reasons=["x"],
+        last_candle=None, last_close=None, timeframe="1d", now=NOW, root=tmp_path,
+    )
+    calm = {"high": 101.0, "low": 99.5, "close": 100.5, "close_time": "2026-07-23T00:00:00Z"}
+    settled = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=calm, last_close=100.5,
+        timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
+    )
+    assert settled["open_count"] == 0
+    records = counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert len(records) == 1 and records[0]["close_reason"] == "time_exit"
+
+
 def test_shadow_book_is_capped(tmp_path):
     for i in range(counterfactual.MAX_OPEN_COUNTERFACTUALS + 5):
         counterfactual.run_counterfactual_update(
