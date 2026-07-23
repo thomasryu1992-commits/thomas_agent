@@ -212,7 +212,12 @@ def _check_paths(checks: list[tuple[str, list[str]]]) -> set[str]:
 
 
 def _normalize_ci_path(path: str) -> str:
-    return path.strip().replace("\\", "/").lstrip("./")
+    # removeprefix, NOT lstrip: lstrip takes a character SET, so lstrip("./") ate the
+    # leading dot of every dotfile path — ".github/workflows/x.yml" normalized to
+    # "github/workflows/x.yml", the ".github/workflows/**" pattern never matched, and a
+    # CI-infrastructure change silently skipped the full Gate. Precisely the fail-OPEN
+    # this module's fallback comment warns about, in the matcher itself.
+    return path.strip().replace("\\", "/").removeprefix("./")
 
 
 def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
