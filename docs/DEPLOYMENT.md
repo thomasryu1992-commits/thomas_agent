@@ -157,6 +157,22 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
   drops (never doubles) the in-flight occurrence, and since L3a a fire that fails inside a
   living process is recorded as a durable `failed` event.
 
+## What CI enforces about this image
+
+`.github/workflows/docker-image.yml` builds the image on ubuntu-latest — the same Linux
+AMD64 target the service runs on — and smoke-tests the properties this document relies on,
+all on a **bare image with no secrets and no provisioned state**:
+
+- both compose services exist (an operator-only deploy runs no schedules);
+- the scheduler ticks cleanly on an empty mounted volume, proving uid 10001 can write it;
+- a provider env var **alone** refuses to open a network path (`ACTIVATION_MISSING`);
+- the operator refuses to act with no registration (`REGISTRATION_MISSING`);
+- a `kill` survives the container that issued it, and a corrupt control state reads as
+  `KILLED`, never as "go";
+- the scheduler service starts from its compose definition and answers the healthcheck.
+
+So the fail-closed claims above are checked on every PR rather than trusted.
+
 ## Notes
 
 - The base image is `python:3.12-slim` to match CI's Python 3.12.
