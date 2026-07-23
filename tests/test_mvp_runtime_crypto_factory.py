@@ -274,3 +274,77 @@ def test_promotion_refuses_unknown_candidate(tmp_path):
     with pytest.raises(SystemExit):
         run_promotion(selectors=["S_NOPE"], promoted_by="Thomas", reason="r",
                       keep_active=False, root=tmp_path, now=NOW)
+
+
+# --- candidate lineage (fusion groundwork) ------------------------------------
+
+def _lineage_row(parent_ids, derivation="mutation", seed_tag="x"):
+    """A minimal candidate row claiming a derivation from ``parent_ids``."""
+    return {
+        "strategy_id": "S900",
+        "strategy_rule_hash": f"sha256:{seed_tag * 8}",
+        "generation_id": "GEN-900",
+        "evidence_input_sha256": "sha256:" + "e" * 8,
+        "derivation_type": derivation,
+        "parent_candidate_ids": parent_ids,
+    }
+
+
+def test_factory_records_are_seeded_with_empty_parents():
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["candidates"]
+    for c in result["candidates"]:
+        assert c["derivation_type"] == "seeded_template"
+        assert c["parent_candidate_ids"] == []
+
+
+def test_parented_row_roundtrips_when_parents_are_durable(tmp_path):
+    _seed_candidates(tmp_path)
+    parents = [pool.candidate_id(r) for r in pool.read_candidates(tmp_path)[:2]]
+    pool.append_candidates([_lineage_row(parents, derivation="crossover")], root=tmp_path)
+    rows = pool.read_candidates(tmp_path)
+    assert rows[-1]["parent_candidate_ids"] == parents
+    assert rows[-1]["derivation_type"] == "crossover"
+
+
+def test_legacy_rows_without_lineage_fields_still_append(tmp_path):
+    row = _lineage_row([], seed_tag="l")
+    del row["derivation_type"], row["parent_candidate_ids"]
+    assert pool.append_candidates([row], root=tmp_path) == 1
+
+
+def test_unknown_parent_refused_and_nothing_written(tmp_path):
+    _seed_candidates(tmp_path)
+    before = len(pool.read_candidates(tmp_path))
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([_lineage_row(["cand-nope"])], root=tmp_path)
+    assert "UNKNOWN_PARENT_CANDIDATE" in str(exc.value)
+    assert len(pool.read_candidates(tmp_path)) == before  # all-or-nothing
+
+
+@pytest.mark.parametrize("mutant, reason", [
+    ({"derivation_type": "alien"}, "unknown derivation_type"),
+    ({"derivation_type": "seeded_template"}, "admits 0..0 parents"),          # parents ride along
+    ({"parent_candidate_ids": None}, "list of non-empty ids"),
+    ({"parent_candidate_ids": ["p", "p"]}, "duplicate"),
+    ({"parent_candidate_ids": ["only-one"], "derivation_type": "crossover"}, "admits 2+"),
+])
+def test_incoherent_lineage_refused(tmp_path, mutant, reason):
+    _seed_candidates(tmp_path)
+    known = pool.candidate_id(pool.read_candidates(tmp_path)[0])
+    row = {**_lineage_row([known]), **mutant}
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([row], root=tmp_path)
+    assert "CANDIDATE_LINEAGE_INVALID" in str(exc.value)
+    assert reason.split()[0].lower() in str(exc.value).lower()
+
+
+def test_parents_without_derivation_type_refused(tmp_path):
+    _seed_candidates(tmp_path)
+    known = pool.candidate_id(pool.read_candidates(tmp_path)[0])
+    row = _lineage_row([known])
+    del row["derivation_type"]
+    with pytest.raises(Exception) as exc:
+        pool.append_candidates([row], root=tmp_path)
+    assert "CANDIDATE_LINEAGE_INVALID" in str(exc.value)
