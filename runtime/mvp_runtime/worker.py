@@ -32,7 +32,10 @@ from .paths import repo_root as _repo_root
 
 WORKER_ID = "mvp.business_analysis.llm"
 WORKER_VERSION = "0.1.0"
-PROMPT_VERSION = "mvp_business_analysis.v1"
+# v2 adds the explicit acceptance criteria (see ACCEPTANCE_CRITERIA below). The prompt
+# version is recorded on every invocation, so a changed prompt gets a new version — the
+# ledger must not claim two different prompts were the same one.
+PROMPT_VERSION = "mvp_business_analysis.v2"
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v0.2"
 
 # Business-idea evaluation priorities (Core MVP_RULE_005); the worker asks the model
@@ -43,6 +46,26 @@ EVALUATION_PRIORITIES = (
     "scalability",
     "automatability",
     "long_term_growth",
+)
+
+# The three REVISE conditions in ``validation.validate_agent_output`` (required_sections,
+# evidence_grounding, calibration), stated to the model as acceptance criteria rather than
+# left implicit. They are the checks that withhold delivery, and every one of them is a
+# compliance requirement — a present-but-empty field — not a question of analytical skill.
+# A model that is never told the bar cannot aim at it, and the run pays for the analysis
+# either way, so the cheapest place to raise the pass rate is the prompt.
+#
+# Deliberately scoped to the specialist prompt, NOT to the shared ``_RESPONSE_INSTRUCTION``
+# in providers.py: the independent validator and the orchestrator triage speak the same
+# analysis JSON but legitimately return empty facts/key_findings (they judge, they do not
+# analyze), so a shared criterion would ask them to invent content.
+ACCEPTANCE_CRITERIA = (
+    "Acceptance criteria - an answer failing any of these is rejected and never reaches "
+    "the reader, so satisfy all three: (1) at least one entry in key_findings; (2) at "
+    "least one entry in facts, each carrying a non-empty evidence_refs; (3) at least one "
+    "entry in uncertainty or assumptions - an analysis disclosing neither reads as "
+    "over-confident. If the request is too thin to support a finding, say exactly that in "
+    "these fields; leaving them empty is the one answer that cannot be delivered."
 )
 
 
@@ -184,7 +207,8 @@ def build_prompt(
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
-        "inferences, disclose assumptions and uncertainty, and do not propose external actions."
+        "inferences, disclose assumptions and uncertainty, and do not propose external actions.\n"
+        f"{ACCEPTANCE_CRITERIA}"
     )
 
 

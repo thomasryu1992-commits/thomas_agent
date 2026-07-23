@@ -28,7 +28,7 @@ from runtime.mvp_runtime.validator import (
     run_validation_worker,
     stricter_result,
 )
-from runtime.mvp_runtime.worker import ProviderResult
+from runtime.mvp_runtime.worker import MockProvider, ProviderResult
 
 from tests._helpers import requires_local_core
 
@@ -319,6 +319,47 @@ def test_e2e_independent_block_withholds_delivery():
                       validator_provider=FakeVerdictProvider("BLOCK"), now=NOW)
     assert result["status"] == "BLOCKED"
     assert result["block"]["reason_code"] == "VALIDATION_BLOCK"
+
+
+class _OverconfidentProvider(MockProvider):
+    """Produces an output the AUTOMATIC checks call REVISE (no uncertainty, no
+    assumptions) — the calibration check the shared analysis shape allows to be empty."""
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        r.analysis = {**r.analysis, "uncertainty": [], "assumptions": []}
+        return r
+
+
+class _CountingValidatorProvider(FakeVerdictProvider):
+    """Counts how many times the reviewer was actually invoked."""
+
+    def __init__(self, verdict="PASS"):
+        super().__init__(verdict)
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        self.calls += 1
+        return super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+
+
+@requires_local_core
+def test_automatic_revise_does_not_spend_the_reviewer():
+    """The merge is stricter-wins and delivery requires PASS, so an automatic REVISE has
+    already decided this run: the reviewer could return PASS and the outcome would still
+    be REVISE. Spending the run's most expensive model call there buys nothing, so it is
+    skipped — previously only an automatic BLOCK short-circuited."""
+    reviewer = _CountingValidatorProvider("PASS")
+    result = run_task(REQUEST, provider=_OverconfidentProvider(), independent_validation=True,
+                      validator_provider=reviewer, now=NOW)
+    assert result["status"] == "BLOCKED" and result["delivered"] is False
+    assert result["block"]["reason_code"] == "VALIDATION_REVISE"
+    assert reviewer.calls == 0
+    assert "independent_validation_result" not in result["records"]
+    # The withheld run still says why: the automatic checks name every failing check.
+    assert "over-confident" in result["block"]["message"]
+    # Budget honesty: one model call was spent, and the usage record says one.
+    assert result["records"]["budget_usage"]["usage"]["model_calls"] == 1
 
 
 @requires_local_core

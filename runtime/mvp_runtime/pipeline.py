@@ -370,10 +370,22 @@ def run_task(
         records["validation_result"] = validation
 
         # R7 (opt-in): the independent validator reviews the output in a fresh context.
-        # Skipped when the automatic checks already BLOCK — the outcome is decided and a
-        # model call would be spent for nothing. The stricter result decides delivery.
+        # Run ONLY when the automatic checks PASSed. The merge below is stricter-wins and
+        # delivery requires PASS, so once the automatic result is REVISE or BLOCK the
+        # reviewer's verdict cannot change this run's outcome — the call would spend the
+        # run's most expensive tokens (the reviewer is typically the higher-tier provider)
+        # on an already-decided result. Previously only BLOCK short-circuited, so every
+        # REVISE paid for a review it could not act on.
+        #
+        # What is given up: the reviewer's findings used to be appended to a withheld run's
+        # reasons. The automatic checks already name every failing check, so the run still
+        # reports why it was withheld — it just no longer buys extra prose at model prices.
+        #
+        # The candidate-role trial deliberately keeps the wider `!= "BLOCK"` condition:
+        # there the review is evidence for a later promotion decision, not a delivery gate,
+        # and a trial's `independent_result` is worth more than the tokens it costs.
         independent_validation_result = validator_invocation = None
-        if validate_run and validation["validation"]["result"] != "BLOCK":
+        if validate_run and validation["validation"]["result"] == "PASS":
             independent_validation_result, validator_invocation = run_validation_worker(
                 plan["task"], plan["validator_assignment"], agent_output,
                 provider=validator_provider, created_at=now, repo_root=repo_root,

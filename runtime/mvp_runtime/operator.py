@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import approval, control, safety_gate, timeutil
+from . import approval, control, operator_feedback, safety_gate, timeutil
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .control import ControlStore
 from .errors import ApprovalBlocked, AuditError, ControlBlocked, OperatorBlocked, PersistenceError
@@ -177,6 +177,11 @@ def handle_operator_message(
     verification the approval record requires, so no separate proof is needed — and nothing
     that fails the gate can ever reach the decision path. An approved Approval authorizes no
     execution: consumption is gate-pinned unimplemented.
+
+    ``/feedback <good|bad|note>`` (E1) records Thomas's verdict on the last delivered run
+    to the feedback ledger — handled like the console/approval commands (any runtime mode,
+    behind the same identity gate), and like every ``/`` command it never reaches the
+    pipeline.
     """
     try:
         verify_control_channel(message, registration)
@@ -254,6 +259,21 @@ def handle_operator_message(
                     )
             return OperatorReply(text=outcome["reply"], accepted=True, status="APPROVAL", reason_code=outcome["action"])
 
+    # E1: /feedback records Thomas's verdict on the last delivered run. Like /approve,
+    # it is handled in any runtime mode — judging already-delivered work is not new
+    # execution, and a PAUSED runtime must still let Thomas say what he thinks of what
+    # it already sent. The identity gate above is what makes the verdict *his*.
+    feedback_payload = operator_feedback.parse_feedback_command(text)
+    if feedback_payload is not None:
+        try:
+            outcome = operator_feedback.apply_feedback(
+                feedback_payload, operator_id=registration.operator_id,
+                store=store, now=now, repo_root=repo_root,
+            )
+        except (OperatorBlocked, PersistenceError) as exc:
+            return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+        return OperatorReply(text=outcome["reply"], accepted=True, status="FEEDBACK", reason_code="FEEDBACK_RECORDED")
+
     if text.startswith("/"):
         # A leading-slash message that matched no console/approval verb is refused, never
         # run as a task: a typo'd ``/killl`` (or an emergency verb reaching a deployment
@@ -261,7 +281,8 @@ def handle_operator_message(
         # included — is the fail-open direction.
         return OperatorReply(
             text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
-                  "/audit /recovery /approve <id> [reason] /reject <id> [reason]"),
+                  "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
+                  "/feedback <good|bad|한줄평>"),
             accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
         )
 
@@ -653,6 +674,18 @@ def run_operator_once(
             # durable (ledger, control state, approval store); only this reply's delivery
             # is lost, and the summary reports it.
             send_failures += 1
+        else:
+            if reply.status == "COMPLETED" and reply.trace_id:
+                # E1: a completed analysis actually reached Thomas — record the pointer
+                # /feedback binds to. AFTER the send, so feedback can never target a run
+                # he did not see. Best-effort like the ack: losing the pointer degrades
+                # /feedback to an honest refusal and must not cost the batch.
+                try:
+                    operator_feedback.record_delivery(
+                        reply.trace_id, now=now or timeutil.utc_now_iso(), repo_root=repo_root,
+                    )
+                except OperatorBlocked:
+                    pass
         handled.append(reply)
     if dropped and store is not None:
         # An unverified sender is still silently dropped — no reply, no engagement, no

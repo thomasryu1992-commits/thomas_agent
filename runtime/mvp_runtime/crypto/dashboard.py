@@ -93,17 +93,22 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         cf_records, cf_summary = [], {}
         warnings.append(f"counterfactual store unreadable ({exc.reason_code})")
 
-    open_position = None
+    # Every book, not just one: positions are keyed per (venue, symbol, timeframe),
+    # so a dashboard reading a single slot would under-report open exposure.
+    open_positions: list[dict[str, Any]] = []
     try:
-        position = paper.load_open_position(root)
-        if position:
-            open_position = {"position_id": position.get("position_id"),
-                            "direction": position.get("direction"),
-                            "strategy_id": position.get("strategy_id"),
-                            "entry_price": position.get("entry_price"),
-                            "opened_at": position.get("opened_at_utc")}
+        for context, position in paper.list_open_positions(root):
+            open_positions.append({"context": context.key,
+                                   "symbol": context.symbol,
+                                   "timeframe": context.timeframe,
+                                   "position_id": position.get("position_id"),
+                                   "direction": position.get("direction"),
+                                   "strategy_id": position.get("strategy_id"),
+                                   "entry_price": position.get("entry_price"),
+                                   "opened_at": position.get("opened_at_utc")})
     except MvpRuntimeError as exc:
         warnings.append(f"position state unreadable ({exc.reason_code})")
+    open_position = open_positions[0] if open_positions else None
 
     last_cycle = cycle_rows[-1] if cycle_rows else None
     return {
@@ -118,6 +123,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "reason_codes": last_cycle.get("reason_codes"),
         } if last_cycle else None,
         "open_position": open_position,
+        "open_positions": open_positions,
         "pool_status_counts": status_counts,
         "pool_size": len(active.get("active_strategies") or []),
         "performance": {
