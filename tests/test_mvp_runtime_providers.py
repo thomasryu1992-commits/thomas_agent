@@ -269,6 +269,51 @@ def test_every_hosted_call_names_itself_in_the_user_agent(monkeypatch):
     assert seen == [_USER_AGENT, _USER_AGENT]
 
 
+def test_gemini_body_binds_the_analysis_response_schema(monkeypatch):
+    """Structured output, not a prose request: the vendor enforces the 12-key shape, so a
+    dropped field cannot reach the MALFORMED_RESPONSE guard or the validator's
+    required-sections check. No minItems anywhere — the validator and the triage share this
+    shape and legitimately return empty facts/key_findings."""
+    from runtime.mvp_runtime.providers import _ANALYSIS_RESPONSE_SCHEMA
+
+    monkeypatch.setenv(API_ENV, "k")
+    bodies: list[dict] = []
+
+    def capture_urlopen(request, timeout):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResp(_gemini_response(_ANALYSIS))
+    monkeypatch.setattr("urllib.request.urlopen", capture_urlopen)
+
+    GoogleAIStudioProvider(authorization=_AUTH).generate("p", max_output_tokens=100, timeout_seconds=10)
+
+    config = bodies[0]["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseSchema"] == _ANALYSIS_RESPONSE_SCHEMA
+    # The three fields whose absence makes validate_agent_output withhold delivery.
+    for key in ("key_findings", "facts", "uncertainty", "assumptions"):
+        assert key in _ANALYSIS_RESPONSE_SCHEMA["required"]
+    assert json.dumps(_ANALYSIS_RESPONSE_SCHEMA).find("minItems") == -1
+
+
+def test_groq_body_keeps_plain_json_object_mode(monkeypatch):
+    """Groq's json_schema support is model-dependent and a rejected body fails the call
+    outright (PROVIDER_TRANSPORT, not retryable). Deliberate asymmetry, asserted so it
+    reads as a decision rather than an oversight."""
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    bodies: list[dict] = []
+
+    def capture_urlopen(request, timeout):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResp(_groq_response(_ANALYSIS))
+    monkeypatch.setattr("urllib.request.urlopen", capture_urlopen)
+
+    GroqProvider(authorization=_groq_auth()).generate("p", max_output_tokens=100, timeout_seconds=10)
+    assert bodies[0]["response_format"] == {"type": "json_object"}
+    assert "response_schema" not in bodies[0]
+
+
 def test_groq_happy_path_parses_openai_shape(monkeypatch):
     from runtime.mvp_runtime.providers import GroqProvider
 
