@@ -78,11 +78,14 @@ MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
 
 # Factory replay depth, expressed in CALENDAR days rather than a constant bar count.
-# A flat 500-bar window is ~1.4 years at 1d but 42 HOURS at 5m: all three of the
-# factory's walk-forward slices land in the same afternoon, so every candidate mined
-# there is single-regime by construction and cannot clear the robustness score. Bars
-# are derived per timeframe and clamped by MAX_CANDLES, which is what bounds the two
-# fastest timeframes (5m lands at ~208 days).
+# A flat 500-bar window is ~1.4 years at 1d but five hours at 15m: all three of the
+# factory's walk-forward slices land in the same session, so every candidate mined
+# there is single-regime by construction and cannot clear the robustness score.
+#
+# Every timeframe a strategy can actually be authored at (strategy.ALLOWED_TIMEFRAMES,
+# which is narrower than TIMEFRAMES above) fits under MAX_CANDLES at this depth — 15m
+# is the deepest at 48k bars. The clamp is therefore head-room, not a live limit; it
+# bounds egress and memory if the strategy vocabulary is ever widened downward.
 FACTORY_DEPTH_DAYS = 500
 
 

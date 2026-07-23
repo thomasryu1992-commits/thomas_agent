@@ -18,8 +18,10 @@ import pytest
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
+    FACTORY_DEPTH_DAYS,
     MARKET_DATA_ENV,
     MAX_CANDLES,
+    TIMEFRAMES,
     BinanceFuturesCollector,
     MarketSnapshot,
     MockMarketDataCollector,
@@ -28,6 +30,7 @@ from runtime.mvp_runtime.crypto.market_data import (
     factory_candle_target,
     select_market_data_collector,
 )
+from runtime.mvp_runtime.crypto.strategy import ALLOWED_TIMEFRAMES
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
 
@@ -274,6 +277,22 @@ def test_factory_candle_target_clamps_the_fastest_timeframes():
     # 500 days of 5m is 144k bars; the ceiling is what bounds egress and memory.
     assert factory_candle_target("5m") == MAX_CANDLES
     assert factory_candle_target("1m") == MAX_CANDLES
+
+
+def test_every_authorable_timeframe_gets_its_full_depth():
+    """Drift gate: collection accepts more timeframes than a strategy can be authored at.
+
+    ``strategy.ALLOWED_TIMEFRAMES`` is the narrower vocabulary — a spec at 5m is
+    rejected at parse, so a 5m factory schedule mines candidates that can never be
+    accepted. Every timeframe that IS authorable must fit under MAX_CANDLES, or the
+    clamp would silently shorten a window the factory depends on. Widening either
+    vocabulary without re-checking the other trips this.
+    """
+    assert ALLOWED_TIMEFRAMES < set(TIMEFRAMES), "strategy vocabulary must stay a subset"
+    for timeframe in ALLOWED_TIMEFRAMES:
+        bars = factory_candle_target(timeframe)
+        assert bars < MAX_CANDLES, f"{timeframe} is clamped below its full depth"
+        assert bars * TIMEFRAMES[timeframe] // 1440 == FACTORY_DEPTH_DAYS
 
 
 def test_factory_candle_target_rejects_unknown_timeframe():
