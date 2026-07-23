@@ -190,6 +190,16 @@ class LedgerStore:
             return jsonl.read_objects(self._root / BLOCKS_FILE,
                                       read_code="LEDGER_UNREADABLE", label="the block ledger")
 
+    def read_scheduler_events(self) -> list[dict[str, Any]]:
+        """Every persisted scheduler event, in append order. Fails closed on a corrupt file.
+
+        Read under the appender's own lock, like the block/audit readers: the tick loop may
+        be appending a fire's outcome while a startup scan reads the stream."""
+        with locked(self._root / (SCHEDULER_FILE + ".lock"),
+                    code="LEDGER_WRITE_FAILED", label="the scheduler ledger"):
+            return jsonl.read_objects(self._root / SCHEDULER_FILE,
+                                      read_code="LEDGER_UNREADABLE", label="the scheduler ledger")
+
     def read_audit_events(self) -> list[dict[str, Any]]:
         """Every persisted audit event, in append order. Fails closed on a corrupt ledger.
 
