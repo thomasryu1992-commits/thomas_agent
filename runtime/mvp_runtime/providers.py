@@ -98,6 +98,29 @@ DEFAULT_HOSTED_MODEL = "gemini-flash-latest"
 GROQ = "groq"
 GROQ_MODEL_ENV = "MVP_GROQ_MODEL"
 DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+
+OPENROUTER = "openrouter"
+OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
+# OpenRouter is a GATEWAY, not a vendor: one endpoint and one key front hundreds of models
+# from many vendors. Two consequences worth stating rather than discovering:
+#
+# 1. Scope. Every other provider id names one vendor whose model range is narrow, so the
+#    grant and the capability line up. Here they do not — a single ``openrouter`` grant
+#    authorizes whatever slug the env var happens to name, and the model is the thing that
+#    actually decides cost and quality. That is acceptable while one pinned free model is
+#    configured on a machine only Thomas operates; it stops being acceptable the moment
+#    tiers and money are involved, at which point the answer is separate provider ids per
+#    tier with the allowed models pinned INTO each grant. Recorded here so the next change
+#    starts from the limit rather than rediscovering it.
+# 2. Rate limits. Free models allow ~20 req/min and ~200 req/day and answer 429 when
+#    exhausted — which ``_post_json_with_retry`` already classifies as PROVIDER_UNAVAILABLE,
+#    so a failover chain switches members instead of failing the run.
+#
+# The default is a free-tier slug. OpenRouter's catalogue changes, so verify it against the
+# account and override with ``MVP_OPENROUTER_MODEL``; an unknown slug is a 4xx, which is
+# PROVIDER_TRANSPORT (deliberately not retried, not failed over).
+DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
 _NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
 # The two HTTP statuses that mean "not now", not "no": 503 (the model pool is overloaded —
@@ -200,6 +223,10 @@ def _hosted_factories() -> dict[str, Any]:
         ),
         GROQ: lambda authorization: GroqProvider(
             model=os.environ.get(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL).strip(),
+            authorization=authorization,
+        ),
+        OPENROUTER: lambda authorization: OpenRouterProvider(
+            model=os.environ.get(OPENROUTER_MODEL_ENV, DEFAULT_OPENROUTER_MODEL).strip(),
             authorization=authorization,
         ),
     }
@@ -380,30 +407,40 @@ class GoogleAIStudioProvider:
         )
 
 
-class GroqProvider:
-    """Groq provider via the OpenAI-compatible chat-completions endpoint.
+class _OpenAICompatibleProvider:
+    """Shared adapter for vendors speaking the OpenAI ``/chat/completions`` shape.
 
-    The failover alternative CLAUDE.md's locked decision has always named. Same shape as
-    :class:`GoogleAIStudioProvider`: gate-authorized per its own ``groq`` grant, key read
-    from ``api_key_env`` **by name** at call time (sent in the Authorization header —
-    never stored, logged, or echoed), egress re-verified at the moment of the call, and
-    the shared retry/latency/typed-failure HTTP path.
+    Groq and OpenRouter differ in four values — endpoint, provider id, default model, and
+    the NAME of the key env var. The request body, the secret handling, the gate
+    chokepoint, the retry rule, and the usage-parsing stance are identical. They live here
+    once for the same reason ``_parse_hosted_response`` exists: these are exactly the parts
+    that must not drift between vendors, and a third OpenAI-compatible backend should
+    inherit them rather than restate them and get one subtly wrong.
+
+    Same guarantees as :class:`GoogleAIStudioProvider`: gate-authorized per its own grant
+    (``model_id`` IS the provider id the Safety-Flag Gate authorizes against — one grant
+    per id), key read from ``api_key_env`` **by name** at call time and sent in the
+    Authorization header (never stored, logged, or echoed), egress re-verified at the
+    moment of the call, and the shared retry/latency/typed-failure HTTP path.
     """
 
-    model_id = GROQ
     network_egress = True  # makes an outbound HTTPS call — audited as network egress
-    _ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    model_id: str = ""
+    _ENDPOINT: str = ""
+    _DEFAULT_MODEL: str = ""
+    _API_KEY_ENV: str = ""
 
     def __init__(
         self,
         *,
-        model: str = DEFAULT_GROQ_MODEL,
-        api_key_env: str = "GROQ_API_KEY",
+        model: str | None = None,
+        api_key_env: str | None = None,
         authorization: Authorization | None = None,
     ):
-        self._model = model
-        self._api_key_env = api_key_env  # the NAME of the env var, never the value
-        self.model_version = model
+        self._model = model if model is not None else self._DEFAULT_MODEL
+        # the NAME of the env var, never the value
+        self._api_key_env = api_key_env if api_key_env is not None else self._API_KEY_ENV
+        self.model_version = self._model
         # Egress authorization from the Safety-Flag Gate. Without it, generate() refuses
         # to open a socket — so a directly-constructed provider cannot bypass the gate.
         self._authorization = authorization
@@ -456,6 +493,31 @@ class GroqProvider:
             latency_ms=latency_ms, retries=retries,
             extract_text=extract_text, extract_usage=extract_usage,
         )
+
+
+class GroqProvider(_OpenAICompatibleProvider):
+    """Groq — the failover alternative CLAUDE.md's locked decision has always named."""
+
+    model_id = GROQ
+    _ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    _DEFAULT_MODEL = DEFAULT_GROQ_MODEL
+    _API_KEY_ENV = "GROQ_API_KEY"
+
+
+class OpenRouterProvider(_OpenAICompatibleProvider):
+    """OpenRouter — one OpenAI-compatible gateway in front of many vendors' models.
+
+    Selecting a different model is an env var (``MVP_OPENROUTER_MODEL``) rather than a new
+    adapter, which is the whole point of adding it: the runtime gains model choice without
+    gaining a code path per vendor. See ``DEFAULT_OPENROUTER_MODEL`` for what that costs in
+    grant scope — one grant here covers whatever slug is configured, unlike every other
+    provider id.
+    """
+
+    model_id = OPENROUTER
+    _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+    _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL
+    _API_KEY_ENV = "OPENROUTER_API_KEY"
 
 
 class FailoverProvider:
