@@ -148,9 +148,15 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
 
 ## Health, logs, shutdown
 
-- **Healthcheck** (compose): `console_cli status` against the mounted control state — exits
-  nonzero when the state volume is unreadable. A KILLED runtime still answers: killed is
-  *halted*, not *unhealthy*, and resuming is the operator's decision, never the orchestrator's.
+- **Healthcheck** (compose): each service's own **heartbeat**
+  (`python -m runtime.mvp_runtime.heartbeat_cli operator|scheduler`). Each loop stamps
+  `.runtime_governance_state/heartbeats/<service>.json` once per pass, and the probe fails
+  when that stamp is older than the loop's own cadence allows — so a wedged poll or a tick
+  hung on a provider call is finally visible. It replaced `console_cli status`, which only
+  proved the control-state file parsed and therefore reported healthy through exactly those
+  stalls. A KILLED runtime still passes: killed is *halted*, not *unhealthy*, its loop keeps
+  turning, and resuming stays the operator's decision, never the orchestrator's.
+  Check by hand with `docker compose exec scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler`.
 - **Logs** rotate via the json-file driver (10 MB × 3 files per service).
 - **Shutdown**: `docker compose stop` sends SIGTERM with a 30 s grace period — enough for an
   in-flight tick to finish its current fire; the claim-before-execute rule means a harder kill

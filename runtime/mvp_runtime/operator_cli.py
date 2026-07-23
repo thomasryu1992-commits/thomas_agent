@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import heartbeat
 from .approval_store import ApprovalStore
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
@@ -122,6 +123,21 @@ def main(
         f"OPERATOR: listening for the registered operator (ledger: {store.root}; control: {control_mode})\n"
     )
 
+    # Liveness: one stamp before the first poll so a probe has an answer as soon as the
+    # service is up, then one per completed batch. The cadence a probe judges against is
+    # the long-poll window — the loop's own natural pass length. Best-effort: a heartbeat
+    # write must never take down the loop it only observes.
+    def _beat() -> None:
+        try:
+            heartbeat.write_heartbeat(
+                heartbeat.OPERATOR_SERVICE,
+                interval_seconds=max(args.long_poll_seconds, args.sleep_seconds, 1.0),
+                root=repo_root,
+            )
+        except OSError as exc:
+            sys.stderr.write(f"OPERATOR: heartbeat not written ({type(exc).__name__})\n")
+
+    _beat()
     total_handled = 0
     total_dropped = 0
     channel_egress = False
@@ -173,6 +189,7 @@ def main(
             for reply in summary["replies"]:
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")
             batch += 1
+            _beat()
             if args.sleep_seconds > 0 and (args.max_batches == 0 or batch < args.max_batches):
                 sleep(args.sleep_seconds)
     except KeyboardInterrupt:

@@ -152,8 +152,9 @@ jobs:
             echo "the scheduler service never started ticking"; exit 1; }
           state=$(docker inspect -f '{{.State.Status}}' thomas-scheduler)
           [ "${state}" = "running" ] || { echo "scheduler is ${state}, not running"; exit 1; }
-          # The compose healthcheck command itself must answer.
-          docker compose exec -T scheduler python -m runtime.mvp_runtime.console_cli status
+          # The compose healthcheck command itself must answer — and it now asserts the
+          # loop actually turned, not merely that a state file parses.
+          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler
 
       - name: Tear down
         if: always()

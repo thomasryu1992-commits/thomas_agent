@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import operator, scheduler, timeutil
+from . import heartbeat, operator, scheduler, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -271,6 +271,19 @@ def main(
         report_startup_gap(store, now=startup_stamp, ledger=ledger, alerter=alerter)
         report_abandoned_runs(ledger=ledger, now=startup_stamp, alerter=alerter)
 
+        # Stamp once before the first tick so a probe has an answer from the moment the
+        # service is up, and once per completed pass thereafter. Best-effort: a heartbeat
+        # write that fails must not stop the scheduling it only observes.
+        def _beat() -> None:
+            try:
+                heartbeat.write_heartbeat(
+                    heartbeat.SCHEDULER_SERVICE,
+                    interval_seconds=args.interval_seconds, now=now, root=repo_root,
+                )
+            except OSError as exc:
+                sys.stderr.write(f"SCHEDULER: heartbeat not written ({type(exc).__name__})\n")
+
+        _beat()
         total_fired = 0
         total_skipped = 0
         total_failed = 0
@@ -289,6 +302,7 @@ def main(
                 for r in summary["results"]:
                     sys.stderr.write(f"  {r['action']} {r['schedule_id']} -> {r['status']}\n")
                 tick += 1
+                _beat()
                 if args.interval_seconds > 0 and (args.max_ticks == 0 or tick < args.max_ticks):
                     sleep(args.interval_seconds)
         except KeyboardInterrupt:
