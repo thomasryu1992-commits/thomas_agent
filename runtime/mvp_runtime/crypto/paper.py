@@ -69,9 +69,12 @@ SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
-# table — e.g. 1d — use the default, the source runtime's own behavior).
+# table — e.g. 1d — use the default, the source runtime's own behavior). Since the
+# exit-parity fix these are the LEGACY fallback only: a position normally carries its
+# spec's own max_holding_bars (the value its backtest evidence was built on).
 MAX_HOLD_BARS = {"15m": 96, "1h": 48, "4h": 30}
 DEFAULT_MAX_HOLD_BARS = 48
+LEGACY_MAX_HOLD_FALLBACK = "LEGACY_POSITION_MAX_HOLD_FALLBACK"
 
 PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker
 
@@ -191,6 +194,10 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "stop_loss": float(stop),
         "take_profit": float(target),
         "risk": abs(float(entry) - float(stop)),
+        # Backtest/runtime exit parity: the spec's own time-exit limit rides into the
+        # plan so the live settlement uses the SAME rule the backtest evidence was
+        # built on — a strategy promoted on max_holding_bars=12 must not hold 48.
+        "max_holding_bars": int(spec.exit_rules.max_holding_bars),
         "strategy_id": route.get("primary_strategy_id"),
         "strategy_rule_hash": route.get("primary_strategy_rule_hash"),
         "strategy_generation_id": route.get("primary_strategy_generation_id"),
@@ -211,6 +218,7 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
         "stop_loss": plan["stop_loss"],
         "take_profit": plan["take_profit"],
         "risk": plan["risk"],
+        "max_holding_bars": plan.get("max_holding_bars"),
         "holding_candles": 0,
         "intrabar_policy": "pessimistic_sl_first",
         "opened_at_utc": now,
@@ -225,6 +233,20 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
         {"strategy_id": position["strategy_id"], "entry": str(position["entry_price"]), "opened_at": now},
     )
     return position
+
+
+def position_max_hold(position: Mapping[str, Any], timeframe: str) -> tuple[int, bool]:
+    """The time-exit limit for THIS position, and whether it is a legacy fallback.
+
+    Parity rule: a position carries the ``max_holding_bars`` its spec was backtested
+    with, and settlement must judge it by that same number — a strategy promoted on
+    12-bar evidence must not silently hold 48. Only a legacy position (opened before
+    the plan carried the value) falls back to the timeframe table, and the caller
+    records that fallback so a backtest/paper gap is attributable, never invisible."""
+    stored = position.get("max_holding_bars")
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+        return stored, False
+    return MAX_HOLD_BARS.get(timeframe, DEFAULT_MAX_HOLD_BARS), True
 
 
 # --- settlement (pure; source math verbatim) ----------------------------------
@@ -646,7 +668,7 @@ def run_paper_update(
             records.append(_event("settle_recovered", recovery))
             position = None  # the slot is honestly free again
         elif not refused:
-            max_hold = MAX_HOLD_BARS.get(timeframe, DEFAULT_MAX_HOLD_BARS)
+            max_hold, legacy_fallback = position_max_hold(position, timeframe)
             reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
             if reason is not None:
                 outcome = build_outcome_record(position, reason, exit_price, result_r, now=now)
@@ -664,6 +686,11 @@ def run_paper_update(
                     "outcome_id": outcome["outcome_id"],
                     "settlement_id": outcome["settlement_id"],
                     "outcome_sha256": outcome["record_sha256"],
+                    "max_hold": max_hold,
+                    # Present only when the spec value was absent: the settlement ran on
+                    # the legacy timeframe default, so a backtest/paper gap on this
+                    # trade is attributable to the fallback, not to the strategy.
+                    **({"max_hold_fallback": LEGACY_MAX_HOLD_FALLBACK} if legacy_fallback else {}),
                 }))
                 position = None
             else:
