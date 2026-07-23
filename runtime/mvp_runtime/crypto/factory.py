@@ -568,6 +568,8 @@ def run_factory(
             "backtest_evidence": evidence,
             "evidence_input_sha256": candles_sha,
             "provenance": "mvp_factory",
+            "derivation_type": "seeded_template",
+            "parent_candidate_ids": [],
             "created_at_utc": now,
         }
         # Stored id == derived id: strategy_id restarts every generation, so the
