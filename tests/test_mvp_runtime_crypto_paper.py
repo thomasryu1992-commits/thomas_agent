@@ -529,7 +529,10 @@ def test_two_symbols_hold_positions_at_the_same_time(tmp_path):
     assert len(paper.list_open_positions(tmp_path)) == 2
 
 
-def test_portfolio_cap_refuses_the_third_book(tmp_path):
+def test_portfolio_cap_refuses_the_third_book(tmp_path, monkeypatch):
+    # Pin the ceiling so this stays a test of the cap MECHANISM, not of whatever the
+    # production number currently is (the per-symbol test does the same).
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 2)
     control_store = ControlStore(tmp_path)
     sol = _pool_entry(_spec_dict(strategy_id="S3", symbol_scope=["SOLUSDT"]), strategy_id="S3")
     pool = _pool(_pool_entry(), _eth_entry(), sol)
@@ -846,3 +849,95 @@ def test_settlement_runs_even_under_no_trade_verdict(tmp_path):
     )
     # Closing is risk-reducing: the verdict forbids OPENING, never settling.
     assert summary["settled"] is not None and summary["opened"] is None
+
+
+# --- intrabar exit resolution: observe the order instead of assuming it ---------
+
+
+def _fine(open_time: str, high: float, low: float) -> dict:
+    return {"open_time": open_time, "high": high, "low": low, "close": (high + low) / 2}
+
+
+# The coarse bar touches BOTH levels (position: entry 105, sl 102, tp 109).
+_AMBIGUOUS = (110.0, 101.0, 108.0)
+
+
+def test_intrabar_ambiguous_only_when_both_levels_are_touched():
+    assert paper.intrabar_ambiguous(_position(), _candle(*_AMBIGUOUS)) is True
+    assert paper.intrabar_ambiguous(_position(), _candle(104.0, 101.0, 103.0)) is False  # stop only
+    assert paper.intrabar_ambiguous(_position(), _candle(110.0, 104.0, 109.5)) is False  # target only
+    assert paper.intrabar_ambiguous(_position(), None) is False
+
+
+def test_resolve_intrabar_exit_returns_whichever_came_first():
+    tp_first = [_fine("2026-07-23T00:01:00Z", 109.5, 105.0), _fine("2026-07-23T00:02:00Z", 106.0, 101.0)]
+    sl_first = [_fine("2026-07-23T00:01:00Z", 106.0, 101.5), _fine("2026-07-23T00:02:00Z", 110.0, 105.0)]
+    assert paper.resolve_intrabar_exit(_position(), tp_first) == "take_profit"
+    assert paper.resolve_intrabar_exit(_position(), sl_first) == "stop_loss"
+
+
+def test_resolve_intrabar_exit_orders_by_time_not_by_argument_order():
+    # Same two bars, reversed: the TIME order decides, not the sequence handed in.
+    later_first = [_fine("2026-07-23T00:02:00Z", 106.0, 101.0), _fine("2026-07-23T00:01:00Z", 109.5, 105.0)]
+    assert paper.resolve_intrabar_exit(_position(), later_first) == "take_profit"
+
+
+def test_resolve_intrabar_exit_is_none_when_nothing_is_touched():
+    # A gap or a too-short window must read as UNRESOLVED, never as a resolution.
+    assert paper.resolve_intrabar_exit(_position(), [_fine("2026-07-23T00:01:00Z", 106.0, 104.0)]) is None
+    assert paper.resolve_intrabar_exit(_position(), []) is None
+
+
+def test_settle_uses_observed_order_over_the_pessimistic_assumption():
+    position = _position()
+    tp_first = [_fine("2026-07-23T00:01:00Z", 109.5, 105.0), _fine("2026-07-23T00:02:00Z", 106.0, 101.0)]
+    reason, exit_price, r = settle_trade_plan(
+        position, _candle(*_AMBIGUOUS), 108.0, 48, False, fine_candles=tp_first
+    )
+    assert (reason, exit_price) == ("take_profit", 109.0)
+    assert r == (109.0 - 105.0) / 3.0
+    assert position["exit_resolution"] == "observed_fine_candles"
+
+
+def test_settle_observed_order_can_also_confirm_the_stop():
+    position = _position()
+    sl_first = [_fine("2026-07-23T00:01:00Z", 106.0, 101.5)]
+    reason, exit_price, r = settle_trade_plan(
+        position, _candle(*_AMBIGUOUS), 108.0, 48, False, fine_candles=sl_first
+    )
+    assert (reason, exit_price, r) == ("stop_loss", 102.0, -1.0)
+    assert position["exit_resolution"] == "observed_fine_candles"
+
+
+def test_settle_keeps_pessimism_when_fine_candles_resolve_nothing():
+    position = _position()
+    reason, exit_price, r = settle_trade_plan(
+        position, _candle(*_AMBIGUOUS), 108.0, 48, False,
+        fine_candles=[_fine("2026-07-23T00:01:00Z", 106.0, 104.0)],
+    )
+    assert (reason, exit_price, r) == ("stop_loss", 102.0, -1.0)
+    assert position["exit_resolution"] == "pessimistic_sl_first"
+
+
+def test_settle_without_fine_candles_is_unchanged():
+    # The pre-existing contract: no finer evidence supplied -> SL-first assumption.
+    position = _position()
+    reason, exit_price, r = settle_trade_plan(position, _candle(*_AMBIGUOUS), 108.0, 48, False)
+    assert (reason, exit_price, r) == ("stop_loss", 102.0, -1.0)
+    assert position["exit_resolution"] == "pessimistic_sl_first"
+
+
+def test_settle_marks_an_unambiguous_exit_as_such():
+    position = _position()
+    settle_trade_plan(position, _candle(104.0, 101.0, 103.0), 103.0, 48, False)
+    assert position["exit_resolution"] == "unambiguous"
+
+
+def test_outcome_record_carries_the_resolution_basis():
+    position = _position()
+    settle_trade_plan(position, _candle(*_AMBIGUOUS), 108.0, 48, False)
+    outcome = paper.build_outcome_record(position, "stop_loss", 102.0, -1.0, now=NOW)
+    assert outcome["exit_resolution"] == "pessimistic_sl_first"
+    # An imported/legacy position carries no basis; it must not read as assumed.
+    assert paper.build_outcome_record(_position(), "time_exit", 106.0, 0.3, now=NOW)[
+        "exit_resolution"] == "unambiguous"

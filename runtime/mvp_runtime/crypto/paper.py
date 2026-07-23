@@ -36,7 +36,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -67,19 +67,31 @@ OUTCOMES_FILENAME = "paper_outcomes.jsonl"
 # rather than a second migration of every stored position.
 DEFAULT_VENUE = "binance_futures"
 
-# Concurrency limits (explicit Thomas decision 2026-07-23). Before context-keyed
-# positions there was ONE global slot, so "at most one open position" was an
-# accidental risk cap that nothing named. Splitting the key removes that cap, so it
-# is made explicit here — and deliberately derived, not invented:
+# Concurrency limits. Before context-keyed positions there was ONE global slot, so
+# "at most one open position" was an accidental risk cap that nothing named.
+# Splitting the key removed that cap, so the limit is named here.
 #
-#   MAX_CONCURRENT_POSITIONS = abs(guards.DAILY_MAX_LOSS_R) = 2
+# The derived value is:
 #
-# at the pool's standard ``max_risk_per_trade_R: 1.0``, so if every open position
-# stops out on the same day the realized loss equals the daily circuit breaker
-# instead of blowing through it. The guard reacts to *realized* losses only, which
-# is exactly why the pre-trade cap has to exist. Raising either limit widens live
-# risk and is a separate explicit decision.
-MAX_CONCURRENT_POSITIONS = 2
+#   abs(guards.DAILY_MAX_LOSS_R) = 2
+#
+# at the pool's standard ``max_risk_per_trade_R: 1.0`` — if every open position
+# stops out on the same day, the realized loss equals the daily circuit breaker
+# instead of blowing through it. The breaker reacts to *realized* losses only and
+# cannot see open exposure, which is exactly why a pre-trade cap has to exist.
+#
+# **The live value deliberately breaks that derivation** (explicit Thomas decision
+# 2026-07-23, paper-trading evaluation phase). At 20 concurrent positions the
+# worst-case same-day realized loss is 20R against a 2R breaker, and because the
+# breaker is reactive it cannot prevent that — it only stops the *next* entry after
+# the losses land. This is accepted here because the runtime holds no live-money
+# capability: paper settlement writes records, never orders.
+#
+# The cap is what makes outcome data accumulate fast enough to judge strategies at
+# all: with 1d specs holding 14-39 bars, two slots yield roughly two outcomes a
+# month. **Revert to the derived value before any live-order posture** — that is a
+# separate explicit decision, and this comment is the record of what it undoes.
+MAX_CONCURRENT_POSITIONS = 20
 MAX_POSITIONS_PER_SYMBOL = 2
 
 # Router statuses/rules (source S7).
@@ -88,6 +100,12 @@ STATUS_NO_ENTRY = "NO_ENTRY"
 STATUS_BLOCKED = "BLOCKED"
 BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
 POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
+
+# Intrabar exit resolution: when a bar touches both the stop and the target it cannot
+# say which came first. Finer bars can. 1m is the finest the venue serves and divides
+# every authorable timeframe evenly.
+INTRABAR_TIMEFRAME = "1m"
+INTRABAR_RESOLUTION_DEGRADED = "INTRABAR_RESOLUTION_DEGRADED"
 POSITION_LIMIT_PORTFOLIO = "POSITION_LIMIT_PORTFOLIO"
 POSITION_LIMIT_SYMBOL = "POSITION_LIMIT_SYMBOL"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
@@ -305,16 +323,103 @@ def _advance_holding(position: dict[str, Any], candle: Mapping[str, Any] | None)
         position["last_counted_candle_ts"] = str(ts)
 
 
+def _touches(direction: str, candle: Mapping[str, Any], sl: float, tp: float) -> tuple[bool, bool]:
+    """(hit_stop, hit_target) for one candle — the same test at every resolution."""
+    high = float(candle.get("high") or 0.0)
+    low = float(candle.get("low") or 0.0)
+    if direction == "LONG":
+        return low <= sl, high >= tp
+    return high >= sl, low <= tp
+
+
+def intrabar_ambiguous(position: Mapping[str, Any], candle: Mapping[str, Any] | None) -> bool:
+    """True when this candle touches BOTH the stop and the target.
+
+    The bar says both happened and cannot say which came first, so the settlement
+    has to either assume (pessimistic SL-first) or look at finer bars. Callers use
+    this to decide whether a finer collection is worth making: when only one side is
+    touched there is nothing to resolve, so the common case costs no extra request.
+    """
+    if candle is None or float(position.get("risk") or 0.0) <= 0:
+        return False
+    hit_stop, hit_target = _touches(str(position["direction"]), candle, float(position["stop_loss"]),
+                                    float(position["take_profit"]))
+    return hit_stop and hit_target
+
+
+def resolve_intrabar_exit(
+    position: Mapping[str, Any], fine_candles: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """Which of stop/target was touched FIRST, read off finer candles. None = unresolved.
+
+    Walks the finer bars in time order and returns on the first one that touches
+    either level. A finer bar touching both is ambiguous at its own resolution, so
+    it resolves to the stop — the pessimistic assumption survives, but confined to
+    the width of one fine bar instead of one whole position-timeframe bar. Returns
+    None when the finer series never touches either level (a gap, a short window, a
+    stale collection): unresolved must not read as resolved, and the caller falls
+    back to the assumption rather than inventing an answer.
+    """
+    direction = str(position["direction"])
+    sl, tp = float(position["stop_loss"]), float(position["take_profit"])
+    for candle in sorted(fine_candles, key=lambda c: str(c.get("open_time") or "")):
+        hit_stop, hit_target = _touches(direction, candle, sl, tp)
+        if hit_stop:
+            return "stop_loss"
+        if hit_target:
+            return "take_profit"
+    return None
+
+
+def collect_intrabar_candles(
+    collector: Any,
+    position: Mapping[str, Any],
+    candle: Mapping[str, Any],
+    *,
+    timeframe: str,
+) -> list[dict[str, Any]]:
+    """Fine bars covering ``candle``'s span — the evidence for which level hit first.
+
+    The window is the ONE bar being settled, not the whole holding period: only that
+    bar's ordering is in question. Because a collection returns the most recent bars,
+    the request covers two bar-spans (the settling bar may have closed anywhere
+    between "just now" and one span ago) and the result is filtered to the bar's own
+    [open_time, close_time). Raises on a collector failure — the caller degrades.
+    """
+    from .market_data import TIMEFRAMES, collect_market_data
+
+    minutes = TIMEFRAMES.get(str(timeframe))
+    fine_minutes = TIMEFRAMES[INTRABAR_TIMEFRAME]
+    if not minutes or minutes <= fine_minutes:
+        return []  # already at the finest resolution — nothing further to observe
+    span = minutes // fine_minutes
+    snapshot, _ = collect_market_data(
+        str(position.get("symbol") or ""),
+        INTRABAR_TIMEFRAME,
+        collector=collector,
+        now=timeutil.utc_now_iso(),
+        limit=2 * span + 2,
+    )
+    start = str(candle.get("open_time") or "")
+    end = str(candle.get("close_time") or "")
+    return [c for c in snapshot["candles"] if start <= str(c.get("open_time") or "") < end]
+
+
 def settle_trade_plan(
     position: dict[str, Any],
     candle: Mapping[str, Any] | None,
     last_close: float | None,
     max_hold: int,
     manual_exit: bool,
+    fine_candles: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[str | None, float | None, float | None]:
     """(close_reason, exit_price, result_R), or (None, None, None) while still open.
 
-    Precedence: manual exit → intrabar SL/TP (pessimistic SL-first) → time exit."""
+    Precedence: manual exit → intrabar SL/TP → time exit. When the bar touches both
+    levels, ``fine_candles`` (finer bars covering that bar) decide which came first;
+    without them, or when they resolve nothing, the SL-first assumption stands. Pure:
+    collecting the finer bars is the caller's job (see :func:`intrabar_ambiguous`).
+    """
     direction = position["direction"]
     entry = float(position["entry_price"])
     sl = float(position["stop_loss"])
@@ -326,18 +431,23 @@ def settle_trade_plan(
 
     _advance_holding(position, candle)
     if candle is not None and risk > 0:
-        high = float(candle.get("high") or 0.0)
-        low = float(candle.get("low") or 0.0)
-        if direction == "LONG":
-            if low <= sl:
-                return "stop_loss", sl, -1.0
-            if high >= tp:
-                return "take_profit", tp, (tp - entry) / risk
-        else:
-            if high >= sl:
-                return "stop_loss", sl, -1.0
-            if low <= tp:
-                return "take_profit", tp, (entry - tp) / risk
+        hit_stop, hit_target = _touches(direction, candle, sl, tp)
+        if hit_stop and hit_target:
+            # Both touched: observe the order if we were given the finer bars, and
+            # record which basis decided it — an assumed exit is not evidence of the
+            # same standing as an observed one.
+            resolved = resolve_intrabar_exit(position, fine_candles or ())
+            position["exit_resolution"] = "observed_fine_candles" if resolved else "pessimistic_sl_first"
+            hit = resolved or "stop_loss"
+            if hit == "take_profit":
+                return "take_profit", tp, (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
+            return "stop_loss", sl, -1.0
+        if hit_stop:
+            position["exit_resolution"] = "unambiguous"
+            return "stop_loss", sl, -1.0
+        if hit_target:
+            position["exit_resolution"] = "unambiguous"
+            return "take_profit", tp, (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
 
     if last_close is not None and int(position.get("holding_candles", 0)) >= int(max_hold):
         return "time_exit", last_close, _result_r(direction, entry, last_close, risk)
@@ -374,6 +484,12 @@ def build_outcome_record(
         "strategy_rule_hash": position.get("strategy_rule_hash"),
         "strategy_generation_id": position.get("strategy_generation_id"),
         "supporting_strategy_ids": list(position.get("supporting_strategy_ids") or []),
+        # How the exit price was decided: "unambiguous" (only one level touched),
+        # "observed_fine_candles" (both touched, finer bars showed the order), or
+        # "pessimistic_sl_first" (both touched, unresolved — the stop is assumed).
+        # Carried so a later reading can weigh assumed exits differently from
+        # observed ones instead of treating every outcome as equally measured.
+        "exit_resolution": position.get("exit_resolution") or "unambiguous",
         "provenance": "mvp_paper_kernel",
     }
     # Idempotency key: one position settles exactly once, so the settlement's
@@ -814,6 +930,7 @@ def run_paper_update(
     root: Path | None = None,
     control_store: ControlStore | None = None,
     manual_exit: bool = False,
+    intrabar_collector: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One cycle's paper step: settle the open position, then maybe open one.
 
@@ -937,7 +1054,27 @@ def run_paper_update(
             position = None  # the slot is honestly free again
         elif not refused:
             max_hold, legacy_fallback = position_max_hold(position, timeframe)
-            reason, exit_price, result_r = settle_trade_plan(position, last_candle, last_close, max_hold, manual_exit)
+            # Only an ambiguous bar is worth a second collection, and only if the
+            # caller supplied a collector. A failure here DEGRADES to the assumption
+            # (the MARKET_DATA_DEGRADED posture): a settlement must never be blocked
+            # by the exchange being slow about a precision refinement.
+            fine_candles = None
+            if intrabar_collector is not None and intrabar_ambiguous(position, last_candle):
+                try:
+                    fine_candles = collect_intrabar_candles(
+                        intrabar_collector, position, last_candle, timeframe=timeframe
+                    )
+                except (ToolError, ToolBlocked) as exc:
+                    degraded = {
+                        "reason_code": INTRABAR_RESOLUTION_DEGRADED,
+                        "cause_reason_code": getattr(exc, "reason_code", "TOOL_ERROR"),
+                        "position_id": position_id,
+                    }
+                    summary["intrabar_degraded"] = degraded
+                    records.append(_event("intrabar_degraded", {**degraded, "read_only": True}))
+            reason, exit_price, result_r = settle_trade_plan(
+                position, last_candle, last_close, max_hold, manual_exit, fine_candles=fine_candles
+            )
             if reason is not None:
                 outcome = build_outcome_record(position, reason, exit_price, result_r, now=now)
                 try:
