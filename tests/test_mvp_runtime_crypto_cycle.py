@@ -17,7 +17,11 @@ from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.crypto import paper, pool
 from runtime.mvp_runtime.crypto.cycle import cycle_status_line, run_crypto_cycle
 from runtime.mvp_runtime.crypto.market_data import MARKET_DATA_ENV, Candle, MarketSnapshot
-from runtime.mvp_runtime.crypto.paper import PAPER_ENV, DryRunPaperStore, RealPaperStore, load_open_position
+from runtime.mvp_runtime.crypto.paper import (
+    PAPER_ENV, DryRunPaperStore, PositionContext, RealPaperStore, load_open_position,
+)
+
+CTX = PositionContext(venue="binance_futures", symbol="BTCUSDT", timeframe="1d")
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
 from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
@@ -122,7 +126,7 @@ def test_full_cycle_opens_then_settles_with_real_store(tmp_path):
     record = _cycle(tmp_path, FakeExchangeCollector(), store)
     assert record["verdict_status"] == "ALLOW"
     assert record["opened"] is not None and record["settled"] is None
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     # Flat candles: ATR 2 -> entry 100, stop 97, target 104.
     assert opened["entry_price"] == 100.0 and opened["stop_loss"] == 97.0
 
@@ -135,7 +139,7 @@ def test_full_cycle_opens_then_settles_with_real_store(tmp_path):
     # Settle-then-reopen within one cycle is the source trading-cycle order: the
     # stopped position closed AND the still-matching strategy opened a fresh one.
     assert record2["opened"] is not None
-    reopened = load_open_position(tmp_path)
+    reopened = load_open_position(CTX, tmp_path)
     assert reopened["position_id"] != opened["position_id"]
     outcomes = paper.read_outcomes(tmp_path)
     assert len(outcomes) == 1 and outcomes[0]["strategy_id"] == "S_ALWAYS"
@@ -188,21 +192,23 @@ def test_tampered_pool_refuses_routing_not_the_cycle(tmp_path):
     assert record["cycle_id"].startswith("crypto_cycle")
 
 
-def test_foreign_symbol_cycle_leaves_position_and_reports_mismatch(tmp_path):
+def test_foreign_symbol_cycle_leaves_the_other_book_untouched(tmp_path):
     _install_pool(tmp_path, _always_spec())
     store = RealPaperStore(root=tmp_path, authorization=_AUTH)
     _cycle(tmp_path, FakeExchangeCollector(), store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     assert opened is not None
 
-    # An ETH cycle whose candle sweeps the BTC stop must refuse, not mis-settle.
+    # An ETH cycle whose candle sweeps the BTC stop trades its own book; the BTC
+    # position is not merely refused, it is not reachable from here at all.
     sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0}
     record = _cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
                     now="2026-07-23T12:00:00Z", symbol="ETHUSDT")
-    assert "POSITION_CONTEXT_MISMATCH" in record["reason_codes"]
-    assert record["settled"] is None and record["opened"] is None
+    assert record["settled"] is None
     assert paper.read_outcomes(tmp_path) == []
-    assert load_open_position(tmp_path)["position_id"] == opened["position_id"]
+    untouched = load_open_position(CTX, tmp_path)
+    assert untouched["position_id"] == opened["position_id"]
+    assert untouched["holding_candles"] == opened["holding_candles"]
 
 
 def test_status_line_summarizes(tmp_path):
