@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field, replace
+from itertools import combinations
 from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
@@ -40,7 +41,7 @@ from runtime.read_only_kernel import integrity
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
-from .pool import derive_candidate_id
+from .pool import candidate_id, derive_candidate_id
 from .robustness import score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
 
@@ -507,6 +508,192 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
     }
 
 
+# --- fusion: crossover of two proven lineages ---------------------------------
+
+# How many top-ranked lineages the pair search may draw from. A ceiling, not a
+# quota: the caller's ``fusion_pairs`` decides how many children are actually minted.
+FUSION_PARENT_POOL = 6
+
+
+class FusionRefused(ValueError):
+    """A parent pair cannot be fused. Carries a stable short ``reason``."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _condition_key(cond: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """Total order over conditions — the dedupe key AND the sort key.
+
+    The rule hash covers the condition *sequence*, so the union must be ordered by
+    content alone; that is what makes ``fuse(a, b)`` and ``fuse(b, a)`` the same
+    child (and therefore the same hash, caught by the duplicate guard)."""
+    value = cond.get("value")
+    return (
+        str(cond.get("feature")),
+        str(cond.get("comparison")),
+        str(cond.get("value_from") or ""),
+        "" if value is None else repr(value),
+    )
+
+
+def fuse_specs(
+    first: StrategySpec, second: StrategySpec, *, strategy_id: str, generation_id: str,
+) -> StrategySpec:
+    """Cross two parents into a child that enters only where BOTH would.
+
+    Entry conditions are the **deduplicated union** under AND, so the child is by
+    construction at least as selective as either parent — a crossover can never
+    loosen an entry. Exits are the midpoint of the parents'; risk takes the
+    stricter (minimum) cap. Everything the parents must agree on (schema,
+    direction, timeframe, symbol scope, stop model, AND-operator) is a fail-closed
+    precondition, not something to reconcile: unioning an OR parent's conditions
+    into an AND would silently change what that parent meant.
+
+    The child is structurally parsed and put through the same ``validate_strategy``
+    as any generated spec; a blend that lands outside the validator's bounds (an
+    R:R below the floor, say) refuses rather than being clamped into range."""
+    if first.schema_version != second.schema_version:
+        raise FusionRefused("schema_version_mismatch")
+    if first.direction != second.direction:
+        raise FusionRefused("direction_mismatch")
+    if first.timeframe != second.timeframe:
+        raise FusionRefused("timeframe_mismatch")
+    if sorted(first.symbol_scope) != sorted(second.symbol_scope):
+        raise FusionRefused("symbol_scope_mismatch")
+    if first.exit_rules.stop_model != second.exit_rules.stop_model:
+        raise FusionRefused("stop_model_mismatch")
+    if "OR" in (first.entry_rules.operator, second.entry_rules.operator):
+        raise FusionRefused("non_and_parent")
+
+    merged: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for condition in (*first.entry_rules.conditions, *second.entry_rules.conditions):
+        as_dict = condition.to_dict()
+        merged.setdefault(_condition_key(as_dict), as_dict)
+    conditions = [merged[key] for key in sorted(merged)]
+    if len(conditions) > MAX_ENTRY_CONDITIONS:
+        raise FusionRefused("too_many_conditions")
+
+    # "breakout+mean_reversion", stable and order-independent; a shared component
+    # collapses so re-fusing a lineage does not grow the name without adding meaning.
+    families = sorted({*first.strategy_family.split("+"), *second.strategy_family.split("+")})
+
+    spec_dict = {
+        "schema_version": first.schema_version,
+        "strategy_id": strategy_id,
+        "strategy_version": "1.0",
+        "generation_id": generation_id,
+        "strategy_family": "+".join(families),
+        "status": "GENERATED",
+        "symbol_scope": sorted(first.symbol_scope),
+        "timeframe": first.timeframe,
+        "direction": first.direction.value,
+        "entry_rules": {"operator": "AND", "conditions": conditions},
+        "exit_rules": {
+            "stop_model": first.exit_rules.stop_model,
+            "stop_atr": round((first.exit_rules.stop_atr + second.exit_rules.stop_atr) / 2, 4),
+            "target_atr": round((first.exit_rules.target_atr + second.exit_rules.target_atr) / 2, 4),
+            "max_holding_bars": int(
+                round((first.exit_rules.max_holding_bars + second.exit_rules.max_holding_bars) / 2)
+            ),
+        },
+        "risk_constraints": {
+            "max_risk_per_trade_R": min(
+                first.risk_constraints.max_risk_per_trade_R,
+                second.risk_constraints.max_risk_per_trade_R,
+            ),
+        },
+        "created_by": "mvp_factory_fusion",
+    }
+    try:
+        child = StrategySpec.from_dict(spec_dict)
+    except SpecParseError as exc:
+        raise FusionRefused(f"parse: {exc}") from exc
+    verdict = validate_strategy(child)
+    if not verdict["approved_for_backtest"]:
+        raise FusionRefused(f"validator: {','.join(verdict['block_reasons'])}")
+    return child
+
+
+def rank_fusion_parents(
+    existing_candidates: list[Mapping[str, Any]], *, top_n: int = FUSION_PARENT_POOL,
+) -> list[dict[str, Any]]:
+    """The best-scoring distinct lineages available as parents, deterministically.
+
+    Only rows carrying a numeric ``champion_score`` and a parseable spec can parent
+    — an unscored or legacy-shaped row has no evidence to pass on. Ordering is
+    (score desc, candidate_id asc) so a tie never depends on file order, and a
+    lineage appears once however many times it was appended (latest-wins)."""
+    best: dict[str, dict[str, Any]] = {}
+    for record in existing_candidates:
+        score = record.get("champion_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        if not isinstance(record.get("strategy_spec"), Mapping):
+            continue
+        cid = candidate_id(record)
+        best[cid] = {**record, "candidate_id": cid}
+    ranked = sorted(best.values(), key=lambda r: (-float(r["champion_score"]), r["candidate_id"]))
+    return ranked[:top_n]
+
+
+def _fuse_batch(
+    parents: list[Mapping[str, Any]], snapshot: Mapping[str, Any], *, generation_id: str,
+    start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fuse ranked parents pairwise until ``pairs`` children carry evidence.
+
+    Children are backtested on their own — a crossover inherits its parents' rules,
+    never their evidence, so a child that overfits cannot ride a parent's score.
+    A child that closed **no** trades is refused rather than stored: an unsatisfiable
+    union (``rsi <= 30`` from one parent, ``rsi >= 70`` from the other) parses and
+    validates perfectly well and would otherwise sit in the store as a scored
+    candidate that can never trade."""
+    minted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for left, right in combinations(parents, 2):
+        if len(minted) >= pairs:
+            break
+        parent_ids = sorted([left["candidate_id"], right["candidate_id"]])
+        try:
+            child = fuse_specs(
+                StrategySpec.from_dict(dict(left["strategy_spec"])),
+                StrategySpec.from_dict(dict(right["strategy_spec"])),
+                strategy_id=f"S{start_index + len(minted):03d}",
+                generation_id=generation_id,
+            )
+        except (FusionRefused, SpecParseError) as exc:
+            rejected.append({"parent_candidate_ids": parent_ids,
+                             "reason": getattr(exc, "reason", f"parse: {exc}")})
+            continue
+        if child.strategy_rule_hash in seen_hashes:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
+            continue
+        evidence = backtest_spec(child, snapshot)
+        if not evidence["closed_count"]:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
+            continue
+        seen_hashes.add(child.strategy_rule_hash)
+        record = {
+            "strategy_id": child.strategy_id,
+            "strategy_rule_hash": child.strategy_rule_hash,
+            "generation_id": generation_id,
+            "status": "BACKTESTED",
+            "champion_score": evidence["champion_score"],
+            "strategy_spec": child.to_dict(),
+            "backtest_evidence": evidence,
+            "evidence_input_sha256": evidence_sha,
+            "provenance": "mvp_factory_fusion",
+            "derivation_type": "crossover",
+            "parent_candidate_ids": parent_ids,
+            "created_at_utc": now,
+        }
+        record["candidate_id"] = derive_candidate_id(record)
+        minted.append(record)
+    return minted, rejected
+
+
 def next_generation_id(existing: list[Mapping[str, Any]]) -> str:
     """GEN-%03d after the highest generation number seen in the given records."""
     highest = 0
@@ -529,13 +716,20 @@ def run_factory(
     existing_candidates: list[Mapping[str, Any]],
     now: str,
     count: int = DEFAULT_BATCH_SIZE,
+    fusion_pairs: int = 0,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
     The seed derives from the candle window's content hash — reproducible from the
     recorded inputs, no wall-clock randomness. Candidate records carry the spec, its
     backtest evidence, the generation lineage, and provenance ``mvp_factory``; the
-    caller appends them to the candidates store. Nothing here touches the pool."""
+    caller appends them to the candidates store. Nothing here touches the pool.
+
+    ``fusion_pairs`` (default 0 — no behaviour change) additionally crosses up to
+    that many pairs drawn from the best-scoring **already durable** lineages in
+    ``existing_candidates``. Parents are deliberately never taken from the batch
+    being minted: the store requires a parent to be durable before the child citing
+    it is appended, and a same-run parent has no independent evidence anyway."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -577,6 +771,20 @@ def run_factory(
         record["candidate_id"] = derive_candidate_id(record)
         candidates.append(record)
 
+    fused: list[dict[str, Any]] = []
+    fusion_rejected: list[dict[str, Any]] = []
+    if fusion_pairs > 0:
+        fused, fusion_rejected = _fuse_batch(
+            rank_fusion_parents(existing_candidates),
+            snapshot,
+            generation_id=generation_id,
+            start_index=len(candidates) + 1,
+            pairs=fusion_pairs,
+            seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
+            evidence_sha=candles_sha,
+            now=now,
+        )
+
     return {
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
@@ -584,7 +792,9 @@ def run_factory(
         "requested_count": batch["requested_count"],
         "accepted_count": batch["accepted_count"],
         "rejected": batch["rejected"],
-        "candidates": candidates,
+        "candidates": [*candidates, *fused],
+        "fused_count": len(fused),
+        "fusion_rejected": fusion_rejected,
         "evidence_input_sha256": candles_sha,
         "created_at": now,
     }
