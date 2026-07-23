@@ -216,6 +216,132 @@ def test_unexpected_exception_is_recorded_with_its_type(tmp_path):
     assert store.list()[0].last_status == "failed:UNEXPECTED:RuntimeError"
 
 
+# --- operator alerting (failure / recovery / downtime gap) -------------------
+
+class RecordingNotifier:
+    """Stands in for scheduler_cli.OperatorAlerter without a channel or registration."""
+
+    def __init__(self, explode=False):
+        self.calls: list[tuple[str, str]] = []
+        self._explode = explode
+
+    def __call__(self, key, text):
+        self.calls.append((key, text))
+        if self._explode:
+            raise RuntimeError("transport down")
+
+
+def _failing_executor(request, **kwargs):
+    raise PersistenceError("LEDGER_WRITE_FAILED", "disk full")
+
+
+def test_failed_fire_alerts_the_operator(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    run_due(store, now=T1, executor=_failing_executor, control_store=ControlStore(tmp_path),
+            notifier=notifier)
+    assert len(notifier.calls) == 1
+    key, text = notifier.calls[0]
+    assert key == store.list()[0].schedule_id
+    assert "스케줄 실패" in text and "failed:LEDGER_WRITE_FAILED" in text
+
+
+def test_healthy_fire_alerts_nothing(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    run_due(store, now=T1, executor=FakeExecutor(), control_store=ControlStore(tmp_path),
+            notifier=notifier)
+    assert notifier.calls == []          # steady green says nothing
+
+
+def test_recovery_after_failure_alerts_once(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    run_due(store, now=T1, executor=_failing_executor, control_store=ControlStore(tmp_path),
+            notifier=notifier)
+    run_due(store, now=T2, executor=FakeExecutor(), control_store=ControlStore(tmp_path),
+            notifier=notifier)
+    assert len(notifier.calls) == 2
+    assert "스케줄 복구" in notifier.calls[1][1]
+    # A second healthy fire is silent again: the failure is behind us.
+    run_due(store, now="2026-07-16T09:03:00Z", executor=FakeExecutor(),
+            control_store=ControlStore(tmp_path), notifier=notifier)
+    assert len(notifier.calls) == 2
+
+
+def test_a_broken_notifier_never_breaks_scheduling(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    summary = run_due(store, now=T1, ledger=ledger, executor=_failing_executor,
+                      control_store=ControlStore(tmp_path), notifier=RecordingNotifier(explode=True))
+    assert summary["failed"] == 1                       # the fire outcome is unaffected
+    assert store.list()[0].last_status == "failed:LEDGER_WRITE_FAILED"
+    event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
+    assert event["action"] == "failed"                  # the ledger is still the truth
+
+
+def test_skipped_by_kill_switch_does_not_alert(tmp_path):
+    # A kill is Thomas's own decision — telling him about it is noise, not news.
+    store = ScheduleStore(tmp_path)
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, "kill", actor="op", now=T0)
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    summary = run_due(store, now=T1, control_store=control_store, executor=FakeExecutor(),
+                      notifier=notifier)
+    assert summary["skipped"] == 1 and notifier.calls == []
+
+
+# --- downtime gap detection ---------------------------------------------------
+
+def test_overdue_schedules_finds_only_real_gaps(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60, request="due-soon")     # next_run = T1
+    schedules = store.list()
+    # One interval late is still normal operation (a tick lands a bit after due).
+    assert scheduler.overdue_schedules(schedules, now=T2) == []
+    # Two hours late cannot happen while a loop is running: it was not running.
+    late = scheduler.overdue_schedules(schedules, now="2026-07-16T11:00:00Z")
+    assert len(late) == 1 and late[0][1] == 7140                       # 09:01 -> 11:00
+
+
+def test_overdue_ignores_disabled_schedules(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60, enabled=False)
+    assert scheduler.overdue_schedules(store.list(), now="2026-07-16T11:00:00Z") == []
+
+
+def test_startup_gap_is_recorded_and_alerted(tmp_path):
+    from runtime.mvp_runtime.scheduler_cli import report_startup_gap
+
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    late = report_startup_gap(store, now="2026-07-16T11:00:00Z", ledger=ledger, alerter=notifier)
+
+    assert len(late) == 1
+    event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
+    assert event["action"] == "gap_detected" and event["status"] == "overdue_seconds=7140"
+    assert len(notifier.calls) == 1 and "공백 감지" in notifier.calls[0][1]
+
+
+def test_no_gap_records_nothing(tmp_path):
+    from runtime.mvp_runtime.scheduler_cli import report_startup_gap
+
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60)
+    notifier = RecordingNotifier()
+    assert report_startup_gap(store, now=T2, ledger=ledger, alerter=notifier) == []
+    assert notifier.calls == []
+    assert not (ledger.root / "scheduler_events.jsonl").exists()
+
+
 # --- kill-switch binding (governance kill_blocks: scheduler_execution) -------
 
 @pytest.mark.parametrize("command, status", [("kill", "skipped_not_active"), ("pause", "skipped_not_active")])

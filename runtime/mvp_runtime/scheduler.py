@@ -42,6 +42,10 @@ SCHEDULES_REL = ".runtime_governance_state/schedules.jsonl"
 SCHEDULER_EVENT_TYPE = "scheduler_event.v0"
 RECORD_TYPE = "schedule.v0"
 
+# The status prefix a raised fire records (L3a). Also the recovery signal: a fire that
+# succeeds while the PREVIOUS status carried this prefix is a schedule coming back.
+FAILED_PREFIX = "failed:"
+
 # Schedule kinds. A task template is a request string (analysis_task), a maintenance action
 # (memory_prune), or a governed crypto cycle (crypto_pipeline) — never a shell command.
 KIND_TASK = "analysis_task"
@@ -249,6 +253,69 @@ class ScheduleStore:
                     return
 
 
+def overdue_schedules(schedules: list[Schedule], *, now: str) -> list[tuple[Schedule, int]]:
+    """Enabled schedules whose due time is more than one full interval in the past.
+
+    A running tick loop advances ``next_run_at`` at every claim, so a schedule can only
+    fall a whole interval behind if the scheduler itself was NOT RUNNING — process dead,
+    Docker daemon down, host asleep. That is the one failure the loop cannot report while
+    it is happening: it reports it on the way back up. Returns ``(schedule,
+    seconds_overdue)``, most overdue first. Timestamps are the store's validated canonical
+    form (``SCHEDULE_RECORD_INVALID`` rejects anything else), so parsing cannot surprise us.
+    """
+    late: list[tuple[Schedule, int]] = []
+    current = timeutil.parse_iso(now)
+    for schedule in schedules:
+        if not schedule.enabled:
+            continue
+        overdue = int((current - timeutil.parse_iso(schedule.next_run_at)).total_seconds())
+        if overdue > schedule.interval_seconds:
+            late.append((schedule, overdue))
+    late.sort(key=lambda item: item[1], reverse=True)
+    return late
+
+
+def _notify_status_change(
+    notifier: Callable[[str, str], None],
+    schedule: Schedule,
+    *,
+    previous_status: str | None,
+    status: str,
+    failed: bool,
+    now: str,
+) -> None:
+    """Tell the operator when a schedule STARTS failing, or recovers. Best-effort.
+
+    Only transitions are worth a message: a steady green schedule says nothing, and the
+    de-dup lives in the notifier so a schedule failing every interval does not spam the
+    control channel. The ledger event is the record of truth — this is an extra delivery
+    attempt on top of it, which is why a broken notifier is swallowed here rather than
+    allowed to take down the scheduling it was only supposed to report on."""
+    if failed:
+        text = (
+            f"[스케줄 실패] {schedule.kind}\n"
+            f"schedule_id: {schedule.schedule_id}\n"
+            f"status: {status}\n"
+            f"시각: {now}\n"
+            f"이 회차는 유실됐습니다(at-most-once). "
+            f"다음 실행: {timeutil.plus_seconds(now, schedule.interval_seconds)}"
+        )
+    elif (previous_status or "").startswith(FAILED_PREFIX):
+        text = (
+            f"[스케줄 복구] {schedule.kind}\n"
+            f"schedule_id: {schedule.schedule_id}\n"
+            f"직전 실패: {previous_status}\n"
+            f"현재 status: {status}\n"
+            f"시각: {now}"
+        )
+    else:
+        return
+    try:
+        notifier(schedule.schedule_id, text)
+    except Exception:  # noqa: BLE001 — last-resort guard; the notifier reports its own failures
+        pass
+
+
 def _scheduler_event(action: str, schedule: Schedule, *, now: str, status: str) -> dict[str, Any]:
     return stamped_event(
         SCHEDULER_EVENT_TYPE, action=action,    # "fired" | "skipped" | "failed"
@@ -355,6 +422,7 @@ def run_due(
     search_tool: Any | None = None,
     repo_root: Path | None = None,
     executor: Callable[..., dict[str, Any]] = run_task,
+    notifier: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
 
@@ -371,6 +439,9 @@ def run_due(
     schedule: one bad fire must neither kill the tick process (it schedules every other kind
     too) nor vanish untraced. Occurrences stay at-most-once by design (the claim precedes the
     execute); what changed is that a lost fire is now a *recorded* failure, never silence.
+    With a ``notifier`` injected, a schedule that STARTS failing or recovers also notifies the
+    operator — transitions only, the notifier de-dups and reports its own failures. The ledger
+    event remains the record of truth, so a dropped alert loses no evidence.
 
     The batch snapshot below is for iteration only. Every state change goes through the
     store's per-schedule, locked operations (``claim_due`` / ``record_result``) against the
@@ -414,6 +485,7 @@ def run_due(
         # (at-most-once), so the honest record of a raised fire is a durable
         # "failed" event + last_status, not a dead process with nothing written.
         # KeyboardInterrupt/SystemExit still propagate (Exception excludes them).
+        previous_status = claimed.last_status
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization,
@@ -432,5 +504,8 @@ def run_due(
             ledger.append_scheduler_event(_scheduler_event(action, claimed, now=now, status=status))
         store.record_result(claimed.schedule_id, last_run_at=now, last_status=status)
         results.append({"schedule_id": claimed.schedule_id, "action": action, "status": status})
+        if notifier is not None:
+            _notify_status_change(notifier, claimed, previous_status=previous_status,
+                                  status=status, failed=(action == "failed"), now=now)
 
     return {"fired": fired, "skipped": skipped, "failed": failed, "results": results}

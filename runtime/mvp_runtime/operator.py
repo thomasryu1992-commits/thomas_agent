@@ -402,6 +402,21 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     )
 
 
+def notify_operator(channel: OperatorChannel, text: str, *, repo_root: Path | None = None) -> None:
+    """Send an UNSOLICITED notification to the registered operator.
+
+    The outbound half of R4's identity gate. The destination is never caller-supplied: it
+    is always the ONE registered private chat (``load_operator_registration``), so a
+    notification can only ever reach Thomas — no caller can address anyone else, and the
+    same registration that decides whose messages are obeyed decides who gets told.
+    Fails closed (``OperatorBlocked``) with no registration: with nobody registered there
+    is nobody to notify. The transport is whatever the Safety-Flag Gate handed the caller,
+    so on the default mock channel this notifies nobody and opens no socket.
+    """
+    registration = load_operator_registration(repo_root)
+    channel.send(registration.chat_id, text)
+
+
 class TelegramChannel:
     """Real Telegram Bot API control channel (long-poll ``getUpdates`` + ``sendMessage``).
 

@@ -128,6 +128,36 @@ def test_load_registration_malformed_fails_closed(tmp_path):
     assert exc.value.reason_code == "REGISTRATION_MALFORMED"
 
 
+# --- outbound notification (the identity gate's other half) -----------------
+
+def _register(tmp_path, chat_id="chat-1"):
+    state = tmp_path / ".runtime_governance_state"
+    state.mkdir(exist_ok=True)
+    (state / "operator_registration.json").write_text(
+        json.dumps({"operator_id": "tg-1", "chat_id": chat_id, "approver": "Thomas"}), encoding="utf-8"
+    )
+
+
+def test_notify_goes_only_to_the_registered_chat(tmp_path):
+    from runtime.mvp_runtime.operator import notify_operator
+
+    _register(tmp_path, chat_id="chat-registered")
+    ch = MockOperatorChannel()
+    notify_operator(ch, "scheduler is down", repo_root=tmp_path)
+    # The destination is the registration's, never the caller's choice.
+    assert ch.sent == [("chat-registered", "scheduler is down")]
+
+
+def test_notify_without_registration_fails_closed(tmp_path):
+    from runtime.mvp_runtime.operator import notify_operator
+
+    ch = MockOperatorChannel()
+    with pytest.raises(OperatorBlocked) as exc:
+        notify_operator(ch, "nobody to tell", repo_root=tmp_path)
+    assert exc.value.reason_code == "REGISTRATION_MISSING"
+    assert ch.sent == []
+
+
 # --- accepted path (needs a Core) -------------------------------------------
 
 @requires_local_core
