@@ -1133,6 +1133,10 @@ Control Channel의 등록 정보 변경은 Thomas 승인과 서버 설정 변경
 /approve <approval_id> [이유] · /reject <approval_id> [이유]
 승인 요청 결정 — 이유는 결정 기록에 원문 그대로 남는다
 
+/feedback <good|bad|한줄평>
+마지막으로 전달된 분석 결과에 대한 운영자 피드백을 피드백 원장에 기록
+(E1; PAUSED/KILLED 중에도 응답 — 이미 전달된 작업에 대한 판정은 새 실행이 아님)
+
 (명령이 아닌 메시지는 분석 요청으로 처리되며, 맨 앞에 !중요 를 붙이면
 priority HIGH로 접수되어 auto 정책에서 독립 검증이 함께 실행된다.)
 ```

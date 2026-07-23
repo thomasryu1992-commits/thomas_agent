@@ -29,6 +29,8 @@ Three files, each append-only (one JSON object per line):
   switch), likewise standalone.
 - ``programization_events.jsonl`` — operator programization-review events (a pattern moved
   UNDER_REVIEW/CLOSED, a program candidate drafted), likewise standalone.
+- ``feedback_events.jsonl`` — operator feedback on delivered runs (E1: Thomas's verdict
+  on an answer, the ground truth later evaluation reads), likewise standalone.
 
 Fail-closed: any write or read failure raises :class:`PersistenceError`. Secrets are never
 written — the records are already metadata-only and secret-scanned upstream.
@@ -52,6 +54,7 @@ CONTROL_FILE = "control_events.jsonl"
 MEMORY_FILE = "memory_events.jsonl"
 SCHEDULER_FILE = "scheduler_events.jsonl"
 PROGRAMIZATION_FILE = "programization_events.jsonl"
+FEEDBACK_FILE = "feedback_events.jsonl"
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -143,6 +146,10 @@ class LedgerStore:
         """Durably record one operator programization-review event (transition / candidate draft)."""
         self._append_locked(PROGRAMIZATION_FILE, [dict(entry)], "the programization ledger")
 
+    def append_feedback_event(self, entry: Mapping[str, Any]) -> None:
+        """Durably record one operator feedback event (Thomas's verdict on a delivered run)."""
+        self._append_locked(FEEDBACK_FILE, [dict(entry)], "the feedback ledger")
+
     def _append_locked(self, filename: str, rows: list[Mapping[str, Any]], label: str) -> None:
         """Append under this file's own cross-process lock.
 
@@ -221,7 +228,7 @@ class LedgerStore:
         for kind, filename in (
             ("audit_events", AUDIT_FILE), ("records", RECORDS_FILE), ("blocks", BLOCKS_FILE),
             ("control_events", CONTROL_FILE), ("memory_events", MEMORY_FILE),
-            ("scheduler_events", SCHEDULER_FILE),
+            ("scheduler_events", SCHEDULER_FILE), ("feedback_events", FEEDBACK_FILE),
         ):
             path = self._root / filename
             entry: dict[str, Any] = {"kind": kind, "path": filename, "present": path.is_file()}
