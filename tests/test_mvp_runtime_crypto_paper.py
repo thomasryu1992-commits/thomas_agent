@@ -25,6 +25,7 @@ from runtime.mvp_runtime.crypto.paper import (
     RealPaperStore,
     build_entry_plan,
     build_outcome_record,
+    PositionContext,
     load_open_position,
     open_position,
     read_outcomes,
@@ -37,6 +38,9 @@ from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization, build_activation_record
 
 NOW = "2026-07-22T12:00:00Z"
+
+# The book every fixture in this file trades in.
+CTX = PositionContext(venue="binance_futures", symbol="BTCUSDT", timeframe="1d")
 
 _AUTH = Authorization(
     flags=(FILESYSTEM_WRITE,),
@@ -345,7 +349,7 @@ def test_read_outcomes_imported_records_skip_hash_recompute(tmp_path):
 
 
 def test_load_position_missing_is_none(tmp_path):
-    assert load_open_position(tmp_path) is None
+    assert load_open_position(CTX, tmp_path) is None
 
 
 def test_load_position_corrupt_raises(tmp_path):
@@ -353,7 +357,7 @@ def test_load_position_corrupt_raises(tmp_path):
     path.mkdir(parents=True)
     (path / "paper_position.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
-        load_open_position(tmp_path)
+        load_open_position(CTX, tmp_path)
     assert exc.value.reason_code == "POSITION_STATE_UNREADABLE"
 
 
@@ -419,7 +423,7 @@ def test_dry_run_opens_nothing_durable(tmp_path):
         store=DryRunPaperStore(), now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
     assert summary["opened"] is not None  # the full path ran...
-    assert load_open_position(tmp_path) is None  # ...but nothing persisted
+    assert load_open_position(CTX, tmp_path) is None  # ...but nothing persisted
     assert records and all(r["filesystem_write"] is False for r in records)
 
 
@@ -443,7 +447,7 @@ def test_real_open_then_settle_cycle(tmp_path):
         store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store,
     )
     assert summary["opened"] is not None
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     assert opened is not None and opened["entry_price"] == 105.0
 
     # Next cycle: the candle trades through the stop (102) — settle to -1R.
@@ -454,7 +458,7 @@ def test_real_open_then_settle_cycle(tmp_path):
         store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
     )
     assert summary2["settled"]["close_reason"] == "stop_loss"
-    assert load_open_position(tmp_path) is None
+    assert load_open_position(CTX, tmp_path) is None
     outcomes = read_outcomes(tmp_path)
     assert len(outcomes) == 1 and outcomes[0]["result_R"] == -1.0
     assert records2[0]["filesystem_write"] is True
@@ -464,7 +468,7 @@ def test_single_position_no_double_open(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    first = load_open_position(tmp_path)
+    first = load_open_position(CTX, tmp_path)
     # Second cycle still matches but must not double the position (one open book).
     calm = {"open_time": "2026-07-22T00:00:00Z", "open": 105.0, "high": 106.0, "low": 104.0,
             "close": 105.5, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
@@ -473,31 +477,123 @@ def test_single_position_no_double_open(tmp_path):
         store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
     )
     assert summary["opened"] is None
-    assert load_open_position(tmp_path)["position_id"] == first["position_id"]
+    assert load_open_position(CTX, tmp_path)["position_id"] == first["position_id"]
 
 
 @pytest.mark.parametrize("symbol,timeframe", [("ETHUSDT", "1d"), ("BTCUSDT", "1h")])
-def test_foreign_context_cycle_refuses_settlement(symbol, timeframe, tmp_path):
+def test_foreign_context_cycle_cannot_touch_another_book(symbol, timeframe, tmp_path):
+    """The safety property survives context keying, now structurally.
+
+    Before, a foreign cycle could *reach* the single global position and had to be
+    refused; now it reads its own book and the other one is simply not there. What
+    must still hold: no settlement, no fabricated outcome, no advanced time-exit."""
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     # A foreign cycle whose candle trades through the BTC stop must not settle it.
     sl_candle = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
                  "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
-    summary, records = run_paper_update(
+    summary, _ = run_paper_update(
         _snapshot(sl_candle, symbol=symbol, timeframe=timeframe), ROW, _pool(_pool_entry()), _verdict(),
         store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
     )
-    assert summary["settled"] is None and summary["opened"] is None
-    assert summary["settle_refused"]["reason_code"] == "POSITION_CONTEXT_MISMATCH"
-    assert summary["settle_refused"]["snapshot_symbol"] == symbol
-    assert records[0]["operation"] == "settle_refused" and records[0]["read_only"] is True
+    assert summary["settled"] is None
+    assert summary["settle_refused"] is None  # nothing to refuse: a separate book
     assert read_outcomes(tmp_path) == []  # no outcome fabricated from foreign candles
-    untouched = load_open_position(tmp_path)
+    untouched = load_open_position(CTX, tmp_path)
     assert untouched["position_id"] == opened["position_id"]
     # Foreign candles must not advance time_exit either.
     assert untouched["holding_candles"] == opened["holding_candles"]
+
+
+def _eth_entry():
+    spec = _spec_dict(strategy_id="S2", symbol_scope=["ETHUSDT"])
+    return _pool_entry(spec, strategy_id="S2")
+
+
+def test_two_symbols_hold_positions_at_the_same_time(tmp_path):
+    """The point of context keying: an occupied BTC book no longer blocks ETH."""
+    control_store = ControlStore(tmp_path)
+    pool = _pool(_pool_entry(), _eth_entry())
+    run_paper_update(_snapshot(), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                     now=NOW, root=tmp_path, control_store=control_store)
+    summary, _ = run_paper_update(
+        _snapshot(symbol="ETHUSDT"), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary["opened"] is not None  # would have been blocked by the old single slot
+    eth = paper.PositionContext(venue="binance_futures", symbol="ETHUSDT", timeframe="1d")
+    assert load_open_position(eth, tmp_path)["symbol"] == "ETHUSDT"
+    assert load_open_position(CTX, tmp_path)["symbol"] == "BTCUSDT"
+    assert len(paper.list_open_positions(tmp_path)) == 2
+
+
+def test_portfolio_cap_refuses_the_third_book(tmp_path):
+    control_store = ControlStore(tmp_path)
+    sol = _pool_entry(_spec_dict(strategy_id="S3", symbol_scope=["SOLUSDT"]), strategy_id="S3")
+    pool = _pool(_pool_entry(), _eth_entry(), sol)
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        run_paper_update(_snapshot(symbol=symbol), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    assert len(paper.list_open_positions(tmp_path)) == paper.MAX_CONCURRENT_POSITIONS
+    summary, records = run_paper_update(
+        _snapshot(symbol="SOLUSDT"), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary["opened"] is None
+    assert summary["open_refused"]["reason_code"] == "POSITION_LIMIT_PORTFOLIO"
+    assert summary["open_refused"]["limit"] == paper.MAX_CONCURRENT_POSITIONS
+    assert records[-1]["operation"] == "open_refused" and records[-1]["read_only"] is True
+    assert len(paper.list_open_positions(tmp_path)) == paper.MAX_CONCURRENT_POSITIONS
+
+
+def test_per_symbol_cap_refuses_a_third_timeframe_on_one_symbol(tmp_path, monkeypatch):
+    # Raise the portfolio ceiling so the per-symbol cap is the binding one.
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    control_store = ControlStore(tmp_path)
+    pool = _pool(*[_pool_entry(_spec_dict(strategy_id=f"S{i}", timeframe=tf), strategy_id=f"S{i}")
+                   for i, tf in enumerate(("1d", "4h", "1h"), start=1)])
+    for timeframe in ("1d", "4h"):
+        run_paper_update(_snapshot(timeframe=timeframe), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    assert len(paper.list_open_positions(tmp_path)) == paper.MAX_POSITIONS_PER_SYMBOL
+    summary, _ = run_paper_update(
+        _snapshot(timeframe="1h"), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary["opened"] is None
+    assert summary["open_refused"]["reason_code"] == "POSITION_LIMIT_SYMBOL"
+    assert summary["open_refused"]["symbol"] == "BTCUSDT"
+
+
+def test_context_parts_cannot_escape_the_positions_directory(tmp_path):
+    with pytest.raises(ToolError) as exc:
+        paper.PositionContext(venue="binance_futures", symbol="../../etc", timeframe="1d")
+    assert exc.value.reason_code == "POSITION_CONTEXT_MISMATCH"
+
+
+def test_legacy_position_is_settled_by_its_own_context(tmp_path):
+    """A position written before context keying still closes — in its own book."""
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True)
+    (state / "paper_position.json").write_text(json.dumps({
+        "status": "OPEN", "position_id": "p-legacy", "symbol": "BTCUSDT", "timeframe": "1d",
+        "direction": "LONG", "entry_price": 105.0, "stop_loss": 102.0, "take_profit": 111.0,
+        "risk": 3.0, "holding_candles": 0, "max_holding_bars": 10,
+    }), encoding="utf-8")
+    assert load_open_position(CTX, tmp_path)["position_id"] == "p-legacy"
+    sl_candle = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
+                 "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+    summary, _ = run_paper_update(
+        _snapshot(sl_candle), ROW, _pool(_pool_entry()), _verdict(allow=False),
+        store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path,
+        control_store=ControlStore(tmp_path),
+    )
+    assert summary["settled"]["position_id"] == "p-legacy"
+    # Closed in the legacy file too, or the next cycle would settle it a second time.
+    assert load_open_position(CTX, tmp_path) is None
+    assert paper.list_open_positions(tmp_path) == []
 
 
 def test_position_missing_context_fields_refuses_settlement(tmp_path):
@@ -542,7 +638,7 @@ def test_settlement_carries_a_position_derived_idempotency_key(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     summary, records = run_paper_update(
         _snapshot(SL_CANDLE), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(),
         store=_real_store(tmp_path), now="2026-07-23T12:00:00Z", root=tmp_path, control_store=control_store,
@@ -559,11 +655,11 @@ def test_crash_between_append_and_clear_recovers_without_second_outcome(tmp_path
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     # Simulate crash window A: the outcome got durably written, the clear was lost.
     store = _real_store(tmp_path)
     store.append_outcome(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
-    assert load_open_position(tmp_path) is not None  # position still OPEN — the corpse
+    assert load_open_position(CTX, tmp_path) is not None  # position still OPEN — the corpse
 
     summary, records = run_paper_update(
         _snapshot(SL_CANDLE), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(allow=False),
@@ -573,14 +669,14 @@ def test_crash_between_append_and_clear_recovers_without_second_outcome(tmp_path
     assert summary["settled"] is None
     assert records[0]["operation"] == "settle_recovered"
     assert len(read_outcomes(tmp_path)) == 1  # never a second outcome for one position
-    assert load_open_position(tmp_path) is None  # the interrupted settlement finished
+    assert load_open_position(CTX, tmp_path) is None  # the interrupted settlement finished
 
 
 def test_recovered_slot_can_open_in_the_same_cycle(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     store = _real_store(tmp_path)
     store.append_outcome(paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW))
     # Matching row again: after recovery the slot is honestly free, so a fresh
@@ -593,14 +689,14 @@ def test_recovered_slot_can_open_in_the_same_cycle(tmp_path):
     )
     assert summary["settle_recovered"] is not None
     assert summary["opened"] is not None
-    assert load_open_position(tmp_path)["position_id"] != opened["position_id"]
+    assert load_open_position(CTX, tmp_path)["position_id"] != opened["position_id"]
 
 
 def test_unreadable_history_refuses_settlement(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    opened = load_open_position(tmp_path)
+    opened = load_open_position(CTX, tmp_path)
     outcomes_path = paper.state_dir(tmp_path) / "paper_outcomes.jsonl"
     outcomes_path.write_text("{broken\n", encoding="utf-8")
     # The candle sweeps the stop, but not-settled cannot be proven: refuse, touch nothing.
@@ -612,7 +708,7 @@ def test_unreadable_history_refuses_settlement(tmp_path):
     assert summary["settle_refused"]["reason_code"] == "SETTLEMENT_UNVERIFIABLE"
     assert summary["settle_refused"]["cause_reason_code"] == "OUTCOME_HISTORY_UNREADABLE"
     assert summary["opened"] is None  # occupied slot still blocks any open
-    assert load_open_position(tmp_path)["position_id"] == opened["position_id"]
+    assert load_open_position(CTX, tmp_path)["position_id"] == opened["position_id"]
 
 
 def _calm_candle(n):
@@ -630,7 +726,7 @@ def test_settlement_time_exits_on_the_spec_limit_not_the_table(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(_calm_candle(1)), ROW, pool, _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    assert load_open_position(tmp_path)["max_holding_bars"] == 2
+    assert load_open_position(CTX, tmp_path)["max_holding_bars"] == 2
 
     # Two calm bars: bar 1 holds, bar 2 hits the SPEC limit and time-exits.
     run_paper_update(_snapshot(_calm_candle(2)), ROW_NO_MATCH, pool, _verdict(allow=False),
@@ -669,7 +765,7 @@ def test_legacy_position_settles_on_the_table_and_says_so(tmp_path):
 def _open_one(tmp_path, control_store):
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
                      store=_real_store(tmp_path), now=NOW, root=tmp_path, control_store=control_store)
-    return load_open_position(tmp_path)
+    return load_open_position(CTX, tmp_path)
 
 
 def test_a_settler_that_lost_the_race_writes_nothing(tmp_path):
@@ -702,7 +798,7 @@ def test_a_settler_whose_position_was_replaced_loses(tmp_path):
         store.settle_position(stale)
     assert exc.value.reason_code == "SETTLEMENT_RACE_LOST"
     assert len(read_outcomes(tmp_path)) == 1
-    assert load_open_position(tmp_path)["position_id"] == "p-different"   # untouched
+    assert load_open_position(CTX, tmp_path)["position_id"] == "p-different"   # untouched
 
 
 def test_an_interrupted_settlement_completes_without_doubling(tmp_path):
@@ -712,11 +808,11 @@ def test_an_interrupted_settlement_completes_without_doubling(tmp_path):
     opened = _open_one(tmp_path, ControlStore(tmp_path))
     outcome = paper.build_outcome_record(opened, "stop_loss", 102.0, -1.0, now=NOW)
     store.append_outcome(outcome)                      # append succeeded, clear did not
-    assert load_open_position(tmp_path) is not None
+    assert load_open_position(CTX, tmp_path) is not None
 
     store.settle_position(outcome)                     # same settlement_id
     assert len(read_outcomes(tmp_path)) == 1           # not doubled
-    assert load_open_position(tmp_path) is None        # and the position is closed
+    assert load_open_position(CTX, tmp_path) is None        # and the position is closed
 
 
 def test_chokepoint_reports_a_lost_race_instead_of_claiming_a_settlement(tmp_path):
