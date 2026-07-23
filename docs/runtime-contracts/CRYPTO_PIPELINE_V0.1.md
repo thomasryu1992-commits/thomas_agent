@@ -44,7 +44,7 @@ This is the first domain application of the Dynamic Task Team Architecture
 | Recurring cycle (15 min) / factory (daily) | Scheduled execution | New R6 templates `crypto_pipeline`, `crypto_factory` — `kill_blocks: scheduler_execution` applies automatically |
 | Strategy candidate generation (feedback, factory, rule miner) | Internal record creation | ALLOW-tier candidate creation (R5 working-memory precedent); never mutates the active pool |
 | Strategy promotion (candidate → active pool) | Governed state change | APPROVAL_REQUIRED via R9; **consumption requires widening R10's scope — a separate explicit Thomas decision, deferred** (see below) |
-| Testnet / live order submission | External + financial | **Not ported. BLOCK.** Requires the deferred `execution_request.v0.1` and an explicit financial-effect decision |
+| Testnet / live order submission | External + financial | **Superseded — see `CRYPTO_LIVE_EXECUTION_V0.1.md`.** Still not implemented, but for different reasons than stated here (below) |
 
 ## Stage design
 
@@ -153,3 +153,26 @@ Import rules:
 
 Live/testnet order paths, the x10 SDK, streamlit dashboards, and the source repo's
 backtesting UI are explicitly out of scope for every phase above.
+
+## Amendment (2026-07-23): the live-order row is superseded
+
+The effect-tier row above named the deferred `execution_request.v0.1` as the prerequisite for
+live orders. **That was wrong**, and the correction matters because it was load-bearing for a
+year of "not yet": that schema pins every execution field to `const: false`
+(`execution_mode: PREVIEW_ONLY`, `financial_execution_allowed: false`,
+`executor_ready: false`), so it is structurally incapable of *expressing* an order, let alone
+authorizing one. It is a review-only artifact of the deferred Executor architecture.
+
+The correct expression is the one R8 (controlled write) and R10 (approval consumption)
+established afterwards: a PermissionDecision, a per-machine safety-flag grant, a DryRun
+default, kill-switch binding, and an audit trail. Neither of those needed an Executor, and
+neither needed `execution_request`.
+
+What actually blocks a live order is narrower and is now written down: the runtime has no
+permission scope it may legitimately use for a trade, no actor that can hold P5, and no place
+to register a trading budget. Those decisions are recorded in
+`LIVE_EXECUTION_GOVERNANCE_V0.1.md` and are not yet implemented.
+
+The read and refusal legs **have** been ported (LP1–LP3, LP6) — see
+`CRYPTO_LIVE_EXECUTION_V0.1.md`. The explicit financial-effect decision this row demanded was
+taken on 2026-07-23; the implementation of it was not.
