@@ -1,0 +1,113 @@
+# Thomas Agent MVP — the two-service deployment (operator + scheduler).
+#
+# One image, two long-lived processes sharing ONE state volume:
+#   - operator:  Telegram poll -> verify -> pipeline -> reply (+ emergency console)
+#   - scheduler: the tick loop firing due schedules (analysis, crypto cycle/factory,
+#     memory prune). Without this service NOTHING scheduled ever runs — the operator
+#     loop does not tick schedules.
+#
+# Run at most ONE scheduler service per state volume. Concurrent stores are
+# cross-process locked (claim_due prevents a double-claim), but the deployment
+# contract is a single tick process — parallel crypto workers are out of scope.
+#
+# Secrets come from the environment (compose reads an optional gitignored `.env`
+# next to this file); per-machine governance state is mounted, never baked in. A
+# bare checkout with no provisioned state runs the network-free mock loop and
+# fails closed on every network capability — see docs/DEPLOYMENT.md.
+#
+# NOTE: no YAML anchors/merge keys here — the repo's static-integrity validator
+# parses every YAML file and does not support the merge tag, so the two services
+# spell their shared config out explicitly.
+
+services:
+  operator:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-operator
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    # Liveness: the console answers against the mounted control state; unreadable
+    # state exits nonzero. A KILLED runtime still answers — killed is *halted*,
+    # not *unhealthy*, and resuming is the operator's decision, never Docker's.
+    healthcheck:
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.console_cli", "status"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.operator_cli
+      - --max-batches
+      - "0"
+      - --long-poll-seconds
+      - "25"
+      - --independent-validation
+      - auto
+    environment:
+      # Model provider(s) — ordered failover chain; every member needs its own
+      # mounted safety-flag grant or the whole chain fails closed at startup.
+      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
+      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
+      # Read-only web search (optional).
+      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # The real Telegram transport additionally needs its mounted grant.
+      MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+
+  scheduler:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-scheduler
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.console_cli", "status"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.scheduler_cli
+      - tick
+      - --max-ticks
+      - "0"
+      - --interval-seconds
+      - "30"
+    environment:
+      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
+      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
+      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Crypto pipeline gates (scheduler-only): the env var alone fails closed —
+      # each real backend also needs its mounted safety-flag grant.
+      MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
+      MVP_PAPER_TRADING: ${MVP_PAPER_TRADING:-}
+      MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
+      COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
