@@ -33,6 +33,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -42,7 +44,7 @@ from .. import safety_gate, timeutil
 from ..control import ControlStore
 from ..errors import ToolBlocked, ToolError
 from ..filelock import locked
-from ..paths import repo_root as _repo_root
+from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from .strategy import StrategySpec, evaluate_spec
 
@@ -56,8 +58,29 @@ PAPER_PROVIDER_ID = "paper_trading"
 _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 STATE_REL = ".runtime_governance_state/crypto"
-POSITION_FILENAME = "paper_position.json"
+POSITION_FILENAME = "paper_position.json"  # legacy single-slot file (read-only path)
+POSITIONS_DIRNAME = "positions"
 OUTCOMES_FILENAME = "paper_outcomes.jsonl"
+
+# The trading venue a position was opened on. One value today (the C2 collector is
+# Binance futures), carried explicitly so a later exchange adapter is a new context
+# rather than a second migration of every stored position.
+DEFAULT_VENUE = "binance_futures"
+
+# Concurrency limits (explicit Thomas decision 2026-07-23). Before context-keyed
+# positions there was ONE global slot, so "at most one open position" was an
+# accidental risk cap that nothing named. Splitting the key removes that cap, so it
+# is made explicit here — and deliberately derived, not invented:
+#
+#   MAX_CONCURRENT_POSITIONS = abs(guards.DAILY_MAX_LOSS_R) = 2
+#
+# at the pool's standard ``max_risk_per_trade_R: 1.0``, so if every open position
+# stops out on the same day the realized loss equals the daily circuit breaker
+# instead of blowing through it. The guard reacts to *realized* losses only, which
+# is exactly why the pre-trade cap has to exist. Raising either limit widens live
+# risk and is a separate explicit decision.
+MAX_CONCURRENT_POSITIONS = 2
+MAX_POSITIONS_PER_SYMBOL = 2
 
 # Router statuses/rules (source S7).
 STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
@@ -65,6 +88,8 @@ STATUS_NO_ENTRY = "NO_ENTRY"
 STATUS_BLOCKED = "BLOCKED"
 BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
 POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
+POSITION_LIMIT_PORTFOLIO = "POSITION_LIMIT_PORTFOLIO"
+POSITION_LIMIT_SYMBOL = "POSITION_LIMIT_SYMBOL"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
 SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
@@ -219,6 +244,8 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
     position = {
         "position_kernel_version": PAPER_KERNEL_VERSION,
         "status": "OPEN",
+        # The book this position belongs to: its context IS its storage slot.
+        "venue": str(plan.get("venue") or DEFAULT_VENUE),
         "symbol": plan["symbol"],
         "timeframe": plan["timeframe"],
         "direction": plan["direction"],
@@ -333,6 +360,7 @@ def build_outcome_record(
         "win_loss": "WIN" if result_r > 0 else ("LOSS" if result_r < 0 else "FLAT"),
         "close_reason": close_reason,
         "created_at_utc": now,
+        "venue": str(position.get("venue") or DEFAULT_VENUE),
         "symbol": position.get("symbol"),
         "timeframe": position.get("timeframe"),
         "direction": position.get("direction"),
@@ -363,9 +391,90 @@ def state_dir(root: Path | None = None) -> Path:
     return (root if root is not None else _repo_root()) / STATE_REL
 
 
-def load_open_position(root: Path | None = None) -> dict[str, Any] | None:
-    """The current OPEN position, or None. ALLOW-tier read of private state."""
-    path = state_dir(root) / POSITION_FILENAME
+# --- position contexts: one slot per (venue, symbol, timeframe) ----------------
+
+# Each part becomes a path segment, so it is pattern-checked like a provider id.
+# Symbols are upper-case (BTCUSDT), timeframes lower (1d) — both admitted.
+_CONTEXT_PART_PATTERN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,31}\Z")
+_CONTEXT_SEP = "__"
+
+
+@dataclass(frozen=True)
+class PositionContext:
+    """The book one position belongs to. Its identity IS its storage location.
+
+    Before this existed the runtime had a single global position file, so a cycle
+    for one symbol could find a position opened by another; the cross-context guard
+    (PR #109) had to refuse those, which also meant an occupied slot blocked every
+    other symbol from ever opening. Keying the slot by context makes that structural:
+    a cycle only ever sees its own book."""
+
+    venue: str
+    symbol: str
+    timeframe: str
+
+    def __post_init__(self) -> None:
+        for field_name, value in (("venue", self.venue), ("symbol", self.symbol),
+                                  ("timeframe", self.timeframe)):
+            if not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value)):
+                raise ToolError(
+                    POSITION_CONTEXT_MISMATCH,
+                    f"position context {field_name}={value!r} is not a valid book name",
+                )
+            if value.split(".", 1)[0].upper() in RESERVED_BASENAMES:
+                raise ToolError(
+                    POSITION_CONTEXT_MISMATCH,
+                    f"position context {field_name}={value!r} is a reserved device name on Windows",
+                )
+
+    @property
+    def key(self) -> str:
+        return _CONTEXT_SEP.join((self.venue, self.symbol, self.timeframe))
+
+    @staticmethod
+    def from_snapshot(snapshot: Mapping[str, Any]) -> "PositionContext":
+        return PositionContext(
+            venue=str(snapshot.get("venue") or DEFAULT_VENUE),
+            symbol=str(snapshot.get("symbol") or ""),
+            timeframe=str(snapshot.get("timeframe") or ""),
+        )
+
+    @staticmethod
+    def from_position(position: Mapping[str, Any]) -> "PositionContext":
+        """The book a stored position belongs to, or fail closed.
+
+        ``venue`` defaults for positions written before venues existed; ``symbol``
+        and ``timeframe`` are never guessed — a position that cannot say what it
+        trades cannot be attributed to any book (the PR #109 rule)."""
+        return PositionContext(
+            venue=str(position.get("venue") or DEFAULT_VENUE),
+            symbol=str(position.get("symbol") or ""),
+            timeframe=str(position.get("timeframe") or ""),
+        )
+
+
+def positions_dir(root: Path | None = None) -> Path:
+    return state_dir(root) / POSITIONS_DIRNAME
+
+
+def position_path(context: PositionContext, root: Path | None = None) -> Path:
+    """Where this context's position lives — validated and containment-checked.
+
+    The context parts are caller-influenced path segments (a schedule's request
+    line reaches here), so the resolved path must stay inside the positions
+    directory: a context can name a book, never a location."""
+    base = positions_dir(root)
+    base.mkdir(parents=True, exist_ok=True)
+    resolved_base = base.resolve()
+    path = (resolved_base / f"{context.key}.json").resolve()
+    if path.parent != resolved_base:
+        raise ToolError(
+            POSITION_CONTEXT_MISMATCH, f"position context {context.key!r} resolves outside the positions directory"
+        )
+    return path
+
+
+def _read_position_file(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
@@ -377,6 +486,76 @@ def load_open_position(root: Path | None = None) -> dict[str, Any] | None:
     if isinstance(data, dict) and data.get("status") == "OPEN":
         return data
     return None
+
+
+def legacy_position_path(root: Path | None = None) -> Path:
+    return state_dir(root) / POSITION_FILENAME
+
+
+def load_open_position(context: PositionContext, root: Path | None = None) -> dict[str, Any] | None:
+    """This context's OPEN position, or None. ALLOW-tier read of private state.
+
+    The legacy single-slot file is still honoured for reads so a position opened
+    before context keying can still be settled — but only by its own context, and
+    only if it says what that context is. An OPEN legacy position without symbol or
+    timeframe is unattributable; :func:`list_open_positions` refuses on it so it can
+    neither be settled on a guess nor silently excluded from the exposure count."""
+    stored = _read_position_file(position_path(context, root))
+    if stored is not None:
+        if PositionContext.from_position(stored) != context:
+            raise ToolError(
+                POSITION_CONTEXT_MISMATCH,
+                f"book {context.key} holds a position for a different context",
+            )
+        return stored
+    legacy = _read_position_file(legacy_position_path(root))
+    if legacy is not None and str(legacy.get("symbol") or "") and str(legacy.get("timeframe") or ""):
+        if PositionContext.from_position(legacy) == context:
+            return legacy
+    return None
+
+
+def unattributable_legacy_position(root: Path | None = None) -> dict[str, Any] | None:
+    """An OPEN legacy position that cannot say which book it belongs to, or None.
+
+    Its risk is real but unplaceable: it can neither be settled (no cycle can prove
+    the candles are its own — the PR #109 rule) nor counted toward the concurrency
+    caps. Callers treat it as a hard stop rather than trading around a position they
+    cannot measure."""
+    legacy = _read_position_file(legacy_position_path(root))
+    if legacy is None:
+        return None
+    if str(legacy.get("symbol") or "") and str(legacy.get("timeframe") or ""):
+        return None
+    return legacy
+
+
+def list_open_positions(root: Path | None = None) -> list[tuple[PositionContext, dict[str, Any]]]:
+    """Every open position across every book — the exposure the caps are counted on.
+
+    Fails closed on an unattributable legacy position: counting exposure without one
+    would understate what is at stake."""
+    found: list[tuple[PositionContext, dict[str, Any]]] = []
+    blocker = unattributable_legacy_position(root)
+    if blocker is not None:
+        raise ToolError(
+            POSITION_CONTEXT_MISMATCH,
+            f"legacy position {blocker.get('position_id')!r} is OPEN but names no symbol/timeframe",
+        )
+    legacy = _read_position_file(legacy_position_path(root))
+    if legacy is not None:
+        found.append((PositionContext.from_position(legacy), legacy))
+    directory = positions_dir(root)
+    if directory.is_dir():
+        for path in sorted(directory.glob("*.json")):
+            position = _read_position_file(path)
+            if position is None:
+                continue
+            context = PositionContext.from_position(position)
+            if any(context == seen for seen, _ in found):
+                continue  # the legacy file is the same book, already counted
+            found.append((context, position))
+    return found
 
 
 def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
@@ -449,7 +628,7 @@ class PaperStore(Protocol):
     tool_version: str
 
     def save_position(self, position: Mapping[str, Any]) -> None: ...
-    def clear_position(self) -> None: ...
+    def clear_position(self, context: PositionContext) -> None: ...
     def append_outcome(self, record: Mapping[str, Any]) -> None: ...
     def settle_position(self, outcome: Mapping[str, Any]) -> None: ...
 
@@ -468,7 +647,7 @@ class DryRunPaperStore:
     def save_position(self, position: Mapping[str, Any]) -> None:
         return None
 
-    def clear_position(self) -> None:
+    def clear_position(self, context: PositionContext) -> None:
         return None
 
     def append_outcome(self, record: Mapping[str, Any]) -> None:
@@ -511,19 +690,39 @@ class RealPaperStore:
 
     def save_position(self, position: Mapping[str, Any]) -> None:
         self._assert()
-        path = self._dir() / POSITION_FILENAME
+        self._dir()
+        context = PositionContext.from_position(position)
+        path = position_path(context, self._root)
         with locked(path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(dict(position), ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(path)
 
-    def clear_position(self) -> None:
+    def clear_position(self, context: PositionContext) -> None:
+        """Close this context's book — and the legacy file when it held that book.
+
+        A position opened before context keying lives in the legacy single-slot
+        file; settling it must close it *there*, or the next cycle would read the
+        same OPEN position back and settle it twice."""
         self._assert()
-        path = self._dir() / POSITION_FILENAME
+        self._dir()
+        closed = json.dumps({"status": "CLOSED"})
+        path = position_path(context, self._root)
         with locked(path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"status": "CLOSED"}), encoding="utf-8")
+            tmp.write_text(closed, encoding="utf-8")
             tmp.replace(path)
+        legacy = legacy_position_path(self._root)
+        stale = _read_position_file(legacy)
+        try:
+            stale_context = PositionContext.from_position(stale) if stale is not None else None
+        except ToolError:
+            stale_context = None  # unattributable: not this book's to close
+        if stale is not None and stale_context == context:
+            with locked(legacy.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
+                tmp = legacy.with_suffix(".tmp")
+                tmp.write_text(closed, encoding="utf-8")
+                tmp.replace(legacy)
 
     def append_outcome(self, record: Mapping[str, Any]) -> None:
         self._assert()
@@ -554,10 +753,12 @@ class RealPaperStore:
         exists is precisely the crash window this closes. Lock order is position →
         outcomes, the only nesting in this module."""
         self._assert()
-        position_path = self._dir() / POSITION_FILENAME
-        with locked(position_path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
+        self._dir()
+        context = PositionContext.from_position(outcome)
+        path = position_path(context, self._root)
+        with locked(path.with_suffix(".lock"), code="PAPER_STATE_LOCKED", label="paper position"):
             expected_id = outcome.get("position_id")
-            current = load_open_position(self._root)
+            current = load_open_position(context, self._root)
             if current is None or current.get("position_id") != expected_id:
                 raise ToolError(
                     SETTLEMENT_RACE_LOST,
@@ -567,9 +768,18 @@ class RealPaperStore:
             recorded = any(o.get("settlement_id") == settlement_id for o in read_outcomes(self._root))
             if not recorded:
                 self.append_outcome(outcome)
-            tmp = position_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"status": "CLOSED"}), encoding="utf-8")
-            tmp.replace(position_path)
+            closed = json.dumps({"status": "CLOSED"})
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(closed, encoding="utf-8")
+            tmp.replace(path)
+            # The position may still live in the legacy single-slot file; leaving it
+            # OPEN there would hand the next cycle the same position to settle again.
+            legacy = legacy_position_path(self._root)
+            stale = _read_position_file(legacy)
+            if stale is not None and stale.get("position_id") == expected_id:
+                tmp = legacy.with_suffix(".tmp")
+                tmp.write_text(closed, encoding="utf-8")
+                tmp.replace(legacy)
 
 
 def select_paper_store(*, now: str | None = None, root: Path | None = None) -> PaperStore:
@@ -611,13 +821,22 @@ def run_paper_update(
     open), each carrying the store's ``filesystem_write`` capability flag. Fails
     closed (``ToolBlocked``, mode-aware reason) when the runtime is PAUSED/KILLED
     (``kill_blocks: tool_write``); a no-trade verdict skips the open, never the
-    settlement — an already-open position must always be able to close. A position
-    whose (symbol, timeframe) does not match the snapshot's is left untouched with a
-    ``POSITION_CONTEXT_MISMATCH`` refusal recorded: only the position's own context
-    may settle it, and the occupied slot blocks any open. Settlement is idempotent:
-    a position whose outcome is already durable (a crash between append and clear)
-    is recovered — cleared without a second outcome (``SETTLEMENT_ALREADY_RECORDED``)
-    — and an unreadable history refuses the settlement (``SETTLEMENT_UNVERIFIABLE``).
+    settlement — an already-open position must always be able to close.
+
+    Positions are keyed by ``(venue, symbol, timeframe)``, so this cycle reads and
+    writes only its own book: another symbol's open position is invisible here
+    rather than refused, and it no longer blocks this book from opening. What still
+    refuses (``POSITION_CONTEXT_MISMATCH``) is state that cannot be attributed —
+    a legacy position naming no symbol/timeframe, or a book holding a position
+    belonging to a different context.
+
+    Opening is additionally capped: ``MAX_POSITIONS_PER_SYMBOL`` per symbol and
+    ``MAX_CONCURRENT_POSITIONS`` across every book, counted under a portfolio lock
+    so a manual cycle racing the scheduler cannot slip past the ceiling. Settlement
+    is idempotent: a position whose outcome is already durable (a crash between
+    append and clear) is recovered — cleared without a second outcome
+    (``SETTLEMENT_ALREADY_RECORDED``) — and an unreadable history refuses the
+    settlement (``SETTLEMENT_UNVERIFIABLE``).
     """
     control = control_store if control_store is not None else ControlStore(root or _repo_root())
     state = control.load()
@@ -632,11 +851,12 @@ def run_paper_update(
     last_close = last_candle.get("close") if isinstance(last_candle, Mapping) else None
     timeframe = str(snapshot.get("timeframe") or "")
     symbol = str(snapshot.get("symbol") or "")
+    context = PositionContext.from_snapshot(snapshot)
 
     records: list[dict[str, Any]] = []
     summary: dict[str, Any] = {
         "settled": None, "opened": None, "route_status": None,
-        "settle_refused": None, "settle_recovered": None,
+        "settle_refused": None, "settle_recovered": None, "open_refused": None,
     }
 
     def _event(operation: str, detail: dict[str, Any]) -> dict[str, Any]:
@@ -654,26 +874,42 @@ def run_paper_update(
         }
 
     # 1) Settle. Runs regardless of the verdict: closing is risk-reducing — but only
-    #    in the position's own context. A cycle for a different (symbol, timeframe)
-    #    must not judge this position on candles it was never opened against: no
-    #    settlement, no holding advance, and no opening over the occupied
-    #    single-position slot. A position missing its context fields is refused too.
-    position = load_open_position(root)
-    if position is not None and (
-        str(position.get("symbol") or "") != symbol
-        or str(position.get("timeframe") or "") != timeframe
-    ):
+    #    in the position's own book. Since positions are keyed by context, a cycle
+    #    simply cannot reach another context's position: the load is scoped, so a
+    #    foreign position is invisible here rather than refused. What still refuses
+    #    is state that cannot be attributed at all — a legacy position naming no
+    #    symbol/timeframe, or a book holding someone else's position.
+    position: dict[str, Any] | None = None
+    attribution_blocked = False
+    orphan = unattributable_legacy_position(root)
+    if orphan is not None:
+        attribution_blocked = True
         refusal = {
             "reason_code": POSITION_CONTEXT_MISMATCH,
-            "position_id": position.get("position_id"),
-            "position_symbol": position.get("symbol"),
-            "position_timeframe": position.get("timeframe"),
+            "position_id": orphan.get("position_id"),
+            "position_symbol": orphan.get("symbol"),
+            "position_timeframe": orphan.get("timeframe"),
             "snapshot_symbol": symbol,
             "snapshot_timeframe": timeframe,
         }
         summary["settle_refused"] = refusal
         records.append(_event("settle_refused", {**refusal, "read_only": True}))
-    elif position is not None:
+    else:
+        try:
+            position = load_open_position(context, root)
+        except ToolError as exc:
+            if exc.reason_code != POSITION_CONTEXT_MISMATCH:
+                raise
+            attribution_blocked = True  # a book holding another context's position
+            refusal = {
+                "reason_code": POSITION_CONTEXT_MISMATCH,
+                "detail": str(exc),
+                "snapshot_symbol": symbol,
+                "snapshot_timeframe": timeframe,
+            }
+            summary["settle_refused"] = refusal
+            records.append(_event("settle_refused", {**refusal, "read_only": True}))
+    if position is not None:
         position_id = position.get("position_id")
         # Idempotency first: a crash between outcome-append and position-clear left
         # this position OPEN with its outcome already durable. Finish the
@@ -694,7 +930,7 @@ def run_paper_update(
                 records.append(_event("settle_refused", {**refusal, "read_only": True}))
                 refused = True
         if recovered:
-            store.clear_position()
+            store.clear_position(context)
             recovery = {"reason_code": SETTLEMENT_ALREADY_RECORDED, "position_id": position_id}
             summary["settle_recovered"] = recovery
             records.append(_event("settle_recovered", recovery))
@@ -741,26 +977,51 @@ def run_paper_update(
             else:
                 store.save_position(position)  # persist advanced holding_candles
 
-    # 2) Maybe open — only with no open position AND an allowing verdict.
+    # 2) Maybe open — only with this book free, an allowing verdict, and room under
+    #    both concurrency caps. Counting and opening happen under ONE portfolio lock:
+    #    the caps are a property of every book together, so two cycles that each
+    #    counted before either wrote would both see room that only one of them had.
     route = route_entries(pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
     summary["route_status"] = route["status"]
-    if position is None and bool(verdict.get("allow_new_position")):
+    if position is None and not attribution_blocked and bool(verdict.get("allow_new_position")):
         plan = build_entry_plan(route, feature_row, now=now)
         if plan is not None:
-            opened = open_position(plan, now=now)
-            store.save_position(opened)
-            summary["opened"] = {
-                "position_id": opened["position_id"],
-                "direction": opened["direction"],
-                "strategy_id": opened.get("strategy_id"),
-            }
-            records.append(_event("open", {
-                "position_id": opened["position_id"],
-                "direction": opened["direction"],
-                "entry_price": opened["entry_price"],
-                "stop_loss": opened["stop_loss"],
-                "take_profit": opened["take_profit"],
-                "strategy_id": opened.get("strategy_id"),
-                "strategy_rule_hash": opened.get("strategy_rule_hash"),
-            }))
+            portfolio_lock = positions_dir(root) / "portfolio.lock"
+            with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):
+                open_books = list_open_positions(root)
+                same_symbol = sum(1 for ctx, _ in open_books if ctx.symbol == context.symbol)
+                refusal = None
+                if len(open_books) >= MAX_CONCURRENT_POSITIONS:
+                    refusal = {
+                        "reason_code": POSITION_LIMIT_PORTFOLIO,
+                        "open_positions": len(open_books),
+                        "limit": MAX_CONCURRENT_POSITIONS,
+                    }
+                elif same_symbol >= MAX_POSITIONS_PER_SYMBOL:
+                    refusal = {
+                        "reason_code": POSITION_LIMIT_SYMBOL,
+                        "symbol": context.symbol,
+                        "open_positions": same_symbol,
+                        "limit": MAX_POSITIONS_PER_SYMBOL,
+                    }
+                if refusal is not None:
+                    summary["open_refused"] = refusal
+                    records.append(_event("open_refused", {**refusal, "read_only": True}))
+                else:
+                    opened = open_position({**plan, "venue": context.venue}, now=now)
+                    store.save_position(opened)
+                    summary["opened"] = {
+                        "position_id": opened["position_id"],
+                        "direction": opened["direction"],
+                        "strategy_id": opened.get("strategy_id"),
+                    }
+                    records.append(_event("open", {
+                        "position_id": opened["position_id"],
+                        "direction": opened["direction"],
+                        "entry_price": opened["entry_price"],
+                        "stop_loss": opened["stop_loss"],
+                        "take_profit": opened["take_profit"],
+                        "strategy_id": opened.get("strategy_id"),
+                        "strategy_rule_hash": opened.get("strategy_rule_hash"),
+                    }))
     return summary, records
