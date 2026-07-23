@@ -39,6 +39,56 @@ _RESPONSE_INSTRUCTION = (
 )
 
 
+# The same 12-key shape as _RESPONSE_INSTRUCTION, as a schema the vendor can ENFORCE
+# rather than a request the model may drift from. Free/low-cost models follow a prose
+# format instruction least reliably, and a missing key is exactly what makes the automatic
+# validation withhold delivery — a run that already paid for its analysis.
+#
+# Deliberately NO minItems: this shape is shared by the specialist, the independent
+# validator, and the orchestrator triage. The latter two legitimately return empty
+# facts/key_findings (they judge an answer, they do not produce one), so requiring a
+# non-empty array here would ask them to invent content. The schema guarantees the KEYS
+# exist; non-emptiness is the specialist prompt's job (``worker.ACCEPTANCE_CRITERIA``).
+#
+# ``recommendation`` stays nullable per the documented contract ("or null"). The validator
+# and triage carry their verdict in ``recommendation.action`` and their prompts say so
+# explicitly; permitting null does not invite it.
+_STRING_ARRAY: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+_ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "key_findings": _STRING_ARRAY,
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"statement": {"type": "string"}, "evidence_refs": _STRING_ARRAY},
+                "required": ["statement", "evidence_refs"],
+            },
+        },
+        "inferences": _STRING_ARRAY,
+        "assumptions": _STRING_ARRAY,
+        "uncertainty": _STRING_ARRAY,
+        "risks": _STRING_ARRAY,
+        "recommendation": {
+            "type": "object",
+            "nullable": True,
+            "properties": {"action": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["action", "reason"],
+        },
+        "limitations": _STRING_ARRAY,
+        "next_actions": _STRING_ARRAY,
+        "evidence_quality": {"type": "string"},
+        "unresolved_questions": _STRING_ARRAY,
+    },
+    "required": [
+        "summary", "key_findings", "facts", "inferences", "assumptions", "uncertainty",
+        "risks", "recommendation", "limitations", "next_actions", "evidence_quality",
+        "unresolved_questions",
+    ],
+}
+
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
 VALIDATOR_PROVIDER_ENV = "MVP_VALIDATOR_PROVIDER"
 HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
@@ -284,6 +334,13 @@ class GoogleAIStudioProvider:
             "generationConfig": {
                 "maxOutputTokens": int(max_output_tokens),
                 "responseMimeType": "application/json",
+                # Structured output: the vendor enforces the key set, so a missing field
+                # cannot reach _parse_hosted_response's MALFORMED_RESPONSE guard or the
+                # validator's required-sections check. Groq's endpoint keeps plain
+                # json_object mode — json_schema support is model-dependent there, and a
+                # rejected body would fail the call outright (PROVIDER_TRANSPORT, not
+                # retryable), which is a worse trade than the format instruction it has.
+                "responseSchema": _ANALYSIS_RESPONSE_SCHEMA,
             },
         }).encode("utf-8")
         request = urllib.request.Request(

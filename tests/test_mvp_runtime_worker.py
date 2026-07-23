@@ -83,6 +83,34 @@ def test_unbound_task_blocks_everywhere():
     assert exc.value.reason_code == "NOT_BOUND"
 
 
+# --- the prompt states the bar it will be judged against --------------------
+
+@requires_local_core
+def test_prompt_states_the_acceptance_criteria():
+    """The three checks that make validate_agent_output withhold delivery are all
+    compliance requirements — an empty field, not a missing insight. A model never told
+    the bar cannot aim at it, and the run pays for the analysis either way, so the
+    criteria are stated in the prompt rather than discovered afterwards."""
+    from runtime.mvp_runtime.worker import ACCEPTANCE_CRITERIA, build_prompt
+
+    task, assignment = _planned()
+    prompt = build_prompt(task, assignment)
+    assert ACCEPTANCE_CRITERIA in prompt
+    for field in ("key_findings", "facts", "evidence_refs", "uncertainty", "assumptions"):
+        assert field in ACCEPTANCE_CRITERIA
+    # ASCII only: these strings reach a Windows cp949 console via the CLI banner path.
+    ACCEPTANCE_CRITERIA.encode("ascii")
+
+
+def test_prompt_version_tracks_the_prompt_text():
+    """The invocation record names the prompt version; a changed prompt must not ride
+    under the old one (the mvp_independent_validation.v3 / mvp_candidate_trial.v2
+    precedent)."""
+    from runtime.mvp_runtime.worker import PROMPT_VERSION
+
+    assert PROMPT_VERSION == "mvp_business_analysis.v2"
+
+
 # --- happy path + fail-closed needing a planned task (local Core) ------------
 
 @requires_local_core
