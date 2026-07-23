@@ -183,11 +183,14 @@ def run_crypto_cycle(
         block_reasons=list(verdict.get("problems") or []),
         last_candle=candles_for_cf[-1] if candles_for_cf else None,
         last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
+        symbol=symbol,
         timeframe=timeframe,
         now=now,
         root=root,
         persist=bool(getattr(store, "filesystem_write", False)),
     )
+    if counterfactual_summary.get("degraded"):
+        reason_codes.append(counterfactual_summary["degraded"])
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
