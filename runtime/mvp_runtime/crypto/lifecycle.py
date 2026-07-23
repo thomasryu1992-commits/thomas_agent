@@ -15,8 +15,11 @@ asymmetry:
   rolling window carry the decision (a young strategy is never degraded on thin data),
   and suspension needs 2 consecutive failing evaluations, archive 3 — one bad window
   never suspends outright.
-- Only outcomes ATTRIBUTED to a strategy (``strategy_id`` on the outcome record) feed
-  its windows; imported history without attribution honestly feeds nothing.
+- Only outcomes ATTRIBUTED to a strategy feed its windows, and attribution is by
+  LINEAGE (``candidate_id``, else the generation+rule-hash pair) rather than the
+  display ``strategy_id`` — which the factory restarts at S001 every generation, so
+  grouping by it would judge a fresh strategy on the history of the one it replaced.
+  Imported history with no lineage at all honestly feeds nothing.
 
 Effect discipline: :func:`evaluate_lifecycle` and the performance math are pure. The
 one effect — updating pool statuses — goes through ``pool.update_statuses`` (locked,
@@ -228,6 +231,57 @@ def evaluate_lifecycle(
     return decision
 
 
+def outcome_attribution_key(record: Mapping[str, Any]) -> str:
+    """The lineage an outcome belongs to — never the display name alone.
+
+    ``strategy_id`` restarts at S001 every factory generation, so grouping by it mixes
+    a replaced strategy's history into its successor's evaluation: a fresh strategy
+    inherits the losses that got its predecessor replaced, or hides behind its wins.
+    Preference order: the exact ``candidate_id``; else the (generation, rule hash)
+    pair, which is equally lineage-precise and is what pre-lineage outcomes carry;
+    else the bare id (imported history with no lineage at all, honestly coarse)."""
+    candidate_id = record.get("candidate_id")
+    if isinstance(candidate_id, str) and candidate_id:
+        return f"cand:{candidate_id}"
+    generation = record.get("strategy_generation_id") or record.get("generation_id")
+    rule_hash = record.get("strategy_rule_hash")
+    if isinstance(generation, str) and generation and isinstance(rule_hash, str) and rule_hash:
+        return f"gen:{generation}:{rule_hash}"
+    strategy_id = record.get("strategy_id")
+    return f"sid:{strategy_id}" if isinstance(strategy_id, str) and strategy_id else ""
+
+
+def _entry_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
+    """Every key an outcome of THIS pool entry could carry, across three eras of
+    record-keeping. An outcome is keyed at the best precision IT has, so the entry
+    must accept all three or history written before a field existed goes unattributed:
+
+    - ``cand:`` — outcomes since the lineage reached the trading path. Exact.
+    - ``gen:``  — outcomes carrying (generation, rule hash). Also lineage-precise:
+      a different generation of the same display name keys differently, which is
+      what stops a replaced strategy from inheriting its predecessor's record.
+    - ``sid:``  — imported history that carries nothing but the display name. It
+      cannot be placed in a lineage because it never recorded one, so it attaches to
+      whoever holds that name. This is the ONE imprecise join, it is confined to
+      pre-lineage records, and the set only shrinks: every new outcome keys on
+      ``cand:`` and can never be absorbed by a different lineage. Dropping it instead
+      would silently zero out the lifecycle's input for strategies still trading on
+      imported history — blinding the auto-demotion this module exists for.
+    """
+    keys: set[str] = set()
+    candidate_id = entry.get("candidate_id")
+    if isinstance(candidate_id, str) and candidate_id:
+        keys.add(f"cand:{candidate_id}")
+    generation = entry.get("generation_id") or entry.get("strategy_generation_id")
+    rule_hash = entry.get("strategy_rule_hash")
+    if isinstance(generation, str) and generation and isinstance(rule_hash, str) and rule_hash:
+        keys.add(f"gen:{generation}:{rule_hash}")
+    strategy_id = entry.get("strategy_id")
+    if isinstance(strategy_id, str) and strategy_id:
+        keys.add(f"sid:{strategy_id}")
+    return keys
+
+
 def run_lifecycle(
     active_pool: Mapping[str, Any],
     outcomes: Sequence[Mapping[str, Any]],
@@ -237,14 +291,18 @@ def run_lifecycle(
 ) -> list[dict[str, Any]]:
     """Evaluate every pool strategy against its attributed outcomes. Pure.
 
-    Returns one decision per non-terminal strategy (terminal ones are left
-    untouched without even an evaluation — the source rule). The caller applies
-    ``status_changed`` decisions through ``pool.update_statuses``."""
-    by_strategy: dict[str, list[Mapping[str, Any]]] = {}
+    Attribution is by LINEAGE (:func:`outcome_attribution_key`), not by display name:
+    a strategy is judged only on trades its own lineage made. Returns one decision per
+    non-terminal strategy (terminal ones are left untouched without even an evaluation
+    — the source rule). The caller applies ``status_changed`` decisions through
+    ``pool.update_statuses``."""
+    by_lineage: dict[str, list[Mapping[str, Any]]] = {}
     for outcome in outcomes:
-        sid = outcome.get("strategy_id")
-        if isinstance(sid, str) and sid and outcome.get("outcome_closed") is True:
-            by_strategy.setdefault(sid, []).append(outcome)
+        if outcome.get("outcome_closed") is not True:
+            continue
+        key = outcome_attribution_key(outcome)
+        if key:
+            by_lineage.setdefault(key, []).append(outcome)
 
     decisions: list[dict[str, Any]] = []
     for entry in active_pool.get("active_strategies") or []:
@@ -253,7 +311,7 @@ def run_lifecycle(
         if not isinstance(strategy_id, str) or not strategy_id or status in TERMINAL_STATUSES:
             continue
         attributed = sorted(
-            by_strategy.get(strategy_id, []),
+            (o for key in _entry_attribution_keys(entry) for o in by_lineage.get(key, [])),
             key=lambda o: str(o.get("created_at_utc") or ""),
         )
         performance = compute_strategy_performance(

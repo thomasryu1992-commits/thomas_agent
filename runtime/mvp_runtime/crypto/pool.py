@@ -104,8 +104,31 @@ def candidates_path(root: Path | None = None) -> Path:
     return state_dir(root) / CANDIDATES_FILENAME
 
 
+def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
+    """No two active entries may share a ``strategy_id`` or a ``candidate_id``.
+
+    Both are keys the runtime resolves by: ``strategy_id`` selects the champion and
+    keys every lifecycle status update, ``candidate_id`` names the lineage an outcome
+    is attributed to. A duplicate makes routing, demotion and attribution ambiguous —
+    the pool would silently pick one entry and update the other. Fail-closed at both
+    doors (install and read) so a duplicate can neither be written nor traded on."""
+    seen_strategy: set[str] = set()
+    seen_candidate: set[str] = set()
+    for entry in pool.get("active_strategies") or []:
+        strategy_id = entry.get("strategy_id")
+        if isinstance(strategy_id, str) and strategy_id:
+            if strategy_id in seen_strategy:
+                raise ToolError("STRATEGY_POOL_DUPLICATE", f"duplicate strategy_id in the pool: {strategy_id}")
+            seen_strategy.add(strategy_id)
+        candidate_id = entry.get("candidate_id")
+        if isinstance(candidate_id, str) and candidate_id:
+            if candidate_id in seen_candidate:
+                raise ToolError("STRATEGY_POOL_DUPLICATE", f"duplicate candidate_id in the pool: {candidate_id}")
+            seen_candidate.add(candidate_id)
+
+
 def load_active_pool(root: Path | None = None) -> dict[str, Any]:
-    """The active pool, validated spec-by-spec. Missing = honestly empty."""
+    """The active pool, validated spec-by-spec and identity-unique. Missing = empty."""
     path = pool_path(root)
     if not path.is_file():
         return {"active_strategies": []}
@@ -117,17 +140,19 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
         load_strategy_pool(pool)  # fail-closed structural validation, one bad spec poisons
     except SpecParseError as exc:
         raise ToolError("STRATEGY_POOL_INVALID", f"active strategy pool failed validation: {exc}") from exc
+    assert_pool_identity_unique(pool)
     return pool
 
 
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:
     """Install (replace) the active pool — the OPERATOR door, not a runtime call.
 
-    Validates every spec first (fail-closed), then writes atomically. Returns the
-    number of strategies installed. Callers are operator scripts acting on an
-    explicit confirmation (the pre-R10 promotion posture); the runtime cycle never
-    calls this."""
+    Validates every spec and the identity invariant first (fail-closed), then writes
+    atomically. Returns the number of strategies installed. Callers are operator
+    scripts acting on an explicit confirmation (the pre-R10 promotion posture); the
+    runtime cycle never calls this."""
     specs = load_strategy_pool(pool)
+    assert_pool_identity_unique(pool)
     path = pool_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):

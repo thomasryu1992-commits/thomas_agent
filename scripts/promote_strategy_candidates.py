@@ -131,8 +131,12 @@ def run_promotion(
             raise SystemExit(f"BLOCKED: candidate {c['candidate_id']} is already in the active pool")
         if c.get("strategy_id") in existing_ids:
             # Pool invariant: strategy_id keys routing/lifecycle, so display names
-            # stay unique in the pool even across lineages.
+            # stay unique in the pool even across lineages. The sets are updated as
+            # we go — checking only the PRE-EXISTING pool let two candidates from
+            # different generations that share a display name into one batch.
             raise SystemExit(f"BLOCKED: {c.get('strategy_id')} is already in the active pool")
+        existing_cids.add(c["candidate_id"])
+        existing_ids.add(c.get("strategy_id"))
         entries.append({
             "strategy_id": c.get("strategy_id"),
             "candidate_id": c["candidate_id"],

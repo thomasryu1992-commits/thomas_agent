@@ -276,6 +276,44 @@ def test_candidate_rows_without_hash_still_read(tmp_path):
     assert pool.resolve_candidates(["S9"], tmp_path)[0]["strategy_id"] == "S9"
 
 
+def test_two_candidates_sharing_a_display_name_cannot_enter_one_batch(tmp_path):
+    """The set of in-pool ids was built once before the loop and never updated, so
+    GEN-001:S1 and GEN-002:S1 could both be promoted in a single request — leaving the
+    pool with two entries answering to the same routing/lifecycle key."""
+    old = _seed_candidates(tmp_path, _spec_dict())
+    changed = _spec_dict(entry_rules={"operator": "AND", "conditions": [
+        {"feature": "adx", "comparison": ">=", "value": 30.0}]})
+    new = _seed_candidates(tmp_path, changed, generation_id="GEN-002")
+    both = [pool.candidate_id(old[0]), pool.candidate_id(new[0])]
+
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=both, promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "already in the active pool" in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
+
+
+@pytest.mark.parametrize("dup_field", ["strategy_id", "candidate_id"])
+def test_a_pool_with_duplicate_identity_is_refused_at_both_doors(tmp_path, dup_field):
+    entry = {"strategy_id": "S1", "candidate_id": "c1", "status": "PAPER_ACTIVE",
+             "champion_score": 0.5, "strategy_spec": _spec_dict()}
+    other = {**entry, "strategy_id": "S2", "candidate_id": "c2"}
+    other[dup_field] = entry[dup_field]                       # collide on one key
+    bad = {"active_strategies": [entry, other]}
+
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.install_active_pool(bad, root=tmp_path)          # cannot be written
+    assert exc.value.reason_code == "STRATEGY_POOL_DUPLICATE"
+
+    import json
+    path = pool.pool_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(bad), encoding="utf-8")        # ...nor traded on if it is
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.load_active_pool(tmp_path)
+    assert exc.value.reason_code == "STRATEGY_POOL_DUPLICATE"
+
+
 def test_legacy_candidate_rows_derive_a_stable_id(tmp_path):
     # Rows written before candidate_id existed derive the same id on every read —
     # the append-only store is never rewritten, and the derived id resolves.
