@@ -98,29 +98,42 @@ jobs:
           echo "${out}" | grep -q "REGISTRATION_MISSING" || {
             echo "expected REGISTRATION_MISSING"; exit 1; }
 
-      - name: A kill survives the container that issued it
+      - name: Only an explicit resume clears a kill
         run: |
           set -euo pipefail
-          docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
-            python -m runtime.mvp_runtime.console_cli kill --reason "ci smoke"
+          # Every mutation of the state volume runs INSIDE a container: its files are
+          # written by uid 10001, so the runner cannot truncate them even through a
+          # world-writable directory. The state belongs to the container.
+          state() {
+            docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+              python -m runtime.mvp_runtime.console_cli "$@" 2>&1
+          }
+
+          state kill --reason "ci smoke" > /dev/null
           # A FRESH container must still see it: the kill lives on the volume, not in
           # process memory, so restarting the service cannot clear an emergency stop.
-          out=$(docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
-                python -m runtime.mvp_runtime.console_cli status 2>&1)
-          echo "${out}"
+          out=$(state status); echo "${out}"
           echo "${out}" | grep -q "mode: KILLED" || { echo "the kill did not persist"; exit 1; }
 
-      - name: A corrupt control state fails closed to KILLED
-        run: |
-          set -euo pipefail
-          echo '{not json' > ci-state/operator_control_state.json
-          out=$(docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
-                python -m runtime.mvp_runtime.console_cli status 2>&1)
-          echo "${out}"
           # Unreadable control state must never read as "go".
+          docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+            sh -c 'printf "{not json" > /app/.runtime_governance_state/operator_control_state.json'
+          out=$(state status); echo "${out}"
           echo "${out}" | grep -q "mode: KILLED" || {
             echo "corrupt control state did not fail closed"; exit 1; }
-          rm -f ci-state/operator_control_state.json
+
+          # Nor may DELETING the state resume a killed runtime: load() consults the
+          # control-event ledger, so removing the file cannot launder a kill away.
+          docker run --rm -v "${PWD}/ci-state:/app/.runtime_governance_state" thomas-agent-runtime \
+            rm -f /app/.runtime_governance_state/operator_control_state.json
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: KILLED" || {
+            echo "deleting the control state laundered the kill away"; exit 1; }
+
+          # The one way out is the authenticated operator saying so.
+          state resume --reason "ci smoke done" > /dev/null
+          out=$(state status); echo "${out}"
+          echo "${out}" | grep -q "mode: ACTIVE" || { echo "resume did not clear the kill"; exit 1; }
 
       - name: The scheduler service starts from its compose definition
         run: |
