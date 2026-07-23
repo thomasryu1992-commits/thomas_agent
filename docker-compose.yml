@@ -35,11 +35,12 @@ services:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
-    # Liveness: the console answers against the mounted control state; unreadable
-    # state exits nonzero. A KILLED runtime still answers — killed is *halted*,
-    # not *unhealthy*, and resuming is the operator's decision, never Docker's.
+    # Liveness: the loop's OWN heartbeat, not just a readable state file. `console_cli
+    # status` answered while a poll loop was wedged, because it only proves the control
+    # state parses. A KILLED runtime still passes — killed is *halted*, not *unhealthy*,
+    # and its loop keeps turning; resuming stays the operator's decision, never Docker's.
     healthcheck:
-      test: ["CMD", "python", "-m", "runtime.mvp_runtime.console_cli", "status"]
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "operator"]
       interval: 60s
       timeout: 20s
       retries: 3
@@ -83,8 +84,10 @@ services:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    # Same liveness rule as the operator: the tick loop's own heartbeat. A scheduler
+    # wedged on a provider call used to report healthy indefinitely.
     healthcheck:
-      test: ["CMD", "python", "-m", "runtime.mvp_runtime.console_cli", "status"]
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler"]
       interval: 60s
       timeout: 20s
       retries: 3
