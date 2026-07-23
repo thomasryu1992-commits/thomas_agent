@@ -13,6 +13,13 @@
 
 The tick loop selects a provider/search tool through the Safety-Flag Gate exactly like the
 operator loop, and it will not run a scheduled task while the runtime is PAUSED/KILLED.
+
+It also NOTIFIES the registered operator about scheduling that went wrong: a schedule that
+starts failing, one that recovers, and — on startup — schedules left overdue while the loop
+was not running at all (the failure a dead process can never report itself). Alerting needs
+the operator registration plus an authorized channel; when either is missing the loop says
+so at startup and runs with alerts off, because a silently disabled alerter is the very
+failure this reports. Alerts never gate scheduling: the ledger event is the record of truth.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import scheduler, timeutil
+from . import operator, scheduler, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -35,6 +42,94 @@ from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
 LOCAL_ACTOR = "local_scheduler_cli"
+GAP_ALERT_KEY = "startup_gap"
+
+
+class OperatorAlerter:
+    """Best-effort operator notifications for the tick loop.
+
+    De-dups per key: an identical alert for the same schedule is sent once, so a schedule
+    failing every interval does not spam the control channel — a CHANGED message (a new
+    failure reason, or a recovery) alerts again. **Never raises**: alerting exists to
+    report failures, so it must not become one. A failed send is counted and printed, and
+    the durable scheduler event remains the record of truth.
+
+    Sends go through ``operator.notify_operator``, which addresses the ONE registered
+    private chat — this cannot message anyone but Thomas — over whatever transport the
+    Safety-Flag Gate authorized (the mock channel notifies nobody and opens no socket)."""
+
+    def __init__(self, channel: Any, *, repo_root: Path | None = None) -> None:
+        self._channel = channel
+        self._repo_root = repo_root
+        self._last: dict[str, str] = {}
+        self.sent = 0
+        self.failed = 0
+
+    def __call__(self, key: str, text: str) -> None:
+        if self._last.get(key) == text:
+            return
+        try:
+            operator.notify_operator(self._channel, text, repo_root=self._repo_root)
+        except MvpRuntimeError as exc:
+            self.failed += 1
+            sys.stderr.write(f"ALERT FAILED ({exc.reason_code}): operator not notified; "
+                             f"the scheduler event stands\n")
+        except Exception as exc:  # noqa: BLE001 — transport errors must not stop scheduling
+            self.failed += 1
+            sys.stderr.write(f"ALERT FAILED ({type(exc).__name__}): operator not notified; "
+                             f"the scheduler event stands\n")
+        else:
+            self._last[key] = text
+            self.sent += 1
+
+
+def build_alerter(*, repo_root: Path | None, now: str | None) -> OperatorAlerter | None:
+    """The tick loop's operator alerter, or None when alerting cannot work.
+
+    Both doors are checked UP FRONT and the outcome is announced, because a silently
+    disabled alerter is exactly the failure this feature exists to prevent: no
+    registration (nobody to tell) or a refused channel (no authorized transport) means
+    the loop runs with alerts off, and says so."""
+    try:
+        operator.load_operator_registration(repo_root)
+        channel = operator.select_operator_channel(now=now, root=repo_root)
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"SCHEDULER: operator alerts DISABLED ({exc.reason_code})\n")
+        return None
+    egress = bool(getattr(channel, "network_egress", True))
+    sys.stderr.write(f"SCHEDULER: operator alerts enabled "
+                     f"({'real channel' if egress else 'mock channel — notifies nobody'})\n")
+    return OperatorAlerter(channel, repo_root=repo_root)
+
+
+def report_startup_gap(
+    store: ScheduleStore, *, now: str, ledger: LedgerStore | None, alerter: OperatorAlerter | None
+) -> list[tuple[Any, int]]:
+    """Detect and report scheduling the loop missed while it was NOT RUNNING.
+
+    A schedule more than a full interval overdue means nothing ticked it — the one
+    failure mode an in-process guard can never catch (a dead process reports nothing).
+    Recorded durably as ``gap_detected`` scheduler events so the downtime is evidence on
+    the ledger, not just a Telegram message that could fail to send."""
+    late = scheduler.overdue_schedules(store.list(), now=now)
+    if not late:
+        return []
+    for schedule, overdue in late:
+        sys.stderr.write(f"SCHEDULER: gap detected — {schedule.kind} ({schedule.schedule_id}) "
+                         f"overdue by {overdue}s\n")
+        if ledger is not None:
+            ledger.append_scheduler_event(scheduler._scheduler_event(
+                "gap_detected", schedule, now=now, status=f"overdue_seconds={overdue}"))
+    if alerter is not None:
+        lines = "\n".join(
+            f"- {s.kind} ({s.schedule_id}): {overdue // 60}분 지연" for s, overdue in late
+        )
+        alerter(GAP_ALERT_KEY,
+                "[스케줄 공백 감지] 스케줄러가 실행되지 않은 구간이 있습니다.\n"
+                f"{lines}\n\n"
+                f"재시작 시각: {now}\n"
+                "이 구간의 회차들은 유실됐습니다(at-most-once).")
+    return late
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -71,6 +166,7 @@ def main(
     repo_root: Path | None = None,
     now: str | None = None,
     sleep: Any = time.sleep,
+    alerter: OperatorAlerter | None = None,
 ) -> int:
     """Run one scheduler command. Returns 0 on success, non-zero on a fail-closed block.
     Dependencies are injectable for tests; unset ones default to local state / the gate."""
@@ -124,6 +220,11 @@ def main(
         search_tool = search_tool if search_tool is not None else select_search_tool()
         gate_banners(provider=provider, search_tool=search_tool)
         sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
+        if alerter is None:
+            alerter = build_alerter(repo_root=repo_root, now=now)
+        # Before the first tick: report the scheduling that did NOT happen while this
+        # loop was down. After it, next_run_at is current and there is no gap to find.
+        report_startup_gap(store, now=now or timeutil.utc_now_iso(), ledger=ledger, alerter=alerter)
 
         total_fired = 0
         total_skipped = 0
@@ -135,6 +236,7 @@ def main(
                     store, now=now or timeutil.utc_now_iso(), control_store=control_store, ledger=ledger,
                     working_memory=working_memory, programization=programization,
                     provider=provider, search_tool=search_tool, repo_root=repo_root,
+                    notifier=alerter,
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]
@@ -146,7 +248,9 @@ def main(
                     sleep(args.interval_seconds)
         except KeyboardInterrupt:
             sys.stderr.write("\nSCHEDULER: stopped.\n")
-        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped}, failed {total_failed} over {tick} tick(s)\n")
+        alerts = f", alerts {alerter.sent} sent/{alerter.failed} failed" if alerter is not None else ""
+        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped}, failed {total_failed} "
+                         f"over {tick} tick(s){alerts}\n")
         return EXIT_OK
 
     except MvpRuntimeError as exc:

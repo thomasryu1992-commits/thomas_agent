@@ -105,6 +105,12 @@ services:
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
+      # or was left overdue while this service was down. Same bot, same `telegram`
+      # grant, same registered chat as the operator service — the scheduler never
+      # reads inbound messages, so this adds notification, not a second command door.
+      MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # Crypto pipeline gates (scheduler-only): the env var alone fails closed —
       # each real backend also needs its mounted safety-flag grant.
       MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
