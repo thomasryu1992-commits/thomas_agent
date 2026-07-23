@@ -119,6 +119,7 @@ def route_entries(
         if result.matched:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
+                "candidate_id": entry.get("candidate_id"),
                 "strategy_rule_hash": entry.get("strategy_rule_hash"),
                 "strategy_generation_id": entry.get("generation_id") or entry.get("strategy_spec", {}).get("generation_id"),
                 "direction": result.direction,
@@ -160,6 +161,7 @@ def route_entries(
         "status": STATUS_ENTRY_CANDIDATE,
         "direction": primary["direction"],
         "primary_strategy_id": primary["strategy_id"],
+        "primary_candidate_id": primary["candidate_id"],
         "primary_strategy_rule_hash": primary["strategy_rule_hash"],
         "primary_strategy_generation_id": primary["strategy_generation_id"],
         "primary_spec": primary["spec"],
@@ -201,6 +203,10 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         # built on — a strategy promoted on max_holding_bars=12 must not hold 48.
         "max_holding_bars": int(spec.exit_rules.max_holding_bars),
         "strategy_id": route.get("primary_strategy_id"),
+        # The lineage the promotion evidence was built on rides all the way to the
+        # outcome, so a later generation reusing this display name cannot inherit
+        # this trade's performance (or be judged by it).
+        "candidate_id": route.get("primary_candidate_id"),
         "strategy_rule_hash": route.get("primary_strategy_rule_hash"),
         "strategy_generation_id": route.get("primary_strategy_generation_id"),
         "supporting_strategy_ids": list(route.get("supporting_strategy_ids") or []),
@@ -225,6 +231,7 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
         "intrabar_policy": "pessimistic_sl_first",
         "opened_at_utc": now,
         "strategy_id": plan.get("strategy_id"),
+        "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
         "strategy_generation_id": plan.get("strategy_generation_id"),
         "supporting_strategy_ids": list(plan.get("supporting_strategy_ids") or []),
@@ -335,6 +342,7 @@ def build_outcome_record(
         "position_id": position.get("position_id"),
         "opened_at_utc": position.get("opened_at_utc"),
         "strategy_id": position.get("strategy_id"),
+        "candidate_id": position.get("candidate_id"),
         "strategy_rule_hash": position.get("strategy_rule_hash"),
         "strategy_generation_id": position.get("strategy_generation_id"),
         "supporting_strategy_ids": list(position.get("supporting_strategy_ids") or []),

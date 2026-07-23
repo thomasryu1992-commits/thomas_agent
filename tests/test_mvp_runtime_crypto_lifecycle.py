@@ -156,6 +156,74 @@ def test_run_lifecycle_skips_terminal_and_unattributed():
     assert decisions[0]["new_status"] == "PAPER_ACTIVE"  # unattributed outcomes feed nothing
 
 
+# --- lineage attribution (the mid-review P0: generations must not mix) ---------
+
+def _lineage_outcomes(rs, *, candidate_id=None, generation_id=None, rule_hash=None,
+                      strategy_id="S1"):
+    rows = _outcomes(rs, strategy_id=strategy_id)
+    for i, row in enumerate(rows):
+        row["outcome_id"] = f"{candidate_id or generation_id or strategy_id}-{i}"
+        if candidate_id:
+            row["candidate_id"] = candidate_id
+        if generation_id:
+            row["strategy_generation_id"] = generation_id
+        if rule_hash:
+            row["strategy_rule_hash"] = rule_hash
+    return rows
+
+
+_GEN2 = dict(candidate_id="cand_gen2", generation_id="GEN-002", strategy_rule_hash="rule2")
+
+
+def _only_decision(outcomes):
+    active = {"active_strategies": [_entry("S1", **_GEN2)]}
+    decisions = run_lifecycle(active, outcomes, now=NOW)
+    assert len(decisions) == 1
+    return decisions[0]
+
+
+def test_a_replaced_strategy_does_not_inherit_its_predecessors_losses():
+    """The bug: GEN-002's S1 is a different strategy that happens to reuse the display
+    name. Grouping by strategy_id fed it GEN-001's 30 losses and demoted it on day one."""
+    decision = _only_decision(_lineage_outcomes([-0.5] * 30, candidate_id="cand_gen1"))
+    assert decision["new_status"] == "PAPER_ACTIVE"            # judged on its OWN record
+    assert decision["status_changed"] is False
+
+
+def test_a_strategy_is_still_judged_on_its_own_lineage():
+    decision = _only_decision(_lineage_outcomes([-0.5] * 30, candidate_id="cand_gen2"))
+    assert decision["new_status"] == "PROBATION"               # its own losses do count
+
+
+def test_pre_lineage_outcomes_join_on_generation_and_rule_hash():
+    # Outcomes written before candidate_id reached the trading path carry no
+    # candidate_id; the entry still attributes them via the generation+rule pair.
+    legacy = _lineage_outcomes([-0.5] * 30, generation_id="GEN-002", rule_hash="rule2")
+    assert _only_decision(legacy)["new_status"] == "PROBATION"
+    # ...but the SAME display name in another generation still stays out.
+    other = _lineage_outcomes([-0.5] * 30, generation_id="GEN-001", rule_hash="rule1")
+    assert _only_decision(other)["new_status"] == "PAPER_ACTIVE"
+
+
+def test_imported_history_still_attaches_by_display_name():
+    # Pre-lineage imports carry only a strategy_id. Refusing them would zero out the
+    # lifecycle input of strategies still trading on imported history — the live pool
+    # is exactly this shape today. Documented as the one imprecise join.
+    legacy = _outcomes([-0.5] * 30, strategy_id="S1")          # no lineage fields at all
+    assert _only_decision(legacy)["new_status"] == "PROBATION"
+
+
+def test_attribution_key_precedence():
+    from runtime.mvp_runtime.crypto.lifecycle import outcome_attribution_key
+
+    assert outcome_attribution_key({"candidate_id": "c1", "strategy_id": "S1"}) == "cand:c1"
+    assert outcome_attribution_key(
+        {"strategy_generation_id": "GEN-001", "strategy_rule_hash": "r", "strategy_id": "S1"}
+    ) == "gen:GEN-001:r"
+    assert outcome_attribution_key({"strategy_id": "S1"}) == "sid:S1"
+    assert outcome_attribution_key({}) == ""                   # unattributed feeds nothing
+
+
 def test_update_statuses_applies_and_guards(tmp_path):
     _install_pool(tmp_path, _entry("S1"), _entry("S2"))
     decisions = run_lifecycle(pool.load_active_pool(tmp_path), _outcomes([-0.1] * 30), now=NOW)

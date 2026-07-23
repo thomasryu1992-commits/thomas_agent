@@ -183,6 +183,19 @@ def test_open_position_shape_and_deterministic_id():
     assert a["intrabar_policy"] == "pessimistic_sl_first"
 
 
+def test_lineage_flows_route_to_plan_to_position_to_outcome():
+    # The chain the mid-review found broken: candidate_id stopped at the pool.
+    entry = {**_pool_entry(), "candidate_id": "cand_abc123"}
+    route = route_entries(_pool(entry), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW)
+    assert route["primary_candidate_id"] == "cand_abc123"
+    plan = build_entry_plan(route, ROW, now=NOW)
+    assert plan["candidate_id"] == "cand_abc123"
+    position = open_position(plan, now=NOW)
+    assert position["candidate_id"] == "cand_abc123"
+    outcome = build_outcome_record(position, "stop_loss", 102.0, -1.0, now=NOW)
+    assert outcome["candidate_id"] == "cand_abc123"
+
+
 def test_plan_and_position_carry_the_spec_time_exit():
     # Exit parity: the spec was backtested with max_holding_bars=10, so the plan and
     # the position must carry exactly that — never the timeframe table.
