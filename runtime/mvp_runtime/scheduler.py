@@ -63,9 +63,6 @@ KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY})
 
-# History depth for a factory backtest window (venue cap 500 in market_data).
-FACTORY_CANDLES = 500
-
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
 
@@ -434,6 +431,7 @@ def _execute(
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
+            factory_candle_target,
             select_liquidation_feed,
             select_market_data_collector,
         )
@@ -444,7 +442,8 @@ def _execute(
         collector = select_market_data_collector(now=now, root=repo_root)
         try:
             snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now, limit=FACTORY_CANDLES
+                symbol, timeframe, collector=collector, now=now,
+                limit=factory_candle_target(timeframe),
             )
         except ToolBlocked as exc:
             if exc.reason_code == "TOOL_ERROR":

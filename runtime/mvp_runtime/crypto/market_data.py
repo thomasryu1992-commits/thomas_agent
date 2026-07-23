@@ -69,13 +69,24 @@ LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
 COINALYZE = "coinalyze_market_data"
 FUNDING_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/fundingRate call
 FUNDING_MAX_PAGES = 4      # 8h cadence: 4 pages ≈ 3.6 years — beyond any window we replay
-DEFAULT_FUNDING_RECORDS = 1600  # ≥ 3 events/day × MAX_CANDLES days, with head-room
+DEFAULT_FUNDING_RECORDS = 1600  # ≥ 3 events/day × FACTORY_DEPTH_DAYS, with head-room
 
 # Closed vocabulary, identical on both collectors and on Binance's interval strings.
 TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
-MAX_CANDLES = 500
+MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
+
+# Factory replay depth, expressed in CALENDAR days rather than a constant bar count.
+# A flat 500-bar window is ~1.4 years at 1d but five hours at 15m: all three of the
+# factory's walk-forward slices land in the same session, so every candidate mined
+# there is single-regime by construction and cannot clear the robustness score.
+#
+# Every timeframe a strategy can actually be authored at (strategy.ALLOWED_TIMEFRAMES,
+# which is narrower than TIMEFRAMES above) fits under MAX_CANDLES at this depth — 15m
+# is the deepest at 48k bars. The clamp is therefore head-room, not a live limit; it
+# bounds egress and memory if the strategy vocabulary is ever widened downward.
+FACTORY_DEPTH_DAYS = 500
 
 
 @dataclass
@@ -185,6 +196,17 @@ def _require_timeframe(timeframe: Any) -> str:
     if timeframe not in TIMEFRAMES:
         raise ToolBlocked("INVALID_TIMEFRAME", f"timeframe must be one of {sorted(TIMEFRAMES)}")
     return timeframe
+
+
+def factory_candle_target(timeframe: str) -> int:
+    """Bars covering ``FACTORY_DEPTH_DAYS`` at ``timeframe``, clamped to ``MAX_CANDLES``.
+
+    The factory's replay window is a calendar span, not a bar count — see
+    ``FACTORY_DEPTH_DAYS``. 1d resolves to 500, exactly the flat value this replaced,
+    so the timeframe already in production keeps its behavior bar for bar.
+    """
+    minutes = TIMEFRAMES[_require_timeframe(timeframe)]
+    return max(1, min(FACTORY_DEPTH_DAYS * 1440 // minutes, MAX_CANDLES))
 
 
 def collect_market_data(
@@ -353,6 +375,11 @@ class BinanceFuturesCollector:
     network_egress = True  # makes an outbound HTTPS call — recorded as network egress
     source = "binance_futures_public"
     _ENDPOINT = "https://fapi.binance.com/fapi/v1/klines"
+    # Rows the venue serves per klines call, and the page budget that bounds one
+    # collection's egress. MAX_CANDLES needs 40 full pages; the rest is head-room for
+    # short pages, and the cap is what stops a misbehaving venue from paging forever.
+    PAGE_LIMIT = 1500
+    MAX_PAGES = 60
 
     def __init__(self, *, authorization: Authorization | None = None):
         # Egress authorization from the Safety-Flag Gate. Without it, collect() refuses
@@ -362,6 +389,13 @@ class BinanceFuturesCollector:
     def collect(
         self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int
     ) -> MarketSnapshot:
+        """Assemble ``limit`` closed candles, paging backward past the venue's page cap.
+
+        Pages exactly like ``funding_history``: walk ``endTime`` to just before the
+        oldest bar seen, stop when the venue runs out, refuse to spin without backward
+        progress. A deep window is what makes the fast timeframes replayable at all —
+        one page of 5m bars is five hours.
+        """
         # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
             self._authorization,
@@ -369,35 +403,57 @@ class BinanceFuturesCollector:
             provider_id=self.provider_id,
             now=timeutil.utc_now_iso(),
         )
-        # Ask for one extra row: the venue returns the still-forming candle last, and
-        # dropping it must not shrink the caller's requested window.
-        params = urllib.parse.urlencode(
-            {"symbol": symbol, "interval": timeframe, "limit": min(limit + 1, MAX_CANDLES + 1)}
-        )
-        request = urllib.request.Request(
-            f"{self._ENDPOINT}?{params}", method="GET", headers={"Accept": "application/json"}
-        )
         started = time.monotonic()
-        try:
-            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
-            # Deliberately generic — never echo the URL (the R3 transport-error posture).
-            raise ToolError("TOOL_TRANSPORT", "market-data request failed or timed out") from None
+        now_ms = int(time.time() * 1000)
+        # Keyed by open time: pages are requested by an exclusive endTime, but a venue
+        # that repeats a boundary bar must not have it counted twice.
+        collected: dict[int, Candle] = {}
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < limit and pages < self.MAX_PAGES:
+            pages += 1
+            # One extra row: the venue returns the still-forming candle last, and
+            # dropping it must not shrink the caller's requested window.
+            params: dict[str, Any] = {
+                "symbol": symbol,
+                "interval": timeframe,
+                "limit": min(self.PAGE_LIMIT, limit - len(collected) + 1),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"{self._ENDPOINT}?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                # Deliberately generic — never echo the URL (the R3 transport-error posture).
+                raise ToolError("TOOL_TRANSPORT", "market-data request failed or timed out") from None
+            page = self._parse(raw, now_ms=now_ms)
+            if not page:
+                break  # the venue has no more history in this direction
+            oldest = min(open_ms for open_ms, _ in page)
+            collected.update(page)
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        candles = self._parse(raw, limit, now_ms=int(time.time() * 1000))
+        candles = [collected[open_ms] for open_ms in sorted(collected)]
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
-            candles=candles,
+            candles=candles[-limit:],
             source=self.source,
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=latency_ms,
         )
 
-    def _parse(self, raw: str, limit: int, *, now_ms: int) -> list[Candle]:
+    def _parse(self, raw: str, *, now_ms: int) -> list[tuple[int, Candle]]:
+        """One klines page as ``(open_time_ms, Candle)``, still-forming bar dropped."""
         try:
             rows = json.loads(raw)
         except ValueError:
@@ -405,14 +461,14 @@ class BinanceFuturesCollector:
         if not isinstance(rows, list):
             raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response")
 
-        candles: list[Candle] = []
+        parsed: list[tuple[int, Candle]] = []
         for row in rows:
             # Kline row: [open_time_ms, open, high, low, close, volume, close_time_ms, ...]
             if not isinstance(row, list) or len(row) < 7:
                 raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response")
             try:
                 open_ms, close_ms = int(row[0]), int(row[6])
-                candles.append(Candle(
+                candle = Candle(
                     open_time=self._iso(open_ms),
                     open=float(row[1]),
                     high=float(row[2]),
@@ -420,12 +476,13 @@ class BinanceFuturesCollector:
                     close=float(row[4]),
                     volume=float(row[5]),
                     close_time=self._iso(close_ms),
-                ))
+                )
             except (TypeError, ValueError):
                 raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response") from None
             if close_ms >= now_ms:
-                candles.pop()  # still-forming candle — its close is still moving
-        return candles[-limit:]
+                continue  # still-forming candle — its close is still moving
+            parsed.append((open_ms, candle))
+        return parsed
 
     @staticmethod
     def _iso(epoch_ms: int) -> str:
