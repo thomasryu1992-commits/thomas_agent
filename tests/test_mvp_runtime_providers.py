@@ -364,6 +364,141 @@ def _groq_auth():
     )
 
 
+# --- the OpenRouter adapter ----------------------------------------------------
+
+# OpenRouter answers in the same OpenAI chat-completions shape as Groq. That sameness is
+# exactly why both share one adapter, so they share one response fixture too.
+_openrouter_response = _groq_response
+
+
+def _openrouter_auth():
+    from runtime.mvp_runtime.safety_gate import Authorization
+    return Authorization(
+        flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="openrouter",
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    )
+
+
+def test_openrouter_needs_its_own_grant_like_every_other_provider(monkeypatch, tmp_path):
+    """A gateway is not a shortcut through the gate: opting in by env var alone fails
+    closed, and the grant is keyed on the ``openrouter`` provider id like any vendor's."""
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "openrouter")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+    _grant(tmp_path, "openrouter")
+    provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(provider, OpenRouterProvider)
+
+
+def test_openrouter_grant_does_not_authorize_another_provider(monkeypatch):
+    """One grant per provider id survives the shared base class: holding OpenRouter's
+    authorization must not let the Groq adapter open a socket."""
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        GroqProvider(authorization=_openrouter_auth()).generate(
+            "p", max_output_tokens=10, timeout_seconds=10)
+    assert exc.value.reason_code != ""          # refused, not silently allowed
+
+
+def test_openrouter_happy_path_parses_openai_shape(monkeypatch):
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_urlopen_sequence(monkeypatch, [_openrouter_response(_ANALYSIS)])
+    result = OpenRouterProvider(authorization=_openrouter_auth()).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.model_id == "openrouter"
+    assert result.analysis["summary"] == "A concise analysis."
+    assert result.input_tokens == 21 and result.output_tokens == 43
+    assert result.usage_reported is True
+
+
+def test_openrouter_body_names_the_gateway_and_the_configured_model(monkeypatch):
+    """The model slug is the only thing that decides cost and quality behind this gateway,
+    so it must be exactly what was configured — never a silent default substitution."""
+    from runtime.mvp_runtime.providers import _USER_AGENT, OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret-key-value")
+    seen: list = []
+
+    def capture_urlopen(request, timeout):
+        seen.append((request.full_url, json.loads(request.data.decode("utf-8")),
+                     request.get_header("Authorization"), request.get_header("User-agent")))
+        return _FakeResp(_openrouter_response(_ANALYSIS))
+    monkeypatch.setattr("urllib.request.urlopen", capture_urlopen)
+
+    OpenRouterProvider(model="vendor/some-model:free", authorization=_openrouter_auth()).generate(
+        "p", max_output_tokens=100, timeout_seconds=10)
+
+    url, body, auth_header, user_agent = seen[0]
+    assert url == "https://openrouter.ai/api/v1/chat/completions"
+    assert body["model"] == "vendor/some-model:free"
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["max_tokens"] == 100
+    assert auth_header == "Bearer secret-key-value"    # header only
+    assert user_agent == _USER_AGENT
+    # The key never leaves the header: not in the body, not in the URL.
+    assert "secret-key-value" not in json.dumps(body) and "secret-key-value" not in url
+
+
+def test_openrouter_free_tier_throttle_is_provider_unavailable(monkeypatch):
+    """Free models are rate-limited (~20/min, ~200/day) and answer 429. That is "not now",
+    not "no": one retry, then the failure class a failover chain is allowed to switch on."""
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_urlopen_sequence(monkeypatch, [_http_error(429), _http_error(429)])
+    with pytest.raises(ProviderError) as exc:
+        OpenRouterProvider(authorization=_openrouter_auth()).generate(
+            "p", max_output_tokens=100, timeout_seconds=10)
+    assert exc.value.reason_code == "PROVIDER_UNAVAILABLE"
+
+
+def test_openrouter_without_key_fails_closed(monkeypatch):
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(ProviderError) as exc:
+        OpenRouterProvider(authorization=_openrouter_auth()).generate(
+            "p", max_output_tokens=10, timeout_seconds=10)
+    assert exc.value.reason_code == "NO_API_KEY"
+
+
+def test_openrouter_without_authorization_fails_closed(monkeypatch):
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        OpenRouterProvider().generate("p", max_output_tokens=10, timeout_seconds=10)
+    assert exc.value.reason_code == "NOT_AUTHORIZED"
+
+
+def test_the_two_openai_compatible_adapters_share_one_implementation():
+    """Groq and OpenRouter speak the identical protocol, so they differ in exactly four
+    values and inherit everything else. Asserted so the next OpenAI-compatible backend is
+    added as four constants rather than a third copy of the gate/secret/retry logic."""
+    from runtime.mvp_runtime.providers import (
+        GroqProvider,
+        OpenRouterProvider,
+        _OpenAICompatibleProvider,
+    )
+
+    for cls in (GroqProvider, OpenRouterProvider):
+        assert issubclass(cls, _OpenAICompatibleProvider)
+        # Nothing beyond the four vendor values is restated in the subclass.
+        assert set(vars(cls)) <= {"model_id", "_ENDPOINT", "_DEFAULT_MODEL", "_API_KEY_ENV",
+                                  "__doc__", "__module__", "__qualname__"}
+    assert GroqProvider.model_id != OpenRouterProvider.model_id
+    assert _OpenAICompatibleProvider.network_egress is True
+
+
 # --- Egress self-guard in generate() ----------------------------------------
 
 def test_generate_without_authorization_fails_closed(monkeypatch):
