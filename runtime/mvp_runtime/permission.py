@@ -1,6 +1,6 @@
 """R2.2 PermissionDecision (governance step).
 
-Build an immutable ``permission_decision.v0.3`` record for a bound task and have
+Build an immutable ``permission_decision.v0.4`` record for a bound task and have
 governance judge it. The MVP mints five action specs across three dispositions: the
 ALLOW tier (the specialist's ``INTERNAL_ANALYSIS``, the R3 read-only search's
 ``INTERNAL_READ``, the R7 validator's ``SIMULATION_VALIDATION``), the R8 workspace
@@ -53,7 +53,12 @@ from validate_permission_approval_contracts import (  # noqa: E402
     validate_permission_record,
 )
 
-PERMISSION_DECISION_SCHEMA_VERSION = "permission_decision.v0.3"
+# Bumped v0.3 -> v0.4 to add exactly one action scope to the closed enum:
+# FINANCIAL_APPROVED_TRADING_USE (a live exchange order). v0.4 is a strict superset of v0.3,
+# so every existing decision type is still a valid v0.4 record; the v0.3 schema is kept for
+# the historical example/fixture records that declare it. Additive bump, the R10 precedent
+# (approval.v0.1 -> v0.2).
+PERMISSION_DECISION_SCHEMA_VERSION = "permission_decision.v0.4"
 MVP_TTL_MINUTES = 30
 
 # Governance scope + least-privilege authority level for the R3 read-only search action.
@@ -129,6 +134,19 @@ STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — repla
 REGISTRATION_PERMISSION_SCOPE = "TOOL_PROGRAM_GOVERNANCE"
 REGISTRATION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — registry candidate entry
 
+# Governance scope + level for a live exchange order (LP4; Thomas decision 2026-07-23, recorded
+# in docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md). Its OWN scope, distinct from the
+# API-spend scope FINANCIAL_APPROVED_BUDGET_USE: an API invoice cannot lose more than it spends,
+# a leveraged position can, so the two risks stay separately nameable, cappable, revocable, and
+# auditable. Priced EXECUTE_AND_REPORT because the trading budget is approved in advance (Item 6);
+# each order then executes and reports rather than asking per-order. **P5 EXTERNAL_ACTION** is the
+# honest level — an order reaches a counterparty outside the system — which is exactly why it needs
+# the P5 policy gate and a P5-capable actor that no ordinary role provides. Building this decision
+# grants nothing: it is REVIEW_ONLY planning evidence like every other. Actually SENDING an order
+# is LP4's gated adapter, which does not exist yet.
+LIVE_ORDER_PERMISSION_SCOPE = "FINANCIAL_APPROVED_TRADING_USE"
+LIVE_ORDER_REQUIRED_PERMISSION_LEVEL = "P5"  # EXTERNAL_ACTION — reaches a counterparty outside the system
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -150,7 +168,7 @@ _BLOCK_EVIDENCE_SCOPES = frozenset({"UNREGISTERED_RESOURCE_EXECUTION", "DISABLED
 # The EXECUTE_AND_REPORT scopes the MVP actually implements. Kept as an explicit allowlist
 # so widening the disposition gate does not silently admit the other scopes governance
 # prices at EXECUTE_AND_REPORT (GIT_AGENT_BRANCH_CHANGE, LOCAL_BUILD_TEST, ...).
-_EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE})
+_EXECUTE_AND_REPORT_SCOPES = frozenset({WRITE_PERMISSION_SCOPE, LIVE_ORDER_PERMISSION_SCOPE})
 # Likewise for APPROVAL_REQUIRED: only the scopes the runtime can actually ask about. The
 # other APPROVAL_REQUIRED scopes (PUBLICATION, EXTERNAL_COMMUNICATION, FINANCIAL_*, ...)
 # name actions the runtime has no implementation for, so a request record for one would
@@ -264,6 +282,59 @@ _WRITE_ACTION = _ActionSpec(
 )
 
 
+def build_live_order_action(
+    *, symbol: str, side: str, notional_usdt: float, order_fingerprint: str
+) -> "_ActionSpec":
+    """The action-identity spec for one live exchange order.
+
+    Unlike the fixed action specs, a live order's identity depends on its parameters, so this
+    is built per order. The symbol, side, notional, and the order's own fingerprint go into
+    ``normalized_parameters`` and ``content_sha256`` — and therefore into the action
+    fingerprint — so a decision authorizing "sell 55 USDT of BTCUSDT" cannot be reused for a
+    different or larger order. Notional rides in ``normalized_parameters`` rather than the
+    fingerprint's ``amount_decimal``/``currency`` fields, whose currency pattern is a 3-letter
+    ISO code that a stablecoin ticker (USDT) does not match.
+
+    ``risk_level`` is RED: this is the only action in the runtime that reaches money and a
+    counterparty outside the system. GREEN it is not.
+    """
+    return _ActionSpec(
+        action_type="exchange.order.place",
+        target_suffix="live_order",
+        tool_id="crypto.live.order_adapter",
+        data_scope=("crypto.live_order", "crypto.registered_trading_budget"),
+        normalized_parameters={
+            "symbol": symbol,
+            "side": side,
+            # A normalized decimal STRING, not a float: the action fingerprint forbids floats
+            # (they do not canonicalize deterministically across languages/platforms).
+            "order_notional_usdt": f"{float(notional_usdt):.2f}",
+            "execution_stage": "live",
+            "reduce_only": False,
+        },
+        risk_reason=(
+            "Live exchange order: an external, financial action that reaches a counterparty "
+            "outside the system and can lose more than its notional under leverage."
+        ),
+        authority_reason=(
+            "Placing an order within a pre-registered trading budget and the P5 live-trading "
+            "policy gate; the actor's ceiling must be P5 EXTERNAL_ACTION."
+        ),
+        decision_reason=(
+            "Authority is sufficient at P5, the order is within the registered budget, and the "
+            "outcome is reported; the order itself remains gated behind the live_trading "
+            "safety flag and the final order guard."
+        ),
+        constraint=(
+            "One order within the registered trading budget's caps; no budget overrun (that is "
+            "FINANCIAL_NEW_COMMITMENT, APPROVAL_REQUIRED), no transfer, and no widening of the "
+            "budget or the grant."
+        ),
+        content_sha256=order_fingerprint,
+        risk_level="RED",
+    )
+
+
 def _parse_ts(value: str) -> datetime:
     try:
         return timeutil.parse_iso(value)
@@ -284,7 +355,7 @@ def build_permission_decision(
     action: "_ActionSpec | None" = None,
     approval_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build and fully validate a permission_decision.v0.3 for a bound task.
+    """Build and fully validate a permission_decision.v0.4 for a bound task.
 
     ``action`` selects the action-identity fields + reasons (defaults to the internal
     analysis action). Fails closed (``PlannerBlocked``) if the task is unbound, the scope
@@ -961,4 +1032,47 @@ def build_write_permission_decision(
         ttl_minutes=ttl_minutes,
         repo_root=repo_root,
         action=_WRITE_ACTION,
+    )
+
+
+def build_live_order_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    symbol: str,
+    side: str,
+    notional_usdt: float,
+    order_fingerprint: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the EXECUTE_AND_REPORT PermissionDecision for one live exchange order (LP4).
+
+    A thin wrapper over :func:`build_permission_decision` fixing the live-order scope
+    (``FINANCIAL_APPROVED_TRADING_USE``) and its least-privilege level (**P5 EXTERNAL_ACTION**),
+    with a per-order action spec so the decision binds this exact order. Fails closed
+    identically — including on authority: a role whose ceiling is below P5 cannot obtain this
+    grant, which is why an ``execution.live_trader`` role (P5) is required and every ordinary
+    role (P3 or lower) is refused here by the authority invariant.
+
+    Like `WORKSPACE_REVERSIBLE_WRITE` this is **EXECUTE_AND_REPORT, not ALLOW**, and the
+    disposition comes from the canonical Governance Policy, not from here. Building the decision
+    grants nothing and sends nothing: the record is REVIEW_ONLY planning evidence. The order is
+    only actually placed by LP4's adapter, behind the ``live_trading`` safety flag and the final
+    order guard — neither of which this function is."""
+    return build_permission_decision(
+        bound_task,
+        permission_scope=LIVE_ORDER_PERMISSION_SCOPE,
+        required_permission_level=LIVE_ORDER_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=build_live_order_action(
+            symbol=symbol, side=side, notional_usdt=notional_usdt,
+            order_fingerprint=order_fingerprint,
+        ),
     )

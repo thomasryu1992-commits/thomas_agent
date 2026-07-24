@@ -1,0 +1,86 @@
+schema_version: permission_decision.v0.4
+permission_decision_id: permdec_29646cfa2dc53822ee0e
+trace_id: trace_live_order_demo_001
+task_id: task_live_order_demo_001
+task_revision: 1
+core_context_binding_id: ccb-release-demo:task_live_order_demo_001:r1
+operating_policy:
+  policy_id: thomas.governance.policy
+  policy_version: 1.1.0
+  policy_ref: governance/GOVERNANCE_POLICY.yaml
+requested_by:
+  actor_type: thomas_prime
+  actor_id: execution.live_trader
+  role_id: null
+  role_version: null
+  assignment_id: null
+fingerprint_payload:
+  schema_version: action_fingerprint_payload.v0.1
+  task_id: task_live_order_demo_001
+  task_revision: 1
+  core_context_binding_id: ccb-release-demo:task_live_order_demo_001:r1
+  requester_ref: thomas_prime:execution.live_trader
+  permission_scope: FINANCIAL_APPROVED_TRADING_USE
+  action_type: exchange.order.place
+  target_ref: internal:task_live_order_demo_001:live_order
+  tool_id: crypto.live.order_adapter
+  program_id: null
+  data_scope:
+  - crypto.live_order
+  - crypto.registered_trading_budget
+  content_sha256: sha256:7397717d726201b50ff08b6b4668363df673297a1cf8d8a8ad932849e271054c
+  amount_decimal: null
+  currency: null
+  normalized_parameters:
+    symbol: BTCUSDT
+    side: SELL
+    order_notional_usdt: '55.00'
+    execution_stage: live
+    reduce_only: false
+  expires_at: '2026-07-23T09:30:00Z'
+action_fingerprint: sha256:ef7e15623f5012bcd15f65baa11aa410452f7ad623032205cb188aa081143cd8
+authority:
+  required_permission_level: P5
+  role_permission_ceiling: P5
+  assignment_granted_permission_level: P5
+  effective_permission_level: P5
+  authority_sufficient: true
+  authority_reasons:
+  - Placing an order within a pre-registered trading budget and the P5 live-trading
+    policy gate; the actor's ceiling must be P5 EXTERNAL_ACTION.
+risk:
+  risk_level: RED
+  risk_reasons:
+  - 'Live exchange order: an external, financial action that reaches a counterparty
+    outside the system and can lose more than its notional under leverage.'
+  policy_disposition: EXECUTE_AND_REPORT
+decision:
+  permission_decision: EXECUTE_AND_REPORT
+  decision_reasons:
+  - Authority is sufficient at P5, the order is within the registered budget, and
+    the outcome is reported; the order itself remains gated behind the live_trading
+    safety flag and the final order guard.
+  constraints:
+  - One order within the registered trading budget's caps; no budget overrun (that
+    is FINANCIAL_NEW_COMMITMENT, APPROVAL_REQUIRED), no transfer, and no widening
+    of the budget or the grant.
+approval:
+  approval_required: false
+  approval_id: null
+  approval_status: NOT_REQUIRED
+runtime_effect:
+  mode: REVIEW_ONLY
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+lifecycle:
+  decision_status: ACTIVE
+  created_at: '2026-07-23T09:00:00Z'
+  expires_at: '2026-07-23T09:30:00Z'
+  supersedes: []
+audit_refs:
+- audit:permission:permdec_29646cfa2dc53822ee0e

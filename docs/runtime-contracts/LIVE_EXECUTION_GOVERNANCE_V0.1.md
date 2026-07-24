@@ -342,24 +342,32 @@ Approving this packet does not enable live trading. It makes LP4 *buildable*. St
 
 ## Implementation sequence
 
-Blocked until `feat/cost-budget-ledger` merges to main — it edits the `financial:` block and
-`_EXECUTE_AND_REPORT_SCOPES`, the same two places steps 2 and 3 touch. Rebase onto it rather
-than racing it; a merge conflict in a permission allowlist is the worst place to resolve one
-by hand.
+**Sequencing amended 2026-07-24.** `feat/cost-budget-ledger` never pushed — its B1/B2 commits
+sat local and un-PR'd while main moved 27 commits past them (stale, effectively abandoned).
+Rather than wait indefinitely, the order was reversed by Thomas decision: this work goes first.
+The overlap turned out to be textual only — that branch claims the *existing*
+`FINANCIAL_APPROVED_BUDGET_USE` scope at P4 for API spend, this claims a *new*
+`FINANCIAL_APPROVED_TRADING_USE` scope at P5 for trades, so they append different lines to the
+same list with no logical conflict. If B ever revives it rebases onto this.
 
-| Step | Change | Notes |
+Progress (steps 1, 2, 4, 5, 8, 9 landed as one increment — "a live order is buildable"):
+
+| Step | Change | Status |
 |---|---|---|
-| 1 | `permission_decision.v0.4` — add `FINANCIAL_APPROVED_TRADING_USE` to the scope enum | first bump since v0.3; additive only |
-| 2 | Policy: add the scope to `policy_dispositions.EXECUTE_AND_REPORT` | one line |
-| 3 | Policy: `financial_transaction_execution_implemented: false → true` **when LP4 merges**, not before | `financial_executor_enabled` stays `false`, byte-for-byte |
-| 4 | Policy: define `p5_policy_gate` | Item 1 |
-| 5 | `permission.py`: scope + level constants, add to `_EXECUTE_AND_REPORT_SCOPES`, an `_ActionSpec`, a `build_live_order_permission_decision` | Item 4 |
-| 6 | New schema `live_trading_budget.v0.1` + the registration path | Item 6 |
-| 7 | New role `execution.live_trader` — contract, registry entry, definition hash | Item 2; its own `ROLE_GOVERNANCE` approval |
-| 8 | Update `validate_permission_approval_contracts.py` assertions + `require_doc_tokens` | miss the token and the gate passes while the file drifts |
-| 9 | Regenerate **both** replay bundles (policy SHA-256 + `bundle_sha256`) | CRLF-normalized hash; `rebuild_bundle` has no CLI |
-| 10 | LP4 order adapter behind the `live_trading` grant | the first thing that can send |
+| 1 | `permission_decision.v0.4` — add `FINANCIAL_APPROVED_TRADING_USE` to the scope enum | **done** — v0.3 kept for historical records; v0.4 = v0.3 + one scope |
+| 2 | Policy: add the scope to `policy_dispositions.EXECUTE_AND_REPORT` | **done** |
+| 4 | Policy: define `p5_policy_gate` (the six named conditions) | **done** |
+| 5 | `permission.py`: scope + level constants, `_EXECUTE_AND_REPORT_SCOPES`, `build_live_order_action` + `build_live_order_permission_decision` | **done** — P5, RED risk, notional bound as a decimal string into the fingerprint |
+| 8 | Validator: v0.4 validator + a live-order positive example | **done** — `examples/permission/permission_live_order_execute_report_v0.4.yaml` |
+| 9 | Regenerate both replay bundles (policy SHA-256) | **done** |
+| 3 | Policy: `financial_transaction_execution_implemented: false → true` **when LP4 merges** | flag added as `false`; flips only with the adapter |
+| 6 | New schema `live_trading_budget.v0.1` + the registration path | **pending** (next increment) |
+| 7 | New role `execution.live_trader` (P5, `external_action_allowed: true`, candidate) | **pending** — `ROLE_GOVERNANCE`, its own approval. Until it exists, no *actor* can hold P5, so the builder is exercised only by tests passing `role_permission_ceiling="P5"` directly |
+| 10 | LP4 order adapter behind the `live_trading` grant | **pending** — the first thing that can send |
 
-Steps 1–9 grant nothing on their own. After all of them, an order is still refused until the
+Steps 1, 2, 4, 5, 8, 9 grant nothing on their own: a live-order PermissionDecision is now
+*buildable* as REVIEW_ONLY evidence (EXECUTE_AND_REPORT, P5, every runtime-effect flag false),
+but no role can hold P5 yet (step 7), no trading budget is registered (step 6), and nothing can
+send an order (step 10). After all of them, an order is still refused until the
 six conditions under "What is still refused" hold — including the two clean canary orders that
 do not yet exist.
