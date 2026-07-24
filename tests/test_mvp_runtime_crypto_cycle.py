@@ -290,6 +290,33 @@ def test_routable_contexts_dedup_and_sort(tmp_path):
     ]
 
 
+def _multi_symbol_spec(strategy_id, symbols, timeframe="1d"):
+    spec = _always_spec(strategy_id, symbols[0], timeframe)
+    spec["symbol_scope"] = list(symbols)
+    return spec
+
+
+def test_routable_contexts_includes_every_scoped_symbol(tmp_path):
+    _install_pool(tmp_path, _multi_symbol_spec("S_MULTI", ["BTCUSDT", "ETHUSDT"]))
+    assert pool.routable_contexts(pool.load_active_pool(tmp_path)) == [
+        ("BTCUSDT", "1d"), ("ETHUSDT", "1d"),
+    ]
+
+
+def test_pool_cycle_opens_a_multi_symbol_strategy_on_each_symbol(tmp_path):
+    # One strategy scoped to two symbols opens an independent position in each book.
+    _install_pool(tmp_path, _multi_symbol_spec("S_MULTI", ["BTCUSDT", "ETHUSDT"]))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+
+    assert [c["symbol"] for c in summary["contexts"]] == ["BTCUSDT", "ETHUSDT"]
+    assert load_open_position(CTX, tmp_path) is not None      # BTCUSDT book
+    assert load_open_position(ETH_CTX, tmp_path) is not None  # ETHUSDT book
+    opened = {c["symbol"]: c.get("opened") for c in summary["cycles"]}
+    assert opened["BTCUSDT"]["strategy_id"] == "S_MULTI"
+    assert opened["ETHUSDT"]["strategy_id"] == "S_MULTI"
+
+
 def test_pool_cycle_evaluates_every_symbol_not_just_the_default(tmp_path):
     # Two symbols in the pool; the single-symbol cycle would only ever route one.
     _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))

@@ -191,20 +191,21 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
 
 
 def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """Distinct ``(primary symbol, timeframe)`` pairs the active pool can route on.
+    """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
 
-    One pair per occupying strategy's routing key — ``symbol_scope[0]`` and
-    ``timeframe``, exactly what :func:`paper.route_entries` matches on — so a
-    fan-out proposes a cycle for every context a strategy could fire in and none
-    where it never could. Non-occupying or spec-less entries contribute nothing.
-    Deduplicated and sorted for a stable, deterministic cycle order."""
+    One pair per ``(symbol_scope entry, timeframe)`` — every symbol a strategy is
+    scoped to, exactly what :func:`paper.route_entries` now matches on — so a
+    fan-out proposes a cycle for every context a strategy could fire in (a
+    multi-symbol strategy contributes each of its symbols) and none where it never
+    could. Non-occupying or spec-less entries contribute nothing. Deduplicated and
+    sorted for a stable, deterministic cycle order."""
     contexts: set[tuple[str, str]] = set()
     for entry in pool.get("active_strategies") or []:
         if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
             continue
         spec = StrategySpec.from_dict(entry["strategy_spec"])
-        if spec.symbol_scope:
-            contexts.add((str(spec.symbol_scope[0]), str(spec.timeframe)))
+        for scoped_symbol in spec.symbol_scope:
+            contexts.add((str(scoped_symbol), str(spec.timeframe)))
     return sorted(contexts)
 
 
