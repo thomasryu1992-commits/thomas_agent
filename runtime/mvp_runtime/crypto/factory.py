@@ -82,12 +82,23 @@ NUMERIC_FEATURES = frozenset({
     "rsi", "adx", "macd", "macd_signal", "macd_hist",
     "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
     "roc_4", "price_distance_ma20", "volume_zscore",
-    "mark_price", "index_price", "mark_index_basis_bps", "liquidation_spike_ratio",
+    "mark_price", "index_price", "mark_index_basis_bps",
     # C9: the funding series rides the default binance_futures grant, so generated
-    # specs may reference it. The liquidation columns stay OUT of the generation
-    # registry (the Coinalyze feed is gated off by default; imported specs still
-    # EVALUATE them — this set gates what the factory may mint, not the evaluator).
+    # specs may reference it. This set gates what the factory may MINT, not what the
+    # evaluator may read — imported specs evaluate anything.
     "funding_rate", "funding_zscore",
+    # The liquidation columns were held out while the Coinalyze feed was unconfigured.
+    # Admitted by explicit Thomas decision 2026-07-24, now that the feed is live, and
+    # safe on their own terms: with no feed these three fill with **None**, so the
+    # fail-closed evaluator treats them as indeterminate and a spec naming them simply
+    # never matches. No feed, no trade — the honest outcome.
+    #
+    # ``liquidation_spike_ratio`` is the exception and always was: with no feed it
+    # falls back to a **constant 0.0** ("legacy constant, pre-C9" in features.py), so
+    # a minted ``spike_ratio < x`` condition matches on a fabricated value rather than
+    # on absent data. That hazard predates this change and is not widened by it — the
+    # three added here are strictly safer than the one already present.
+    "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
 })
 CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
     "market_regime": frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
