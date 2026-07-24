@@ -62,6 +62,7 @@ _RECORD_KINDS = (
     "search_permission_decision", "role_assignment",
     "validator_permission_decision", "validator_assignment",
     "triage_permission_decision", "triage_result", "triage_invocation",
+    "model_tier_selection",
     "write_permission_decision", "tool_use",
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
