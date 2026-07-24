@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import approval, control, operator_feedback, safety_gate, timeutil
+from . import approval, control, memory_console, operator_feedback, safety_gate, timeutil
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .control import ControlStore
 from .errors import ApprovalBlocked, AuditError, ControlBlocked, OperatorBlocked, PersistenceError
@@ -182,6 +182,12 @@ def handle_operator_message(
     to the feedback ledger — handled like the console/approval commands (any runtime mode,
     behind the same identity gate), and like every ``/`` command it never reaches the
     pipeline.
+
+    ``/memory`` lists the live promotable working-memory candidates (read-only, any mode)
+    and ``/promote <candidate_id> <reason>`` promotes one to VALIDATED memory — the
+    convenience door onto ``scripts/promote_memory_candidate.py`` over the already-verified
+    channel. Promotion is EXECUTE_AND_REPORT and kill-switch bound (refused unless ACTIVE);
+    it reuses ``working_memory`` (the store) and ``store`` (the ledger) already threaded here.
     """
     try:
         verify_control_channel(message, registration)
@@ -274,6 +280,23 @@ def handle_operator_message(
             return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
         return OperatorReply(text=outcome["reply"], accepted=True, status="FEEDBACK", reason_code="FEEDBACK_RECORDED")
 
+    # Memory console: /memory (list live promotable candidates, read-only) and
+    # /promote <id> <reason> (EXECUTE_AND_REPORT promotion to VALIDATED memory). The
+    # convenience door onto scripts/promote_memory_candidate.py — same guards, same audit —
+    # over the already-verified channel. Promotion is kill-switch bound inside
+    # apply_memory_command; listing is read-only and answered in any mode.
+    memory_command = memory_console.parse_memory_command(text)
+    if memory_command is not None:
+        try:
+            outcome = memory_console.apply_memory_command(
+                memory_command, operator_id=registration.operator_id,
+                working_memory=working_memory, ledger=store, control_store=control_store,
+                now=now, repo_root=repo_root,
+            )
+        except (OperatorBlocked, PersistenceError) as exc:
+            return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+        return OperatorReply(text=outcome["reply"], accepted=True, status="MEMORY", reason_code=outcome["action"])
+
     if text.startswith("/"):
         # A leading-slash message that matched no console/approval verb is refused, never
         # run as a task: a typo'd ``/killl`` (or an emergency verb reaching a deployment
@@ -282,7 +305,7 @@ def handle_operator_message(
         return OperatorReply(
             text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
-                  "/feedback <good|bad|한줄평>"),
+                  "/feedback <good|bad|한줄평> /memory /promote <id> <사유>"),
             accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
         )
 
