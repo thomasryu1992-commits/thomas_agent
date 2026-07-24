@@ -84,13 +84,16 @@ DEFAULT_VENUE = "binance_futures"
 # 2026-07-23, paper-trading evaluation phase). At 20 concurrent positions the
 # worst-case same-day realized loss is 20R against a 2R breaker, and because the
 # breaker is reactive it cannot prevent that — it only stops the *next* entry after
-# the losses land. This is accepted here because the runtime holds no live-money
-# capability: paper settlement writes records, never orders.
+# the losses land. This is accepted because the exposure is simulated: these caps
+# bound the PAPER kernel only. Real orders go through ``live_order``/``live_pnl``,
+# which neither read nor share this limit, so widening it cannot reach live money —
+# and that separation is what has to hold for this number to stay acceptable.
 #
 # The cap is what makes outcome data accumulate fast enough to judge strategies at
 # all: with 1d specs holding 14-39 bars, two slots yield roughly two outcomes a
-# month. **Revert to the derived value before any live-order posture** — that is a
-# separate explicit decision, and this comment is the record of what it undoes.
+# month. **Revert to the derived value before the paper book is ever used to size
+# live exposure** — that is a separate explicit decision, and this comment is the
+# record of what it undoes.
 MAX_CONCURRENT_POSITIONS = 20
 MAX_POSITIONS_PER_SYMBOL = 2
 
