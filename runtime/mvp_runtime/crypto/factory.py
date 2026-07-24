@@ -27,6 +27,16 @@ reproducible from its recorded inputs and no wall-clock randomness exists anywhe
 parameter dominant, regime breadth, in-window pass rate; see ``robustness.py`` for
 what the unported inputs honestly score) — raw expectancy rides alongside in the
 evidence, and ``score_basis`` names the meaning on every candidate.
+
+C12: the replay backtest is costed. Every simulated trade's gross (intended-price) R
+is decomposed into net R after fees + slippage via ``cost.apply_cost_model`` (the
+source's S4b cost model, ported in R-space — see ``cost.py``), matching the source's
+own boundary exactly: costs apply to backtest/factory scoring only, never to live
+paper trading (``paper.settle_trade_plan`` stays cost-free, unchanged — the source's
+live paper kernel never imports the cost model either). ``champion_score`` and
+``expectancy`` are computed over the costed (net) R, so a strategy that only looks
+good gross now scores accordingly; ``robustness.cost_robustness`` is measured for
+real instead of always zero.
 """
 
 from __future__ import annotations
@@ -38,6 +48,7 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
+from .cost import CostModel, apply_cost_model
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
@@ -398,30 +409,49 @@ def generate_batch(
 
 # --- replay backtest (shared evaluator + shared exit math) --------------------
 
-def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def backtest_spec(
+    spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
+) -> dict[str, Any]:
     """Replay ``spec`` over the snapshot's history. Deterministic, pure.
 
     Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
     the position opens at row i's close with the spec's ATR exits, and every later
     bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
     own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
-    features are indeterminate never enter (the evaluator's rule)."""
+    features are indeterminate never enter (the evaluator's rule).
+
+    C12: every closed trade's gross (intended-price) R is costed via
+    ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
+    outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
+    NET R after costs; ``gross_R`` rides alongside for transparency."""
+    cost = cost or CostModel()
     rows = build_feature_rows(dict(snapshot))
     candles = snapshot.get("candles") or []
     outcomes: list[dict[str, Any]] = []
     position: dict[str, Any] | None = None
     entry_regime: str | None = None
+    total_fee_cost_r = 0.0
+    total_slippage_cost_r = 0.0
 
     for i, row in enumerate(rows):
         candle = candles[i]
         if position is not None:
-            reason, exit_price, result_r = settle_trade_plan(
+            reason, exit_price, _gross_r = settle_trade_plan(
                 position, candle, row.get("close"), spec.exit_rules.max_holding_bars, False
             )
             if reason is not None:
+                breakdown = apply_cost_model(
+                    position["direction"], position["entry_price"], float(exit_price),
+                    position["risk"], cost=cost,
+                )
+                total_fee_cost_r += breakdown.fee_cost_r
+                total_slippage_cost_r += breakdown.slippage_cost_r
                 outcomes.append({
                     "outcome_closed": True,
-                    "result_R": round(float(result_r), 8),
+                    "result_R": breakdown.net_r,
+                    "gross_R": breakdown.gross_r,
+                    "fee_cost_R": breakdown.fee_cost_r,
+                    "slippage_cost_R": breakdown.slippage_cost_r,
                     "close_reason": reason,
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
@@ -481,14 +511,17 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
         "windows_counted": len(counted),
     }
 
-    # Cost inputs deliberately withheld (no cost model in this port): the scorer's
-    # cost term scores 0 for every candidate — unmeasured is never credited.
-    robustness = score_robustness(
-        spec,
-        {"trade_count": summary["closed_count"]},
-        walk_forward,
-        regime_breakdown,
-    )
+    # C12: total_net_r is the sum of costed R over every closed trade — the
+    # scorer's cost_robustness reads what FRACTION of the pre-cost edge survives
+    # fees + slippage (net / (net + costs)), so it needs sums, not per-trade means.
+    total_net_r = round(sum(o["result_R"] for o in outcomes), 8)
+    cost_metrics = {
+        "trade_count": summary["closed_count"],
+        "total_net_r": total_net_r,
+        "fee_cost_r": round(total_fee_cost_r, 8),
+        "slippage_cost_r": round(total_slippage_cost_r, 8),
+    }
+    robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown)
     return {
         "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash,
@@ -497,6 +530,12 @@ def backtest_spec(spec: StrategySpec, snapshot: Mapping[str, Any]) -> dict[str, 
         "win_count": summary["win_count"],
         "loss_count": summary["loss_count"],
         "max_drawdown": summary["max_drawdown"],
+        "cost_summary": {
+            "total_net_r": total_net_r,
+            "total_fee_cost_r": round(total_fee_cost_r, 8),
+            "total_slippage_cost_r": round(total_slippage_cost_r, 8),
+            "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
+        },
         "regime_breakdown": regime_breakdown,
         "walk_forward": walk_forward,
         "robustness": robustness,
