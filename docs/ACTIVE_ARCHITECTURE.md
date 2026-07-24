@@ -60,6 +60,7 @@ The architecture is fail-closed when authority, lineage, source ownership, fresh
 
 | Domain | Canonical owner |
 |---|---|
+| Organization design direction — Target / MVP / Dynamic Task Team layers, expansion and separation criteria, architecture guardrails (design authority only; grants no Permission or Runtime capability) | `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` |
 | Identity, values, goals, Core rules | `THOMAS_CORE/` and Core lifecycle records |
 | Authority, Permission, Approval requirements, effects, action identity, conflict rules | `governance/GOVERNANCE_POLICY.yaml` |
 | Task and Runtime record boundaries | Active contracts under `docs/runtime-contracts/` and `schemas/` |
