@@ -61,7 +61,8 @@ KIND_TASK = "analysis_task"
 KIND_PRUNE = "memory_prune"
 KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
-KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY})
+KIND_REPORT = "crypto_report"
+KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -394,6 +395,27 @@ def _execute(
             return "skipped_no_memory_store"
         summary = memory.prune_working_memory(working_memory, ledger, now=now, reason=f"scheduled:{schedule.schedule_id}")
         return f"pruned:{summary['removed_count']}"
+    if schedule.kind == KIND_REPORT:
+        # C13: render the read-only dashboard and push it to the ONE registered
+        # operator chat. Pure reads + one notify — no gate of its own beyond the
+        # channel's (selected at fire time, so a revoked telegram grant silently
+        # degrades this to "rendered, not sent" rather than breaking the tick).
+        # Delivery failure is reported in the status, never raised: a report that
+        # cannot be sent must not stop the schedules behind it.
+        from . import operator as operator_mod
+        from .crypto.dashboard import build_status, render_status_text
+
+        status = build_status(repo_root, now=now)
+        text = render_status_text(status)
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, text, repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"report_rendered_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"report_rendered_not_sent:{type(exc).__name__}"
+        warned = len(status.get("warnings") or [])
+        return f"report_sent cycles={status.get('cycles_seen')} warnings={warned}"
     if schedule.kind == KIND_CRYPTO:
         # One governed crypto cycle (C7). The collector and paper store are selected
         # at fire time through their Safety-Flag chokepoints, so a deleted grant is a
