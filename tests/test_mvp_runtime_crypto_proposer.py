@@ -90,17 +90,18 @@ def test_known_features_is_the_validators_vocabulary_not_the_rows(row):
     assert known < frozenset(str(k) for k in row)
 
 
-def test_three_liquidation_features_are_computed_but_unusable(row):
-    """A live gap, asserted so it cannot drift unnoticed.
+def test_every_computed_liquidation_feature_is_proposable(row):
+    """The C9 liquidation columns are all nameable (Thomas 2026-07-24).
 
-    C9 computes four liquidation columns; the validator's vocabulary admits only
-    ``liquidation_spike_ratio``. A proposal naming the other three is refused even
-    though the Coinalyze data behind them is present.
+    They were held out while the Coinalyze feed was unconfigured. The gap is closed,
+    so this now guards the other direction: a column features.py computes but the
+    validator will not admit is a column no proposal can ever use.
     """
     computed = {k for k in row if "liquidation" in k}
     usable = {f for f in proposer.known_features() if "liquidation" in f}
-    assert usable == {"liquidation_spike_ratio"}
-    assert computed - usable == {"liquidation_total", "long_liquidation", "short_liquidation"}
+    assert computed == usable == {
+        "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
+    }
 
 
 def test_unknown_features_names_what_the_validator_refused(snapshot):

@@ -123,6 +123,52 @@ def test_unknown_feature_blocks():
     assert "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"]
 
 
+@pytest.mark.parametrize("feature", [
+    "liquidation_total", "long_liquidation", "short_liquidation", "liquidation_spike_ratio",
+])
+def test_liquidation_features_are_mintable(feature):
+    # Held out while the Coinalyze feed was unconfigured; admitted 2026-07-24.
+    spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+        "operator": "AND", "conditions": [{"feature": feature, "comparison": ">", "value": 1.0}],
+    }))
+    assert validate_strategy(spec)["approved_for_backtest"] is True
+
+
+def test_the_three_added_liquidation_features_fail_closed_without_a_feed():
+    """Why admitting them is safe: no feed means None, and None never matches.
+
+    This is the whole argument for the widening. ``liquidation_spike_ratio`` does NOT
+    share it — with no feed it falls back to a constant 0.0, so a ``< x`` condition on
+    it matches fabricated data. That hazard predates the widening; this test pins the
+    distinction so a later change to the fallbacks cannot erase it silently.
+    """
+    from runtime.mvp_runtime.crypto.features import latest_feature_row
+    from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
+    from runtime.mvp_runtime.crypto.strategy import evaluate_spec
+
+    snapshot, _ = collect_market_data(
+        "BTCUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=120
+    )
+    row = latest_feature_row(snapshot)  # no "liquidations" key — the default posture
+
+    for feature in ("liquidation_total", "long_liquidation", "short_liquidation"):
+        assert row[feature] is None
+        for comparison, value in ((">", -1e12), ("<", 1e12)):  # both directions
+            spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+                "operator": "AND",
+                "conditions": [{"feature": feature, "comparison": comparison, "value": value}],
+            }))
+            assert evaluate_spec(spec, row).matched is False, f"{feature} {comparison} matched"
+
+    # The pre-existing exception, asserted rather than left as folklore.
+    assert row["liquidation_spike_ratio"] == 0.0
+    permissive = StrategySpec.from_dict(_spec_dict(entry_rules={
+        "operator": "AND",
+        "conditions": [{"feature": "liquidation_spike_ratio", "comparison": "<", "value": 1.0}],
+    }))
+    assert evaluate_spec(permissive, row).matched is True  # matches the constant, not data
+
+
 def test_bad_reward_risk_blocks():
     spec = StrategySpec.from_dict(_spec_dict(
         exit_rules={"stop_model": "atr", "stop_atr": 2.0, "target_atr": 1.0, "max_holding_bars": 10}))
