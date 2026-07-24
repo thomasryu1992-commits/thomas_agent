@@ -160,14 +160,19 @@ def run_crypto_cycle(
         reason_codes.append(exc.reason_code)
 
     # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
+    # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
+    # failure degrades the settlement to its pessimistic assumption, never blocks it.
     paper_summary, paper_records = run_paper_update(
         snapshot, feature_row, active_pool, verdict,
         store=store, now=now, root=root, control_store=control_store,
+        intrabar_collector=collector,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
     if paper_summary.get("settle_recovered"):
         reason_codes.append(paper_summary["settle_recovered"]["reason_code"])
+    if paper_summary.get("intrabar_degraded"):
+        reason_codes.append(paper_summary["intrabar_degraded"]["reason_code"])
 
     # 4b) counterfactuals (C11) — purely observational: settle every open shadow
     # with the same exit math, and when the guards refused an actionable signal
