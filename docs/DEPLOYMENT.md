@@ -101,6 +101,18 @@ MVP_PAPER_TRADING=real
 # THOMAS_STATE_DIR=/srv/thomas/state          # defaults to ./.runtime_governance_state
 ```
 
+`MVP_HOSTED_PROVIDER` also accepts `openrouter` — one OpenAI-compatible gateway to many
+vendors' models — as a chain member (e.g. `MVP_HOSTED_PROVIDER=openrouter,groq`, OpenRouter
+primary with Groq as the 503/429 failover). It needs its own `openrouter` mounted grant like
+any provider, `OPENROUTER_API_KEY`, and `MVP_OPENROUTER_MODEL` naming the exact model slug (a
+gateway fronts hundreds, so the runtime must be told which; an unset/stale slug is a 4xx):
+
+```text
+MVP_HOSTED_PROVIDER=openrouter,groq
+OPENROUTER_API_KEY=...
+MVP_OPENROUTER_MODEL=openai/gpt-oss-20b:free
+```
+
 ```bash
 docker compose up -d --build
 docker compose ps            # both healthy: thomas-operator + thomas-scheduler
