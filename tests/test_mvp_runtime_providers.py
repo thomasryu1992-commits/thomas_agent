@@ -16,9 +16,13 @@ import pytest
 from runtime.mvp_runtime.errors import ProviderError, SafetyGateBlocked
 from runtime.mvp_runtime.providers import (
     HOSTED_PROVIDER_ENV,
+    OPENROUTER_HEAVY,
+    TIER_DEGRADED,
     VALIDATOR_PROVIDER_ENV,
     GoogleAIStudioProvider,
+    OpenRouterHeavyProvider,
     select_provider,
+    select_tiered_provider,
     select_validator_provider,
 )
 from runtime.mvp_runtime import safety_gate
@@ -100,6 +104,50 @@ def _grant(tmp_path, provider_id):
     path = safety_gate.activation_path(tmp_path, provider_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
+
+
+# --- M2: difficulty-driven model tiers ---------------------------------------
+
+_TIER_NOW = "2026-07-15T00:00:00Z"
+
+
+def test_tiered_provider_keeps_inert_base_for_a_mock():
+    # A network-free base has nothing to upgrade — no gate call, no degrade.
+    provider, selection = select_tiered_provider("HIGH", base_provider=MockProvider())
+    assert isinstance(provider, MockProvider)
+    assert selection["tier"] is None and selection["degraded"] is False
+
+
+def test_tiered_provider_degrades_to_base_without_a_tier_grant(tmp_path):
+    base = GoogleAIStudioProvider(authorization=_AUTH)  # network-capable base
+    provider, selection = select_tiered_provider("HIGH", base_provider=base, now=_TIER_NOW, root=tmp_path)
+    assert provider is base  # degraded to the already-authorized base chain
+    assert selection["tier"] == OPENROUTER_HEAVY
+    assert selection["degraded"] is True and selection["reason_code"] == TIER_DEGRADED
+
+
+def test_tiered_provider_unmapped_difficulty_degrades(tmp_path):
+    base = GoogleAIStudioProvider(authorization=_AUTH)
+    provider, selection = select_tiered_provider("WHATEVER", base_provider=base, now=_TIER_NOW, root=tmp_path)
+    assert provider is base and selection["degraded"] is True and selection["tier"] is None
+
+
+def test_tiered_provider_builds_the_tier_when_granted(tmp_path):
+    # Its own grant (per tier id) opens the gate; the tier provider serves the specialist.
+    _grant(tmp_path, OPENROUTER_HEAVY)
+    base = GoogleAIStudioProvider(authorization=_AUTH)
+    provider, selection = select_tiered_provider("HIGH", base_provider=base, now=_TIER_NOW, root=tmp_path)
+    assert isinstance(provider, OpenRouterHeavyProvider)
+    assert selection["tier"] == OPENROUTER_HEAVY and selection["degraded"] is False
+    assert selection["model_id"] == OPENROUTER_HEAVY
+
+
+def test_light_grant_does_not_authorize_the_heavy_tier(tmp_path):
+    # Per-tier grants: a light grant cannot open the heavy tier — it degrades to base.
+    _grant(tmp_path, "openrouter_light")
+    base = GoogleAIStudioProvider(authorization=_AUTH)
+    provider, selection = select_tiered_provider("HIGH", base_provider=base, now=_TIER_NOW, root=tmp_path)
+    assert provider is base and selection["degraded"] is True
 
 
 def test_chain_with_both_grants_builds_ordered_failover(monkeypatch, tmp_path):
