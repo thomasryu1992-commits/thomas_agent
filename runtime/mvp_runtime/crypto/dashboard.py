@@ -2,6 +2,7 @@
 
     python -m runtime.mvp_runtime.crypto.dashboard            # human-readable
     python -m runtime.mvp_runtime.crypto.dashboard --json     # machine-readable
+    python -m runtime.mvp_runtime.crypto.dashboard --account  # + the live exchange account
 
 Reads only what the runtime already persists (cycle records in the ledger, the paper
 outcome store, the active pool, the counterfactual registry, the safety-flag grants)
@@ -9,6 +10,10 @@ and renders uptime, performance, digest trends, lifecycle state, and gate-calibr
 summaries. Pure reads at ALLOW tier: no gate, no writes, no network — the source
 ``scripts/dashboard.py`` posture. Unreadable inputs degrade to an explicit warning
 line, never a crash and never silence.
+
+``--account`` is the one exception and is therefore opt-in: it adds a *live* read of the
+real exchange account through the separately-gated ``binance_futures_account`` feed
+(LP1). Without the flag this board still makes no network call at all.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from .. import timeutil
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
-from . import counterfactual, digest, feedback, paper, pool
+from . import account, counterfactual, digest, feedback, paper, pool
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -183,12 +188,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Crypto pipeline status board (read-only).")
     parser.add_argument("--json", action="store_true", help="emit the full status as JSON")
     parser.add_argument("--cycles", type=int, default=12, help="how many recent cycle records to read")
+    parser.add_argument(
+        "--account", action="store_true",
+        help="also read the live exchange account (balance/positions/P&L) — makes a network call",
+    )
     args = parser.parse_args(argv)
     status = build_status(cycles=args.cycles)
+
+    # Opt-in only: without --account this board keeps its "no gate, no network" posture and
+    # reports purely from what the runtime already persisted. The live read is a separate,
+    # separately-gated capability, so asking for it has to be deliberate.
+    account_snapshot = None
+    if args.account:
+        account_snapshot, account_record = account.read_account()
+        status["account"] = account_record
+
     if args.json:
         sys.stdout.write(json.dumps(status, ensure_ascii=False, indent=1) + "\n")
     else:
         sys.stdout.write(render_status_text(status) + "\n")
+        if args.account:
+            sys.stdout.write(account.render_account_text(account_snapshot) + "\n")
     return 0
 
 
