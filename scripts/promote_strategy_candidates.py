@@ -202,14 +202,19 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}")
             return EXIT_BLOCKED
-        for c in candidates:
+        # M4a: robustness stays the first-pass filter; within a verdict tier the
+        # ranking then orders by win-rate + realized reward:risk, so the strongest
+        # believable edges surface first for the promotion decision.
+        for c in pool_store.rank_candidates(candidates):
             spec = c.get("strategy_spec") or {}
             evidence = c.get("backtest_evidence") or {}
-            robustness = (evidence.get("robustness") or {})
+            q = pool_store.candidate_quality(c)
+            rr = "inf" if q["all_wins"] else ("-" if q["reward_risk"] is None else f"{q['reward_risk']:.2f}")
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
-                  f"verdict={robustness.get('verdict') or '-':11} "
+                  f"verdict={q['verdict'] or '-':11} "
+                  f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
                   f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}")
         return EXIT_OK
 

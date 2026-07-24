@@ -59,8 +59,19 @@ def test_summary_math():
     assert summary["win_count"] == 2 and summary["loss_count"] == 2
     assert summary["expectancy"] == round((2.0 - 1.0 + 1.5 - 1.0) / 4, 8)
     assert summary["win_loss_ratio"] == 1.0
+    # M4a realized payoff legs: avg win (2.0, 1.5)=1.75, avg loss magnitude (1.0,1.0)=1.0.
+    assert summary["avg_win_R"] == 1.75 and summary["avg_loss_R"] == 1.0
     # Equity path: 2, 1, 2.5, 1.5 -> deepest fall from a peak is 1.0R.
     assert summary["max_drawdown"] == 1.0
+
+
+def test_avg_win_loss_R_degenerate_cases():
+    # No losses: avg_loss_R is 0.0 (the ranking reads this as an undefined ratio).
+    all_wins = summarize_outcomes([_outcome(1.0, NOW), _outcome(2.0, NOW)])
+    assert all_wins["avg_win_R"] == 1.5 and all_wins["avg_loss_R"] == 0.0
+    # No wins: avg_win_R is 0.0, avg_loss_R the positive mean magnitude.
+    all_losses = summarize_outcomes([_outcome(-1.0, NOW), _outcome(-2.0, NOW)])
+    assert all_losses["avg_win_R"] == 0.0 and all_losses["avg_loss_R"] == 1.5
 
 
 def test_summary_empty_and_open_rows():
