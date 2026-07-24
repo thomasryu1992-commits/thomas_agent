@@ -10,6 +10,7 @@ Current reality: the committed system is contracts + a **read-only replay kernel
 
 ## Repository layout
 
+- `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` — **top-level design-direction (Goal) document** (promoted from historical v0.1 by Thomas decision 2026-07-24). New features, milestones, and roadmaps must be designed against its three layers (Target / MVP / Dynamic Task Team) and its expansion criteria + guardrails (§12–§16). Design authority only — Permission/effects stay with the Governance Policy, current-implementation truth with `docs/ACTIVE_ARCHITECTURE.md`.
 - `THOMAS_CORE/` — identity, values, goals, active core rules. `MVP_ACTIVE_CORE.yaml` is the only active core (schema v0.4, `thomas_approved`).
 - `governance/GOVERNANCE_POLICY.yaml` — authoritative permission/authority/effect model (P0–P6, ALLOW/EXECUTE_AND_REPORT/APPROVAL_REQUIRED/BLOCK). `runtime_effect.mode: REVIEW_ONLY` — execution capabilities are OFF.
 - `03_ROLE_CONTRACTS/` — roles + `ROLE_REGISTRY.yaml`. Active routable roles: `general.specialist` (P3), `validation.independent` (P2). Others are non-routable candidates.

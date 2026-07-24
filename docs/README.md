@@ -9,6 +9,7 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 
 | Purpose | Document |
 |---|---|
+| **Top-level design-direction (Goal) document** — Target / MVP / Dynamic Task Team layers, expansion criteria, guardrails | [Thomas Autonomous Organization Architecture](THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md) |
 | Final active architecture and canonical Gate commands | [Active Architecture](ACTIVE_ARCHITECTURE.md) |
 | Canonical Governance Policy | [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml) |
 | Architecture Slimming principles | [Step 1 — Principles](architecture-slimming/STEP1_PRINCIPLES.md) |
@@ -30,6 +31,7 @@ The candidate Constitution is intentionally excluded from the Active Source Fami
 
 ## Active Source Families
 
+- Organization design direction (top-level Goal document): [`docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md`](THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md)
 - Core: [`THOMAS_CORE/`](../THOMAS_CORE/)
 - Governance: [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml)
 - Runtime contracts: [`docs/runtime-contracts/`](runtime-contracts/)
