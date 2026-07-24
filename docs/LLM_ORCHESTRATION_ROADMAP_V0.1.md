@@ -29,7 +29,7 @@ Thomas-decision point.**
 | --- | --- | --- |
 | LLM reviews the request | Triage LLM judges the request (`triage.py`) | ✅ exists |
 | Difficulty 상/중/하 | Triage returns only importance HIGH/NORMAL; `complexity` is hardcoded `NORMAL` (`planner.py`) | ⚠️ 2-level, not difficulty |
-| Difficulty → OpenRouter model | Model slug fixed by `MVP_OPENROUTER_MODEL`; **no difficulty→model mapping** (`providers.py`) | ❌ missing |
+| Difficulty → OpenRouter model | Difficulty picks an `openrouter_light/standard/heavy` tier via `select_tiered_provider`, fail-closed to base (`providers.py`) | ✅ M2 (done) |
 | Specialist LLM produces content | `run_analysis_worker` (`worker.py`) | ✅ exists |
 | Verifier LLM | Independent validator (`validator.py`), own gated provider | ✅ exists |
 | Accurate → deliver | PASS → rendered response (`pipeline.py`) | ✅ exists |
@@ -63,21 +63,29 @@ Thomas-decision point.**
   contracts / schemas / gates. `triage_result` is a free dict (no closed schema), so the field
   is additive.
 
-### M2 — difficulty → OpenRouter tier model ⚠️ *(1–2 PR, Thomas decision: tier provider ids + slugs)*
+### M2 — difficulty → OpenRouter tier model ⚠️ *(done 2026-07-24; Thomas approved tier ids + default slugs)*
 
-- Introduce tier provider ids: `openrouter_light` / `openrouter_standard` / `openrouter_heavy`,
-  each with **its own grant + its own model-slug env**
-  (`MVP_OPENROUTER_MODEL_LIGHT/STANDARD/HEAVY`). The M1 difficulty picks the tier; selection
-  still flows through the existing `select_gated_chain` chokepoint.
-- This is the direction `providers.py` already names for itself: *"the moment tiers and money
-  are involved … the answer is separate provider ids per tier."* One `openrouter` grant
-  authorizing any slug is the interim, not the destination.
-- **Fail-closed:** if the chosen tier has no grant → degrade to the base `MVP_HOSTED_PROVIDER`
-  chain + audit `TIER_DEGRADED` (the SEARCH_DEGRADED precedent). The chain never dies; only the
-  tier benefit is lost.
-- **Thomas decision:** the three tier provider ids and their model slugs (e.g. light =
-  `gpt-oss-20b:free`, heavy = a stronger free model), plus a local `activate_safety_flag.py`
-  grant per tier.
+- Tier provider ids `openrouter_light` / `openrouter_standard` / `openrouter_heavy`, each its
+  OWN grant + own model-slug env (`MVP_OPENROUTER_MODEL_LIGHT/STANDARD/HEAVY`). The M1 difficulty
+  (LOW/MEDIUM/HIGH) picks the tier via `providers.select_tiered_provider`; the tier gate opens
+  through a new `safety_gate.select_gated_optional` — same "factory receives the Authorization"
+  safety property as `select_gated`, but returning a degrade signal instead of raising.
+- **Fail-closed:** if the chosen tier has no local grant → degrade to the base
+  `MVP_HOSTED_PROVIDER` chain, recorded as `model_tier_selection` with `TIER_DEGRADED` (the
+  SEARCH_DEGRADED precedent). An inert/mock base is left unchanged (nothing to upgrade), and a
+  per-tier grant can never authorize another tier (a light grant does not open heavy).
+- **Wiring / scope:** the tier serves the **specialist only** (the validator/triage keep their
+  own provider). It is applied when the triage produced a difficulty — i.e. the R7.2 auto path
+  (`--independent-validation auto`); on a run where no triage ran there is no difficulty and the
+  base provider serves unchanged. Extending triage-to-every-request for universal tiering is a
+  later cost decision (an extra triage call per run).
+- **Thomas decision (taken):** tier ids as above; default slugs light =
+  `openai/gpt-oss-20b:free`, standard = `meta-llama/llama-3.3-70b-instruct:free`, heavy =
+  `deepseek/deepseek-r1:free` — fallbacks only, overridden per machine via the envs. Minting the
+  per-tier grant with `activate_safety_flag.py` and setting the real slugs stays the local
+  operator step; until then every run degrades cleanly to base.
+- Governance: reuses the existing gate/provider machinery — **zero** new contracts / schemas /
+  registries / gates.
 
 ### M3 — verify-fail → bounded LLM revision loop ⚠️ *(1 PR, Thomas decision required)*
 
