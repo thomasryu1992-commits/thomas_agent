@@ -62,9 +62,16 @@ def summarize_outcomes(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     rows = [dict(r) for r in records if isinstance(r, Mapping)]
     closed = [r for r in rows if r.get("outcome_closed") is True]
     result_rs = [_f(r.get("result_R")) for r in closed]
-    win_count = sum(1 for v in result_rs if v > 0)
-    loss_count = sum(1 for v in result_rs if v < 0)
+    wins = [v for v in result_rs if v > 0]
+    losses = [v for v in result_rs if v < 0]
+    win_count = len(wins)
+    loss_count = len(losses)
     expectancy = sum(result_rs) / len(result_rs) if result_rs else 0.0
+    # Realized payoff legs (M4a): the average winning R and the average losing R as a
+    # positive magnitude, so avg_win_R / avg_loss_R is the realized reward:risk. Kept
+    # separate from expectancy — the ranking wants win-rate and payoff as two axes.
+    avg_win_r = sum(wins) / win_count if win_count else 0.0
+    avg_loss_r = -sum(losses) / loss_count if loss_count else 0.0
     cumulative = peak = max_dd = 0.0
     for value in result_rs:
         cumulative += value
@@ -92,6 +99,8 @@ def summarize_outcomes(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "expectancy": round(expectancy, 8),
         "win_loss_ratio": round(win_count / loss_count, 8) if loss_count else float(win_count),
         "average_R": round(expectancy, 8),
+        "avg_win_R": round(avg_win_r, 8),
+        "avg_loss_R": round(avg_loss_r, 8),
         "max_drawdown": round(max_dd, 8),
         "by_strategy": by_strategy,
     }
