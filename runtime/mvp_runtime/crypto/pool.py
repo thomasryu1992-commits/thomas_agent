@@ -23,8 +23,8 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
-from .paper import state_dir
-from .strategy import SpecParseError, load_strategy_pool
+from .paper import OCCUPYING_STATUSES, state_dir
+from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
@@ -187,6 +187,24 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
         raise ToolError("STRATEGY_POOL_INVALID", f"active strategy pool failed validation: {exc}") from exc
     assert_pool_identity_unique(pool)
     return pool
+
+
+def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Distinct ``(primary symbol, timeframe)`` pairs the active pool can route on.
+
+    One pair per occupying strategy's routing key — ``symbol_scope[0]`` and
+    ``timeframe``, exactly what :func:`paper.route_entries` matches on — so a
+    fan-out proposes a cycle for every context a strategy could fire in and none
+    where it never could. Non-occupying or spec-less entries contribute nothing.
+    Deduplicated and sorted for a stable, deterministic cycle order."""
+    contexts: set[tuple[str, str]] = set()
+    for entry in pool.get("active_strategies") or []:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        if spec.symbol_scope:
+            contexts.add((str(spec.symbol_scope[0]), str(spec.timeframe)))
+    return sorted(contexts)
 
 
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:

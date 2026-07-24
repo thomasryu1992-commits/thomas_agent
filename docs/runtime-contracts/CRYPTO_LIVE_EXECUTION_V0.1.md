@@ -123,9 +123,14 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - [x] Paper trading on real data shows positive expectancy over a sustained window
       (2.36R over 114 closed trades as of 2026-07-23). Check with
       `python -m runtime.mvp_runtime.crypto.dashboard`.
-- [ ] The active pool is populated with strategies you trust. Note the standing finding that
-      the router is symbol-starved: the cycle runs BTCUSDT only while the pool is mostly other
-      symbols, so most strategies are never evaluated.
+- [ ] The active pool is populated with strategies you trust. The former symbol-starved finding
+      is resolved: a crypto schedule with an empty request now fans out over every
+      ``(symbol, timeframe)`` the pool routes on — plus every context that holds an open paper
+      position, so a demoted strategy's position still settles — via
+      ``cycle.run_pool_cycle`` (a named ``SYMBOL [TIMEFRAME]`` request still pins one context as
+      an operator override). One remaining narrower limit: a strategy scoped to several symbols
+      is still evaluated only on its primary ``symbol_scope[0]`` (the router's keying), so
+      multi-symbol strategies are not multiplexed across their whole scope.
 
 **Gate 1 — the code must exist**
 - [ ] LP4 (order adapter) and LP5 (position kernel + cycle routing) merged. **Blocked** on the
