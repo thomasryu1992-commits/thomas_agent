@@ -65,7 +65,26 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 `/app/.runtime_governance_state`. The Core activation/approval records additionally mount over
 `/app/THOMAS_CORE/activations` and `/app/THOMAS_CORE/approvals`.
 
-## Run (compose — the deployed topology)
+## Run (compose — the one deployment path)
+
+**Compose is the only way this is deployed. Do not `docker run` the services and do not
+build private `thomas-agent-operator:<tag>` images to deploy from.** The two services own
+the fixed names `thomas-operator` and `thomas-scheduler`; a hand-run container claiming
+either name blocks the next `docker compose up` with a name conflict, and two people
+deploying by different routes on one host means each redeploy silently replaces the
+other's containers. One host, one deploy command, run from a checkout on the commit you
+want live:
+
+```bash
+docker compose up -d --build
+```
+
+This is safe to run from any session: it rebuilds `thomas-agent-runtime` from the current
+checkout and recreates both services in place. The mounted state volume is untouched, so
+no history is lost. If a name conflict is reported, an out-of-band container exists —
+`docker rm -f thomas-operator thomas-scheduler` and re-run compose (their state is on the
+bind mount, not in the container). Confirm the commit you are on is a superset of whatever
+the running image carried before removing anything.
 
 Secrets and per-host paths come from a gitignored `.env` next to `docker-compose.yml`
 (compose reads it automatically). Typical `.env` for the current live host:
@@ -95,38 +114,38 @@ cannot open a network socket or write paper state. The crypto gates (`MVP_MARKET
 operator service never trades.
 
 The compose operator runs with `--independent-validation auto` (review only
-important/high-risk requests — the R7.1 policy).
+important/high-risk requests — the R7.1 policy). To change that, edit the operator
+service's `command:` in `docker-compose.yml` — not a `docker run` flag.
 
-### Run (plain docker — single service, e.g. a smoke test)
+`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`google_ai_studio,groq` —
+put `GROQ_API_KEY` in the `.env` too). Every member needs its own safety-flag activation
+on the mounted state volume; a chain with an unknown or unauthorized member fails closed
+at startup rather than silently shrinking. The next member is tried only when the previous
+one answers 503/429 even after its own retry. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
+to run the R7.1 reviewer on its own gated provider/quota — same grant rules. **These env
+vars belong to the scheduler service too** (both `environment:` blocks list them); a key
+present for the operator but missing for the scheduler is the failure mode where scheduled
+work silently degrades while interactive work is fine.
+
+### Throwaway smoke test (NOT a deployment)
+
+This is the *only* sanctioned `docker run`, and it exists solely to boot the image once and
+watch it fail closed. It **must** use a throwaway name (`thomas-smoke` below) and its own
+scratch volume so it can never collide with — or share state with — the deployed services.
+It is never how the operator or scheduler is run for real; that is always compose, above.
 
 ```bash
-docker run -d --name thomas-operator \
-  --restart unless-stopped \
-  -e MVP_OPERATOR_CHANNEL=telegram \
-  -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
-  -e MVP_HOSTED_PROVIDER=google_ai_studio \
-  -e GOOGLE_AI_STUDIO_API_KEY="$GOOGLE_AI_STUDIO_API_KEY" \
-  -v /srv/thomas/state:/app/.runtime_governance_state \
-  -v /srv/thomas/core/activations:/app/THOMAS_CORE/activations:ro \
-  -v /srv/thomas/core/approvals:/app/THOMAS_CORE/approvals:ro \
-  thomas-agent-runtime
+docker run --rm --name thomas-smoke \
+  -v thomas-smoke-state:/app/.runtime_governance_state \
+  thomas-agent-runtime \
+  python -m runtime.mvp_runtime.heartbeat_cli operator || echo "expected: fails closed with no state"
 ```
 
-Omit the `MVP_OPERATOR_CHANNEL` / `MVP_HOSTED_PROVIDER` env vars (and their secrets) to run the
-network-free mock loop — a safe smoke test that touches no network and answers with the
-deterministic mock analysis. Remember that a plain operator container runs NO schedules — the
-scheduler service is what fires them.
-
-`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain
-(`google_ai_studio,groq` — pass `GROQ_API_KEY` too). Every member needs its own
-safety-flag activation on the mounted state volume; a chain with an unknown or
-unauthorized member fails closed at startup rather than silently shrinking. The next
-member is tried only when the previous one answers 503/429 even after its own retry.
-
-R7.1: append `--independent-validation auto` to the container command to review only
-important/high-risk requests (the operator marks one with a leading `!중요` /
-`!important` token), and set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`) to run the reviewer
-on its own gated provider/quota — same grant rules as `MVP_HOSTED_PROVIDER`.
+With no provisioned state and no secrets the image runs the network-free mock loop and fails
+closed on every gated capability — which is the whole point of the smoke test. `--rm` removes
+the container on exit; the named scratch volume is disposable (`docker volume rm
+thomas-smoke-state`). Never point a `docker run` at the real state bind or the real service
+names — that is the collision this section exists to prevent.
 
 ## Emergency controls on a running service
 
