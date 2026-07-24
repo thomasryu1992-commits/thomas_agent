@@ -540,6 +540,10 @@ def backtest_spec(
         "expectancy": summary["expectancy"],
         "win_count": summary["win_count"],
         "loss_count": summary["loss_count"],
+        # M4a: realized payoff legs, so a candidate carries its win-rate and realized
+        # reward:risk (avg_win_R / avg_loss_R) for the second-pass promotion ranking.
+        "avg_win_R": summary["avg_win_R"],
+        "avg_loss_R": summary["avg_loss_R"],
         "max_drawdown": summary["max_drawdown"],
         "cost_summary": {
             "total_net_r": total_net_r,

@@ -42,6 +42,17 @@ ROBUST = "ROBUST"
 PROVISIONAL = "PROVISIONAL"
 FRAGILE = "FRAGILE"
 
+# First-pass ordering for candidate ranking (M4a): a more-believable edge outranks a
+# less-believable one before any performance term is consulted. An unknown/absent
+# verdict sorts last — no evidence of robustness is not evidence of it.
+VERDICT_ORDER: dict[str, int] = {ROBUST: 0, PROVISIONAL: 1, FRAGILE: 2}
+_UNKNOWN_VERDICT_RANK = 3
+
+
+def verdict_rank(verdict: Any) -> int:
+    """The first-pass sort rank of a robustness verdict (lower = more believable)."""
+    return VERDICT_ORDER.get(str(verdict), _UNKNOWN_VERDICT_RANK)
+
 ROBUST_SCORE_THRESHOLD = 0.70
 FRAGILE_SCORE_THRESHOLD = 0.35
 

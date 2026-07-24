@@ -15,7 +15,13 @@ import pytest
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.crypto import paper, pool
-from runtime.mvp_runtime.crypto.cycle import cycle_status_line, run_crypto_cycle
+from runtime.mvp_runtime.crypto.cycle import (
+    cycle_status_line,
+    pool_cycle_contexts,
+    pool_cycle_status_line,
+    run_crypto_cycle,
+    run_pool_cycle,
+)
 from runtime.mvp_runtime.crypto.market_data import MARKET_DATA_ENV, Candle, MarketSnapshot
 from runtime.mvp_runtime.crypto.paper import (
     PAPER_ENV, DryRunPaperStore, PositionContext, RealPaperStore, load_open_position,
@@ -83,14 +89,14 @@ class BrokenCollector:
         raise ToolError("TOOL_TRANSPORT", "exchange unreachable")
 
 
-def _always_spec(strategy_id="S_ALWAYS"):
+def _always_spec(strategy_id="S_ALWAYS", symbol="BTCUSDT", timeframe="1d"):
     return {
         "schema_version": "strategy_spec.v1",
         "strategy_id": strategy_id,
         "strategy_version": "1.0",
         "strategy_family": "breakout",
-        "symbol_scope": ["BTCUSDT"],
-        "timeframe": "1d",
+        "symbol_scope": [symbol],
+        "timeframe": timeframe,
         "direction": "long",
         "entry_rules": {"operator": "AND",
                         "conditions": [{"feature": "close", "comparison": ">", "value": 0.0}]},
@@ -257,6 +263,159 @@ def test_scheduler_crypto_request_overrides_symbol(tmp_path, monkeypatch):
     cycle_rows = [r for r in rows if r["kind"] == "crypto_cycle"]
     assert cycle_rows[0]["record"]["symbol"] == "ETHUSDT"
     assert cycle_rows[0]["record"]["timeframe"] == "4h"
+
+
+# --- the multi-symbol pool fan-out (symbol-starved router fix) -----------------
+
+ETH_CTX = PositionContext(venue="binance_futures", symbol="ETHUSDT", timeframe="1d")
+
+
+def _pool_cycle(root, collector, store=None, now=NOW, **kwargs):
+    return run_pool_cycle(
+        collector=collector, store=store or DryRunPaperStore(), now=now, root=root,
+        control_store=ControlStore(root), **kwargs,
+    )
+
+
+def test_routable_contexts_dedup_and_sort(tmp_path):
+    _install_pool(
+        tmp_path,
+        _always_spec("S_BTC", "BTCUSDT", "1d"),
+        _always_spec("S_ETH", "ETHUSDT", "1d"),
+        _always_spec("S_ETH_2", "ETHUSDT", "1d"),   # same context — deduped
+        _always_spec("S_SOL", "SOLUSDT", "4h"),
+    )
+    assert pool.routable_contexts(pool.load_active_pool(tmp_path)) == [
+        ("BTCUSDT", "1d"), ("ETHUSDT", "1d"), ("SOLUSDT", "4h"),
+    ]
+
+
+def _multi_symbol_spec(strategy_id, symbols, timeframe="1d"):
+    spec = _always_spec(strategy_id, symbols[0], timeframe)
+    spec["symbol_scope"] = list(symbols)
+    return spec
+
+
+def test_routable_contexts_includes_every_scoped_symbol(tmp_path):
+    _install_pool(tmp_path, _multi_symbol_spec("S_MULTI", ["BTCUSDT", "ETHUSDT"]))
+    assert pool.routable_contexts(pool.load_active_pool(tmp_path)) == [
+        ("BTCUSDT", "1d"), ("ETHUSDT", "1d"),
+    ]
+
+
+def test_pool_cycle_opens_a_multi_symbol_strategy_on_each_symbol(tmp_path):
+    # One strategy scoped to two symbols opens an independent position in each book.
+    _install_pool(tmp_path, _multi_symbol_spec("S_MULTI", ["BTCUSDT", "ETHUSDT"]))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+
+    assert [c["symbol"] for c in summary["contexts"]] == ["BTCUSDT", "ETHUSDT"]
+    assert load_open_position(CTX, tmp_path) is not None      # BTCUSDT book
+    assert load_open_position(ETH_CTX, tmp_path) is not None  # ETHUSDT book
+    opened = {c["symbol"]: c.get("opened") for c in summary["cycles"]}
+    assert opened["BTCUSDT"]["strategy_id"] == "S_MULTI"
+    assert opened["ETHUSDT"]["strategy_id"] == "S_MULTI"
+
+
+def test_pool_cycle_evaluates_every_symbol_not_just_the_default(tmp_path):
+    # Two symbols in the pool; the single-symbol cycle would only ever route one.
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+
+    assert [c["symbol"] for c in summary["contexts"]] == ["BTCUSDT", "ETHUSDT"]
+    assert summary["skipped"] == []
+    # Both books opened — the ETH strategy is no longer starved.
+    assert load_open_position(CTX, tmp_path) is not None
+    assert load_open_position(ETH_CTX, tmp_path) is not None
+    assert {r["symbol"] for r in summary["cycles"]} == {"BTCUSDT", "ETHUSDT"}
+
+
+def test_pool_cycle_settles_open_position_even_after_its_strategy_leaves(tmp_path):
+    # Open an ETH position, then empty the pool: the strategy is gone but the book
+    # must still be visited by its own cycle so the position can settle.
+    _install_pool(tmp_path, _always_spec("S_ETH", "ETHUSDT"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+    opened = load_open_position(ETH_CTX, tmp_path)
+    assert opened is not None
+
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    assert pool.routable_contexts(pool.load_active_pool(tmp_path)) == []
+    # The open ETH position alone pulls its context into the fan-out.
+    assert pool_cycle_contexts(tmp_path) == [("ETHUSDT", "1d")]
+
+    sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0}
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
+                          now="2026-07-23T12:00:00Z")
+    settled = [c for c in summary["cycles"] if c["settled"]]
+    assert len(settled) == 1 and settled[0]["symbol"] == "ETHUSDT"
+    assert settled[0]["settled"]["close_reason"] == "stop_loss"
+    assert load_open_position(ETH_CTX, tmp_path) is None
+
+
+def test_pool_cycle_skips_a_bad_symbol_without_starving_the_rest(tmp_path):
+    # A pool symbol that parses as a spec but cannot be collected (INVALID_SYMBOL)
+    # must not abort the batch — the other symbol still runs.
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_BAD", "btc"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+
+    assert [s["symbol"] for s in summary["skipped"]] == ["btc"]
+    assert summary["skipped"][0]["reason_code"] == "INVALID_SYMBOL"
+    assert {r["symbol"] for r in summary["cycles"]} == {"BTCUSDT"}
+    assert load_open_position(CTX, tmp_path) is not None
+
+
+def test_pool_cycle_falls_back_to_default_when_nothing_to_do(tmp_path):
+    # Empty pool, no open positions: still run one heartbeat cycle (data collection).
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector())
+    assert summary["contexts"] == [{"symbol": "BTCUSDT", "timeframe": "1d"}]
+    assert len(summary["cycles"]) == 1
+
+
+def test_pool_cycle_kill_propagates_and_stops_the_fan_out(tmp_path):
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    store = ControlStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(
+        json.dumps(ControlState(mode=control.KILLED, updated_by="op", updated_at=NOW, reason="t").as_record()),
+        encoding="utf-8",
+    )
+    with pytest.raises(ToolBlocked) as exc:
+        run_pool_cycle(collector=FakeExchangeCollector(), store=DryRunPaperStore(),
+                       now=NOW, root=tmp_path, control_store=store)
+    assert exc.value.reason_code == "RUNTIME_KILLED"
+
+
+def test_pool_cycle_status_line_lists_every_context(tmp_path):
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(),
+                          RealPaperStore(root=tmp_path, authorization=_AUTH))
+    line = pool_cycle_status_line(summary)
+    assert line.startswith("pool_cycle contexts=2")
+    assert "BTCUSDT 1d:" in line and "ETHUSDT 1d:" in line
+
+
+def test_scheduler_default_fans_out_over_the_pool(tmp_path, monkeypatch):
+    monkeypatch.delenv(MARKET_DATA_ENV, raising=False)
+    monkeypatch.delenv(PAPER_ENV, raising=False)
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    schedule = build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900,
+                              created_by="op", now="2026-07-22T11:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    ledger = LedgerStore(tmp_path / LEDGER_REL)
+
+    summary = run_due(store, now="2026-07-22T13:00:00Z", control_store=ControlStore(tmp_path),
+                      ledger=ledger, repo_root=tmp_path)
+    assert summary["fired"] == 1
+    assert "pool_cycle contexts=2" in summary["results"][0]["status"]
+    rows = [json.loads(line) for line in
+            (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+    symbols = {r["record"]["symbol"] for r in rows if r["kind"] == "crypto_cycle"}
+    assert symbols == {"BTCUSDT", "ETHUSDT"}
 
 
 # --- the one-time import ------------------------------------------------------

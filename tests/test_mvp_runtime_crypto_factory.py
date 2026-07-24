@@ -207,6 +207,9 @@ def test_backtest_is_deterministic_and_produces_outcomes():
     assert a["champion_score"] == a["robustness"]["robustness_score"]
     assert a["robustness"]["verdict"] in {"ROBUST", "PROVISIONAL", "FRAGILE"}
     assert a["bars_replayed"] == 200
+    # M4a: realized payoff legs ride in the evidence for the promotion ranking.
+    assert "avg_win_R" in a and "avg_loss_R" in a
+    assert a["avg_win_R"] >= 0.0 and a["avg_loss_R"] >= 0.0
 
 
 def test_backtest_never_enters_on_indeterminate_features():
@@ -556,3 +559,57 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
     assert result["fusion_rejected"] == [
         {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
     ]
+
+
+# --- M4a: promotion ranking (robustness first-pass, win-rate + reward:risk) ----
+
+def _cand(cid, *, verdict, score, closed, wins, avg_win=None, avg_loss=None,
+          expectancy=0.0, spec_rr=None):
+    evidence = {"closed_count": closed, "win_count": wins, "expectancy": expectancy,
+                "robustness": {"verdict": verdict}}
+    if avg_win is not None or avg_loss is not None:
+        evidence["avg_win_R"] = avg_win or 0.0
+        evidence["avg_loss_R"] = avg_loss or 0.0
+    record = {"candidate_id": cid, "champion_score": score, "backtest_evidence": evidence}
+    if spec_rr is not None:
+        record["strategy_spec"] = {"exit_rules": {"stop_atr": 1.0, "target_atr": spec_rr}}
+    return record
+
+
+def test_candidate_quality_realized_designed_and_all_wins():
+    realized = pool.candidate_quality(
+        _cand("c", verdict="ROBUST", score=0.8, closed=10, wins=6, avg_win=2.0, avg_loss=1.0))
+    assert realized["win_rate"] == 0.6 and realized["reward_risk"] == 2.0
+    assert realized["reward_risk_basis"] == "realized" and realized["edge_quality"] == 1.2
+
+    legacy = pool.candidate_quality(  # no avg_* fields -> designed target/stop fallback
+        _cand("c", verdict="ROBUST", score=0.8, closed=10, wins=7, spec_rr=2.0))
+    assert legacy["reward_risk"] == 2.0 and legacy["reward_risk_basis"] == "designed"
+
+    all_wins = pool.candidate_quality(
+        _cand("c", verdict="ROBUST", score=0.7, closed=5, wins=5, avg_win=1.2, avg_loss=0.0))
+    assert all_wins["all_wins"] is True and all_wins["reward_risk"] is None
+    assert all_wins["edge_quality"] == float("inf")
+
+
+def test_rank_candidates_robustness_tier_before_performance():
+    # A PROVISIONAL lineage with a huge edge still sorts below every ROBUST one.
+    strong_provisional = _cand("p", verdict="PROVISIONAL", score=0.6, closed=10, wins=8,
+                               avg_win=3.0, avg_loss=0.5, expectancy=1.0)
+    robust_mid = _cand("r1", verdict="ROBUST", score=0.8, closed=10, wins=6, avg_win=2.0, avg_loss=1.0)
+    robust_low = _cand("r2", verdict="ROBUST", score=0.75, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    ranked = [r["candidate_id"] for r in pool.rank_candidates([strong_provisional, robust_low, robust_mid])]
+    assert ranked == ["r1", "r2", "p"]  # tier first, then edge_quality within tier
+
+
+def test_rank_candidates_is_deterministic_and_latest_wins():
+    a1 = _cand("dup", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    a2 = _cand("dup", verdict="ROBUST", score=0.9, closed=10, wins=9, avg_win=2.0, avg_loss=1.0)  # newer
+    tie_a = _cand("aaa", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    tie_b = _cand("bbb", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    ranked = pool.rank_candidates([a1, tie_b, a2, tie_a])
+    ids = [r["candidate_id"] for r in ranked]
+    assert ids.count("dup") == 1  # latest-wins collapse
+    # dup now carries the newer (stronger) evidence, so it leads; equal-quality ties
+    # fall back to candidate_id ascending (aaa before bbb).
+    assert ids == ["dup", "aaa", "bbb"]
