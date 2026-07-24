@@ -399,6 +399,32 @@ def select_gated(
     return gated_factory(authorization)
 
 
+def select_gated_optional(
+    *,
+    flags: Sequence[str],
+    provider_id: str,
+    gated_factory: Callable[[Authorization], T],
+    now: str | None = None,
+    root: Path | None = None,
+) -> tuple[T | None, str | None]:
+    """Gate chokepoint for a capability that DEGRADES rather than fails closed.
+
+    Same safety property as :func:`select_gated` — ``gated_factory`` receives the
+    :class:`Authorization`, so the capable implementation is built only after the gate
+    opens — but where ``select_gated`` raises :class:`SafetyGateBlocked` when an opted-in
+    provider has no grant, this returns a signal instead: ``(impl, None)`` when the gate
+    opens, ``(None, reason_code)`` when it does not. The caller then falls back to an
+    implementation it already holds (e.g. a base provider), turning "no grant" into a
+    recorded degrade instead of a blocked run. Use ONLY where the fallback is itself
+    already-authorized and inert-or-narrower; a capability with no safe fallback must use
+    :func:`select_gated` and fail closed."""
+    try:
+        authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
+    except SafetyGateBlocked as exc:
+        return None, exc.reason_code
+    return gated_factory(authorization), None
+
+
 def select_gated_chain(
     *,
     env_var: str,
