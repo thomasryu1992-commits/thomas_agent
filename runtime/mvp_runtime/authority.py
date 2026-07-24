@@ -59,7 +59,7 @@ def authority_invariant_holds(required: str, effective: str, granted: str, ceili
 
 
 def permission_decision_runtime_effect() -> dict[str, Any]:
-    """``runtime_effect`` block for permission_decision.v0.3: REVIEW_ONLY, nothing enabled.
+    """``runtime_effect`` block for a permission_decision record: REVIEW_ONLY, nothing enabled.
 
     ALLOW is never an executor token — a fresh dict per record, all flags false.
     """

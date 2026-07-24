@@ -587,6 +587,7 @@ def main() -> int:
         error(f"{POLICY_REL}: expected valid, got {policy_issues}")
 
     permission_validator = validator_for("schemas/permission_decision.v0.3.schema.json")
+    permission_v4_validator = validator_for("schemas/permission_decision.v0.4.schema.json")
     approval_validator = validator_for("schemas/approval.v0.1.schema.json")
     approval_v2_validator = validator_for("schemas/approval.v0.2.schema.json")
 
@@ -626,6 +627,20 @@ def main() -> int:
         data = load_yaml(rel)
         issues = schema_issues(approval_v2_validator, data)
         issues.extend(validate_approval_record(data, permission_cache, policy))
+        if issues:
+            error(f"{rel}: expected valid, got {issues}")
+
+    # LP4: the live-order example is a permission_decision.v0.4 record — validate it against the
+    # v0.4 schema (v0.3 + the FINANCIAL_APPROVED_TRADING_USE scope) and the same semantic pass.
+    # It is EXECUTE_AND_REPORT at P5 EXTERNAL_ACTION and REVIEW_ONLY like every decision: building
+    # it grants nothing. The semantic validator enforces that (runtime_effect all-false).
+    permission_v4_positive = [
+        "examples/permission/permission_live_order_execute_report_v0.4.yaml",
+    ]
+    for rel in permission_v4_positive:
+        data = load_yaml(rel)
+        issues = schema_issues(permission_v4_validator, data)
+        issues.extend(validate_permission_record(data, policy))
         if issues:
             error(f"{rel}: expected valid, got {issues}")
 
