@@ -35,13 +35,16 @@ class _FixedProvider:
     model_version = "0.0.1"
     network_egress = False
 
-    def __init__(self, action, *, reason="because"):
-        self._action, self._reason = action, reason
+    def __init__(self, action, *, reason="because", difficulty=None):
+        self._action, self._reason, self._difficulty = action, reason, difficulty
         self.seen_max_tokens = None
 
     def generate(self, prompt, *, max_output_tokens, timeout_seconds):
         self.seen_max_tokens = max_output_tokens
-        analysis = {"recommendation": {"action": self._action, "reason": self._reason}}
+        recommendation = {"action": self._action, "reason": self._reason}
+        if self._difficulty is not None:
+            recommendation["difficulty"] = self._difficulty
+        analysis = {"recommendation": recommendation}
         return ProviderResult(analysis=analysis, model_id=self.model_id,
                               model_version=self.model_version,
                               input_tokens=20, output_tokens=5, latency_ms=0)
@@ -76,6 +79,40 @@ def test_unusable_verdict_degrades_to_normal(action):
     assert invocation is not None      # the model answered; the answer was unusable
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("LOW", "LOW"), ("low", "LOW"), (" simple ", "LOW"), ("하", "LOW"),
+    ("MEDIUM", "MEDIUM"), ("moderate", "MEDIUM"), ("중", "MEDIUM"),
+    ("HIGH", "HIGH"), ("hard", "HIGH"), ("COMPLEX", "HIGH"), ("상", "HIGH"),
+])
+def test_difficulty_folds_onto_three_tiers(raw, expected):
+    record, _ = run_triage(
+        _task(), provider=_FixedProvider("NORMAL", difficulty=raw), created_at=NOW)
+    assert record["difficulty"] == expected
+    assert record["difficulty_degraded"] is False
+
+
+@pytest.mark.parametrize("raw", [None, "", "SORTA", 3])
+def test_unusable_or_absent_difficulty_degrades_to_medium(raw):
+    # None means the model omitted the field entirely — the common real case; still MEDIUM.
+    record, _ = run_triage(
+        _task(), provider=_FixedProvider("NORMAL", difficulty=raw), created_at=NOW)
+    assert record["difficulty"] == "MEDIUM"
+    assert record["difficulty_degraded"] is True
+
+
+def test_difficulty_is_independent_of_importance_verdict():
+    # A LOW-importance (NORMAL) request can still be HIGH difficulty, and vice-versa.
+    record, _ = run_triage(
+        _task(), provider=_FixedProvider("NORMAL", difficulty="HIGH"), created_at=NOW)
+    assert record["verdict"] == "NORMAL" and record["difficulty"] == "HIGH"
+
+
+def test_provider_failure_degrades_difficulty_too():
+    record, _ = run_triage(_task(), provider=_ExplodingProvider(), created_at=NOW)
+    assert record["difficulty"] == "MEDIUM"
+    assert record["difficulty_degraded"] is True
+
+
 def test_provider_failure_degrades_without_an_invocation():
     record, invocation = run_triage(_task(), provider=_ExplodingProvider(), created_at=NOW)
     assert record["verdict"] == "NORMAL"
@@ -89,6 +126,8 @@ def test_mock_triage_is_deterministic_normal():
     b, inv_b = run_triage(_task(), provider=MockTriageProvider(), created_at=NOW)
     assert a == b
     assert a["verdict"] == "NORMAL" and a["degraded"] is False
+    # The deterministic mock states a difficulty explicitly, so it is not degraded.
+    assert a["difficulty"] == "MEDIUM" and a["difficulty_degraded"] is False
     assert inv_a == inv_b and inv_a["network_egress"] is False
 
 
@@ -103,5 +142,8 @@ def test_prompt_carries_goal_and_request_only():
     assert "analyze the idea" in prompt
     assert REQUEST in prompt
     assert "HIGH or NORMAL" in prompt
+    # M1: the difficulty ask rides in the same prompt.
+    assert "recommendation.difficulty" in prompt
+    assert "LOW, MEDIUM, or HIGH" in prompt
     # The triage judges the ask; it must not be asked to perform it.
     assert "do not answer it" in prompt
