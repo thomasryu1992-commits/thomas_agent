@@ -4,29 +4,29 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-24** (end of the Kalshi/Polymarket roadmap session).
+Last updated: **2026-07-25** (refreshed against the actual repo state — every claim below was
+re-checked against `main`, not carried over).
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
 Authoritative detail for each item lives in the linked roadmap docs; this file is the index.
 
 ---
 
-## In-flight PRs (snapshot 2026-07-24 — being merged, possibly from another machine)
+## In-flight PRs
 
-- [ ] **#145** M1: difficulty triage (상/중/하) + LLM orchestration roadmap — `feat/difficulty-triage`
-- [ ] **#143** docs: prediction-market trading roadmap v0.1 (PM0–PM3) — `docs/prediction-market-roadmap`
-- [ ] **#142** LP4 governance: a live-order PermissionDecision is buildable at P5 (grants nothing) — `feat/live-order-permission`
-- [x] #146 memory console (/memory, /promote) — merged 2026-07-24
-- [x] #144 promote organization architecture to active Goal doc — merged 2026-07-24
+**None.** The 2026-07-24 snapshot has fully drained: #142, #145, #146 and #144 merged, and #143's
+roadmap reached `main` by another route (the PR itself was closed unmerged, the document is
+present). Both roadmaps below are on `main` and readable from a plain clone.
 
-> Check live state with `gh pr list`. Once #143 and #145 merge, the two roadmaps below
-> are on `main` and visible from a plain clone (until then: `git fetch` + read the branch).
+> Check live state with `gh pr list` rather than trusting this line — parallel machines open and
+> merge PRs continuously.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket) — NEW this session
+## A. Prediction-market trading (Kalshi / Polymarket) — not started
 
-Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (PR #143).
+Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
+**No code exists for this track yet** — every box below is open.
 Phasing: observe (no money) → paper (no external effect) → approval-gated live (per-order approval).
 
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
@@ -59,7 +59,8 @@ trading, leverage, any US-context Polymarket access.
 
 ## B. LLM orchestration (M-series) — request → tiered model → verify → deliver
 
-Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145).
+Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (on `main`).
+**This track is code-complete.** The only open line is M5b, which is an operator action, not a build.
 
 - [x] **M0** env cleanup (done 2026-07-24).
 - [x] **M1** difficulty triage 상/중/하, observe-only — merged (PR #145).
@@ -76,8 +77,12 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
       memory-event stream, CANDIDATE-only). `runtime/mvp_runtime/memory.py`
       (`build_correction_candidate`/`build_learning_event`), wired in `pipeline.py` +
       `operator_feedback.py`.
-- [ ] **M5b** Thomas promotes useful correction candidates to VALIDATED — already available via the
-      existing R9/`/promote` door; no new code, it is the operator's explicit yes.
+- [ ] **M5b** Thomas promotes useful correction candidates to VALIDATED — **standing operator habit,
+      not a build item.** The door already exists (`/memory` to list, `/promote` to approve, or
+      `scripts/promote_memory_candidate.py`); nothing here is waiting on code. It stays open on
+      purpose: M5a captures corrections as unverified `[M#]` candidates and M5c only feeds back what
+      was promoted, so the loop produces nothing until someone says yes. That gate is the feature —
+      it is what keeps a bad correction from entrenching itself as standing guidance.
 - [x] **M5c** a promoted VALIDATED correction feeds back as a correction to *apply* (`[V#]`,
       distinctly framed) — done. `promote_candidate` carries the correction marker forward;
       `worker._validated_context` frames it. Known limit: only revision-path corrections are
@@ -92,16 +97,22 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
 
 ## C. Crypto live execution — the governance packet + the order code
 
-Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (decided 2026-07-23,
-**not implemented**). Status: `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
-**PR #142 is the first step of this track** (a live-order PermissionDecision buildable at P5, grants nothing).
+Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (decided 2026-07-23;
+**the governance packet is now implemented except the LP4-coupled flag** — that doc's own step
+table is the authority). Status: `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
-- [ ] **Governance implementation (steps 1–10)** — blocked until `feat/cost-budget-ledger` (B2 spend
-      gate) merges first, then rebase onto it:
-  - [ ] `permission_decision.v0.4` — add `FINANCIAL_APPROVED_TRADING_USE` scope (first bump since v0.3).
-  - [ ] Policy: scope in `policy_dispositions.EXECUTE_AND_REPORT`; define `p5_policy_gate`;
-        `financial_transaction_execution_implemented: true` **only when LP4 merges** (leave
-        `financial_executor_enabled: false` byte-for-byte).
+The `feat/cost-budget-ledger` dependency this section once recorded is **void** — that branch was
+never pushed and the sequencing was deliberately reversed (2026-07-24); the two claim different
+scopes at different levels, so nothing was owed to it.
+
+- [x] **Governance implementation** — steps 1, 2, 4, 5, 8, 9 done (PR #142): `permission_decision.v0.4`
+      adds `FINANCIAL_APPROVED_TRADING_USE`; the scope is in `policy_dispositions.EXECUTE_AND_REPORT`;
+      `p5_policy_gate` is defined; `permission.py` builds a live-order decision at P5; the v0.4
+      validator + positive example exist; both replay bundles regenerated.
+  - [ ] Step 3 — `financial_transaction_execution_implemented: false → true`, **only when LP4 can
+        actually send** (it is `false` today, correctly). `financial_executor_enabled` stays `false`
+        and untouched. This flag, `ORDER_PATH_IMPLEMENTED`, and the readiness board must flip
+        **in lockstep** (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`).
   - [x] New closed schema `live_trading_budget.v0.1` (registered trading caps, self-hashed) —
         done 2026-07-25 (schema + `live_budget.py` + `register_live_trading_budget.py`).
   - [x] Step 6b: the guard reads the registered budget as authoritative (over env caps) — done
@@ -111,8 +122,9 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
         (non-routable)** — done 2026-07-25 (contract + index-only registry entry + hash; passes
         contract-consistency + release gate). Grants nothing; **activating** it (candidate →
         routable) is the separate remaining `ROLE_GOVERNANCE` approval.
-  - [ ] Update validator assertions + `require_doc_tokens`; **regenerate both replay bundles**
-        (CRLF-normalized SHA; `rebuild_bundle` has no CLI entrypoint).
+  - [x] Validator assertions + the v0.4 positive example + **both replay bundles regenerated** —
+        done with steps 8/9 (PR #142). Any future policy edit changes its SHA-256 and owes the
+        bundles another rebuild (CRLF-normalized; `rebuild_bundle` has no CLI entrypoint).
 - [~] **LP4** order adapter — **increment 1 (skeleton) done 2026-07-25**
       (`runtime/mvp_runtime/crypto/live_execution.py`: adapter protocol, DryRun default, gated
       stub, `submit_and_reconcile` + reconcile vocabulary; design record
@@ -138,8 +150,11 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
       feedback report cannot read live results (only the daily-loss breaker can). Closed by LP5.4.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0** migrated; 1 existed in
       the frozen source system, did not migrate).
-- [ ] Standing finding: the router is **symbol-starved** — the cycle runs BTCUSDT only while the pool
-      is mostly other symbols, so most strategies are never evaluated.
+- [x] The **symbol-starved router** finding — closed 2026-07-25 (PR #148). A crypto schedule with an
+      empty request now fans out over every `(symbol, timeframe)` the pool routes on **plus** every
+      context holding an open paper position (`cycle.run_pool_cycle`), and `route_entries` matches
+      the whole `symbol_scope` rather than `symbol_scope[0]`, booking under the traded symbol. A
+      named `SYMBOL [TIMEFRAME]` request is still a single-context operator override.
 
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
