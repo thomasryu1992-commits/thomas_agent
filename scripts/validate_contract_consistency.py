@@ -242,6 +242,19 @@ for entry in registry.get("non_dynamic_roles", []):
         error(f"Non-dynamic Role definition is missing: {rel}")
     if entry.get("role_id") == "thomas.prime" and entry.get("routable") is not False:
         error("Thomas Prime must remain non-routable")
+    if entry.get("role_id") == "conversation.frontdesk":
+        # The frontdesk's privilege separation depends on Prime never being able to route
+        # work to it — the pipeline-front position IS the boundary. Flipping this bit
+        # would put a conversational LLM in a specialist seat, so it is pinned here like
+        # Prime's, active or not.
+        if entry.get("routable") is not False:
+            error("Conversation Frontdesk must remain non-routable")
+        if isinstance(rel, str) and (ROOT / rel).exists():
+            # Non-dynamic entries skip the dynamic-role hash loop above, but this one
+            # pins its definition hash in the registry — verify it the same way, so a
+            # definition edit without a registry update is caught, not waved through.
+            if entry.get("definition_sha256") != sha256_text((ROOT / rel).read_text(encoding="utf-8")):
+                error("conversation.frontdesk: definition_sha256 mismatch")
 
 for rel in [
     "schemas/task.v0.3.schema.json",

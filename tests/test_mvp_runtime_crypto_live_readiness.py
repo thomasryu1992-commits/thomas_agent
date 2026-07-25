@@ -200,18 +200,32 @@ def test_canary_registry_shares_the_one_live_grant():
 
 # === the readiness board ============================================================
 
+def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z", **cap_overrides):
+    """Register a valid live-trading budget under ``root`` (step 6b: the guard's cap source)."""
+    from runtime.mvp_runtime.crypto import live_budget
+    caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
+                max_daily_order_count=2, max_open_notional_usdt=120.0,
+                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+    caps.update(cap_overrides)
+    rec = live_budget.build_live_trading_budget_record(
+        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from=valid_from, valid_until=valid_until,
+        registered_by="thomas", registered_at=valid_from)
+    live_budget.write_registered_budget(rec, root=root)
+    return rec
+
+
 def test_fresh_machine_is_not_ready(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["ready"] is False
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
-    assert {"live_trading_grant", "confirmation_phrase", "risk_caps",
+    assert {"live_trading_grant", "confirmation_phrase", "registered_budget",
             "canary_evidence", "order_path_implemented"} <= failed
 
 
 def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
-        "live_trading_grant", "confirmation_phrase", "risk_caps", "manual_kill_switch",
+        "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
         "order_path_implemented",
     }
@@ -224,24 +238,28 @@ def test_unconfigured_loss_limit_shows_as_breached(tmp_path, clean_env):
     assert breaker["ok"] is False and "BREACHED" in breaker["detail"]
 
 
-def test_configuring_caps_clears_that_row(tmp_path, clean_env):
+def test_registering_a_budget_clears_the_budget_row(tmp_path, clean_env):
+    """Step 6b: the caps come from the registered budget now, not env — env caps no longer
+    clear the row (that is the whole point: an auditable record, not a mutable env)."""
+    # Env caps set, but NO budget registered => the row stays red.
     clean_env.setenv("MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "60")
-    clean_env.setenv("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "2")
-    clean_env.setenv("MVP_LIVE_MAX_OPEN_NOTIONAL_USDT", "120")
-    clean_env.setenv("MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "20")
-    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    caps = next(c for c in status["checks"] if c["check"] == "risk_caps")
-    assert caps["ok"] is True
+    before = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert next(c for c in before["checks"] if c["check"] == "registered_budget")["ok"] is False
+    # Register a valid budget => the row clears, and the caps in the detail come from the record.
+    _register_budget(tmp_path)
+    after = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in after["checks"] if c["check"] == "registered_budget")
+    assert row["ok"] is True and "order<=60.0" in row["detail"]
 
 
-def test_cap_above_the_ceiling_fails_the_caps_row(tmp_path, clean_env):
-    clean_env.setenv("MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "500")
-    clean_env.setenv("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "2")
-    clean_env.setenv("MVP_LIVE_MAX_OPEN_NOTIONAL_USDT", "120")
-    clean_env.setenv("MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "20")
-    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    caps = next(c for c in status["checks"] if c["check"] == "risk_caps")
-    assert caps["ok"] is False and "ceiling" in caps["detail"]
+def test_an_expired_budget_fails_the_budget_row(tmp_path, clean_env):
+    """A registered budget outside its validity window is invalid — the row names why, and the
+    guard dry-run refuses (the caps fall back to blocking)."""
+    _register_budget(tmp_path, valid_from="2026-06-01T00:00:00Z", valid_until="2026-06-30T00:00:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)  # NOW is 2026-07-23, past valid_until
+    row = next(c for c in status["checks"] if c["check"] == "registered_budget")
+    assert row["ok"] is False and "invalid" in row["detail"]
+    assert status["guard_dry_run"]["approved"] is False
 
 
 def test_confirmation_phrase_row(tmp_path, clean_env):

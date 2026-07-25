@@ -33,9 +33,9 @@ from .account import ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_E
 from .live_order import (
     CONFIRMATION_ENV,
     MANUAL_KILL_SWITCH_ENV,
-    LiveOrderLimits,
     count_today,
     evaluate_live_order_guard,
+    resolve_live_order_limits,
 )
 from .live_pnl import (
     LIVE_TRADING_ENV,
@@ -61,7 +61,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     failed check with its reason, not a crashed board."""
     root = root if root is not None else _repo_root()
     now = now or timeutil.utc_now_iso()
-    limits = LiveOrderLimits.from_env()
+    # The caps come from the registered budget now, not the environment; confirmation + manual
+    # kill still come from env (resolve_live_order_limits folds both in). budget["valid"] is the
+    # authoritative "a budget backs these caps" fact the guard needs.
+    limits, budget = resolve_live_order_limits(root, now=now)
     checks: list[dict[str, Any]] = []
 
     # 1. The switch itself.
@@ -88,22 +91,20 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         else f"{CONFIRMATION_ENV} missing or does not match the live-trading phrase",
     ))
 
-    # 3. The four caps. Zero means not configured, which blocks.
-    caps = {
-        "max_order_notional_usdt": limits.max_order_notional_usdt,
-        "max_daily_order_count": limits.max_daily_order_count,
-        "max_open_notional_usdt": limits.max_open_notional_usdt,
-        "daily_loss_limit_usdt": limits.daily_loss_limit_usdt,
-    }
-    unset = [name for name, value in caps.items() if value <= 0]
-    over_ceiling = limits.max_order_notional_usdt > limits.absolute_max_notional_usdt
-    checks.append(_check(
-        "risk_caps",
-        not unset and not over_ceiling,
-        "all four configured" if not unset and not over_ceiling
-        else (f"unconfigured: {', '.join(unset)}" if unset else "")
-        + (" ; per-order cap exceeds the absolute ceiling" if over_ceiling else ""),
-    ))
+    # 3. The registered trading budget (step 6b). The caps now come FROM this record, and a
+    #    valid budget is schema-guaranteed to carry positive caps within the 200 USDT ceiling —
+    #    so this one row subsumes the old env-caps check. A missing / expired / tampered budget
+    #    fails here, and the caps fall back to the blocking defaults so the guard refuses too.
+    budget_detail = (
+        f"registered {budget['budget_id']} "
+        f"(order<={limits.max_order_notional_usdt}, {limits.max_daily_order_count}/day, "
+        f"open<={limits.max_open_notional_usdt}, loss<={limits.daily_loss_limit_usdt})"
+        if budget.get("valid")
+        else (f"registered but invalid: {budget['error']}" if budget.get("registered")
+              else "no live-trading budget registered "
+                   "(register with scripts/register_live_trading_budget.py)")
+    )
+    checks.append(_check("registered_budget", bool(budget.get("valid")), budget_detail))
 
     # 4. The manual halt.
     manual_halt = limits.manual_kill_switch
@@ -190,6 +191,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         clean_canary_orders=promotion["clean_count"],
         submitted_today=submitted_today,
         current_open_notional_usdt=0.0,
+        budget_registered=bool(budget.get("valid")),
         limits=limits,
     )
 
