@@ -29,7 +29,7 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from . import jsonl, memory, timeutil
+from . import jsonl, memory, task_registry, timeutil
 from .events import stamped_event
 from .control import ControlStore
 from .errors import MvpRuntimeError, SchedulerBlocked, ToolBlocked
@@ -389,8 +389,15 @@ def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
+    registry: Any = None,
 ) -> str:
-    """Execute one due schedule and return a short status string."""
+    """Execute one due schedule and return a short status string.
+
+    ``registry`` (F1, opt-in) records an ``analysis_task`` fire as a coordination entry, so
+    an unattended scheduled run is visible to ``/tasks`` and ``/history`` like an operator's
+    own request. Only that kind is recorded — the maintenance and crypto kinds are not
+    task-shaped and have their own scheduler events — and the recording is best-effort, so
+    bookkeeping can never fail a fire."""
     if schedule.kind == KIND_PRUNE:
         if working_memory is None:
             return "skipped_no_memory_store"
@@ -560,13 +567,29 @@ def _execute(
         return (f"proposed={record['accepted_count']}/{record['proposed_count']} "
                 f"backlog={backlog} prop={record['proposal_id']}")
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
+    entry = task_registry.record_submission(
+        registry, request_text=schedule.request, origin="SCHEDULER",
+        requester_id=f"mvp.scheduler:{schedule.schedule_id}", now=now,
+    )
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
         programization=programization,
         now=now, store=ledger, repo_root=repo_root, channel="scheduler", requester_type="scheduler",
         requester_id="mvp.scheduler", authenticated=True, source_ref=f"scheduler:{schedule.schedule_id}",
     )
-    return str(result.get("status", "UNKNOWN"))
+    status = str(result.get("status", "UNKNOWN"))
+    identity = result.get("records", {}).get("received_task", {}).get("identity", {})
+    trace_id = identity.get("trace_id")
+    # A scheduled run has no operator waiting on a send, so COMPLETED *is* its terminal:
+    # the deliverable exists in the ledger and /result can re-render it on demand.
+    task_registry.close_entry(
+        registry, entry,
+        status=task_registry.DELIVERED if status == "COMPLETED" else task_registry.BLOCKED,
+        now=now, task_id=identity.get("task_id"), trace_id=trace_id,
+        result_ref=f"ledger:{trace_id}" if trace_id else None,
+        reason_code=None if status == "COMPLETED" else (result.get("block") or {}).get("reason_code", "BLOCKED"),
+    )
+    return status
 
 
 def run_due(
@@ -582,6 +605,7 @@ def run_due(
     repo_root: Path | None = None,
     executor: Callable[..., dict[str, Any]] = run_task,
     notifier: Callable[[str, str], None] | None = None,
+    registry: Any = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
 
@@ -663,7 +687,7 @@ def run_due(
         started_at = time.monotonic()
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
-                              programization=programization,
+                              programization=programization, registry=registry,
                               provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
             action = "fired"
             fired += 1
