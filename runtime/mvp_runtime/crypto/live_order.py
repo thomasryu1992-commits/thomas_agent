@@ -51,7 +51,14 @@ STATUS_READY = "READY"
 # canary or testnet phrase must not authorize autonomous live trading.
 LIVE_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY"
 
+# ...and the converse: the autonomous phrase must not authorize a canary either. A canary is a
+# deliberate, one-at-a-time operator order placed to BUILD the promotion evidence, so it carries
+# its own phrase and its own env. One phrase per capability is the whole point — pasting the
+# wrong one authorizes nothing.
+CANARY_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER"
+
 CONFIRMATION_ENV = "MVP_LIVE_CONFIRMATION"
+CANARY_CONFIRMATION_ENV = "MVP_LIVE_CANARY_CONFIRMATION"
 MANUAL_KILL_SWITCH_ENV = "MVP_LIVE_MANUAL_KILL_SWITCH"
 MAX_ORDER_NOTIONAL_ENV = "MVP_LIVE_MAX_ORDER_NOTIONAL_USDT"
 ABSOLUTE_MAX_NOTIONAL_ENV = "MVP_LIVE_ABSOLUTE_MAX_NOTIONAL_USDT"
@@ -107,6 +114,7 @@ class LiveOrderLimits:
     daily_loss_limit_usdt: float = 0.0
     min_clean_canary_orders: int = DEFAULT_MIN_CLEAN_CANARY_ORDERS
     confirmation: str = ""
+    canary_confirmation: str = ""
     manual_kill_switch: bool = False
 
     @classmethod
@@ -123,6 +131,7 @@ class LiveOrderLimits:
                 MIN_CLEAN_CANARY_ORDERS_ENV, DEFAULT_MIN_CLEAN_CANARY_ORDERS
             ),
             confirmation=os.environ.get(CONFIRMATION_ENV, "").strip(),
+            canary_confirmation=os.environ.get(CANARY_CONFIRMATION_ENV, "").strip(),
             manual_kill_switch=_env_bool(MANUAL_KILL_SWITCH_ENV),
         )
 
@@ -132,6 +141,11 @@ class LiveOrderLimits:
 
     def confirmation_present(self) -> bool:
         return bool(self.confirmation) and self.confirmation == LIVE_CONFIRMATION_PHRASE
+
+    def canary_confirmation_present(self) -> bool:
+        """The canary phrase, compared only against the canary constant — so the autonomous
+        phrase can never stand in for it (and vice versa)."""
+        return bool(self.canary_confirmation) and self.canary_confirmation == CANARY_CONFIRMATION_PHRASE
 
 
 # --- idempotency -------------------------------------------------------------------
@@ -305,6 +319,7 @@ def evaluate_live_order_guard(
     # supplies it from the venue and reports the cap itself when the account is unreadable.
     current_open_notional_usdt: float,
     budget_registered: bool = False,
+    canary: bool = False,
     limits: LiveOrderLimits | None = None,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
@@ -316,6 +331,22 @@ def evaluate_live_order_guard(
     ``limits`` — the caller resolves it (``resolve_live_order_limits``). It defaults to
     ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
     authorize an order on env-only caps.
+
+    ``canary`` marks the deliberate operator canary — the one-at-a-time real order placed to
+    BUILD the promotion evidence. It changes exactly two things, and nothing else:
+
+    1. the **promotion gate is not applied**, because requiring >= 3 clean canaries before the
+       first canary can be placed is unsatisfiable — that check exists to gate the *autonomous*
+       path, and the canary is what earns it;
+    2. the confirmation phrase compared is the **canary** phrase, not the autonomous one, so the
+       autonomous phrase cannot authorize a canary (and the canary phrase cannot authorize
+       autonomous trading — that was already true).
+
+    Every other check — the grant, both kill switches, the loss breaker, the registered budget,
+    the size / daily-count / exposure caps, the connectivity refusal, the intent shape — applies
+    identically. Sharing one guard rather than writing a second one is deliberate: a check added
+    later cannot land on only one of the two paths. ``canary`` defaults to ``False``, so the
+    autonomous path keeps the promotion gate by default (fail-closed).
     """
     cfg = limits if limits is not None else LiveOrderLimits.from_env()
     blocks: list[str] = []
@@ -334,8 +365,13 @@ def evaluate_live_order_guard(
     # 1. The switch. Without the operator's live-trading grant nothing else matters.
     if not gate_open:
         blocks.append("live trading grant is not active (safety-flag gate closed)")
-    # 2. The phrase. A grant enables the capability; the phrase proves intent to use it.
-    if not cfg.confirmation_present():
+    # 2. The phrase. A grant enables the capability; the phrase proves intent to use it. One
+    #    phrase per capability: a canary is authorized by the canary phrase, never the autonomous
+    #    one, so a machine armed for canaries cannot start trading autonomously.
+    if canary:
+        if not cfg.canary_confirmation_present():
+            blocks.append(f"canary confirmation phrase not present ({CANARY_CONFIRMATION_ENV})")
+    elif not cfg.confirmation_present():
         blocks.append(f"live confirmation phrase not present ({CONFIRMATION_ENV})")
     # 3. The trader's own halt.
     if cfg.manual_kill_switch:
@@ -352,14 +388,18 @@ def evaluate_live_order_guard(
             blocks.append(
                 f"daily realized-loss limit {cfg.daily_loss_limit_usdt} USDT reached - halted for today"
             )
-    # 6. Promotion evidence: clean canary orders actually placed and reconciled.
-    if cfg.min_clean_canary_orders <= 0:
-        blocks.append("promotion minimum is not configured (would be promotion with no evidence)")
-    elif clean_canary_orders < cfg.min_clean_canary_orders:
-        blocks.append(
-            f"live promotion not ready - need >= {cfg.min_clean_canary_orders} clean canary "
-            f"orders, have {clean_canary_orders}"
-        )
+    # 6. Promotion evidence: clean canary orders actually placed and reconciled. NOT applied to a
+    #    canary — that order is what earns this evidence, so gating it on the evidence would make
+    #    the first canary unplaceable and the count would stay 0 forever. The autonomous path
+    #    keeps the gate (canary defaults to False).
+    if not canary:
+        if cfg.min_clean_canary_orders <= 0:
+            blocks.append("promotion minimum is not configured (would be promotion with no evidence)")
+        elif clean_canary_orders < cfg.min_clean_canary_orders:
+            blocks.append(
+                f"live promotion not ready - need >= {cfg.min_clean_canary_orders} clean canary "
+                f"orders, have {clean_canary_orders}"
+            )
     # 7. A connectivity probe must never ride the autonomous path.
     if intent.get("connectivity_test"):
         blocks.append("connectivity_test intent cannot use the live order path")
@@ -418,6 +458,7 @@ def evaluate_live_order_guard(
         "daily_loss_breached": daily_loss_breached,
         "clean_canary_orders": clean_canary_orders,
         "close_guard": False,
+        "canary": bool(canary),
     }
 
 

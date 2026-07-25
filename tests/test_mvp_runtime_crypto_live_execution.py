@@ -208,12 +208,41 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
-def test_no_autonomous_path_can_reach_the_venue_yet():
-    """Increment 2a: the real transport exists, but the two governance/readiness flags stay OFF
-    in lockstep, so the readiness board cannot report READY and nothing autonomous routes here.
-    The lockstep flip is increment 2b."""
-    from runtime.mvp_runtime.crypto.live_readiness import ORDER_PATH_IMPLEMENTED
-    assert ORDER_PATH_IMPLEMENTED is False
+def test_no_autonomous_entry_point_reaches_the_live_order_path():
+    """Increment 2b flipped the flags, so what keeps an order from happening autonomously is
+    structural, not a missing implementation.
+
+    The property under test is about the **autonomous entry points** — the crypto cycle, the
+    scheduler, the pipeline, and the operator loop. LP5's own modules (``live_position``) may of
+    course reach the adapter; that is what they are for. What must stay true is that no scheduled
+    or operator-triggered run routes there, so the only door remains the deliberate canary script.
+    Wiring the cycle to live is a separate, explicit decision — and this test is what makes that
+    wiring impossible to do by accident."""
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    entry_points = [
+        "runtime/mvp_runtime/crypto/cycle.py",
+        "runtime/mvp_runtime/scheduler.py",
+        "runtime/mvp_runtime/pipeline.py",
+        "runtime/mvp_runtime/operator.py",
+    ]
+    live_order_surface = ("live_execution", "live_position", "select_order_adapter",
+                          "submit_and_reconcile")
+    offenders = []
+    for rel in entry_points:
+        path = Path(repo_root()) / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        hits = [needle for needle in live_order_surface if needle in text]
+        if hits:
+            offenders.append(f"{rel}: {hits}")
+    assert offenders == [], (
+        "an autonomous entry point now reaches the live order path — that is a deliberate "
+        f"go-live decision, not a refactor: {offenders}"
+    )
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):
