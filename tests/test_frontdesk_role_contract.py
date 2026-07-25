@@ -60,11 +60,13 @@ def test_frontdesk_is_not_a_routable_dynamic_role():
 
 
 def test_activation_is_a_separate_explicit_decision():
-    """The candidate status is load-bearing: flipping it to active is proposal decision D2
-    and must arrive as its own deliberate change, not ride along with something else. When
-    that decision is made, this test is updated IN the activating PR — which is the point."""
-    assert _registry_entry()["status"] == "candidate"
-    assert _front_matter()["status"] == "candidate"
+    """This test existed to pin ``candidate`` so the activation flip could not ride in
+    silently. The flip HAS now been made — proposal decision D2, explicit Thomas decision
+    2026-07-25, in the F2 runtime PR, by updating exactly this test — which is the
+    ceremony the pin was for. It now pins ``active`` the same way, so a future
+    deactivation is equally deliberate."""
+    assert _registry_entry()["status"] == "active"
+    assert _front_matter()["status"] == "active"
 
 
 def test_registry_hash_pins_the_definition():

@@ -2,8 +2,8 @@
 schema_version: role_definition.v0.2
 role_id: conversation.frontdesk
 role_name: Conversational Frontdesk Role
-role_version: 0.1.0
-status: candidate
+role_version: 0.2.0
+status: active
 routable: false
 role_type: session_front
 purpose: Hold the operator's Telegram conversation — understand intent across turns,
@@ -202,7 +202,8 @@ validation_block_conditions: []
 
 ## 7. 활성화
 
-- 이 문서의 존재는 아무것도 활성화하지 않는다. `status: candidate`이며, 활성화
-  (`status: active` 플립)는 F2 런타임 구현과 함께 **별도의 명시적 Thomas 결정**이다
-  (제안 문서의 D2). provider 그랜트(D3)는 머신별로 또 별도다
-  (`scripts/activate_safety_flag.py`).
+- `status: active` (D2 결정, 2026-07-25, F2 런타임 구현 PR에서 명시적으로 플립).
+  활성화가 곧 실행은 아니다: 머신별 provider 그랜트(D3,
+  `scripts/activate_safety_flag.py` + `MVP_FRONTDESK_PROVIDER`)가 없으면 런타임
+  selection이 fail-closed로 거부하며, 레지스트리 활성 + 해시 일치를 selection이
+  직접 재검증한다 (`frontdesk.select_frontdesk_provider`).

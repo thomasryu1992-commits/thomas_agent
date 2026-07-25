@@ -108,6 +108,13 @@ it faithfully or a "close" could open), `newClientOrderId = intent.client_order_
 one-way position mode on USDT-M futures (documented; a hedge-mode `positionSide` is a later
 addition if the account uses it).
 
+**Scope note added 2026-07-25 (LP5 decision 1).** LP5 places a venue-side protective bracket
+(SL + TP, reduceOnly) at entry, so **increment 2 must also support conditional order types** —
+`STOP_MARKET` / `TAKE_PROFIT_MARKET` with a `stopPrice` — not MARKET alone. `build_order_request`
+currently asserts `order_type_exchange == "MARKET"`; that assertion widens to an allowlist of the
+supported types. The venue's exact conditional-order semantics are a **must-verify-at-implementation**
+item (see `LP5_POSITION_KERNEL_DESIGN_V0.1.md`), not something to implement from memory.
+
 ## Reconcile — the real-money safety core
 
 A submit is confirmed by a **read**, never assumed from the POST response:
