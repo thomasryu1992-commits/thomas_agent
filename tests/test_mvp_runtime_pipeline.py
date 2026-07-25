@@ -276,6 +276,40 @@ def test_m5a_revision_without_working_memory_is_safe():
 
 
 @requires_local_core
+def test_m5c_promoted_correction_feeds_back_as_a_correction(tmp_path):
+    """The full A→D loop: a revision correction (M5a) → operator promotion (M5b) → a later run
+    reads it back as a VALIDATED correction with its marker intact (M5c). The framing that makes
+    the specialist apply it is unit-tested in the worker; here we prove the marker round-trips
+    all the way to the next run's validated context."""
+    from runtime.mvp_runtime.memory import promote_candidate
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+
+    # Run 1: a revision recovers a REVISE to PASS and mints a correction candidate (full origin).
+    first = run_task(REQUEST, provider=_ReviseThenPassSpecialist(), working_memory=wm,
+                     revise=True, now=NOW)
+    assert first["status"] == "COMPLETED"
+    correction = [c for c in wm.read_all() if c.get("learning_source") == "revision"][0]
+
+    # M5b: the operator promotes it (the revision correction carries origin, so the audited
+    # promotion path accepts it).
+    validated = promote_candidate(correction, promoted_by="thomas", reason="반복 교정",
+                                  now="2026-07-15T09:30:00Z")
+    assert validated["learning_source"] == "revision"
+    wm.append_validated([validated])
+
+    # Run 2: the promoted correction is read back as VALIDATED context, marker intact.
+    second = run_task(REQUEST, provider=MockProvider(), working_memory=wm,
+                      now="2026-07-15T10:00:00Z")
+    assert second["status"] == "COMPLETED"
+    retrieved = second["records"]["validated_memory_retrieved"]
+    assert [e["validated_memory_id"] for e in retrieved] == [validated["validated_memory_id"]]
+    assert retrieved[0]["learning_source"] == "revision"     # feeds back AS a correction
+    evidence = second["records"]["agent_output"]["evidence"]
+    assert any(e.get("ref") == f"validated_memory:{validated['validated_memory_id']}" for e in evidence)
+
+
+@requires_local_core
 def test_promoted_memory_feeds_back_as_validated_context(tmp_path):
     """The full loop: run -> candidate -> operator promotion -> next run reads it back."""
     from runtime.mvp_runtime.memory import promote_candidate

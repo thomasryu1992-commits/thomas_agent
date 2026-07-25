@@ -405,6 +405,15 @@ def promote_candidate(
     origin = candidate.get("origin")
     if isinstance(origin, Mapping):
         validated["source_origin"] = dict(origin)
+    # M5c: carry the correction marker forward so a promoted M5a correction feeds back to a
+    # later run *as a correction to apply* ([V#]), not as generic reusable knowledge. Additive
+    # and present only for a correction candidate (``build_correction_candidate`` stamps it).
+    learning_source = candidate.get("learning_source")
+    if isinstance(learning_source, str) and learning_source:
+        validated["learning_source"] = learning_source
+        correction_ref = candidate.get("correction_ref")
+        if isinstance(correction_ref, str) and correction_ref:
+            validated["correction_ref"] = correction_ref
     try:
         integrity.scan_for_secret_bearing_keys(validated)
     except IntegrityError as exc:

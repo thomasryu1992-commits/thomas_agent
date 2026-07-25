@@ -189,3 +189,29 @@ def test_worker_normalizes_imperfect_model_output():
     assert out["facts"][0]["evidence_refs"] == ["model:analysis"]
     assert all(isinstance(i, dict) and "statement" in i for i in out["inferences"])
     assert len(out["inferences"]) == 2  # the integer inference dropped
+
+
+# --- M5c: a promoted correction is framed as a correction to apply -----------
+
+def test_validated_context_frames_a_correction_distinctly():
+    from runtime.mvp_runtime.worker import _validated_context
+
+    plain = {"candidate_type": "reusable_knowledge", "content": "generic fact"}
+    correction = {"candidate_type": "reusable_knowledge", "content": "표로 정리하라",
+                  "learning_source": "revision"}
+    block = _validated_context([plain, correction])
+    # The plain entry keeps the ordinary framing; the correction gets the apply-this framing.
+    assert "[V1] (reusable_knowledge) generic fact" in block
+    assert "[V2] (operator-approved correction — apply to this similar request) 표로 정리하라" in block
+    # ...and the model is instructed to prefer a marked correction.
+    assert "prefer its guidance over your default approach" in block
+
+
+def test_validated_context_without_a_correction_is_unchanged():
+    """No correction present => byte-identical to the pre-M5c rendering (no PROMPT_VERSION bump)."""
+    from runtime.mvp_runtime.worker import _validated_context
+
+    block = _validated_context([{"candidate_type": "reusable_knowledge", "content": "x"}])
+    assert block == ("\nValidated memory (operator-approved reusable knowledge; cite by [V#]):"
+                     "\n[V1] (reusable_knowledge) x\n")
+    assert "prefer its guidance" not in block
