@@ -9,6 +9,7 @@ import pytest
 from runtime.mvp_runtime import cli, control
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.control import ControlStore
+from runtime.mvp_runtime.programization import ProgramizationStore
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 
@@ -27,6 +28,10 @@ def test_cli_runs_pipeline_and_emits_response(capsys, tmp_path):
     rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],
                   store=LedgerStore(tmp_path / "ledger"),
                   working_memory=WorkingMemoryStore(tmp_path / "memory"),
+                  # Injected for the reason cli.main's own docstring gives: an omitted
+                  # store defaults to the REPO's, and a synthetic run would accumulate
+                  # toward the real programization counter.
+                  programization=ProgramizationStore(tmp_path / "programization"),
                   control_store=ControlStore(tmp_path))
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out

@@ -34,8 +34,8 @@ class WorkingMemoryStore:
         self._root = Path(root)
 
     @classmethod
-    def default(cls) -> "WorkingMemoryStore":
-        return cls(_repo_root() / WORKING_MEMORY_REL)
+    def default(cls, root: Path | None = None) -> "WorkingMemoryStore":
+        return cls((root if root is not None else _repo_root()) / WORKING_MEMORY_REL)
 
     @property
     def root(self) -> Path:

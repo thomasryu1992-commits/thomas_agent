@@ -216,8 +216,8 @@ def main(
     Dependencies are injectable for tests; unset ones default to local state / the gate."""
     force_utf8_io()
     args = _parse_args(argv)
-    store = store if store is not None else ScheduleStore.default()
-    ledger = ledger if ledger is not None else LedgerStore.default()
+    store = store if store is not None else ScheduleStore.default(repo_root)
+    ledger = ledger if ledger is not None else LedgerStore.default(repo_root)
 
     try:
         # The tick loop's equivalent of the operator's startup guard: a scheduler that
@@ -261,9 +261,9 @@ def main(
             return EXIT_OK
 
         # tick
-        control_store = control_store if control_store is not None else ControlStore.default()
-        working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
-        programization = ProgramizationStore.default()
+        control_store = control_store if control_store is not None else ControlStore.default(repo_root)
+        working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
+        programization = ProgramizationStore.default(repo_root)
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
         gate_banners(provider=provider, search_tool=search_tool)
@@ -304,7 +304,7 @@ def main(
                     # F1: scheduled analysis runs join the same coordination view the
                     # operator's own requests appear in — otherwise /tasks would show
                     # nothing while an unattended run held the tick.
-                    registry=TaskRegistryStore(repo_root) if repo_root else TaskRegistryStore.default(),
+                    registry=TaskRegistryStore.default(repo_root),
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]

@@ -99,8 +99,8 @@ class ProgramizationStore:
         self._root = Path(root)
 
     @classmethod
-    def default(cls) -> "ProgramizationStore":
-        return cls(_repo_root() / PROGRAMIZATION_REL)
+    def default(cls, root: Path | None = None) -> "ProgramizationStore":
+        return cls((root if root is not None else _repo_root()) / PROGRAMIZATION_REL)
 
     @property
     def root(self) -> Path:
