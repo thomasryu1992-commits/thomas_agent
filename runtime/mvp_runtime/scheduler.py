@@ -63,7 +63,9 @@ KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
 KIND_REPORT = "crypto_report"
 KIND_PROPOSER = "crypto_propose"
-KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER})
+KIND_DATA_REVIEW = "crypto_data_review"
+KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
+                   KIND_PROPOSER, KIND_DATA_REVIEW})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -570,6 +572,51 @@ def _execute(
             ledger.append_records(record["proposal_id"], {crypto_proposer.PROPOSAL_LEDGER_KIND: record})
         return (f"proposed={record['accepted_count']}/{record['proposed_count']} "
                 f"backlog={backlog} prop={record['proposal_id']}")
+    if schedule.kind == KIND_DATA_REVIEW:
+        # Loop ① of the three review loops: a periodic, budgeted review of the pipeline's
+        # DATA inputs (the M4b proposer posture applied one layer down). Deterministic
+        # inventory — sources, mintable vocabulary, live feed status, per-timeframe paper
+        # performance — plus one budgeted model call suggesting additional data worth
+        # collecting. ALLOW-tier: the record installs and collects nothing; adding a
+        # source stays a Thomas decision + a gated code change. The sheet is pushed to
+        # the operator best-effort (the crypto_report delivery posture — a failed send
+        # never fails the fire), and the record rides the ledger either way.
+        from . import operator as operator_mod
+        from .crypto import data_review as crypto_data_review
+        from .crypto import pool as crypto_pool
+        from .crypto.cycle import pool_cycle_contexts
+        from .crypto.paper import read_outcomes
+        from .providers import select_validator_provider
+
+        try:
+            cycle_rows = [r for r in (ledger.read_records() if ledger is not None else [])
+                          if r.get("kind") == "crypto_cycle"][-40:]
+        except MvpRuntimeError:
+            cycle_rows = []  # a malformed ledger degrades the inventory, never the fire
+        try:
+            outcomes = read_outcomes(repo_root)
+        except MvpRuntimeError:
+            outcomes = []
+        inventory = crypto_data_review.build_data_inventory(
+            cycle_rows, outcomes, contexts=pool_cycle_contexts(repo_root),
+        )
+        provider = (select_validator_provider(now=now, root=repo_root)
+                    or crypto_data_review.MockDataReviewProvider())
+        record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
+        if ledger is not None:
+            ledger.append_records(
+                record["review_id"], {crypto_data_review.DATA_REVIEW_LEDGER_KIND: record})
+        delivery = ""
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(
+                channel, crypto_data_review.format_review_report(record), repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            delivery = f" sheet_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            delivery = f" sheet_not_sent:{type(exc).__name__}"
+        return (f"data_review={record['accepted_count']}/{record['suggested_count']} "
+                f"review={record['review_id']}{delivery}")
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
