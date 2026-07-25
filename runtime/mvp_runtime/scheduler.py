@@ -434,10 +434,17 @@ def _execute(
         )
         from .crypto.market_data import select_liquidation_feed, select_market_data_collector
         from .crypto.paper import select_paper_store
+        from .crypto.routing_marks import RoutingMarkStore
 
         collector = select_market_data_collector(now=now, root=repo_root)
         store = select_paper_store(now=now, root=repo_root)
         liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+        # Freshness marks — local per-machine bookkeeping (no gate of its own): a new
+        # entry is evaluated at most once per closed candle per context, so one 15-min
+        # fan-out schedule covers 15m/1h/4h/1d without re-entering coarse timeframes
+        # every tick. Marks persist only when the paper store is live (dry run keeps
+        # none), so this changes nothing for a dry-run cycle.
+        routing_marks = RoutingMarkStore(repo_root)
 
         parts = schedule.request.split()
         if parts and parts[0]:
@@ -446,7 +453,7 @@ def _execute(
                 kwargs["timeframe"] = parts[1]
             record = run_crypto_cycle(
                 collector=collector, store=store, liquidation_feed=liquidation_feed,
-                now=now, root=repo_root, **kwargs,
+                now=now, root=repo_root, routing_marks=routing_marks, **kwargs,
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
@@ -454,7 +461,7 @@ def _execute(
 
         summary = run_pool_cycle(
             collector=collector, store=store, liquidation_feed=liquidation_feed,
-            now=now, root=repo_root,
+            now=now, root=repo_root, routing_marks=routing_marks,
         )
         if ledger is not None:
             for record in summary["cycles"]:
