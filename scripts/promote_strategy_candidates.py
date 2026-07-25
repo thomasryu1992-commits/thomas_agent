@@ -126,19 +126,34 @@ def run_promotion(
         entries.extend(pool_store.load_active_pool(root).get("active_strategies") or [])
     existing_ids = {e.get("strategy_id") for e in entries}
     existing_cids = {e.get("candidate_id") for e in entries}
+    display_ids: list[str] = []
     for c in candidates:
         if c["candidate_id"] in existing_cids:
             raise SystemExit(f"BLOCKED: candidate {c['candidate_id']} is already in the active pool")
-        if c.get("strategy_id") in existing_ids:
-            # Pool invariant: strategy_id keys routing/lifecycle, so display names
-            # stay unique in the pool even across lineages. The sets are updated as
-            # we go — checking only the PRE-EXISTING pool let two candidates from
-            # different generations that share a display name into one batch.
-            raise SystemExit(f"BLOCKED: {c.get('strategy_id')} is already in the active pool")
+        # The pool invariant requires a UNIQUE strategy_id per entry, but the FACTORY
+        # restarts strategy_id at S001 every generation — so one promotion batch (or the
+        # existing pool) routinely holds several distinct lineages that share a display
+        # name. candidate_id is the true lineage key (routing records it, lifecycle groups
+        # on it), so on a display-name collision we derive a unique, lineage-readable
+        # id ``{strategy_id}-{generation_id}`` rather than refuse the whole batch;
+        # globally-unique ids (the C7 import's) never collide and keep their name. A
+        # residual collision — the same strategy_id AND generation twice, or no generation
+        # to disambiguate — still fails closed rather than silently picking one entry.
+        display_sid = c.get("strategy_id")
+        if display_sid in existing_ids:
+            gen = c.get("generation_id")
+            derived = f"{display_sid}-{gen}" if gen else None
+            if derived is None or derived in existing_ids:
+                raise SystemExit(
+                    f"BLOCKED: cannot assign a unique strategy_id for {display_sid} "
+                    f"(candidate {c['candidate_id']}); {derived or display_sid} is already in the pool"
+                )
+            display_sid = derived
         existing_cids.add(c["candidate_id"])
-        existing_ids.add(c.get("strategy_id"))
+        existing_ids.add(display_sid)
+        display_ids.append(display_sid)
         entries.append({
-            "strategy_id": c.get("strategy_id"),
+            "strategy_id": display_sid,
             "candidate_id": c["candidate_id"],
             "status": "PAPER_ACTIVE",
             "champion_score": c.get("champion_score"),
@@ -161,6 +176,9 @@ def run_promotion(
     summary = {
         "promoted_candidate_ids": [c["candidate_id"] for c in candidates],
         "promoted_strategy_ids": [c.get("strategy_id") for c in candidates],
+        # The display ids actually installed — equal to the candidate strategy_ids except
+        # where a cross-generation collision forced a unique ``{sid}-{generation}`` name.
+        "promoted_display_ids": display_ids,
         "promoted_rule_hashes": [c.get("strategy_rule_hash") for c in candidates],
         "evidence_hashes": [c.get("evidence_input_sha256") for c in candidates],
         "kept_active": keep_active,
