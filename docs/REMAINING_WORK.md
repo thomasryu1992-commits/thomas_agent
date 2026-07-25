@@ -104,8 +104,10 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
   - [x] Step 6b: the guard reads the registered budget as authoritative (over env caps) — done
         2026-07-25 (`resolve_live_order_limits` + `budget_registered` guard check + the readiness
         `registered_budget` row). No live order without a valid registered budget. Grants nothing.
-  - [ ] New narrow role `execution.live_trader` — P5, `external_action_allowed: true`, candidate,
-        its own `ROLE_GOVERNANCE` approval.
+  - [x] New narrow role `execution.live_trader` — P5, `external_action_allowed: true`, **candidate
+        (non-routable)** — done 2026-07-25 (contract + index-only registry entry + hash; passes
+        contract-consistency + release gate). Grants nothing; **activating** it (candidate →
+        routable) is the separate remaining `ROLE_GOVERNANCE` approval.
   - [ ] Update validator assertions + `require_doc_tokens`; **regenerate both replay bundles**
         (CRLF-normalized SHA; `rebuild_bundle` has no CLI entrypoint).
 - [ ] **LP4** order adapter + **LP5** position kernel / cycle routing — **code does not exist yet**.
