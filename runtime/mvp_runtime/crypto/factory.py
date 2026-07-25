@@ -48,6 +48,7 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
+from . import features, market_data
 from .cost import CostModel, apply_cost_model
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
@@ -99,10 +100,19 @@ NUMERIC_FEATURES = frozenset({
     # on absent data. That hazard predates this change and is not widened by it — the
     # three added here are strictly safer than the one already present.
     "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
+    # Higher-timeframe context (Thomas 2026-07-25): the read of the last CLOSED candle
+    # one step up the traded ladder. Safe on the liquidation terms, not the spike-ratio
+    # terms — with no HTF supplied every column is **None**, so an htf_* condition is
+    # indeterminate and simply never matches. The numeric ones are normalized ratios,
+    # so a mined threshold carries the same meaning on every symbol.
+    *features.HTF_NUMERIC_COLUMNS,
 })
+_REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
+                            "LOW_VOLATILITY", "UNCLEAR"})
 CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
-    "market_regime": frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
-                                "LOW_VOLATILITY", "UNCLEAR"}),
+    "market_regime": _REGIME_VALUES,
+    # Same classifier, one timeframe up — so the same closed vocabulary.
+    "htf_market_regime": _REGIME_VALUES,
 }
 _NUMERIC_COMPARISONS = frozenset({">", ">=", "<", "<=", "==", "!="})
 _CATEGORICAL_COMPARISONS = frozenset({"==", "!="})
@@ -164,6 +174,40 @@ def _breakdown_short_entry(p: dict) -> list[dict]:
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
         {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
         {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_pullback_long_entry(p: dict) -> list[dict]:
+    # The reason the families exist: buy weakness only while the timeframe ABOVE is
+    # still trending up. Same dip, opposite meaning, depending on the higher regime.
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
+    ]
+
+
+def _htf_pullback_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
@@ -267,13 +311,40 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("funding_fade_short", "short", "1h",
                      {"funding_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
                      {"funding_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _funding_fade_short_entry),
+    # HTF families (Thomas 2026-07-25). Ported now that every timeframe in the ladder
+    # is collected — the "untimeable" objection that held them back was that the
+    # higher leg's data was not there to time against, and it now is.
+    StrategyTemplate("htf_trend_long", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_long_entry),
+    StrategyTemplate("htf_trend_short", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
+    StrategyTemplate("htf_pullback_long", "long", "1h",
+                     {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
+                     {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+    StrategyTemplate("htf_pullback_short", "short", "1h",
+                     {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
+                     {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
+
+# Families whose entry rules read HTF columns — mintable only where a higher
+# timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
+HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
+                          "htf_pullback_long", "htf_pullback_short"})
 
 
 def templates_for_timeframe(timeframe: str) -> tuple[StrategyTemplate, ...]:
-    """The rotation retimed to ``timeframe`` (all ten families are retimeable —
-    the untimeable htf_* families were not ported)."""
-    return tuple(replace(t, timeframe=str(timeframe)) for t in TEMPLATES)
+    """The rotation retimed to ``timeframe``.
+
+    Every price/feed family is retimeable. The htf_* families additionally need a
+    higher timeframe to read, so they drop out at the top of the ladder (``1d``):
+    minting one there would produce a spec whose HTF conditions can never be
+    determined — permanently no-entry rather than merely selective."""
+    timeframe = str(timeframe)
+    has_htf = timeframe in market_data.HIGHER_TIMEFRAME
+    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES
+                 if has_htf or t.family not in HTF_FAMILIES)
 
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
