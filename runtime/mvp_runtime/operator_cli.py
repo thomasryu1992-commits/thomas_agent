@@ -32,6 +32,7 @@ from .approval_store import ApprovalStore
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError, OperatorBlocked
+from .frontdesk import select_frontdesk_provider
 from .operator import (
     OperatorChannel,
     OperatorIdentity,
@@ -86,6 +87,7 @@ def main(
     control_store: ControlStore | None = None,
     approval_store: ApprovalStore | None = None,
     registry: TaskRegistryStore | None = None,
+    frontdesk_provider: Any | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
 ) -> int:
@@ -104,6 +106,12 @@ def main(
         # Selected here even when validation is off so a misconfigured env fails at
         # startup, not on the first important request at 3am.
         validator_provider = validator_provider if validator_provider is not None else select_validator_provider()
+        # F2: the conversational front desk's own gated provider — None keeps the F1
+        # deterministic channel. Selected at startup for the validator's reason (a
+        # misconfigured env or an unactivated role fails HERE, not on the first message),
+        # and the selection itself enforces the registry's D2 activation flip.
+        frontdesk_provider = (frontdesk_provider if frontdesk_provider is not None
+                              else select_frontdesk_provider(root=repo_root))
     except MvpRuntimeError as exc:
         return report_block(exc)
 
@@ -111,6 +119,10 @@ def main(
     if getattr(validator_provider, "network_egress", False):
         sys.stderr.write("SAFETY_GATE: validator provider authorized separately "
                          f"(model: {getattr(validator_provider, 'model_id', 'unknown')})\n")
+    if frontdesk_provider is not None:
+        sys.stderr.write("FRONTDESK: conversational mode ON "
+                         f"(model: {getattr(frontdesk_provider, 'model_id', 'unknown')}; "
+                         "plain text is a conversation turn, /verbs stay deterministic)\n")
 
     store = store if store is not None else LedgerStore.default()
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
@@ -171,7 +183,7 @@ def main(
                     provider=provider, search_tool=search_tool, working_memory=working_memory,
                     programization=programization,
                     store=store, control_store=control_store, approval_store=approval_store,
-                    registry=registry,
+                    registry=registry, frontdesk_provider=frontdesk_provider,
                     independent_validation=_validation_policy(args.independent_validation),
                     validator_provider=validator_provider, repo_root=repo_root,
                 )

@@ -101,6 +101,36 @@ MVP_PAPER_TRADING=real
 # THOMAS_STATE_DIR=/srv/thomas/state          # defaults to ./.runtime_governance_state
 ```
 
+## Conversational mode (F2, optional)
+
+Unset, the Telegram channel behaves exactly as it always has: plain text is a task
+submission and `/verbs` are deterministic. Set, an **unmarked** plain-text message becomes a
+conversation turn instead — the front desk asks clarifying questions, translates requests
+into queued tasks, and answers "what's running?" with the same data `/tasks` prints.
+`/verbs` and `!중요`-marked requests always stay deterministic.
+
+```text
+MVP_FRONTDESK_PROVIDER=groq
+```
+
+Three things must line up, and each fails closed loudly rather than degrading quietly:
+
+1. the variable reaches the **operator** service (it is in that service's `environment:`
+   block — the scheduler holds no conversation and must not get it);
+2. the named provider has its own mounted safety-flag grant
+   (`model_invocation,network_access`), like every provider;
+3. `conversation.frontdesk` is **active** in `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml`, with a
+   matching definition hash — the env var is a request, the registry entry is the grant.
+
+Miss (2) or (3) and the operator service refuses at startup (`FRONTDESK_ROLE_INACTIVE`,
+`FRONTDESK_ROLE_HASH_MISMATCH`, or the gate's own refusal) instead of running a
+conversation nobody authorized. `docker compose logs operator` prints `FRONTDESK:
+conversational mode ON (model: …)` when it is genuinely on.
+
+At run time a provider outage **degrades** rather than blocks: `FRONTDESK_DEGRADED` is
+audited and the raw message continues to the task queue exactly as if the feature were off,
+so no message is lost to a model failure.
+
 `MVP_HOSTED_PROVIDER` also accepts `openrouter` — one OpenAI-compatible gateway to many
 vendors' models — as a chain member (e.g. `MVP_HOSTED_PROVIDER=openrouter,groq`, OpenRouter
 primary with Groq as the 503/429 failover). It needs its own `openrouter` mounted grant like
