@@ -30,3 +30,6 @@ workspace/
 
 # Compose secrets/per-host overrides (docker-compose.yml reads it; never commit values)
 .env
+
+# Build/compose output logs (regenerated artifacts; never shared source)
+*.log
