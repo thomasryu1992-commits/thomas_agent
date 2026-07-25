@@ -134,9 +134,12 @@ def route_entries(
 ) -> dict[str, Any]:
     """Evaluate every routable pool strategy against this cycle's feature row.
 
-    A spec scoped to a different (symbol, timeframe) is recorded as unevaluable and
-    cannot match — an ETH daily strategy is never judged on a BTC hourly row (the
-    source's ``feature_rows`` rule, single-snapshot form). The router only proposes.
+    A spec is evaluable here when this cycle's ``symbol`` is in its ``symbol_scope``
+    and its timeframe matches — a strategy scoped to several symbols is judged on
+    each of them (on that symbol's own cycle), not only its primary one. A spec
+    scoped elsewhere is recorded as unevaluable and cannot match — an ETH daily
+    strategy is never judged on a BTC hourly row (the source's ``feature_rows`` rule,
+    single-snapshot form). The router only proposes.
     """
     entries = [
         e for e in (pool.get("active_strategies") or [])
@@ -147,13 +150,12 @@ def route_entries(
 
     for entry in entries:
         spec = StrategySpec.from_dict(entry["strategy_spec"])
-        spec_symbol = str(spec.symbol_scope[0]) if spec.symbol_scope else ""
-        if spec_symbol != symbol or spec.timeframe != timeframe or not feature_row:
+        if symbol not in spec.symbol_scope or spec.timeframe != timeframe or not feature_row:
             evaluations.append({
                 "strategy_id": entry.get("strategy_id"),
                 "matched": False,
                 "direction": None,
-                "unevaluable": f"no feature row for {spec_symbol} {spec.timeframe}",
+                "unevaluable": f"no feature row for {'/'.join(spec.symbol_scope)} {spec.timeframe}",
             })
             continue
         result = evaluate_spec(spec, feature_row)
@@ -177,6 +179,11 @@ def route_entries(
         "strategies_evaluated": len(entries),
         "evaluations": evaluations,
         "matched_strategy_ids": sorted(m["strategy_id"] for m in matches if m["strategy_id"] is not None),
+        # The traded context, so a plan books under the symbol this cycle actually
+        # ran — not the spec's primary symbol_scope[0], which for a multi-symbol
+        # strategy on a non-primary symbol would mis-book the position.
+        "symbol": symbol,
+        "timeframe": timeframe,
         "created_at_utc": now,
         "direction": None,
     }
@@ -236,9 +243,12 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         stop, target = entry - stop_distance, entry + target_distance
     else:
         stop, target = entry + stop_distance, entry - target_distance
+    # The traded context comes from the route (this cycle's symbol/timeframe), with a
+    # fall back to the spec's primary symbol for a route built before it carried one.
+    plan_symbol = str(route.get("symbol") or (spec.symbol_scope[0] if spec.symbol_scope else ""))
     return {
-        "symbol": str(spec.symbol_scope[0]) if spec.symbol_scope else "",
-        "timeframe": spec.timeframe,
+        "symbol": plan_symbol,
+        "timeframe": str(route.get("timeframe") or spec.timeframe),
         "direction": direction,
         "entry_price": float(entry),
         "stop_loss": float(stop),

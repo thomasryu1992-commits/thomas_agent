@@ -23,8 +23,9 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
-from .paper import state_dir
-from .strategy import SpecParseError, load_strategy_pool
+from .paper import OCCUPYING_STATUSES, state_dir
+from .robustness import verdict_rank
+from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
@@ -189,6 +190,25 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
     return pool
 
 
+def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
+
+    One pair per ``(symbol_scope entry, timeframe)`` — every symbol a strategy is
+    scoped to, exactly what :func:`paper.route_entries` now matches on — so a
+    fan-out proposes a cycle for every context a strategy could fire in (a
+    multi-symbol strategy contributes each of its symbols) and none where it never
+    could. Non-occupying or spec-less entries contribute nothing. Deduplicated and
+    sorted for a stable, deterministic cycle order."""
+    contexts: set[tuple[str, str]] = set()
+    for entry in pool.get("active_strategies") or []:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        for scoped_symbol in spec.symbol_scope:
+            contexts.add((str(scoped_symbol), str(spec.timeframe)))
+    return sorted(contexts)
+
+
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:
     """Install (replace) the active pool — the OPERATOR door, not a runtime call.
 
@@ -315,3 +335,94 @@ def append_candidates(records: list[dict[str, Any]], *, root: Path | None = None
                     row["record_sha256"] = integrity.sha256_record(row)
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return len(records)
+
+
+# --- candidate ranking (M4a): robustness first-pass, win-rate + reward:risk second -
+
+# A payoff ratio a losing-free backtest can't divide out. It floats an all-wins
+# lineage to the top of its robustness tier for the sort only; the displayed
+# reward:risk stays honest (None → "∞"), so this cap is never shown as a real ratio.
+_ALL_WINS_RR_SORT = float("inf")
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value) if value is not None and not isinstance(value, bool) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _designed_reward_risk(record: Mapping[str, Any]) -> float | None:
+    """target_atr / stop_atr from the spec — the legacy fallback when a candidate
+    predates the realized avg_win_R/avg_loss_R evidence. None if it can't be read."""
+    exit_rules = ((record.get("strategy_spec") or {}).get("exit_rules")) or {}
+    stop = _as_float(exit_rules.get("stop_atr"))
+    target = _as_float(exit_rules.get("target_atr"))
+    return round(target / stop, 8) if stop > 0 and target > 0 else None
+
+
+def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The ranking view of one candidate: robustness tier + realized performance.
+
+    First-pass ``verdict_rank`` (ROBUST < PROVISIONAL < FRAGILE < unknown) never
+    changes with performance — the anti-overfit filter stays authoritative. The
+    second-pass axes are ``win_rate`` and the realized ``reward_risk`` (avg_win_R /
+    avg_loss_R); ``edge_quality = win_rate * reward_risk`` combines them so a lineage
+    strong on *both* outranks one strong on either alone. A candidate with no losing
+    trades has an undefined ratio (``reward_risk`` None, ``all_wins`` True); one
+    predating the realized evidence falls back to the designed target/stop ratio
+    (``reward_risk_basis`` ``"designed"``)."""
+    evidence = record.get("backtest_evidence") or {}
+    robustness = evidence.get("robustness") or {}
+    closed = int(_as_float(evidence.get("closed_count")))
+    win_count = int(_as_float(evidence.get("win_count")))
+    win_rate = round(win_count / closed, 8) if closed else 0.0
+
+    all_wins = False
+    if "avg_win_R" in evidence or "avg_loss_R" in evidence:
+        basis = "realized"
+        avg_win = _as_float(evidence.get("avg_win_R"))
+        avg_loss = _as_float(evidence.get("avg_loss_R"))
+        if avg_loss > 0:
+            reward_risk: float | None = round(avg_win / avg_loss, 8)
+        elif avg_win > 0:
+            reward_risk, all_wins = None, True  # no losses to divide by
+        else:
+            reward_risk = 0.0
+    else:
+        reward_risk = _designed_reward_risk(record)
+        basis = "designed" if reward_risk is not None else "none"
+
+    rr_sort = _ALL_WINS_RR_SORT if all_wins else (reward_risk or 0.0)
+    return {
+        "candidate_id": candidate_id(record),
+        "verdict": robustness.get("verdict"),
+        "verdict_rank": verdict_rank(robustness.get("verdict")),
+        "robustness_score": round(_as_float(record.get("champion_score")), 8),
+        "win_rate": win_rate,
+        "reward_risk": reward_risk,
+        "reward_risk_basis": basis,
+        "all_wins": all_wins,
+        "expectancy": round(_as_float(evidence.get("expectancy")), 8),
+        "closed_count": closed,
+        "edge_quality": win_rate * rr_sort,
+    }
+
+
+def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Candidates ordered for the promotion decision, latest-wins per lineage.
+
+    Deterministic total order: robustness verdict tier first (the anti-overfit
+    first-pass), then ``edge_quality`` (win-rate × realized reward:risk) descending,
+    then ``expectancy`` descending, then ``candidate_id`` ascending so a tie never
+    depends on store order. Re-appends of a lineage collapse to the latest row."""
+    by_cid: dict[str, dict[str, Any]] = {}
+    for record in records:
+        cid = candidate_id(record)
+        by_cid[cid] = {**record, "candidate_id": cid}
+
+    def _key(record: Mapping[str, Any]) -> tuple[int, float, float, str]:
+        q = candidate_quality(record)
+        return (q["verdict_rank"], -q["edge_quality"], -q["expectancy"], str(record["candidate_id"]))
+
+    return sorted(by_cid.values(), key=_key)

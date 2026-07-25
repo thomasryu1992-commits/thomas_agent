@@ -417,31 +417,49 @@ def _execute(
         warned = len(status.get("warnings") or [])
         return f"report_sent cycles={status.get('cycles_seen')} warnings={warned}"
     if schedule.kind == KIND_CRYPTO:
-        # One governed crypto cycle (C7). The collector and paper store are selected
-        # at fire time through their Safety-Flag chokepoints, so a deleted grant is a
-        # live revocation here exactly as everywhere else. The optional request field
-        # is "SYMBOL TIMEFRAME"; empty uses the cycle defaults.
-        from .crypto.cycle import cycle_status_line, run_crypto_cycle
+        # Governed crypto cycles (C7). The collector and paper store are selected at
+        # fire time through their Safety-Flag chokepoints, so a deleted grant is a
+        # live revocation here exactly as everywhere else.
+        #
+        # The optional request field is "SYMBOL [TIMEFRAME]". With a symbol named, it
+        # is an explicit operator override: one cycle for exactly that context. With
+        # the request empty, the fire fans OUT over every context the pool trades (+
+        # every open position) so no strategy is symbol-starved — the default that
+        # actually covers the pool. Each sub-cycle rides the ledger on its own id.
+        from .crypto.cycle import (
+            cycle_status_line,
+            pool_cycle_status_line,
+            run_crypto_cycle,
+            run_pool_cycle,
+        )
         from .crypto.market_data import select_liquidation_feed, select_market_data_collector
         from .crypto.paper import select_paper_store
 
+        collector = select_market_data_collector(now=now, root=repo_root)
+        store = select_paper_store(now=now, root=repo_root)
+        liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+
         parts = schedule.request.split()
-        kwargs: dict[str, Any] = {}
-        if len(parts) >= 1 and parts[0]:
-            kwargs["symbol"] = parts[0]
-        if len(parts) >= 2:
-            kwargs["timeframe"] = parts[1]
-        record = run_crypto_cycle(
-            collector=select_market_data_collector(now=now, root=repo_root),
-            store=select_paper_store(now=now, root=repo_root),
-            liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
-            now=now,
-            root=repo_root,
-            **kwargs,
+        if parts and parts[0]:
+            kwargs: dict[str, Any] = {"symbol": parts[0]}
+            if len(parts) >= 2:
+                kwargs["timeframe"] = parts[1]
+            record = run_crypto_cycle(
+                collector=collector, store=store, liquidation_feed=liquidation_feed,
+                now=now, root=repo_root, **kwargs,
+            )
+            if ledger is not None:
+                ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
+            return cycle_status_line(record)
+
+        summary = run_pool_cycle(
+            collector=collector, store=store, liquidation_feed=liquidation_feed,
+            now=now, root=repo_root,
         )
         if ledger is not None:
-            ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        return cycle_status_line(record)
+            for record in summary["cycles"]:
+                ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
+        return pool_cycle_status_line(summary)
     if schedule.kind == KIND_FACTORY:
         # One factory run (C8): generate + backtest candidates over a deep candle
         # window, append them to the candidates store. ALLOW-tier record creation —

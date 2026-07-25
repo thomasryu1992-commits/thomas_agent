@@ -24,7 +24,7 @@ MockProvider), and no tool/program execution.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
@@ -182,6 +182,7 @@ def run_task(
     store: LedgerStore | None = None,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
+    tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None = None,
     write_path: str | None = None,
     writer: WorkspaceWriter | None = None,
     **intake_kwargs: Any,
@@ -328,6 +329,16 @@ def run_task(
         else:
             validate_run = bool(independent_validation)
 
+        # M2: the M1 difficulty (from triage) picks the specialist's OpenRouter model tier.
+        # Only when triage produced a difficulty AND a selector is wired; otherwise the base
+        # provider serves unchanged (the default and every mock run). A missing tier grant
+        # degrades to the base chain (TIER_DEGRADED) — recorded, never blocking. The tiered
+        # model serves the specialist ONLY; the validator/triage keep their own provider.
+        specialist_provider = provider
+        if tiered_provider_selector is not None and triage_result is not None:
+            specialist_provider, tier_selection = tiered_provider_selector(triage_result["difficulty"])
+            records["model_tier_selection"] = tier_selection
+
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
         # Search is enrichment, not the task: a backend failure (quota exhausted,
@@ -359,7 +370,7 @@ def run_task(
         records["validated_memory_retrieved"] = validated_entries
 
         agent_output, invocation = run_analysis_worker(
-            plan["task"], plan["role_assignment"], provider=provider, created_at=now,
+            plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
             validated_entries=validated_entries, repo_root=repo_root,
         )
@@ -443,8 +454,9 @@ def run_task(
                     programization, task=plan["task"], assignment=plan["role_assignment"],
                     steps=steps_run,
                     # A provider with no network egress is an in-process mock: a synthetic
-                    # run, observed but never counted (policy §4).
-                    synthetic=not bool(getattr(provider, "network_egress", False)),
+                    # run, observed but never counted (policy §4). The specialist provider is
+                    # what actually produced this run's output (tiered when M2 selected one).
+                    synthetic=not bool(getattr(specialist_provider, "network_egress", False)),
                     now=now, repo_root=repo_root,
                 )
                 records["programization_observation"] = observation

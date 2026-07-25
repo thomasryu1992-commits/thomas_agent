@@ -28,7 +28,7 @@ from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, gate_b
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .pipeline import AUTO_VALIDATION, run_task
-from .providers import select_provider, select_validator_provider
+from .providers import select_provider, select_tiered_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
 from .programization import ProgramizationStore
@@ -150,11 +150,18 @@ def main(
     programization = (
         programization if programization is not None else ProgramizationStore.default()
     )
+    # M2: difficulty-driven model tier for the specialist. The selector picks an OpenRouter
+    # tier from the triage difficulty and degrades to this base `provider` (fail-closed) when
+    # the tier has no local grant — so a machine without tier grants keeps today's behaviour.
+    tiered_provider_selector = (
+        lambda difficulty: select_tiered_provider(difficulty, base_provider=provider)
+    )
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
                       working_memory=working_memory, programization=programization,
                       channel="manual", store=store,
                       independent_validation=independent_validation,
                       validator_provider=validator_provider,
+                      tiered_provider_selector=tiered_provider_selector,
                       priority="HIGH" if important else "NORMAL",
                       write_path=write_path, writer=writer)
     # One field answers "is this run's evidence durable?" for every failure shape. Checking

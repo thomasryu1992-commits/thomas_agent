@@ -18,7 +18,7 @@ behavior enters at its correct permission tier behind an existing chokepoint.
 ## Relationship to the organization architecture
 
 This is the first domain application of the Dynamic Task Team Architecture
-(`historical/architecture/thomas-autonomous-organization-architecture-v0.1.md`):
+(`docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md`):
 
 - **One pipeline cycle = one Task = one Dynamic Task Team** assembled by Thomas Prime.
 - The five deterministic stages are **Programs** in the architecture's vocabulary

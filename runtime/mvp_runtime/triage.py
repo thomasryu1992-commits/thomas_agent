@@ -39,7 +39,7 @@ from .worker import Provider, ProviderResult
 
 TRIAGE_WORKER_ID = "mvp.orchestrator_triage.llm"
 TRIAGE_WORKER_VERSION = "0.1.0"
-TRIAGE_PROMPT_VERSION = "mvp_orchestrator_triage.v1"
+TRIAGE_PROMPT_VERSION = "mvp_orchestrator_triage.v2"  # v2: adds the difficulty (상/중/하) ask
 
 VERDICT_HIGH = "HIGH"
 VERDICT_NORMAL = "NORMAL"
@@ -47,6 +47,19 @@ VERDICT_NORMAL = "NORMAL"
 # that exist. Anything else is not a usable judgement (degraded).
 _VERDICT_FOLD = {"HIGH": VERDICT_HIGH, "URGENT": VERDICT_HIGH,
                  "NORMAL": VERDICT_NORMAL, "LOW": VERDICT_NORMAL}
+
+# M1: alongside the importance verdict the triage also judges the request's DIFFICULTY on
+# three tiers (상/중/하). This is OBSERVE-ONLY for now — recorded in triage_result, but it
+# routes nothing (M2 will map difficulty -> an OpenRouter model tier). Korean 상/중/하 and
+# common English words both fold onto the three tiers; an unusable answer degrades to MEDIUM.
+DIFFICULTY_LOW = "LOW"        # 하
+DIFFICULTY_MEDIUM = "MEDIUM"  # 중
+DIFFICULTY_HIGH = "HIGH"      # 상
+_DIFFICULTY_FOLD = {
+    "LOW": DIFFICULTY_LOW, "하": DIFFICULTY_LOW, "EASY": DIFFICULTY_LOW, "SIMPLE": DIFFICULTY_LOW,
+    "MEDIUM": DIFFICULTY_MEDIUM, "중": DIFFICULTY_MEDIUM, "MODERATE": DIFFICULTY_MEDIUM,
+    "HIGH": DIFFICULTY_HIGH, "상": DIFFICULTY_HIGH, "HARD": DIFFICULTY_HIGH, "COMPLEX": DIFFICULTY_HIGH,
+}
 
 
 class MockTriageProvider:
@@ -64,6 +77,7 @@ class MockTriageProvider:
             "key_findings": [], "facts": [], "inferences": [], "assumptions": [],
             "uncertainty": [], "risks": [],
             "recommendation": {"action": VERDICT_NORMAL,
+                               "difficulty": DIFFICULTY_MEDIUM,
                                "reason": "Mock triage default: routine analysis, no independent review required."},
             "limitations": ["Mock triage; no real model judgement was exercised."],
             "next_actions": [], "evidence_quality": "not_assessed", "unresolved_questions": [],
@@ -88,8 +102,13 @@ def build_triage_prompt(task: Mapping[str, Any]) -> str:
         "money, contracts or legal exposure, hiring, irreversible or long-term commitments, or "
         "an explicit wish for extra care. Mark it NORMAL for routine, exploratory, or low-stakes "
         "questions.\n"
-        "Render your verdict in recommendation.action as exactly HIGH or NORMAL, and a one-line "
-        "reason in recommendation.reason."
+        "Also judge how DIFFICULT the request is to answer well, on three tiers: LOW (a simple, "
+        "factual, or narrow question), MEDIUM (needs some reasoning or synthesis), or HIGH (deep, "
+        "multi-step, ambiguous, or specialist analysis). Difficulty is about the work the answer "
+        "takes, not its importance — the two are independent.\n"
+        "Render your verdict in recommendation.action as exactly HIGH or NORMAL, the difficulty in "
+        "recommendation.difficulty as exactly LOW, MEDIUM, or HIGH, and a one-line reason in "
+        "recommendation.reason."
     )
 
 
@@ -104,6 +123,18 @@ def _verdict_of(analysis: Mapping[str, Any]) -> tuple[str, str, bool]:
         return verdict, (reason if isinstance(reason, str) and reason.strip()
                          else f"Triage verdict: {verdict}."), False
     return VERDICT_NORMAL, "Triage produced no usable HIGH/NORMAL verdict; degraded to NORMAL.", True
+
+
+def _difficulty_of(analysis: Mapping[str, Any]) -> tuple[str, bool]:
+    """Extract ``(difficulty, degraded)`` from ``recommendation.difficulty``. An unusable
+    answer degrades to MEDIUM — the safe middle tier, never a crash. Observe-only in M1:
+    the value is recorded but routes nothing yet (M2 maps it to a model tier)."""
+    recommendation = analysis.get("recommendation")
+    raw = recommendation.get("difficulty") if isinstance(recommendation, Mapping) else None
+    difficulty = _DIFFICULTY_FOLD.get(raw.strip().upper()) if isinstance(raw, str) else None
+    if difficulty is not None:
+        return difficulty, False
+    return DIFFICULTY_MEDIUM, True
 
 
 def run_triage(
@@ -128,9 +159,12 @@ def run_triage(
         )
     except (ProviderError, TimeoutError) as exc:
         verdict, reason, degraded = VERDICT_NORMAL, f"Triage provider failed: {exc}", True
+        # A provider that never answered judged no difficulty either — degrade it too.
+        difficulty, difficulty_degraded = DIFFICULTY_MEDIUM, True
     else:
         analysis = result.analysis if isinstance(result.analysis, Mapping) else {}
         verdict, reason, degraded = _verdict_of(analysis)
+        difficulty, difficulty_degraded = _difficulty_of(analysis)
         invocation = {
             "worker_id": TRIAGE_WORKER_ID,
             "worker_version": TRIAGE_WORKER_VERSION,
@@ -158,6 +192,10 @@ def run_triage(
         "verdict": verdict,
         "reason": reason,
         "degraded": degraded,
+        # M1 observe-only: the difficulty tier (상/중/하) rides beside the importance verdict
+        # but changes no routing yet. M2 will read it to pick an OpenRouter model tier.
+        "difficulty": difficulty,
+        "difficulty_degraded": difficulty_degraded,
         "prompt_version": TRIAGE_PROMPT_VERSION,
         "created_at": created_at,
     }
