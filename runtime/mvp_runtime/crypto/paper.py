@@ -94,8 +94,16 @@ DEFAULT_VENUE = "binance_futures"
 # month. **Revert to the derived value before the paper book is ever used to size
 # live exposure** — that is a separate explicit decision, and this comment is the
 # record of what it undoes.
+#
+# Per-symbol raised 2 -> 4 (Thomas 2026-07-25) now that 15m/1h/4h/1d all route: a
+# book is one position per (symbol, timeframe), so a symbol can hold at most one per
+# active timeframe = 4. At 2 the cap silently blocked half a symbol's timeframes
+# from ever holding a position at once; 4 lets each timeframe occupy its own slot
+# without the per-symbol limit shadowing the natural per-context limit. The global
+# MAX_CONCURRENT_POSITIONS (20 = 5 symbols x 4 timeframes) stays the portfolio bound,
+# and this is still the PAPER kernel only (live_order/live_pnl never read it).
 MAX_CONCURRENT_POSITIONS = 20
-MAX_POSITIONS_PER_SYMBOL = 2
+MAX_POSITIONS_PER_SYMBOL = 4
 
 # Router statuses/rules (source S7).
 STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
