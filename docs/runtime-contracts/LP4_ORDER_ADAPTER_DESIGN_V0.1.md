@@ -172,14 +172,26 @@ Merging LP4 (behind the gate, DryRun default) still authorizes nothing. Before a
 - Whether the canary CLI closes the position automatically or leaves the close to the operator
   (the checklist says "close each canary on the venue afterwards" — lean operator-closed).
 
-## Proposed implementation shape (for the eventual code PR, once this design is accepted)
+## Implementation shape
 
-- `runtime/mvp_runtime/crypto/live_execution.py` (or extend `live_order.py`): `OrderAdapter`
-  protocol, `DryRunOrderAdapter` (default, inert), `BinanceFuturesOrderAdapter` (real, gated),
-  `select_order_adapter` via `select_gated`; `submit_and_reconcile(intent)` orchestration; the
-  reconcile comparison + `reconcile_status` vocabulary.
-- `scripts/place_canary_order.py`: the deliberate single-canary operator path.
-- Governance: flip `financial_transaction_execution_implemented: false → true` **only when this
-  merges** (the code exists; the grant stays the per-machine safety flag), leaving every
-  `runtime_effect`/`cutover` flag false; regenerate both replay bundles; `ORDER_PATH_IMPLEMENTED
-  = True` in lockstep. All per the `LIVE_EXECUTION_GOVERNANCE_V0.1.md` "mechanics" section.
+**Increment 1 — the skeleton (done 2026-07-25):** `runtime/mvp_runtime/crypto/live_execution.py`
+— `OrderAdapter` protocol, `DryRunOrderAdapter` (default, inert), `BinanceFuturesOrderAdapter`
+(real, gated — a **stub** that re-asserts the grant then raises `ORDER_PATH_NOT_IMPLEMENTED`),
+`select_order_adapter` via `select_gated`; `build_order_request` (reduceOnly from intent, MARKET
+only), `reconcile_order` (the comparison + the `reconcile_status` vocabulary), and
+`submit_and_reconcile` (guard-approval belt-and-suspenders; reconcile-first, never blind-retry).
+Fully tested with zero network. **No governance change:** because the real send is a stub, no
+code can send an order, so `ORDER_PATH_IMPLEMENTED` and
+`financial_transaction_execution_implemented` stay OFF — honestly.
+
+**Increment 2 — the real send (pending, its own PR):**
+- Fill in `BinanceFuturesOrderAdapter.submit`/`fetch_order`: the signed `POST /fapi/v1/order` +
+  reconcile `GET`, mirroring `account.py`'s posture (names-only errors, the signed URL never
+  logged), using the separate `MVP_LIVE_ORDER_*` key.
+- `scripts/place_canary_order.py`: the deliberate single-canary operator path (gathers live
+  facts, runs the final guard, calls `submit_and_reconcile`, records the reconciled canary).
+- Governance: flip `financial_transaction_execution_implemented: false → true` (the code now
+  exists; the grant stays the per-machine safety flag), leave every `runtime_effect`/`cutover`
+  flag false, regenerate both replay bundles, and set `ORDER_PATH_IMPLEMENTED = True` in
+  lockstep. All per the `LIVE_EXECUTION_GOVERNANCE_V0.1.md` "mechanics" section. This is the
+  real-money-adjacent step and its own deliberate decision.

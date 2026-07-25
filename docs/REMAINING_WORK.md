@@ -110,7 +110,12 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
         routable) is the separate remaining `ROLE_GOVERNANCE` approval.
   - [ ] Update validator assertions + `require_doc_tokens`; **regenerate both replay bundles**
         (CRLF-normalized SHA; `rebuild_bundle` has no CLI entrypoint).
-- [ ] **LP4** order adapter + **LP5** position kernel / cycle routing — **code does not exist yet**.
+- [~] **LP4** order adapter — **increment 1 (skeleton) done 2026-07-25**
+      (`runtime/mvp_runtime/crypto/live_execution.py`: adapter protocol, DryRun default, gated
+      stub, `submit_and_reconcile` + reconcile vocabulary; design record
+      `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`). **Increment 2 (real Binance signed HTTP + the canary
+      CLI + the governance flip) is pending** — the real-money-adjacent step. **LP5** position
+      kernel / cycle routing — code does not exist yet.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0** migrated; 1 existed in
       the frozen source system, did not migrate).
 - [ ] Standing finding: the router is **symbol-starved** — the cycle runs BTCUSDT only while the pool
