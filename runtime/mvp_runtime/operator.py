@@ -28,10 +28,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import approval, control, memory_console, operator_feedback, safety_gate, timeutil
+from . import (
+    approval, control, memory_console, operator_feedback, registry_console, safety_gate,
+    task_registry, timeutil,
+)
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .control import ControlStore
-from .errors import ApprovalBlocked, AuditError, ControlBlocked, OperatorBlocked, PersistenceError
+from .errors import (
+    ApprovalBlocked, AuditError, ControlBlocked, MvpRuntimeError, OperatorBlocked, PersistenceError,
+)
 from .events import stamped_event
 from .paths import repo_root as _repo_root
 from .pipeline import run_task
@@ -97,6 +102,10 @@ class OperatorReply:
     status: str                          # ACCEPTED result status, or REFUSED
     reason_code: str | None = None
     trace_id: str | None = None
+    # F1: set only when a coordination entry is still open at return — i.e. the run
+    # COMPLETED and its terminal depends on whether the reply actually reaches Thomas.
+    # Every other outcome is already closed by the time this returns.
+    open_registry_entry_id: str | None = None
 
 
 def load_operator_registration(repo_root: Path | None = None) -> OperatorIdentity:
@@ -147,6 +156,7 @@ def handle_operator_message(
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
+    registry: Any | None = None,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
@@ -188,6 +198,13 @@ def handle_operator_message(
     convenience door onto ``scripts/promote_memory_candidate.py`` over the already-verified
     channel. Promotion is EXECUTE_AND_REPORT and kill-switch bound (refused unless ACTIVE);
     it reuses ``working_memory`` (the store) and ``store`` (the ledger) already threaded here.
+
+    ``registry`` (opt-in, F1) is the task-coordination store. When wired, every request this
+    channel runs is recorded as one entry (RUNNING on the way in, a terminal on the way out)
+    and ``/tasks`` ``/history`` ``/result`` ``/cancel`` answer from it. The recording is
+    best-effort — a bookkeeping failure never costs Thomas the analysis — while the console
+    verbs are not: asked what is running, an unreadable registry says so rather than showing
+    an empty list.
     """
     try:
         verify_control_channel(message, registration)
@@ -297,6 +314,21 @@ def handle_operator_message(
             return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
         return OperatorReply(text=outcome["reply"], accepted=True, status="MEMORY", reason_code=outcome["action"])
 
+    # F1 task console: /tasks /history /result (read-only, any runtime mode — an operator
+    # facing a PAUSED runtime most needs to see what it was doing) and /cancel (mutates
+    # coordination state, so kill-switch bound inside apply_registry_command).
+    registry_command = registry_console.parse_registry_command(text)
+    if registry_command is not None:
+        try:
+            outcome = registry_console.apply_registry_command(
+                registry_command, operator_id=registration.operator_id,
+                registry=registry, ledger=store, control_store=control_store,
+                now=now, repo_root=repo_root,
+            )
+        except (OperatorBlocked, PersistenceError) as exc:
+            return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+        return OperatorReply(text=outcome["reply"], accepted=True, status="REGISTRY", reason_code=outcome["action"])
+
     if text.startswith("/"):
         # A leading-slash message that matched no console/approval verb is refused, never
         # run as a task: a typo'd ``/killl`` (or an emergency verb reaching a deployment
@@ -305,7 +337,8 @@ def handle_operator_message(
         return OperatorReply(
             text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
-                  "/feedback <good|bad|한줄평> /memory /promote <id> <사유>"),
+                  "/feedback <good|bad|한줄평> /memory /promote <id> <사유> "
+                  "/tasks /history [n] /result <id> /cancel <id>"),
             accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
         )
 
@@ -346,6 +379,16 @@ def handle_operator_message(
         except OperatorBlocked:
             pass    # best-effort: the notice is a courtesy, the run is the job
 
+    # F1: open the coordination entry BEFORE the run, so a request that dies mid-pipeline
+    # is visible as an abandoned run rather than as nothing having been asked at all.
+    stamp = now or timeutil.utc_now_iso()
+    registry_entry = task_registry.record_submission(
+        registry, request_text=text, origin="TELEGRAM",
+        requester_id=registration.operator_id, now=stamp,
+        flags={"important": priority == "HIGH",
+               "independent_validation": bool(independent_validation)},
+    )
+
     result = run_task(
         text,
         provider=provider,
@@ -364,12 +407,26 @@ def handle_operator_message(
         authenticated=True,
         source_ref=f"telegram:private_chat:{message.chat_id}",
     )
-    trace_id = result.get("records", {}).get("received_task", {}).get("identity", {}).get("trace_id")
+    identity = result.get("records", {}).get("received_task", {}).get("identity", {})
+    trace_id = identity.get("trace_id")
+    task_id = identity.get("task_id")
     if result["status"] == "COMPLETED":
-        return OperatorReply(text=result["final_response"], accepted=True, status="COMPLETED", trace_id=trace_id)
+        # The entry stays RUNNING on purpose: "DELIVERED" must mean the analysis reached
+        # Thomas, and the send has not happened yet. The loop closes it after the send —
+        # and closes it as FAILED/SEND_FAILED if delivery is what broke, which is a real
+        # observed failure mode, not a hypothetical one.
+        return OperatorReply(
+            text=result["final_response"], accepted=True, status="COMPLETED", trace_id=trace_id,
+            open_registry_entry_id=(registry_entry.registry_entry_id if registry_entry else None),
+        )
 
     block = result.get("block") or {"reason_code": "BLOCKED"}
     reason_code = block.get("reason_code", "BLOCKED")
+    # A withheld run has no deliverable, so its terminal does not depend on the send.
+    task_registry.close_entry(
+        registry, registry_entry, status=task_registry.BLOCKED, now=stamp,
+        task_id=task_id, trace_id=trace_id, reason_code=reason_code,
+    )
     reply_text = f"Your request was not completed ({reason_code})."
     detail = str(block.get("message") or "").strip()
     if detail:
@@ -637,6 +694,30 @@ def _message_from_update(update: dict[str, Any]) -> InboundMessage | None:
     )
 
 
+def _close_open_entry(
+    registry: Any | None,
+    reply: OperatorReply,
+    *,
+    now: str | None,
+    status: str,
+    reason_code: str | None = None,
+) -> None:
+    """Give a COMPLETED run's still-open coordination entry its terminal, once the send
+    outcome is known. Best-effort like every other registry write on the run path."""
+    entry_id = reply.open_registry_entry_id
+    if registry is None or not entry_id:
+        return
+    try:
+        registry.transition(
+            entry_id, status, now=now or timeutil.utc_now_iso(),
+            trace_id=reply.trace_id,
+            result_ref=f"ledger:{reply.trace_id}" if reply.trace_id else None,
+            reason_code=reason_code,
+        )
+    except MvpRuntimeError:
+        return
+
+
 def run_operator_once(
     channel: OperatorChannel,
     registration: OperatorIdentity,
@@ -650,6 +731,7 @@ def run_operator_once(
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
+    registry: Any | None = None,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
@@ -680,7 +762,7 @@ def run_operator_once(
             message, registration=registration, provider=provider, search_tool=search_tool,
             working_memory=working_memory, programization=programization,
             now=now, store=store, control_store=control_store,
-            approval_store=approval_store,
+            approval_store=approval_store, registry=registry,
             independent_validation=independent_validation,
             validator_provider=validator_provider, repo_root=repo_root,
             # The received-working notice, sent back on the same verified chat the request
@@ -697,7 +779,13 @@ def run_operator_once(
             # durable (ledger, control state, approval store); only this reply's delivery
             # is lost, and the summary reports it.
             send_failures += 1
+            # F1: the run finished but Thomas never saw it. Recording that as DELIVERED
+            # would make the registry claim an analysis was handed over that was not, and
+            # /result exists precisely so an undelivered one can be fetched later.
+            _close_open_entry(registry, reply, now=now, status=task_registry.FAILED,
+                              reason_code="SEND_FAILED")
         else:
+            _close_open_entry(registry, reply, now=now, status=task_registry.DELIVERED)
             if reply.status == "COMPLETED" and reply.trace_id:
                 # E1: a completed analysis actually reached Thomas — record the pointer
                 # /feedback binds to. AFTER the send, so feedback can never target a run

@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat
+from . import heartbeat, timeutil
 from .approval_store import ApprovalStore
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
@@ -43,6 +43,7 @@ from .pipeline import AUTO_VALIDATION
 from .programization import ProgramizationStore
 from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
+from .task_registry import TaskRegistryStore, reconcile_stale_running
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
@@ -84,6 +85,7 @@ def main(
     store: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     approval_store: ApprovalStore | None = None,
+    registry: TaskRegistryStore | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
 ) -> int:
@@ -118,6 +120,19 @@ def main(
     # through to the pipeline and be analyzed as a business idea. The production entrypoint
     # must wire the documented answer path, not only the tests.
     approval_store = approval_store if approval_store is not None else ApprovalStore.default()
+    # F1: the task-coordination registry, wired for the same reason as the approval store —
+    # without it /tasks and /history would be refused on the one entrypoint they exist for.
+    registry = registry if registry is not None else TaskRegistryStore.default()
+    # An entry still RUNNING when this process starts belongs to a dead one (the MVP runs
+    # tasks one at a time, single-process), so it gets the terminal that process never
+    # wrote. Startup is the only vantage point that can see it — the scheduler's
+    # `abandoned` precedent. Best-effort: bookkeeping must not stop the service.
+    try:
+        abandoned = reconcile_stale_running(registry, now=timeutil.utc_now_iso())
+        if abandoned:
+            sys.stderr.write(f"OPERATOR: {len(abandoned)} interrupted task(s) marked RUN_ABANDONED\n")
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"OPERATOR: task registry not reconciled ({exc.reason_code})\n")
     control_mode = control_store.load().mode
     sys.stderr.write(
         f"OPERATOR: listening for the registered operator (ledger: {store.root}; control: {control_mode})\n"
@@ -156,6 +171,7 @@ def main(
                     provider=provider, search_tool=search_tool, working_memory=working_memory,
                     programization=programization,
                     store=store, control_store=control_store, approval_store=approval_store,
+                    registry=registry,
                     independent_validation=_validation_policy(args.independent_validation),
                     validator_provider=validator_provider, repo_root=repo_root,
                 )
