@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import random
+from itertools import combinations
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import pool
+from runtime.mvp_runtime.crypto import factory, pool
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -522,6 +523,52 @@ def test_rank_fusion_parents_orders_by_score_and_skips_the_unscorable():
     ]
     ranked = rank_fusion_parents(records)
     assert [r["candidate_id"] for r in ranked] == ["cand-high", "cand-low"]
+
+
+# --- fusion parent bucketing --------------------------------------------------
+
+def _bucket_record(candidate_id, score, spec):
+    return {"candidate_id": candidate_id, "champion_score": score, "strategy_spec": spec.to_dict()}
+
+
+def test_buckets_group_only_structurally_fusable_lineages():
+    """The defect this closes: parents were ranked GLOBALLY and paired top-N, but a
+    crossover is only defined inside one (direction, timeframe, symbol) context — so
+    the leaders were spread across contexts and nearly every pair was refused on a
+    mismatch. The first live day attempted 240 pairs and refused all 240."""
+    long_a = _parent_spec("S1", [_CLOSE_OVER_MA20])
+    long_b = _parent_spec("S2", [_MA20_OVER_MA50])
+    short = _parent_spec("S3", [_CLOSE_OVER_MA20], direction="short")
+    other_tf = _parent_spec("S4", [_CLOSE_OVER_MA20], timeframe="4h")
+    other_symbol = _parent_spec("S5", [_CLOSE_OVER_MA20], symbol_scope=["ETHUSDT"])
+    records = [
+        _bucket_record("cand-long-a", 0.9, long_a),
+        _bucket_record("cand-long-b", 0.8, long_b),
+        _bucket_record("cand-short", 0.95, short),      # top score, wrong direction to pair with
+        _bucket_record("cand-other-tf", 0.7, other_tf),
+        _bucket_record("cand-other-symbol", 0.99, other_symbol),
+    ]
+    buckets = factory.fusion_parent_buckets(records, symbol="BTCUSDT", timeframe="1d")
+    # Only the two same-context longs can pair: the short is alone in its bucket, and
+    # the other timeframe/symbol are not this run's context at all.
+    assert [[r["candidate_id"] for r in b] for b in buckets] == [["cand-long-a", "cand-long-b"]]
+    for left, right in combinations(buckets[0], 2):
+        fuse_specs(StrategySpec.from_dict(left["strategy_spec"]),
+                   StrategySpec.from_dict(right["strategy_spec"]),
+                   strategy_id="S9", generation_id="GEN-9")  # every offered pair is fusable
+
+
+def test_buckets_exclude_contexts_the_run_cannot_score_honestly():
+    """A fused child is backtested on the CALLER's snapshot, so a parent pair from
+    another symbol/timeframe would be stored with evidence that never described it.
+    Global ranking hid this (compatible pairs were vanishingly rare); making pairs
+    common has to close it."""
+    eth = _parent_spec("S1", [_CLOSE_OVER_MA20], symbol_scope=["ETHUSDT"])
+    eth2 = _parent_spec("S2", [_MA20_OVER_MA50], symbol_scope=["ETHUSDT"])
+    records = [_bucket_record("cand-eth-a", 0.9, eth), _bucket_record("cand-eth-b", 0.8, eth2)]
+    assert factory.fusion_parent_buckets(records, symbol="ETHUSDT", timeframe="1d")
+    assert factory.fusion_parent_buckets(records, symbol="BTCUSDT", timeframe="1d") == []
+    assert factory.fusion_parent_buckets(records, symbol="ETHUSDT", timeframe="4h") == []
 
 
 # --- fusion through the factory door ------------------------------------------

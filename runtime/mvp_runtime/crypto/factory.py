@@ -7,9 +7,10 @@ behaves identically in backtest and live" because both share one evaluator and o
 exit model) holds here by construction, since ``strategy.evaluate_spec`` and
 ``paper.settle_trade_plan`` are exactly what the live cycle runs.
 
-Template subset: the ten families whose features the C3 rows compute. The ``htf_*``
-families (higher-timeframe legs) and ``funding_fade_*`` (funding feed) are NOT ported
-— their inputs do not exist here yet, and generating specs that can never match would
+Template library: the families whose features the C3 rows compute. ``funding_fade_*``
+joined when the funding series landed, and the ``htf_*`` legs when every timeframe in
+the ladder became collected (Thomas 2026-07-25) — the standing rule being that a
+family is ported only once its inputs exist, since specs that can never match would
 be noise pretending to be diversity.
 
 Everything in this module is ALLOW-tier record creation: the factory produces
@@ -763,11 +764,73 @@ def rank_fusion_parents(
     return ranked[:top_n]
 
 
+def _fusion_bucket_key(record: Mapping[str, Any]) -> tuple | None:
+    """The context two parents must already agree on, or None if unreadable.
+
+    Exactly :func:`fuse_specs`' preconditions — schema, direction, timeframe, symbol
+    scope, stop model — because those are not differences to reconcile but the
+    definition of "these two describe the same trade"."""
+    spec = record.get("strategy_spec")
+    if not isinstance(spec, Mapping):
+        return None
+    scope = spec.get("symbol_scope")
+    if not isinstance(scope, (list, tuple)):
+        return None
+    exits = spec.get("exit_rules")
+    return (
+        spec.get("schema_version"), spec.get("direction"), spec.get("timeframe"),
+        tuple(sorted(str(s) for s in scope)),
+        (exits or {}).get("stop_model") if isinstance(exits, Mapping) else None,
+    )
+
+
+def fusion_parent_buckets(
+    existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    per_bucket: int = FUSION_PARENT_POOL,
+) -> list[list[dict[str, Any]]]:
+    """Fusable parent groups, best bucket first, best parent first within each.
+
+    Ranking parents GLOBALLY and pairing the top N was the wired-but-inert version of
+    this: a crossover is only defined inside one (direction, timeframe, symbol_scope,
+    …) context, and the global leaders are spread across ~40 such contexts, so nearly
+    every pair drawn from them disagreed on something structural. The first live day
+    showed it exactly — 240 pairs attempted, 240 refused, every one on
+    direction/symbol/timeframe mismatch and not one on merit.
+
+    Grouping first makes compatibility structural: every pair a bucket yields already
+    agrees, so the refusals that remain are the ones worth reading (duplicate rules, a
+    child that trades nothing). Buckets of one are dropped — there is no pair to make —
+    and buckets are ordered by their best parent so the strongest context fuses first.
+
+    Buckets are additionally confined to the context being MINED (``symbol`` /
+    ``timeframe``), because a fused child is backtested on the caller's snapshot: a
+    child inheriting an ETH 4h scope but scored on a BTC 1h replay would be stored
+    with evidence that never described it. Global ranking hid that — compatible pairs
+    were so rare it effectively never arose — so making pairs common has to close it
+    in the same change."""
+    buckets: dict[tuple, list[dict[str, Any]]] = {}
+    for record in rank_fusion_parents(existing_candidates, top_n=len(existing_candidates)):
+        key = _fusion_bucket_key(record)
+        if key is None:
+            continue
+        _schema, _direction, bucket_timeframe, scope, _stop = key
+        if bucket_timeframe != timeframe or symbol not in scope:
+            continue  # not the context this run can produce honest evidence for
+        buckets.setdefault(key, []).append(record)  # already score-ordered
+    ordered = [members[:per_bucket] for members in buckets.values() if len(members) >= 2]
+    ordered.sort(key=lambda members: (-float(members[0]["champion_score"]), members[0]["candidate_id"]))
+    return ordered
+
+
 def _fuse_batch(
-    parents: list[Mapping[str, Any]], snapshot: Mapping[str, Any], *, generation_id: str,
+    buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Fuse ranked parents pairwise until ``pairs`` children carry evidence.
+    """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
+
+    Each bucket is a set of lineages that already agree on schema/direction/timeframe/
+    symbol/stop model (see :func:`fusion_parent_buckets`), so every pair offered here
+    is structurally fusable and a refusal means something real.
 
     Children are backtested on their own — a crossover inherits its parents' rules,
     never their evidence, so a child that overfits cannot ride a parent's score.
@@ -777,7 +840,8 @@ def _fuse_batch(
     candidate that can never trade."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
-    for left, right in combinations(parents, 2):
+    pair_stream = (pair for bucket in buckets for pair in combinations(bucket, 2))
+    for left, right in pair_stream:
         if len(minted) >= pairs:
             break
         parent_ids = sorted([left["candidate_id"], right["candidate_id"]])
@@ -900,7 +964,11 @@ def run_factory(
     fusion_rejected: list[dict[str, Any]] = []
     if fusion_pairs > 0:
         fused, fusion_rejected = _fuse_batch(
-            rank_fusion_parents(existing_candidates),
+            fusion_parent_buckets(
+                existing_candidates,
+                symbol=str(snapshot.get("symbol") or ""),
+                timeframe=str(snapshot.get("timeframe") or ""),
+            ),
             snapshot,
             generation_id=generation_id,
             start_index=len(candidates) + 1,
