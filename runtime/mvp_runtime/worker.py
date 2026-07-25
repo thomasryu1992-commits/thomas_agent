@@ -175,12 +175,27 @@ def _validated_context(validated_entries: list[Mapping[str, Any]] | None) -> str
     """An operator-validated-memory block appended to the prompt. Empty when none exists.
 
     Framed differently from the candidate block: VALIDATED entries were explicitly
-    promoted by the operator, so the model may rely on them (cite by [V#])."""
+    promoted by the operator, so the model may rely on them (cite by [V#]).
+
+    M5c: a validated entry carrying a ``learning_source`` is a promoted correction — the
+    operator's "for a request like this, do it this way." It is framed distinctly so the
+    specialist *applies* it (starts closer to the accepted answer) rather than treating it as
+    one more reference fact; a closing instruction tells the model to prefer such guidance."""
     if not validated_entries:
         return ""
     lines = ["\nValidated memory (operator-approved reusable knowledge; cite by [V#]):"]
+    has_correction = False
     for index, entry in enumerate(validated_entries, start=1):
-        lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+        if entry.get("learning_source"):
+            has_correction = True
+            lines.append(
+                f"[V{index}] (operator-approved correction — apply to this similar request) "
+                f"{entry.get('content', '')}"
+            )
+        else:
+            lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+    if has_correction:
+        lines.append("Where a [V#] is marked a correction, prefer its guidance over your default approach.")
     return "\n".join(lines) + "\n"
 
 

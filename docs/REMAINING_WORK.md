@@ -67,7 +67,10 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
       stay the local operator step; until minted, every run degrades cleanly to the base chain.
 - [x] **M3** verify-fail → bounded LLM revision loop (opt-in `--revise`, hard cap 1) — merged (PR #150).
 - [x] **M4a** crypto: second-pass win-rate + risk-reward ranking — merged (PR #148).
-- [ ] **M4b** ⚠️ crypto: put the strategy proposer on a schedule (needs per-run + backlog caps).
+- [x] **M4b** crypto: the strategy proposer on a schedule (`crypto_propose` kind) — done. Per-run
+      cap (existing) + unreviewed-backlog cap (distinct accepted-but-uninstalled families; skip +
+      audit `skipped_backlog_full:N` past 12, 30-day window). Installing a family clears its
+      backlog slot. Also registered the proposal ledger kind (a latent persist bug).
 - [x] **M5a** correction → working-memory CANDIDATE — done. A successful M3 revision (REVISE→PASS)
       or a `/feedback bad <note>` mints a correction candidate (ALLOW-tier, audited on the
       memory-event stream, CANDIDATE-only). `runtime/mvp_runtime/memory.py`
@@ -75,9 +78,11 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
       `operator_feedback.py`.
 - [ ] **M5b** Thomas promotes useful correction candidates to VALIDATED — already available via the
       existing R9/`/promote` door; no new code, it is the operator's explicit yes.
-- [ ] **M5c** ⚠️ planner retrieves matching VALIDATED corrections as `[V#]` context for new
-      requests. (Correction candidates already feed back as unverified `[M#]` context today; M5c is
-      the verified-correction leg.)
+- [x] **M5c** a promoted VALIDATED correction feeds back as a correction to *apply* (`[V#]`,
+      distinctly framed) — done. `promote_candidate` carries the correction marker forward;
+      `worker._validated_context` frames it. Known limit: only revision-path corrections are
+      promotable (they carry origin); feedback-path corrections stay `[M#]` until origin can be
+      reconstructed from the delivered run.
 - [ ] **M5d** (later) repeated identical corrections → programization counter → candidate Program.
 
 ---

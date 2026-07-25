@@ -322,3 +322,38 @@ def test_build_learning_event_shape():
     assert ev["candidate_id"] == c["candidate_id"]
     assert ev["learning_source"] == LEARNING_SOURCE_REVISION and ev["trace_id"] == "tr1"
     assert ev["integrity"]["event_sha256"]     # self-hashed like every stamped event
+
+
+# --- M5c: a promoted correction feeds back as a correction --------------------
+
+def _corr_candidate_with_origin():
+    """A revision-path correction candidate — it carries full origin, so it is promotable
+    (the audited promotion path requires complete provenance)."""
+    return build_correction_candidate(
+        "유사 요청에서는 표로 정리하라", source=LEARNING_SOURCE_REVISION, now=NOW,
+        seed={"trace_id": "trace_c"},
+        origin={"task_id": "task_c", "task_revision": 1, "trace_id": "trace_c",
+                "core_context_binding_id": "ccb-abc", "data_sensitivity": "internal"},
+        correction_ref="trace:trace_c",
+    )
+
+
+def test_promotion_preserves_the_correction_marker():
+    from runtime.mvp_runtime.memory import promote_candidate
+    v = promote_candidate(_corr_candidate_with_origin(), promoted_by="thomas",
+                          reason="반복되는 교정", now=NOW)
+    assert v["status"] == VALIDATED_STATUS
+    assert v["learning_source"] == LEARNING_SOURCE_REVISION      # marker carried forward
+    assert v["correction_ref"] == "trace:trace_c"
+    assert v["source_origin"]["task_id"] == "task_c"            # lineage still carried (R5.4)
+
+
+def test_promotion_of_a_plain_candidate_has_no_correction_marker():
+    from runtime.mvp_runtime.memory import promote_candidate
+    plain = build_memory_candidates(_analysis(["ordinary knowledge"]), _assignment(), now=NOW,
+                                    seed={"task_id": "t"},
+                                    origin={"task_id": "t", "task_revision": 1, "trace_id": "tr",
+                                            "core_context_binding_id": "ccb-x",
+                                            "data_sensitivity": "internal"})[0]
+    v = promote_candidate(plain, promoted_by="thomas", reason="reuse", now=NOW)
+    assert "learning_source" not in v and "correction_ref" not in v

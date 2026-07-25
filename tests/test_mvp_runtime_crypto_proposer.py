@@ -276,3 +276,52 @@ def test_report_states_that_nothing_was_installed(row, snapshot):
     )
     assert "installs nothing" in text
     assert "ACCEPTED" in text and "REJECTED" in text
+
+
+# --- M4b: unreviewed-backlog counting ----------------------------------------
+
+def _proposal_row(families_accepted, *, created_at="2026-07-24T00:00:00Z", rejected=()):
+    """A ledger record row as LedgerStore.read_records returns it."""
+    proposals = [{"family": f, "accepted": True} for f in families_accepted]
+    proposals += [{"family": f, "accepted": False} for f in rejected]
+    return {"kind": proposer.PROPOSAL_LEDGER_KIND, "trace_id": "t",
+            "record": {"record_type": proposer.PROPOSAL_RECORD_TYPE,
+                       "created_at": created_at, "proposals": proposals}}
+
+
+def test_backlog_counts_distinct_accepted_uninstalled_families():
+    rows = [
+        _proposal_row(["alpha", "beta"]),
+        _proposal_row(["beta", "gamma"]),     # beta repeats — dedup to one
+    ]
+    # gamma is not installed; alpha/beta not installed => {alpha, beta, gamma} = 3
+    assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-24T01:00:00Z") == 3
+
+
+def test_backlog_excludes_installed_families():
+    rows = [_proposal_row(["alpha", "beta", "gamma"])]
+    # Installing beta (a factory.TEMPLATES code change) drops it from the backlog.
+    assert proposer.count_unreviewed_backlog(rows, ["beta"], now="2026-07-24T01:00:00Z") == 2
+
+
+def test_backlog_ignores_rejected_proposals():
+    rows = [_proposal_row(["alpha"], rejected=["bad_one", "invented"])]
+    assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-24T01:00:00Z") == 1
+
+
+def test_backlog_windows_out_old_proposals():
+    rows = [
+        _proposal_row(["stale"], created_at="2026-06-01T00:00:00Z"),   # >30d before now
+        _proposal_row(["fresh"], created_at="2026-07-24T00:00:00Z"),
+    ]
+    assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-25T00:00:00Z") == 1
+
+
+def test_backlog_skips_malformed_rows_without_crashing():
+    rows = [
+        {"kind": "some_other_kind", "record": {}},          # wrong kind
+        {"kind": proposer.PROPOSAL_LEDGER_KIND, "record": "not a mapping"},
+        {"kind": proposer.PROPOSAL_LEDGER_KIND, "record": {"proposals": "nope"}},
+        _proposal_row(["real"]),
+    ]
+    assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-24T01:00:00Z") == 1

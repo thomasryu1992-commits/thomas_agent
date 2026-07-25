@@ -220,6 +220,47 @@ def test_promotion_with_escape_is_audited_as_such(tmp_path):
     assert entry["candidate_id"] == pool.candidate_id(seeded[0])  # lineage rides into the pool
 
 
+def test_promotion_derives_unique_display_id_on_collision(tmp_path):
+    # The factory restarts strategy_id at S001 every generation, so two distinct lineages
+    # can share a display name. The batch must NOT be refused: the collision gets a unique
+    # {sid}-{generation} display id, candidate_id stays the lineage key, and the installed
+    # pool passes the identity invariant (a re-load would raise otherwise).
+    a = _seed_candidates(tmp_path, _spec_dict(), generation_id="GEN-001")
+    b = _seed_candidates(
+        tmp_path,
+        _spec_dict(entry_rules={"operator": "AND",
+                                "conditions": [{"feature": "adx", "comparison": ">=", "value": 30.0}]}),
+        generation_id="GEN-002",
+    )
+    cid_a, cid_b = pool.candidate_id(a[0]), pool.candidate_id(b[0])
+    summary = run_promotion(selectors=[cid_a, cid_b], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    entries = pool.load_active_pool(tmp_path)["active_strategies"]  # re-load validates the invariant
+    sids = [e["strategy_id"] for e in entries]
+    assert len(set(sids)) == 2 and "S1" in sids                    # one bare, one derived
+    assert any(s in ("S1-GEN-001", "S1-GEN-002") for s in sids)    # lineage-readable
+    assert {e["candidate_id"] for e in entries} == {cid_a, cid_b}  # distinct lineages
+    assert set(summary["promoted_display_ids"]) == set(sids)
+
+
+def test_promotion_residual_collision_fails_closed(tmp_path):
+    # Three distinct lineages sharing BOTH strategy_id and generation cannot all get a
+    # unique {sid}-{generation} name — the third fails closed rather than silently
+    # collapsing onto the second, and nothing is installed.
+    specs = [
+        _spec_dict(entry_rules={"operator": "AND",
+                                "conditions": [{"feature": "close", "comparison": ">", "value": float(v)}]})
+        for v in (1.0, 2.0, 3.0)
+    ]
+    seeded = _seed_candidates(tmp_path, *specs, generation_id="GEN-002")
+    cids = [pool.candidate_id(s) for s in seeded]
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=cids, promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "cannot assign a unique strategy_id" in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
+
+
 def test_promotion_with_bad_approval_refused(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(SystemExit) as exc:
@@ -274,23 +315,6 @@ def test_candidate_rows_without_hash_still_read(tmp_path):
               "evidence_input_sha256": "sha256:test", "strategy_spec": _spec_dict(strategy_id="S9")}
     path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
     assert pool.resolve_candidates(["S9"], tmp_path)[0]["strategy_id"] == "S9"
-
-
-def test_two_candidates_sharing_a_display_name_cannot_enter_one_batch(tmp_path):
-    """The set of in-pool ids was built once before the loop and never updated, so
-    GEN-001:S1 and GEN-002:S1 could both be promoted in a single request — leaving the
-    pool with two entries answering to the same routing/lifecycle key."""
-    old = _seed_candidates(tmp_path, _spec_dict())
-    changed = _spec_dict(entry_rules={"operator": "AND", "conditions": [
-        {"feature": "adx", "comparison": ">=", "value": 30.0}]})
-    new = _seed_candidates(tmp_path, changed, generation_id="GEN-002")
-    both = [pool.candidate_id(old[0]), pool.candidate_id(new[0])]
-
-    with pytest.raises(SystemExit) as exc:
-        run_promotion(selectors=both, promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
-    assert "already in the active pool" in str(exc.value)
-    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
 
 @pytest.mark.parametrize("dup_field", ["strategy_id", "candidate_id"])

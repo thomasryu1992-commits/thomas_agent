@@ -110,6 +110,17 @@ def test_append_records_persists_known_kinds_and_skips_non_record_keys(tmp_path)
     assert rows[0]["trace_id"] == "trace-1"
 
 
+def test_read_records_returns_rows_in_append_order(tmp_path):
+    """M4b reads this stream to count the unreviewed proposal backlog."""
+    store = LedgerStore(tmp_path / "ledger")
+    assert store.read_records() == []                       # empty stream reads clean
+    store.append_records("trace-1", {"crypto_strategy_proposal": {"proposals": []}})
+    store.append_records("trace-2", {"task": {"x": 1}})
+    rows = store.read_records()
+    assert [r["kind"] for r in rows] == ["crypto_strategy_proposal", "task"]
+    assert rows[0]["trace_id"] == "trace-1" and rows[0]["record"] == {"proposals": []}
+
+
 def test_corrupt_ledger_tip_fails_closed(tmp_path):
     store = LedgerStore(tmp_path / "ledger")
     (store.root).mkdir(parents=True)
