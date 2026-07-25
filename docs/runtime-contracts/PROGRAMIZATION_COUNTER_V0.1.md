@@ -75,6 +75,13 @@ the first two records real.
   The counter keeps counting during and after a review without ever touching an
   operator-owned status. Every mutation requires an operator identity + reason and is
   refused otherwise.
+- **Correction lineage** (`lineage <pattern_id>` command; M5d, option C): a **read-only** join
+  showing which corrections the repeated pattern kept needing — `correction_lineage_for_pattern`
+  matches the pattern's valid-observation trace ids against the `correction_ref` of the M5a
+  working-memory candidates and M5c VALIDATED corrections. It informs the "codify A→D as a
+  Program" decision at review time. Read-only like `status` (answered in any runtime mode, no
+  kill-switch gate); no new schema or counter, and the annotation is never written into a closed
+  record.
 - **Candidate creation** (`candidate` command): the review's outcome per policy §5, allowed
   only while UNDER_REVIEW, one per pattern. Thomas authors the substance in an input file
   (`deterministic_slice`, `agent_retained_responsibilities`, `defined_exceptions`,

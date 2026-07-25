@@ -185,8 +185,17 @@ and much of the substrate already ships:
   provenance, which the audited promotion path requires. A **feedback-path** (`/feedback bad`)
   correction has no live assignment, so it stays an unverified `[M#]` candidate; making it
   promotable needs reconstructing origin from the delivered run (a later increment).
-- **M5d (later)** — repeated identical corrections flow into the programization counter → a
-  candidate Program → (separate Thomas approval) a deterministic A→D.
+- **M5d** *(done 2026-07-25; option C — lineage annotation, reuse-first)* — repeated identical
+  corrections surface at the programization review as a **read-only correction lineage**, so a
+  reviewer of a TRIGGERED pattern sees which corrections the repeated pattern kept needing and
+  can decide "codify A→D as a Program" informed. Zero new schema, zero new counter: the existing
+  programization counter already counts repeated identical work, so this is a join —
+  `programization.correction_lineage_for_pattern` matches a pattern's valid-observation trace ids
+  against the `correction_ref` of the M5a candidates and M5c VALIDATED corrections; surfaced by a
+  read-only `programization_cli lineage <pattern_id>`. The annotation is a read-side view, never
+  written into a closed record. Actually *codifying* the correction (candidate Program →
+  registration → activation) stays the existing operator-gated programization flow + its Thomas
+  approvals.
 
 By design this stays **operator-gated**: learning is real, but promotion is Thomas's explicit yes.
 That gate is the feature, not friction — it is what makes it improve *the way he wants* rather
