@@ -75,9 +75,11 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
       `operator_feedback.py`.
 - [ ] **M5b** Thomas promotes useful correction candidates to VALIDATED — already available via the
       existing R9/`/promote` door; no new code, it is the operator's explicit yes.
-- [ ] **M5c** ⚠️ planner retrieves matching VALIDATED corrections as `[V#]` context for new
-      requests. (Correction candidates already feed back as unverified `[M#]` context today; M5c is
-      the verified-correction leg.)
+- [x] **M5c** a promoted VALIDATED correction feeds back as a correction to *apply* (`[V#]`,
+      distinctly framed) — done. `promote_candidate` carries the correction marker forward;
+      `worker._validated_context` frames it. Known limit: only revision-path corrections are
+      promotable (they carry origin); feedback-path corrections stay `[M#]` until origin can be
+      reconstructed from the delivered run.
 - [ ] **M5d** (later) repeated identical corrections → programization counter → candidate Program.
 
 ---

@@ -162,9 +162,19 @@ and much of the substrate already ships:
 - **M5b** — Thomas promotes the useful candidates to VALIDATED (existing APPROVAL_REQUIRED door).
   This is the "as I want" gate: only what he approves becomes standing guidance, so a bad
   correction can't entrench itself.
-- **M5c** — the planner retrieves matching VALIDATED corrections as `[V#]` context for new
-  requests, so the specialist starts closer to D. Same scope-gate / recency-cap / fail-closed
-  semantics as today's validated-memory read-back.
+- **M5c** *(done 2026-07-25)* — a promoted VALIDATED correction feeds back into a later run as a
+  correction to *apply*, not as one more reference fact. The read-back leg already existed
+  (`memory.retrieve_validated_memory`, wired in `pipeline.py`, same scope-gate / recency-cap /
+  fail-closed semantics), so M5c is two reuse-first changes: `promote_candidate` carries the
+  `learning_source` / `correction_ref` marker forward onto the VALIDATED entry, and
+  `worker._validated_context` frames a marked entry distinctly (`[V#] (operator-approved
+  correction — apply to this similar request) …` + a closing "prefer its guidance" instruction).
+  A run with no correction in validated memory renders byte-identically to before (no
+  `PROMPT_VERSION` bump — the `_revision_context` precedent for conditional context blocks).
+  **Known limit:** only a **revision-path** correction is promotable — it carries full origin
+  provenance, which the audited promotion path requires. A **feedback-path** (`/feedback bad`)
+  correction has no live assignment, so it stays an unverified `[M#]` candidate; making it
+  promotable needs reconstructing origin from the delivered run (a later increment).
 - **M5d (later)** — repeated identical corrections flow into the programization counter → a
   candidate Program → (separate Thomas approval) a deterministic A→D.
 
