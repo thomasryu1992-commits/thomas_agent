@@ -33,3 +33,6 @@ workspace/
 
 # Build/compose output logs (regenerated artifacts; never shared source)
 *.log
+
+# Claude Code worktrees: local, per-session working copies of this repo (never source).
+.claude/worktrees/
