@@ -30,6 +30,7 @@ from .features import latest_feature_row
 from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_check, run_risk_guard
 from .market_data import (
     FUNDING_DEGRADED,
+    HIGHER_TIMEFRAME,
     LIQUIDATION_DEGRADED,
     MARKET_DATA_DEGRADED,
     TIMEFRAMES,
@@ -57,6 +58,9 @@ _KILL_CODES = frozenset({"RUNTIME_KILLED", "RUNTIME_PAUSED"})
 
 # Collection failures that degrade the cycle; anything else is a config error.
 _DEGRADABLE_CODES = {"TOOL_ERROR"}
+
+# The higher-timeframe leg could not be read this cycle; htf_* specs stay no-entry.
+HTF_DEGRADED = "HTF_DEGRADED"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
 _FUNDING_RECORDS = 1600
@@ -108,6 +112,42 @@ def attach_feeds(
     return reason_codes, status
 
 
+def attach_htf(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    limit: int | None = None,
+) -> str | None:
+    """Fetch the higher-timeframe candles onto ``snapshot`` (mutating it). Degrade-only.
+
+    One step up ``market_data.HIGHER_TIMEFRAME``; the top of the ladder has none, and
+    a fetch failure leaves the key ABSENT rather than empty. Both cases mean the same
+    honest thing downstream — the HTF columns stay indeterminate, so an htf_* spec
+    matches nothing and simply does not trade this cycle. Returns a reason code when
+    the fetch degraded, else None.
+
+    Deliberately never raises: the HTF leg is a *filter*, and a filter that cannot be
+    read must not take down the cycle that would have traded without it."""
+    symbol = str(snapshot.get("symbol") or "")
+    higher = HIGHER_TIMEFRAME.get(str(snapshot.get("timeframe") or ""))
+    if higher is None:
+        return None
+    # Enough higher bars for the indicators to warm up (MIN_WARM_CANDLES) with room
+    # to spare; the alignment only ever reads the last closed one per lower bar.
+    want = limit if limit is not None else 240
+    try:
+        htf_snapshot, _ = collect_market_data(symbol, higher, collector=collector, now=now, limit=want)
+    except (ToolError, ToolBlocked):
+        return HTF_DEGRADED
+    candles = htf_snapshot.get("candles") or []
+    if not candles:
+        return HTF_DEGRADED
+    snapshot["htf_candles"] = candles
+    snapshot["htf_timeframe"] = higher
+    return None
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -150,6 +190,11 @@ def run_crypto_cycle(
         snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now,
     )
     reason_codes.extend(feed_reasons)
+
+    # 1c) higher-timeframe context — the regime leg htf_* specs filter on. Degrade-only.
+    htf_reason = attach_htf(snapshot, collector=collector, now=now)
+    if htf_reason:
+        reason_codes.append(htf_reason)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)

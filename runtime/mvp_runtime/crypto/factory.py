@@ -7,9 +7,10 @@ behaves identically in backtest and live" because both share one evaluator and o
 exit model) holds here by construction, since ``strategy.evaluate_spec`` and
 ``paper.settle_trade_plan`` are exactly what the live cycle runs.
 
-Template subset: the ten families whose features the C3 rows compute. The ``htf_*``
-families (higher-timeframe legs) and ``funding_fade_*`` (funding feed) are NOT ported
-— their inputs do not exist here yet, and generating specs that can never match would
+Template library: the families whose features the C3 rows compute. ``funding_fade_*``
+joined when the funding series landed, and the ``htf_*`` legs when every timeframe in
+the ladder became collected (Thomas 2026-07-25) — the standing rule being that a
+family is ported only once its inputs exist, since specs that can never match would
 be noise pretending to be diversity.
 
 Everything in this module is ALLOW-tier record creation: the factory produces
@@ -48,6 +49,7 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
+from . import features, market_data
 from .cost import CostModel, apply_cost_model
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
@@ -99,10 +101,19 @@ NUMERIC_FEATURES = frozenset({
     # on absent data. That hazard predates this change and is not widened by it — the
     # three added here are strictly safer than the one already present.
     "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
+    # Higher-timeframe context (Thomas 2026-07-25): the read of the last CLOSED candle
+    # one step up the traded ladder. Safe on the liquidation terms, not the spike-ratio
+    # terms — with no HTF supplied every column is **None**, so an htf_* condition is
+    # indeterminate and simply never matches. The numeric ones are normalized ratios,
+    # so a mined threshold carries the same meaning on every symbol.
+    *features.HTF_NUMERIC_COLUMNS,
 })
+_REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
+                            "LOW_VOLATILITY", "UNCLEAR"})
 CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
-    "market_regime": frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
-                                "LOW_VOLATILITY", "UNCLEAR"}),
+    "market_regime": _REGIME_VALUES,
+    # Same classifier, one timeframe up — so the same closed vocabulary.
+    "htf_market_regime": _REGIME_VALUES,
 }
 _NUMERIC_COMPARISONS = frozenset({">", ">=", "<", "<=", "==", "!="})
 _CATEGORICAL_COMPARISONS = frozenset({"==", "!="})
@@ -164,6 +175,40 @@ def _breakdown_short_entry(p: dict) -> list[dict]:
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
         {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
         {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_pullback_long_entry(p: dict) -> list[dict]:
+    # The reason the families exist: buy weakness only while the timeframe ABOVE is
+    # still trending up. Same dip, opposite meaning, depending on the higher regime.
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
+    ]
+
+
+def _htf_pullback_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
@@ -267,13 +312,40 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("funding_fade_short", "short", "1h",
                      {"funding_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
                      {"funding_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _funding_fade_short_entry),
+    # HTF families (Thomas 2026-07-25). Ported now that every timeframe in the ladder
+    # is collected — the "untimeable" objection that held them back was that the
+    # higher leg's data was not there to time against, and it now is.
+    StrategyTemplate("htf_trend_long", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_long_entry),
+    StrategyTemplate("htf_trend_short", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
+    StrategyTemplate("htf_pullback_long", "long", "1h",
+                     {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
+                     {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+    StrategyTemplate("htf_pullback_short", "short", "1h",
+                     {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
+                     {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
+
+# Families whose entry rules read HTF columns — mintable only where a higher
+# timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
+HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
+                          "htf_pullback_long", "htf_pullback_short"})
 
 
 def templates_for_timeframe(timeframe: str) -> tuple[StrategyTemplate, ...]:
-    """The rotation retimed to ``timeframe`` (all ten families are retimeable —
-    the untimeable htf_* families were not ported)."""
-    return tuple(replace(t, timeframe=str(timeframe)) for t in TEMPLATES)
+    """The rotation retimed to ``timeframe``.
+
+    Every price/feed family is retimeable. The htf_* families additionally need a
+    higher timeframe to read, so they drop out at the top of the ladder (``1d``):
+    minting one there would produce a spec whose HTF conditions can never be
+    determined — permanently no-entry rather than merely selective."""
+    timeframe = str(timeframe)
+    has_htf = timeframe in market_data.HIGHER_TIMEFRAME
+    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES
+                 if has_htf or t.family not in HTF_FAMILIES)
 
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
@@ -692,11 +764,73 @@ def rank_fusion_parents(
     return ranked[:top_n]
 
 
+def _fusion_bucket_key(record: Mapping[str, Any]) -> tuple | None:
+    """The context two parents must already agree on, or None if unreadable.
+
+    Exactly :func:`fuse_specs`' preconditions — schema, direction, timeframe, symbol
+    scope, stop model — because those are not differences to reconcile but the
+    definition of "these two describe the same trade"."""
+    spec = record.get("strategy_spec")
+    if not isinstance(spec, Mapping):
+        return None
+    scope = spec.get("symbol_scope")
+    if not isinstance(scope, (list, tuple)):
+        return None
+    exits = spec.get("exit_rules")
+    return (
+        spec.get("schema_version"), spec.get("direction"), spec.get("timeframe"),
+        tuple(sorted(str(s) for s in scope)),
+        (exits or {}).get("stop_model") if isinstance(exits, Mapping) else None,
+    )
+
+
+def fusion_parent_buckets(
+    existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    per_bucket: int = FUSION_PARENT_POOL,
+) -> list[list[dict[str, Any]]]:
+    """Fusable parent groups, best bucket first, best parent first within each.
+
+    Ranking parents GLOBALLY and pairing the top N was the wired-but-inert version of
+    this: a crossover is only defined inside one (direction, timeframe, symbol_scope,
+    …) context, and the global leaders are spread across ~40 such contexts, so nearly
+    every pair drawn from them disagreed on something structural. The first live day
+    showed it exactly — 240 pairs attempted, 240 refused, every one on
+    direction/symbol/timeframe mismatch and not one on merit.
+
+    Grouping first makes compatibility structural: every pair a bucket yields already
+    agrees, so the refusals that remain are the ones worth reading (duplicate rules, a
+    child that trades nothing). Buckets of one are dropped — there is no pair to make —
+    and buckets are ordered by their best parent so the strongest context fuses first.
+
+    Buckets are additionally confined to the context being MINED (``symbol`` /
+    ``timeframe``), because a fused child is backtested on the caller's snapshot: a
+    child inheriting an ETH 4h scope but scored on a BTC 1h replay would be stored
+    with evidence that never described it. Global ranking hid that — compatible pairs
+    were so rare it effectively never arose — so making pairs common has to close it
+    in the same change."""
+    buckets: dict[tuple, list[dict[str, Any]]] = {}
+    for record in rank_fusion_parents(existing_candidates, top_n=len(existing_candidates)):
+        key = _fusion_bucket_key(record)
+        if key is None:
+            continue
+        _schema, _direction, bucket_timeframe, scope, _stop = key
+        if bucket_timeframe != timeframe or symbol not in scope:
+            continue  # not the context this run can produce honest evidence for
+        buckets.setdefault(key, []).append(record)  # already score-ordered
+    ordered = [members[:per_bucket] for members in buckets.values() if len(members) >= 2]
+    ordered.sort(key=lambda members: (-float(members[0]["champion_score"]), members[0]["candidate_id"]))
+    return ordered
+
+
 def _fuse_batch(
-    parents: list[Mapping[str, Any]], snapshot: Mapping[str, Any], *, generation_id: str,
+    buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Fuse ranked parents pairwise until ``pairs`` children carry evidence.
+    """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
+
+    Each bucket is a set of lineages that already agree on schema/direction/timeframe/
+    symbol/stop model (see :func:`fusion_parent_buckets`), so every pair offered here
+    is structurally fusable and a refusal means something real.
 
     Children are backtested on their own — a crossover inherits its parents' rules,
     never their evidence, so a child that overfits cannot ride a parent's score.
@@ -706,7 +840,8 @@ def _fuse_batch(
     candidate that can never trade."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
-    for left, right in combinations(parents, 2):
+    pair_stream = (pair for bucket in buckets for pair in combinations(bucket, 2))
+    for left, right in pair_stream:
         if len(minted) >= pairs:
             break
         parent_ids = sorted([left["candidate_id"], right["candidate_id"]])
@@ -829,7 +964,11 @@ def run_factory(
     fusion_rejected: list[dict[str, Any]] = []
     if fusion_pairs > 0:
         fused, fusion_rejected = _fuse_batch(
-            rank_fusion_parents(existing_candidates),
+            fusion_parent_buckets(
+                existing_candidates,
+                symbol=str(snapshot.get("symbol") or ""),
+                timeframe=str(snapshot.get("timeframe") or ""),
+            ),
             snapshot,
             generation_id=generation_id,
             start_index=len(candidates) + 1,
