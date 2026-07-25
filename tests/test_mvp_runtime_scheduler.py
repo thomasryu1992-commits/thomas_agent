@@ -13,6 +13,7 @@ from runtime.mvp_runtime import control, scheduler
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import PersistenceError, SchedulerBlocked
 from runtime.mvp_runtime.scheduler import (
+    KIND_PROPOSER,
     KIND_PRUNE,
     KIND_TASK,
     MIN_INTERVAL_SECONDS,
@@ -626,3 +627,62 @@ def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
     # failure is durable state, not a dead process.
     assert by_id[second.schedule_id].next_run_at > T1
     assert by_id[second.schedule_id].last_status == "failed:LEDGER_WRITE_FAILED"
+
+
+# --- M4b: scheduled LLM strategy proposer, backlog-gated ---------------------
+
+def _proposer_schedule(store, *, now=T0, interval=60, request=""):
+    s = build_schedule(kind=KIND_PROPOSER, request=request, interval_seconds=interval,
+                       created_by="op", now=now)
+    store.add(s)
+    return s
+
+
+def _proposal_rows(ledger):
+    from runtime.mvp_runtime.crypto.proposer import PROPOSAL_LEDGER_KIND
+    return [r for r in ledger.read_records() if r["kind"] == PROPOSAL_LEDGER_KIND]
+
+
+def test_proposer_schedule_needs_no_request():
+    # Like memory_prune: the proposer defaults to BTCUSDT/1h, so the request is optional.
+    s = build_schedule(kind=KIND_PROPOSER, request="", interval_seconds=3600,
+                       created_by="op", now=T0)
+    assert s.kind == KIND_PROPOSER
+
+
+def test_proposer_schedule_fires_and_records_a_proposal(tmp_path):
+    # repo_root=tmp_path forces the mock market-data + mock proposer paths (no grants there),
+    # so the fire is deterministic and never reaches the network.
+    store = ScheduleStore(tmp_path / "sched")
+    ledger = LedgerStore(tmp_path / "ledger")
+    _proposer_schedule(store)
+    summary = run_due(store, now=T1, ledger=ledger, repo_root=tmp_path,
+                      control_store=ControlStore(tmp_path))
+    assert summary["fired"] == 1
+    rows = _proposal_rows(ledger)
+    assert len(rows) == 1                                   # the proposal record persisted
+    assert rows[0]["record"]["installation_effect"] == "NONE"   # installs nothing
+    assert store.list()[0].last_status.startswith("proposed=")
+
+
+def test_proposer_schedule_skips_when_backlog_full(tmp_path):
+    from runtime.mvp_runtime.crypto.proposer import (
+        PROPOSAL_LEDGER_KIND,
+        PROPOSAL_RECORD_TYPE,
+    )
+    store = ScheduleStore(tmp_path / "sched")
+    ledger = LedgerStore(tmp_path / "ledger")
+    # Pre-fill the backlog with 12 distinct accepted, uninstalled families (the cap).
+    for i in range(12):
+        rec = {"record_type": PROPOSAL_RECORD_TYPE, "created_at": T0,
+               "proposals": [{"family": f"fam_{i}", "accepted": True}]}
+        ledger.append_records(f"p{i}", {PROPOSAL_LEDGER_KIND: rec})
+    _proposer_schedule(store)
+    summary = run_due(store, now=T1, ledger=ledger, repo_root=tmp_path,
+                      control_store=ControlStore(tmp_path))
+    # The occurrence fired but the backlog cap made it a recorded skip — no model call,
+    # no new proposal piled onto the unreviewed heap.
+    assert summary["fired"] == 1
+    assert summary["results"][0]["status"] == "skipped_backlog_full:12"
+    assert len(_proposal_rows(ledger)) == 12               # nothing new appended
+    assert store.list()[0].last_status == "skipped_backlog_full:12"

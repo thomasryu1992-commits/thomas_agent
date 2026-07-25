@@ -71,6 +71,7 @@ _RECORD_KINDS = (
     "trial_report",
     "crypto_cycle",
     "crypto_factory",
+    "crypto_strategy_proposal",
     "programization_observation", "programization_pattern",
 )
 
@@ -198,6 +199,17 @@ class LedgerStore:
                     code="LEDGER_WRITE_FAILED", label="the block ledger"):
             return jsonl.read_objects(self._root / BLOCKS_FILE,
                                       read_code="LEDGER_UNREADABLE", label="the block ledger")
+
+    def read_records(self) -> list[dict[str, Any]]:
+        """Every persisted record row (``{"kind", "trace_id", "record"}``), in append order.
+
+        Read under the appender's own lock, like the block/scheduler readers: a run may be
+        appending its records while a reader scans the stream. Fails closed on a corrupt file.
+        The M4b proposer backlog reads this to count unreviewed strategy proposals."""
+        with locked(self._root / (RECORDS_FILE + ".lock"),
+                    code="LEDGER_WRITE_FAILED", label="the record ledger"):
+            return jsonl.read_objects(self._root / RECORDS_FILE,
+                                      read_code="LEDGER_UNREADABLE", label="the record ledger")
 
     def read_scheduler_events(self) -> list[dict[str, Any]]:
         """Every persisted scheduler event, in append order. Fails closed on a corrupt file.

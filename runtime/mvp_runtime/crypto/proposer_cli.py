@@ -1,14 +1,17 @@
-"""CLI for the LLM strategy-family proposer — deliberately manual, never scheduled.
+"""CLI for the LLM strategy-family proposer — the on-demand path.
 
     python -m runtime.mvp_runtime.crypto.proposer_cli --focus liquidation
     python -m runtime.mvp_runtime.crypto.proposer_cli --symbol ETHUSDT --timeframe 4h
     python -m runtime.mvp_runtime.crypto.proposer_cli --json
 
-Thomas runs this when he wants proposals, which is why it is a command and not a
-schedule (explicit decision 2026-07-24): proposals need reading, and a schedule would
-accumulate them faster than anyone reviews them. The output is a review sheet — the
-record installs nothing, and adding a family to ``factory.TEMPLATES`` stays a code
-change in Thomas's PR.
+Thomas runs this when he wants proposals now. The output is a review sheet — the record
+installs nothing, and adding a family to ``factory.TEMPLATES`` stays a code change in
+Thomas's PR. Originally this was the *only* path (2026-07-24: "a schedule would accumulate
+proposals faster than anyone reviews them"); M4b (2026-07-25) added a scheduled path
+(scheduler kind ``crypto_propose``) that answers exactly that concern with an
+unreviewed-backlog cap — once too many accepted-but-uninstalled families are waiting, a
+scheduled fire skips instead of piling on more. This on-demand CLI has no such cap by
+design: Thomas asking explicitly is itself the review intent.
 
 Two gated reads, both through the existing chokepoints: market data for the candles the
 proposals are scored on (``MVP_MARKET_DATA``), and the validator provider for the model
@@ -83,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_ledger:
         try:
-            LedgerStore.default().append_records(record["proposal_id"], {"crypto_strategy_proposal": record})
+            LedgerStore.default().append_records(
+                record["proposal_id"], {proposer.PROPOSAL_LEDGER_KIND: record})
         except MvpRuntimeError as exc:
             # Reporting honesty (QA wave 7): say the persist failed rather than printing
             # a report that implies it was kept.
