@@ -99,7 +99,9 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
   - [ ] Policy: scope in `policy_dispositions.EXECUTE_AND_REPORT`; define `p5_policy_gate`;
         `financial_transaction_execution_implemented: true` **only when LP4 merges** (leave
         `financial_executor_enabled: false` byte-for-byte).
-  - [ ] New closed schema `live_trading_budget.v0.1` (registered trading caps, self-hashed).
+  - [x] New closed schema `live_trading_budget.v0.1` (registered trading caps, self-hashed) —
+        done 2026-07-25 (schema + `live_budget.py` + `register_live_trading_budget.py`). Record
+        only; making it the guard's authoritative source (over env caps) is a follow-up (6b).
   - [ ] New narrow role `execution.live_trader` — P5, `external_action_allowed: true`, candidate,
         its own `ROLE_GOVERNANCE` approval.
   - [ ] Update validator assertions + `require_doc_tokens`; **regenerate both replay bundles**
