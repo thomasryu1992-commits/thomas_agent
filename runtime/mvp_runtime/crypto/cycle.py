@@ -41,6 +41,7 @@ from .market_data import (
 )
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle
+from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .paper import (
     PaperStore,
     build_entry_plan,
@@ -63,6 +64,11 @@ _DEGRADABLE_CODES = {"TOOL_ERROR"}
 
 # The higher-timeframe leg could not be read this cycle; htf_* specs stay no-entry.
 HTF_DEGRADED = "HTF_DEGRADED"
+
+# At least one live outcome could not be given an honest R, so the R-based guard did not read
+# it. Surfaced rather than silent: the money is still in the daily-loss breaker, but a row the
+# streak logic never saw is something an operator should know about.
+LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
 _FUNDING_RECORDS = 1600
@@ -230,7 +236,20 @@ def run_crypto_cycle(
         # purpose: imported outcomes carry strategy lineage, and promotion/demotion is a
         # performance judgement about a strategy, not a safety brake on this runtime.
         own_outcomes, _imported = split_by_provenance(outcomes)
-        risk = run_risk_guard(own_outcomes, now=now)
+        # LP5.3: live results are this runtime's own trading too — and the only kind that costs
+        # real money — so the breaker must see them. They live in their own store, so the paper
+        # split above never sees them; without this the guard would ignore live losses entirely.
+        #
+        # Routed through LP5.4's bridge rather than concatenated raw: `guards._closed_rows` reads
+        # a missing `result_R` as 0.0, i.e. a BREAKEVEN, so an R-less live loss would SHORTEN a
+        # loss streak. The bridge drops those rows (they stay visible to the daily-loss breaker,
+        # which needs no R). An unreadable or tampered live history raises, and fails the guard
+        # closed exactly like an unreadable paper history — a history that cannot prove itself
+        # must not be allowed to argue the breaker is clear.
+        live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+        if live_excluded:
+            reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
+        risk = run_risk_guard(own_outcomes + live_readable, now=now)
     except ToolError as exc:
         risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
         reason_codes.append(exc.reason_code)

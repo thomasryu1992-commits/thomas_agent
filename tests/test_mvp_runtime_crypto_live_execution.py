@@ -228,8 +228,12 @@ def test_no_autonomous_entry_point_reaches_the_live_order_path():
         "runtime/mvp_runtime/pipeline.py",
         "runtime/mvp_runtime/operator.py",
     ]
-    live_order_surface = ("live_execution", "live_position", "select_order_adapter",
-                          "submit_and_reconcile")
+    # LP5.3: ``live_leg`` joins the surface. The executing leg now EXISTS, so an autonomous
+    # entry point importing it is exactly the wiring this test exists to make deliberate.
+    # ``live_pnl`` is deliberately absent: the cycle reads live OUTCOMES so the risk guard can
+    # see live losses, and reading a result is not reaching the order path.
+    live_order_surface = ("live_execution", "live_position", "live_leg",
+                          "select_order_adapter", "submit_and_reconcile")
     offenders = []
     for rel in entry_points:
         path = Path(repo_root()) / rel

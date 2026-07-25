@@ -210,19 +210,26 @@ scopes at different levels, so nothing was owed to it.
           design. The bracket is priced *before* the size so the quantity matches the stop that
           would actually be placed, and both legs round toward the entry so rounding can only shrink
           realised risk, never widen it (a stop that rounds onto the entry refuses, never repairs).
-    - [ ] **The executing leg + cycle routing** ⚠️ **still its own explicit decision.** Design
-          record: `docs/runtime-contracts/LP5_3_LIVE_LEG_DESIGN_V0.1.md` (PR #195) — read it before
-          writing any of this. It is small in code and large in consequence: the wire between a
-          decision that already exists (`plan_live_entry`) and a sender that already exists
-          (`submit_and_reconcile`). That wire is what makes an **autonomous** live order
-          structurally reachable; today the only door is the deliberate
+    - [x] **The executing leg** (Thomas 2026-07-25) — `live_leg.py`: `execute_live_entry` opens a
+          position only on a RECONCILED fill, places both protective legs as `closePosition`
+          conditionals, and **closes any exposure the venue reports if the bracket will not
+          place**; `execute_live_exit` closes reduceOnly, cancels the surviving leg (the venue
+          auto-cancels nothing), computes realized P&L from actual fills, and records the outcome
+          **before** clearing the book. The adapter is **injected**, so the module cannot reach a
+          venue on its own and every branch is tested with zero network. Also extended the risk
+          guard to see live outcomes — they live in their own store, so the paper provenance split
+          never saw them and the breaker would have ignored every live loss.
+    - [ ] **The cycle routing** ⚠️ **the last piece, and its own explicit decision.** Design
+          record: `docs/runtime-contracts/LP5_3_LIVE_LEG_DESIGN_V0.1.md`. This is the line that
+          gives the executing leg an autonomous caller; today the only door is the deliberate
           `scripts/place_canary_order.py`, one canary at a time, and
-          `test_no_autonomous_entry_point_reaches_the_live_order_path` fails loudly if an autonomous
-          entry point starts importing the order path — **building this is the decision to remove
-          that tripwire.** It owes: submit → bracket → naked-position close-now, cancelling the
-          surviving bracket leg (the venue documents no auto-cancel), the position book writes, the
-          realized outcome from actual fills, and feeding the readiness board the *real* open
-          exposure so the honest block-at-cap can lift.
+          `test_no_autonomous_entry_point_reaches_the_live_order_path` (which now also covers
+          `live_leg`) fails loudly if an autonomous entry point imports it — **doing this is the
+          decision to relax that tripwire.** It also owes the readiness board the *real* open
+          exposure, so the honest block-at-cap can lift. The preconditions the design record
+          states — this runtime's own paper record (6 closed trades at −0.39R,
+          `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
+          step, not the leg above: a leg with no caller places no orders.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
       source system and did not migrate). **Operator-only, real money** — `scripts/place_canary_order.py`
       on Thomas's machine with his own keys and its own confirmation phrase
