@@ -43,6 +43,7 @@ from .operator import (
 from .pipeline import AUTO_VALIDATION
 from .programization import ProgramizationStore
 from .providers import select_provider, select_validator_provider
+from .state_guard import assert_state_writable
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore, reconcile_stale_running
 from .tools import select_search_tool
@@ -98,6 +99,10 @@ def main(
     args = _parse_args(argv)
 
     try:
+        # Before anything selects a provider or opens a socket: if this process cannot
+        # write its own state, every capability would refuse one request at a time with
+        # its own reason code and no single startup signal. Say it once, here, and stop.
+        assert_state_writable(repo_root)
         registration = registration if registration is not None else load_operator_registration(repo_root)
         channel = channel if channel is not None else select_operator_channel(root=repo_root)
         provider = provider if provider is not None else select_provider()
