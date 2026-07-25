@@ -218,8 +218,9 @@ def test_fresh_machine_is_not_ready(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["ready"] is False
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
+    # order_path_implemented now passes (LP4 landed); every AUTHORITY row must still fail.
     assert {"live_trading_grant", "confirmation_phrase", "registered_budget",
-            "canary_evidence", "order_path_implemented"} <= failed
+            "canary_evidence"} <= failed
 
 
 def test_board_reports_every_gate(tmp_path, clean_env):
@@ -291,13 +292,35 @@ def test_guard_dry_run_is_the_authoritative_answer(tmp_path, clean_env):
     assert status["guard_dry_run"]["blocks"]
 
 
-def test_order_path_is_not_implemented():
-    """A canary for LP4: when an order adapter lands, this constant and this test change
-    together, so the board can never claim a capability that does not exist."""
-    assert live_readiness.ORDER_PATH_IMPLEMENTED is False
+def test_order_path_flag_matches_the_governance_flag():
+    """The lockstep rule: the board's constant and the policy's
+    `financial_transaction_execution_implemented` state the SAME fact ("the code that can place a
+    live order exists"), so a drift between them — one claiming a capability the other denies —
+    is the dangerous state this asserts against."""
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load((repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8"))
+    flag = policy["financial"]["financial_transaction_execution_implemented"]
+    assert live_readiness.ORDER_PATH_IMPLEMENTED is bool(flag)
 
 
-def test_board_cannot_report_ready_without_an_order_path(tmp_path, clean_env):
+def test_the_executor_handoff_flag_is_still_off():
+    """LP4 made the runtime act directly; it did NOT enable the deferred Executor handoff. That
+    flag is gate-asserted elsewhere too — this states the boundary next to the flag that moved."""
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load((repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8"))
+    assert policy["financial"]["financial_executor_enabled"] is False
+
+
+def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_path, clean_env):
+    """Since LP4 the order-path row passes, so what must keep the board from READY is the
+    *authority* — no grant, no phrase, no registered budget. Configuring the old env caps and
+    three clean canaries is not enough."""
     clean_env.setenv(CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE)
     clean_env.setenv("MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "60")
     clean_env.setenv("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "2")
@@ -306,12 +329,18 @@ def test_board_cannot_report_ready_without_an_order_path(tmp_path, clean_env):
     _write(tmp_path, [_canary(True, order_id=x) for x in ("a", "b", "c")])
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["ready"] is False
-    assert not next(c for c in status["checks"] if c["check"] == "order_path_implemented")["ok"]
+    assert next(c for c in status["checks"] if c["check"] == "order_path_implemented")["ok"]
+    failed = {c["check"] for c in status["checks"] if not c["ok"]}
+    assert "live_trading_grant" in failed and "registered_budget" in failed
+    assert status["guard_dry_run"]["approved"] is False
 
 
-def test_render_is_ascii_and_states_the_verdict(tmp_path, clean_env):
+def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     text = live_readiness.render_readiness_text(
         live_readiness.build_readiness(root=tmp_path, now=NOW)
     )
     text.encode("ascii")
-    assert "NOT READY" in text and "no order path exists yet" in text
+    assert "NOT READY" in text
+    # The board must not let green ticks read as harmless now that a path exists.
+    assert "an order path EXISTS" in text and "a real order can be placed" in text
+    assert "LP5" in text and "place_canary_order.py" in text

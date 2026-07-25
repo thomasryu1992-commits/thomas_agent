@@ -520,3 +520,70 @@ def test_counter_selection_is_inert_by_default(tmp_path, monkeypatch):
     counter = select_live_order_counter(now=NOW, root=tmp_path)
     assert counter.record_submission(day=TODAY) == 0
     assert count_today(tmp_path, day=TODAY) == 0
+
+
+# === increment 2b: the canary guard mode ===========================================
+
+def test_canary_is_exempt_from_the_promotion_gate():
+    """The chicken-and-egg: requiring >= 3 clean canaries before the FIRST canary can be placed
+    is unsatisfiable. A canary is what earns that evidence, so the gate does not apply to it."""
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
+    facts = _ready(clean_canary_orders=0,
+                   limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE))
+    verdict = evaluate_live_order_guard(_intent(), canary=True, **facts)
+    assert verdict["approved"] is True and verdict["canary"] is True
+    # ...while the autonomous path with the same zero evidence is still blocked.
+    assert evaluate_live_order_guard(_intent(), **_ready(clean_canary_orders=0))["approved"] is False
+
+
+def test_the_autonomous_phrase_cannot_authorize_a_canary():
+    """One phrase per capability, in both directions."""
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_ENV
+    # Only the autonomous phrase is set (that is what _ready_limits does) => a canary is refused.
+    verdict = evaluate_live_order_guard(_intent(), canary=True, **_ready(clean_canary_orders=0))
+    assert verdict["approved"] is False
+    assert any(CANARY_CONFIRMATION_ENV in b for b in verdict["blocks"])
+
+
+def test_the_canary_phrase_cannot_authorize_autonomous_trading():
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
+    limits = _ready_limits(confirmation="", canary_confirmation=CANARY_CONFIRMATION_PHRASE)
+    verdict = evaluate_live_order_guard(_intent(), **_ready(limits=limits))
+    assert verdict["approved"] is False
+    assert any(CONFIRMATION_ENV in b for b in verdict["blocks"])
+
+
+@pytest.mark.parametrize("fact, needle", [
+    (dict(gate_open=False), "grant is not active"),
+    (dict(runtime_active=False), "external_execution"),
+    (dict(daily_loss_breached=True), "halted for today"),
+    (dict(submitted_today=2), "daily order cap reached"),
+    (dict(budget_registered=False), "registered live-trading budget"),
+    (dict(current_open_notional_usdt=90.0), "open exposure"),
+])
+def test_a_canary_still_obeys_every_other_check(fact, needle):
+    """Only the promotion gate and the phrase differ; a canary is not a bypass."""
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
+    facts = _ready(clean_canary_orders=0,
+                   limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE))
+    facts.update(fact)
+    verdict = evaluate_live_order_guard(_intent(), canary=True, **facts)
+    assert verdict["approved"] is False
+    assert any(needle in b for b in verdict["blocks"])
+
+
+def test_canary_mode_defaults_off_so_the_promotion_gate_is_fail_closed():
+    facts = _ready(clean_canary_orders=0)
+    assert evaluate_live_order_guard(_intent(), **facts)["canary"] is False
+    assert any("promotion not ready" in b for b in evaluate_live_order_guard(_intent(), **facts)["blocks"])
+
+
+def test_a_canary_still_refuses_a_manual_kill_and_a_connectivity_probe():
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
+    killed = _ready(clean_canary_orders=0, limits=_ready_limits(
+        canary_confirmation=CANARY_CONFIRMATION_PHRASE, manual_kill_switch=True))
+    assert evaluate_live_order_guard(_intent(), canary=True, **killed)["approved"] is False
+    probe = _ready(clean_canary_orders=0, limits=_ready_limits(
+        canary_confirmation=CANARY_CONFIRMATION_PHRASE))
+    verdict = evaluate_live_order_guard(_intent(connectivity_test=True), canary=True, **probe)
+    assert verdict["approved"] is False

@@ -8,9 +8,11 @@ one question — *what is still standing between this machine and an autonomous 
 by asking each gate directly rather than by reasoning about them from documentation, so an
 answer here cannot drift from what the code actually enforces.
 
-The final line is deliberately blunt. Until LP4 exists there is **no order path at all**, so
-readiness can never report READY no matter how much is configured; the board says so rather
-than showing a row of green ticks that imply otherwise.
+The final line is deliberately blunt. Since LP4 landed (2026-07-25) an order path **does** exist,
+so READY here no longer means "configured" — it means a real order could actually be placed on
+this machine. The board says that out loud rather than letting a row of green ticks read as
+harmless. Autonomous trading needs one more thing the board also names: LP5, which is unbuilt, so
+today the only door is the deliberate `scripts/place_canary_order.py`.
 
 Exit code is 0 only when every check passes, so it can be used as a precondition in a script.
 """
@@ -45,11 +47,15 @@ from .live_pnl import (
     live_risk_snapshot,
 )
 
-# LP4 has not been built. This is a constant rather than a computed check because there is
-# nothing to compute: no module in this package can send an order to a venue. It flips only
-# when an order adapter actually exists, and the governance decisions it needs are recorded
-# in docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md.
-ORDER_PATH_IMPLEMENTED = False
+# LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
+# can sign, send, and reconcile an order. This is a constant rather than a computed check
+# because it is a fact about the codebase, not about this machine — whether an order may
+# actually be sent is the `live_trading` grant, the confirmation phrase, the registered budget,
+# the kill switches, and the canary evidence, each of which the board checks on its own row.
+# Kept in lockstep with the policy's `financial_transaction_execution_implemented`.
+# LP5 (the position kernel + cycle routing) is still unbuilt, so nothing places an order
+# autonomously — only the deliberate `scripts/place_canary_order.py`.
+ORDER_PATH_IMPLEMENTED = True
 
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -165,7 +171,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     checks.append(_check(
         "order_path_implemented",
         ORDER_PATH_IMPLEMENTED,
-        "implemented" if ORDER_PATH_IMPLEMENTED
+        "implemented (LP4); autonomous routing still needs LP5" if ORDER_PATH_IMPLEMENTED
         else "NOT IMPLEMENTED - no module can send an order (LP4 pending governance)",
     ))
 
@@ -223,7 +229,12 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append(f"WARNING : daily order counter unreadable ({status['counter_error']})")
     lines.append("")
     lines.append("READY" if status["ready"] else "NOT READY - every FAIL above must clear first")
-    if not status["order_path_implemented"]:
+    if status["order_path_implemented"]:
+        # READY is no longer an abstract "configured" — say what it now means.
+        lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")
+        lines.append("NOTE  : autonomous trading also needs LP5 (unbuilt) - today the only door is")
+        lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")
+    else:
         lines.append("NOTE  : no order path exists yet; this board cannot report READY until LP4 lands")
     return "\n".join(lines)
 

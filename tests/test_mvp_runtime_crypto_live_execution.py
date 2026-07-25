@@ -208,12 +208,26 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
-def test_no_autonomous_path_can_reach_the_venue_yet():
-    """Increment 2a: the real transport exists, but the two governance/readiness flags stay OFF
-    in lockstep, so the readiness board cannot report READY and nothing autonomous routes here.
-    The lockstep flip is increment 2b."""
-    from runtime.mvp_runtime.crypto.live_readiness import ORDER_PATH_IMPLEMENTED
-    assert ORDER_PATH_IMPLEMENTED is False
+def test_nothing_autonomous_routes_to_the_venue():
+    """Increment 2b flipped the flags: the order path exists. What keeps an order from happening
+    autonomously is now structural rather than a missing implementation — no pipeline, scheduler,
+    cycle, or operator path imports this module (LP5 is the piece that would, and it is unbuilt),
+    so the only door is the deliberate canary script."""
+    import subprocess
+    import sys
+
+    found = subprocess.run(
+        [sys.executable, "-c",
+         "import pathlib,re;"
+         "roots=[p for p in pathlib.Path('runtime').rglob('*.py')];"
+         "hits=[str(p) for p in roots if 'live_execution' in p.read_text(encoding='utf-8')"
+         " and p.name not in ('live_execution.py',)];"
+         "print('\\n'.join(hits))"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    # live_readiness may inspect it; nothing in the autonomous run path may import it.
+    autonomous = [h for h in found if "live_readiness" not in h]
+    assert autonomous == [], f"an autonomous path imports the order adapter: {autonomous}"
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):
