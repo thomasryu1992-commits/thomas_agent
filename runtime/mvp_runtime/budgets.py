@@ -99,6 +99,7 @@ def recorded_usage_budget(
     model_calls: int,
     tokens_used: int,
     validation_cycles: int = 1,
+    revision_cycles: int = 0,
     retry_count: int = 0,
 ) -> dict[str, Any]:
     """What the run actually spent, against the allocation it ran under.
@@ -120,6 +121,10 @@ def recorded_usage_budget(
         "agent_invocations": int(agent_invocations),
         "model_calls": int(model_calls),
         "validation_cycles": int(validation_cycles),
+        # M3: one allowed regeneration when validation returned REVISE. Capped at
+        # max_revision_cycles (1); recording it is what keeps the retry visible in the
+        # ledger rather than hidden inside a larger model_calls number.
+        "revision_cycles": int(revision_cycles),
         # Transient-status provider retries (503/429). The contract caps these at
         # max_retry_count: 1 per call; recording them is what keeps provider instability
         # visible in the ledger instead of hidden inside a longer latency number.

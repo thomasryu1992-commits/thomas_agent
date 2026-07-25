@@ -66,6 +66,7 @@ _RECORD_KINDS = (
     "write_permission_decision", "tool_use",
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
+    "revision",
     "budget_usage",
     "trial_report",
     "crypto_cycle",

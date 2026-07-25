@@ -81,6 +81,11 @@ def main(
     # validation policy adds the independent reviewer to this run.
     important = "--important" in argv
     argv = [a for a in argv if a != "--important"]
+    # M3 (opt-in): arm the one-shot revision loop — a validation REVISE earns exactly one
+    # governed regeneration, then delivers or BLOCKs. Off unless asked (the endless-REVISE
+    # incident is why re-introduction is opt-in and hard-capped).
+    revise = "--revise" in argv
+    argv = [a for a in argv if a != "--revise"]
     write_path, argv, usage_error = _extract_write_path(argv)
     if usage_error is not None:
         sys.stderr.write(f"BLOCKED USAGE: {usage_error}\n")
@@ -96,7 +101,7 @@ def main(
     if unknown:
         sys.stderr.write(
             f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
-            "(known options: --independent-validation[=auto], --important, --write-output PATH); "
+            "(known options: --independent-validation[=auto], --important, --revise, --write-output PATH); "
             "pipe the request on stdin if it must start with '-'\n"
         )
         return EXIT_USAGE
@@ -162,6 +167,7 @@ def main(
                       independent_validation=independent_validation,
                       validator_provider=validator_provider,
                       tiered_provider_selector=tiered_provider_selector,
+                      revise=revise,
                       priority="HIGH" if important else "NORMAL",
                       write_path=write_path, writer=writer)
     # One field answers "is this run's evidence durable?" for every failure shape. Checking
