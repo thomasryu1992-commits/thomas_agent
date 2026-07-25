@@ -186,14 +186,23 @@ scopes at different levels, so nothing was owed to it.
         fabricated R, and stay fully visible to the daily-loss breaker (which needs no R).
         `live_analysis_summary` reports readable and excluded counts separately so live trades never
         silently re-define a previously reported paper expectancy.
-  - [ ] **LP5.3 — the live leg + cycle routing** ⚠️ **needs its own explicit Thomas decision before
-        anyone starts it.** This is no longer ordinary plumbing: with the order path implemented and
-        step 3 flipped, cycle routing is precisely the piece that makes an **autonomous** live order
-        structurally reachable — today the only door is the deliberate
-        `scripts/place_canary_order.py`, one canary at a time. It also owes two things the design
-        record already names: cancelling the surviving bracket leg (the venue documents no
-        auto-cancel), and feeding the readiness board the *real* open exposure so the honest
-        block-at-cap above can lift.
+  - [~] **LP5.3 — the live leg.** Split at the one line that matters: **decide** vs **send**.
+    - [x] **The entry decision** (Thomas 2026-07-25) — `live_filters.py` reads the venue's real
+          lot step / minimums / price tick from `exchangeInfo` (on the existing `binance_futures`
+          grant; the mock collector deliberately cannot answer, so a mock run refuses rather than
+          sizing on invented numbers), and `live_entry.plan_live_entry` assembles every door —
+          C4 verdict, LP5.1 reconciliation, concurrency caps, filters, the tick-rounded protective
+          bracket, LP5.2 sizing, LP3's final guard — into one auditable decision. **It contains no
+          adapter and imports none**, so it cannot send. The bracket is priced *before* the size so
+          the quantity matches the stop that would actually be placed, and both legs round toward
+          the entry so rounding can only shrink realised risk, never widen it.
+    - [ ] **The executing leg + cycle routing** ⚠️ **still its own explicit decision.** This is the
+          piece that makes an **autonomous** live order structurally reachable — today the only door
+          is the deliberate `scripts/place_canary_order.py`, one canary at a time. It owes what the
+          design record names: submit → bracket → naked-position close-now, cancelling the surviving
+          bracket leg (the venue documents no auto-cancel), the position book writes, the realized
+          outcome from actual fills, and feeding the readiness board the *real* open exposure so the
+          honest block-at-cap can lift.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
       source system and did not migrate). **Operator-only, real money** — `scripts/place_canary_order.py`
       on Thomas's machine with his own keys and its own confirmation phrase

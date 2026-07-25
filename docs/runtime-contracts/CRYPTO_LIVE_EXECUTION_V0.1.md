@@ -1,10 +1,14 @@
 # Crypto Live Execution v0.1
 
-**Status:** Partially implemented — LP1, LP2, LP3, LP6 shipped. **No order path exists.**
+**Status:** Partially implemented — LP1, LP2, LP3, LP6, **LP4**, and LP5.1/5.2/5.4 shipped, plus
+LP5.3's entry *decision*. **An order path exists** (since 2026-07-25); nothing routes to it
+autonomously. See the table below — that sentence replaced "no order path exists", which had
+become false, and the difference matters more than any other line in this document.
 **Owner:** Thomas
 **Authority:** None. The canonical Governance Policy (`governance/GOVERNANCE_POLICY.yaml`)
-owns every rule this describes. The governance decisions this work still needs are recorded
-separately in `LIVE_EXECUTION_GOVERNANCE_V0.1.md` and **have not been implemented**.
+owns every rule this describes. The governance decisions this work needed are recorded
+separately in `LIVE_EXECUTION_GOVERNANCE_V0.1.md` and are **now implemented** — that document's
+own step table is the authority on which steps landed and which remain.
 
 Ports the live-execution stack of the frozen `crypto_AI_System` project into this runtime.
 That stack was not merely designed there — it was built and verified against the real venue
@@ -21,12 +25,23 @@ port, then the source repo was frozen. This document covers bringing it across.
 | LP2 P&L ledger + loss breaker | `execution/live_pnl_ledger.py` (L1) | yes | no |
 | LP3 order intent + final guard | `execution/live_order_final_guard.py` (L2) | yes | no — it only refuses |
 | LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes | no |
-| LP4 order adapter | `execution/live_canary_adapter.py` | **no** | — |
-| LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **no** | — |
+| LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind the `live_trading` grant + the order key + a guard PASS |
+| LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **partly** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry *decision*, 5.4 the outcome bridge | no — the executing leg + cycle routing are unbuilt |
 
-Everything shipped so far either **reads** or **refuses**. Nothing in
-`runtime/mvp_runtime/crypto/` can place, amend, or cancel an order at a venue. That is not a
-disabled flag; the code does not exist.
+The honest summary changed on 2026-07-25 and is worth stating without softening: **an order path
+now exists.** What still holds is that nothing reaches it on its own. Every other module either
+**reads** or **refuses**, and the one that can send requires, simultaneously, the operator's
+per-machine `live_trading` grant, the order-capable API key, a registered budget, the
+autonomous confirmation phrase (or the separate canary phrase), both kill switches clear, and a
+guard PASS — and even then it is only reached from the deliberate
+`scripts/place_canary_order.py`, one canary at a time.
+
+LP5.3 (this increment) built the **decision** and deliberately not the send:
+`live_entry.plan_live_entry` assembles every door — verdict, reconciliation, concurrency caps,
+venue filters, protective bracket, sizing, final guard — into one auditable answer, and the
+module contains no adapter and imports none. The executing leg and the cycle routing that would
+call it are the remaining LP5.3 work and are the piece that makes an autonomous live order
+structurally reachable, so they are their own decision.
 
 ## Effect-tier mapping
 
@@ -36,7 +51,9 @@ disabled flag; the code does not exist.
 | Realized live P&L ledger + daily-loss breaker | Internal state + validation | Records behind the `live_trading` grant; the breaker is a pure read every caller can make ungated |
 | Order intent construction, idempotency, final guard | Internal compute | Pure functions. No gate, because computing a refusal is not a capability |
 | Canary promotion evidence | Internal record creation | Append behind the `live_trading` grant; reads ungated and verified |
-| **Live order submission** | **External + financial** | **Not implemented.** Needs the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: a new `FINANCIAL_APPROVED_TRADING_USE` scope at P5, a P5-capable role, a registered trading budget, and a defined P5 policy gate |
+| **Live order submission** | **External + financial** | **Implemented** (LP4, 2026-07-25) under the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: `FINANCIAL_APPROVED_TRADING_USE` at P5, the `execution.live_trader` role (**candidate, non-routable** — activating it is a separate `ROLE_GOVERNANCE` approval), a registered `live_trading_budget.v0.1`, and the `p5_policy_gate`. Reached only from `scripts/place_canary_order.py`; `financial_executor_enabled` stays `false` |
+| **Live entry decision** (LP5.3) | Internal compute | Pure functions — `live_entry.plan_live_entry` decides and refuses; it holds no adapter, so deciding is not a capability |
+| **Venue trading rules** (`exchangeInfo`) | External read | `INTERNAL_READ` · ALLOW on the existing `binance_futures` market-data grant; failure **degrades** (`LIVE_FILTERS_DEGRADED`) and sizing then refuses |
 
 ## One grant is the whole switch
 
@@ -154,9 +171,15 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       symbols its evidence did not cover — an operator judgment at authoring time.)
 
 **Gate 1 — the code must exist**
-- [ ] LP4 (order adapter) and LP5 (position kernel + cycle routing) merged. **Blocked** on the
-      governance decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`, which are recorded but not
-      implemented.
+- [x] **LP4 (order adapter) merged** 2026-07-25 — `live_execution.py`, real signed transport,
+      conditional order types, and the lockstep governance flip
+      (`financial_transaction_execution_implemented: true` + `ORDER_PATH_IMPLEMENTED = True`).
+      The governance decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md` are now implemented except
+      where that document's own step table says otherwise.
+- [~] **LP5** — state + reconciliation (5.1), sizing (5.2), the entry decision (5.3, this
+      increment), and the outcome bridge (5.4) are merged. The **executing leg + cycle routing**
+      are not, and are what an autonomous live order would need; they are a separate explicit
+      decision, not a remaining chore.
 
 **Gate 2 — promotion evidence: 3 clean canary orders**
 - [ ] Place canary orders until three are clean. **One exists**, from 2026-07-16 in the source
