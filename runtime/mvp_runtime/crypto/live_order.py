@@ -252,6 +252,44 @@ def _shape_repairs(intent: Mapping[str, Any]) -> list[str]:
 
 # --- the final guard ---------------------------------------------------------------
 
+def resolve_live_order_limits(
+    root: Path | None = None, *, now: str | None = None
+) -> tuple["LiveOrderLimits", dict[str, Any]]:
+    """The guard's authoritative caps: the **registered budget**, plus the confirmation phrase
+    and manual kill from operator env (those are never budget-registered).
+
+    Returns ``(limits, budget_status)``. A missing / expired / tampered budget yields the
+    blocking-default caps and a status whose ``valid`` is ``False``, so the guard's budget check
+    (and its unconfigured-caps checks) block — no live order without a registered budget
+    (``autonomous_spend_without_registered_budget: '0'``). The env cap vars (``MVP_LIVE_MAX_*``)
+    no longer authorize an order; the registered budget supersedes them. Only the confirmation
+    phrase (``MVP_LIVE_CONFIRMATION``) and the manual kill (``MVP_LIVE_MANUAL_KILL_SWITCH``)
+    remain env — a phrase proving intent and a halt are operator state, not a registered cap."""
+    from . import live_budget  # lazy: live_budget imports LiveOrderLimits
+
+    status = live_budget.budget_status(root, now=now or timeutil.utc_now_iso())
+    env = LiveOrderLimits.from_env()  # confirmation + manual kill only
+    caps = status.get("caps")
+    if status.get("valid") and isinstance(caps, Mapping):
+        limits = LiveOrderLimits(
+            max_order_notional_usdt=float(caps["max_order_notional_usdt"]),
+            absolute_max_notional_usdt=float(caps["absolute_max_notional_usdt"]),
+            max_daily_order_count=int(caps["max_daily_order_count"]),
+            max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
+            daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
+            min_clean_canary_orders=int(caps["min_clean_canary_orders"]),
+            confirmation=env.confirmation,
+            manual_kill_switch=env.manual_kill_switch,
+        )
+    else:
+        # No valid budget: caps stay at the blocking defaults (0), so even the per-order / daily /
+        # exposure / loss caps read as unconfigured on top of the budget block.
+        limits = LiveOrderLimits(
+            confirmation=env.confirmation, manual_kill_switch=env.manual_kill_switch
+        )
+    return limits, status
+
+
 def evaluate_live_order_guard(
     intent: Mapping[str, Any],
     *,
@@ -261,17 +299,33 @@ def evaluate_live_order_guard(
     clean_canary_orders: int,
     submitted_today: int,
     current_open_notional_usdt: float = 0.0,
+    budget_registered: bool = False,
     limits: LiveOrderLimits | None = None,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
 
     Every runtime fact arrives as an argument so this can be exhaustively tested without a
     venue, a grant, or a clock. Checks accumulate — the caller sees the complete refusal.
+
+    ``budget_registered`` states whether a valid registered live-trading budget backs the
+    ``limits`` — the caller resolves it (``resolve_live_order_limits``). It defaults to
+    ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
+    authorize an order on env-only caps.
     """
     cfg = limits if limits is not None else LiveOrderLimits.from_env()
     blocks: list[str] = []
     repairs: list[str] = []
 
+    # 0. The registered trading budget. ``autonomous_spend_without_registered_budget: '0'`` —
+    #    no live order until a self-hashed budget record is registered and valid. The caps below
+    #    come FROM that budget (via resolve_live_order_limits); a missing/expired/tampered budget
+    #    arrives here as budget_registered=False and blocks regardless of the env caps.
+    if not budget_registered:
+        blocks.append(
+            "no valid registered live-trading budget "
+            "(autonomous_spend_without_registered_budget); register one with "
+            "scripts/register_live_trading_budget.py"
+        )
     # 1. The switch. Without the operator's live-trading grant nothing else matters.
     if not gate_open:
         blocks.append("live trading grant is not active (safety-flag gate closed)")

@@ -573,8 +573,11 @@ def test_portfolio_cap_refuses_the_third_book(tmp_path, monkeypatch):
 
 
 def test_per_symbol_cap_refuses_a_third_timeframe_on_one_symbol(tmp_path, monkeypatch):
-    # Raise the portfolio ceiling so the per-symbol cap is the binding one.
+    # Raise the portfolio ceiling so the per-symbol cap is the binding one, and pin the
+    # per-symbol cap itself so this stays a test of the cap MECHANISM, not of whatever
+    # the production number currently is (the portfolio test does the same).
     monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    monkeypatch.setattr(paper, "MAX_POSITIONS_PER_SYMBOL", 2)
     control_store = ControlStore(tmp_path)
     pool = _pool(*[_pool_entry(_spec_dict(strategy_id=f"S{i}", timeframe=tf), strategy_id=f"S{i}")
                    for i, tf in enumerate(("1d", "4h", "1h"), start=1)])
