@@ -57,6 +57,7 @@ BELOW_MIN_QTY = "SIZING_BELOW_VENUE_MIN_QTY"
 BELOW_MIN_NOTIONAL = "SIZING_BELOW_VENUE_MIN_NOTIONAL"
 ROUNDS_TO_ZERO = "SIZING_ROUNDS_TO_ZERO"
 EXCEEDS_BUDGET = "SIZING_EXCEEDS_BUDGET_CAP"
+ABOVE_MAX_QTY = "SIZING_ABOVE_VENUE_MAX_QTY"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -74,13 +75,18 @@ class SymbolFilters:
     quantity increment, ``min_qty`` its floor, ``min_notional`` the MIN_NOTIONAL filter,
     and ``tick_size`` the PRICE_FILTER increment (used for the LP5.3 bracket's stop and
     target prices, which the venue rejects unrounded exactly as it rejects an unrounded
-    quantity).
+    quantity). ``max_qty`` is the lot ceiling; ``0.0`` means the reader did not learn one,
+    so it is simply not checked rather than treated as a limit of zero.
+
+    LP5.3's reader (``live_filters``) folds MARKET_LOT_SIZE into these, taking the
+    stricter of the two lot filters, because LP5 entries and closes are MARKET orders.
     """
 
     step_size: float
     min_qty: float
     min_notional: float
     tick_size: float = 0.0
+    max_qty: float = 0.0
 
     def valid(self) -> bool:
         """A filter set is usable only if the increments are positive. A zero step would
@@ -203,6 +209,11 @@ def size_live_order(
         return _refusal([ROUNDS_TO_ZERO], **detail)
     if quantity < filters.min_qty:
         return _refusal([BELOW_MIN_QTY], min_qty=filters.min_qty, quantity_before_refusal=quantity, **detail)
+    if filters.max_qty > 0 and quantity > filters.max_qty:
+        # Unreachable under a 60 USDT cap on any liquid symbol, and checked anyway: the
+        # venue rejects an oversized MARKET order outright, and refusing here keeps the
+        # reason legible instead of surfacing as an opaque venue error at egress.
+        return _refusal([ABOVE_MAX_QTY], max_qty=filters.max_qty, quantity_before_refusal=quantity, **detail)
     if notional < filters.min_notional:
         return _refusal(
             [BELOW_MIN_NOTIONAL], min_notional=filters.min_notional,
@@ -237,6 +248,7 @@ def usable_equity_usdt(snapshot: Any | None) -> float:
 
 
 __all__ = [
+    "ABOVE_MAX_QTY",
     "BELOW_MIN_NOTIONAL",
     "BELOW_MIN_QTY",
     "EXCEEDS_BUDGET",

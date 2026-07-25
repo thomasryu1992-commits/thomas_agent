@@ -550,6 +550,39 @@ class BinanceFuturesCollector:
         rows = sorted(collected, key=lambda r: r["funding_time_ms"])[-records:]
         return [{"timestamp": r["timestamp"], "funding_rate": r["funding_rate"]} for r in rows]
 
+    def exchange_info(self, *, timeout_seconds: int) -> dict[str, Any]:
+        """The venue's own trading rules (public ``/fapi/v1/exchangeInfo``), raw.
+
+        Same grant as candles and funding — a third public endpoint of the already
+        authorized provider, so no new provider, grant, or gate. Returns the payload
+        unparsed; ``live_filters.parse_symbol_filters`` turns it into the per-symbol lot
+        step / minimum notional / price tick, because that parsing must be testable
+        without a network and the numbers must never be written from memory.
+
+        Deliberately NOT on ``MockMarketDataCollector``: a mock that answered here would
+        hand live sizing invented lot steps, which is the one number nobody may invent.
+        Its absence is what makes a mock run refuse to size rather than size wrongly."""
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        request = urllib.request.Request(
+            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            method="GET", headers={"Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError):
+            raise ToolError("TOOL_TRANSPORT", "exchange-info request failed or timed out") from None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "exchange-info returned an unparseable response") from None
+        if not isinstance(payload, dict):
+            raise ToolError("MALFORMED_RESULT", "exchange-info returned an unparseable response")
+        return payload
+
 
 # --- C9 liquidation feed (Coinalyze — its own provider, key, and grant) -------
 

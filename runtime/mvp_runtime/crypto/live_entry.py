@@ -1,0 +1,296 @@
+"""LP5.3 — the live entry **decision**. Decides everything; sends nothing.
+
+This is the assembly LP5 was missing: the pieces LP5.1 and LP5.2 built (the position book,
+reconciliation, truthful exposure, sizing) plus the pre-existing LP3 intent + final guard,
+run in one order, on one set of facts, producing one auditable answer to *should this
+context open a live position, and at what size and with what protective bracket?*
+
+**It cannot send an order.** It takes no adapter, imports no adapter, and returns a plan —
+the egress step (LP5.3's execution increment) is a separate module that takes this record
+and the guard verdict inside it. Splitting decide from send is what lets every refusal path
+here be tested exhaustively with no venue, no grant, and no key.
+
+Order of checks, and why:
+
+1. **route** — is there an entry candidate at all;
+2. **verdict** — did the C4 guards allow a new position this cycle;
+3. **reconciliation** — does the local book agree with the venue for this symbol
+   (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
+4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
+5. **filters** — the venue's real lot step / minimums / tick (LP5.3's reader);
+6. **bracket** — the protective stop and target, rounded to the venue's tick **first**;
+7. **sizing** — LP5.2, against the *rounded* stop, so the size matches the stop that
+   would actually be placed;
+8. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
+   truthful venue exposure.
+
+Steps 1-5 accumulate: an operator sees every reason at once, the guard's own posture.
+Steps 6-8 are sequential because each consumes the previous one's output, and a step that
+cannot run is reported as the refusal it is rather than skipped.
+
+**Rounding both bracket legs toward the entry** is the one arithmetic decision worth
+stating. A tick-rounded stop that drifts *away* from the entry silently increases the risk
+the size was computed for; rounding toward the entry can only make the realised risk
+smaller than planned. The same direction on the target takes profit no later than planned.
+After rounding, a stop that no longer sits strictly on its own side of the entry is a
+**refusal**, never a repair.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from .live_order import build_live_order_intent, evaluate_live_order_guard
+from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
+from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
+
+LIVE_ENTRY_VERSION = "live_entry.v0.1"
+
+# Statuses. READY is the only one an execution step may act on.
+STATUS_NO_ROUTE = "NO_ROUTE"
+STATUS_REFUSED = "REFUSED"
+STATUS_READY = "READY"
+
+# Refusal reasons, each naming exactly which door closed.
+NO_PLAN = "LIVE_ENTRY_NO_PLAN"
+VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
+RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
+CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
+NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
+BRACKET_UNPRICEABLE = "LIVE_ENTRY_BRACKET_UNPRICEABLE"
+SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
+GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
+INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
+
+# Which venue price the protective orders trigger on. MARK_PRICE rather than the last
+# traded price: a stop that triggers on a single wick print on one venue's tape is the
+# classic way to be stopped out of a position that never actually moved.
+BRACKET_WORKING_TYPE = "MARK_PRICE"
+
+
+def _f(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def price_bracket(
+    plan: Mapping[str, Any], filters: SymbolFilters
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The protective stop and target, rounded to the venue's tick. Pure.
+
+    Both legs round **toward the entry** (see the module docstring): for a LONG the stop
+    sits below the entry so it rounds up, and the target above so it rounds down; a SHORT
+    mirrors that. Returns ``(bracket, None)`` or ``(None, reason)``.
+
+    Refuses — rather than repairing — when a rounded leg lands on or past the entry. That
+    happens on a symbol whose tick is coarse relative to the planned distance, and the
+    honest answer there is "this plan cannot be protected at this venue's granularity",
+    not a stop nudged to a price the strategy never chose.
+    """
+    entry = _f(plan.get("entry_price"))
+    stop = _f(plan.get("stop_loss"))
+    target = _f(plan.get("take_profit"))
+    direction = str(plan.get("direction") or "").upper()
+    tick = filters.tick_size
+
+    if entry <= 0 or stop <= 0 or target <= 0 or tick <= 0 or direction not in {"LONG", "SHORT"}:
+        return None, BRACKET_UNPRICEABLE
+
+    if direction == "LONG":
+        stop_rounded = round_price_to_tick(stop, tick, mode="up")
+        target_rounded = round_price_to_tick(target, tick, mode="down")
+        ok = 0 < stop_rounded < entry < target_rounded
+        stop_side, target_side = "SELL", "SELL"
+    else:
+        stop_rounded = round_price_to_tick(stop, tick, mode="down")
+        target_rounded = round_price_to_tick(target, tick, mode="up")
+        ok = 0 < target_rounded < entry < stop_rounded
+        stop_side, target_side = "BUY", "BUY"
+
+    if not ok:
+        return None, BRACKET_UNPRICEABLE
+
+    return {
+        "stop_loss": stop_rounded,
+        "take_profit": target_rounded,
+        # The per-unit distance the size is computed from, AFTER rounding — so the
+        # quantity corresponds to the stop that would actually be placed at the venue.
+        "risk_per_unit": round(abs(entry - stop_rounded), 12),
+        "stop_side": stop_side,
+        "take_profit_side": target_side,
+        "working_type": BRACKET_WORKING_TYPE,
+        "tick_size": tick,
+    }, None
+
+
+def plan_live_entry(
+    plan: Mapping[str, Any] | None,
+    *,
+    symbol: str,
+    reconciliation: Mapping[str, Any],
+    local_positions: list[Mapping[str, Any]],
+    snapshot: Any | None,
+    filters: SymbolFilters | None,
+    limits: Any,
+    budget_registered: bool,
+    gate_open: bool,
+    runtime_active: bool,
+    daily_loss_breached: bool,
+    clean_canary_orders: int,
+    submitted_today: int,
+    equity_usdt: float,
+    now: str,
+    verdict: Mapping[str, Any] | None = None,
+    filters_reason: str | None = None,
+    risk_fraction: float = RISK_PER_TRADE_FRACTION,
+) -> dict[str, Any]:
+    """Decide one live entry, or refuse it. Pure: no I/O, no venue, no order.
+
+    Every runtime fact arrives as an argument — the caller reads the account, the control
+    state, the budget and the book once and passes them in, so this function is exhaustively
+    testable and so the same facts drive every check rather than each door re-reading and
+    possibly disagreeing.
+
+    Returns a decision record. ``status`` is ``READY`` only when the final guard approved;
+    the record then carries ``intent``, ``sizing``, ``bracket`` and ``guard`` — everything
+    an execution step needs and nothing it may re-derive for itself.
+    """
+    reasons: list[str] = []
+    detail: dict[str, Any] = {}
+
+    # 1. Is there anything to trade?
+    if not isinstance(plan, Mapping) or not plan:
+        return _decision(STATUS_NO_ROUTE, [NO_PLAN], symbol=symbol, now=now)
+
+    # 2-4. The cheap doors, accumulated so a refusal names every closed one at once.
+    if verdict is not None and not bool(verdict.get("allow_new_position")):
+        reasons.append(VERDICT_REFUSED)
+        detail["verdict_problems"] = list(verdict.get("problems") or [])
+
+    if not entry_allowed(reconciliation, symbol):
+        reasons.append(RECONCILE_REFUSED)
+        detail["reconcile_status"] = (
+            reconciliation.get("status") if isinstance(reconciliation, Mapping) else None
+        )
+
+    capacity = live_capacity(list(local_positions), symbol=symbol)
+    if not capacity["allowed"]:
+        reasons.append(CAPACITY_REFUSED)
+    detail["capacity"] = capacity
+
+    if filters is None or not filters.valid() or filters.tick_size <= 0:
+        reasons.append(NO_FILTERS)
+        detail["filters_reason"] = filters_reason
+
+    if reasons:
+        return _decision(STATUS_REFUSED, reasons, symbol=symbol, now=now, **detail)
+
+    assert filters is not None  # narrowed above
+
+    # 5. The protective bracket, priced before the size so the size matches the real stop.
+    bracket, bracket_reason = price_bracket(plan, filters)
+    if bracket is None:
+        return _decision(
+            STATUS_REFUSED, [bracket_reason or BRACKET_UNPRICEABLE], symbol=symbol, now=now, **detail
+        )
+    detail["bracket"] = bracket
+
+    # 6. Sizing, against the ROUNDED stop distance.
+    sizing = size_live_order(
+        {**dict(plan), "stop_loss": bracket["stop_loss"], "risk": bracket["risk_per_unit"]},
+        equity_usdt=equity_usdt,
+        max_order_notional_usdt=_f(getattr(limits, "max_order_notional_usdt", 0.0)),
+        filters=filters,
+        risk_fraction=risk_fraction,
+    )
+    detail["sizing"] = sizing
+    if not sizing["sizable"]:
+        return _decision(STATUS_REFUSED, [SIZING_REFUSED], symbol=symbol, now=now, **detail)
+
+    # 7. The intent. Carries the rounded bracket prices, so what the guard judges and what
+    #    would be sent are the same numbers.
+    try:
+        intent = build_live_order_intent(
+            {**dict(plan), "stop_loss": bracket["stop_loss"], "take_profit": bracket["take_profit"]},
+            symbol=symbol,
+            quantity=sizing["quantity"],
+            notional_usdt=sizing["notional_usdt"],
+            now=now,
+        )
+    except Exception as exc:  # noqa: BLE001 — a malformed plan is a refusal, not a crash
+        detail["intent_error"] = getattr(exc, "reason_code", type(exc).__name__)
+        return _decision(STATUS_REFUSED, [INTENT_REFUSED], symbol=symbol, now=now, **detail)
+    detail["intent"] = intent
+
+    # 8. The final guard, told the truthful venue exposure. An unreadable account reports
+    #    exposure AT the cap (LP5.1), so the guard refuses rather than admits.
+    guard = evaluate_live_order_guard(
+        intent,
+        gate_open=gate_open,
+        runtime_active=runtime_active,
+        daily_loss_breached=daily_loss_breached,
+        clean_canary_orders=clean_canary_orders,
+        submitted_today=submitted_today,
+        current_open_notional_usdt=compute_open_notional_usdt(
+            snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))
+        ),
+        budget_registered=budget_registered,
+        limits=limits,
+    )
+    detail["guard"] = guard
+    if not guard["approved"]:
+        return _decision(STATUS_REFUSED, [GUARD_REFUSED], symbol=symbol, now=now, **detail)
+
+    return _decision(STATUS_READY, [], symbol=symbol, now=now, **detail)
+
+
+def _decision(status: str, reasons: list[str], *, symbol: str, now: str, **detail: Any) -> dict[str, Any]:
+    return {
+        "live_entry_version": LIVE_ENTRY_VERSION,
+        "status": status,
+        # The single boolean an execution step reads. False on every path but one, and it
+        # is derived from the guard's own `approved`, never asserted independently.
+        "ready": status == STATUS_READY and bool((detail.get("guard") or {}).get("approved")),
+        "symbol": symbol,
+        "reasons": reasons,
+        "created_at": now,
+        **detail,
+    }
+
+
+def entry_status_line(decision: Mapping[str, Any]) -> str:
+    """One ASCII line for the console (Windows consoles are cp949)."""
+    parts = [f"live_entry {decision.get('symbol')}: {decision.get('status')}"]
+    reasons = decision.get("reasons") or []
+    if reasons:
+        parts.append("(" + ",".join(str(r) for r in reasons) + ")")
+    sizing = decision.get("sizing")
+    if isinstance(sizing, Mapping) and sizing.get("sizable"):
+        parts.append(f"qty={sizing['quantity']} notional={sizing['notional_usdt']}")
+    guard = decision.get("guard")
+    if isinstance(guard, Mapping):
+        parts.append(f"guard={guard.get('status')}")
+    return " ".join(parts)
+
+
+__all__ = [
+    "BRACKET_UNPRICEABLE",
+    "BRACKET_WORKING_TYPE",
+    "CAPACITY_REFUSED",
+    "GUARD_REFUSED",
+    "INTENT_REFUSED",
+    "LIVE_ENTRY_VERSION",
+    "NO_FILTERS",
+    "NO_PLAN",
+    "RECONCILE_REFUSED",
+    "SIZING_REFUSED",
+    "STATUS_NO_ROUTE",
+    "STATUS_READY",
+    "STATUS_REFUSED",
+    "VERDICT_REFUSED",
+    "entry_status_line",
+    "plan_live_entry",
+    "price_bracket",
+]
