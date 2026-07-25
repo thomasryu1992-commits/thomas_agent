@@ -4,8 +4,14 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-25** (refreshed against the actual repo state — every claim below was
-re-checked against `main`, not carried over).
+Last updated: **2026-07-25**, after LP5.4 merged (`main` = `42ce85b`). Every claim below was
+re-checked against `main` and against the code it describes, not carried over.
+
+> **The one thing to read first:** since 2026-07-25 an order path **exists** and
+> `financial_transaction_execution_implemented` is **true**. Live trading still cannot start —
+> `financial_executor_enabled` is false, no canary order has been placed (0 of 3), and nothing routes
+> to the venue autonomously — but "no code can send an order" is **no longer** the reason. Section C
+> is now safety-critical, LP5.3 above all.
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
 Authoritative detail for each item lives in the linked roadmap docs; this file is the index.
@@ -14,9 +20,15 @@ Authoritative detail for each item lives in the linked roadmap docs; this file i
 
 ## In-flight PRs
 
-**None.** The 2026-07-24 snapshot has fully drained: #142, #145, #146 and #144 merged, and #143's
-roadmap reached `main` by another route (the PR itself was closed unmerged, the document is
-present). Both roadmaps below are on `main` and readable from a plain clone.
+**None** (verified 2026-07-25 15:40 UTC — zero open PRs). Everything below reflects merged `main`
+at `42ce85b`. The LP5 wave drained the same day: #183 (LP5.1), #186 (LP5.2), #187 (LP5.4), alongside
+#184 (LP4 increment 2b + the governance flip).
+
+One PR was **closed unmerged**: **#175** — a second LP4 order adapter written in a worktree without
+re-checking `main`, which by then already carried `live_execution.py` (increment 1) with its reviewed
+design record. Two adapters must not coexist: "which code can send an order" is exactly the question
+this repo keeps unambiguous, so the one with the design record stayed. Its still-useful pieces are
+catalogued in the PR body; the branch is `worktree-crypto-lp4-adapter`.
 
 > Check live state with `gh pr list` rather than trusting this line — parallel machines open and
 > merge PRs continuously.
@@ -109,10 +121,12 @@ scopes at different levels, so nothing was owed to it.
       adds `FINANCIAL_APPROVED_TRADING_USE`; the scope is in `policy_dispositions.EXECUTE_AND_REPORT`;
       `p5_policy_gate` is defined; `permission.py` builds a live-order decision at P5; the v0.4
       validator + positive example exist; both replay bundles regenerated.
-  - [ ] Step 3 — `financial_transaction_execution_implemented: false → true`, **only when LP4 can
-        actually send** (it is `false` today, correctly). `financial_executor_enabled` stays `false`
-        and untouched. This flag, `ORDER_PATH_IMPLEMENTED`, and the readiness board must flip
-        **in lockstep** (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`).
+  - [x] Step 3 — `financial_transaction_execution_implemented: false → true` — **flipped 2026-07-25**
+        with LP4 increment 2b (PR #184), i.e. only once LP4 could actually send. It moved in lockstep
+        with `ORDER_PATH_IMPLEMENTED = True` and the readiness board, asserted to agree
+        (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`). `financial_executor_enabled` stays `false`
+        and untouched. **Read this as a posture change, not a checkbox:** an order path now exists,
+        so READY on the readiness board means a real order can be placed on that machine.
   - [x] New closed schema `live_trading_budget.v0.1` (registered trading caps, self-hashed) —
         done 2026-07-25 (schema + `live_budget.py` + `register_live_trading_budget.py`).
   - [x] Step 6b: the guard reads the registered budget as authoritative (over env caps) — done
@@ -142,21 +156,49 @@ scopes at different levels, so nothing was owed to it.
       + `ORDER_PATH_IMPLEMENTED = True`, asserted to agree) with both replay bundles regenerated.
       `financial_executor_enabled` and every `runtime_effect`/`cutover` flag stay false.
       **LP4 is complete.** Nothing autonomous routes to the venue — that needs LP5.
-- [~] **LP5** position kernel + cycle routing — **design record done 2026-07-25**
-      (`LP5_POSITION_KERNEL_DESIGN_V0.1.md`); **no code yet**. Decisions taken: a venue-side SL+TP
-      bracket at entry, and sizing = `min(risk-based, budget cap)` refusing rather than defaulting.
-      Mandatory findings it records: live positions **must** use a separate `live_positions/`
-      namespace + `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same
-      `binance_futures` venue string, so a shared book would let the paper cycle settle a real
-      position); the venue — not the store — is the truth, so every live cycle reconciles or
-      refuses; and `evaluate_live_order_guard`'s `current_open_notional_usdt=0.0` default is the
-      one fail-open path and gets closed. Planned increments: LP5.1 state+reconciliation,
-      LP5.2 sizing, LP5.3 the live leg, LP5.4 the outcome bridge.
-- [ ] **Live outcomes are invisible to the guards** — the live outcome record has no `result_R`,
-      `created_at_utc`, or strategy lineage, so `guards.run_risk_guard`, `lifecycle`, and the C6
-      feedback report cannot read live results (only the daily-loss breaker can). Closed by LP5.4.
-- [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0** migrated; 1 existed in
-      the frozen source system, did not migrate).
+- [~] **LP5** position kernel + cycle routing — design record `LP5_POSITION_KERNEL_DESIGN_V0.1.md`.
+      **Three of four increments have landed; only LP5.3 is left, and it is the one that changes the
+      safety posture.**
+  - [x] **LP5.1 — position state + reconciliation** (PR #183, 2026-07-25):
+        `crypto/live_position.py`. Live positions live in their own `live_positions/` namespace with
+        `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same `binance_futures`
+        venue string, so a shared book would let the paper cycle settle a *real* position). The venue,
+        not the store, is the truth: `reconcile_positions` returns RECONCILED / DRIFT /
+        ACCOUNT_UNREADABLE, and on anything but RECONCILED entries are refused while **closes stay
+        allowed** — being unable to see the account must never trap an open position. Concurrency
+        caps: 2 open live positions, 1 per symbol.
+  - [x] **LP5.1c — the one fail-open closed** (same PR): `evaluate_live_order_guard`'s
+        `current_open_notional_usdt=0.0` default asserted "the account is flat" on no evidence. The
+        argument is now **required**, and unknown exposure is reported *at the cap*
+        (`compute_open_notional_usdt(None, at_cap=…)`), so not knowing blocks instead of permitting.
+  - [x] **LP5.2 — sizing** (PR #186): `crypto/live_sizing.py`. `min(risk-based, budget cap)`, floored
+        to the venue's lot step in integer space, then **re-checked** after flooring; a size that
+        cannot satisfy both bounds is refused, never defaulted. Risk per trade is 1% of usable
+        (available-balance) equity.
+  - [x] **LP5.4 — the outcome bridge** (PR #187): a live outcome now carries `result_R`,
+        `risk_usdt`, `created_at_utc` and strategy lineage (`candidate_id` /
+        `strategy_rule_hash` / `strategy_generation_id`), so `guards.run_risk_guard`, `lifecycle`
+        and the C6 feedback report read live results with **no live-specific branch** — a live loss
+        streak can finally demote a strategy the way a paper one does. The load-bearing part is the
+        **exclusion rule**: `guards._closed_rows` reads a missing `result_R` as `0.0`, i.e. a
+        *breakeven*, so an R-less live loss would have **shortened** a loss streak. Rows whose risk
+        was never recorded are excluded as `LIVE_OUTCOME_NO_RECORDED_RISK` rather than given a
+        fabricated R, and stay fully visible to the daily-loss breaker (which needs no R).
+        `live_analysis_summary` reports readable and excluded counts separately so live trades never
+        silently re-define a previously reported paper expectancy.
+  - [ ] **LP5.3 — the live leg + cycle routing** ⚠️ **needs its own explicit Thomas decision before
+        anyone starts it.** This is no longer ordinary plumbing: with the order path implemented and
+        step 3 flipped, cycle routing is precisely the piece that makes an **autonomous** live order
+        structurally reachable — today the only door is the deliberate
+        `scripts/place_canary_order.py`, one canary at a time. It also owes two things the design
+        record already names: cancelling the surviving bracket leg (the venue documents no
+        auto-cancel), and feeding the readiness board the *real* open exposure so the honest
+        block-at-cap above can lift.
+- [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
+      source system and did not migrate). **Operator-only, real money** — `scripts/place_canary_order.py`
+      on Thomas's machine with his own keys and its own confirmation phrase
+      (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately distinct from the live-trading phrase so neither
+      authorizes the other's capability). Claude does not run it.
 - [x] The **symbol-starved router** finding — closed 2026-07-25 (PR #148). A crypto schedule with an
       empty request now fans out over every `(symbol, timeframe)` the pool routes on **plus** every
       context holding an open paper position (`cycle.run_pool_cycle`), and `route_entries` matches
