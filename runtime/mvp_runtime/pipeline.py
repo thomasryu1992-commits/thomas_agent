@@ -183,6 +183,7 @@ def run_task(
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None = None,
+    revise: bool = False,
     write_path: str | None = None,
     writer: WorkspaceWriter | None = None,
     **intake_kwargs: Any,
@@ -281,9 +282,15 @@ def run_task(
         # two assignments each granted one model call under a task allocated exactly one
         # is the contract's "an assignment cannot exceed the parent's remaining budget"
         # breach, which the runtime was silently committing on every validated run.
+        # M3: when the one-shot revision loop is armed, pre-allocate its retry up front —
+        # a regenerated specialist call plus a re-verify — so a revision can never spend
+        # past the allocation the run was planned under (over budget => no loop). The
+        # allocation is a ceiling, not a claim: a run that passes first time simply spends
+        # less than it allocated (the triage precedent).
+        base_agents = 2 if (auto_policy or independent_validation) else 1
         task = build_task(
             raw_request, now=now,
-            planned_agents=2 if (auto_policy or independent_validation) else 1,
+            planned_agents=base_agents + (2 if revise else 0),
             planned_triage_calls=1 if auto_policy else 0,
             **intake_kwargs,
         )
@@ -408,6 +415,60 @@ def run_task(
         if independent_validation_result is not None:
             outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
 
+        # M3 (opt-in `revise`): a validation REVISE earns exactly ONE regeneration. The
+        # required revisions (automatic reasons + the independent reviewer's) are fed back to
+        # the specialist, the revised output is re-validated under the same rules, and the
+        # stricter outcome stands. Hard cap of one: this is a single `if`, not a loop — a
+        # revised output that still REVISEs is not revised again, it BLOCKs
+        # (REVISION_EXHAUSTED). BLOCK is never revised (unusable, not fixable). The retry was
+        # pre-allocated above; the worker still fails closed on an exhausted allocation, so
+        # the loop cannot overspend even if this guard drifted.
+        revision = None
+        rev_agent_invocations = rev_model_calls = rev_tokens = 0
+        if revise and outcome == "REVISE":
+            revision_requests = list(validation["validation"]["result_reasons"])
+            if independent_validation_result is not None:
+                revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
+            first_invocation = invocation
+            first_validator_invocation = validator_invocation
+            # Only the FIRST run's calls are extra here — the regenerated specialist and its
+            # re-verify are the FINAL invocation/validator_invocation the usage block counts.
+            rev_agent_invocations = 1 + (1 if first_validator_invocation is not None else 0)
+            rev_model_calls = rev_agent_invocations
+            rev_tokens = (int(first_invocation.get("tokens_used", 0))
+                          + int((first_validator_invocation or {}).get("tokens_used", 0)))
+
+            agent_output, invocation = run_analysis_worker(
+                plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
+                search_hits=search_hits, memory_entries=memory_entries,
+                validated_entries=validated_entries, repo_root=repo_root,
+                revision_requests=revision_requests,
+            )
+            records["agent_output"] = agent_output
+            records["invocation"] = invocation
+
+            validation = validate_agent_output(
+                agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
+            records["validation_result"] = validation
+
+            independent_validation_result = validator_invocation = None
+            if validate_run and validation["validation"]["result"] == "PASS":
+                independent_validation_result, validator_invocation = run_validation_worker(
+                    plan["task"], plan["validator_assignment"], agent_output,
+                    provider=validator_provider, created_at=now, repo_root=repo_root,
+                )
+                records["independent_validation_result"] = independent_validation_result
+                records["validator_invocation"] = validator_invocation
+
+            outcome = validation["validation"]["result"]
+            if independent_validation_result is not None:
+                outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
+            revision = {
+                "attempted": True, "exhausted": outcome != "PASS",
+                "requests": revision_requests, "first_invocation": first_invocation,
+            }
+            records["revision"] = revision
+
         # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
         # Only a PASSING result is written: a rejected analysis must not leave an artifact
         # behind, so the write is gated on the same stricter outcome that gates delivery.
@@ -469,19 +530,24 @@ def run_task(
         # assignment records are allocations built before execution, so their zeroed usage
         # can never answer this — the contract's usage_must_be_recorded_for_audit invariant
         # had no record satisfying it until this one.
+        # M3: the revision's FIRST-run calls (rev_*) are additive to the FINAL-run spend the
+        # formulas below read off invocation/validator_invocation — so a revised run reports
+        # every model call it made, and revision_cycles surfaces the retry on its own.
         records["budget_usage"] = recorded_usage_budget(
             plan["task"].get("execution_budget", {}).get("limits", {}),
-            agent_invocations=2 if validator_invocation is not None else 1,
+            agent_invocations=(2 if validator_invocation is not None else 1) + rev_agent_invocations,
             # The R7.2 triage is Prime's model call, not an agent's — it counts toward
             # model_calls/tokens but never toward agent_invocations.
             model_calls=(2 if validator_invocation is not None else 1)
-                        + (1 if triage_invocation is not None else 0),
+                        + (1 if triage_invocation is not None else 0) + rev_model_calls,
             tokens_used=(
                 int(invocation.get("tokens_used", 0))
                 + int((validator_invocation or {}).get("tokens_used", 0))
                 + int((triage_invocation or {}).get("tokens_used", 0))
+                + rev_tokens
             ),
             validation_cycles=2 if independent_validation_result is not None else 1,
+            revision_cycles=1 if revision is not None else 0,
             retry_count=(
                 int(invocation.get("retry_count", 0))
                 + int((validator_invocation or {}).get("retry_count", 0))
@@ -501,6 +567,7 @@ def run_task(
             write_permission_decision=plan.get("write_permission_decision"),
             programization_pattern=programization_pattern,
             programization_triggered=programization_triggered,
+            revision=revision,
             genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:

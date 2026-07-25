@@ -47,7 +47,9 @@ Run the MVP intake CLI (R2.1):
 .venv/Scripts/python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
 Options are `--independent-validation[=auto]` (R7/R7.1), `--important` (R7.1: priority
-HIGH — under `auto`, adds the independent reviewer to this run), and `--write-output PATH`
+HIGH — under `auto`, adds the independent reviewer to this run), `--revise` (M3: opt-in
+one-shot revision loop — a validation REVISE earns exactly one governed regeneration,
+pre-allocated + audited, then delivers or BLOCKs), and `--write-output PATH`
 (R8); any other `--flag` is rejected with `EXIT_USAGE` rather than folded into the request
 text.
 On Windows set `PYTHONUTF8=1` for non-ASCII I/O.
