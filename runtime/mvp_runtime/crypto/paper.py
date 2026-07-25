@@ -114,6 +114,9 @@ POSITION_LIMIT_SYMBOL = "POSITION_LIMIT_SYMBOL"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
 SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
+# The freshness gate held a new entry: this context was already evaluated for the
+# current closed candle, so a coarser-timeframe strategy is not re-entered every tick.
+CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
@@ -944,6 +947,7 @@ def run_paper_update(
     control_store: ControlStore | None = None,
     manual_exit: bool = False,
     intrabar_collector: Any | None = None,
+    routing_marks: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One cycle's paper step: settle the open position, then maybe open one.
 
@@ -987,6 +991,7 @@ def run_paper_update(
     summary: dict[str, Any] = {
         "settled": None, "opened": None, "route_status": None,
         "settle_refused": None, "settle_recovered": None, "open_refused": None,
+        "open_skipped": None,
     }
 
     def _event(operation: str, detail: dict[str, Any]) -> dict[str, Any]:
@@ -1134,44 +1139,65 @@ def run_paper_update(
     route = route_entries(pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
     summary["route_status"] = route["status"]
     if position is None and not attribution_blocked and bool(verdict.get("allow_new_position")):
-        plan = build_entry_plan(route, feature_row, now=now)
-        if plan is not None:
-            portfolio_lock = positions_dir(root) / "portfolio.lock"
-            with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):
-                open_books = list_open_positions(root)
-                same_symbol = sum(1 for ctx, _ in open_books if ctx.symbol == context.symbol)
-                refusal = None
-                if len(open_books) >= MAX_CONCURRENT_POSITIONS:
-                    refusal = {
-                        "reason_code": POSITION_LIMIT_PORTFOLIO,
-                        "open_positions": len(open_books),
-                        "limit": MAX_CONCURRENT_POSITIONS,
-                    }
-                elif same_symbol >= MAX_POSITIONS_PER_SYMBOL:
-                    refusal = {
-                        "reason_code": POSITION_LIMIT_SYMBOL,
-                        "symbol": context.symbol,
-                        "open_positions": same_symbol,
-                        "limit": MAX_POSITIONS_PER_SYMBOL,
-                    }
-                if refusal is not None:
-                    summary["open_refused"] = refusal
-                    records.append(_event("open_refused", {**refusal, "read_only": True}))
-                else:
-                    opened = open_position({**plan, "venue": context.venue}, now=now)
-                    store.save_position(opened)
-                    summary["opened"] = {
-                        "position_id": opened["position_id"],
-                        "direction": opened["direction"],
-                        "strategy_id": opened.get("strategy_id"),
-                    }
-                    records.append(_event("open", {
-                        "position_id": opened["position_id"],
-                        "direction": opened["direction"],
-                        "entry_price": opened["entry_price"],
-                        "stop_loss": opened["stop_loss"],
-                        "take_profit": opened["take_profit"],
-                        "strategy_id": opened.get("strategy_id"),
-                        "strategy_rule_hash": opened.get("strategy_rule_hash"),
-                    }))
+        # Freshness gate (optional). Evaluate a NEW entry at most once per closed candle
+        # per context, so one 15-min fan-out schedule does not re-enter a 4h/1d strategy
+        # every tick — nor re-open on the very same candle right after a settle. The
+        # settlement above is never gated. With no marks store injected (unit tests,
+        # backtest) the gate is a no-op and behaviour is exactly as before.
+        candle_time = last_candle.get("close_time") if isinstance(last_candle, Mapping) else None
+        if routing_marks is not None and not routing_marks.is_fresh(context.key, candle_time):
+            skip = {
+                "reason_code": CANDLE_NOT_FRESH,
+                "candle_time": candle_time,
+                "last_routed": routing_marks.last(context.key),
+            }
+            summary["open_skipped"] = skip
+            records.append(_event("open_skipped", {**skip, "read_only": True}))
+        else:
+            plan = build_entry_plan(route, feature_row, now=now)
+            if plan is not None:
+                portfolio_lock = positions_dir(root) / "portfolio.lock"
+                with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):
+                    open_books = list_open_positions(root)
+                    same_symbol = sum(1 for ctx, _ in open_books if ctx.symbol == context.symbol)
+                    refusal = None
+                    if len(open_books) >= MAX_CONCURRENT_POSITIONS:
+                        refusal = {
+                            "reason_code": POSITION_LIMIT_PORTFOLIO,
+                            "open_positions": len(open_books),
+                            "limit": MAX_CONCURRENT_POSITIONS,
+                        }
+                    elif same_symbol >= MAX_POSITIONS_PER_SYMBOL:
+                        refusal = {
+                            "reason_code": POSITION_LIMIT_SYMBOL,
+                            "symbol": context.symbol,
+                            "open_positions": same_symbol,
+                            "limit": MAX_POSITIONS_PER_SYMBOL,
+                        }
+                    if refusal is not None:
+                        summary["open_refused"] = refusal
+                        records.append(_event("open_refused", {**refusal, "read_only": True}))
+                    else:
+                        opened = open_position({**plan, "venue": context.venue}, now=now)
+                        store.save_position(opened)
+                        summary["opened"] = {
+                            "position_id": opened["position_id"],
+                            "direction": opened["direction"],
+                            "strategy_id": opened.get("strategy_id"),
+                        }
+                        records.append(_event("open", {
+                            "position_id": opened["position_id"],
+                            "direction": opened["direction"],
+                            "entry_price": opened["entry_price"],
+                            "stop_loss": opened["stop_loss"],
+                            "take_profit": opened["take_profit"],
+                            "strategy_id": opened.get("strategy_id"),
+                            "strategy_rule_hash": opened.get("strategy_rule_hash"),
+                        }))
+            # This candle has now been evaluated for a new entry (matched or not, capped
+            # or not); record it so the same candle is not re-evaluated next tick. Only
+            # persisted when the paper store is live — a dry run keeps no durable state,
+            # so it also keeps no marks (and behaves as an ungated dry run, as before).
+            if routing_marks is not None and candle_time is not None and getattr(store, "filesystem_write", False):
+                routing_marks.record(context.key, candle_time)
     return summary, records

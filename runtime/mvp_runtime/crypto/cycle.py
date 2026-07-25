@@ -119,6 +119,7 @@ def run_crypto_cycle(
     root: Path | None = None,
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
+    routing_marks: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -177,7 +178,7 @@ def run_crypto_cycle(
     paper_summary, paper_records = run_paper_update(
         snapshot, feature_row, active_pool, verdict,
         store=store, now=now, root=root, control_store=control_store,
-        intrabar_collector=collector,
+        intrabar_collector=collector, routing_marks=routing_marks,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
@@ -254,6 +255,7 @@ def run_crypto_cycle(
         "route_status": paper_summary.get("route_status"),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
+        "open_skipped": paper_summary.get("open_skipped"),
         "paper_records": paper_records,
         "lifecycle_decisions": lifecycle_decisions,
         "lifecycle_applied": lifecycle_applied,
@@ -308,6 +310,7 @@ def run_pool_cycle(
     root: Path | None = None,
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
+    routing_marks: Any | None = None,
 ) -> dict[str, Any]:
     """Fan one governed pass out over every context the pool trades. Returns a summary.
 
@@ -334,6 +337,7 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
+                routing_marks=routing_marks,
             ))
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -362,6 +366,8 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"settled={record['settled']['close_reason']}({record['settled']['result_R']}R)")
     if record.get("opened"):
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
+    if record.get("open_skipped"):
+        parts.append(f"held={record['open_skipped']['reason_code']}")
     return " ".join(parts)
 
 
