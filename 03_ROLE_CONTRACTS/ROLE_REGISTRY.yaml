@@ -1,5 +1,5 @@
 schema_version: role_registry.v0.3
-document_version: 0.7.0
+document_version: 0.8.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
@@ -18,6 +18,18 @@ non_dynamic_roles:
   status: active
   routable: false
   definition_path: 03_ROLE_CONTRACTS/THOMAS_PRIME_CHARTER.md
+# conversation.frontdesk is non-dynamic BY DESIGN, not by convenience: it lives in front
+# of the pipeline (session front), so Prime must never be able to route work to it. The
+# dynamic-role rule "active => routable" is correct for specialists and would force this
+# role routable the day it activates — non-dynamic placement removes that contradiction
+# structurally. Its definition hash is pinned like a dynamic role's, and the consistency
+# validator enforces routable: false permanently (the thomas.prime precedent).
+- role_id: conversation.frontdesk
+  role_type: session_front
+  status: candidate
+  routable: false
+  definition_path: 03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md
+  definition_sha256: 116b1f0ea308430c01ee73f76d991e3ef279951e25f72755211b95f28f695797
 roles:
 - role_id: general.specialist
   version: 0.3.0
