@@ -75,6 +75,10 @@ def build_live_outcome_record(
     position_id: str | None = None,
     close_reason: str | None = None,
     opened_at_utc: str | None = None,
+    risk_usdt: float | None = None,
+    candidate_id: str | None = None,
+    strategy_rule_hash: str | None = None,
+    strategy_generation_id: str | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One closed live position, self-hashed.
@@ -82,9 +86,38 @@ def build_live_outcome_record(
     ``settlement_id`` is derived from the position identity, so a second attempt to record
     the same settlement is detectable as a duplicate rather than quietly doubling the day's
     realized P&L — which would move the breaker in the dangerous direction.
+
+    **LP5.4 — the outcome bridge.** The original shape carried only what the daily-loss
+    breaker needs (``realized_pnl_usdt``), which left the risk guard, the lifecycle demoter,
+    and the C6 feedback report blind to live results: they key on ``result_R``,
+    ``created_at_utc``, and strategy LINEAGE, none of which existed here. The four additive
+    arguments close that gap at the source, so a settled live position is legible to the
+    same machinery a paper one is:
+
+    - ``risk_usdt`` — the position's entry↔stop distance in quote terms (LP5.1 records it
+      as ``risk``). ``result_R`` is computed from it, and **only** from it: with no recorded
+      risk there is no honest R, so ``result_R`` stays ``None`` rather than becoming 0.0.
+      That distinction is load-bearing — ``guards._closed_rows`` reads a missing
+      ``result_R`` as ``0.0``, i.e. a breakeven, so a real live loss with no risk recorded
+      would *shorten* a loss streak instead of extending it. The bridge below therefore
+      excludes such rows rather than passing them.
+    - ``candidate_id`` / ``strategy_rule_hash`` / ``strategy_generation_id`` — the lineage
+      the lifecycle groups by. Without it a live result would be attributed to whatever
+      strategy currently answers to that display id, which the factory restarts at S001
+      every generation.
+
+    ``created_at_utc`` mirrors ``closed_at_utc`` because that is the field name every
+    consumer reads for an outcome's time. Both are emitted rather than one renamed: the
+    live record's own vocabulary stays intact, and the analytic key is present too.
     """
+    risk = float(risk_usdt) if isinstance(risk_usdt, (int, float)) and risk_usdt else 0.0
+    realized = round(float(realized_pnl_usdt), 8)
     body: dict[str, Any] = {
-        "realized_pnl_usdt": round(float(realized_pnl_usdt), 8),
+        "realized_pnl_usdt": realized,
+        # R is the realized P&L over what was risked. None when the risk was not recorded —
+        # never 0.0, which would read as a breakeven trade to every consumer.
+        "result_R": round(realized / risk, 8) if risk > 0 else None,
+        "risk_usdt": risk if risk > 0 else None,
         "symbol": symbol,
         "side": side,
         "quantity": float(quantity),
@@ -93,10 +126,15 @@ def build_live_outcome_record(
         "entry_order_id": entry_order_id,
         "exit_order_id": exit_order_id,
         "strategy_id": strategy_id,
+        "candidate_id": candidate_id,
+        "strategy_rule_hash": strategy_rule_hash,
+        "strategy_generation_id": strategy_generation_id,
         "position_id": position_id,
         "close_reason": close_reason,
         "opened_at_utc": opened_at_utc,
         "closed_at_utc": now,
+        # The analytic time key. Same instant as closed_at_utc; named as the consumers read it.
+        "created_at_utc": now,
         "outcome_closed": True,
         "stage": "live",
         "provenance": LIVE_PROVENANCE,
@@ -153,6 +191,84 @@ def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             seen_settlement_ids.add(settlement_id)
         outcomes.append(record)
     return outcomes
+
+
+# --- LP5.4: the outcome bridge -------------------------------------------------
+
+# Why a row can be legible to the breaker but not to the R-based consumers.
+UNKNOWN_R = "LIVE_OUTCOME_NO_RECORDED_RISK"
+
+
+def live_outcomes_for_analysis(
+    outcomes: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split live outcomes into rows the R-based consumers may read, and rows they may not.
+
+    Returns ``(readable, excluded)``. A readable row is exactly the shape
+    ``guards.run_risk_guard``, ``lifecycle`` and ``feedback.summarize_outcomes`` already
+    consume — ``result_R``, ``created_at_utc``, ``outcome_closed``, plus the lineage the
+    lifecycle groups by — so no consumer needs a live-specific branch.
+
+    **The exclusion is the point.** ``guards._closed_rows`` reads a missing ``result_R`` as
+    ``0.0``, which is a *breakeven*. A live loss whose risk was never recorded would
+    therefore shorten a loss streak instead of extending it, and dilute expectancy toward
+    zero — a fail-open in the one direction that matters. Such rows are excluded and
+    reported with ``UNKNOWN_R`` rather than passed through with a fabricated R. They remain
+    fully visible to the daily-loss breaker, which reads ``realized_pnl_usdt`` and needs no
+    R at all: the money is never lost from the accounting, only from the R statistics that
+    cannot honestly include it.
+
+    Pure: no I/O. The caller decides what to do with each list.
+    """
+    readable: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for record in outcomes:
+        if not isinstance(record, Mapping) or record.get("outcome_closed") is not True:
+            continue
+        result_r = record.get("result_R")
+        if not isinstance(result_r, (int, float)) or isinstance(result_r, bool):
+            excluded.append({
+                "outcome_id": record.get("outcome_id"),
+                "symbol": record.get("symbol"),
+                "realized_pnl_usdt": record.get("realized_pnl_usdt"),
+                "reason": UNKNOWN_R,
+            })
+            continue
+        readable.append({
+            "outcome_closed": True,
+            "result_R": float(result_r),
+            # Pre-bridge rows carry only closed_at_utc; either satisfies the consumers.
+            "created_at_utc": record.get("created_at_utc") or record.get("closed_at_utc"),
+            "strategy_id": record.get("strategy_id"),
+            "candidate_id": record.get("candidate_id"),
+            "strategy_rule_hash": record.get("strategy_rule_hash"),
+            "strategy_generation_id": record.get("strategy_generation_id"),
+            "symbol": record.get("symbol"),
+            "close_reason": record.get("close_reason"),
+            "realized_pnl_usdt": record.get("realized_pnl_usdt"),
+            # Kept so a consumer that mixes streams can still tell them apart.
+            "stage": record.get("stage") or "live",
+        })
+    return readable, excluded
+
+
+def live_analysis_summary(
+    outcomes: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """What the live stream contributes to the R-based view, and what it could not.
+
+    Deliberately a **separate** figure rather than something folded into the paper report:
+    silently adding live trades to a paper expectancy would change what a previously
+    reported number means. Whether the two streams are ever merged for a given decision is
+    the caller's call, and it can only be made honestly if both counts are visible.
+    """
+    readable, excluded = live_outcomes_for_analysis(outcomes)
+    return {
+        "readable_count": len(readable),
+        "excluded_count": len(excluded),
+        "excluded": excluded,
+        "readable": readable,
+    }
 
 
 def utc_day(stamp: str | None = None) -> str:
