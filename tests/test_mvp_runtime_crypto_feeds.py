@@ -203,8 +203,10 @@ def test_attach_feeds_ok_and_absent():
         snapshot, collector=MockMarketDataCollector(), liquidation_feed=NoLiquidationFeed(), now=NOW,
     )
     assert reasons == []
-    assert status == {"funding": "ok", "liquidations": "absent"}
-    assert "funding" in snapshot and "liquidations" not in snapshot
+    # Open interest rides the same feed object, so the null feed reports it absent too.
+    assert status == {"funding": "ok", "liquidations": "absent", "open_interest": "absent"}
+    assert "funding" in snapshot
+    assert "liquidations" not in snapshot and "open_interest" not in snapshot
 
 
 def test_attach_feeds_failure_is_present_and_empty():

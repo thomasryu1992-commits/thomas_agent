@@ -65,6 +65,7 @@ MARKET_DATA_DEGRADED = "MARKET_DATA_DEGRADED"
 # grant per provider, exactly like the model failover chain.
 FUNDING_DEGRADED = "FUNDING_DEGRADED"
 LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
+OPEN_INTEREST_DEGRADED = "OPEN_INTEREST_DEGRADED"
 LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
 COINALYZE = "coinalyze_market_data"
 FUNDING_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/fundingRate call
@@ -553,9 +554,16 @@ class BinanceFuturesCollector:
 # --- C9 liquidation feed (Coinalyze — its own provider, key, and grant) -------
 
 class LiquidationFeed(Protocol):
+    """The Coinalyze-backed derivative feed: liquidations and open interest.
+
+    One object, one provider, one grant — the name is historical (liquidations came
+    first) and kept so every selection site stays put."""
+
     feed_id: str
 
     def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]: ...
+
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]: ...
 
 
 class NoLiquidationFeed:
@@ -567,6 +575,9 @@ class NoLiquidationFeed:
 
     def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
         raise ToolError("FEED_ABSENT", "no liquidation feed is configured")
+
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        raise ToolError("FEED_ABSENT", "no open-interest feed is configured")
 
 
 class CoinalyzeLiquidationFeed:
@@ -582,6 +593,7 @@ class CoinalyzeLiquidationFeed:
     provider_id = COINALYZE
     network_egress = True
     _ENDPOINT = "https://api.coinalyze.net/v1/liquidation-history"
+    _OI_ENDPOINT = "https://api.coinalyze.net/v1/open-interest-history"
 
     def __init__(self, *, api_key_env: str = "COINALYZE_API_KEY",
                  authorization: Authorization | None = None):
@@ -643,6 +655,74 @@ class CoinalyzeLiquidationFeed:
                 except (TypeError, ValueError, KeyError):
                     raise ToolError("MALFORMED_RESULT",
                                     "liquidation backend returned an unparseable response") from None
+        rows.sort(key=lambda r: r["timestamp"])
+        return rows[-days:]
+
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        """Daily open-interest closes for the same perp. Same provider, same grant.
+
+        Open interest is the third leg of the positioning picture the runtime already
+        collects two of (funding, liquidations): how much position is *outstanding*,
+        as opposed to what it costs to hold (funding) or what was forcibly closed
+        (liquidations). It rides the existing ``coinalyze_market_data`` provider — same
+        key, same authorization, same egress chokepoint — so it widens what the runtime
+        reads, never what it is allowed to reach.
+
+        Like the liquidation series, the still-forming current day is dropped: a partial
+        day's OI close is not a close."""
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        api_key = os.environ.get(self._api_key_env)
+        if not api_key:
+            raise ToolError("NO_API_KEY", f"environment variable {self._api_key_env} is not set")
+        now_s = int(time.time())
+        params = urllib.parse.urlencode({
+            "symbols": f"{symbol}_PERP.A",
+            "interval": "daily",
+            "from": now_s - (int(days) + 2) * 86400,
+            "to": now_s,
+        })
+        request = urllib.request.Request(
+            f"{self._OI_ENDPOINT}?{params}", method="GET",
+            headers={"Accept": "application/json", "api_key": api_key},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError):
+            raise ToolError("TOOL_TRANSPORT", "open-interest request failed or timed out") from None
+        return self._parse_open_interest(raw, days, now_s=now_s)
+
+    def _parse_open_interest(self, raw: str, days: int, *, now_s: int) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "open-interest backend returned an unparseable response") from None
+        if isinstance(payload, dict) and "data" in payload:
+            payload = payload["data"]
+        if not isinstance(payload, list):
+            raise ToolError("MALFORMED_RESULT", "open-interest backend returned an unparseable response")
+        rows: list[dict[str, Any]] = []
+        day_start_today = (now_s // 86400) * 86400
+        for item in payload:
+            for h in (item.get("history") or []) if isinstance(item, dict) else []:
+                try:
+                    t = int(h["t"])
+                    t_s = t // 1000 if t > 10_000_000_000 else t
+                    if t_s >= day_start_today:
+                        continue  # still-forming current day — dropped
+                    rows.append({
+                        "timestamp": BinanceFuturesCollector._iso(t_s * 1000),
+                        # The OHLC of open interest across the day; the close is the
+                        # standing position at the day's end, which is the quantity a
+                        # point-in-time feature should carry.
+                        "open_interest": float(h["c"]),
+                    })
+                except (TypeError, ValueError, KeyError):
+                    raise ToolError("MALFORMED_RESULT",
+                                    "open-interest backend returned an unparseable response") from None
         rows.sort(key=lambda r: r["timestamp"])
         return rows[-days:]
 

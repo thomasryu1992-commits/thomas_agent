@@ -63,6 +63,19 @@ from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spe
 BACKTEST_WINDOWS = 3
 MIN_TRADES_PER_WINDOW = 3
 
+# Out-of-sample holdout. The most recent slice of the replay window is withheld from
+# scoring entirely: the spec is minted and scored on the earlier bars, then replayed
+# once on this tail to see whether the edge survives data the score never saw.
+#
+# Why this exists: every number the old evidence carried — expectancy, walk-forward
+# pass rate, champion_score — was computed on the SAME bars the candidate was mined
+# on, and promotion then picks the highest scorer out of a growing store. Selecting
+# the maximum over many draws scored in-sample is precisely how noise gets promoted,
+# and no in-sample statistic can detect it. The tail is recent rather than random
+# because that is the regime a promoted strategy trades next.
+HOLDOUT_FRACTION = 0.30
+MIN_BARS_FOR_HOLDOUT = 60
+
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
 _MAX_ATTEMPTS_PER_SPEC = 12
@@ -107,6 +120,12 @@ NUMERIC_FEATURES = frozenset({
     # indeterminate and simply never matches. The numeric ones are normalized ratios,
     # so a mined threshold carries the same meaning on every symbol.
     *features.HTF_NUMERIC_COLUMNS,
+    # Open interest (Thomas 2026-07-25) — the positioning leg beside funding and
+    # liquidations. Only the NORMALIZED derivatives are mintable: raw open_interest is
+    # a venue-scale quantity, so a mined threshold on it would mean something different
+    # on every symbol and nothing at all after the venue grows. Absent feed = None =
+    # never matches, the liquidation posture.
+    "open_interest_change_pct", "open_interest_zscore",
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -209,6 +228,43 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
         {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
         {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
+    ]
+
+
+def _oi_squeeze_long_entry(p: dict) -> list[dict]:
+    # Position building into a quiet market: open interest climbing while price has not
+    # yet moved is crowding, and the release tends to travel. The RANGE gate is what
+    # makes it a squeeze setup rather than plain trend-following.
+    return [
+        {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
+        {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
+        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _oi_squeeze_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
+        {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
+        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+    ]
+
+
+def _oi_unwind_long_entry(p: dict) -> list[dict]:
+    # The mirror: open interest FALLING hard while price is washed out is capitulation
+    # finishing — positions are leaving, not arriving.
+    return [
+        {"feature": "open_interest_change_pct", "comparison": "<=", "value": -p["oi_change_min"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _oi_unwind_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "open_interest_change_pct", "comparison": "<=", "value": -p["oi_change_min"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
     ]
 
 
@@ -324,10 +380,28 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("htf_pullback_long", "long", "1h",
                      {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
                      {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+    StrategyTemplate("oi_squeeze_long", "long", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_long_entry),
+    StrategyTemplate("oi_squeeze_short", "short", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_short_entry),
+    StrategyTemplate("oi_unwind_long", "long", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_max": ParamSpec(20.0, 40.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_max": 30.0, **_EXIT_BASE}, _oi_unwind_long_entry),
+    StrategyTemplate("oi_unwind_short", "short", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_min": 70.0, **_EXIT_BASE}, _oi_unwind_short_entry),
     StrategyTemplate("htf_pullback_short", "short", "1h",
                      {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
                      {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
+
+# Families whose entry rules read the open-interest columns — mintable only where the
+# feed is configured; with no feed their conditions are indeterminate and never match,
+# so a minted spec is harmless (it simply does not trade) rather than wrong.
+OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
+                         "oi_unwind_long", "oi_unwind_short"})
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
@@ -492,24 +566,29 @@ def generate_batch(
 
 # --- replay backtest (shared evaluator + shared exit math) --------------------
 
-def backtest_spec(
-    spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
-) -> dict[str, Any]:
-    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+def holdout_split_index(total_bars: int) -> int:
+    """Where the scored window ends and the untouched holdout begins.
 
-    Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
-    the position opens at row i's close with the spec's ATR exits, and every later
-    bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
-    own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
-    features are indeterminate never enter (the evaluator's rule).
+    Deterministic (a pure function of the bar count — no randomness, no dates), so a
+    replay of the same window always splits identically. A window too short to leave
+    both sides usable yields ``total_bars``: everything trains, nothing is held out,
+    and the verdict layer then reports the holdout as UNCONFIRMED rather than pretending
+    a two-bar tail proved something."""
+    if total_bars < MIN_BARS_FOR_HOLDOUT:
+        return total_bars
+    return max(1, int(total_bars * (1.0 - HOLDOUT_FRACTION)))
 
-    C12: every closed trade's gross (intended-price) R is costed via
-    ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
-    outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
-    NET R after costs; ``gross_R`` rides alongside for transparency."""
-    cost = cost or CostModel()
-    rows = build_feature_rows(dict(snapshot))
-    candles = snapshot.get("candles") or []
+
+def _replay(
+    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
+    *, cost: CostModel, offset: int = 0,
+) -> tuple[list[dict[str, Any]], float, float]:
+    """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
+
+    Extracted so the scored window and the holdout run through **exactly** the same
+    code — a holdout evaluated by a second, slightly different replay would prove
+    nothing about the first. Each pass starts flat: a position open at the split does
+    not carry across, so the holdout measures only what it can attribute to itself."""
     outcomes: list[dict[str, Any]] = []
     position: dict[str, Any] | None = None
     entry_regime: str | None = None
@@ -539,7 +618,7 @@ def backtest_spec(
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
-                    "closed_at_bar": i,
+                    "closed_at_bar": offset + i,
                 })
                 position = None
                 entry_regime = None
@@ -561,6 +640,55 @@ def backtest_spec(
                 "holding_candles": 0,
             }
             entry_regime = row.get("market_regime")
+    return outcomes, total_fee_cost_r, total_slippage_cost_r
+
+
+def _holdout_evidence(
+    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
+    *, cost: CostModel, offset: int,
+) -> dict[str, Any]:
+    """What the spec did on bars that never touched its score. Compact by design.
+
+    Only the few numbers a confirmation needs: how many trades the unseen tail
+    produced and whether they were profitable in aggregate. The verdict layer turns
+    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
+    outcomes, _fees, _slip = _replay(spec, rows, candles, cost=cost, offset=offset)
+    total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
+    closed = len(outcomes)
+    return {
+        "bars": len(rows),
+        "closed_count": closed,
+        "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
+        "total_R": total_r,
+        "expectancy": round(total_r / closed, 8) if closed else 0.0,
+    }
+
+
+def backtest_spec(
+    spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
+) -> dict[str, Any]:
+    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+
+    Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
+    the position opens at row i's close with the spec's ATR exits, and every later
+    bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
+    own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
+    features are indeterminate never enter (the evaluator's rule).
+
+    C12: every closed trade's gross (intended-price) R is costed via
+    ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
+    outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
+    NET R after costs; ``gross_R`` rides alongside for transparency."""
+    cost = cost or CostModel()
+    all_rows = build_feature_rows(dict(snapshot))
+    all_candles = snapshot.get("candles") or []
+    # Train / holdout split (see HOLDOUT_FRACTION). Features are computed over the FULL
+    # series and only then sliced, so the holdout starts with warm indicators instead of
+    # re-warming — the split is about what the SCORE may see, not about the data itself.
+    split = holdout_split_index(len(all_rows))
+    rows, candles = all_rows[:split], all_candles[:split]
+    outcomes, total_fee_cost_r, total_slippage_cost_r = _replay(spec, rows, candles, cost=cost)
+    holdout = _holdout_evidence(spec, all_rows[split:], all_candles[split:], cost=cost, offset=split)
 
     summary = summarize_outcomes(outcomes)
 
@@ -604,7 +732,7 @@ def backtest_spec(
         "fee_cost_r": round(total_fee_cost_r, 8),
         "slippage_cost_r": round(total_slippage_cost_r, 8),
     }
-    robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown)
+    robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown, holdout=holdout)
     return {
         "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash,
@@ -625,6 +753,7 @@ def backtest_spec(
         },
         "regime_breakdown": regime_breakdown,
         "walk_forward": walk_forward,
+        "holdout": holdout,
         "robustness": robustness,
         # The score's whole meaning, recorded where it is used: the anti-overfit
         # robustness score (C8b), with raw expectancy kept alongside.

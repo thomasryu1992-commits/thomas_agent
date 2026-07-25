@@ -39,6 +39,7 @@ from .errors import MvpRuntimeError
 from .programization import ProgramizationStore
 from .providers import select_provider
 from .scheduler import ScheduleStore
+from .state_guard import assert_state_writable
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .tools import select_search_tool
@@ -219,6 +220,10 @@ def main(
     ledger = ledger if ledger is not None else LedgerStore.default()
 
     try:
+        # The tick loop's equivalent of the operator's startup guard: a scheduler that
+        # cannot write state would claim occurrences it can never record the outcome of,
+        # which is the one failure at-most-once execution must not have.
+        assert_state_writable(repo_root)
         if args.command == "add":
             stamp = now or timeutil.utc_now_iso()
             sched = scheduler.build_schedule(
