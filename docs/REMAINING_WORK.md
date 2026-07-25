@@ -83,7 +83,10 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145)
       `worker._validated_context` frames it. Known limit: only revision-path corrections are
       promotable (they carry origin); feedback-path corrections stay `[M#]` until origin can be
       reconstructed from the delivered run.
-- [ ] **M5d** (later) repeated identical corrections → programization counter → candidate Program.
+- [x] **M5d** repeated identical corrections surface at the programization review as a read-only
+      correction lineage — done 2026-07-25 (option C, reuse-first: `correction_lineage_for_pattern`
+      + `programization_cli lineage <pattern_id>`; no new schema/counter). Codifying stays the
+      existing operator-gated programization flow.
 
 ---
 

@@ -320,6 +320,61 @@ def observe_completed_run(
     return observation, pattern, triggered_now
 
 
+def correction_lineage_for_pattern(
+    store: ProgramizationStore, working_memory: Any, *, pattern_id: str
+) -> list[dict[str, Any]]:
+    """The corrections (M5a candidates + M5c VALIDATED) whose run belongs to this pattern.
+
+    M5d, option C — a **read-only join**, no new schema and no new counter. A reviewer of a
+    TRIGGERED programization pattern sees which corrections the repeated pattern kept needing,
+    so "codify A→D as a Program" is an informed decision rather than a guess. The join matches a
+    correction's ``correction_ref`` (``trace:<trace_id>``, stamped by M5a) against the trace ids
+    of the pattern's *valid* observations, reading both the working-memory candidates (recent,
+    may have expired) and the VALIDATED store (operator-promoted, permanent — so an old
+    promoted correction still shows). Deduped by (ref, content, status). Side-effect-free and
+    best-effort: returns ``[]`` when there is no store, no pattern, or nothing to join, and never
+    mutates anything. Deliberately NOT written into any closed record — the annotation is a
+    read-side view, so the programization schemas are untouched (the reuse-first choice)."""
+    if working_memory is None:
+        return []
+    pattern = store.latest_patterns().get(pattern_id)
+    if not isinstance(pattern, Mapping):
+        return []
+    valid_ids = {i for i in pattern.get("valid_observation_ids", []) if isinstance(i, str)}
+    if not valid_ids:
+        return []
+    traces: set[str] = set()
+    for row in store.read_observations():
+        record = row.get("record", {}) if isinstance(row, Mapping) else {}
+        if record.get("observation_id") in valid_ids:
+            trace = record.get("trace_id")
+            if isinstance(trace, str) and trace:
+                traces.add(trace)
+    if not traces:
+        return []
+    refs = {f"trace:{t}" for t in traces}
+    lineage: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for entry in list(working_memory.read_all()) + list(working_memory.read_validated()):
+        if not isinstance(entry, Mapping):
+            continue
+        source = entry.get("learning_source")
+        ref = entry.get("correction_ref")
+        if not (source and ref in refs):
+            continue
+        key = (ref, str(entry.get("content", "")), entry.get("status"))
+        if key in seen:
+            continue
+        seen.add(key)
+        lineage.append({
+            "correction_ref": ref,
+            "learning_source": source,
+            "status": entry.get("status"),
+            "content": entry.get("content"),
+        })
+    return lineage
+
+
 # --- Review handling (operator-only; explicit Thomas decision 2026-07-22) ----
 
 

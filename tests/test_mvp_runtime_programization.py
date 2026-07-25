@@ -16,6 +16,7 @@ from runtime.mvp_runtime.programization import (
     REVIEW_TRIGGER_COUNT,
     ProgramizationStore,
     build_pattern_signature,
+    correction_lineage_for_pattern,
     create_program_candidate,
     observe_completed_run,
     record_shadow_result,
@@ -517,3 +518,86 @@ def test_counter_failure_is_best_effort_never_blocks_delivery(tmp_path):
     assert r["status"] == "COMPLETED" and r["delivered"] is True
     assert r["programization_error"] == "PROGRAMIZATION_UNREADABLE"
     assert "programization_observation" not in r["records"]
+
+
+# --- M5d (option C): correction lineage for a pattern (read-only join) --------
+
+def _pattern_with_traces(store, pattern_id, traces):
+    """Seed a store with one observation per trace and a pattern over them (valid)."""
+    obs_ids = []
+    for i, trace in enumerate(traces):
+        oid = f"o_{pattern_id}_{i}"
+        store.append_observation({"input_sha256": "x", "record": {"observation_id": oid, "trace_id": trace}})
+        obs_ids.append(oid)
+    store.append_pattern({"pattern_id": pattern_id, "valid_observation_ids": obs_ids,
+                          "review_status": "TRIGGERED", "valid_repetition_count": len(obs_ids)})
+    return obs_ids
+
+
+def _correction(trace, content, *, source="revision"):
+    from runtime.mvp_runtime.memory import build_correction_candidate
+    return build_correction_candidate(content, source=source, now=NOW, seed={"trace_id": trace},
+                                      correction_ref=f"trace:{trace}")
+
+
+def test_lineage_joins_candidate_and_validated_corrections(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    store = ProgramizationStore(tmp_path / "prog")
+    _pattern_with_traces(store, "p1", ["t1", "t2"])
+    _pattern_with_traces(store, "p2", ["t9"])            # a different pattern, must not leak in
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    wm.append([_correction("t1", "prefer a table")])      # candidate for t1
+    wm.append([_correction("t9", "unrelated")])           # belongs to p2, not p1
+    validated = {**_correction("t2", "validated fix"), "status": "VALIDATED",
+                 "scope": "related_validated_memory"}
+    wm.append_validated([validated])                      # VALIDATED (M5c) for t2
+
+    lineage = correction_lineage_for_pattern(store, wm, pattern_id="p1")
+    refs = {c["correction_ref"] for c in lineage}
+    assert refs == {"trace:t1", "trace:t2"}               # both p1 traces, nothing from p2
+    statuses = {c["status"] for c in lineage}
+    assert statuses == {"CANDIDATE", "VALIDATED"}         # candidate + promoted correction both surface
+
+
+def test_lineage_excludes_non_correction_memory(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    store = ProgramizationStore(tmp_path / "prog")
+    _pattern_with_traces(store, "p1", ["t1"])
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    # an ordinary (non-correction) candidate: no learning_source, no correction_ref
+    wm.append([{"candidate_id": "c1", "scope": "task_working_memory", "status": "CANDIDATE",
+                "content": "ordinary knowledge", "correction_ref": "trace:t1"}])
+    assert correction_lineage_for_pattern(store, wm, pattern_id="p1") == []
+
+
+def test_lineage_fail_closed_and_empty_cases(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    store = ProgramizationStore(tmp_path / "prog")
+    _pattern_with_traces(store, "p1", ["t1"])
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    assert correction_lineage_for_pattern(store, None, pattern_id="p1") == []   # no working memory
+    assert correction_lineage_for_pattern(store, wm, pattern_id="unknown") == []  # unknown pattern
+    assert correction_lineage_for_pattern(store, wm, pattern_id="p1") == []      # no corrections yet
+
+
+def test_lineage_cli_is_read_only_and_prints_corrections(tmp_path):
+    from runtime.mvp_runtime import programization_cli
+    from runtime.mvp_runtime.control import ControlStore, apply_command
+    from runtime.mvp_runtime.store import LedgerStore
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    store = ProgramizationStore(tmp_path / "prog")
+    _pattern_with_traces(store, "p1", ["t1"])
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    wm.append([_correction("t1", "prefer a table")])
+    # Read-only: answered even while the runtime is KILLED (like status; no kill-switch gate).
+    control = ControlStore(tmp_path)
+    apply_command(control, "kill", actor="op", now=NOW)
+    rc = programization_cli.main(
+        ["lineage", "p1"], store=store, ledger=LedgerStore(tmp_path / "ledger"),
+        control_store=control, working_memory=wm, now=NOW)
+    assert rc == 0
+
+    rc_missing = programization_cli.main(
+        ["lineage"], store=store, ledger=LedgerStore(tmp_path / "ledger"),
+        control_store=control, working_memory=wm, now=NOW)
+    assert rc_missing != 0   # no pattern id -> fail-closed
