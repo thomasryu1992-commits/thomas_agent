@@ -274,6 +274,36 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path, monkeyp
     assert any(r["kind"] == "crypto_factory" for r in rows)
 
 
+def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, monkeypatch):
+    """The scheduler passes a non-zero ``fusion_pairs``, so the SECOND fire — with the
+    first fire's candidates durable as parents — must actually attempt crossover.
+    The machinery shipped dormant: every scheduled call left the default 0, so no
+    fused child was ever minted. Deterministic either way it lands: the recorded
+    factory result carries fused children (parent lineage attached) or explicit
+    ``fusion_rejected`` reasons — dormant fusion produced neither."""
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
+                              created_by="op", now="2026-07-22T10:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    ledger = LedgerStore(tmp_path / LEDGER_REL)
+    run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+            ledger=ledger, repo_root=tmp_path)          # fire 1: parents become durable
+    summary = run_due(store, now="2026-07-24T12:00:00Z", control_store=ControlStore(tmp_path),
+                      ledger=ledger, repo_root=tmp_path)  # fire 2: fusion draws on them
+    assert summary["fired"] == 1
+    assert "fused=" in summary["results"][0]["status"]
+    rows = [json.loads(line) for line in
+            (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+    second = [r["record"] for r in rows if r["kind"] == "crypto_factory"][-1]
+    fused = [c for c in second["candidates"] if c.get("parent_candidate_ids")]
+    assert fused or second["fusion_rejected"], "fusion was never attempted"
+    for child in fused:
+        assert child["provenance"] == "mvp_factory_fusion"
+        assert len(child["parent_candidate_ids"]) == 2
+
+
 # --- the promotion door -------------------------------------------------------
 
 def _seed_candidates(tmp_path):
