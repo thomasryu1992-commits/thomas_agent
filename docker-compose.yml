@@ -61,6 +61,12 @@ services:
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
+      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
+      # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
+      # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       # Read-only web search (optional).
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
@@ -105,6 +111,12 @@ services:
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
+      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
+      # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
+      # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}

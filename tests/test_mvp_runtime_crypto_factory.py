@@ -123,6 +123,52 @@ def test_unknown_feature_blocks():
     assert "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"]
 
 
+@pytest.mark.parametrize("feature", [
+    "liquidation_total", "long_liquidation", "short_liquidation", "liquidation_spike_ratio",
+])
+def test_liquidation_features_are_mintable(feature):
+    # Held out while the Coinalyze feed was unconfigured; admitted 2026-07-24.
+    spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+        "operator": "AND", "conditions": [{"feature": feature, "comparison": ">", "value": 1.0}],
+    }))
+    assert validate_strategy(spec)["approved_for_backtest"] is True
+
+
+def test_the_three_added_liquidation_features_fail_closed_without_a_feed():
+    """Why admitting them is safe: no feed means None, and None never matches.
+
+    This is the whole argument for the widening. ``liquidation_spike_ratio`` does NOT
+    share it — with no feed it falls back to a constant 0.0, so a ``< x`` condition on
+    it matches fabricated data. That hazard predates the widening; this test pins the
+    distinction so a later change to the fallbacks cannot erase it silently.
+    """
+    from runtime.mvp_runtime.crypto.features import latest_feature_row
+    from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
+    from runtime.mvp_runtime.crypto.strategy import evaluate_spec
+
+    snapshot, _ = collect_market_data(
+        "BTCUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=120
+    )
+    row = latest_feature_row(snapshot)  # no "liquidations" key — the default posture
+
+    for feature in ("liquidation_total", "long_liquidation", "short_liquidation"):
+        assert row[feature] is None
+        for comparison, value in ((">", -1e12), ("<", 1e12)):  # both directions
+            spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+                "operator": "AND",
+                "conditions": [{"feature": feature, "comparison": comparison, "value": value}],
+            }))
+            assert evaluate_spec(spec, row).matched is False, f"{feature} {comparison} matched"
+
+    # The pre-existing exception, asserted rather than left as folklore.
+    assert row["liquidation_spike_ratio"] == 0.0
+    permissive = StrategySpec.from_dict(_spec_dict(entry_rules={
+        "operator": "AND",
+        "conditions": [{"feature": "liquidation_spike_ratio", "comparison": "<", "value": 1.0}],
+    }))
+    assert evaluate_spec(permissive, row).matched is True  # matches the constant, not data
+
+
 def test_bad_reward_risk_blocks():
     spec = StrategySpec.from_dict(_spec_dict(
         exit_rules={"stop_model": "atr", "stop_atr": 2.0, "target_atr": 1.0, "max_holding_bars": 10}))
@@ -161,6 +207,9 @@ def test_backtest_is_deterministic_and_produces_outcomes():
     assert a["champion_score"] == a["robustness"]["robustness_score"]
     assert a["robustness"]["verdict"] in {"ROBUST", "PROVISIONAL", "FRAGILE"}
     assert a["bars_replayed"] == 200
+    # M4a: realized payoff legs ride in the evidence for the promotion ranking.
+    assert "avg_win_R" in a and "avg_loss_R" in a
+    assert a["avg_win_R"] >= 0.0 and a["avg_loss_R"] >= 0.0
 
 
 def test_backtest_never_enters_on_indeterminate_features():
@@ -510,3 +559,57 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
     assert result["fusion_rejected"] == [
         {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
     ]
+
+
+# --- M4a: promotion ranking (robustness first-pass, win-rate + reward:risk) ----
+
+def _cand(cid, *, verdict, score, closed, wins, avg_win=None, avg_loss=None,
+          expectancy=0.0, spec_rr=None):
+    evidence = {"closed_count": closed, "win_count": wins, "expectancy": expectancy,
+                "robustness": {"verdict": verdict}}
+    if avg_win is not None or avg_loss is not None:
+        evidence["avg_win_R"] = avg_win or 0.0
+        evidence["avg_loss_R"] = avg_loss or 0.0
+    record = {"candidate_id": cid, "champion_score": score, "backtest_evidence": evidence}
+    if spec_rr is not None:
+        record["strategy_spec"] = {"exit_rules": {"stop_atr": 1.0, "target_atr": spec_rr}}
+    return record
+
+
+def test_candidate_quality_realized_designed_and_all_wins():
+    realized = pool.candidate_quality(
+        _cand("c", verdict="ROBUST", score=0.8, closed=10, wins=6, avg_win=2.0, avg_loss=1.0))
+    assert realized["win_rate"] == 0.6 and realized["reward_risk"] == 2.0
+    assert realized["reward_risk_basis"] == "realized" and realized["edge_quality"] == 1.2
+
+    legacy = pool.candidate_quality(  # no avg_* fields -> designed target/stop fallback
+        _cand("c", verdict="ROBUST", score=0.8, closed=10, wins=7, spec_rr=2.0))
+    assert legacy["reward_risk"] == 2.0 and legacy["reward_risk_basis"] == "designed"
+
+    all_wins = pool.candidate_quality(
+        _cand("c", verdict="ROBUST", score=0.7, closed=5, wins=5, avg_win=1.2, avg_loss=0.0))
+    assert all_wins["all_wins"] is True and all_wins["reward_risk"] is None
+    assert all_wins["edge_quality"] == float("inf")
+
+
+def test_rank_candidates_robustness_tier_before_performance():
+    # A PROVISIONAL lineage with a huge edge still sorts below every ROBUST one.
+    strong_provisional = _cand("p", verdict="PROVISIONAL", score=0.6, closed=10, wins=8,
+                               avg_win=3.0, avg_loss=0.5, expectancy=1.0)
+    robust_mid = _cand("r1", verdict="ROBUST", score=0.8, closed=10, wins=6, avg_win=2.0, avg_loss=1.0)
+    robust_low = _cand("r2", verdict="ROBUST", score=0.75, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    ranked = [r["candidate_id"] for r in pool.rank_candidates([strong_provisional, robust_low, robust_mid])]
+    assert ranked == ["r1", "r2", "p"]  # tier first, then edge_quality within tier
+
+
+def test_rank_candidates_is_deterministic_and_latest_wins():
+    a1 = _cand("dup", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    a2 = _cand("dup", verdict="ROBUST", score=0.9, closed=10, wins=9, avg_win=2.0, avg_loss=1.0)  # newer
+    tie_a = _cand("aaa", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    tie_b = _cand("bbb", verdict="ROBUST", score=0.7, closed=10, wins=5, avg_win=1.0, avg_loss=1.0)
+    ranked = pool.rank_candidates([a1, tie_b, a2, tie_a])
+    ids = [r["candidate_id"] for r in ranked]
+    assert ids.count("dup") == 1  # latest-wins collapse
+    # dup now carries the newer (stronger) evidence, so it leads; equal-quality ties
+    # fall back to candidate_id ascending (aaa before bbb).
+    assert ids == ["dup", "aaa", "bbb"]

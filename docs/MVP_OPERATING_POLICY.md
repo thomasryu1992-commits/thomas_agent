@@ -30,7 +30,7 @@ Target 단계 문서이며 MVP에서는 아직 비활성
 ↓
 
 Organization Architecture
-`thomas-autonomous-organization-architecture-v0.1.md`
+`THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` — 최상위 설계 방향(Goal) 문서
 
 ↓
 

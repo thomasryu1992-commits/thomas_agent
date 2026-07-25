@@ -24,7 +24,7 @@ from typing import Any
 from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
-from ..errors import ToolBlocked, ToolError
+from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, pool
 from .features import latest_feature_row
 from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_check, run_risk_guard
@@ -39,9 +39,21 @@ from .market_data import (
 )
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle
-from .paper import PaperStore, build_entry_plan, read_outcomes, route_entries, run_paper_update
+from .paper import (
+    PaperStore,
+    build_entry_plan,
+    list_open_positions,
+    read_outcomes,
+    route_entries,
+    run_paper_update,
+)
 
 CYCLE_VERSION = "crypto_cycle.v0.1"
+POOL_CYCLE_VERSION = "crypto_pool_cycle.v0.1"
+
+# A PAUSED/KILLED runtime refuses every context identically, so a kill refusal from
+# one sub-cycle stops the whole fan-out; any other refusal is that context's alone.
+_KILL_CODES = frozenset({"RUNTIME_KILLED", "RUNTIME_PAUSED"})
 
 # Collection failures that degrade the cycle; anything else is a config error.
 _DEGRADABLE_CODES = {"TOOL_ERROR"}
@@ -256,6 +268,91 @@ def run_crypto_cycle(
     return record
 
 
+def pool_cycle_contexts(root: Path | None = None) -> list[tuple[str, str]]:
+    """Every ``(symbol, timeframe)`` one pool pass must visit, sorted.
+
+    The union of two sets, because a cycle both *opens* and *settles*:
+
+    - the pool's routable contexts (:func:`pool.routable_contexts`) — so every
+      strategy is actually evaluated, not just the ones scoped to one default
+      symbol; and
+    - the contexts of every currently OPEN paper position — so a position whose
+      strategy has since been demoted out of the routable set is still visited by
+      its own symbol's cycle and can settle, never stranded.
+
+    A tampered/unreadable pool or position book contributes nothing rather than
+    raising: each per-context cycle re-reads and records its own fail-closed reason,
+    so one corrupt book cannot starve the rest. An empty union is returned as-is;
+    the caller decides the fallback."""
+    contexts: set[tuple[str, str]] = set()
+    try:
+        contexts.update(pool.routable_contexts(pool.load_active_pool(root)))
+    except MvpRuntimeError:
+        pass  # per-context cycles below still re-read and record the pool's state
+    try:
+        for context, _position in list_open_positions(root):
+            contexts.add((context.symbol, context.timeframe))
+    except MvpRuntimeError:
+        pass
+    return sorted(contexts)
+
+
+def run_pool_cycle(
+    *,
+    collector: MarketDataCollector,
+    store: PaperStore,
+    now: str,
+    default_symbol: str = "BTCUSDT",
+    default_timeframe: str = "1d",
+    limit: int = 120,
+    root: Path | None = None,
+    control_store: ControlStore | None = None,
+    liquidation_feed: Any | None = None,
+) -> dict[str, Any]:
+    """Fan one governed pass out over every context the pool trades. Returns a summary.
+
+    :func:`run_crypto_cycle` only ever routes the strategies scoped to its single
+    symbol, so a pool spread across symbols left most strategies ``unevaluable`` and
+    every non-default symbol's open position unsettled — the symbol-starved router.
+    This runs one full cycle per :func:`pool_cycle_contexts` entry, falling back to
+    the default context when there is nothing to route and nothing open (a heartbeat
+    that still collects data), and aggregates the sub-records for the caller's ledger.
+
+    Per-context isolation is the whole point: a configuration or state failure in one
+    context (a malformed pool symbol, an unreadable position book) is recorded under
+    ``skipped`` and the remaining contexts still run — it can never again starve them.
+    The one refusal that is *not* per-context is the kill switch: a PAUSED/KILLED
+    runtime refuses every context identically, so that refusal propagates and stops
+    the whole fan-out, exactly as it stops a single cycle."""
+    contexts = pool_cycle_contexts(root) or [(default_symbol, default_timeframe)]
+
+    cycles: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for symbol, timeframe in contexts:
+        try:
+            cycles.append(run_crypto_cycle(
+                collector=collector, store=store, now=now,
+                symbol=symbol, timeframe=timeframe, limit=limit, root=root,
+                control_store=control_store, liquidation_feed=liquidation_feed,
+            ))
+        except MvpRuntimeError as exc:
+            if exc.reason_code in _KILL_CODES:
+                raise  # global stop — every remaining context would refuse the same
+            skipped.append({"symbol": symbol, "timeframe": timeframe, "reason_code": exc.reason_code})
+
+    summary = {
+        "pool_cycle_version": POOL_CYCLE_VERSION,
+        "contexts": [{"symbol": s, "timeframe": t} for s, t in contexts],
+        "cycles": cycles,
+        "skipped": skipped,
+        "created_at": now,
+    }
+    summary["pool_cycle_id"] = integrity.short_id(
+        "crypto_pool_cycle", {"contexts": summary["contexts"], "at": now}
+    )
+    return summary
+
+
 def cycle_status_line(record: dict[str, Any]) -> str:
     """The one-line status a scheduler fire records for this cycle."""
     parts = [f"verdict={record['verdict_status']}", f"route={record['route_status']}"]
@@ -268,4 +365,23 @@ def cycle_status_line(record: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-__all__ = ["cycle_status_line", "run_crypto_cycle"]
+def pool_cycle_status_line(summary: dict[str, Any]) -> str:
+    """The one-line status a scheduler fire records for a whole pool fan-out."""
+    cycles = summary.get("cycles") or []
+    skipped = summary.get("skipped") or []
+    head = f"pool_cycle contexts={len(cycles)}"
+    if skipped:
+        head += f" skipped={len(skipped)}"
+    parts = [head]
+    parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
+    parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)
+    return " | ".join(parts)
+
+
+__all__ = [
+    "cycle_status_line",
+    "pool_cycle_contexts",
+    "pool_cycle_status_line",
+    "run_crypto_cycle",
+    "run_pool_cycle",
+]

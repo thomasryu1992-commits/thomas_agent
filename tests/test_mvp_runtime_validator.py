@@ -411,6 +411,35 @@ def test_auto_policy_triage_normal_skips_the_planned_reviewer():
 
 
 @requires_local_core
+def test_m2_tiered_selector_applied_from_triage_difficulty():
+    """M2: the triage difficulty picks the specialist provider through the injected
+    selector, and the selection is recorded. The mock triage yields MEDIUM; a stub selector
+    proves the difficulty reaches it and its choice is what the pipeline records + uses."""
+    seen: dict[str, str] = {}
+    sentinel = MockProvider()
+
+    def selector(difficulty):
+        seen["difficulty"] = difficulty
+        return sentinel, {"difficulty": difficulty, "tier": "openrouter_standard", "degraded": False}
+
+    result = run_task(REQUEST, independent_validation="auto", now=NOW,
+                      tiered_provider_selector=selector)
+    assert result["status"] == "COMPLETED"
+    assert seen["difficulty"] == "MEDIUM"  # the mock triage's default difficulty tier
+    assert result["records"]["model_tier_selection"] == {
+        "difficulty": "MEDIUM", "tier": "openrouter_standard", "degraded": False,
+    }
+
+
+@requires_local_core
+def test_m2_no_selector_leaves_no_tier_record():
+    """Backward compatible: with no selector wired, the run records no tier selection."""
+    result = run_task(REQUEST, independent_validation="auto", now=NOW)
+    assert result["status"] == "COMPLETED"
+    assert "model_tier_selection" not in result["records"]
+
+
+@requires_local_core
 def test_auto_policy_validates_an_important_request():
     """priority HIGH (the operator's importance marker) adds the reviewer to this run —
     and the record still says the GOVERNANCE requirement was false (operator-requested,

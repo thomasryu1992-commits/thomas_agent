@@ -141,6 +141,27 @@ def test_route_wrong_symbol_or_timeframe_is_unevaluable():
     assert "unevaluable" in route["evaluations"][0]
 
 
+def test_route_matches_any_symbol_in_scope_not_just_primary():
+    # A strategy scoped to two symbols is evaluable on EACH — including the one that
+    # is not symbol_scope[0], which the old primary-only router left starved.
+    multi = _pool_entry(spec=_spec_dict(symbol_scope=["BTCUSDT", "ETHUSDT"]))
+    btc = route_entries(_pool(multi), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW)
+    eth = route_entries(_pool(multi), ROW, symbol="ETHUSDT", timeframe="1d", now=NOW)
+    assert btc["status"] == STATUS_ENTRY_CANDIDATE and eth["status"] == STATUS_ENTRY_CANDIDATE
+    # A symbol outside the scope is still unevaluable.
+    sol = route_entries(_pool(multi), ROW, symbol="SOLUSDT", timeframe="1d", now=NOW)
+    assert sol["status"] == STATUS_NO_ENTRY
+
+
+def test_multi_symbol_plan_books_under_the_traded_symbol():
+    # On its non-primary symbol the plan must book ETHUSDT, not symbol_scope[0] (BTC).
+    multi = _pool_entry(spec=_spec_dict(symbol_scope=["BTCUSDT", "ETHUSDT"]))
+    route = route_entries(_pool(multi), ROW, symbol="ETHUSDT", timeframe="1d", now=NOW)
+    plan = build_entry_plan(route, ROW, now=NOW)
+    assert plan["symbol"] == "ETHUSDT" and plan["timeframe"] == "1d"
+    assert open_position(plan, now=NOW)["symbol"] == "ETHUSDT"
+
+
 # --- entry plan + position ----------------------------------------------------
 
 def _candidate_route(row=ROW):

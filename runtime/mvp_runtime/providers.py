@@ -121,6 +121,30 @@ OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
 # PROVIDER_TRANSPORT (deliberately not retried, not failed over).
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
+# M2: difficulty-driven model tiers over the same OpenRouter gateway. Each tier is its
+# OWN provider id — its own Safety-Flag grant and its own model-slug env — so a light
+# grant can never authorize the heavy model; the scope limit DEFAULT_OPENROUTER_MODEL
+# names is closed one tier at a time. The M1 difficulty (LOW/MEDIUM/HIGH) picks the tier;
+# an absent tier grant degrades to the base MVP_HOSTED_PROVIDER chain (TIER_DEGRADED),
+# never blocks. Slug defaults are fallbacks only — the OpenRouter catalogue changes, so
+# verify per machine and override with the envs below (the DEFAULT_OPENROUTER_MODEL caveat
+# applies per tier). Grants are minted locally with activate_safety_flag.py, per tier id.
+OPENROUTER_LIGHT = "openrouter_light"
+OPENROUTER_STANDARD = "openrouter_standard"
+OPENROUTER_HEAVY = "openrouter_heavy"
+OPENROUTER_MODEL_LIGHT_ENV = "MVP_OPENROUTER_MODEL_LIGHT"
+OPENROUTER_MODEL_STANDARD_ENV = "MVP_OPENROUTER_MODEL_STANDARD"
+OPENROUTER_MODEL_HEAVY_ENV = "MVP_OPENROUTER_MODEL_HEAVY"
+DEFAULT_OPENROUTER_MODEL_LIGHT = "openai/gpt-oss-20b:free"
+DEFAULT_OPENROUTER_MODEL_STANDARD = "meta-llama/llama-3.3-70b-instruct:free"
+DEFAULT_OPENROUTER_MODEL_HEAVY = "deepseek/deepseek-r1:free"
+
+TIER_DEGRADED = "TIER_DEGRADED"
+# M1 difficulty tier -> the OpenRouter model tier that serves it. Keys are the literal
+# difficulty strings the triage records (triage.DIFFICULTY_*), matched here as strings to
+# avoid importing triage (which would cycle back through the worker module).
+_DIFFICULTY_TIER = {"LOW": OPENROUTER_LIGHT, "MEDIUM": OPENROUTER_STANDARD, "HIGH": OPENROUTER_HEAVY}
+
 _NETWORK_FLAGS = (MODEL_INVOCATION, NETWORK_ACCESS)
 
 # The two HTTP statuses that mean "not now", not "no": 503 (the model pool is overloaded —
@@ -230,6 +254,60 @@ def _hosted_factories() -> dict[str, Any]:
             authorization=authorization,
         ),
     }
+
+
+def _tier_factories() -> dict[str, Any]:
+    """The gated factories for the M2 difficulty tiers. Each reads its own model-slug env
+    only after its gate has opened, exactly like ``_hosted_factories``."""
+    return {
+        OPENROUTER_LIGHT: lambda authorization: OpenRouterLightProvider(
+            model=os.environ.get(OPENROUTER_MODEL_LIGHT_ENV, DEFAULT_OPENROUTER_MODEL_LIGHT).strip(),
+            authorization=authorization,
+        ),
+        OPENROUTER_STANDARD: lambda authorization: OpenRouterStandardProvider(
+            model=os.environ.get(OPENROUTER_MODEL_STANDARD_ENV, DEFAULT_OPENROUTER_MODEL_STANDARD).strip(),
+            authorization=authorization,
+        ),
+        OPENROUTER_HEAVY: lambda authorization: OpenRouterHeavyProvider(
+            model=os.environ.get(OPENROUTER_MODEL_HEAVY_ENV, DEFAULT_OPENROUTER_MODEL_HEAVY).strip(),
+            authorization=authorization,
+        ),
+    }
+
+
+def select_tiered_provider(
+    difficulty: str, *, base_provider: Provider, now: str | None = None, root: Path | None = None,
+) -> tuple[Provider, dict[str, Any]]:
+    """Pick the OpenRouter model tier for this request's difficulty (M2); degrade to base.
+
+    Returns ``(provider, selection)``. ``selection`` records the difficulty, the chosen
+    tier, whether it degraded, and why — persisted by the caller as run evidence. The base
+    provider serves unchanged when either (a) it is inert/mock: a network-free run has
+    nothing to upgrade, or (b) the chosen tier has no local grant, in which case the run
+    degrades to the already-authorized base chain and records ``TIER_DEGRADED`` (the
+    SEARCH_DEGRADED precedent — the tier benefit is lost, the run is not). Only when the
+    tier gate opens is the tier provider built, from its own grant's Authorization, and it
+    serves in place of the base for the specialist call."""
+    selection: dict[str, Any] = {
+        "difficulty": str(difficulty), "tier": None, "degraded": False, "reason_code": None,
+    }
+    if not bool(getattr(base_provider, "network_egress", False)):
+        return base_provider, selection  # inert/mock base — no tier to select
+    tier_id = _DIFFICULTY_TIER.get(str(difficulty))
+    if tier_id is None:
+        selection.update(degraded=True, reason_code=TIER_DEGRADED,
+                         detail=f"no tier for difficulty {difficulty!r}")
+        return base_provider, selection
+    selection["tier"] = tier_id
+    provider, blocked_reason = safety_gate.select_gated_optional(
+        flags=_NETWORK_FLAGS, provider_id=tier_id,
+        gated_factory=_tier_factories()[tier_id], now=now, root=root,
+    )
+    if provider is None:
+        selection.update(degraded=True, reason_code=TIER_DEGRADED, detail=blocked_reason)
+        return base_provider, selection
+    selection["model_id"] = getattr(provider, "model_id", tier_id)
+    return provider, selection
 
 
 def select_validator_provider(*, now: str | None = None, root: Path | None = None) -> Provider | None:
@@ -518,6 +596,28 @@ class OpenRouterProvider(_OpenAICompatibleProvider):
     _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL
     _API_KEY_ENV = "OPENROUTER_API_KEY"
+
+
+class OpenRouterLightProvider(OpenRouterProvider):
+    """M2 LOW-difficulty tier. Same OpenRouter gateway/key; its OWN ``model_id`` so the
+    Safety-Flag Gate authorizes it against its own grant, and its own default slug."""
+
+    model_id = OPENROUTER_LIGHT
+    _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_LIGHT
+
+
+class OpenRouterStandardProvider(OpenRouterProvider):
+    """M2 MEDIUM-difficulty tier — its own grant + slug, OpenRouter gateway shared."""
+
+    model_id = OPENROUTER_STANDARD
+    _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_STANDARD
+
+
+class OpenRouterHeavyProvider(OpenRouterProvider):
+    """M2 HIGH-difficulty tier — its own grant + slug, OpenRouter gateway shared."""
+
+    model_id = OPENROUTER_HEAVY
+    _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_HEAVY
 
 
 class FailoverProvider:
