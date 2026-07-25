@@ -277,11 +277,16 @@ financial:
   # A live exchange order gets its OWN scope, FINANCIAL_APPROVED_TRADING_USE, priced
   # EXECUTE_AND_REPORT because the trading budget is registered in advance — distinct from the
   # API-spend scope so the two risks stay separately capped and revocable. This flag says the
-  # PERMISSION side exists (a live-order decision is buildable); it flips true only when LP4's
-  # order adapter merges. Until then a decision can be built as REVIEW_ONLY evidence but no
-  # order can be sent. financial_executor_enabled stays false and untouched: "Executor" is the
-  # deferred handoff component, which this does not use — the runtime acts directly (R8/R10).
-  financial_transaction_execution_implemented: false
+  # PERMISSION side exists (a live-order decision is buildable). Flipped true 2026-07-25 when
+  # LP4's order adapter merged: the CODE that can place a live order now exists (the signed
+  # transport + the reconcile read). It says nothing about whether THIS machine may act —
+  # authority remains the per-machine `live_trading` safety-flag grant, which is Thomas-minted,
+  # TTL-capped and revocable, plus the canary confirmation phrase, a registered trading budget,
+  # both kill switches, and (for the autonomous path) >= 3 clean canary orders. The R8/R10
+  # precedent: "the code exists" and "this machine may act" are separate facts.
+  # financial_executor_enabled stays false and untouched: "Executor" is the deferred handoff
+  # component, which this does not use — the runtime acts directly (R8/R10).
+  financial_transaction_execution_implemented: true
 
 role_tool_program:
   candidate_creation: ALLOW

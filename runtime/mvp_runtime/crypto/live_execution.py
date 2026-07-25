@@ -500,6 +500,25 @@ def submit_and_reconcile(
     }
 
 
+def open_notional_from_positions(positions: Any) -> float:
+    """Total open notional across the venue's own open positions, in USDT.
+
+    The truthful source for the guard's ``current_open_notional_usdt`` — the venue reports each
+    position's notional, so exposure is read rather than inferred from local state. A caller that
+    cannot read the account must **not** substitute 0.0 (that is the guard's one fail-open
+    default); it should refuse instead. LP5 promotes this into its reconciliation step."""
+    total = 0.0
+    for position in positions or []:
+        notional = getattr(position, "notional", None)
+        if notional is None and isinstance(position, Mapping):
+            notional = position.get("notional")
+        try:
+            total += abs(float(notional))
+        except (TypeError, ValueError):
+            continue
+    return round(total, 8)
+
+
 def _fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:
     """The venue's own fill numbers, coerced to floats where they parse.
 

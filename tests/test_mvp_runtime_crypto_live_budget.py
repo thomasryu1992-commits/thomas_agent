@@ -196,7 +196,11 @@ def test_limits_from_budget_maps_caps_and_leaves_confirmation_to_the_operator():
 # --- registration grants nothing ---------------------------------------------
 
 def test_registering_a_budget_does_not_enable_trading(tmp_path):
-    """A registered budget is a record, not a permission: the live surface still cannot send."""
-    from runtime.mvp_runtime.crypto.live_readiness import ORDER_PATH_IMPLEMENTED
+    """A registered budget is a record, not a permission. Since LP4 the order path exists, so the
+    thing that must stay untouched is the *authority*: registering a budget mints no grant, so the
+    order adapter stays inert and nothing can be sent."""
+    from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter, select_order_adapter
     lb.write_registered_budget(_build(), root=tmp_path)
-    assert ORDER_PATH_IMPLEMENTED is False       # nothing changed; no order path exists
+    adapter = select_order_adapter(now=NOW, root=tmp_path)
+    assert isinstance(adapter, DryRunOrderAdapter)          # no grant => inert
+    assert adapter.network_egress is False                  # cannot reach a venue

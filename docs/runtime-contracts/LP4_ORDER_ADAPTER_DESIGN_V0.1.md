@@ -210,11 +210,32 @@ The reconcile result now also carries the **actual fill** (`avg_price`, `execute
 compute `realized_pnl_usdt` from. **The governance/readiness flags deliberately stay OFF in 2a**,
 so the readiness board cannot report READY and no autonomous path routes here.
 
-**Increment 2b — the threshold crossing (pending, its own PR):**
-- `scripts/place_canary_order.py`: the deliberate single-canary operator path (gathers live
-  facts, runs the final guard, calls `submit_and_reconcile`, records the reconciled canary).
-- Governance: flip `financial_transaction_execution_implemented: false → true` (the code now
-  exists; the grant stays the per-machine safety flag), leave every `runtime_effect`/`cutover`
-  flag false, regenerate both replay bundles, and set `ORDER_PATH_IMPLEMENTED = True` in
-  lockstep. All per the `LIVE_EXECUTION_GOVERNANCE_V0.1.md` "mechanics" section. This is the
+**Increment 2b — the threshold crossing (done 2026-07-25):**
+
+- **`scripts/place_canary_order.py`** — the deliberate single-canary operator path: resolves the
+  registered budget, reads every live fact (kill switch, breaker, canary count, daily count, and
+  open exposure **from the venue**), runs the guard in canary mode, sends exactly one order,
+  reconciles, and records the result. Entry-only; the operator closes the position on the venue.
+- **Two design gaps this increment had to close first:**
+  1. **The chicken-and-egg.** The guard requires ≥ 3 clean canaries — but a canary is what *earns*
+     that evidence, so the first one was unplaceable. The promotion gate now does not apply when
+     `canary=True`. Implemented as a mode on the *same* guard rather than a second guard, so a
+     check added later cannot land on only one path; it defaults to `False` (fail-closed).
+  2. **One phrase per capability was aspirational.** The docs said the canary phrase is distinct
+     from the autonomous one, but only one phrase existed. Added
+     `CANARY_CONFIRMATION_PHRASE` / `MVP_LIVE_CANARY_CONFIRMATION`, so the autonomous phrase
+     cannot authorize a canary and the canary phrase cannot authorize autonomous trading (both
+     directions asserted).
+- **The exposure fail-open is closed on this path**: the canary refuses with
+  `NO_ACCOUNT_VISIBILITY` rather than passing the guard's `0.0` default when the account cannot be
+  read, because an unknown exposure cannot honor the exposure cap.
+- **Governance flip, in lockstep:** `financial_transaction_execution_implemented: false → true`
+  and `ORDER_PATH_IMPLEMENTED = False → True`, with a test asserting the two agree so they cannot
+  drift. `financial_executor_enabled` stays **false and byte-for-byte untouched** (a test asserts
+  that too), and every `runtime_effect` / `cutover.grants_*` flag stays false — so the frozen
+  kernel's preflight is untouched. Both replay bundles regenerated (the policy SHA is pinned in
+  four places per bundle plus the bundle fingerprint).
+- **What READY now means, said out loud.** The readiness board no longer reports "no order path
+  exists"; it states that a path exists, that READY therefore means a real order can be placed,
+  and that autonomous trading still needs LP5 — so a row of green ticks cannot read as harmless. This is the
   real-money-adjacent step and its own deliberate decision.
