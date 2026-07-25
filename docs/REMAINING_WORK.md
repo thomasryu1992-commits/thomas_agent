@@ -4,14 +4,17 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-25**, after LP5.4 merged (`main` = `42ce85b`). Every claim below was
-re-checked against `main` and against the code it describes, not carried over.
+Last updated: **2026-07-25**, after LP5.3's decision half merged (`main` = `4bc0455`). Every claim
+below was re-checked against `main` and against the code it describes, not carried over.
 
 > **The one thing to read first:** since 2026-07-25 an order path **exists** and
 > `financial_transaction_execution_implemented` is **true**. Live trading still cannot start —
 > `financial_executor_enabled` is false, no canary order has been placed (0 of 3), and nothing routes
 > to the venue autonomously — but "no code can send an order" is **no longer** the reason. Section C
-> is now safety-critical, LP5.3 above all.
+> is now safety-critical, and the single item that matters most is **LP5.3's executing leg**: it is
+> the last structural piece between this repository and an autonomous live order, and it is
+> deliberately unbuilt.
+
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
 Authoritative detail for each item lives in the linked roadmap docs; this file is the index.
@@ -20,9 +23,11 @@ Authoritative detail for each item lives in the linked roadmap docs; this file i
 
 ## In-flight PRs
 
-**None** (verified 2026-07-25 15:40 UTC — zero open PRs). Everything below reflects merged `main`
-at `42ce85b`. The LP5 wave drained the same day: #183 (LP5.1), #186 (LP5.2), #187 (LP5.4), alongside
-#184 (LP4 increment 2b + the governance flip).
+**None** (verified 2026-07-25 18:25 UTC — zero open PRs). Everything below reflects merged `main`
+at `4bc0455`. The whole LP4/LP5 wave landed on 2026-07-25: #184 (LP4 increment 2b + the governance
+flip), #183 (LP5.1 state + reconciliation), #186 (LP5.2 sizing), #187 (LP5.4 the outcome bridge),
+#193 (LP5.3's decision half), plus #191/#192 (the risk-guard provenance scoping and its decision
+record) and #188 (this file's previous refresh).
 
 One PR was **closed unmerged**: **#175** — a second LP4 order adapter written in a worktree without
 re-checking `main`, which by then already carried `live_execution.py` (increment 1) with its reviewed
@@ -110,8 +115,13 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (on `main`).
 ## C. Crypto live execution — the governance packet + the order code
 
 Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (decided 2026-07-23;
-**the governance packet is now implemented except the LP4-coupled flag** — that doc's own step
-table is the authority). Status: `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
+**the governance packet is fully implemented** — the last item, the LP4-coupled flag, flipped with
+#184 on 2026-07-25; that doc's own step table remains the authority). Status:
+`docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
+
+**What is left in this section is no longer governance — it is one build decision and one operator
+action:** LP5.3's executing leg (below), and three clean canary orders. Neither is blocked on a
+contract, a schema, or a gate.
 
 The `feat/cost-budget-ledger` dependency this section once recorded is **void** — that branch was
 never pushed and the sequencing was deliberately reversed (2026-07-24); the two claim different
@@ -157,8 +167,9 @@ scopes at different levels, so nothing was owed to it.
       `financial_executor_enabled` and every `runtime_effect`/`cutover` flag stay false.
       **LP4 is complete.** Nothing autonomous routes to the venue — that needs LP5.
 - [~] **LP5** position kernel + cycle routing — design record `LP5_POSITION_KERNEL_DESIGN_V0.1.md`.
-      **Three of four increments have landed; only LP5.3 is left, and it is the one that changes the
-      safety posture.**
+      **Everything except the executing leg has landed.** LP5.1, 5.2 and 5.4 are complete, and 5.3
+      was split at the one line that matters — *decide* vs *send* — with the decide half merged. What
+      remains is the send half, and it is the piece that changes the safety posture.
   - [x] **LP5.1 — position state + reconciliation** (PR #183, 2026-07-25):
         `crypto/live_position.py`. Live positions live in their own `live_positions/` namespace with
         `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same `binance_futures`
@@ -187,22 +198,31 @@ scopes at different levels, so nothing was owed to it.
         `live_analysis_summary` reports readable and excluded counts separately so live trades never
         silently re-define a previously reported paper expectancy.
   - [~] **LP5.3 — the live leg.** Split at the one line that matters: **decide** vs **send**.
-    - [x] **The entry decision** (Thomas 2026-07-25) — `live_filters.py` reads the venue's real
-          lot step / minimums / price tick from `exchangeInfo` (on the existing `binance_futures`
-          grant; the mock collector deliberately cannot answer, so a mock run refuses rather than
-          sizing on invented numbers), and `live_entry.plan_live_entry` assembles every door —
-          C4 verdict, LP5.1 reconciliation, concurrency caps, filters, the tick-rounded protective
-          bracket, LP5.2 sizing, LP3's final guard — into one auditable decision. **It contains no
-          adapter and imports none**, so it cannot send. The bracket is priced *before* the size so
-          the quantity matches the stop that would actually be placed, and both legs round toward
-          the entry so rounding can only shrink realised risk, never widen it.
-    - [ ] **The executing leg + cycle routing** ⚠️ **still its own explicit decision.** This is the
-          piece that makes an **autonomous** live order structurally reachable — today the only door
-          is the deliberate `scripts/place_canary_order.py`, one canary at a time. It owes what the
-          design record names: submit → bracket → naked-position close-now, cancelling the surviving
-          bracket leg (the venue documents no auto-cancel), the position book writes, the realized
-          outcome from actual fills, and feeding the readiness board the *real* open exposure so the
-          honest block-at-cap can lift.
+    - [x] **The entry decision** (PR #193, Thomas 2026-07-25) — `live_filters.py` reads the venue's
+          real lot step / minimums / price tick from `exchangeInfo` (on the existing
+          `binance_futures` grant; the mock collector deliberately cannot answer, so a mock run
+          refuses rather than sizing on invented numbers, and a MARKET order is bound by the
+          stricter of `LOT_SIZE`/`MARKET_LOT_SIZE`). `live_entry.plan_live_entry` then assembles
+          every door — C4 verdict, LP5.1 reconciliation, concurrency caps, filters, the tick-rounded
+          protective bracket, LP5.2 sizing, LP3's final guard — into one auditable decision, with
+          `ready` *derived* from the guard's own `approved` rather than asserted. **It contains no
+          adapter and imports none**, so it cannot send; it also has no production caller yet, by
+          design. The bracket is priced *before* the size so the quantity matches the stop that
+          would actually be placed, and both legs round toward the entry so rounding can only shrink
+          realised risk, never widen it (a stop that rounds onto the entry refuses, never repairs).
+    - [ ] **The executing leg + cycle routing** ⚠️ **still its own explicit decision.** Design
+          record: `docs/runtime-contracts/LP5_3_LIVE_LEG_DESIGN_V0.1.md` (PR #195) — read it before
+          writing any of this. It is small in code and large in consequence: the wire between a
+          decision that already exists (`plan_live_entry`) and a sender that already exists
+          (`submit_and_reconcile`). That wire is what makes an **autonomous** live order
+          structurally reachable; today the only door is the deliberate
+          `scripts/place_canary_order.py`, one canary at a time, and
+          `test_no_autonomous_entry_point_reaches_the_live_order_path` fails loudly if an autonomous
+          entry point starts importing the order path — **building this is the decision to remove
+          that tripwire.** It owes: submit → bracket → naked-position close-now, cancelling the
+          surviving bracket leg (the venue documents no auto-cancel), the position book writes, the
+          realized outcome from actual fills, and feeding the readiness board the *real* open
+          exposure so the honest block-at-cap can lift.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
       source system and did not migrate). **Operator-only, real money** — `scripts/place_canary_order.py`
       on Thomas's machine with his own keys and its own confirmation phrase
