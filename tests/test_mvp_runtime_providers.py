@@ -343,6 +343,54 @@ def test_gemini_body_binds_the_analysis_response_schema(monkeypatch):
     assert json.dumps(_ANALYSIS_RESPONSE_SCHEMA).find("minItems") == -1
 
 
+def test_analysis_schemas_do_not_drift():
+    """The Google (``responseSchema``) and OpenRouter (strict ``json_schema``) dialects
+    describe the SAME analysis contract. They are separate constants only because the vendor
+    dialects differ — their required-key sets must stay identical, and both must cover the
+    keys the parser hard-requires, or one gateway would silently enforce a different shape."""
+    from runtime.mvp_runtime.providers import (
+        _ANALYSIS_JSON_SCHEMA,
+        _ANALYSIS_RESPONSE_SCHEMA,
+        _REQUIRED_ANALYSIS_KEYS,
+    )
+
+    assert _ANALYSIS_JSON_SCHEMA["required"] == _ANALYSIS_RESPONSE_SCHEMA["required"]
+    assert set(_ANALYSIS_JSON_SCHEMA["properties"]) == set(_ANALYSIS_RESPONSE_SCHEMA["properties"])
+    assert set(_REQUIRED_ANALYSIS_KEYS).issubset(_ANALYSIS_JSON_SCHEMA["required"])
+    # Same "no minItems" stance as the Google schema: the validator and triage share this
+    # shape and legitimately return empty facts/key_findings.
+    assert "minItems" not in json.dumps(_ANALYSIS_JSON_SCHEMA)
+
+
+def test_openrouter_json_schema_uses_strict_openai_dialect():
+    """Strict json_schema is only honored if it is well-formed for that dialect: every object
+    carries ``additionalProperties: false`` and the one nullable field is a ``["object",
+    "null"]`` union, not Google's ``nullable: True`` (which OpenAI strict mode rejects)."""
+    from runtime.mvp_runtime.providers import _ANALYSIS_JSON_SCHEMA
+
+    assert _ANALYSIS_JSON_SCHEMA["additionalProperties"] is False
+    assert _ANALYSIS_JSON_SCHEMA["properties"]["facts"]["items"]["additionalProperties"] is False
+    recommendation = _ANALYSIS_JSON_SCHEMA["properties"]["recommendation"]
+    assert recommendation["type"] == ["object", "null"]
+    assert recommendation["additionalProperties"] is False
+    assert "nullable" not in json.dumps(_ANALYSIS_JSON_SCHEMA)
+
+
+def test_openrouter_difficulty_tiers_inherit_schema_enforcement():
+    """The M2 difficulty-tier subclasses front the same gateway and must inherit the strict
+    json_schema enforcement — not silently fall back to plain json_object."""
+    from runtime.mvp_runtime.providers import (
+        OpenRouterHeavyProvider,
+        OpenRouterLightProvider,
+        OpenRouterProvider,
+        OpenRouterStandardProvider,
+    )
+
+    for cls in (OpenRouterLightProvider, OpenRouterStandardProvider, OpenRouterHeavyProvider):
+        assert cls._RESPONSE_FORMAT == OpenRouterProvider._RESPONSE_FORMAT
+        assert cls._RESPONSE_FORMAT["type"] == "json_schema"
+
+
 def test_groq_body_keeps_plain_json_object_mode(monkeypatch):
     """Groq's json_schema support is model-dependent and a rejected body fails the call
     outright (PROVIDER_TRANSPORT, not retryable). Deliberate asymmetry, asserted so it
@@ -488,7 +536,13 @@ def test_openrouter_body_names_the_gateway_and_the_configured_model(monkeypatch)
     url, body, auth_header, user_agent = seen[0]
     assert url == "https://openrouter.ai/api/v1/chat/completions"
     assert body["model"] == "vendor/some-model:free"
-    assert body["response_format"] == {"type": "json_object"}
+    # OpenRouter enforces the 12-key shape server-side (strict json_schema), unlike Groq's
+    # plain json_object — so a reasoning model cannot drop a required key past the gateway.
+    from runtime.mvp_runtime.providers import _ANALYSIS_JSON_SCHEMA
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "analysis", "strict": True, "schema": _ANALYSIS_JSON_SCHEMA},
+    }
     assert body["max_tokens"] == 100
     assert auth_header == "Bearer secret-key-value"    # header only
     assert user_agent == _USER_AGENT
@@ -530,19 +584,32 @@ def test_openrouter_without_authorization_fails_closed(monkeypatch):
 
 def test_the_two_openai_compatible_adapters_share_one_implementation():
     """Groq and OpenRouter speak the identical protocol, so they differ in exactly four
-    values and inherit everything else. Asserted so the next OpenAI-compatible backend is
-    added as four constants rather than a third copy of the gate/secret/retry logic."""
+    vendor values and inherit everything else. Asserted so the next OpenAI-compatible backend
+    is added as a few constants rather than a third copy of the gate/secret/retry logic.
+
+    The one deliberate asymmetry: OpenRouter also overrides ``_RESPONSE_FORMAT`` to enforce
+    the analysis schema server-side, while Groq keeps the inherited json_object default. That
+    single extra attribute is a decision (see OpenRouterProvider's docstring), asserted here
+    so it reads as intentional rather than as creeping per-vendor logic."""
     from runtime.mvp_runtime.providers import (
         GroqProvider,
         OpenRouterProvider,
         _OpenAICompatibleProvider,
     )
 
+    vendor_values = {"model_id", "_ENDPOINT", "_DEFAULT_MODEL", "_API_KEY_ENV"}
+
+    def own_attrs(cls):
+        # Ignore version-dependent dunders (e.g. __firstlineno__ on 3.13); only the
+        # deliberately restated class attributes matter here.
+        return {k for k in vars(cls) if not k.startswith("__")}
+
     for cls in (GroqProvider, OpenRouterProvider):
         assert issubclass(cls, _OpenAICompatibleProvider)
-        # Nothing beyond the four vendor values is restated in the subclass.
-        assert set(vars(cls)) <= {"model_id", "_ENDPOINT", "_DEFAULT_MODEL", "_API_KEY_ENV",
-                                  "__doc__", "__module__", "__qualname__"}
+    # Groq restates only the four vendor values — including no response-format override.
+    assert own_attrs(GroqProvider) == vendor_values
+    # OpenRouter restates the four vendor values plus its one schema-enforcement decision.
+    assert own_attrs(OpenRouterProvider) == vendor_values | {"_RESPONSE_FORMAT"}
     assert GroqProvider.model_id != OpenRouterProvider.model_id
     assert _OpenAICompatibleProvider.network_egress is True
 
