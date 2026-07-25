@@ -68,6 +68,11 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
+      # F2 conversational front desk (operator service ONLY — the scheduler holds no
+      # conversation). Unset = the deterministic channel, exactly as before. Set = plain
+      # text becomes a conversation turn; needs its own mounted grant AND the role active
+      # in the registry, or startup fails closed rather than quietly staying deterministic.
+      MVP_FRONTDESK_PROVIDER: ${MVP_FRONTDESK_PROVIDER:-}
       # Read-only web search (optional).
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
