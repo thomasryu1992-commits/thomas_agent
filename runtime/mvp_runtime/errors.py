@@ -123,3 +123,13 @@ class ApprovalBlocked(MvpRuntimeError):
     approver, unverified source, missing reason). Fail-closed: an approval is only worth the
     certainty that Thomas gave it, so any doubt about identity, freshness, or one-time use
     refuses rather than records a decision that might not be his."""
+
+
+class TaskRegistryBlocked(MvpRuntimeError):
+    """A task-registry coordination operation was refused (F1).
+
+    Raised on a malformed/incomplete entry, a record that fails its closed schema, an
+    illegal lifecycle transition (the lifecycle is forward-only), or an unreadable store.
+    Fail-closed in the direction of *not* reporting coordination state: an entry whose
+    status cannot be trusted is refused rather than shown, because a registry that
+    misreports what is running is worse than one that admits it cannot say."""
