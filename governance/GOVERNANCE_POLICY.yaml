@@ -85,6 +85,7 @@ policy_dispositions:
     - LOCAL_BUILD_TEST
     - LOW_RISK_OPERATIONAL_KNOWLEDGE
     - FINANCIAL_APPROVED_BUDGET_USE
+    - FINANCIAL_APPROVED_TRADING_USE
   APPROVAL_REQUIRED:
     - EXTERNAL_COMMUNICATION
     - PUBLICATION
@@ -133,6 +134,24 @@ authority:
   runtime_self_activation_allowed: false
   tool_or_program_may_expand_authority: false
   p5_and_p6_require_separate_policy_gate: true
+  # The gate the line above requires, defined for the first time (LP4; Thomas decision
+  # 2026-07-23). Every condition must hold at the moment of a P5 action; any one missing
+  # refuses. These are the conditions LP1-LP3 already enforce in code — named here so a P5
+  # action is auditable against a policy gate rather than an implied one, and so a future P5
+  # capability cannot claim the level by satisfying a weaker set. Defining the gate does not
+  # open it: an actor still needs the P5 ceiling, and each condition is still enforced.
+  p5_policy_gate:
+    gate_id: thomas.p5.live_execution_gate
+    applies_to_scopes:
+      - FINANCIAL_APPROVED_TRADING_USE
+    requires:
+      - operator_safety_flag_grant       # per-machine, Thomas-minted, TTL-capped, revocable
+      - operator_confirmation_phrase     # distinct per capability
+      - registered_budget_record         # a registered trading budget (autonomous_spend_without_registered_budget: '0')
+      - runtime_kill_switch_active       # kill_blocks: external_execution
+      - pre_action_final_guard           # the accumulating, fail-closed order guard
+      - post_action_report_and_audit     # EXECUTE_AND_REPORT is not fire-and-forget
+    gate_grants_authority: false         # the gate permits; it never raises a ceiling
 
 action_identity:
   payload_schema: action_fingerprint_payload.v0.1
@@ -254,6 +273,15 @@ financial:
   new_commitment_or_budget_overrun: APPROVAL_REQUIRED
   autonomous_spend_without_registered_budget: '0'
   financial_executor_enabled: false
+  # LP4 (Thomas decision 2026-07-23, docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md).
+  # A live exchange order gets its OWN scope, FINANCIAL_APPROVED_TRADING_USE, priced
+  # EXECUTE_AND_REPORT because the trading budget is registered in advance — distinct from the
+  # API-spend scope so the two risks stay separately capped and revocable. This flag says the
+  # PERMISSION side exists (a live-order decision is buildable); it flips true only when LP4's
+  # order adapter merges. Until then a decision can be built as REVIEW_ONLY evidence but no
+  # order can be sent. financial_executor_enabled stays false and untouched: "Executor" is the
+  # deferred handoff component, which this does not use — the runtime acts directly (R8/R10).
+  financial_transaction_execution_implemented: false
 
 role_tool_program:
   candidate_creation: ALLOW
