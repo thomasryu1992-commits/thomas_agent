@@ -204,22 +204,17 @@ scopes at different levels, so nothing was owed to it.
       context holding an open paper position (`cycle.run_pool_cycle`), and `route_entries` matches
       the whole `symbol_scope` rather than `symbol_scope[0]`, booking under the traded symbol. A
       named `SYMBOL [TIMEFRAME]` request is still a single-context operator override.
-- [ ] ⚠️ **Decision: should the imported crypto_AI_System history feed the C4 risk guard?**
-      Found 2026-07-25 while correcting Gate 0. `import_crypto_history.py` deliberately routes the
-      predecessor's closed outcomes into the paper outcome store *"the C4 risk guard and C6
-      feedback read"* — a considered choice (counterfactuals were split into their own file in the
-      same script precisely so they could **not** reach the guard). The reporting half is fixed
-      (the dashboard and Gate 0 now separate the populations), but the guard still sums both.
-      **Concrete effect measured that day:** 112 imported rows worth **+266.8R** sat inside the
-      current week, so `run_risk_guard`'s weekly-loss breaker could not trip no matter how this
-      runtime performed — a breaker that cannot trip. It is **transient** (the imported rows are
-      dated 07-18…07-22 and leave the rolling week within days), and it affects **paper only**
-      today, which is why it was surfaced rather than silently changed: reversing a deliberate
-      import decision is Thomas's call. Options: (a) filter the guard to
-      `paper.split_by_provenance(...)[0]` — one line, makes the breaker measure this runtime;
-      (b) keep it and accept the cold-start cushion; (c) re-import into a separate file, the
-      counterfactual precedent. Same question applies to `run_lifecycle` (imported outcomes can
-      demote/promote current strategies).
+- [x] ⚠️ **Decided 2026-07-25 (Thomas): option (a)** — the C4 risk guard reads **this runtime's own
+      outcomes only**; `run_lifecycle` keeps the full history. Found while correcting Gate 0:
+      `import_crypto_history.py` deliberately routes the predecessor's closed outcomes into the
+      store *"the C4 risk guard and C6 feedback read"*, and the measured effect was 112 imported
+      rows worth **+266.8R** inside the rolling week — so the weekly-loss breaker could not trip
+      however this runtime performed. Transient (those rows age out within days) but the cause was
+      not, so the cause was fixed: `cycle.run_crypto_cycle` now passes
+      `split_by_provenance(outcomes)[0]` to the guard. Lifecycle was left alone deliberately —
+      imported outcomes carry strategy lineage, and promotion/demotion is a performance judgement,
+      not a safety brake; a test pins the two call sites as scoped differently. The import script
+      itself is untouched.
 
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
