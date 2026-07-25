@@ -34,9 +34,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import timeutil
+from . import memory, timeutil
 from .control import command_verb
-from .errors import OperatorBlocked
+from .errors import MemoryBlocked, OperatorBlocked, PersistenceError
 from .events import stamped_event
 from .paths import repo_root as _repo_root
 
@@ -147,11 +147,51 @@ def build_feedback_event(
     )
 
 
+def _capture_correction(
+    *,
+    comment: str,
+    verdict: str,
+    trace_id: str,
+    operator_id: str,
+    working_memory: Any,
+    store: Any,
+    now: str,
+) -> dict[str, Any] | None:
+    """M5a: mint a working-memory correction CANDIDATE from a ``/feedback bad <note>``, or None.
+
+    Only a BAD verdict carrying a note is a correction to learn from (a bare ``bad`` or a
+    ``good`` has no delta). The candidate is CANDIDATE-status like every other — Thomas's
+    later M5b promotion is the only door to VALIDATED — so even his own correction is captured,
+    not auto-trusted. Best-effort by construction: the feedback verdict is already durably
+    recorded by the time this runs, so a candidate/audit failure is swallowed (returns None),
+    never turning a recorded feedback into an error. No live assignment exists on the control
+    channel, so origin is left unstamped (allowed) and the default candidate type is used."""
+    if working_memory is None or verdict != "BAD" or not comment.strip():
+        return None
+    try:
+        candidate = memory.build_correction_candidate(
+            comment, source=memory.LEARNING_SOURCE_FEEDBACK, now=now,
+            seed={"trace_id": trace_id, "operator_id": operator_id},
+            correction_ref=f"trace:{trace_id}",
+        )
+        if candidate is None:
+            return None
+        working_memory.append([candidate])
+        store.append_memory_event(memory.build_learning_event(
+            candidate, source=memory.LEARNING_SOURCE_FEEDBACK, now=now,
+            trace_id=trace_id, operator_id=operator_id,
+        ))
+        return candidate
+    except (OperatorBlocked, PersistenceError, MemoryBlocked):
+        return None
+
+
 def apply_feedback(
     payload: str,
     *,
     operator_id: str,
     store: Any,
+    working_memory: Any | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -161,7 +201,12 @@ def apply_feedback(
     the memory/control seams. Raises ``OperatorBlocked`` for every refusal
     (no ledger wired, empty payload, no delivered run, unreadable pointer) and lets the
     store's ``PersistenceError`` propagate: a feedback Thomas typed that was NOT
-    durably recorded must be reported as a failure, never confirmed."""
+    durably recorded must be reported as a failure, never confirmed.
+
+    ``working_memory`` (opt-in, M5a): a ``/feedback bad <note>`` additionally mints a
+    working-memory correction CANDIDATE holding the note, so a later similar request starts
+    closer to what Thomas wanted. Best-effort — the verdict is recorded first, and the
+    capture never turns a recorded feedback into a failure (see ``_capture_correction``)."""
     if store is None:
         raise OperatorBlocked(
             "FEEDBACK_UNAVAILABLE", "no ledger is wired on this channel; feedback cannot be recorded"
@@ -175,14 +220,19 @@ def apply_feedback(
         raise OperatorBlocked(
             "NO_FEEDBACK_TARGET", "아직 전달된 분석 결과가 없어 피드백을 연결할 대상이 없습니다"
         )
+    stamp = now or timeutil.utc_now_iso()
     verdict, comment = split_verdict(payload)
     event = build_feedback_event(
         trace_id=target["trace_id"], delivered_at=target["delivered_at"],
         verdict=verdict, comment=comment, operator_id=operator_id,
-        now=now or timeutil.utc_now_iso(),
+        now=stamp,
     )
     store.append_feedback_event(event)
-    reply = (
-        f"피드백을 기록했습니다 ({verdict}) — 대상 실행: {target['trace_id']}."
+    correction = _capture_correction(
+        comment=comment, verdict=verdict, trace_id=target["trace_id"],
+        operator_id=operator_id, working_memory=working_memory, store=store, now=stamp,
     )
-    return {"reply": reply, "event": event, "verdict": verdict}
+    reply = f"피드백을 기록했습니다 ({verdict}) — 대상 실행: {target['trace_id']}."
+    if correction is not None:
+        reply += " 교정 후보를 메모리에 저장했습니다 (승인 시 반영)."
+    return {"reply": reply, "event": event, "verdict": verdict, "learning_candidate": correction}

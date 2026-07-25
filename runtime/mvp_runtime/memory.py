@@ -44,6 +44,18 @@ VALIDATED_STATUS = "VALIDATED"
 VALIDATED_SCOPE = "related_validated_memory"
 PROMOTION_DISPOSITION = "EXECUTE_AND_REPORT"   # governance tier for validated-knowledge promotion
 
+# M5a — correction-learning candidates. When a run is *corrected* — the M3 revision loop
+# turns a REVISE into a PASS, or the operator leaves a ``/feedback bad <note>`` — the
+# correction is minted as a working-memory CANDIDATE so a later similar request can start
+# closer to the accepted answer (Thomas's "next time go A→D directly"). Like every
+# candidate it is ALLOW-tier and nothing more: ``status=CANDIDATE``, never auto-promoted —
+# the operator's M5b approval is the only door to VALIDATED. The delta is captured; trust
+# is still earned separately.
+LEARNING_SOURCE_REVISION = "revision"
+LEARNING_SOURCE_FEEDBACK = "operator_feedback"
+LEARNING_EVENT_TYPE = "working_memory_learning_event.v0"
+MAX_CORRECTION_CHARS = 2000   # cap the stored delta: a correction is guidance, not a transcript
+
 
 ORIGIN_FIELDS = ("task_id", "task_revision", "trace_id", "core_context_binding_id", "data_sensitivity")
 
@@ -89,6 +101,23 @@ def _normalize_origin(origin: Mapping[str, Any] | None) -> dict[str, Any] | None
     return provenance
 
 
+def candidate_type_for(assignment: Mapping[str, Any]) -> str | None:
+    """The candidate type a run's assignment permits, or None when creation is disallowed.
+
+    THE type-selection rule, shared so :func:`build_memory_candidates` (the specialist's
+    proposals) and :func:`build_correction_candidate` (M5a corrections) never drift: prefer
+    ``reusable_knowledge`` when the role allows it, else the first allowed type. None when the
+    assignment does not permit candidate creation or declares no allowed types — the caller
+    fails closed to minting nothing."""
+    memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
+    if not memory_scope.get("memory_candidate_creation_allowed"):
+        return None
+    allowed = [t for t in memory_scope.get("allowed_candidate_types", []) if isinstance(t, str) and t]
+    if not allowed:
+        return None
+    return PREFERRED_TYPE if PREFERRED_TYPE in allowed else sorted(allowed)[0]
+
+
 def build_memory_candidates(
     analysis: Mapping[str, Any],
     assignment: Mapping[str, Any],
@@ -112,13 +141,9 @@ def build_memory_candidates(
     originating task (R5.4). It never affects ``candidate_id`` (derived from ``seed``), so
     stamping provenance is deterministic and leaves existing ids unchanged."""
     origin_provenance = _normalize_origin(origin)
-    memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
-    if not memory_scope.get("memory_candidate_creation_allowed"):
+    candidate_type = candidate_type_for(assignment)
+    if candidate_type is None:
         return []
-    allowed = [t for t in memory_scope.get("allowed_candidate_types", []) if isinstance(t, str) and t]
-    if not allowed:
-        return []
-    candidate_type = PREFERRED_TYPE if PREFERRED_TYPE in allowed else sorted(allowed)[0]
 
     findings = [f.strip() for f in (analysis.get("key_findings") or [])
                 if isinstance(f, str) and f.strip()][:MAX_CANDIDATES]
@@ -151,6 +176,83 @@ def build_memory_candidates(
         except IntegrityError as exc:
             raise MemoryBlocked("SECRET_IN_CANDIDATE", str(exc)) from exc
     return candidates
+
+
+def build_correction_candidate(
+    content: str,
+    *,
+    source: str,
+    now: str,
+    candidate_type: str = PREFERRED_TYPE,
+    seed: Mapping[str, Any] | None = None,
+    origin: Mapping[str, Any] | None = None,
+    correction_ref: str | None = None,
+    ttl_minutes: int = WORKING_MEMORY_TTL_MINUTES,
+) -> dict[str, Any] | None:
+    """Mint one correction CANDIDATE from a delta, or None when there is nothing to store (M5a).
+
+    Same shape/scope/stamping as a :func:`build_memory_candidates` proposal — so retrieval,
+    promotion, and retention treat it identically — with two additive fields: ``learning_source``
+    (``revision`` or ``operator_feedback``) and, when known, ``correction_ref`` (the run the
+    correction is about). ``status=CANDIDATE``, ``validated=False``, ``promotable=False``: a
+    correction is captured, never auto-trusted (the M5b operator approval is the only door to
+    VALIDATED). Empty content returns None — a correction with no delta is nothing to learn.
+    ``origin`` (optional) stamps the originating task's provenance for a later audited promotion,
+    exactly as for the specialist's proposals; None is allowed (e.g. the operator-feedback path,
+    which has no live assignment). Fails closed (``MemoryBlocked``) on a secret-bearing entry."""
+    text = content.strip() if isinstance(content, str) else ""
+    if not text:
+        return None
+    text = text[:MAX_CORRECTION_CHARS]
+    origin_provenance = _normalize_origin(origin)
+    candidate: dict[str, Any] = {
+        "candidate_id": integrity.short_id(
+            "memcorr", {**dict(seed or {}), "source": source, "content": text}
+        ),
+        "candidate_type": candidate_type,
+        "scope": CANDIDATE_SCOPE,
+        "status": CANDIDATE_STATUS,
+        "validated": False,
+        "promotable": False,
+        "content": text,
+        "evidence_refs": [f"correction:{source}"],
+        "learning_source": source,
+        "created_at": now,
+        EXPIRES_AT: timeutil.plus_minutes(now, ttl_minutes),
+    }
+    if correction_ref:
+        candidate["correction_ref"] = correction_ref
+    if origin_provenance is not None:
+        candidate["origin"] = origin_provenance
+    try:
+        integrity.scan_for_secret_bearing_keys(candidate)
+    except IntegrityError as exc:
+        raise MemoryBlocked("SECRET_IN_CANDIDATE", str(exc)) from exc
+    return candidate
+
+
+LEARNING_ACTION = "mint_correction_candidate"
+
+
+def build_learning_event(
+    candidate: Mapping[str, Any],
+    *,
+    source: str,
+    now: str,
+    trace_id: str | None = None,
+    operator_id: str | None = None,
+) -> dict[str, Any]:
+    """A tamper-evident memory event recording that a correction candidate was minted (M5a).
+
+    On the memory-event stream, the retention-event precedent: a working-memory maintenance
+    action is audited standalone, not on a run's task-bound audit chain. ALLOW-tier — this
+    records that a candidate was captured, never that anything was trusted or promoted."""
+    return stamped_event(
+        LEARNING_EVENT_TYPE, action=LEARNING_ACTION,
+        candidate_id=str(candidate.get("candidate_id", "")),
+        learning_source=source, trace_id=trace_id, operator_id=operator_id,
+        created_at=now,
+    )
 
 
 def retrieve_working_memory(

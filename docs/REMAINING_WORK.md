@@ -62,18 +62,23 @@ trading, leverage, any US-context Polymarket access.
 Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (lands on `main` with PR #145).
 
 - [x] **M0** env cleanup (done 2026-07-24).
-- [ ] **M1** difficulty triage 상/중/하, observe-only — **in PR #145** (about to merge).
-- [ ] **M2** ⚠️ difficulty → OpenRouter tier model. Needs Thomas decision: three tier provider ids
-      (`openrouter_light/standard/heavy`) + their model slugs + a local grant per tier.
-      Fail-closed: no tier grant → degrade to base chain + audit `TIER_DEGRADED`.
-- [ ] **M3** ⚠️ verify-fail → bounded LLM revision loop. Hard cap **1** retry, pre-allocated retry
-      budget, both retry and give-up audited. (An endless REVISE loop happened live before —
-      re-introduction conditions are mandatory.)
-- [ ] **M4a** ⚠️ crypto: second-pass sort by win-rate + risk-reward on top of the robustness filter.
+- [x] **M1** difficulty triage 상/중/하, observe-only — merged (PR #145).
+- [x] **M2** difficulty → OpenRouter tier model — merged (PR #149). Per-tier grants + model slugs
+      stay the local operator step; until minted, every run degrades cleanly to the base chain.
+- [x] **M3** verify-fail → bounded LLM revision loop (opt-in `--revise`, hard cap 1) — merged (PR #150).
+- [x] **M4a** crypto: second-pass win-rate + risk-reward ranking — merged (PR #148).
 - [ ] **M4b** ⚠️ crypto: put the strategy proposer on a schedule (needs per-run + backlog caps).
-- [ ] **M5a–d** ⚠️ trial-and-error learning loop: correction → working-memory CANDIDATE → Thomas
-      promotes to VALIDATED → planner retrieves it for similar requests → (later) programization.
-      Operator-gated by design.
+- [x] **M5a** correction → working-memory CANDIDATE — done. A successful M3 revision (REVISE→PASS)
+      or a `/feedback bad <note>` mints a correction candidate (ALLOW-tier, audited on the
+      memory-event stream, CANDIDATE-only). `runtime/mvp_runtime/memory.py`
+      (`build_correction_candidate`/`build_learning_event`), wired in `pipeline.py` +
+      `operator_feedback.py`.
+- [ ] **M5b** Thomas promotes useful correction candidates to VALIDATED — already available via the
+      existing R9/`/promote` door; no new code, it is the operator's explicit yes.
+- [ ] **M5c** ⚠️ planner retrieves matching VALIDATED corrections as `[V#]` context for new
+      requests. (Correction candidates already feed back as unverified `[M#]` context today; M5c is
+      the verified-correction leg.)
+- [ ] **M5d** (later) repeated identical corrections → programization counter → candidate Program.
 
 ---
 
