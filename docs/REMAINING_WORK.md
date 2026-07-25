@@ -116,9 +116,22 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 - [~] **LP4** order adapter — **increment 1 (skeleton) done 2026-07-25**
       (`runtime/mvp_runtime/crypto/live_execution.py`: adapter protocol, DryRun default, gated
       stub, `submit_and_reconcile` + reconcile vocabulary; design record
-      `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`). **Increment 2 (real Binance signed HTTP + the canary
-      CLI + the governance flip) is pending** — the real-money-adjacent step. **LP5** position
-      kernel / cycle routing — code does not exist yet.
+      `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`). **Increment 2 (real Binance signed HTTP + conditional
+      order types for the LP5 bracket + the canary CLI + the governance flip) is pending** — the
+      real-money-adjacent step.
+- [~] **LP5** position kernel + cycle routing — **design record done 2026-07-25**
+      (`LP5_POSITION_KERNEL_DESIGN_V0.1.md`); **no code yet**. Decisions taken: a venue-side SL+TP
+      bracket at entry, and sizing = `min(risk-based, budget cap)` refusing rather than defaulting.
+      Mandatory findings it records: live positions **must** use a separate `live_positions/`
+      namespace + `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same
+      `binance_futures` venue string, so a shared book would let the paper cycle settle a real
+      position); the venue — not the store — is the truth, so every live cycle reconciles or
+      refuses; and `evaluate_live_order_guard`'s `current_open_notional_usdt=0.0` default is the
+      one fail-open path and gets closed. Planned increments: LP5.1 state+reconciliation,
+      LP5.2 sizing, LP5.3 the live leg, LP5.4 the outcome bridge.
+- [ ] **Live outcomes are invisible to the guards** — the live outcome record has no `result_R`,
+      `created_at_utc`, or strategy lineage, so `guards.run_risk_guard`, `lifecycle`, and the C6
+      feedback report cannot read live results (only the daily-loss breaker can). Closed by LP5.4.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0** migrated; 1 existed in
       the frozen source system, did not migrate).
 - [ ] Standing finding: the router is **symbol-starved** — the cycle runs BTCUSDT only while the pool
