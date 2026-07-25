@@ -116,9 +116,13 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 - [~] **LP4** order adapter — **increment 1 (skeleton) done 2026-07-25**
       (`runtime/mvp_runtime/crypto/live_execution.py`: adapter protocol, DryRun default, gated
       stub, `submit_and_reconcile` + reconcile vocabulary; design record
-      `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`). **Increment 2 (real Binance signed HTTP + conditional
-      order types for the LP5 bracket + the canary CLI + the governance flip) is pending** — the
-      real-money-adjacent step.
+      `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`). **Increment 2a (the real signed transport +
+      conditional order types) done 2026-07-25** — venue semantics verified against the official
+      New Order / Query Order / error-code references (corrected: closePosition excludes both
+      quantity and reduceOnly; -2013 = NOT_FOUND vs any other rejection = UNRECONCILABLE; no
+      documented auto-cancel, so LP5 must cancel the surviving bracket leg). Governance/readiness
+      flags stay OFF, so nothing autonomous can reach the venue. **Increment 2b (the canary CLI +
+      the lockstep governance flip + replay-bundle regen) is pending** — the threshold crossing.
 - [~] **LP5** position kernel + cycle routing — **design record done 2026-07-25**
       (`LP5_POSITION_KERNEL_DESIGN_V0.1.md`); **no code yet**. Decisions taken: a venue-side SL+TP
       bracket at entry, and sizing = `min(risk-based, budget cap)` refusing rather than defaulting.

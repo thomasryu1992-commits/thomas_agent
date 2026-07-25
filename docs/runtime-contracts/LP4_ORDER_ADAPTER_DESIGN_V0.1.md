@@ -191,10 +191,26 @@ Fully tested with zero network. **No governance change:** because the real send 
 code can send an order, so `ORDER_PATH_IMPLEMENTED` and
 `financial_transaction_execution_implemented` stay OFF — honestly.
 
-**Increment 2 — the real send (pending, its own PR):**
-- Fill in `BinanceFuturesOrderAdapter.submit`/`fetch_order`: the signed `POST /fapi/v1/order` +
-  reconcile `GET`, mirroring `account.py`'s posture (names-only errors, the signed URL never
-  logged), using the separate `MVP_LIVE_ORDER_*` key.
+**Increment 2a — the real transport (done 2026-07-25):** `BinanceFuturesOrderAdapter.submit` /
+`fetch_order` implemented — signed `POST /fapi/v1/order` and the reconcile `GET`, mirroring
+`account.py`'s credential posture (key read at call time from the separate `MVP_LIVE_ORDER_*` env,
+names-only errors, the signed URL never logged), plus the conditional order types the LP5 bracket
+needs. **Every venue semantic was verified against the venue's own New Order / Query Order /
+error-code references rather than written from memory**, which corrected three assumptions:
+
+| Verified fact | Consequence in the code |
+|---|---|
+| `closePosition=true` is mutually exclusive with **both** `quantity` and `reduceOnly` | a close-all bracket leg sends neither; combining them is refused before the wire |
+| `newClientOrderId` must match `^[\.A-Z\:/a-z0-9_-]{1,36}$` | validated locally (the existing generator already complies) |
+| code **-2013** = "Order does not exist."; **-4116** = duplicate client id | -2013 is a truthful `NOT_FOUND`; any *other* query rejection raises so it becomes `UNRECONCILABLE`; -4116 means the original already landed, so reconcile decides |
+| conditional auto-cancel on position close is **not documented** | LP5 must explicitly cancel the surviving leg — no reliance on auto-cancel |
+
+The reconcile result now also carries the **actual fill** (`avg_price`, `executed_qty`,
+`cum_quote`), reported as `None` rather than `0.0` when unknown, because that is what LP5 must
+compute `realized_pnl_usdt` from. **The governance/readiness flags deliberately stay OFF in 2a**,
+so the readiness board cannot report READY and no autonomous path routes here.
+
+**Increment 2b — the threshold crossing (pending, its own PR):**
 - `scripts/place_canary_order.py`: the deliberate single-canary operator path (gathers live
   facts, runs the final guard, calls `submit_and_reconcile`, records the reconciled canary).
 - Governance: flip `financial_transaction_execution_implemented: false → true` (the code now
