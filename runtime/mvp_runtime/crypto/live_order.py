@@ -298,7 +298,12 @@ def evaluate_live_order_guard(
     daily_loss_breached: bool,
     clean_canary_orders: int,
     submitted_today: int,
-    current_open_notional_usdt: float = 0.0,
+    # LP5.1: no default. This used to be `= 0.0` — the single fail-open path in an
+    # otherwise fail-closed guard, because a caller that forgot it silently disabled the
+    # exposure cap. It is now required, so the exposure a live order is judged against is
+    # always something a caller stated on purpose. `live_position.compute_open_notional_usdt`
+    # supplies it from the venue and reports the cap itself when the account is unreadable.
+    current_open_notional_usdt: float,
     budget_registered: bool = False,
     limits: LiveOrderLimits | None = None,
 ) -> dict[str, Any]:

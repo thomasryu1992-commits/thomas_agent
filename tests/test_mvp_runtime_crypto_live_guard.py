@@ -406,7 +406,8 @@ def test_resolve_limits_without_a_budget_is_blocking(tmp_path):
     assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
     guard = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        clean_canary_orders=3, submitted_today=0, budget_registered=status["valid"], limits=limits)
+        clean_canary_orders=3, submitted_today=0, current_open_notional_usdt=0.0,
+        budget_registered=status["valid"], limits=limits)
     assert guard["approved"] is False
     assert any("registered live-trading budget" in b for b in guard["blocks"])
 

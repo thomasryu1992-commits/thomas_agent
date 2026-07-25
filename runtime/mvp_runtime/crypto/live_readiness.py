@@ -30,6 +30,7 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from . import live_promotion
 from .account import ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT
+from .live_position import compute_open_notional_usdt
 from .live_order import (
     CONFIRMATION_ENV,
     MANUAL_KILL_SWITCH_ENV,
@@ -190,7 +191,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         daily_loss_breached=breached,
         clean_canary_orders=promotion["clean_count"],
         submitted_today=submitted_today,
-        current_open_notional_usdt=0.0,
+        # LP5.1: this board performs no venue read, so the open exposure is genuinely
+        # UNKNOWN here — and unknown exposure is reported at the cap, never as zero. The
+        # literal 0.0 that used to sit here asserted "the account is flat" on no evidence,
+        # which is the fail-open the guard's required argument now prevents. LP5.3 supplies
+        # the real figure from the account snapshot; until then this row honestly blocks.
+        current_open_notional_usdt=compute_open_notional_usdt(
+            None, at_cap=limits.max_open_notional_usdt
+        ),
         budget_registered=bool(budget.get("valid")),
         limits=limits,
     )
