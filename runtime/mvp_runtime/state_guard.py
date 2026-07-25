@@ -93,8 +93,13 @@ def describe(offenders: Iterable[Path], *, root: Path) -> str:
         "not start while it cannot. This usually means a CLI was run directly on the host "
         "as another user (commonly root) against the same state the service mounts."
     )
+    # A refusal without a remedy just relocates the investigation. Every platform gets a
+    # fix line — the POSIX one can be pasted, and elsewhere it names the account and the
+    # path, which is the same instruction in the form that platform's tooling takes.
     if hasattr(os, "getuid"):
         lines.append(f"Fix: chown -R {os.getuid()}:{os.getgid()} {base}")
+    else:
+        lines.append(f"Fix: grant the account running this process write access to {base}")
     return "\n".join(lines)
 
 

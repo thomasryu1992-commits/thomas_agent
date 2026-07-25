@@ -13,6 +13,7 @@ reproduced at all.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -105,14 +106,20 @@ def test_unwritable_state_fails_closed(tmp_path):
 
 
 def test_the_message_names_the_offender_and_the_fix(tmp_path):
-    """The message has one job: let whoever reads the log fix it without investigating."""
+    """The message has one job: let whoever reads the log fix it without investigating.
+
+    A remedy on EVERY platform, not only POSIX — a refusal without one just relocates the
+    investigation. (The first version emitted the fix line only where ``os.getuid`` exists,
+    so Windows got a refusal with no way out; CI caught it.)"""
     _state(tmp_path)
     with pytest.raises(PersistenceError) as exc:
         assert_state_writable(tmp_path, writable=_blocking("task_registry.jsonl"))
     message = exc.value.reason
     assert "task_registry.jsonl" in message
-    assert "chown" in message
     assert STATE_DIR_REL in message
+    assert "Fix:" in message
+    if hasattr(os, "getuid"):
+        assert f"chown -R {os.getuid()}:{os.getgid()}" in message
 
 
 def test_a_long_list_is_capped_but_counted(tmp_path):
