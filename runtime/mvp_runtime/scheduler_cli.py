@@ -40,6 +40,7 @@ from .programization import ProgramizationStore
 from .providers import select_provider
 from .scheduler import ScheduleStore
 from .store import LedgerStore
+from .task_registry import TaskRegistryStore
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
@@ -295,6 +296,10 @@ def main(
                     working_memory=working_memory, programization=programization,
                     provider=provider, search_tool=search_tool, repo_root=repo_root,
                     notifier=alerter,
+                    # F1: scheduled analysis runs join the same coordination view the
+                    # operator's own requests appear in — otherwise /tasks would show
+                    # nothing while an unattended run held the tick.
+                    registry=TaskRegistryStore(repo_root) if repo_root else TaskRegistryStore.default(),
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]

@@ -1,0 +1,401 @@
+"""Task-console tests — /tasks /history /result /cancel over the control channel.
+
+The coordination verbs. What must hold: the read verbs answer in any runtime mode but never
+*lie* (an unreadable registry says so instead of showing an empty list), /result re-renders
+from the ledger rather than a second copy of the analysis, /cancel is kill-switch bound and
+refuses to duplicate the kill switch's authority over in-flight work, and a run recorded
+through the operator channel only becomes DELIVERED once it actually reached Thomas.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from runtime.mvp_runtime import control, registry_console, task_registry
+from runtime.mvp_runtime.control import ControlStore
+from runtime.mvp_runtime.errors import OperatorBlocked
+from runtime.mvp_runtime.operator import (
+    InboundMessage,
+    MockOperatorChannel,
+    OperatorIdentity,
+    handle_operator_message,
+    run_operator_once,
+)
+from runtime.mvp_runtime.store import LedgerStore
+from runtime.mvp_runtime.task_registry import (
+    BLOCKED,
+    DELIVERED,
+    QUEUED,
+    RUNNING,
+    TaskRegistryStore,
+    build_entry,
+)
+
+NOW = "2026-07-25T09:00:00Z"
+LATER = "2026-07-25T09:07:00Z"
+REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
+
+
+def _registry(tmp_path) -> TaskRegistryStore:
+    return TaskRegistryStore(tmp_path)
+
+
+def _entry(store, *, text="구독형 세차 사업 아이디어 분석", status=RUNNING, now=NOW, origin="TELEGRAM"):
+    return store.submit(build_entry(
+        request_text=text, origin=origin, requester_id="tg-12345", now=now, status=status,
+    ))
+
+
+def _apply(command, **kwargs):
+    kwargs.setdefault("operator_id", "tg-12345")
+    kwargs.setdefault("now", LATER)
+    return registry_console.apply_registry_command(command, **kwargs)
+
+
+def _msg(text):
+    return InboundMessage(text=text, sender_id="tg-12345", chat_id="chat-777")
+
+
+# --- parsing -----------------------------------------------------------------
+
+@pytest.mark.parametrize("text, expected", [
+    ("/tasks", ("TASKS", None)),
+    ("tasks", ("TASKS", None)),
+    ("/tasks@thomas_bot", ("TASKS", None)),          # Telegram menu suffix is addressing
+    ("/history", ("HISTORY", None)),
+    ("/history 25", ("HISTORY", "25")),
+    ("/result treg_abc", ("RESULT", "treg_abc")),
+    ("/cancel treg_abc", ("CANCEL", "treg_abc")),
+])
+def test_parse_registry_command(text, expected):
+    assert registry_console.parse_registry_command(text) == expected
+
+
+@pytest.mark.parametrize("text", ["", "   ", "/status", "분석해줘", None, "/taskss"])
+def test_non_registry_text_is_not_a_registry_command(text):
+    assert registry_console.parse_registry_command(text) is None
+
+
+# --- /tasks ------------------------------------------------------------------
+
+def test_tasks_lists_open_entries_running_first(tmp_path):
+    store = _registry(tmp_path)
+    queued = _entry(store, text="두 번째 요청", status=QUEUED, now=LATER)
+    running = _entry(store, text="첫 번째 요청", status=RUNNING, now=NOW)
+
+    outcome = _apply(("TASKS", None), registry=store)
+
+    assert outcome["action"] == "TASKS_LISTED" and outcome["count"] == 2
+    reply = outcome["reply"]
+    assert reply.index(running.registry_entry_id[:12]) < reply.index(queued.registry_entry_id[:12])
+    assert "7분 경과" in reply          # elapsed, not an invented percentage
+    assert "%" not in reply
+
+
+def test_tasks_on_an_empty_registry_says_so(tmp_path):
+    outcome = _apply(("TASKS", None), registry=_registry(tmp_path))
+    assert outcome["count"] == 0 and "없습니다" in outcome["reply"]
+
+
+def test_finished_entries_do_not_appear_in_tasks(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER)
+    assert _apply(("TASKS", None), registry=store)["count"] == 0
+
+
+def test_unreadable_registry_refuses_rather_than_showing_nothing(tmp_path):
+    """An empty list would read as 'nothing is running' — the one answer that must not be
+    given when the registry cannot actually be read."""
+    store = _registry(tmp_path)
+    _entry(store)
+    store.path.write_text("{not json\n", encoding="utf-8")
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("TASKS", None), registry=store)
+    assert exc.value.reason_code == "REGISTRY_UNREADABLE"
+
+
+def test_no_registry_wired_is_a_typed_refusal():
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("TASKS", None), registry=None)
+    assert exc.value.reason_code == "REGISTRY_UNAVAILABLE"
+
+
+# --- /history ----------------------------------------------------------------
+
+def test_history_lists_finished_entries_with_their_reason(tmp_path):
+    store = _registry(tmp_path)
+    done = _entry(store, text="완료된 작업")
+    store.transition(done.registry_entry_id, DELIVERED, now=LATER)
+    failed = _entry(store, text="차단된 작업", now=LATER)
+    store.transition(failed.registry_entry_id, BLOCKED, now=LATER, reason_code="PROVIDER_ERROR")
+
+    outcome = _apply(("HISTORY", None), registry=store)
+
+    assert outcome["action"] == "HISTORY_LISTED" and outcome["count"] == 2
+    assert "PROVIDER_ERROR" in outcome["reply"]
+
+
+def test_history_respects_and_caps_its_limit(tmp_path):
+    store = _registry(tmp_path)
+    for index in range(4):
+        entry = _entry(store, text=f"작업 {index}", now=f"2026-07-25T09:0{index}:00Z")
+        store.transition(entry.registry_entry_id, DELIVERED, now=LATER)
+    assert _apply(("HISTORY", "2"), registry=store)["reply"].count("• ") == 2
+    # Out-of-range values clamp rather than refuse; the count reported is the true total.
+    assert _apply(("HISTORY", "999"), registry=store)["count"] == 4
+
+
+def test_history_with_a_non_numeric_argument_is_a_usage_refusal(tmp_path):
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("HISTORY", "많이"), registry=_registry(tmp_path))
+    assert exc.value.reason_code == "USAGE"
+
+
+# --- /result -----------------------------------------------------------------
+
+_AGENT_OUTPUT = {
+    "goal": "구독형 세차 사업성 분석",
+    "summary": "월 구독 모델은 재방문율에 좌우된다.",
+    "role_specific_output": {"key_findings": ["세차 빈도가 핵심 변수"]},
+}
+
+
+def _ledger_with_run(tmp_path, trace_id, *, records=None):
+    ledger = LedgerStore(tmp_path / "ledger")
+    ledger.append_records(trace_id, records or {"agent_output": _AGENT_OUTPUT})
+    return ledger
+
+
+def test_result_rerenders_from_the_ledger(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, trace_id="trace_r1")
+    ledger = _ledger_with_run(tmp_path, "trace_r1")
+
+    outcome = _apply(("RESULT", entry.registry_entry_id), registry=store, ledger=ledger)
+
+    assert outcome["action"] == "RESULT_RESENT"
+    assert "구독형 세차 사업성 분석" in outcome["reply"]
+    assert "세차 빈도가 핵심 변수" in outcome["reply"]
+    # The registry stores no copy of the analysis — only the pointer to it.
+    assert "월 구독 모델" not in json.dumps(
+        [json.loads(l) for l in store.path.read_text(encoding="utf-8").splitlines()], ensure_ascii=False)
+
+
+def test_result_renders_the_sources_its_citations_point_at(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, trace_id="trace_r2")
+    ledger = _ledger_with_run(tmp_path, "trace_r2", records={
+        "agent_output": _AGENT_OUTPUT,
+        "tool_use": {"hits": [{"title": "세차 시장", "url": "https://example.test/a",
+                               "snippet": "요약", "source": "example.test"}]},
+    })
+    assert "https://example.test/a" in _apply(
+        ("RESULT", entry.registry_entry_id), registry=store, ledger=ledger)["reply"]
+
+
+def test_result_on_an_unfinished_entry_is_refused(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", entry.registry_entry_id), registry=store)
+    assert exc.value.reason_code == "TASK_NOT_FINISHED"
+
+
+def test_result_on_a_blocked_entry_says_there_is_no_deliverable(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, BLOCKED, now=LATER, reason_code="VALIDATION_BLOCK")
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", entry.registry_entry_id), registry=store)
+    assert exc.value.reason_code == "NO_DELIVERABLE"
+    assert "VALIDATION_BLOCK" in exc.value.reason
+
+
+def test_result_admits_when_the_ledger_cannot_rebuild_it(tmp_path):
+    """DELIVERED but unrenderable (pruned, another machine) must refuse, never half-render."""
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, trace_id="trace_gone")
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", entry.registry_entry_id), registry=store,
+               ledger=LedgerStore(tmp_path / "ledger"))
+    assert exc.value.reason_code == "RESULT_UNAVAILABLE"
+
+
+def test_result_without_an_id_is_a_usage_refusal(tmp_path):
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", None), registry=_registry(tmp_path))
+    assert exc.value.reason_code == "USAGE"
+
+
+def test_unknown_id_is_refused(tmp_path):
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", "treg_nothere"), registry=_registry(tmp_path))
+    assert exc.value.reason_code == "ENTRY_NOT_FOUND"
+
+
+# --- /cancel -----------------------------------------------------------------
+
+def _control(tmp_path, mode=control.ACTIVE):
+    store = ControlStore(tmp_path / "control")
+    if mode != control.ACTIVE:
+        store.save(control.ControlState(mode=mode, updated_by="tg-12345", updated_at=NOW,
+                                        reason="test"))
+    return store
+
+
+def test_cancel_a_queued_entry(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store, status=QUEUED)
+    ledger = LedgerStore(tmp_path / "ledger")
+
+    outcome = _apply(("CANCEL", entry.registry_entry_id), registry=store, ledger=ledger,
+                     control_store=_control(tmp_path))
+
+    assert outcome["action"] == "TASK_CANCELLED"
+    cancelled = store.find(entry.registry_entry_id)
+    assert cancelled.status == task_registry.CANCELLED
+    assert cancelled.last_reason_code == "OPERATOR_CANCELLED"
+    # A verb that changed something records an event (unlike the read verbs).
+    assert any(b.get("record_type") == registry_console.REGISTRY_EVENT_TYPE
+               for b in ledger.read_blocks())
+
+
+def test_cancel_does_not_duplicate_the_kill_switch(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store, status=RUNNING)
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("CANCEL", entry.registry_entry_id), registry=store,
+               control_store=_control(tmp_path))
+    assert exc.value.reason_code == "TASK_ALREADY_RUNNING"
+    assert "/kill" in exc.value.reason
+
+
+@pytest.mark.parametrize("mode, code", [
+    (control.PAUSED, "RUNTIME_PAUSED"),
+    (control.KILLED, "RUNTIME_KILLED"),
+])
+def test_cancel_is_kill_switch_bound(tmp_path, mode, code):
+    store = _registry(tmp_path)
+    entry = _entry(store, status=QUEUED)
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("CANCEL", entry.registry_entry_id), registry=store,
+               control_store=_control(tmp_path, mode))
+    assert exc.value.reason_code == code
+    assert store.find(entry.registry_entry_id).status == QUEUED
+
+
+def test_cancel_without_control_state_fails_closed(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store, status=QUEUED)
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("CANCEL", entry.registry_entry_id), registry=store, control_store=None)
+    assert exc.value.reason_code == "KILL_STATE_UNAVAILABLE"
+
+
+def test_cancel_a_finished_entry_is_refused(tmp_path):
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER)
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("CANCEL", entry.registry_entry_id), registry=store,
+               control_store=_control(tmp_path))
+    assert exc.value.reason_code == "TASK_ALREADY_FINISHED"
+
+
+# --- read verbs answer while the runtime is down -----------------------------
+
+@pytest.mark.parametrize("mode", [control.PAUSED, control.KILLED])
+@pytest.mark.parametrize("verb", ["/tasks", "/history"])
+def test_read_verbs_answer_in_any_runtime_mode(tmp_path, mode, verb):
+    """An operator facing a PAUSED runtime most needs to see what it was doing."""
+    store = _registry(tmp_path)
+    _entry(store)
+    reply = handle_operator_message(
+        _msg(verb), registration=REG, registry=store,
+        control_store=_control(tmp_path, mode), now=LATER, repo_root=tmp_path,
+    )
+    assert reply.accepted and reply.status == "REGISTRY"
+
+
+# --- operator-channel integration --------------------------------------------
+
+def test_registry_verbs_are_listed_in_the_unknown_command_help(tmp_path):
+    reply = handle_operator_message(_msg("/nope"), registration=REG, repo_root=tmp_path)
+    assert reply.reason_code == "UNKNOWN_COMMAND"
+    for verb in ("/tasks", "/history", "/result", "/cancel"):
+        assert verb in reply.text
+
+
+def _stub_completed_run(monkeypatch):
+    """Stand in for the pipeline (as the other operator tests do) so these assert the
+    coordination bookkeeping, not the analysis."""
+    monkeypatch.setattr(
+        "runtime.mvp_runtime.operator.run_task",
+        lambda *a, **k: {
+            "status": "COMPLETED", "final_response": "분석 결과",
+            "records": {"received_task": {"identity": {"task_id": "task_x1",
+                                                       "trace_id": "trace_x1"}}},
+        },
+    )
+
+
+def test_a_completed_run_is_delivered_only_after_it_is_sent(tmp_path, monkeypatch):
+    """DELIVERED must mean the analysis reached Thomas, not that it was produced."""
+    _stub_completed_run(monkeypatch)
+    store = _registry(tmp_path)
+    channel = MockOperatorChannel(inbound=[_msg("이 사업 아이디어를 분석해줘: 구독형 세차")])
+
+    run_operator_once(channel, REG, registry=store, repo_root=tmp_path)
+
+    entries = store.latest()
+    assert len(entries) == 1
+    assert entries[0].status == DELIVERED
+    assert entries[0].origin == "TELEGRAM"
+    assert entries[0].result_ref == "ledger:trace_x1"
+
+
+def test_a_failed_send_is_not_recorded_as_delivered(tmp_path, monkeypatch):
+    _stub_completed_run(monkeypatch)
+
+    class _DeadChannel(MockOperatorChannel):
+        def send(self, chat_id, text):
+            raise OperatorBlocked("CHANNEL_TRANSPORT", "telegram is down")
+
+    store = _registry(tmp_path)
+    channel = _DeadChannel(inbound=[_msg("이 사업 아이디어를 분석해줘: 구독형 세차")])
+
+    summary = run_operator_once(channel, REG, registry=store, repo_root=tmp_path)
+
+    assert summary["send_failures"] == 1
+    entry = store.latest()[0]
+    assert entry.status == task_registry.FAILED
+    assert entry.last_reason_code == "SEND_FAILED"
+
+
+def test_a_blocked_run_is_closed_without_waiting_for_a_send(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "runtime.mvp_runtime.operator.run_task",
+        lambda *a, **k: {"status": "BLOCKED", "block": {"reason_code": "PROVIDER_ERROR"},
+                         "records": {}},
+    )
+    store = _registry(tmp_path)
+    reply = handle_operator_message(_msg("분석해줘: 아이디어"), registration=REG, registry=store,
+                                    now=NOW, repo_root=tmp_path)
+
+    assert reply.open_registry_entry_id is None      # nothing left for the sender to close
+    entry = store.latest()[0]
+    assert entry.status == BLOCKED and entry.last_reason_code == "PROVIDER_ERROR"
+
+
+def test_console_commands_do_not_create_registry_entries(tmp_path):
+    """Only actual work is coordinated work — /status is not a task."""
+    store = _registry(tmp_path)
+    handle_operator_message(_msg("/status"), registration=REG, registry=store,
+                            control_store=_control(tmp_path), now=NOW, repo_root=tmp_path)
+    assert store.latest() == []
