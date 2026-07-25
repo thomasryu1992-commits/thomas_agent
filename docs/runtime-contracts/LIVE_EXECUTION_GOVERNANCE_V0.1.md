@@ -361,7 +361,7 @@ Progress (steps 1, 2, 4, 5, 8, 9 landed as one increment — "a live order is bu
 | 8 | Validator: v0.4 validator + a live-order positive example | **done** — `examples/permission/permission_live_order_execute_report_v0.4.yaml` |
 | 9 | Regenerate both replay bundles (policy SHA-256) | **done** |
 | 3 | Policy: `financial_transaction_execution_implemented: false → true` **when LP4 merges** | flag added as `false`; flips only with the adapter |
-| 6 | New schema `live_trading_budget.v0.1` + the registration path | **pending** (next increment) |
+| 6 | New schema `live_trading_budget.v0.1` + the registration path | **done 2026-07-25** — closed schema `schemas/live_trading_budget.v0.1.schema.json`, self-hashed record + verified read + `budget_status` + `limits_from_budget` in `runtime/mvp_runtime/crypto/live_budget.py`, operator registration via `scripts/register_live_trading_budget.py`. **Record only** — registering grants nothing and enables no trading. Making the registered budget the *authoritative* source the guard reads (replacing the env caps) is a deliberately separate follow-up (step 6b), so the well-tested guard logic stays untouched while the record type lands. |
 | 7 | New role `execution.live_trader` (P5, `external_action_allowed: true`, candidate) | **pending** — `ROLE_GOVERNANCE`, its own approval. Until it exists, no *actor* can hold P5, so the builder is exercised only by tests passing `role_permission_ceiling="P5"` directly |
 | 10 | LP4 order adapter behind the `live_trading` grant | **pending** — the first thing that can send |
 

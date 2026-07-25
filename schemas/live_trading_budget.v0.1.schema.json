@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "live_trading_budget.v0.1.schema.json",
+  "title": "Live Trading Budget v0.1",
+  "description": "An operator-registered, self-hashed record of the live-trading risk caps, venue, symbol allowlist, and validity window. Replaces the LP3 environment-variable caps with an auditable record: changing a limit produces a new record rather than a silent env edit, and every future order's audit can reference this record's hash. Registering it grants nothing and enables no trading (see LIVE_EXECUTION_GOVERNANCE_V0.1.md item 6).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "budget_id",
+    "venue",
+    "symbol_allowlist",
+    "caps",
+    "valid_from",
+    "valid_until",
+    "registered_by",
+    "registered_at",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "live_trading_budget.v0.1"
+    },
+    "budget_id": {
+      "type": "string",
+      "pattern": "^budget_[0-9a-f]{20}$"
+    },
+    "venue": {
+      "description": "The single venue this runtime supports. An enum, not a free string, so a typo cannot register a budget for a venue the code cannot reach.",
+      "enum": [
+        "binance_futures"
+      ]
+    },
+    "symbol_allowlist": {
+      "description": "The symbols a live order may target. Non-empty; an order for a symbol outside this list is refused.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9]{5,20}$"
+      }
+    },
+    "caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_order_notional_usdt",
+        "absolute_max_notional_usdt",
+        "max_daily_order_count",
+        "max_open_notional_usdt",
+        "daily_loss_limit_usdt",
+        "min_clean_canary_orders"
+      ],
+      "properties": {
+        "max_order_notional_usdt": {
+          "description": "Per-order notional cap. Must be > 0 (zero would read as unconfigured = halted) and <= absolute_max_notional_usdt (cross-field, enforced by the builder).",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "absolute_max_notional_usdt": {
+          "description": "The hard ceiling a per-order cap can never exceed. Capped at 200 USDT: a configured cap above the ceiling is refused, never clamped.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 200
+        },
+        "max_daily_order_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_open_notional_usdt": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "daily_loss_limit_usdt": {
+          "description": "Realized-loss limit per UTC day. Must be > 0 — an unconfigured loss limit reads as breached.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "min_clean_canary_orders": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "valid_from": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "valid_until": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "registered_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registered_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "record_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
