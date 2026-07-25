@@ -75,10 +75,19 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
 
     try:
         outcomes = paper.read_outcomes(root)
-        report = feedback.build_performance_report(outcomes, now=now)
-        outcome_digest = digest.build_performance_digest(outcomes, now=now)
+        # The store holds this runtime's own outcomes AND history imported from the frozen
+        # crypto_AI_System. Blended, the imported set dominates by count and the headline
+        # answers "how did the OLD system do", which is not the question this board is asked.
+        own_outcomes, imported_outcomes = paper.split_by_provenance(outcomes)
+        report = feedback.build_performance_report(own_outcomes, now=now) if own_outcomes else None
+        imported_report = (
+            feedback.build_performance_report(imported_outcomes, now=now)
+            if imported_outcomes else None
+        )
+        outcome_digest = digest.build_performance_digest(own_outcomes, now=now) if own_outcomes else None
     except MvpRuntimeError as exc:
-        outcomes, report, outcome_digest = [], None, None
+        outcomes, own_outcomes, imported_outcomes = [], [], []
+        report, imported_report, outcome_digest = None, None, None
         warnings.append(f"outcome store unreadable ({exc.reason_code})")
 
     try:
@@ -131,11 +140,19 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_positions": open_positions,
         "pool_status_counts": status_counts,
         "pool_size": len(active.get("active_strategies") or []),
+        # THIS runtime's own paper trading — the only evidence about this codebase.
         "performance": {
-            "closed_count": report.get("sample_size") if report else None,
+            "closed_count": report.get("sample_size") if report else 0,
             "expectancy": (report.get("summary") or {}).get("expectancy") if report else None,
             "max_drawdown": (report.get("summary") or {}).get("max_drawdown") if report else None,
             "recommendation": report.get("recommendation") if report else None,
+        },
+        # Imported crypto_AI_System history, reported separately and never merged above: it is
+        # the predecessor's record, useful as context, not as evidence about this runtime.
+        "imported_performance": {
+            "closed_count": imported_report.get("sample_size") if imported_report else 0,
+            "expectancy": (imported_report.get("summary") or {}).get("expectancy") if imported_report else None,
+            "max_drawdown": (imported_report.get("summary") or {}).get("max_drawdown") if imported_report else None,
         },
         "digest": {
             "weekly_trend": (outcome_digest or {}).get("weekly_trend"),
@@ -167,6 +184,13 @@ def render_status_text(status: dict[str, Any]) -> str:
     perf = status["performance"]
     lines.append(f"performance : {perf['closed_count']} closed, expectancy {perf['expectancy']}R, "
                  f"dd {perf['max_drawdown']}R, recommend {perf['recommendation']}")
+    lines.append("              ^ THIS runtime's own paper trading (mvp_paper_kernel)")
+    imported = status.get("imported_performance") or {}
+    if imported.get("closed_count"):
+        lines.append(
+            f"imported    : {imported['closed_count']} closed, expectancy {imported['expectancy']}R, "
+            f"dd {imported['max_drawdown']}R  <- crypto_AI_System history, NOT this runtime"
+        )
     if status.get("digest"):
         for label in ("weekly_trend", "monthly_trend"):
             trend = status["digest"].get(label) or {}

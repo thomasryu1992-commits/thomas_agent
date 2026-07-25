@@ -58,6 +58,12 @@ PAPER_PROVIDER_ID = "paper_trading"
 _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 STATE_REL = ".runtime_governance_state/crypto"
+PAPER_PROVENANCE = "mvp_paper_kernel"
+# Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
+# They are REAL closed trades, but produced by different code, so anything reporting "how is
+# THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
+IMPORTED_PROVENANCE = "crypto_ai_system_import"
+
 POSITION_FILENAME = "paper_position.json"  # legacy single-slot file (read-only path)
 POSITIONS_DIRNAME = "positions"
 OUTCOMES_FILENAME = "paper_outcomes.jsonl"
@@ -514,7 +520,7 @@ def build_outcome_record(
         # Carried so a later reading can weigh assumed exits differently from
         # observed ones instead of treating every outcome as equally measured.
         "exit_resolution": position.get("exit_resolution") or "unambiguous",
-        "provenance": "mvp_paper_kernel",
+        "provenance": PAPER_PROVENANCE,
     }
     # Idempotency key: one position settles exactly once, so the settlement's
     # identity derives from the position alone — a retried settlement of the same
@@ -729,7 +735,7 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             raise ToolError("OUTCOME_HISTORY_UNREADABLE", f"paper outcomes line {i + 1} is not valid JSON") from exc
         if not isinstance(record, dict):
             continue
-        if record.get("provenance") == "mvp_paper_kernel":
+        if record.get("provenance") == PAPER_PROVENANCE:
             stored = record.get("record_sha256")
             body = {k: v for k, v in record.items() if k != "record_sha256"}
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
@@ -750,6 +756,25 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             seen_settlement_ids.add(settlement_id)
         outcomes.append(record)
     return outcomes
+
+
+def split_by_provenance(
+    outcomes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(own, imported)`` — this runtime's own paper outcomes vs the imported history.
+
+    The store deliberately holds both: ``import_crypto_history.py`` carried the frozen
+    crypto_AI_System's closed outcomes in so the risk guard and feedback would have history
+    from day one rather than a cold start. They are real trades, but produced by **different
+    code**, so any answer to "how is THIS runtime performing" has to separate them — blended,
+    the imported set dominates by count and the runtime's own record disappears inside it.
+
+    Deliberately a filter the *caller* applies rather than a change to ``read_outcomes``:
+    idempotency and settlement de-duplication must keep seeing every record, and whether the
+    risk guard should count imported history is a governance decision, not a reporting one."""
+    own = [r for r in outcomes if isinstance(r, dict) and r.get("provenance") == PAPER_PROVENANCE]
+    imported = [r for r in outcomes if isinstance(r, dict) and r.get("provenance") != PAPER_PROVENANCE]
+    return own, imported
 
 
 def already_settled(position_id: str, root: Path | None = None) -> bool:

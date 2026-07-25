@@ -39,6 +39,17 @@ def _outcome(result_r, closed_at):
     return {"result_R": result_r, "outcome_closed": True, "created_at_utc": closed_at}
 
 
+def _own_outcome(result_r, closed_at, **extra):
+    """An outcome as THIS runtime's paper kernel writes it: stamped with the paper provenance
+    and self-hashed, so it survives ``read_outcomes``' verified read and lands on the
+    dashboard's own-performance line rather than the imported one."""
+    from runtime.read_only_kernel import integrity
+
+    body = {**_outcome(result_r, closed_at), "provenance": paper.PAPER_PROVENANCE,
+            "outcome_id": closed_at, **extra}
+    return {**body, "record_sha256": integrity.sha256_record(body)}
+
+
 # --- digest -------------------------------------------------------------------
 
 def test_digest_compares_only_complete_periods():
@@ -296,8 +307,8 @@ def test_dashboard_reads_and_renders(tmp_path):
     state = paper.state_dir(tmp_path)
     state.mkdir(parents=True, exist_ok=True)
     with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
-        for o in [_outcome(1.0, "2026-07-20T10:00:00Z"), _outcome(-0.5, "2026-07-21T10:00:00Z")]:
-            handle.write(json.dumps({**o, "outcome_id": o["created_at_utc"]}) + "\n")
+        for o in [_own_outcome(1.0, "2026-07-20T10:00:00Z"), _own_outcome(-0.5, "2026-07-21T10:00:00Z")]:
+            handle.write(json.dumps(o) + "\n")
     pool.install_active_pool({"active_strategies": []}, root=tmp_path)
 
     status = build_status(tmp_path, now=NOW)
@@ -305,6 +316,32 @@ def test_dashboard_reads_and_renders(tmp_path):
     assert status["warnings"] == []
     text = render_status_text(status)
     assert "crypto pipeline dashboard" in text and "performance" in text
+
+
+def test_dashboard_never_blends_imported_history_into_this_runtimes_performance(tmp_path):
+    """The store holds both; the headline must answer "how is THIS runtime doing".
+
+    Blended, the imported crypto_AI_System set dominates by count — that is exactly how a
+    +2.24R headline was read as this runtime's result when its own record was 5 trades."""
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True, exist_ok=True)
+    rows = [_own_outcome(-1.0, "2026-07-24T10:00:00Z"), _own_outcome(-1.0, "2026-07-25T10:00:00Z")]
+    # Imported rows carry the other provenance and are NOT self-hash-verified on read.
+    rows += [{**_outcome(3.0, f"2026-07-2{d}T10:00:00Z"), "provenance": paper.IMPORTED_PROVENANCE,
+              "outcome_id": f"imported-{d}"} for d in (0, 1, 2)]
+    with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["performance"]["closed_count"] == 2            # own only
+    assert status["performance"]["expectancy"] < 0               # and honestly negative
+    assert status["imported_performance"]["closed_count"] == 3   # reported, separately
+    assert status["imported_performance"]["expectancy"] > 0
+    text = render_status_text(status)
+    assert "THIS runtime's own paper trading" in text
+    assert "NOT this runtime" in text
 
 
 def test_dashboard_degrades_unreadable_inputs_to_warnings(tmp_path):
