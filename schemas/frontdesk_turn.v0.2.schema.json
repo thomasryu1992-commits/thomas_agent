@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "frontdesk_turn.v0.2.schema.json",
+  "title": "Frontdesk Turn v0.2 — the closed output contract of the conversational front desk",
+  "description": "One turn of the conversation.frontdesk role. This is the FORCED output shape of the front desk's model call: the LLM does not emit free text with side effects, it emits exactly one of seven typed turns, and the runtime acts only on what the closed payload carries. A turn that fails this schema is downgraded to CHAT_REPLY by the runtime (uncertain => submits nothing). The privilege separation lives here: five of the seven kinds are read-only, and the two that change anything (SUBMIT_TASK, CANCEL_TASK) can only feed the already-governed task queue — there is no payload field through which a turn could name a tool, a file, a provider, or a permission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "turn_kind",
+    "payload",
+    "reply_text"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frontdesk_turn.v0.2"
+    },
+    "turn_kind": {
+      "description": "What this turn asks the runtime to do. SUBMIT_TASK/CANCEL_TASK feed the task queue; every QUERY_* is a read-only lookup the runtime answers from its own deterministic renderers (task registry, scheduler, control state, working memory) — never from the model's account of them; CLARIFY asks the operator a question instead of guessing; CHAT_REPLY is conversation with no runtime action at all — and is also the mandatory downgrade for any turn the runtime cannot validate.",
+      "enum": [
+        "SUBMIT_TASK",
+        "QUERY_STATUS",
+        "QUERY_HISTORY",
+        "QUERY_RESULT",
+        "QUERY_SCHEDULES",
+        "QUERY_CONTROL",
+        "QUERY_MEMORY",
+        "CANCEL_TASK",
+        "CLARIFY",
+        "CHAT_REPLY"
+      ]
+    },
+    "payload": {
+      "description": "The kind-specific closed arguments. Every variant is additionalProperties:false — an unexpected field is a schema failure, never a silently ignored extra.",
+      "type": "object"
+    },
+    "reply_text": {
+      "description": "What the operator sees for this turn, in natural language. Always required: even a SUBMIT_TASK narrates what was submitted, so the operator can catch a misunderstanding before the pipeline finishes. For SUBMIT_TASK this narration is confirmation only — the pipeline receives payload.request_text verbatim, never this rendering.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "SUBMIT_TASK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_text",
+              "important",
+              "independent_validation"
+            ],
+            "properties": {
+              "request_text": {
+                "description": "The operator's request VERBATIM — the exact words to submit to the pipeline. The front desk must not paraphrase, summarize, or translate here; its own understanding belongs in reply_text, where the operator can check it. Verbatimness itself is enforced by the runtime against the conversation, not by this schema.",
+                "type": "string",
+                "minLength": 1
+              },
+              "important": {
+                "description": "True only when the operator marked the request important (!중요 semantics), never inferred from tone.",
+                "type": "boolean"
+              },
+              "independent_validation": {
+                "description": "True only when the operator asked for independent review, never volunteered.",
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_STATUS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_HISTORY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "description": "How many finished entries to list. Null means the runtime default; the runtime clamps, this schema only types.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_RESULT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entry_id"
+            ],
+            "properties": {
+              "entry_id": {
+                "description": "The task-registry entry id (or unambiguous prefix) whose deliverable to re-send.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CANCEL_TASK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entry_id"
+            ],
+            "properties": {
+              "entry_id": {
+                "description": "The QUEUED task-registry entry to cancel. The runtime's own rules still apply (QUEUED only — stopping running work stays the kill switch's authority).",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CLARIFY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CHAT_REPLY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_SCHEDULES"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_CONTROL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_MEMORY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    }
+  ]
+}

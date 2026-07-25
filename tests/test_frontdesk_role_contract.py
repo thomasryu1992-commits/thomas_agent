@@ -14,6 +14,7 @@ ride in silently with unrelated changes.
 
 from __future__ import annotations
 
+import json
 from hashlib import sha256
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "03_ROLE_CONTRACTS" / "ROLE_REGISTRY.yaml"
 DEFINITION_PATH = ROOT / "03_ROLE_CONTRACTS" / "CONVERSATION_FRONTDESK_ROLE.md"
-SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.1.schema.json"
+SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.2.schema.json"
 
 
 def _registry_entry() -> dict:
@@ -143,7 +144,7 @@ def _validate(record: dict) -> None:
 
 
 def _turn(kind: str, payload: dict, reply: str = "네, 확인했습니다.") -> dict:
-    return {"schema_version": "frontdesk_turn.v0.1", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.2", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
@@ -178,7 +179,7 @@ def test_each_turn_kind_validates(kind, payload):
     (_turn("CANCEL_TASK", {}), "a cancel must name its target"),
     (_turn("CHAT_REPLY", {"entry_id": "treg_x"}), "chat carries no arguments"),
     (_turn("CHAT_REPLY", {}, reply="") , "the operator always sees something"),
-    ({"schema_version": "frontdesk_turn.v0.1", "turn_kind": "CHAT_REPLY",
+    ({"schema_version": "frontdesk_turn.v0.2", "turn_kind": "CHAT_REPLY",
       "payload": {}}, "reply_text is required"),
     ({**_turn("CHAT_REPLY", {}), "side_effect": "write"}, "no fields beyond the four"),
 ])
@@ -192,5 +193,41 @@ def test_the_contract_names_the_downgrade_rule():
     """An invalid turn becomes CHAT_REPLY (uncertain => submits nothing). The runtime will
     implement it in F2; the contract carries it now so F2 cannot 'forget'."""
     output = _front_matter()["output_contract"]
-    assert output["base_contract"] == "frontdesk_turn.v0.1"
+    assert output["base_contract"] == "frontdesk_turn.v0.2"
     assert output["invalid_turn_downgrade"] == "CHAT_REPLY"
+
+
+# --- v0.2: the runtime read turns --------------------------------------------
+
+@pytest.mark.parametrize("kind", ["QUERY_SCHEDULES", "QUERY_CONTROL", "QUERY_MEMORY"])
+def test_runtime_read_turns_take_no_arguments(kind):
+    """They name a subject; the runtime owns everything else. No field here could point
+    the lookup somewhere it was not meant to go."""
+    _validate(_turn(kind, {}))
+    with pytest.raises(RuntimeSchemaError):
+        _validate(_turn(kind, {"path": "/etc/passwd"}))
+
+
+def test_the_widening_stayed_an_enumeration():
+    """v0.2 adds items to a list; it does not introduce open-ended access. Every turn kind
+    is still one of a fixed set, and the only ones that change state remain the two that
+    feed the already-governed task queue."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    kinds = set(schema["properties"]["turn_kind"]["enum"])
+    assert kinds == {
+        "SUBMIT_TASK", "CANCEL_TASK",
+        "QUERY_STATUS", "QUERY_HISTORY", "QUERY_RESULT",
+        "QUERY_SCHEDULES", "QUERY_CONTROL", "QUERY_MEMORY",
+        "CLARIFY", "CHAT_REPLY",
+    }
+    assert len([k for k in kinds if not k.startswith("QUERY_")
+                and k not in ("CLARIFY", "CHAT_REPLY")]) == 2
+
+
+def test_the_contract_names_the_new_capability():
+    data = _front_matter()
+    assert "runtime_state_lookup" in data["capabilities"]
+    assert data["output_contract"]["base_contract"] == "frontdesk_turn.v0.2"
+    # The prohibitions are untouched by the widening.
+    unsupported = set(data["unsupported_capabilities"])
+    assert {"task_execution", "workspace_write", "memory_promotion", "external_action"} <= unsupported

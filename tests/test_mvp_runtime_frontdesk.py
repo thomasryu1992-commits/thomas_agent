@@ -62,7 +62,7 @@ class TurnProvider:
 
 
 def _turn(kind, payload, reply="알겠습니다."):
-    return {"schema_version": "frontdesk_turn.v0.1", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.2", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
@@ -414,3 +414,119 @@ def test_frontdesk_submission_is_drained_like_any_queued_task(tmp_path, monkeypa
     texts = [t for _c, t in channel.sent]
     assert any("접수했습니다" in t for t in texts)
     assert any("분석 결과" in t for t in texts)
+
+
+# --- v0.2 runtime queries ----------------------------------------------------
+#
+# The gap these close, from the live channel on 2026-07-25: asked "현재 crypto 스케쥴러는
+# 어떻게 되어있어?", the front desk had no action that could reach a scheduler, fell to
+# CHAT_REPLY, and narrated "확인할게요" — a check it could not perform. The answer is a
+# listed capability, not open access.
+
+def _schedule(store, kind="crypto_pipeline", interval=900, now=NOW):
+    from runtime.mvp_runtime import scheduler
+    sched = scheduler.build_schedule(kind=kind, request="BTCUSDT 1h", interval_seconds=interval,
+                                     created_by="test", now=now)
+    store.add(sched)
+    return sched
+
+
+def _schedule_store(tmp_path):
+    from runtime.mvp_runtime.scheduler import ScheduleStore
+    return ScheduleStore(tmp_path)
+
+
+def test_schedule_question_is_answered_with_real_schedules(tmp_path):
+    """The exact failure that prompted v0.2, now answered with data."""
+    store = _schedule_store(tmp_path)
+    _schedule(store)
+    provider = TurnProvider(_turn("QUERY_SCHEDULES", {}, reply="스케줄을 확인할게요."))
+
+    outcome = _run("현재 crypto 스케쥴러는 어떻게 되어있어?", provider, tmp_path,
+                   schedules=store)
+
+    assert outcome["action"] == "SCHEDULES_LISTED"
+    assert "crypto_pipeline" in outcome["reply"]
+    assert "15분마다" in outcome["reply"]
+    # The model's narration is dropped; the store's rendering is what is sent.
+    assert "확인할게요" not in outcome["reply"]
+
+
+def test_schedule_summary_is_chat_sized(tmp_path):
+    """`scheduler_cli list` prints each fire's full last_status — for a crypto pipeline
+    that is a multi-line dump past Telegram's send limit."""
+    from runtime.mvp_runtime import scheduler
+    from dataclasses import replace as _replace
+
+    store = _schedule_store(tmp_path)
+    sched = _schedule(store)
+    store.record_result(sched.schedule_id, last_run_at=NOW, last_status="x" * 4000)
+    rendered = scheduler.render_schedule_summary(store.list(), now=NOW)
+    assert len(rendered) < 500
+    assert "…" in rendered
+
+
+def test_many_schedules_of_one_kind_are_grouped(tmp_path):
+    from runtime.mvp_runtime import scheduler
+    store = _schedule_store(tmp_path)
+    for index in range(16):
+        _schedule(store, kind="crypto_factory", interval=86400,
+                  now=f"2026-07-25T13:{index:02d}:00Z")
+    rendered = scheduler.render_schedule_summary(store.list(), now=NOW)
+    assert "crypto_factory ×16" in rendered
+    assert "…외 13개" in rendered
+
+
+def test_control_question_is_answered_from_the_control_store(tmp_path):
+    control_store = ControlStore(tmp_path / "control")
+    control_store.save(control.ControlState(mode=control.PAUSED, updated_by="tg-12345",
+                                            updated_at=NOW, reason="점검 중"))
+    provider = TurnProvider(_turn("QUERY_CONTROL", {}, reply="상태 확인할게요."))
+
+    outcome = _run("지금 멈춰있어?", provider, tmp_path, control_store=control_store)
+
+    assert outcome["action"] == "CONTROL_STATUS"
+    assert "PAUSED" in outcome["reply"]
+    assert "점검 중" in outcome["reply"]
+
+
+def test_memory_question_is_answered_from_the_memory_console(tmp_path):
+    provider = TurnProvider(_turn("QUERY_MEMORY", {}, reply="메모리 볼게요."))
+    outcome = _run("기억해둔 거 뭐 있어?", provider, tmp_path,
+                   working_memory=WorkingMemoryStore(tmp_path / "wm"))
+    assert outcome["action"] == "MEMORY_LISTED"
+
+
+def test_runtime_queries_answer_while_paused(tmp_path):
+    """Read-only, so they answer in any mode — a stopped runtime is exactly when you ask."""
+    control_store = ControlStore(tmp_path / "control")
+    control_store.save(control.ControlState(mode=control.KILLED, updated_by="tg-12345",
+                                            updated_at=NOW, reason="kill"))
+    store = _schedule_store(tmp_path)
+    _schedule(store)
+    outcome = _run("스케줄 뭐 있어?", TurnProvider(_turn("QUERY_SCHEDULES", {})), tmp_path,
+                   schedules=store, control_store=control_store)
+    assert outcome["action"] == "SCHEDULES_LISTED"
+
+
+def test_an_unreadable_schedule_store_says_so(tmp_path):
+    store = _schedule_store(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text("{not json\n", encoding="utf-8")
+    outcome = _run("스케줄?", TurnProvider(_turn("QUERY_SCHEDULES", {})), tmp_path,
+                   schedules=store)
+    assert outcome["action"] == "SCHEDULES_UNREADABLE"
+
+
+def test_the_new_turns_change_no_state(tmp_path):
+    """Every v0.2 addition is read-only: none may queue, cancel, or promote anything."""
+    registry = TaskRegistryStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store = _schedule_store(tmp_path)
+    _schedule(store)
+    for kind in ("QUERY_SCHEDULES", "QUERY_CONTROL", "QUERY_MEMORY"):
+        _run("뭐 좀 볼게", TurnProvider(_turn(kind, {})), tmp_path,
+             registry=registry, working_memory=wm, schedules=store,
+             control_store=ControlStore(tmp_path / "control"))
+    assert registry.latest() == []
+    assert [e for e in wm.read_all() if e.get("scope") != frontdesk.SESSION_SCOPE] == []

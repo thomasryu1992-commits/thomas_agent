@@ -272,6 +272,45 @@ class ScheduleStore:
                     return
 
 
+# A chat message is not a host console. `scheduler_cli list` prints each schedule's full
+# last_status, which for a crypto pipeline fire is a multi-line dump of every evaluated
+# context — unreadable in Telegram and past its send limit. This renders the same
+# schedules for the other audience: grouped by kind, one line each, status truncated.
+# Two renderers for two audiences, not two authorities: both read the same store.
+_SUMMARY_STATUS_CHARS = 60
+_SUMMARY_MAX_PER_KIND = 3
+
+
+def render_schedule_summary(schedules: list[Schedule], *, now: str) -> str:
+    """A compact, chat-sized report of what is scheduled and when it next runs."""
+    if not schedules:
+        return "등록된 스케줄이 없습니다."
+    enabled = [s for s in schedules if s.enabled]
+    disabled = len(schedules) - len(enabled)
+    by_kind: dict[str, list[Schedule]] = {}
+    for schedule in sorted(enabled, key=lambda s: (s.kind, s.next_run_at)):
+        by_kind.setdefault(schedule.kind, []).append(schedule)
+
+    lines = [f"스케줄 {len(enabled)}개 실행 중" + (f" (비활성 {disabled}개)" if disabled else "")]
+    for kind, group in by_kind.items():
+        count = f" ×{len(group)}" if len(group) > 1 else ""
+        interval = group[0].interval_seconds
+        cadence = (f"{interval // 3600}시간" if interval >= 3600
+                   else f"{interval // 60}분" if interval >= 60 else f"{interval}초")
+        lines.append(f"\n• {kind}{count} — {cadence}마다")
+        for schedule in group[:_SUMMARY_MAX_PER_KIND]:
+            status = " ".join(str(schedule.last_status or "").split())
+            if len(status) > _SUMMARY_STATUS_CHARS:
+                status = status[:_SUMMARY_STATUS_CHARS] + "…"
+            overdue = " ⚠ 지연" if schedule.next_run_at <= now else ""
+            lines.append(f"  다음 {schedule.next_run_at}{overdue}")
+            if status:
+                lines.append(f"  마지막: {status}")
+        if len(group) > _SUMMARY_MAX_PER_KIND:
+            lines.append(f"  …외 {len(group) - _SUMMARY_MAX_PER_KIND}개")
+    return "\n".join(lines)
+
+
 def overdue_schedules(schedules: list[Schedule], *, now: str) -> list[tuple[Schedule, int]]:
     """Enabled schedules whose due time is more than one full interval in the past.
 
