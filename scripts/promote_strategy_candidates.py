@@ -232,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
                   f"verdict={q['verdict'] or '-':11} "
+                  f"oos={q['holdout_status']:12} "
                   f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
                   f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}")
         return EXIT_OK

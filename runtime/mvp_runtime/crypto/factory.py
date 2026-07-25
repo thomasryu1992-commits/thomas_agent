@@ -63,6 +63,19 @@ from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spe
 BACKTEST_WINDOWS = 3
 MIN_TRADES_PER_WINDOW = 3
 
+# Out-of-sample holdout. The most recent slice of the replay window is withheld from
+# scoring entirely: the spec is minted and scored on the earlier bars, then replayed
+# once on this tail to see whether the edge survives data the score never saw.
+#
+# Why this exists: every number the old evidence carried — expectancy, walk-forward
+# pass rate, champion_score — was computed on the SAME bars the candidate was mined
+# on, and promotion then picks the highest scorer out of a growing store. Selecting
+# the maximum over many draws scored in-sample is precisely how noise gets promoted,
+# and no in-sample statistic can detect it. The tail is recent rather than random
+# because that is the regime a promoted strategy trades next.
+HOLDOUT_FRACTION = 0.30
+MIN_BARS_FOR_HOLDOUT = 60
+
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
 _MAX_ATTEMPTS_PER_SPEC = 12
@@ -492,24 +505,29 @@ def generate_batch(
 
 # --- replay backtest (shared evaluator + shared exit math) --------------------
 
-def backtest_spec(
-    spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
-) -> dict[str, Any]:
-    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+def holdout_split_index(total_bars: int) -> int:
+    """Where the scored window ends and the untouched holdout begins.
 
-    Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
-    the position opens at row i's close with the spec's ATR exits, and every later
-    bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
-    own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
-    features are indeterminate never enter (the evaluator's rule).
+    Deterministic (a pure function of the bar count — no randomness, no dates), so a
+    replay of the same window always splits identically. A window too short to leave
+    both sides usable yields ``total_bars``: everything trains, nothing is held out,
+    and the verdict layer then reports the holdout as UNCONFIRMED rather than pretending
+    a two-bar tail proved something."""
+    if total_bars < MIN_BARS_FOR_HOLDOUT:
+        return total_bars
+    return max(1, int(total_bars * (1.0 - HOLDOUT_FRACTION)))
 
-    C12: every closed trade's gross (intended-price) R is costed via
-    ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
-    outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
-    NET R after costs; ``gross_R`` rides alongside for transparency."""
-    cost = cost or CostModel()
-    rows = build_feature_rows(dict(snapshot))
-    candles = snapshot.get("candles") or []
+
+def _replay(
+    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
+    *, cost: CostModel, offset: int = 0,
+) -> tuple[list[dict[str, Any]], float, float]:
+    """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
+
+    Extracted so the scored window and the holdout run through **exactly** the same
+    code — a holdout evaluated by a second, slightly different replay would prove
+    nothing about the first. Each pass starts flat: a position open at the split does
+    not carry across, so the holdout measures only what it can attribute to itself."""
     outcomes: list[dict[str, Any]] = []
     position: dict[str, Any] | None = None
     entry_regime: str | None = None
@@ -539,7 +557,7 @@ def backtest_spec(
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
-                    "closed_at_bar": i,
+                    "closed_at_bar": offset + i,
                 })
                 position = None
                 entry_regime = None
@@ -561,6 +579,55 @@ def backtest_spec(
                 "holding_candles": 0,
             }
             entry_regime = row.get("market_regime")
+    return outcomes, total_fee_cost_r, total_slippage_cost_r
+
+
+def _holdout_evidence(
+    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
+    *, cost: CostModel, offset: int,
+) -> dict[str, Any]:
+    """What the spec did on bars that never touched its score. Compact by design.
+
+    Only the few numbers a confirmation needs: how many trades the unseen tail
+    produced and whether they were profitable in aggregate. The verdict layer turns
+    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
+    outcomes, _fees, _slip = _replay(spec, rows, candles, cost=cost, offset=offset)
+    total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
+    closed = len(outcomes)
+    return {
+        "bars": len(rows),
+        "closed_count": closed,
+        "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
+        "total_R": total_r,
+        "expectancy": round(total_r / closed, 8) if closed else 0.0,
+    }
+
+
+def backtest_spec(
+    spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
+) -> dict[str, Any]:
+    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+
+    Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
+    the position opens at row i's close with the spec's ATR exits, and every later
+    bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
+    own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
+    features are indeterminate never enter (the evaluator's rule).
+
+    C12: every closed trade's gross (intended-price) R is costed via
+    ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
+    outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
+    NET R after costs; ``gross_R`` rides alongside for transparency."""
+    cost = cost or CostModel()
+    all_rows = build_feature_rows(dict(snapshot))
+    all_candles = snapshot.get("candles") or []
+    # Train / holdout split (see HOLDOUT_FRACTION). Features are computed over the FULL
+    # series and only then sliced, so the holdout starts with warm indicators instead of
+    # re-warming — the split is about what the SCORE may see, not about the data itself.
+    split = holdout_split_index(len(all_rows))
+    rows, candles = all_rows[:split], all_candles[:split]
+    outcomes, total_fee_cost_r, total_slippage_cost_r = _replay(spec, rows, candles, cost=cost)
+    holdout = _holdout_evidence(spec, all_rows[split:], all_candles[split:], cost=cost, offset=split)
 
     summary = summarize_outcomes(outcomes)
 
@@ -604,7 +671,7 @@ def backtest_spec(
         "fee_cost_r": round(total_fee_cost_r, 8),
         "slippage_cost_r": round(total_slippage_cost_r, 8),
     }
-    robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown)
+    robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown, holdout=holdout)
     return {
         "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash,
@@ -625,6 +692,7 @@ def backtest_spec(
         },
         "regime_breakdown": regime_breakdown,
         "walk_forward": walk_forward,
+        "holdout": holdout,
         "robustness": robustness,
         # The score's whole meaning, recorded where it is used: the anti-overfit
         # robustness score (C8b), with raw expectancy kept alongside.
