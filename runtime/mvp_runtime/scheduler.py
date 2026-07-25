@@ -68,6 +68,15 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
 
+# Scheduled factory fires also cross the best-scoring durable lineages (factory
+# fusion, Thomas 2026-07-25): up to this many parent pairs per fire. The fusion
+# machinery shipped with `run_factory(fusion_pairs=...)` but every scheduled call
+# left the default 0, so no fused child was ever minted (0/109 candidates carried
+# a parent). Children are backtested on their own evidence, refused when they
+# close no trades, and de-duplicated by rule hash — so the steady-state output is
+# small and re-fusing the same top parents is a no-op, not a pile-up.
+FACTORY_FUSION_PAIRS = 2
+
 # The one timestamp form `next_run_at <= now` is a correct time comparison for —
 # single authority in timeutil (anchor rationale documented there).
 _TIMESTAMP_PATTERN = timeutil.FIXED_UTC_PATTERN
@@ -506,11 +515,13 @@ def _execute(
             active_pool=crypto_pool.load_active_pool(repo_root),
             existing_candidates=crypto_pool.read_candidates(repo_root),
             now=now,
+            fusion_pairs=FACTORY_FUSION_PAIRS,
         )
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:
             ledger.append_records(result["generation_id"], {"crypto_factory": result})
-        return f"generated={result['accepted_count']} gen={result['generation_id']}"
+        return (f"generated={result['accepted_count']} fused={result.get('fused_count', 0)} "
+                f"gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
