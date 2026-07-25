@@ -1,11 +1,18 @@
 """LP4 order adapter — submit + reconcile one guard-approved live order.
 
-**Increment 1 (this module): the skeleton.** The default inert ``DryRunOrderAdapter``, the
-Safety-Flag gate selection, the ``submit_and_reconcile`` orchestration, and the
-``reconcile_status`` vocabulary land here — all exercisable and tested with **zero network and
-zero venue**. The real Binance signed HTTP send + reconcile is a **gated stub** deferred to
-increment 2, so **no code can send an order yet**: ``live_readiness.ORDER_PATH_IMPLEMENTED`` and
-``financial_transaction_execution_implemented`` both stay OFF, honestly.
+**Increment 2a (this module): the real transport.** The skeleton (inert ``DryRunOrderAdapter``
+default, Safety-Flag gate selection, ``submit_and_reconcile``, the ``reconcile_status``
+vocabulary) landed in increment 1; the real Binance **signed POST + reconcile GET** is now
+implemented, along with the conditional order types the LP5 protective bracket needs. Every
+venue semantic here was verified against the venue's own New Order / Query Order / error-code
+references (2026-07-25) rather than written from memory.
+
+**Nothing autonomous can reach it.** ``live_readiness.ORDER_PATH_IMPLEMENTED`` and
+``financial_transaction_execution_implemented`` deliberately stay **OFF** in this increment —
+the readiness board therefore cannot report READY, so no autonomous path routes here. Flipping
+those two flags in lockstep (with the replay-bundle regeneration) is increment 2b, together with
+the deliberate single-canary CLI. Reaching the venue at all additionally requires the operator's
+``live_trading`` grant and the order key, neither of which this code can create.
 
 Design: ``docs/runtime-contracts/LP4_ORDER_ADAPTER_DESIGN_V0.1.md``. LP4 is the narrow, and only,
 code that can send an order — it takes one **guard-approved** MARKET intent (LP3), submits it,
@@ -21,6 +28,15 @@ revocation. The order-capable key is its **own** env, distinct from the read-onl
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -46,6 +62,25 @@ ORDER_API_SECRET_ENV = "MVP_LIVE_ORDER_API_SECRET"
 ORDER_BASE_URL = "https://fapi.binance.com"
 ORDER_PATH = "/fapi/v1/order"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
+# Venue cap is 60000; mirror account.py's conservative value.
+RECV_WINDOW_MS = 5000
+
+# Order types LP4 can express. MARKET is the entry/close; the two conditional types are the
+# LP5 protective bracket. Verified against the venue's New Order contract (2026-07-25):
+# a conditional type carries a ``stopPrice``, and ``workingType`` selects the trigger price.
+ORDER_TYPE_MARKET = "MARKET"
+ORDER_TYPE_STOP_MARKET = "STOP_MARKET"
+ORDER_TYPE_TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
+CONDITIONAL_ORDER_TYPES = frozenset({ORDER_TYPE_STOP_MARKET, ORDER_TYPE_TAKE_PROFIT_MARKET})
+SUPPORTED_ORDER_TYPES = frozenset({ORDER_TYPE_MARKET}) | CONDITIONAL_ORDER_TYPES
+WORKING_TYPE_MARK_PRICE = "MARK_PRICE"
+WORKING_TYPE_CONTRACT_PRICE = "CONTRACT_PRICE"
+WORKING_TYPES = frozenset({WORKING_TYPE_MARK_PRICE, WORKING_TYPE_CONTRACT_PRICE})
+
+# The venue's own charset rule for newClientOrderId, verified from its New Order contract:
+# ``^[\.A-Z\:/a-z0-9_-]{1,36}$``. ``make_client_order_id`` already complies; validating here
+# means a hand-built intent cannot get rejected at the venue for a character.
+CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
 
 # reconcile_status vocabulary. RECONCILED is reused from live_promotion so the canary record's
 # clean-derivation (clean iff RECONCILED and no mismatch) matches this by construction.
@@ -53,9 +88,16 @@ MISMATCH = "MISMATCH"
 NOT_FOUND = "NOT_FOUND"
 UNRECONCILABLE = "UNRECONCILABLE"
 
-ORDER_PATH_NOT_IMPLEMENTED = "ORDER_PATH_NOT_IMPLEMENTED"
 GUARD_NOT_APPROVED = "GUARD_NOT_APPROVED"
 MALFORMED_INTENT = "MALFORMED_LIVE_ORDER_INTENT"
+NO_ORDER_API_KEY = "NO_ORDER_API_KEY"
+ORDER_REJECTED = "ORDER_REJECTED"
+ORDER_TRANSPORT = "ORDER_TRANSPORT"
+ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
+
+# Venue error codes, verified from its error-code reference (2026-07-25).
+VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
+VENUE_DUPLICATE_CLIENT_ORDER_ID = -4116  # the idempotency key already landed => reconcile finds it
 
 
 def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
@@ -63,29 +105,84 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
 
     ``reduceOnly`` is set **from the intent** — the structural boundary the close guard relies
     on: a "close" that dropped this flag could open a position, so LP4 carries it faithfully.
-    LP4 submits MARKET orders only (the intent already fixes ``order_type_exchange: MARKET``)."""
+
+    Supported types (``order_type_exchange``): ``MARKET`` for an entry or a close, plus
+    ``STOP_MARKET`` / ``TAKE_PROFIT_MARKET`` for the LP5 protective bracket. A conditional type
+    **requires** a positive ``stop_price``: the venue lists ``stopPrice`` as optional across all
+    types, but a conditional order without one is meaningless, so it is required here rather than
+    sent empty and rejected at the venue.
+
+    Two venue constraints are enforced rather than discovered at run time (both verified against
+    the New Order contract, 2026-07-25):
+
+    - ``closePosition=true`` is **mutually exclusive with both ``quantity`` and ``reduceOnly``**,
+      and is only valid on a conditional type. So a close-all bracket leg sends neither.
+    - ``newClientOrderId`` must match the venue's charset (``CLIENT_ORDER_ID_PATTERN``).
+    """
     symbol = intent.get("symbol")
     side = intent.get("side")
-    quantity = intent.get("quantity")
     client_order_id = intent.get("client_order_id")
+    order_type = intent.get("order_type_exchange")
+    close_position = bool(intent.get("close_position"))
+
     if not (isinstance(symbol, str) and symbol):
         raise ToolError(MALFORMED_INTENT, "order intent is missing a symbol")
     if side not in ("BUY", "SELL"):
         raise ToolError(MALFORMED_INTENT, f"order intent side must be BUY or SELL, got {side!r}")
-    if not (isinstance(quantity, (int, float)) and quantity > 0):
-        raise ToolError(MALFORMED_INTENT, "order intent needs a positive quantity")
-    if not (isinstance(client_order_id, str) and client_order_id):
-        raise ToolError(MALFORMED_INTENT, "order intent is missing client_order_id (run enrich_order_identity)")
-    if intent.get("order_type_exchange") != "MARKET":
-        raise ToolError(MALFORMED_INTENT, "LP4 submits MARKET orders only")
-    return {
+    if not (isinstance(client_order_id, str) and CLIENT_ORDER_ID_PATTERN.match(client_order_id)):
+        raise ToolError(
+            MALFORMED_INTENT,
+            "order intent needs a client_order_id matching the venue charset "
+            "(1-36 of A-Z a-z 0-9 . : / _ -); run enrich_order_identity",
+        )
+    if order_type not in SUPPORTED_ORDER_TYPES:
+        raise ToolError(
+            MALFORMED_INTENT,
+            f"order_type_exchange must be one of {sorted(SUPPORTED_ORDER_TYPES)}, got {order_type!r}",
+        )
+
+    request: dict[str, Any] = {
         "symbol": symbol,
         "side": side,
-        "type": "MARKET",
-        "quantity": float(quantity),
-        "reduceOnly": bool(intent.get("reduce_only")),
+        "type": order_type,
         "newClientOrderId": client_order_id,
     }
+
+    if order_type in CONDITIONAL_ORDER_TYPES:
+        stop_price = intent.get("stop_price")
+        if not (isinstance(stop_price, (int, float)) and stop_price > 0):
+            raise ToolError(
+                MALFORMED_INTENT,
+                f"{order_type} needs a positive stop_price (a conditional order without a "
+                "trigger is meaningless)",
+            )
+        request["stopPrice"] = float(stop_price)
+        working_type = intent.get("working_type")
+        if working_type is not None:
+            if working_type not in WORKING_TYPES:
+                raise ToolError(
+                    MALFORMED_INTENT,
+                    f"working_type must be one of {sorted(WORKING_TYPES)}, got {working_type!r}",
+                )
+            request["workingType"] = working_type
+    elif close_position:
+        # closePosition is a Close-All conditional-order behaviour; on a MARKET order it is not
+        # a thing the venue accepts, so refuse rather than send something that would be rejected.
+        raise ToolError(
+            MALFORMED_INTENT,
+            f"close_position is only valid on {sorted(CONDITIONAL_ORDER_TYPES)}, not {order_type}",
+        )
+
+    if close_position:
+        # Mutually exclusive with quantity AND reduceOnly — send neither.
+        request["closePosition"] = "true"
+    else:
+        quantity = intent.get("quantity")
+        if not (isinstance(quantity, (int, float)) and quantity > 0):
+            raise ToolError(MALFORMED_INTENT, "order intent needs a positive quantity")
+        request["quantity"] = float(quantity)
+        request["reduceOnly"] = bool(intent.get("reduce_only"))
+    return request
 
 
 def reconcile_order(
@@ -157,12 +254,15 @@ class DryRunOrderAdapter:
         req = self._submitted.get(str(client_order_id))
         if req is None:
             return None
+        # A closePosition bracket leg carries neither quantity nor reduceOnly (they are mutually
+        # exclusive with it at the venue), so the synthetic echo mirrors that shape too.
         return {
             "symbol": req["symbol"],
             "side": req["side"],
             "status": "FILLED",
-            "executedQty": req["quantity"],
-            "reduceOnly": req["reduceOnly"],
+            "executedQty": req.get("quantity", 0.0),
+            "reduceOnly": req.get("reduceOnly", False),
+            "closePosition": req.get("closePosition") == "true",
             "orderId": f"dryrun-{str(client_order_id)[:16]}",
             "dry_run": True,
         }
@@ -172,13 +272,20 @@ class BinanceFuturesOrderAdapter:
     """The real adapter — constructed only behind the ``live_trading`` grant, host-allowlisted,
     re-asserting authorization at every egress.
 
-    **INCREMENT 1 STUB.** The actual signed ``POST /fapi/v1/order`` + reconcile ``GET`` is
-    deferred to increment 2, so both methods raise ``ORDER_PATH_NOT_IMPLEMENTED`` rather than
-    reaching the venue. Its presence as a *gated* stub keeps the gate skeleton real while
-    ``ORDER_PATH_IMPLEMENTED`` / ``financial_transaction_execution_implemented`` stay honestly
-    OFF — no code can send an order yet. When increment 2 fills these in, it mirrors
-    ``account.py``'s signed-request posture (names-only errors, the signed URL never logged) and
-    flips the two flags in lockstep."""
+    **This is the repository's first WRITE network egress.** Every other network path
+    (``account``, ``market_data``) is GET-only. The credential posture mirrors ``account.py``
+    exactly, because the signature travels in the query string:
+
+    - the key is read from its **own** env at call time (never stored on the instance), and a
+      missing credential is reported **by name only**;
+    - a transport failure raises a deliberately **generic** error — the signed URL never reaches
+      a message, a log, or a record;
+    - authorization is re-asserted before every request, so deleting the grant is a live
+      revocation mid-flight.
+
+    It still sends nothing on its own: ``submit_and_reconcile`` refuses unless the final guard
+    PASSed, and the whole adapter is only reachable once the operator has minted the
+    ``live_trading`` grant and set the order key."""
 
     tool_id = ORDER_ADAPTER_TOOL_ID
     tool_version = ORDER_ADAPTER_TOOL_VERSION
@@ -186,8 +293,6 @@ class BinanceFuturesOrderAdapter:
     network_egress = True
 
     def __init__(self, *, base_url: str = ORDER_BASE_URL, authorization: Authorization | None = None):
-        import urllib.parse
-
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in ALLOWED_ORDER_HOSTS:
             # A URL typo must fail loudly rather than sign a request to an unexpected host.
@@ -203,21 +308,108 @@ class BinanceFuturesOrderAdapter:
             now=timeutil.utc_now_iso(),
         )
 
-    def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
+    def _signed_request(
+        self, method: str, path: str, params: Mapping[str, Any], *, timeout_seconds: int
+    ) -> tuple[Any, int | None]:
+        """One signed request. Returns ``(parsed_body, venue_error_code)``.
+
+        A venue-side rejection (HTTP 4xx) is returned as ``(body, code)`` rather than raised, so
+        the caller decides what it means: for a query, "order does not exist" is a legitimate
+        NOT_FOUND; for a submit, a duplicate client id means the original already landed. Only a
+        transport failure or an unparseable body raises."""
         self._assert()
-        raise ToolError(
-            ORDER_PATH_NOT_IMPLEMENTED,
-            "the real order submit path is not implemented yet (LP4 increment 2)",
+        api_key = os.environ.get(ORDER_API_KEY_ENV, "").strip()
+        api_secret = os.environ.get(ORDER_API_SECRET_ENV, "").strip()
+        if not api_key or not api_secret:
+            # Names only — the absence of a credential is reportable, its value never is.
+            raise ToolError(
+                NO_ORDER_API_KEY,
+                f"live order credentials are not configured "
+                f"({ORDER_API_KEY_ENV}/{ORDER_API_SECRET_ENV})",
+            )
+        query = {k: v for k, v in params.items() if v is not None}
+        query.setdefault("recvWindow", RECV_WINDOW_MS)
+        query["timestamp"] = int(time.time() * 1000)
+        encoded = urllib.parse.urlencode(query)
+        signature = hmac.new(
+            api_secret.encode("utf-8"), encoded.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        request = urllib.request.Request(
+            f"{self._base_url}{path}?{encoded}&signature={signature}",
+            method=method,
+            headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
         )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # The venue puts its reason in the body ({"code": -2013, "msg": "..."}). Read it, but
+            # never echo the request URL — it carries the signature.
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                code = int(body.get("code")) if isinstance(body, dict) else None
+            except Exception:  # noqa: BLE001 — an unreadable error body must not mask the failure
+                body, code = None, None
+            if code is None:
+                raise ToolError(
+                    ORDER_TRANSPORT, f"live order request rejected (HTTP {exc.code})"
+                ) from None
+            return body, code
+        except (TimeoutError, urllib.error.URLError):
+            # Deliberately generic (the account.py / market-data transport posture).
+            raise ToolError(ORDER_TRANSPORT, "live order request failed or timed out") from None
+        try:
+            return json.loads(raw), None
+        except ValueError:
+            raise ToolError(
+                ORDER_MALFORMED_RESULT, "live order endpoint returned an unparseable response"
+            ) from None
+
+    def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
+        """Send one order. Raises ``ToolError`` on a venue rejection or a transport failure.
+
+        A rejection is raised rather than returned because a rejected submit is not an outcome the
+        caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
+        actually happened. The one rejection that is *informative* is a duplicate client order id:
+        it means this exact order already landed, so the reconcile read will find it."""
+        body, code = self._signed_request(
+            "POST", ORDER_PATH, dict(order_request), timeout_seconds=timeout_seconds
+        )
+        if code is not None:
+            if code == VENUE_DUPLICATE_CLIENT_ORDER_ID:
+                # Idempotency did its job: the original submission is already at the venue.
+                raise ToolError(
+                    ORDER_REJECTED,
+                    f"duplicate client order id ({code}) — the original order already landed; "
+                    "reconcile decides the outcome",
+                )
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}")
+        return body if isinstance(body, dict) else {}
 
     def fetch_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
     ) -> dict[str, Any] | None:
-        self._assert()
-        raise ToolError(
-            ORDER_PATH_NOT_IMPLEMENTED,
-            "the real reconcile path is not implemented yet (LP4 increment 2)",
+        """The order's state at the venue, or ``None`` when the venue has no such order.
+
+        ``None`` is the venue's own "order does not exist" answer (code -2013) — a truthful
+        NOT_FOUND, meaning the submit did not land. Any other rejection raises, so an ambiguous
+        query becomes UNRECONCILABLE rather than being read as "no position". Queried by
+        ``origClientOrderId``, which is the idempotency key.
+
+        Retention caveat (venue-documented): an order that was cancelled/expired with no fill
+        stops being queryable after 3 days, so ``None`` is only a reliable "did not land" signal
+        near the time of the submit — which is exactly when reconcile runs."""
+        body, code = self._signed_request(
+            "GET", ORDER_PATH, {"symbol": symbol, "origClientOrderId": client_order_id},
+            timeout_seconds=timeout_seconds,
         )
+        if code is not None:
+            if code == VENUE_ORDER_DOES_NOT_EXIST:
+                return None
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}")
+        return body if isinstance(body, dict) else None
 
 
 def select_order_adapter(*, now: str | None = None, root: Path | None = None) -> OrderAdapter:
@@ -278,6 +470,9 @@ def submit_and_reconcile(
             request["symbol"], request["newClientOrderId"], timeout_seconds=timeout_seconds
         )
     except ToolError as exc:
+        # No venue answer at all: the fill is unknown, NOT empty — `_fill_facts(None)` reports
+        # every figure as None so a caller can never read an unreconciled order as a free trade.
+        venue_order = None
         status, mismatches, exchange_order_id = (
             UNRECONCILABLE,
             [f"reconcile query failed: {exc.reason_code}"],
@@ -293,8 +488,35 @@ def submit_and_reconcile(
         "exchange_order_id": exchange_order_id,
         "client_order_id": request["newClientOrderId"],
         "symbol": request["symbol"],
-        "reduce_only": request["reduceOnly"],
+        # A closePosition leg carries no reduceOnly (mutually exclusive at the venue).
+        "reduce_only": bool(request.get("reduceOnly")),
+        "order_type": request["type"],
+        # The ACTUAL fill, straight from the venue — what LP5 must compute realized PnL from,
+        # never the modelled entry/exit the plan carried (the venue reports these as strings).
+        "fill": _fill_facts(venue_order),
         "submit_error": submit_error,
         "submit_response": submit_response,
         "created_at": now,
+    }
+
+
+def _fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The venue's own fill numbers, coerced to floats where they parse.
+
+    ``avgPrice`` is the real average fill price and ``cumQuote`` the filled notional — the two
+    figures a truthful ``realized_pnl_usdt`` has to come from. A field that will not parse is
+    reported as ``None`` rather than zero: a missing fill price must not read as a free trade."""
+    if not isinstance(venue_order, Mapping):
+        return {"avg_price": None, "executed_qty": None, "cum_quote": None}
+
+    def _num(key: str) -> float | None:
+        try:
+            return float(venue_order.get(key))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "avg_price": _num("avgPrice"),
+        "executed_qty": _num("executedQty"),
+        "cum_quote": _num("cumQuote"),
     }

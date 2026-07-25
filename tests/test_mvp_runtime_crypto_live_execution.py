@@ -1,13 +1,19 @@
-"""LP4 order-adapter tests (increment 1 — the skeleton).
+"""LP4 order-adapter tests (increments 1 + 2a).
 
-Under test: the intent→request mapping (reduceOnly carried faithfully, MARKET only); the
-reconcile comparison and its status vocabulary; the submit+reconcile orchestration
+Under test: the intent→request mapping (reduceOnly carried faithfully, the conditional bracket
+types, the venue's closePosition/quantity/reduceOnly exclusivity and client-order-id charset);
+the reconcile comparison and its status vocabulary; the submit+reconcile orchestration
 (reconcile-first, never blind-retry; guard-approval belt-and-suspenders); the Safety-Flag gate
-selection (inert by default, env alone fails closed); and that the real send path does NOT exist
-yet (the gated adapter is a stub). Nothing here opens a socket.
+selection (inert by default, env alone fails closed); the **signed transport** (signature and
+timestamp present, secret never in the URL, -2013 is NOT_FOUND rather than an error, any other
+rejection raises so it becomes UNRECONCILABLE, a transport failure never leaks the signed URL);
+and the actual-fill facts LP5 needs. **Nothing here opens a socket** — ``urlopen`` is intercepted.
 """
 
 from __future__ import annotations
+
+import io
+import json
 
 import pytest
 
@@ -202,18 +208,232 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
-def test_real_send_path_does_not_exist_yet():
-    """Increment 1: even fully authorized, the real adapter cannot send — the order path is a
-    stub, so ORDER_PATH_IMPLEMENTED stays honestly False."""
+def test_no_autonomous_path_can_reach_the_venue_yet():
+    """Increment 2a: the real transport exists, but the two governance/readiness flags stay OFF
+    in lockstep, so the readiness board cannot report READY and nothing autonomous routes here.
+    The lockstep flip is increment 2b."""
     from runtime.mvp_runtime.crypto.live_readiness import ORDER_PATH_IMPLEMENTED
     assert ORDER_PATH_IMPLEMENTED is False
+
+
+def test_real_adapter_refuses_without_credentials(monkeypatch):
+    """Authorized by the gate but no order key configured => refuses by NAME, never a value,
+    and never opens a socket."""
+    monkeypatch.delenv(lx.ORDER_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(lx.ORDER_API_SECRET_ENV, raising=False)
     adapter = lx.BinanceFuturesOrderAdapter(authorization=_LIVE_AUTH)
     with pytest.raises(ToolError) as exc:
-        adapter.submit({"newClientOrderId": "x"})
-    assert exc.value.reason_code == lx.ORDER_PATH_NOT_IMPLEMENTED
+        adapter.submit(lx.build_order_request(_intent()))
+    assert exc.value.reason_code == lx.NO_ORDER_API_KEY
+    assert lx.ORDER_API_KEY_ENV in exc.value.reason        # the name is reportable
+    assert "secret" not in exc.value.reason.lower().replace("api_secret", "")
 
 
 def test_real_adapter_rejects_a_disallowed_host():
     with pytest.raises(ToolError) as exc:
         lx.BinanceFuturesOrderAdapter(base_url="https://evil.example.com", authorization=_LIVE_AUTH)
     assert exc.value.reason_code == "ORDER_HOST_NOT_ALLOWED"
+
+
+# --- increment 2a: conditional order types (the LP5 bracket) ------------------
+
+def _cond_intent(order_type, **kw):
+    intent = dict(_intent())
+    intent["order_type_exchange"] = order_type
+    intent.setdefault("stop_price", 59000.0)
+    intent.update(kw)
+    return intent
+
+
+@pytest.mark.parametrize("order_type", ["STOP_MARKET", "TAKE_PROFIT_MARKET"])
+def test_conditional_order_carries_the_stop_price(order_type):
+    req = lx.build_order_request(_cond_intent(order_type, reduce_only=True))
+    assert req["type"] == order_type and req["stopPrice"] == 59000.0
+    assert req["reduceOnly"] is True and req["quantity"] > 0
+
+
+@pytest.mark.parametrize("order_type", ["STOP_MARKET", "TAKE_PROFIT_MARKET"])
+def test_conditional_order_without_a_stop_price_is_refused(order_type):
+    intent = _cond_intent(order_type)
+    intent["stop_price"] = 0
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request(intent)
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_working_type_is_validated_and_passed_through():
+    req = lx.build_order_request(_cond_intent("STOP_MARKET", working_type="MARK_PRICE"))
+    assert req["workingType"] == "MARK_PRICE"
+    with pytest.raises(ToolError):
+        lx.build_order_request(_cond_intent("STOP_MARKET", working_type="LAST_PRICE"))
+
+
+def test_close_position_excludes_quantity_and_reduce_only():
+    """Venue rule: closePosition=true is mutually exclusive with BOTH quantity and reduceOnly."""
+    req = lx.build_order_request(_cond_intent("STOP_MARKET", close_position=True, reduce_only=True))
+    assert req["closePosition"] == "true"
+    assert "quantity" not in req and "reduceOnly" not in req
+
+
+def test_close_position_is_refused_on_a_market_order():
+    """closePosition is a Close-All conditional behaviour; on MARKET the venue would reject it."""
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request({**_intent(), "close_position": True})
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_unsupported_order_type_is_refused():
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request({**_intent(), "order_type_exchange": "LIMIT"})
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_client_order_id_charset_is_enforced():
+    """The venue's own charset rule — a bad character would be rejected at the venue."""
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request({**_intent(), "client_order_id": "bad id!"})
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+    # 37 chars exceeds the venue's 36 limit.
+    with pytest.raises(ToolError):
+        lx.build_order_request({**_intent(), "client_order_id": "A" * 37})
+
+
+# --- increment 2a: the signed transport (urlopen intercepted, no network) -----
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code, msg):
+    import urllib.error
+    body = json.dumps({"code": code, "msg": msg}).encode("utf-8")
+    return urllib.error.HTTPError("https://redacted", 400, msg, {}, io.BytesIO(body))
+
+
+@pytest.fixture
+def order_creds(monkeypatch):
+    monkeypatch.setenv(lx.ORDER_API_KEY_ENV, "test-key")
+    monkeypatch.setenv(lx.ORDER_API_SECRET_ENV, "test-secret")
+
+
+def _adapter():
+    return lx.BinanceFuturesOrderAdapter(authorization=_LIVE_AUTH)
+
+
+def test_submit_signs_the_request_and_never_sends_the_secret(monkeypatch, order_creds):
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["method"] = request.method
+        seen["headers"] = dict(request.headers)
+        return _FakeResponse({"orderId": 99, "status": "NEW"})
+
+    monkeypatch.setattr(lx.urllib.request, "urlopen", fake_urlopen)
+    body = _adapter().submit(lx.build_order_request(_intent()))
+    assert body["orderId"] == 99
+    assert seen["method"] == "POST" and "/fapi/v1/order?" in seen["url"]
+    # Signed, timestamped, and the key rides in the header — never the secret anywhere.
+    assert "signature=" in seen["url"] and "timestamp=" in seen["url"]
+    assert seen["headers"].get("X-mbx-apikey") == "test-key"
+    assert "test-secret" not in seen["url"]
+
+
+def test_fetch_order_queries_by_client_order_id(monkeypatch, order_creds):
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["method"] = request.method
+        return _FakeResponse({"orderId": 7, "status": "FILLED", "executedQty": "0.001"})
+
+    monkeypatch.setattr(lx.urllib.request, "urlopen", fake_urlopen)
+    order = _adapter().fetch_order("BTCUSDT", "TAI_X")
+    assert order["orderId"] == 7 and seen["method"] == "GET"
+    assert "origClientOrderId=TAI_X" in seen["url"]
+
+
+def test_order_does_not_exist_is_none_not_an_error(monkeypatch, order_creds):
+    """Venue code -2013 is a truthful NOT_FOUND, so it must be None — not UNRECONCILABLE."""
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(-2013, "Order does not exist.")))
+    assert _adapter().fetch_order("BTCUSDT", "TAI_X") is None
+
+
+def test_any_other_query_rejection_raises_so_it_becomes_unreconcilable(monkeypatch, order_creds):
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(-1021, "Timestamp out of recvWindow.")))
+    with pytest.raises(ToolError) as exc:
+        _adapter().fetch_order("BTCUSDT", "TAI_X")
+    assert exc.value.reason_code == lx.ORDER_REJECTED
+
+
+def test_a_rejected_submit_raises_with_the_venue_reason(monkeypatch, order_creds):
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(-2019, "Margin is insufficient.")))
+    with pytest.raises(ToolError) as exc:
+        _adapter().submit(lx.build_order_request(_intent()))
+    assert exc.value.reason_code == lx.ORDER_REJECTED and "-2019" in exc.value.reason
+
+
+def test_a_duplicate_client_order_id_is_reported_as_already_landed(monkeypatch, order_creds):
+    """Idempotency working as designed: the original landed, so reconcile decides the outcome."""
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(-4116, "clientOrderId is duplicated")))
+    with pytest.raises(ToolError) as exc:
+        _adapter().submit(lx.build_order_request(_intent()))
+    assert "already landed" in exc.value.reason
+
+
+def test_a_transport_failure_never_leaks_the_signed_url(monkeypatch, order_creds):
+    import urllib.error
+
+    def boom(*a, **k):
+        raise urllib.error.URLError("connection reset to https://fapi.binance.com/...signature=SECRETSIG")
+
+    monkeypatch.setattr(lx.urllib.request, "urlopen", boom)
+    with pytest.raises(ToolError) as exc:
+        _adapter().submit(lx.build_order_request(_intent()))
+    assert exc.value.reason_code == lx.ORDER_TRANSPORT
+    assert "signature" not in exc.value.reason and "SECRETSIG" not in exc.value.reason
+
+
+def test_an_unparseable_body_is_refused(monkeypatch, order_creds):
+    class _Bad(_FakeResponse):
+        def __init__(self):
+            self._raw = b"not json"
+
+    monkeypatch.setattr(lx.urllib.request, "urlopen", lambda *a, **k: _Bad())
+    with pytest.raises(ToolError) as exc:
+        _adapter().submit(lx.build_order_request(_intent()))
+    assert exc.value.reason_code == lx.ORDER_MALFORMED_RESULT
+
+
+# --- increment 2a: the fill facts LP5 needs ----------------------------------
+
+def test_reconcile_result_carries_the_actual_fill():
+    intent = _intent()
+    adapter = _FakeAdapter(venue_order={**_venue_order_from(intent),
+                                        "avgPrice": "60000.5", "cumQuote": "60.0005"})
+    res = lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
+    assert res["fill"]["avg_price"] == 60000.5 and res["fill"]["cum_quote"] == 60.0005
+    assert res["order_type"] == "MARKET"
+
+
+def test_an_unreconciled_order_reports_an_unknown_fill_not_a_free_trade():
+    """None, never 0.0 — a missing fill price must not read as a costless trade."""
+    res = lx.submit_and_reconcile(
+        _intent(), adapter=_FakeAdapter(fetch_raises="TOOL_TRANSPORT"),
+        guard_verdict=APPROVED, now=NOW)
+    assert res["reconcile_status"] == lx.UNRECONCILABLE
+    assert res["fill"] == {"avg_price": None, "executed_qty": None, "cum_quote": None}
