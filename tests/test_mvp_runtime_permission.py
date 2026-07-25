@@ -53,7 +53,7 @@ def test_unbound_task_blocks_everywhere():
 @requires_local_core
 def test_allow_decision_is_schema_and_semantics_valid():
     rec = _decide(_bound_task())
-    assert rec["schema_version"] == "permission_decision.v0.3"
+    assert rec["schema_version"] == "permission_decision.v0.4"
     assert rec["permission_decision_id"].startswith("permdec_")
     assert rec["decision"]["permission_decision"] == "ALLOW"
     assert rec["risk"]["policy_disposition"] == "ALLOW"
@@ -225,3 +225,87 @@ def test_write_is_a_distinct_action_from_analysis_and_search():
     fps = {write["action_fingerprint"], search["action_fingerprint"], analysis["action_fingerprint"]}
     assert len(ids) == 3
     assert len(fps) == 3
+
+
+# --- LP4: live-order permission decision (P5, EXECUTE_AND_REPORT, grants nothing) ---
+# These use a SYNTHETIC bound task (build_permission_decision only checks the ccb- prefix,
+# not a real activated Core), so unlike the sibling tests above they run everywhere — the
+# live-order path must be exercised on core-neutral CI, not only where a local Core exists.
+
+from runtime.read_only_kernel import integrity
+from runtime.mvp_runtime.permission import build_live_order_permission_decision
+
+_SYNTH_TID = "task_live_order_unit_001"
+
+
+def _synthetic_bound():
+    return {
+        "identity": {"task_id": _SYNTH_TID, "trace_id": "trace_live_order_unit_001",
+                     "task_revision": 1},
+        "context": {"core_context_binding_id": f"ccb-unit:{_SYNTH_TID}:r1"},
+    }
+
+
+def _order_fp(**over):
+    seed = {"symbol": "BTCUSDT", "side": "SELL", "notional": "55.00", "stage": "live"}
+    seed.update(over)
+    return integrity.sha256_record(seed)
+
+
+def _live_order(ceiling="P5", **over):
+    params = dict(role_permission_ceiling=ceiling, symbol="BTCUSDT", side="SELL",
+                  notional_usdt=55.0, order_fingerprint=_order_fp(), now=FIXED_NOW)
+    params.update(over)
+    return build_live_order_permission_decision(_synthetic_bound(), **params)
+
+
+def test_live_order_decision_is_execute_and_report_at_p5():
+    rec = _live_order()
+    assert rec["schema_version"] == "permission_decision.v0.4"
+    assert rec["fingerprint_payload"]["permission_scope"] == "FINANCIAL_APPROVED_TRADING_USE"
+    assert rec["decision"]["permission_decision"] == "EXECUTE_AND_REPORT"
+    assert rec["risk"]["policy_disposition"] == "EXECUTE_AND_REPORT"
+    assert rec["authority"]["required_permission_level"] == "P5"
+    assert rec["authority"]["authority_sufficient"] is True
+
+
+def test_live_order_decision_grants_nothing():
+    """Building the decision is REVIEW_ONLY evidence: every runtime-effect flag stays false.
+    Nothing here sends an order — that is LP4's gated adapter, which does not exist yet."""
+    effect = _live_order()["runtime_effect"]
+    assert effect["mode"] == "REVIEW_ONLY"
+    assert effect["external_execution_allowed"] is False
+    assert effect["financial_execution_allowed"] is False
+    assert all(v is False for k, v in effect.items() if k != "mode")
+
+
+def test_live_order_refused_below_p5():
+    """A P5 action needs a P5 actor. Every ordinary role (P3 or lower) is refused here by the
+    authority invariant — which is why a dedicated execution.live_trader role is required."""
+    for ceiling in ("P2", "P3", "P4"):
+        with pytest.raises(PlannerBlocked) as exc:
+            _live_order(ceiling=ceiling)
+        assert exc.value.reason_code == "AUTHORITY_INSUFFICIENT"
+
+
+def test_live_order_notional_is_a_decimal_string_not_a_float():
+    """The action fingerprint forbids floats; the notional must canonicalize deterministically."""
+    params = _live_order()["fingerprint_payload"]["normalized_parameters"]
+    assert params["order_notional_usdt"] == "55.00"
+    assert isinstance(params["order_notional_usdt"], str)
+
+
+def test_live_order_binds_this_exact_order():
+    """A different order (side, notional, or its own fingerprint) yields a different action
+    fingerprint, so a decision cannot be reused for another order."""
+    base = _live_order()["action_fingerprint"]
+    assert _live_order(side="BUY")["action_fingerprint"] != base
+    assert _live_order(notional_usdt=120.0)["action_fingerprint"] != base
+    assert _live_order(order_fingerprint=_order_fp(symbol="ETHUSDT"))["action_fingerprint"] != base
+
+
+def test_live_order_is_distinct_from_a_write():
+    rec = _live_order()
+    write = build_write_permission_decision(_synthetic_bound(), role_permission_ceiling="P5", now=FIXED_NOW)
+    assert rec["action_fingerprint"] != write["action_fingerprint"]
+    assert rec["fingerprint_payload"]["action_type"] == "exchange.order.place"
