@@ -73,6 +73,14 @@ DEFAULT_FUNDING_RECORDS = 1600  # ≥ 3 events/day × FACTORY_DEPTH_DAYS, with h
 
 # Closed vocabulary, identical on both collectors and on Binance's interval strings.
 TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+
+# The higher timeframe each authorable timeframe reads its regime from — one step up
+# the LADDER THE RUNTIME ALREADY TRADES, so an HTF context is itself a collected
+# context rather than a new data dependency. Ratios are 4x/4x/6x, the conventional
+# band for a regime filter. ``1d`` is deliberately absent: the step above it (1w) is
+# not collected, and a timeframe with no entry here simply has no HTF features —
+# they stay indeterminate, so an htf_* spec can never match there.
+HIGHER_TIMEFRAME: dict[str, str] = {"15m": "1h", "1h": "4h", "4h": "1d"}
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
 MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120

@@ -492,8 +492,9 @@ def _execute(
         # the factory can never touch the active pool (promotion is the operator
         # door). A degraded backend simply skips the run: candidates mined from no
         # data would be evidence-free noise.
+        from .crypto import market_data
         from .crypto import pool as crypto_pool
-        from .crypto.cycle import attach_feeds
+        from .crypto.cycle import attach_feeds, attach_htf
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
@@ -519,6 +520,13 @@ def _execute(
         # evaluates — one feature source for backtest and live (the source rule).
         attach_feeds(snapshot, collector=collector,
                      liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now)
+        # The same rule for the HTF leg: mining htf_* families over a frame with no
+        # higher timeframe would score every one of them as a no-trade spec. The
+        # window must cover the replay span, so the depth is the higher timeframe's
+        # own factory target, not the live default.
+        higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
+        attach_htf(snapshot, collector=collector, now=now,
+                   limit=factory_candle_target(higher) if higher else None)
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),
