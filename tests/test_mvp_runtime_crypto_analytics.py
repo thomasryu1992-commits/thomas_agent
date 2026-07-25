@@ -268,8 +268,9 @@ def test_blocked_cycle_opens_shadow_and_allowed_cycle_does_not(tmp_path):
     # Poison the risk history so the verdict blocks while the route still matches.
     state = paper.state_dir(tmp_path)
     state.mkdir(parents=True, exist_ok=True)
-    losses = [{"result_R": -1.2, "outcome_closed": True, "outcome_id": f"o{i}",
-               "created_at_utc": f"2026-07-22T0{i}:00:00Z"} for i in range(2)]
+    # This runtime's OWN losses — the risk guard counts only these (imported history cannot
+    # answer "is this system losing right now"), so the fixture carries the paper provenance.
+    losses = [_own_outcome(-1.2, f"2026-07-22T0{i}:00:00Z", outcome_id=f"o{i}") for i in range(2)]
     with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
         for o in losses:
             handle.write(json.dumps(o) + "\n")
@@ -291,8 +292,7 @@ def test_dry_run_cycle_computes_shadow_without_persisting(tmp_path):
     state = paper.state_dir(tmp_path)
     state.mkdir(parents=True, exist_ok=True)
     with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"result_R": -3.0, "outcome_closed": True, "outcome_id": "o1",
-                                 "created_at_utc": "2026-07-22T01:00:00Z"}) + "\n")
+        handle.write(json.dumps(_own_outcome(-3.0, "2026-07-22T01:00:00Z", outcome_id="o1")) + "\n")
     record = run_crypto_cycle(
         collector=FakeExchangeCollector(), store=DryRunPaperStore(),
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
@@ -351,3 +351,48 @@ def test_dashboard_degrades_unreadable_inputs_to_warnings(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert any("outcome store unreadable" in w for w in status["warnings"])
     assert "WARNING" in render_status_text(status)
+
+
+def test_imported_history_cannot_offset_the_risk_breaker(tmp_path):
+    """The reason the guard was scoped to own outcomes.
+
+    Imported crypto_AI_System history is real but was produced by different code, so it cannot
+    answer "is THIS system losing right now". Measured 2026-07-25: 112 imported rows worth
+    +266.8R sat inside the rolling week, so the weekly-loss breaker could not trip however this
+    runtime performed. Here a big imported profit sits alongside this runtime's own losses — the
+    breaker must still trip.
+    """
+    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
+
+    _install_pool(tmp_path, _always_spec())
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True, exist_ok=True)
+    rows = [_own_outcome(-1.2, f"2026-07-22T0{i}:00:00Z", outcome_id=f"own{i}") for i in range(2)]
+    rows += [{"result_R": 200.0, "outcome_closed": True, "outcome_id": "imported-1",
+              "created_at_utc": "2026-07-22T05:00:00Z",
+              "provenance": paper.IMPORTED_PROVENANCE}]
+    with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+
+    record = run_crypto_cycle(
+        collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
+        now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+    # +200R of someone else's history does not clear this runtime's own daily loss.
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    shadows = counterfactual.load_open_counterfactuals(tmp_path)
+    assert shadows and "daily_loss_limit_breached" in shadows[0]["block_reasons"]
+
+
+def test_lifecycle_still_sees_the_full_history(tmp_path):
+    """Deliberately NOT filtered: imported outcomes carry strategy lineage, and
+    promotion/demotion is a performance judgement about a strategy, not a safety brake on this
+    runtime. Scoping the guard must not silently change what lifecycle reads."""
+    import inspect
+
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    source = inspect.getsource(cycle_mod.run_crypto_cycle)
+    assert "run_risk_guard(own_outcomes" in source      # guard: own only
+    assert "run_lifecycle(active_pool, outcomes" in source   # lifecycle: full history
