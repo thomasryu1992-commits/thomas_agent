@@ -372,25 +372,28 @@ def test_a_failed_send_is_not_recorded_as_delivered(tmp_path, monkeypatch):
 
     summary = run_operator_once(channel, REG, registry=store, repo_root=tmp_path)
 
-    assert summary["send_failures"] == 1
+    # Both sends failed — the queue acknowledgement and the result — and both are counted.
+    assert summary["send_failures"] == 2
     entry = store.latest()[0]
     assert entry.status == task_registry.FAILED
     assert entry.last_reason_code == "SEND_FAILED"
 
 
-def test_a_blocked_run_is_closed_without_waiting_for_a_send(tmp_path, monkeypatch):
+def test_a_blocked_run_is_closed_by_the_drain(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "runtime.mvp_runtime.operator.run_task",
         lambda *a, **k: {"status": "BLOCKED", "block": {"reason_code": "PROVIDER_ERROR"},
                          "records": {}},
     )
     store = _registry(tmp_path)
-    reply = handle_operator_message(_msg("분석해줘: 아이디어"), registration=REG, registry=store,
-                                    now=NOW, repo_root=tmp_path)
+    channel = MockOperatorChannel(inbound=[_msg("분석해줘: 아이디어")])
 
-    assert reply.open_registry_entry_id is None      # nothing left for the sender to close
+    run_operator_once(channel, REG, registry=store, repo_root=tmp_path)
+
     entry = store.latest()[0]
     assert entry.status == BLOCKED and entry.last_reason_code == "PROVIDER_ERROR"
+    # The block's reply still reaches Thomas, on the same channel.
+    assert any("PROVIDER_ERROR" in text for _chat, text in channel.sent)
 
 
 def test_console_commands_do_not_create_registry_entries(tmp_path):
