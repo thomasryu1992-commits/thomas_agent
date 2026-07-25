@@ -374,6 +374,10 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     (``reward_risk_basis`` ``"designed"``)."""
     evidence = record.get("backtest_evidence") or {}
     robustness = evidence.get("robustness") or {}
+    # Out-of-sample status rides into the ranking view so the promotion door can show
+    # it: with ROBUST now gated on it, "PROVISIONAL because unconfirmed" and
+    # "PROVISIONAL because it failed forward" are very different things to promote.
+    holdout_state = str(robustness.get("holdout_status") or "UNCONFIRMED")
     closed = int(_as_float(evidence.get("closed_count")))
     win_count = int(_as_float(evidence.get("win_count")))
     win_rate = round(win_count / closed, 8) if closed else 0.0
@@ -398,6 +402,7 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_id": candidate_id(record),
         "verdict": robustness.get("verdict"),
         "verdict_rank": verdict_rank(robustness.get("verdict")),
+        "holdout_status": holdout_state,
         "robustness_score": round(_as_float(record.get("champion_score")), 8),
         "win_rate": win_rate,
         "reward_risk": reward_risk,

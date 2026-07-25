@@ -56,6 +56,18 @@ def verdict_rank(verdict: Any) -> int:
 ROBUST_SCORE_THRESHOLD = 0.70
 FRAGILE_SCORE_THRESHOLD = 0.35
 
+# Out-of-sample confirmation (the factory's holdout — see factory.HOLDOUT_FRACTION).
+# ROBUST is the only verdict that claims an edge is believable, so it is the only one
+# that must be earned on bars the score never saw. Everything the scorer measured
+# before this was in-sample by construction, which meant a high score could not
+# distinguish a real edge from a lucky fit; promotion then selected the maximum of
+# many such scores, which is how noise gets promoted.
+HOLDOUT_CONFIRMED = "CONFIRMED"          # enough unseen trades, and profitable
+HOLDOUT_CONTRADICTED = "CONTRADICTED"    # enough unseen trades, and not profitable
+HOLDOUT_INSUFFICIENT = "INSUFFICIENT"    # the tail produced too few trades to judge
+HOLDOUT_UNCONFIRMED = "UNCONFIRMED"      # no holdout was evaluated at all
+MIN_HOLDOUT_TRADES = 3
+
 WEIGHTS: dict[str, float] = {
     "sample_adequacy": 0.30,
     "temporal_consistency": 0.25,
@@ -133,8 +145,15 @@ def _warnings(
     walk_forward: Mapping[str, Any],
     regime_breakdown: Mapping[str, Any],
     components: Mapping[str, float],
+    holdout_state: str = HOLDOUT_UNCONFIRMED,
 ) -> list[str]:
     warnings: list[str] = []
+    if holdout_state == HOLDOUT_CONTRADICTED:
+        warnings.append("holdout_contradicts_in_sample_edge")
+    elif holdout_state == HOLDOUT_INSUFFICIENT:
+        warnings.append("holdout_too_thin_to_confirm")
+    elif holdout_state == HOLDOUT_UNCONFIRMED:
+        warnings.append("no_out_of_sample_evidence")
     if trades_per_parameter < CRITICAL_TRADES_PER_PARAMETER:
         warnings.append("trades_per_parameter_below_critical")
     elif trades_per_parameter < HEALTHY_TRADES_PER_PARAMETER:
@@ -153,13 +172,31 @@ def _warnings(
     return sorted(set(warnings))
 
 
-def _verdict(score: float, trades_per_parameter: float) -> str:
+def holdout_status(holdout: Mapping[str, Any] | None) -> str:
+    """Classify what the untouched tail showed. Fail-closed toward not-confirmed.
+
+    A missing holdout block (every candidate minted before this existed) reads as
+    UNCONFIRMED rather than as a pass: no evidence of out-of-sample survival is not
+    evidence of it — the same rule this module already applies to unknown verdicts."""
+    if not isinstance(holdout, Mapping):
+        return HOLDOUT_UNCONFIRMED
+    closed = holdout.get("closed_count")
+    if not isinstance(closed, (int, float)) or isinstance(closed, bool) or closed < MIN_HOLDOUT_TRADES:
+        return HOLDOUT_INSUFFICIENT if isinstance(holdout, Mapping) and holdout else HOLDOUT_UNCONFIRMED
+    return HOLDOUT_CONFIRMED if _f(holdout.get("total_R")) > 0 else HOLDOUT_CONTRADICTED
+
+
+def _verdict(score: float, trades_per_parameter: float, holdout_state: str) -> str:
     # The veto is not a tiebreak: below the critical ratio every other component is
     # computed on the same too-small sample — a high score there IS the overfitting.
     if trades_per_parameter < CRITICAL_TRADES_PER_PARAMETER:
         return FRAGILE
     if score >= ROBUST_SCORE_THRESHOLD:
-        return ROBUST
+        # The in-sample score alone can no longer award ROBUST. A candidate that scored
+        # well and then failed (or never faced) unseen bars is exactly the one this
+        # tier exists to keep out of the promotion shortlist; it stays PROVISIONAL,
+        # which is what "looks good, unproven forward" honestly means.
+        return ROBUST if holdout_state == HOLDOUT_CONFIRMED else PROVISIONAL
     if score < FRAGILE_SCORE_THRESHOLD:
         return FRAGILE
     return PROVISIONAL
@@ -170,8 +207,15 @@ def score_robustness(
     metrics: Mapping[str, Any],
     walk_forward: Mapping[str, Any],
     regime_breakdown: Mapping[str, Any],
+    holdout: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Score how much of this strategy's backtest is believable."""
+    """Score how much of this strategy's backtest is believable.
+
+    ``holdout`` is the factory's out-of-sample tail (omitted by callers predating it,
+    which then read as UNCONFIRMED). It never moves the score — it gates the ROBUST
+    verdict, so the number stays comparable across candidates while the tier means
+    something stronger."""
+    holdout_state = holdout_status(holdout)
     free_parameters = count_free_parameters(spec)
     trade_count = int(metrics.get("trade_count", 0) or 0)
     trades_per_parameter = (trade_count / free_parameters) if free_parameters > 0 else 0.0
@@ -193,8 +237,10 @@ def score_robustness(
         "components": {name: round(value, 6) for name, value in components.items()},
         "weights": dict(WEIGHTS),
         "robustness_score": round(score, 6),
-        "verdict": _verdict(score, trades_per_parameter),
-        "warnings": _warnings(trades_per_parameter, walk_forward, regime_breakdown, components),
+        "holdout_status": holdout_state,
+        "verdict": _verdict(score, trades_per_parameter, holdout_state),
+        "warnings": _warnings(trades_per_parameter, walk_forward, regime_breakdown,
+                              components, holdout_state),
         "healthy_trades_per_parameter": HEALTHY_TRADES_PER_PARAMETER,
         "critical_trades_per_parameter": CRITICAL_TRADES_PER_PARAMETER,
     }

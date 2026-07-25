@@ -207,7 +207,9 @@ def test_backtest_is_deterministic_and_produces_outcomes():
     assert a["score_basis"] == "robustness_score_v1"  # C8b: anti-overfit score
     assert a["champion_score"] == a["robustness"]["robustness_score"]
     assert a["robustness"]["verdict"] in {"ROBUST", "PROVISIONAL", "FRAGILE"}
-    assert a["bars_replayed"] == 200
+    # bars_replayed is what the SCORE saw; the rest is the untouched holdout tail.
+    assert a["bars_replayed"] == factory.holdout_split_index(200) == 140
+    assert a["holdout"]["bars"] == 200 - 140
     # M4a: realized payoff legs ride in the evidence for the promotion ranking.
     assert "avg_win_R" in a and "avg_loss_R" in a
     assert a["avg_win_R"] >= 0.0 and a["avg_loss_R"] >= 0.0
