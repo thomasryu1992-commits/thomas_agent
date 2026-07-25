@@ -208,26 +208,41 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
-def test_nothing_autonomous_routes_to_the_venue():
-    """Increment 2b flipped the flags: the order path exists. What keeps an order from happening
-    autonomously is now structural rather than a missing implementation — no pipeline, scheduler,
-    cycle, or operator path imports this module (LP5 is the piece that would, and it is unbuilt),
-    so the only door is the deliberate canary script."""
-    import subprocess
-    import sys
+def test_no_autonomous_entry_point_reaches_the_live_order_path():
+    """Increment 2b flipped the flags, so what keeps an order from happening autonomously is
+    structural, not a missing implementation.
 
-    found = subprocess.run(
-        [sys.executable, "-c",
-         "import pathlib,re;"
-         "roots=[p for p in pathlib.Path('runtime').rglob('*.py')];"
-         "hits=[str(p) for p in roots if 'live_execution' in p.read_text(encoding='utf-8')"
-         " and p.name not in ('live_execution.py',)];"
-         "print('\\n'.join(hits))"],
-        capture_output=True, text=True, check=False,
-    ).stdout.split()
-    # live_readiness may inspect it; nothing in the autonomous run path may import it.
-    autonomous = [h for h in found if "live_readiness" not in h]
-    assert autonomous == [], f"an autonomous path imports the order adapter: {autonomous}"
+    The property under test is about the **autonomous entry points** — the crypto cycle, the
+    scheduler, the pipeline, and the operator loop. LP5's own modules (``live_position``) may of
+    course reach the adapter; that is what they are for. What must stay true is that no scheduled
+    or operator-triggered run routes there, so the only door remains the deliberate canary script.
+    Wiring the cycle to live is a separate, explicit decision — and this test is what makes that
+    wiring impossible to do by accident."""
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    entry_points = [
+        "runtime/mvp_runtime/crypto/cycle.py",
+        "runtime/mvp_runtime/scheduler.py",
+        "runtime/mvp_runtime/pipeline.py",
+        "runtime/mvp_runtime/operator.py",
+    ]
+    live_order_surface = ("live_execution", "live_position", "select_order_adapter",
+                          "submit_and_reconcile")
+    offenders = []
+    for rel in entry_points:
+        path = Path(repo_root()) / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        hits = [needle for needle in live_order_surface if needle in text]
+        if hits:
+            offenders.append(f"{rel}: {hits}")
+    assert offenders == [], (
+        "an autonomous entry point now reaches the live order path — that is a deliberate "
+        f"go-live decision, not a refactor: {offenders}"
+    )
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):

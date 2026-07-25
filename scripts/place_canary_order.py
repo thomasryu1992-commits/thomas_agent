@@ -40,6 +40,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     resolve_live_order_limits,
 )
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
+from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
 from runtime.mvp_runtime.errors import MvpRuntimeError
 
 
@@ -81,9 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         clean_count, canary_error = live_promotion.clean_canary_order_count(root)
         submitted_today = count_today(root)
 
-        # 3. Open exposure from the VENUE. The guard's 0.0 default is its one fail-open path, so a
-        #    canary refuses rather than guessing when the account cannot be read.
+        # 3. Open exposure from the VENUE, via LP5's fail-closed supplier (an unreadable account
+        #    reports at-cap, never 0.0 — the guard's one fail-open path). A canary additionally
+        #    refuses outright, because "configure the account feed" is the actionable answer for a
+        #    deliberate operator tool, rather than a cap refusal it has to decode.
         snapshot, account_use = read_account(timeout_seconds=args.timeout_seconds)
+        open_notional = compute_open_notional_usdt(
+            snapshot, at_cap=limits.max_open_notional_usdt
+        )
         if snapshot is None:
             sys.stderr.write(
                 "BLOCKED NO_ACCOUNT_VISIBILITY: cannot read the venue account, so open exposure "
@@ -91,7 +97,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"account feed first (account_use={account_use.get('degraded_reason_code')}).\n"
             )
             return EXIT_BLOCKED
-        open_notional = live_execution.open_notional_from_positions(snapshot.positions)
 
         # 4. The gate. Selecting the adapter is what proves the grant: an inert dry-run adapter
         #    means no grant is active, so nothing can be sent — and the guard is told so rather
