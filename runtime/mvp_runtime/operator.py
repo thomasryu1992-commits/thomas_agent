@@ -24,7 +24,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -102,10 +102,9 @@ class OperatorReply:
     status: str                          # ACCEPTED result status, or REFUSED
     reason_code: str | None = None
     trace_id: str | None = None
-    # F1: set only when a coordination entry is still open at return — i.e. the run
-    # COMPLETED and its terminal depends on whether the reply actually reaches Thomas.
-    # Every other outcome is already closed by the time this returns.
-    open_registry_entry_id: str | None = None
+    # F1: the coordination entry this reply is about — set when a request was queued, so
+    # the caller can tell Thomas which id to follow with /tasks or /result.
+    registry_entry_id: str | None = None
 
 
 def load_operator_registration(repo_root: Path | None = None) -> OperatorIdentity:
@@ -368,26 +367,53 @@ def handle_operator_message(
 
     # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
     # the model call takes tens of seconds and the operator otherwise stares at silence.
+    stamp = now or timeutil.utc_now_iso()
+
+    # F1 increment 2: with a registry wired, the request is QUEUED and the loop's drain
+    # runs it between polls. The registry IS the queue, so "no registry" means there is
+    # nothing to queue into and the request runs inline below — that is one rule, not a
+    # mode switch. Queueing is what keeps the channel answering: an inline run holds the
+    # loop for the length of a model call, during which /tasks, /cancel and /kill could
+    # not land.
+    if registry is not None:
+        try:
+            entry, position = task_registry.enqueue(
+                registry, request_text=text, origin="TELEGRAM",
+                requester_id=registration.operator_id, now=stamp,
+                flags={"important": priority == "HIGH",
+                       "independent_validation": bool(independent_validation)},
+            )
+        except MvpRuntimeError as exc:
+            # NOT swallowed, unlike the bookkeeping seam: a request that failed to queue
+            # was never accepted, and silently dropping one Thomas believes is running is
+            # the one outcome worse than refusing it.
+            return OperatorReply(text=exc.reason, accepted=False, status="REFUSED",
+                                 reason_code=exc.reason_code)
+        marker_note = ""
+        if priority == "HIGH":
+            # Truthful note: the marker adds the reviewer only when a validation policy is
+            # active ("auto" or always-on); otherwise it is recorded priority only.
+            marker_note = " · 중요 표시: 독립 검증 포함" if independent_validation else " · 중요 표시 적용"
+        queue_note = "바로 시작합니다" if position == 1 else f"대기 {position}번째"
+        return OperatorReply(
+            text=(f"접수했습니다 ({queue_note}){marker_note}\n"
+                  f"id: {entry.registry_entry_id[:12]}\n"
+                  "완료되면 결과를 보내드립니다 — /tasks 로 진행 상황을 볼 수 있습니다."),
+            accepted=True, status="QUEUED", reason_code="TASK_QUEUED",
+            registry_entry_id=entry.registry_entry_id,
+        )
+
+    # Inline path (no registry): every refusal is behind us, so this message WILL run the
+    # pipeline now. Say so — the model call takes tens of seconds and the operator
+    # otherwise stares at silence.
     if ack is not None:
         marker_note = ""
         if priority == "HIGH":
-            # Truthful note: the marker adds the reviewer only when a validation policy
-            # is active ("auto" or always-on); otherwise it is recorded priority only.
             marker_note = " (중요 표시: 독립 검증 포함)" if independent_validation else " (중요 표시 적용)"
         try:
             ack("접수했습니다 — 분석 중입니다. 모델 호출에 수십 초 걸릴 수 있습니다." + marker_note)
         except OperatorBlocked:
             pass    # best-effort: the notice is a courtesy, the run is the job
-
-    # F1: open the coordination entry BEFORE the run, so a request that dies mid-pipeline
-    # is visible as an abandoned run rather than as nothing having been asked at all.
-    stamp = now or timeutil.utc_now_iso()
-    registry_entry = task_registry.record_submission(
-        registry, request_text=text, origin="TELEGRAM",
-        requester_id=registration.operator_id, now=stamp,
-        flags={"important": priority == "HIGH",
-               "independent_validation": bool(independent_validation)},
-    )
 
     result = run_task(
         text,
@@ -407,26 +433,24 @@ def handle_operator_message(
         authenticated=True,
         source_ref=f"telegram:private_chat:{message.chat_id}",
     )
+    return render_result_reply(result)
+
+
+def render_result_reply(result: dict[str, Any]) -> OperatorReply:
+    """Render a finished pipeline result as the reply Thomas receives.
+
+    Shared by the inline path and the queue drain so the two can never drift on what a
+    blocked run tells him — the drain reaches Thomas through a different door, not with a
+    different voice.
+    """
     identity = result.get("records", {}).get("received_task", {}).get("identity", {})
     trace_id = identity.get("trace_id")
-    task_id = identity.get("task_id")
     if result["status"] == "COMPLETED":
-        # The entry stays RUNNING on purpose: "DELIVERED" must mean the analysis reached
-        # Thomas, and the send has not happened yet. The loop closes it after the send —
-        # and closes it as FAILED/SEND_FAILED if delivery is what broke, which is a real
-        # observed failure mode, not a hypothetical one.
-        return OperatorReply(
-            text=result["final_response"], accepted=True, status="COMPLETED", trace_id=trace_id,
-            open_registry_entry_id=(registry_entry.registry_entry_id if registry_entry else None),
-        )
+        return OperatorReply(text=result["final_response"], accepted=True,
+                             status="COMPLETED", trace_id=trace_id)
 
     block = result.get("block") or {"reason_code": "BLOCKED"}
     reason_code = block.get("reason_code", "BLOCKED")
-    # A withheld run has no deliverable, so its terminal does not depend on the send.
-    task_registry.close_entry(
-        registry, registry_entry, status=task_registry.BLOCKED, now=stamp,
-        task_id=task_id, trace_id=trace_id, reason_code=reason_code,
-    )
     reply_text = f"Your request was not completed ({reason_code})."
     detail = str(block.get("message") or "").strip()
     if detail:
@@ -694,28 +718,134 @@ def _message_from_update(update: dict[str, Any]) -> InboundMessage | None:
     )
 
 
-def _close_open_entry(
-    registry: Any | None,
-    reply: OperatorReply,
+def run_queued_task(
+    entry: Any,
     *,
-    now: str | None,
-    status: str,
-    reason_code: str | None = None,
-) -> None:
-    """Give a COMPLETED run's still-open coordination entry its terminal, once the send
-    outcome is known. Best-effort like every other registry write on the run path."""
-    entry_id = reply.open_registry_entry_id
-    if registry is None or not entry_id:
-        return
+    channel: OperatorChannel,
+    registration: OperatorIdentity,
+    registry: Any,
+    provider: Provider | None = None,
+    search_tool: Any | None = None,
+    working_memory: Any | None = None,
+    programization: Any | None = None,
+    now: str | None = None,
+    store: LedgerStore | None = None,
+    independent_validation: bool | str = False,
+    validator_provider: Provider | None = None,
+    repo_root: Path | None = None,
+) -> tuple[OperatorReply, bool]:
+    """Run one already-claimed queued entry, deliver its result, and close the entry.
+
+    Returns ``(reply, delivered)``. ``delivered`` is reported separately rather than folded
+    into ``reply.reason_code``, which for a blocked run already carries the block's own
+    code — overloading it would have made a send failure invisible in the batch summary
+    exactly when the run was withheld.
+
+    The entry arrives RUNNING (``claim_next_queued`` claimed it under the store lock), so
+    this owns exactly one thing: turn it into a terminal that matches what actually
+    happened. ``DELIVERED`` only after the send succeeds — a completed analysis Thomas
+    never received is ``FAILED``/``SEND_FAILED``, and ``/result`` exists so he can still
+    fetch it. Reply text comes from the shared :func:`render_result_reply`, so a run that
+    arrives through the queue speaks the same way as one that ran inline.
+    """
+    stamp = now or timeutil.utc_now_iso()
+    reply = render_result_reply(run_task(
+        entry.request_text,
+        provider=provider,
+        search_tool=search_tool,
+        working_memory=working_memory,
+        programization=programization,
+        now=now,
+        store=store,
+        repo_root=repo_root,
+        independent_validation=independent_validation,
+        validator_provider=validator_provider,
+        priority="HIGH" if entry.flags.get("important") else "NORMAL",
+        channel="telegram",
+        requester_type="real_thomas",
+        requester_id=registration.operator_id,
+        authenticated=True,
+        source_ref=f"telegram:private_chat:{registration.chat_id}",
+    ))
+
+    delivered = True
     try:
-        registry.transition(
-            entry_id, status, now=now or timeutil.utc_now_iso(),
-            trace_id=reply.trace_id,
-            result_ref=f"ledger:{reply.trace_id}" if reply.trace_id else None,
-            reason_code=reason_code,
+        channel.send(registration.chat_id, reply.text)
+    except OperatorBlocked:
+        delivered = False
+
+    if delivered and reply.status == "COMPLETED" and reply.trace_id:
+        # E1: the pointer /feedback binds to. Recorded here rather than in the message
+        # loop because in queue mode this is where a run actually completes — leaving it
+        # behind would have silently degraded /feedback to "no delivered run" forever.
+        # AFTER the send, so feedback can never target a run Thomas did not see.
+        try:
+            operator_feedback.record_delivery(reply.trace_id, now=stamp, repo_root=repo_root)
+        except OperatorBlocked:
+            pass        # best-effort: losing the pointer must not cost the run
+
+    if reply.status == "COMPLETED":
+        status = task_registry.DELIVERED if delivered else task_registry.FAILED
+        reason_code = None if delivered else "SEND_FAILED"
+    else:
+        # A withheld run has no deliverable to lose, so the send outcome does not change
+        # what happened to it — only whether Thomas heard about it.
+        status = task_registry.BLOCKED
+        reason_code = reply.reason_code or "BLOCKED"
+    task_registry.close_entry(
+        registry, entry, status=status, now=stamp, trace_id=reply.trace_id,
+        result_ref=f"ledger:{reply.trace_id}" if reply.trace_id else None,
+        reason_code=reason_code,
+    )
+    return replace(reply, registry_entry_id=entry.registry_entry_id), delivered
+
+
+def drain_queue(
+    *,
+    channel: OperatorChannel,
+    registration: OperatorIdentity,
+    registry: Any | None,
+    control_store: ControlStore | None,
+    max_tasks: int,
+    now: str | None = None,
+    **run_kwargs: Any,
+) -> tuple[list[OperatorReply], int]:
+    """Execute up to ``max_tasks`` queued entries. Returns ``(replies, send_failures)``.
+
+    ``max_tasks`` defaults to 1 at the call site on purpose: returning to the poll between
+    tasks is the entire point of the queue. A drain that emptied the whole backlog in one
+    pass would hold the loop exactly as long as the inline execution it replaced, and
+    ``/cancel`` or ``/kill`` issued mid-backlog would not land until it finished.
+
+    Kill-switch is re-read **before every claim**, not once per batch (the scheduler's
+    per-fire precedent): one task can hold the drain for minutes, and a kill issued during
+    it must stop the tasks behind it, not just the next batch. Entries already queued stay
+    queued — a kill drops nothing, it pauses the drain.
+    """
+    executed: list[OperatorReply] = []
+    send_failures = 0
+    if registry is None:
+        return executed, send_failures
+    while len(executed) < max_tasks:
+        if control_store is not None and not control_store.load().execution_allowed:
+            break
+        try:
+            entry = registry.claim_next_queued(now=now or timeutil.utc_now_iso())
+        except MvpRuntimeError:
+            # An unreadable/unwritable registry cannot be claimed against. Stop draining
+            # rather than risk running a task whose claim was not durably recorded — the
+            # direction that never runs one twice.
+            break
+        if entry is None:
+            break
+        reply, delivered = run_queued_task(
+            entry, channel=channel, registration=registration, registry=registry,
+            now=now, **run_kwargs,
         )
-    except MvpRuntimeError:
-        return
+        executed.append(reply)
+        if not delivered:
+            send_failures += 1
+    return executed, send_failures
 
 
 def run_operator_once(
@@ -732,6 +862,7 @@ def run_operator_once(
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
     registry: Any | None = None,
+    max_queued_tasks: int = 1,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
@@ -748,11 +879,25 @@ def run_operator_once(
     sender gets no reply (no engagement, no info leak) and no task runs. Returns a small summary,
     including whether this channel's transport crossed the network (``network_egress``) so the
     loop can observe/report control-channel egress the same way provider/tool egress is recorded
-    on the run."""
+    on the run.
+
+    ``registry`` (opt-in, F1) makes task requests **queued** rather than run inline, and this
+    pass then drains up to ``max_queued_tasks`` of them (default 1) after handling messages.
+    One per pass is deliberate: coming back to the poll between tasks is what lets ``/tasks``,
+    ``/cancel`` and ``/kill`` land while a backlog is still running. When work is already
+    waiting, the poll does not long-poll — holding the channel open for a message while a
+    queued task sits unstarted would be the one wait nobody asked for."""
     handled: list[OperatorReply] = []
     dropped = 0
     send_failures = 0
-    for message in channel.poll(long_poll_seconds=long_poll_seconds):
+    effective_long_poll = long_poll_seconds
+    if registry is not None and long_poll_seconds:
+        try:
+            if registry.queued_count() > 0:
+                effective_long_poll = 0
+        except MvpRuntimeError:
+            pass        # the drain below reports an unusable registry; the poll proceeds
+    for message in channel.poll(long_poll_seconds=effective_long_poll):
         try:
             verify_control_channel(message, registration)
         except OperatorBlocked:
@@ -779,13 +924,7 @@ def run_operator_once(
             # durable (ledger, control state, approval store); only this reply's delivery
             # is lost, and the summary reports it.
             send_failures += 1
-            # F1: the run finished but Thomas never saw it. Recording that as DELIVERED
-            # would make the registry claim an analysis was handed over that was not, and
-            # /result exists precisely so an undelivered one can be fetched later.
-            _close_open_entry(registry, reply, now=now, status=task_registry.FAILED,
-                              reason_code="SEND_FAILED")
         else:
-            _close_open_entry(registry, reply, now=now, status=task_registry.DELIVERED)
             if reply.status == "COMPLETED" and reply.trace_id:
                 # E1: a completed analysis actually reached Thomas — record the pointer
                 # /feedback binds to. AFTER the send, so feedback can never target a run
@@ -812,10 +951,24 @@ def run_operator_once(
             ))
         except PersistenceError:
             pass          # a diagnostic note must never break the loop
+
+    # The drain runs AFTER the batch is handled, so a /kill or /cancel that arrived in this
+    # very batch is already in effect before the next task starts.
+    executed, drain_send_failures = drain_queue(
+        channel=channel, registration=registration, registry=registry,
+        control_store=control_store, max_tasks=max_queued_tasks, now=now,
+        provider=provider, search_tool=search_tool, working_memory=working_memory,
+        programization=programization, store=store,
+        independent_validation=independent_validation,
+        validator_provider=validator_provider, repo_root=repo_root,
+    )
+    send_failures += drain_send_failures
     return {
         "handled": len(handled),
         "dropped": dropped,
+        "executed": len(executed),
         "send_failures": send_failures,
         "replies": handled,
+        "executed_replies": executed,
         "network_egress": bool(getattr(channel, "network_egress", False)),
     }
