@@ -13,10 +13,18 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.errors import PersistenceError
 from runtime.mvp_runtime.memory import (
+    CANDIDATE_SCOPE,
     CANDIDATE_STATUS,
+    LEARNING_EVENT_TYPE,
+    LEARNING_SOURCE_FEEDBACK,
+    LEARNING_SOURCE_REVISION,
     MAX_CANDIDATES,
+    MAX_CORRECTION_CHARS,
     VALIDATED_STATUS,
+    build_correction_candidate,
+    build_learning_event,
     build_memory_candidates,
+    candidate_type_for,
     retrieve_validated_memory,
     retrieve_working_memory,
 )
@@ -241,3 +249,76 @@ def test_worker_attaches_candidates_to_output():
     # Candidates are proposals only — the assignment grants no validated/core write.
     assert plan["role_assignment"]["memory_scope"]["validated_memory_write_allowed"] is False
     assert plan["role_assignment"]["memory_scope"]["core_memory_write_allowed"] is False
+
+
+# --- M5a: correction-learning candidates -------------------------------------
+
+def test_candidate_type_for_prefers_reusable_knowledge():
+    assert candidate_type_for(_assignment()) == "reusable_knowledge"
+    # Absent the preferred type, the first allowed (sorted) is chosen.
+    assert candidate_type_for(_assignment(allowed_candidate_types=["zeta", "alpha"])) == "alpha"
+    # Creation disallowed or no types => None (caller mints nothing, fail-closed).
+    assert candidate_type_for(_assignment(memory_candidate_creation_allowed=False)) is None
+    assert candidate_type_for(_assignment(allowed_candidate_types=[])) is None
+    assert candidate_type_for({}) is None
+
+
+def test_build_correction_candidate_shape():
+    c = build_correction_candidate(
+        "  prefer D over B  ", source=LEARNING_SOURCE_REVISION, now=NOW,
+        seed={"trace_id": "tr1"}, correction_ref="trace:tr1",
+    )
+    assert c["status"] == CANDIDATE_STATUS and c["scope"] == CANDIDATE_SCOPE
+    assert c["validated"] is False and c["promotable"] is False
+    assert c["content"] == "prefer D over B"          # stripped
+    assert c["learning_source"] == LEARNING_SOURCE_REVISION
+    assert c["correction_ref"] == "trace:tr1"
+    assert c["candidate_type"] == "reusable_knowledge"  # default
+    assert c["evidence_refs"] == ["correction:revision"]
+    assert c["expires_at"] > c["created_at"]            # retention stamp present
+
+
+def test_build_correction_candidate_empty_delta_is_none():
+    assert build_correction_candidate("", source=LEARNING_SOURCE_FEEDBACK, now=NOW) is None
+    assert build_correction_candidate("   ", source=LEARNING_SOURCE_FEEDBACK, now=NOW) is None
+    assert build_correction_candidate(None, source=LEARNING_SOURCE_FEEDBACK, now=NOW) is None
+
+
+def test_build_correction_candidate_caps_length():
+    c = build_correction_candidate("x" * (MAX_CORRECTION_CHARS + 500),
+                                   source=LEARNING_SOURCE_FEEDBACK, now=NOW)
+    assert len(c["content"]) == MAX_CORRECTION_CHARS
+
+
+def test_correction_candidate_id_is_deterministic_and_content_sensitive():
+    a = build_correction_candidate("same", source=LEARNING_SOURCE_REVISION, now=NOW, seed={"trace_id": "t"})
+    b = build_correction_candidate("same", source=LEARNING_SOURCE_REVISION, now=NOW, seed={"trace_id": "t"})
+    diff = build_correction_candidate("other", source=LEARNING_SOURCE_REVISION, now=NOW, seed={"trace_id": "t"})
+    assert a["candidate_id"] == b["candidate_id"]
+    assert a["candidate_id"] != diff["candidate_id"]
+
+
+def test_correction_candidate_is_retrievable_and_promotable():
+    """A correction candidate must ride the ordinary retrieval + promotion machinery so the
+    learning loop reuses R5 wholesale — no separate path."""
+    from runtime.mvp_runtime.memory import promote_candidate
+    c = build_correction_candidate("prefer a table", source=LEARNING_SOURCE_FEEDBACK, now=NOW,
+                                   seed={"trace_id": "t"})
+    # Retrieval selects it like any CANDIDATE in scope.
+    class _Store:
+        def read_all(self_inner):
+            return [c]
+    got = retrieve_working_memory(_readable_assignment(), _Store(), now=NOW)
+    assert [e["candidate_id"] for e in got] == [c["candidate_id"]]
+    # Promotion accepts it (operator-authored guidance can still become VALIDATED via M5b).
+    v = promote_candidate(c, promoted_by="op", reason="useful", now=NOW)
+    assert v["status"] == VALIDATED_STATUS and v["content"] == "prefer a table"
+
+
+def test_build_learning_event_shape():
+    c = build_correction_candidate("d", source=LEARNING_SOURCE_REVISION, now=NOW, seed={"trace_id": "t"})
+    ev = build_learning_event(c, source=LEARNING_SOURCE_REVISION, now=NOW, trace_id="tr1")
+    assert ev["record_type"] == LEARNING_EVENT_TYPE
+    assert ev["candidate_id"] == c["candidate_id"]
+    assert ev["learning_source"] == LEARNING_SOURCE_REVISION and ev["trace_id"] == "tr1"
+    assert ev["integrity"]["event_sha256"]     # self-hashed like every stamped event

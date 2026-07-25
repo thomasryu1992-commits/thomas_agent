@@ -274,7 +274,7 @@ def handle_operator_message(
         try:
             outcome = operator_feedback.apply_feedback(
                 feedback_payload, operator_id=registration.operator_id,
-                store=store, now=now, repo_root=repo_root,
+                store=store, working_memory=working_memory, now=now, repo_root=repo_root,
             )
         except (OperatorBlocked, PersistenceError) as exc:
             return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)

@@ -200,6 +200,81 @@ def test_working_memory_corrupt_store_fails_closed(tmp_path):
     assert r["block"]["reason_code"] == "WORKING_MEMORY_UNREADABLE"
 
 
+# --- M5a: a successful revision is captured as a correction candidate ---------
+
+class _ReviseThenPassSpecialist(MockProvider):
+    """First output is over-confident (automatic REVISE); the regeneration passes. Mirrors the
+    validator suite's provider — proves the M3 revision recovers a REVISE to a delivered PASS."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        self.calls += 1
+        if self.calls == 1:
+            r.analysis = {**r.analysis, "uncertainty": [], "assumptions": []}
+        return r
+
+
+def _learning_events(tmp_path):
+    from runtime.mvp_runtime.jsonl import read_objects
+    from runtime.mvp_runtime.store import MEMORY_FILE
+    path = tmp_path / "ledger" / MEMORY_FILE
+    if not path.is_file():
+        return []
+    return [e for e in read_objects(path, read_code="X", label="mem")
+            if e.get("record_type") == "working_memory_learning_event.v0"]
+
+
+@requires_local_core
+def test_m5a_successful_revision_mints_a_correction_candidate(tmp_path):
+    from runtime.mvp_runtime.store import LedgerStore
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store = LedgerStore(tmp_path / "ledger")
+    r = run_task(REQUEST, provider=_ReviseThenPassSpecialist(), working_memory=wm,
+                 store=store, revise=True, now=NOW)
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    assert r["records"]["revision"]["attempted"] is True
+    assert r["records"]["revision"]["exhausted"] is False
+    # A correction candidate was minted, CANDIDATE-only (never auto-trusted).
+    corr = [c for c in wm.read_all() if c.get("learning_source") == "revision"]
+    assert len(corr) == 1
+    assert corr[0]["status"] == "CANDIDATE" and corr[0]["validated"] is False
+    assert corr[0]["correction_ref"].startswith("trace:")
+    assert r["learning_candidates"][0]["candidate_id"] == corr[0]["candidate_id"]
+    # ...and audited on the memory-event stream (the retention-event precedent).
+    events = _learning_events(tmp_path)
+    assert len(events) == 1 and events[0]["candidate_id"] == corr[0]["candidate_id"]
+    assert events[0]["learning_source"] == "revision"
+
+
+@requires_local_core
+def test_m5a_first_pass_success_mints_no_correction(tmp_path):
+    """A run that PASSes on the first try — even with --revise armed — has no correction to
+    learn: no revision happened, so no correction candidate is minted."""
+    from runtime.mvp_runtime.store import LedgerStore
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store = LedgerStore(tmp_path / "ledger")
+    r = run_task(REQUEST, provider=MockProvider(), working_memory=wm, store=store, revise=True, now=NOW)
+    assert r["status"] == "COMPLETED"
+    assert [c for c in wm.read_all() if c.get("learning_source") == "revision"] == []
+    assert "learning_candidates" not in r
+    assert _learning_events(tmp_path) == []
+
+
+@requires_local_core
+def test_m5a_revision_without_working_memory_is_safe():
+    """No working-memory store => nothing to accumulate into; the revision still delivers and
+    the run does not crash reaching for a store that isn't there."""
+    r = run_task(REQUEST, provider=_ReviseThenPassSpecialist(), revise=True, now=NOW)
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    assert "learning_candidates" not in r
+
+
 @requires_local_core
 def test_promoted_memory_feeds_back_as_validated_context(tmp_path):
     """The full loop: run -> candidate -> operator promotion -> next run reads it back."""

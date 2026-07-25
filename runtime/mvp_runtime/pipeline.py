@@ -34,7 +34,14 @@ from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked
 from .intake import build_task
-from .memory import retrieve_validated_memory, retrieve_working_memory
+from .memory import (
+    LEARNING_SOURCE_REVISION,
+    build_correction_candidate,
+    build_learning_event,
+    candidate_type_for,
+    retrieve_validated_memory,
+    retrieve_working_memory,
+)
 from .prime import plan_task
 from .programization import ProgramizationStore, observe_completed_run
 from .store import LedgerStore
@@ -267,6 +274,12 @@ def run_task(
         "records": {},
     }
     records = result["records"]
+    # M5a: a correction that turned this run around — the M3 revision loop recovering a
+    # REVISE to a PASS — is captured as a working-memory candidate for later similar
+    # requests. Initialized before the try so the delivered-path accumulation below always
+    # has them defined, even on the runs that mint none.
+    learning_candidates: list[dict[str, Any]] = []
+    learning_events: list[dict[str, Any]] = []
 
     # Chain this run's audit onto the ledger tip. A corrupt/unreadable ledger fails closed.
     try:
@@ -469,6 +482,49 @@ def run_task(
             }
             records["revision"] = revision
 
+            # M5a: a revision that recovered a REVISE to a PASS is a correction — mint it as
+            # a working-memory CANDIDATE so a later similar request starts closer to the
+            # accepted answer. ALLOW-tier and best-effort: only when the assignment permits
+            # candidate creation, and a failure here (secret-bearing delta, bad origin) is
+            # noted, never allowed to block an otherwise-delivered run. The candidate is
+            # appended + audited on the delivered path below.
+            if working_memory is not None and outcome == "PASS":
+                ctype = candidate_type_for(plan["role_assignment"])
+                if ctype is not None:
+                    identity = plan["task"].get("identity", {})
+                    ctx = plan["task"].get("context", {})
+                    goal = plan["task"].get("request", {}).get("normalized_goal") or raw_request
+                    delta = "; ".join(dict.fromkeys(revision_requests))
+                    content = (
+                        f"교정 학습: «{goal[:200]}» 유형의 요청에서 첫 분석이 다음을 "
+                        f"수정한 뒤에야 통과했습니다 — {delta}"
+                    )
+                    try:
+                        correction = build_correction_candidate(
+                            content, source=LEARNING_SOURCE_REVISION, now=now, candidate_type=ctype,
+                            seed={"trace_id": identity.get("trace_id"), "task_id": identity.get("task_id")},
+                            origin={
+                                "task_id": identity.get("task_id"),
+                                "task_revision": identity.get("task_revision"),
+                                "trace_id": identity.get("trace_id"),
+                                "core_context_binding_id": ctx.get("core_context_binding_id"),
+                                "data_sensitivity": ctx.get("data_sensitivity"),
+                            },
+                            correction_ref=f"trace:{identity.get('trace_id')}",
+                        )
+                    except MvpRuntimeError as exc:
+                        # Local catch: this block is inside the run's outer MvpRuntimeError
+                        # handler, which turns any escape into a full BLOCK — M5a must never
+                        # do that. Capture failing is enrichment lost, not a run withheld.
+                        correction = None
+                        result.setdefault("learning_error", exc.reason_code)
+                    if correction is not None:
+                        learning_candidates.append(correction)
+                        learning_events.append(build_learning_event(
+                            correction, source=LEARNING_SOURCE_REVISION, now=now,
+                            trace_id=identity.get("trace_id"),
+                        ))
+
         # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
         # Only a PASSING result is written: a rejected analysis must not leave an artifact
         # behind, so the write is gated on the same stricter outcome that gates delivery.
@@ -587,12 +643,27 @@ def run_task(
                 return result
         # Accumulate this run's candidates into working memory for later runs. Best-effort:
         # working memory is enrichment, not the audit of record, so a write failure is noted
-        # but does not withhold a delivered, durably-audited result.
+        # but does not withhold a delivered, durably-audited result. M5a's correction
+        # candidate (if the revision loop minted one) rides the same append.
         if working_memory is not None:
             try:
-                working_memory.append(agent_output.get("memory_candidates", []))
+                working_memory.append(
+                    list(agent_output.get("memory_candidates", [])) + learning_candidates
+                )
             except PersistenceError as exc:
                 result.setdefault("working_memory_error", exc.reason_code)
+            # M5a: audit the minted correction on the memory-event stream (retention
+            # precedent — a working-memory maintenance action, not a run-audit record).
+            # Best-effort: the candidate is already stored; a failed audit note never
+            # withholds the delivered, durably-audited result.
+            if store is not None and learning_events:
+                try:
+                    for event in learning_events:
+                        store.append_memory_event(event)
+                except PersistenceError as exc:
+                    result.setdefault("learning_error", exc.reason_code)
+            if learning_candidates:
+                result["learning_candidates"] = learning_candidates
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(

@@ -148,9 +148,17 @@ and much of the substrate already ships:
    (E3). Retrieval exists for VALIDATED memory; wiring corrections into it does not.
 
 **Proposed increments (each its own Thomas decision):**
-- **M5a** — at a revision/correction moment (M3's loop, or a `/feedback bad + note`), mint a
-  working-memory CANDIDATE holding the delta ("for requests like X, prefer D over B"). ALLOW-tier,
-  audited — the working-memory precedent, nothing auto-trusted.
+- **M5a** *(done 2026-07-25; Thomas approved both triggers)* — at a revision/correction moment
+  (M3's loop turning REVISE→PASS, **or** a `/feedback bad <note>`), mint a working-memory CANDIDATE
+  holding the delta. ALLOW-tier, audited on the memory-event stream (the retention-event
+  precedent), CANDIDATE-only — nothing auto-trusted; M5b's operator approval is the sole door to
+  VALIDATED. Zero new contracts/schemas/registries/gates: reuses R5 candidate stamping, retrieval,
+  promotion, and retention wholesale (`memory.build_correction_candidate` /
+  `build_learning_event`, wired in `pipeline.py` at the revision-success point and in
+  `operator_feedback.apply_feedback`). Best-effort by construction — a capture failure is recorded
+  (`learning_error`) but never withholds a delivered run or a recorded feedback. Correction
+  candidates already surface as unverified `[M#]` context in later runs via existing retrieval;
+  the verified `[V#]` leg is M5c.
 - **M5b** — Thomas promotes the useful candidates to VALIDATED (existing APPROVAL_REQUIRED door).
   This is the "as I want" gate: only what he approves becomes standing guidance, so a bad
   correction can't entrench itself.

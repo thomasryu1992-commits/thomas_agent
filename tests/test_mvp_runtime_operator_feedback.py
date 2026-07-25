@@ -242,3 +242,82 @@ def test_loop_skips_pointer_when_send_failed(tmp_path, monkeypatch):
     summary = run_operator_once(channel, REG, now=NOW, repo_root=tmp_path)
     assert summary["send_failures"] == 1
     assert load_last_delivered(tmp_path) is None
+
+
+# --- M5a: /feedback bad <note> captures a correction candidate ----------------
+
+def _wm(tmp_path):
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+    return WorkingMemoryStore(tmp_path / "wm")
+
+
+def _memory_rows(tmp_path):
+    from runtime.mvp_runtime.store import MEMORY_FILE
+    path = tmp_path / "ledger" / MEMORY_FILE
+    if not path.is_file():
+        return []
+    return read_objects(path, read_code="LEDGER_UNREADABLE", label="memory")
+
+
+def test_feedback_bad_with_note_mints_a_correction_candidate(tmp_path):
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    outcome = apply_feedback("bad 표를 넣어서 다시 정리해줘", operator_id="tg-12345",
+                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD"
+    cand = outcome["learning_candidate"]
+    assert cand is not None and cand["status"] == "CANDIDATE" and cand["validated"] is False
+    assert cand["learning_source"] == "operator_feedback"
+    assert cand["content"] == "표를 넣어서 다시 정리해줘"
+    assert cand["correction_ref"] == "trace:trace_abc"
+    assert "교정 후보" in outcome["reply"]
+    # Stored in working memory and audited on the memory-event stream.
+    assert [c["candidate_id"] for c in wm.read_all()] == [cand["candidate_id"]]
+    events = [e for e in _memory_rows(tmp_path)
+              if e.get("record_type") == "working_memory_learning_event.v0"]
+    assert len(events) == 1 and events[0]["candidate_id"] == cand["candidate_id"]
+    assert events[0]["operator_id"] == "tg-12345"
+
+
+def test_feedback_good_mints_no_correction(tmp_path):
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    outcome = apply_feedback("good 훌륭함", operator_id="tg-1",
+                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+    assert outcome["learning_candidate"] is None
+    assert wm.read_all() == []
+
+
+def test_feedback_bad_without_note_mints_no_correction(tmp_path):
+    """A bare `bad` has no delta to learn — the verdict is recorded, no candidate is minted."""
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    outcome = apply_feedback("bad", operator_id="tg-1",
+                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD" and outcome["learning_candidate"] is None
+    assert wm.read_all() == []
+    assert len(_feedback_rows(tmp_path)) == 1     # the verdict itself is still recorded
+
+
+def test_feedback_without_working_memory_still_records(tmp_path):
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    outcome = apply_feedback("bad 근거 부족", operator_id="tg-1",
+                             store=_ledger(tmp_path), now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD" and outcome["learning_candidate"] is None
+    assert len(_feedback_rows(tmp_path)) == 1
+
+
+def test_capture_failure_never_fails_the_recorded_feedback(tmp_path):
+    """The verdict is durably recorded before capture runs, so a working-memory failure must
+    not turn a recorded feedback into an error (best-effort by construction)."""
+    from runtime.mvp_runtime.errors import PersistenceError as _PE
+
+    class _BrokenWM:
+        def append(self, entries):
+            raise _PE("WORKING_MEMORY_WRITE_FAILED", "disk full")
+
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    outcome = apply_feedback("bad 표 필요", operator_id="tg-1",
+                             store=_ledger(tmp_path), working_memory=_BrokenWM(), now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD" and outcome["learning_candidate"] is None
+    assert len(_feedback_rows(tmp_path)) == 1     # feedback recorded despite the capture failure
