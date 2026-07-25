@@ -129,17 +129,17 @@ def main(
                          f"(model: {getattr(frontdesk_provider, 'model_id', 'unknown')}; "
                          "plain text is a conversation turn, /verbs stay deterministic)\n")
 
-    store = store if store is not None else LedgerStore.default()
-    working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default()
-    programization = ProgramizationStore.default()
-    control_store = control_store if control_store is not None else ControlStore.default()
+    store = store if store is not None else LedgerStore.default(repo_root)
+    working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
+    programization = ProgramizationStore.default(repo_root)
+    control_store = control_store if control_store is not None else ControlStore.default(repo_root)
     # R9: without the approval store, Thomas's /approve over the deployed loop would fall
     # through to the pipeline and be analyzed as a business idea. The production entrypoint
     # must wire the documented answer path, not only the tests.
-    approval_store = approval_store if approval_store is not None else ApprovalStore.default()
+    approval_store = approval_store if approval_store is not None else ApprovalStore.default(repo_root)
     # F1: the task-coordination registry, wired for the same reason as the approval store —
     # without it /tasks and /history would be refused on the one entrypoint they exist for.
-    registry = registry if registry is not None else TaskRegistryStore.default()
+    registry = registry if registry is not None else TaskRegistryStore.default(repo_root)
     # An entry still RUNNING when this process starts belongs to a dead one (the MVP runs
     # tasks one at a time, single-process), so it gets the terminal that process never
     # wrote. Startup is the only vantage point that can see it — the scheduler's

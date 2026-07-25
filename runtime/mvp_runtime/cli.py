@@ -21,6 +21,8 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import sys
 
 from . import control
@@ -60,6 +62,7 @@ def main(
     working_memory: WorkingMemoryStore | None = None,
     programization: ProgramizationStore | None = None,
     control_store: ControlStore | None = None,
+    repo_root: Path | None = None,
 ) -> int:
     """Run one request end-to-end. Returns the process exit code.
 
@@ -119,7 +122,7 @@ def main(
     # host CLI was the one execution door without the check — a KILLED runtime performing
     # a model-invoking pipeline run because the request came in over SSH instead of
     # Telegram was the asymmetry, not the intent.
-    control_store = control_store if control_store is not None else ControlStore.default()
+    control_store = control_store if control_store is not None else ControlStore.default(repo_root)
     state = control_store.load()
     if not state.execution_allowed:
         reason_code = state.refusal_reason_code()
@@ -148,12 +151,12 @@ def main(
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     # Working memory (local, per-machine) accumulates candidates and feeds them back as context.
-    store = store if store is not None else LedgerStore.default()
+    store = store if store is not None else LedgerStore.default(repo_root)
     working_memory = (
-        working_memory if working_memory is not None else WorkingMemoryStore.default()
+        working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
     )
     programization = (
-        programization if programization is not None else ProgramizationStore.default()
+        programization if programization is not None else ProgramizationStore.default(repo_root)
     )
     # M2: difficulty-driven model tier for the specialist. The selector picks an OpenRouter
     # tier from the triage difficulty and degrades to this base `provider` (fail-closed) when
@@ -169,6 +172,7 @@ def main(
                       tiered_provider_selector=tiered_provider_selector,
                       revise=revise,
                       priority="HIGH" if important else "NORMAL",
+                      repo_root=repo_root,
                       write_path=write_path, writer=writer)
     # One field answers "is this run's evidence durable?" for every failure shape. Checking
     # only the block stage claimed "LEDGER: recorded" over two real persistence failures —

@@ -190,8 +190,8 @@ class ScheduleStore:
         self._path = Path(root) / SCHEDULES_REL
 
     @classmethod
-    def default(cls) -> "ScheduleStore":
-        return cls(_repo_root())
+    def default(cls, root: Path | None = None) -> "ScheduleStore":
+        return cls((root if root is not None else _repo_root()))
 
     @property
     def path(self) -> Path:

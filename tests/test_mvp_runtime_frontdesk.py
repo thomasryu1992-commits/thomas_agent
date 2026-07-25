@@ -389,6 +389,12 @@ def test_degraded_frontdesk_falls_back_to_the_queue(tmp_path):
 def test_frontdesk_submission_is_drained_like_any_queued_task(tmp_path, monkeypatch):
     """End to end: a conversational submission runs through the same drain as a plain
     one — the front desk changed how tasks are ASKED for, not how they run."""
+    # This test must pass the REAL repo root (the turn is schema-validated against
+    # schemas/), and the same argument is what the delivery pointer would be written
+    # under — so the one runtime write that would land in real state is stubbed out. It
+    # is best-effort in production and not what this test asserts.
+    monkeypatch.setattr("runtime.mvp_runtime.operator_feedback.record_delivery",
+                        lambda *a, **k: None)
     monkeypatch.setattr(
         "runtime.mvp_runtime.operator.run_task",
         lambda *a, **k: {"status": "COMPLETED", "final_response": "분석 결과",
