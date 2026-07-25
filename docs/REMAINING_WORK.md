@@ -132,9 +132,16 @@ scopes at different levels, so nothing was owed to it.
       conditional order types) done 2026-07-25** — venue semantics verified against the official
       New Order / Query Order / error-code references (corrected: closePosition excludes both
       quantity and reduceOnly; -2013 = NOT_FOUND vs any other rejection = UNRECONCILABLE; no
-      documented auto-cancel, so LP5 must cancel the surviving bracket leg). Governance/readiness
-      flags stay OFF, so nothing autonomous can reach the venue. **Increment 2b (the canary CLI +
-      the lockstep governance flip + replay-bundle regen) is pending** — the threshold crossing.
+      documented auto-cancel, so LP5 must cancel the surviving bracket leg).
+      **Increment 2b done 2026-07-25** — `scripts/place_canary_order.py` (the deliberate
+      single-canary path, entry-only, exposure read from the venue so the guard's one fail-open
+      default is not used); a `canary=True` guard mode exempt from the promotion gate only (the
+      chicken-and-egg: a canary earns that evidence) with its **own** confirmation phrase
+      (`MVP_LIVE_CANARY_CONFIRMATION`), so neither phrase can authorize the other's capability;
+      and the **lockstep governance flip** (`financial_transaction_execution_implemented: true`
+      + `ORDER_PATH_IMPLEMENTED = True`, asserted to agree) with both replay bundles regenerated.
+      `financial_executor_enabled` and every `runtime_effect`/`cutover` flag stay false.
+      **LP4 is complete.** Nothing autonomous routes to the venue — that needs LP5.
 - [~] **LP5** position kernel + cycle routing — **design record done 2026-07-25**
       (`LP5_POSITION_KERNEL_DESIGN_V0.1.md`); **no code yet**. Decisions taken: a venue-side SL+TP
       bracket at entry, and sizing = `min(risk-based, budget cap)` refusing rather than defaulting.
