@@ -120,6 +120,12 @@ NUMERIC_FEATURES = frozenset({
     # indeterminate and simply never matches. The numeric ones are normalized ratios,
     # so a mined threshold carries the same meaning on every symbol.
     *features.HTF_NUMERIC_COLUMNS,
+    # Open interest (Thomas 2026-07-25) — the positioning leg beside funding and
+    # liquidations. Only the NORMALIZED derivatives are mintable: raw open_interest is
+    # a venue-scale quantity, so a mined threshold on it would mean something different
+    # on every symbol and nothing at all after the venue grows. Absent feed = None =
+    # never matches, the liquidation posture.
+    "open_interest_change_pct", "open_interest_zscore",
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -222,6 +228,43 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
         {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
         {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
+    ]
+
+
+def _oi_squeeze_long_entry(p: dict) -> list[dict]:
+    # Position building into a quiet market: open interest climbing while price has not
+    # yet moved is crowding, and the release tends to travel. The RANGE gate is what
+    # makes it a squeeze setup rather than plain trend-following.
+    return [
+        {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
+        {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
+        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _oi_squeeze_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
+        {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
+        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+    ]
+
+
+def _oi_unwind_long_entry(p: dict) -> list[dict]:
+    # The mirror: open interest FALLING hard while price is washed out is capitulation
+    # finishing — positions are leaving, not arriving.
+    return [
+        {"feature": "open_interest_change_pct", "comparison": "<=", "value": -p["oi_change_min"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _oi_unwind_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "open_interest_change_pct", "comparison": "<=", "value": -p["oi_change_min"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
     ]
 
 
@@ -337,10 +380,28 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("htf_pullback_long", "long", "1h",
                      {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
                      {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+    StrategyTemplate("oi_squeeze_long", "long", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_long_entry),
+    StrategyTemplate("oi_squeeze_short", "short", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_short_entry),
+    StrategyTemplate("oi_unwind_long", "long", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_max": ParamSpec(20.0, 40.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_max": 30.0, **_EXIT_BASE}, _oi_unwind_long_entry),
+    StrategyTemplate("oi_unwind_short", "short", "1h",
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_min": 70.0, **_EXIT_BASE}, _oi_unwind_short_entry),
     StrategyTemplate("htf_pullback_short", "short", "1h",
                      {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
                      {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
+
+# Families whose entry rules read the open-interest columns — mintable only where the
+# feed is configured; with no feed their conditions are indeterminate and never match,
+# so a minted spec is harmless (it simply does not trade) rather than wrong.
+OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
+                         "oi_unwind_long", "oi_unwind_short"})
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).

@@ -41,6 +41,9 @@ VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
 FUNDING_Z_WINDOW = 100      # features.funding_z_window source default
 FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods for the funding z
+OI_CHANGE_PERIOD = 1        # bars between the two OI reads a change compares
+OI_Z_WINDOW = 30            # how unusual the current OI level is, against its own history
+OI_Z_MIN_PERIODS = 10
 LIQ_MA_WINDOW = 50          # liquidation spike baseline window
 LIQ_MA_MIN_PERIODS = 10
 
@@ -237,6 +240,28 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         long_liq = short_liq = liq_total = [None] * len(candles)
         liquidation_spike_ratio = [0.0] * len(candles)  # legacy constant, pre-C9
 
+    # Open interest — how much position is OUTSTANDING, the third leg beside what it
+    # costs to hold (funding) and what was forcibly closed (liquidations). Raw OI is a
+    # venue-scale quantity and means nothing across symbols, so what the row carries
+    # (and what a spec may reference) are the NORMALIZED derivatives: the rate of
+    # change, and how unusual the current level is against its own recent history.
+    #
+    # Series semantics throughout: no feed (key absent) or a failed fetch (key present,
+    # empty) both leave every column None — indeterminate, never a constant. That is
+    # the liquidation posture deliberately, not the spike-ratio one: a missing feed
+    # must not let an oi_* condition match on a fabricated zero.
+    if "open_interest" in snapshot:
+        open_interest = _asof_align(bar_times, snapshot.get("open_interest") or [],
+                                    ("open_interest",))["open_interest"]
+        oi_prev = [None] * OI_CHANGE_PERIOD + open_interest[:-OI_CHANGE_PERIOD or None]
+        open_interest_change_pct = [
+            ((cur - prev) / prev) if (cur is not None and prev not in (None, 0)) else None
+            for cur, prev in zip(open_interest, oi_prev)
+        ]
+        open_interest_zscore = indicators.zscore(open_interest, OI_Z_WINDOW, OI_Z_MIN_PERIODS)
+    else:
+        open_interest = open_interest_change_pct = open_interest_zscore = [None] * len(candles)
+
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
         close = closes[i]
@@ -276,6 +301,10 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "short_liquidation": short_liq[i],
             "liquidation_total": liq_total[i],
             "liquidation_spike_ratio": liquidation_spike_ratio[i],
+            # Positioning: raw level (evidence only) + the normalized derivatives.
+            "open_interest": open_interest[i],
+            "open_interest_change_pct": open_interest_change_pct[i],
+            "open_interest_zscore": open_interest_zscore[i],
             # No-feed fallbacks, verbatim from the source's absent-feed behavior —
             # and verbatim its RUNTIME ROUTER behavior too: runtime_feature_adapter
             # never passes mark/index frames, so basis is 0 in source live routing.

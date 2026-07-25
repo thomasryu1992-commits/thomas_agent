@@ -32,6 +32,7 @@ from .market_data import (
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
     LIQUIDATION_DEGRADED,
+    OPEN_INTEREST_DEGRADED,
     MARKET_DATA_DEGRADED,
     TIMEFRAMES,
     MarketDataCollector,
@@ -107,8 +108,21 @@ def attach_feeds(
             snapshot["liquidations"] = []
             status["liquidations"] = "degraded"
             reason_codes.append(LIQUIDATION_DEGRADED)
+        # Open interest rides the SAME feed object, provider and grant — one
+        # authorization, one egress chokepoint. Its own key and reason code so a
+        # partial outage is legible: liquidations can be fine while OI is not.
+        try:
+            snapshot["open_interest"] = liquidation_feed.open_interest_history(
+                symbol, days=_LIQUIDATION_DAYS, timeout_seconds=10
+            )
+            status["open_interest"] = "ok"
+        except (ToolError, ToolBlocked):
+            snapshot["open_interest"] = []
+            status["open_interest"] = "degraded"
+            reason_codes.append(OPEN_INTEREST_DEGRADED)
     else:
         status["liquidations"] = "absent"
+        status["open_interest"] = "absent"
     return reason_codes, status
 
 
