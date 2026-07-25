@@ -62,7 +62,8 @@ KIND_PRUNE = "memory_prune"
 KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
 KIND_REPORT = "crypto_report"
-KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT})
+KIND_PROPOSER = "crypto_propose"
+KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -510,6 +511,54 @@ def _execute(
         if ledger is not None:
             ledger.append_records(result["generation_id"], {"crypto_factory": result})
         return f"generated={result['accepted_count']} gen={result['generation_id']}"
+    if schedule.kind == KIND_PROPOSER:
+        # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
+        # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
+        # distinct accepted-but-uninstalled families are already waiting, a fire SKIPS
+        # (audited via the returned status) instead of piling on more the reviewer cannot
+        # keep up with; installing a family (Thomas's code change) clears it, and old
+        # proposals age out of the window on their own. The per-run proposal cap
+        # (MAX_PROPOSALS_PER_RUN) already bounds one fire. Two gated reads reuse existing
+        # chokepoints (market data + the validator provider); a degraded backend skips the
+        # fire rather than proposing over no candles. ALLOW-tier: the record installs nothing.
+        from .crypto import factory as crypto_factory
+        from .crypto import proposer as crypto_proposer
+        from .crypto.market_data import collect_market_data, select_market_data_collector
+        from .providers import select_validator_provider
+
+        installed = [t.family for t in crypto_factory.TEMPLATES]
+        # A malformed ledger must not stop the scheduler: an unreadable record stream
+        # degrades to "backlog unknown = 0" (the fire proceeds) rather than failing closed —
+        # the backlog cap is a courtesy throttle, not a safety gate.
+        try:
+            backlog = crypto_proposer.count_unreviewed_backlog(
+                ledger.read_records() if ledger is not None else [], installed, now=now,
+            )
+        except MvpRuntimeError:
+            backlog = 0
+        if backlog >= crypto_proposer.MAX_UNREVIEWED_BACKLOG:
+            return f"skipped_backlog_full:{backlog}"
+
+        parts = schedule.request.split()
+        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
+        timeframe = parts[1] if len(parts) >= 2 else "1h"
+        focus = parts[2] if len(parts) >= 3 else None
+        collector = select_market_data_collector(now=now, root=repo_root)
+        try:
+            snapshot, _ = collect_market_data(symbol, timeframe, collector=collector, now=now)
+        except ToolBlocked as exc:
+            if exc.reason_code == "TOOL_ERROR":
+                return "skipped_market_data_degraded"
+            raise
+        provider = (select_validator_provider(now=now, root=repo_root)
+                    or crypto_proposer.MockProposerProvider())
+        record = crypto_proposer.propose_strategy_families(
+            snapshot, provider=provider, now=now, existing_families=installed, focus=focus,
+        )
+        if ledger is not None:
+            ledger.append_records(record["proposal_id"], {crypto_proposer.PROPOSAL_LEDGER_KIND: record})
+        return (f"proposed={record['accepted_count']}/{record['proposed_count']} "
+                f"backlog={backlog} prop={record['proposal_id']}")
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     result = executor(
         schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,

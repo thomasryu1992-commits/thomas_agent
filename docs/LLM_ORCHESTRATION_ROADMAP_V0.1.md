@@ -117,9 +117,19 @@ Thomas-decision point.**
   sort by win-rate + risk-reward — consistent with `lifecycle.py`'s "never discarded on win rate
   alone." Alternative (adding a performance term into the robustness score) reintroduces the
   overfit risk the original design avoided.
-- **M4b (decision):** whether to put the proposer on a schedule. This reverses the 2026-07-24
-  "manual CLI only — proposals accumulate faster than anyone reviews" decision, so if scheduled
-  it needs a per-run proposal cap + an unreviewed-backlog cap (skip + audit when exceeded).
+- **M4b** *(done 2026-07-25; Thomas approved scheduling the proposer)* — the LLM strategy-family
+  proposer on a schedule (new scheduler kind `crypto_propose`), reversing the 2026-07-24
+  "manual CLI only" decision. Both caps enforced: the **per-run** cap already existed
+  (`MAX_PROPOSALS_PER_RUN`); the new **unreviewed-backlog** cap counts distinct
+  accepted-but-uninstalled families in the ledger (`count_unreviewed_backlog`) and once
+  `MAX_UNREVIEWED_BACKLOG` (12) are waiting, a fire **skips + is audited**
+  (`skipped_backlog_full:N` on the scheduler-event stream) instead of piling on more. "Reviewed"
+  is the real action — Thomas installing a family in `factory.TEMPLATES` (a code change) drops it
+  from the backlog; a 30-day window ages the rest out so the tap reopens on its own (no permanent
+  block). ALLOW-tier — the record installs nothing; the same gated market-data + validator-provider
+  chokepoints, degrading to skip on a dead backend. Also fixed a latent bug: the proposal ledger
+  kind (`crypto_strategy_proposal`) was never registered in `_RECORD_KINDS`, so even the manual
+  CLI's persist was silently failing.
 - Unchanged and correct as-is: risk-reward ≥ 1.0 hard gate, human `/approve` promotion, live
   execution gated OFF at multiple layers.
 

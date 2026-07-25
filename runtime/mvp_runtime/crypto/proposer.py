@@ -71,6 +71,60 @@ UNKNOWN_FEATURE_BLOCK = "BLOCK_UNKNOWN_FEATURE"
 # on quantity and none of it on thought.
 MAX_PROPOSALS_PER_RUN = 4
 
+# M4b — the ledger record kind the CLI and the scheduler both append a proposal under.
+PROPOSAL_LEDGER_KIND = "crypto_strategy_proposal"
+
+# M4b — the unreviewed-backlog cap. Scheduling the proposer reverses the 2026-07-24
+# "manual CLI only — proposals accumulate faster than anyone reviews" decision, so a
+# scheduled fire is gated on a backlog cap: once this many DISTINCT accepted-but-uninstalled
+# families are already waiting, a fire skips (and is audited) instead of piling on more.
+# "Reviewed" is the real action — Thomas installing a family into ``factory.TEMPLATES`` (a
+# code change) drops that proposal out of the backlog. A recency window ages old proposals
+# out so the tap reopens on its own even if none are ever installed (no permanent block).
+MAX_UNREVIEWED_BACKLOG = 12       # ~3 full fires' worth of accepted families
+BACKLOG_WINDOW_DAYS = 30
+PROPOSER_BACKLOG_FULL = "PROPOSER_BACKLOG_FULL"
+
+
+def count_unreviewed_backlog(
+    record_rows: Sequence[Mapping[str, Any]],
+    installed_families: Sequence[str],
+    *,
+    now: str,
+    window_days: int = BACKLOG_WINDOW_DAYS,
+) -> int:
+    """DISTINCT accepted proposal families still awaiting review (M4b backlog measure).
+
+    A family counts when it was **accepted** by an in-window proposal record and is **not
+    yet installed** in ``factory.TEMPLATES`` — the exact pile a scheduled proposer would be
+    adding to faster than Thomas can work it. Deduped by family (re-proposing the same one
+    is not a bigger backlog), windowed by ``created_at`` so an unreviewed proposal ages out
+    (the tap reopens without an install), and blind to rejected proposals (they were never a
+    review burden). ``record_rows`` are ledger rows as ``LedgerStore.read_records`` returns
+    them (``{"kind", "record"}``); a malformed row is skipped, never fatal — a backlog count
+    must not itself fail closed and stop the scheduler."""
+    from .. import timeutil
+
+    cutoff = timeutil.plus_minutes(now, -abs(int(window_days)) * 24 * 60)
+    installed = {f for f in installed_families if isinstance(f, str)}
+    pending: set[str] = set()
+    for row in record_rows:
+        if not isinstance(row, Mapping) or row.get("kind") != PROPOSAL_LEDGER_KIND:
+            continue
+        record = row.get("record")
+        if not isinstance(record, Mapping):
+            continue
+        created = record.get("created_at")
+        if not (isinstance(created, str) and created >= cutoff):
+            continue
+        for proposal in record.get("proposals") or []:
+            if not isinstance(proposal, Mapping) or not proposal.get("accepted"):
+                continue
+            family = proposal.get("family")
+            if isinstance(family, str) and family and family not in installed:
+                pending.add(family)
+    return len(pending)
+
 
 class MockProposerProvider:
     """Deterministic proposer: no network, no real model (the ``MockTriageProvider``

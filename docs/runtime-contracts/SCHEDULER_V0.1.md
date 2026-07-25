@@ -15,6 +15,9 @@ string (`analysis_task`) or a maintenance action (`memory_prune`) — **never a 
 |---|---|
 | `analysis_task` | Run `request` through the full pipeline (`run_task`) as a scheduler-initiated task (`channel=scheduler`, `requester_type=scheduler`) — same intake, planning, permission, budget, and audit as an operator request. |
 | `memory_prune` | Run working-memory retention (delete expired candidates, audited) — the periodic driver for R5 §12.4 retention. |
+| `crypto_propose` | Run the LLM strategy-family proposer (M4b). ALLOW-tier — the proposal record installs nothing. Backlog-gated: once `MAX_UNREVIEWED_BACKLOG` (12) distinct accepted-but-uninstalled families are waiting in the ledger, a fire skips and is audited (`skipped_backlog_full:N`) instead of piling on more; installing a family in `factory.TEMPLATES` clears its slot and a 30-day window ages the rest out. `request` is optional (`"SYMBOL [TIMEFRAME] [FOCUS]"`, defaults `BTCUSDT 1h`). |
+
+(The `crypto_pipeline` / `crypto_factory` / `crypto_report` kinds are governed by their own crypto contracts.)
 
 ## Safety and governance
 
