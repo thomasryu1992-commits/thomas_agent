@@ -90,9 +90,9 @@ class LedgerStore:
         self._root = Path(root)
 
     @classmethod
-    def default(cls) -> "LedgerStore":
+    def default(cls, root: Path | None = None) -> "LedgerStore":
         """The repo-local ledger under ``.runtime_governance_state/`` (gitignored)."""
-        return cls(_repo_root() / LEDGER_REL)
+        return cls((root if root is not None else _repo_root()) / LEDGER_REL)
 
     @property
     def root(self) -> Path:

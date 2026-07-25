@@ -265,8 +265,8 @@ class TaskRegistryStore:
         self._path = self._root / REGISTRY_REL
 
     @classmethod
-    def default(cls) -> "TaskRegistryStore":
-        return cls(_repo_root())
+    def default(cls, root: Path | None = None) -> "TaskRegistryStore":
+        return cls((root if root is not None else _repo_root()))
 
     @property
     def path(self) -> Path:

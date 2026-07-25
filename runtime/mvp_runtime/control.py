@@ -327,8 +327,8 @@ class ControlStore:
         self._path = Path(root) / CONTROL_STATE_REL
 
     @classmethod
-    def default(cls) -> "ControlStore":
-        return cls(_repo_root())
+    def default(cls, root: Path | None = None) -> "ControlStore":
+        return cls((root if root is not None else _repo_root()))
 
     @property
     def path(self) -> Path:

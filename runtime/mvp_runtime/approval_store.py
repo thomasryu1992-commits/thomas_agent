@@ -35,8 +35,8 @@ class ApprovalStore:
         self._root = Path(root)
 
     @classmethod
-    def default(cls) -> "ApprovalStore":
-        return cls(_repo_root() / STORE_REL)
+    def default(cls, root: Path | None = None) -> "ApprovalStore":
+        return cls((root if root is not None else _repo_root()) / STORE_REL)
 
     @property
     def root(self) -> Path:
