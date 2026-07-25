@@ -18,6 +18,12 @@ scope, or safety flag. The store is per-machine and gitignored exactly like
 latest-wins per id, every read-modify-write under one cross-process sidecar lock, because
 the operator loop and a ``docker exec`` CLI share the file in the shipped deployment).
 
+**It is also the queue.** A request submitted over the control channel is *enqueued* here
+and executed by the operator loop's drain between polls, one at a time. That is what makes
+the channel answer while work is pending: the loop is no longer held for the length of a
+model call, so ``/tasks``, ``/cancel`` and ``/kill`` still land mid-backlog. Execution stays
+single-process sequential — this buys **visibility**, not concurrency.
+
 **Forward-only lifecycle**, following the programization review precedent::
 
     QUEUED ──► RUNNING ──► DELIVERED | FAILED | BLOCKED      (terminal)
@@ -80,6 +86,12 @@ _FLAG_NAMES = ("important", "independent_validation", "revise", "write_output")
 
 # The terminal supplied by the next startup for an entry whose process died mid-run.
 ABANDONED_REASON_CODE = "RUN_ABANDONED"
+
+# How many requests may wait at once. The runtime executes one task at a time, so a deeper
+# queue does not get through faster — it only turns "the operator typed a lot" into a long
+# unattended burst he stops being able to predict. Refusing at the limit says so while he
+# can still choose what matters.
+QUEUE_DEPTH_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -277,14 +289,61 @@ class TaskRegistryStore:
                            write_code="REGISTRY_WRITE_FAILED", label="the task registry")
 
     def latest(self) -> list[RegistryEntry]:
-        """The current state of every entry, most recently submitted first."""
+        """The current state of every entry, most recently submitted first.
+
+        Read under the appender's own lock, like the ledger's readers: a drain may be
+        appending a claim while a ``/tasks`` listing scans the stream, and an unlocked read
+        could see a torn final line and report the store corrupt when nothing is wrong."""
+        with self._lock():
+            return list(reversed(self._latest_locked()))
+
+    def _latest_locked(self) -> list[RegistryEntry]:
+        """The current state of every entry, oldest submission first; caller holds the lock.
+
+        Ties break on **arrival order** — the position of an entry's first row in the
+        append-only file — not on ``registry_entry_id``. Timestamps here are the repo's
+        canonical second-resolution UTC form, so two requests sent in the same second carry
+        the same ``submitted_at``; breaking that tie on a hashed id would have run them in
+        an order unrelated to the order Thomas asked, which is not a queue. The file's own
+        append order is the one record of arrival that exists.
+        """
         latest: dict[str, dict[str, Any]] = {}
-        for row in self._read_rows():
+        arrival: dict[str, int] = {}
+        for index, row in enumerate(self._read_rows()):
             if isinstance(row, dict) and isinstance(row.get("registry_entry_id"), str):
-                latest[row["registry_entry_id"]] = row
+                entry_id = row["registry_entry_id"]
+                latest[entry_id] = row
+                arrival.setdefault(entry_id, index)
         entries = [RegistryEntry.from_record(row) for row in latest.values()]
-        entries.sort(key=lambda e: (e.submitted_at, e.registry_entry_id), reverse=True)
+        entries.sort(key=lambda e: (e.submitted_at, arrival[e.registry_entry_id]))
         return entries
+
+    def queued_count(self) -> int:
+        """How many entries are waiting. Cheap enough to ask before every poll."""
+        return sum(1 for entry in self.latest() if entry.status == QUEUED)
+
+    def claim_next_queued(self, *, now: str) -> RegistryEntry | None:
+        """Atomically claim the oldest QUEUED entry, or None if the queue is empty.
+
+        The whole find-and-claim runs inside ONE lock acquisition, so two drains cannot
+        both see the same entry as QUEUED: the second finds it already RUNNING and moves
+        on. This is the ``claim_due`` pattern from the scheduler, and for the same reason —
+        the claim must precede the execution, so an occurrence is at-most-once. A crash
+        after the claim leaves the entry RUNNING for :func:`reconcile_stale_running` to
+        close honestly, which is the direction that never runs a task twice.
+
+        Strict FIFO (see ``_latest_locked`` on why arrival order, not the id, breaks a
+        same-second tie): the queue comes back in the order Thomas asked, and no priority
+        ordering is claimed that the runtime does not actually implement.
+        """
+        with self._lock():
+            for entry in self._latest_locked():
+                if entry.status != QUEUED:
+                    continue
+                claimed = replace(entry, status=RUNNING, started_at=now)
+                self._append([claimed])
+                return claimed
+            return None
 
     def find(self, entry_id: str) -> RegistryEntry | None:
         """The current state of one entry, or None. Accepts a unique id prefix, so the
@@ -376,6 +435,42 @@ def reconcile_stale_running(store: TaskRegistryStore, *, now: str) -> list[Regis
             entry.registry_entry_id, FAILED, now=now, reason_code=ABANDONED_REASON_CODE,
         ))
     return reconciled
+
+
+def enqueue(
+    store: TaskRegistryStore,
+    *,
+    request_text: str,
+    origin: str,
+    requester_id: str,
+    now: str,
+    flags: Mapping[str, bool] | None = None,
+) -> tuple[RegistryEntry, int]:
+    """Queue a request for later execution. Returns ``(entry, queue_position)``.
+
+    **Not best-effort, unlike :func:`record_submission`.** When the registry is the
+    execution path rather than a view onto it, a swallowed failure would silently drop a
+    request Thomas believes was accepted — so every failure here raises and becomes a
+    refusal he can see. That difference is the whole distinction between bookkeeping and
+    the queue.
+
+    ``QUEUE_DEPTH_LIMIT`` bounds the backlog: the runtime executes one task at a time, so
+    an unbounded queue only converts "the operator typed a lot" into a long unattended
+    burst. Refusing at the limit tells him now, when he can still decide what matters.
+    """
+    depth = store.queued_count()
+    if depth >= QUEUE_DEPTH_LIMIT:
+        raise TaskRegistryBlocked(
+            "QUEUE_FULL",
+            f"{depth}건이 이미 대기 중입니다 (최대 {QUEUE_DEPTH_LIMIT}) — "
+            "먼저 처리되기를 기다리거나 /cancel 로 정리해 주세요.",
+        )
+    entry = build_entry(
+        request_text=request_text, origin=origin, requester_id=requester_id,
+        now=now, flags=flags, status=QUEUED,
+    )
+    store.submit(entry)
+    return entry, depth + 1
 
 
 def record_submission(

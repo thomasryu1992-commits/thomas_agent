@@ -68,6 +68,56 @@ there (`FAILED`/`RUN_ABANDONED`), wired into the operator loop's startup. Delibe
 **not** a timeout: a long model call is not a dead process, and guessing from elapsed time
 would abandon healthy runs.
 
+## The queue (increment 2)
+
+The registry is not only the view — it is **the queue**. A request over the control channel
+is *enqueued* and the operator loop's drain runs it between polls:
+
+```
+poll → handle messages (a task request returns "접수했습니다" immediately)
+     → drain at most ONE queued task → send its result
+     → poll again
+```
+
+**Why one per pass.** Returning to the poll between tasks is the entire point. A drain that
+emptied the backlog in one go would hold the loop exactly as long as the inline execution it
+replaced, and `/tasks`, `/cancel` or `/kill` issued mid-backlog would not land until it
+finished. Execution stays single-process sequential — this buys **visibility**, not
+concurrency.
+
+**The claim is atomic.** `claim_next_queued` finds and claims inside one lock acquisition
+(the scheduler's `claim_due` pattern), so two drains cannot both take the same entry. The
+claim precedes the execution, so an occurrence is **at-most-once**: a crash after the claim
+leaves the entry RUNNING for startup reconciliation, which is the direction that never runs
+a task twice.
+
+**Strict FIFO, tie-broken on arrival.** Timestamps are the repo's canonical second-resolution
+UTC form, so a burst of requests shares one `submitted_at`. The tie breaks on the entry's
+position in the append-only file — the one record of arrival that exists. Breaking it on the
+hashed id (the first implementation) ran a burst in an order unrelated to the order Thomas
+asked, which is not a queue.
+
+**Kill-switch is re-read before every claim**, not once per batch (the scheduler's per-fire
+precedent): one task can hold the drain for minutes, and a kill issued during it must stop
+the tasks behind it. Queued entries stay queued — a kill **pauses** the drain, it does not
+drop the backlog. New requests are still refused at the door while not ACTIVE, so nothing
+accumulates to burst on resume.
+
+**`QUEUE_DEPTH_LIMIT` (20)** bounds the backlog. The runtime executes one task at a time, so
+a deeper queue does not get through faster — it only converts "the operator typed a lot"
+into a long unattended burst. `QUEUE_FULL` says so while he can still choose what matters.
+
+**Enqueue is not best-effort.** Everywhere else the registry is bookkeeping and a failure
+degrades to "unrecorded". Here it *is* the execution path, so a failed enqueue **refuses**:
+silently dropping a request Thomas believes is running is the one outcome worse than telling
+him no.
+
+**Pending work suppresses the long poll.** Holding the channel open for 25s waiting on a
+message while a queued task sits unstarted would be the one wait nobody asked for.
+
+**No registry ⇒ inline.** The registry is the queue, so without one there is nothing to
+queue into and the request runs inline. That is one rule, not a mode switch.
+
 ## The verbs
 
 Behind R4's identity gate, sharing the console tokenizer (`control.command_verb`) with the
@@ -135,7 +185,9 @@ pipeline.
 - **Parallel execution.** Execution stays single-process sequential. The registry gives
   *visibility*, not concurrency. A worker pool would need concurrent budget/gate semantics
   and is a separate Thomas decision.
-- **Deferred submission (a real queue).** `QUEUED` is modelled and `/cancel` operates on it,
-  but the operator channel still runs a request inline. Enqueue-then-drain is the next
-  increment; the lifecycle was built to accept it without a schema change.
+- **Priority ordering.** The queue is strict FIFO. `!중요` raises the *task's* priority
+  (which under the "auto" policy adds the reviewer), but it does not jump the queue — no
+  ordering is displayed that the runtime does not actually implement.
+- **Queueing scheduled work.** The scheduler runs its own tick loop and records its
+  `analysis_task` fires inline; it does not feed the operator queue.
 - **Cancelling a running task.** The kill switch owns that.

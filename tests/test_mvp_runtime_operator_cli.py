@@ -80,9 +80,10 @@ def test_handles_registered_message_and_replies(capsys, tmp_path):
               working_memory=WorkingMemoryStore(tmp_path / "wm"))
     assert rc == 0
     assert "handled 1, dropped 1" in capsys.readouterr().out
-    # The received-working ack, then the answer — both on the verified chat.
+    # The queue acknowledgement, then the answer the drain produced — both on the verified
+    # chat, in the same pass (F1 increment 2: the request is queued, then drained).
     assert [c for c, _ in ch.sent] == ["chat-1", "chat-1"]
-    assert "분석 중" in ch.sent[0][1]
+    assert "접수했습니다" in ch.sent[0][1]
     assert "Key findings" in ch.sent[1][1]
 
 
