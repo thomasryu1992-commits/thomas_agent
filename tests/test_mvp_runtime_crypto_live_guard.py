@@ -108,7 +108,7 @@ def _ready(**kw):
     facts = dict(
         gate_open=True, runtime_active=True, daily_loss_breached=False,
         clean_canary_orders=3, submitted_today=0, current_open_notional_usdt=0.0,
-        limits=_ready_limits(),
+        budget_registered=True, limits=_ready_limits(),
     )
     facts.update(kw)
     return facts
@@ -360,6 +360,55 @@ def test_checks_accumulate_rather_than_short_circuiting():
 
 def test_guard_text_is_ascii():
     render_guard_text(evaluate_live_order_guard(_intent(), **_ready(gate_open=False))).encode("ascii")
+
+
+# === step 6b: the guard requires a registered budget ===============================
+
+def test_no_registered_budget_blocks():
+    """autonomous_spend_without_registered_budget: '0' — no live order without one, even when
+    everything else is ready."""
+    verdict = evaluate_live_order_guard(_intent(), **_ready(budget_registered=False))
+    assert verdict["approved"] is False
+    assert any("registered live-trading budget" in b for b in verdict["blocks"])
+
+
+def test_budget_default_is_fail_closed():
+    """A caller that never resolves a budget cannot authorize an order on env-only caps: the
+    fact defaults to False."""
+    facts = _ready()
+    facts.pop("budget_registered")
+    verdict = evaluate_live_order_guard(_intent(), **facts)
+    assert any("registered live-trading budget" in b for b in verdict["blocks"])
+
+
+def test_resolve_limits_uses_the_registered_budget(tmp_path):
+    from runtime.mvp_runtime.crypto import live_budget
+    from runtime.mvp_runtime.crypto.live_order import resolve_live_order_limits
+
+    caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
+                max_daily_order_count=2, max_open_notional_usdt=120.0,
+                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+    rec = live_budget.build_live_trading_budget_record(
+        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
+        valid_until="2026-08-25T00:00:00Z", registered_by="thomas", registered_at="2026-07-25T00:00:00Z")
+    live_budget.write_registered_budget(rec, root=tmp_path)
+    limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
+    assert status["valid"] is True
+    assert limits.max_order_notional_usdt == 60.0 and limits.max_daily_order_count == 2
+
+
+def test_resolve_limits_without_a_budget_is_blocking(tmp_path):
+    from runtime.mvp_runtime.crypto.live_order import resolve_live_order_limits
+
+    limits, status = resolve_live_order_limits(tmp_path, now=NOW)
+    assert status["valid"] is False
+    # Blocking-default caps: a guard fed these refuses on every cap AND on the budget itself.
+    assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
+    guard = evaluate_live_order_guard(
+        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
+        clean_canary_orders=3, submitted_today=0, budget_registered=status["valid"], limits=limits)
+    assert guard["approved"] is False
+    assert any("registered live-trading budget" in b for b in guard["blocks"])
 
 
 # === LP3: the close guard ==========================================================

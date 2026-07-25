@@ -66,12 +66,14 @@ from .programization import (
     ProgramizationStore,
     build_candidate_event,
     build_review_event,
+    correction_lineage_for_pattern,
     create_program_candidate,
     record_shadow_result,
     transition_candidate,
     transition_review,
 )
 from .store import LedgerStore
+from .working_memory import WorkingMemoryStore
 
 _TRANSITION_TARGET = {"review": "UNDER_REVIEW", "close": "CLOSED"}
 _CANDIDATE_ACTIONS = ("ready", "validate", "accept", "reject")
@@ -81,7 +83,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="programization_cli",
         description="Programization review handling (status/review/candidate/close + candidate lifecycle).")
-    parser.add_argument("command", choices=["status", "review", "candidate", "close",
+    parser.add_argument("command", choices=["status", "lineage", "review", "candidate", "close",
                                             *_CANDIDATE_ACTIONS, "shadow", "request"])
     parser.add_argument("target", nargs="?", default=None,
                         help="pattern_id (review/candidate/close) or candidate_id (lifecycle/request commands)")
@@ -117,6 +119,7 @@ def main(
     store: ProgramizationStore | None = None,
     ledger: LedgerStore | None = None,
     control_store: ControlStore | None = None,
+    working_memory: WorkingMemoryStore | None = None,
     now: str | None = None,
 ) -> int:
     """Run one review command. Returns 0 on success, non-zero on a fail-closed block.
@@ -146,6 +149,29 @@ def main(
                     f"pattern={c.get('pattern_id')}\n"
                 )
             sys.stdout.write(f"candidates: {len(candidates)}\n")
+            return EXIT_OK
+
+        if args.command == "lineage":
+            # M5d (option C): read-only join — the corrections this repeated pattern kept
+            # needing, so a reviewer can decide "codify A->D" informed. Read-only like status,
+            # so it is answered in any runtime mode (no kill-switch gate). Best-effort: a
+            # corrupt/absent working memory degrades to "no lineage", never a crash.
+            if not args.target:
+                raise ProgramizationBlocked("PATTERN_NOT_FOUND", "lineage requires a pattern_id")
+            wm = working_memory if working_memory is not None else WorkingMemoryStore.default()
+            try:
+                lineage = correction_lineage_for_pattern(store, wm, pattern_id=args.target)
+            except MvpRuntimeError:
+                lineage = []
+            if not lineage:
+                sys.stdout.write(f"{args.target}: no correction lineage\n")
+                return EXIT_OK
+            sys.stdout.write(f"{args.target}: {len(lineage)} correction(s) this pattern needed\n")
+            for item in lineage:
+                sys.stdout.write(
+                    f"  [{item.get('learning_source')}/{item.get('status')}] "
+                    f"{item.get('correction_ref')}: {item.get('content')}\n"
+                )
             return EXIT_OK
 
         # Mutating commands change governed review state: same kill-switch door rule as

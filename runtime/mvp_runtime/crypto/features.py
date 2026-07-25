@@ -46,12 +46,17 @@ LIQ_MA_MIN_PERIODS = 10
 
 
 def _asof_align(
-    bar_times: list[str], events: list[dict[str, Any]], columns: tuple[str, ...]
+    bar_times: list[str], events: list[dict[str, Any]], columns: tuple[str, ...],
+    *, numeric: bool = True,
 ) -> dict[str, list]:
     """Pure-python ``merge_asof(direction='backward')`` — each bar carries the last
     event at or before its OPEN time (an event can never leak into earlier bars);
     bars before the first event, or with an unparseable key, stay None (the
-    source's rule: indeterminate, never a constant)."""
+    source's rule: indeterminate, never a constant).
+
+    ``numeric=False`` passes values through uncast, for categorical columns (the
+    HTF regime label); the alignment itself is identical, and that identity is the
+    point — one look-ahead rule, not two."""
     from .. import timeutil as _timeutil
 
     parsed_events: list[tuple[Any, dict[str, Any]]] = []
@@ -79,6 +84,9 @@ def _asof_align(
             cursor += 1
         for col in columns:
             value = last.get(col) if last is not None else None
+            if not numeric:
+                out[col].append(value)
+                continue
             try:
                 out[col].append(float(value) if value is not None else None)
             except (TypeError, ValueError):
@@ -108,6 +116,56 @@ def classify_market_regime(row: dict[str, Any], adx_threshold: float = ADX_TREND
 # The minimum candle count for a fully-warmed row: bb_width_percentile needs
 # BB_PERIOD - 1 warm-up plus max(10, PERCENTILE_WINDOW // 5) observations.
 MIN_WARM_CANDLES = BB_PERIOD - 1 + max(10, PERCENTILE_WINDOW // 5)
+
+# --- higher-timeframe (HTF) context -------------------------------------------
+
+# The HTF columns a spec may reference. Numeric ones are NORMALIZED (ratios, not
+# prices) so a threshold means the same thing on BTC and DOGE; the regime label is
+# the categorical one, and the whole point of the family — "only go long while the
+# timeframe above says TREND_UP".
+HTF_NUMERIC_COLUMNS = ("htf_adx", "htf_rsi", "htf_price_distance_ma20", "htf_ma20_distance_ma50")
+HTF_CATEGORICAL_COLUMNS = ("htf_market_regime",)
+HTF_COLUMNS = (*HTF_NUMERIC_COLUMNS, *HTF_CATEGORICAL_COLUMNS)
+
+
+def _htf_columns(bar_times: list[str], htf_candles: list[dict[str, Any]]) -> dict[str, list]:
+    """HTF feature columns aligned onto this timeframe's bars, point-in-time.
+
+    **The look-ahead rule, and why it holds structurally.** Each HTF row is keyed by
+    its candle's ``close_time`` — the first instant that candle is *known* — and
+    aligned with the same backward :func:`_asof_align` the funding and liquidation
+    feeds use, which matches on the lower bar's OPEN time. So a bar opening at 04:00
+    sees the HTF candle that closed at 04:00 but never the one closing at 07:59:59,
+    for live routing and replay alike. The classic HTF backtest error (letting the
+    still-forming higher candle decide the lower bar) is therefore not something this
+    code has to remember to avoid: the key is the close, so an unclosed candle has no
+    key to match on.
+
+    The HTF rows come from :func:`build_feature_rows` itself — one feature pipeline,
+    not a second one that could drift — over a sub-snapshot carrying only candles, so
+    the recursion terminates at depth one (no ``htf_candles`` key, no HTF columns)."""
+    htf_rows = build_feature_rows({"candles": htf_candles})
+    events: list[dict[str, Any]] = []
+    for candle, row in zip(htf_candles, htf_rows):
+        close_time = candle.get("close_time")
+        if not isinstance(close_time, str):
+            continue  # unkeyable: cannot be placed in time, so it is never visible
+        ma20, ma50, close = row.get("ma20"), row.get("ma50"), row.get("close")
+        events.append({
+            "timestamp": close_time,
+            "htf_adx": row.get("adx"),
+            "htf_rsi": row.get("rsi"),
+            "htf_price_distance_ma20": (
+                (close - ma20) / ma20 if (close is not None and ma20 not in (None, 0)) else None
+            ),
+            "htf_ma20_distance_ma50": (
+                (ma20 - ma50) / ma50 if (ma20 is not None and ma50 not in (None, 0)) else None
+            ),
+            "htf_market_regime": row.get("market_regime"),
+        })
+    columns = _asof_align(bar_times, events, HTF_NUMERIC_COLUMNS)
+    columns.update(_asof_align(bar_times, events, HTF_CATEGORICAL_COLUMNS, numeric=False))
+    return columns
 
 
 def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -146,6 +204,13 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # Key ABSENT = the feed is not configured: the source's legacy constants apply
     # (funding 0-fill, spike ratio 0.0), the exact pre-C9 behavior.
     bar_times = [c["open_time"] for c in candles]
+    # HTF context. Key ABSENT (or empty) = no higher timeframe supplied — every HTF
+    # column is None, so an htf_* spec is indeterminate and never matches. That is
+    # the liquidation posture, not the spike-ratio one: no HTF, no trade, never a
+    # fabricated constant that would let a filter silently pass.
+    htf_candles = snapshot.get("htf_candles") or []
+    htf = (_htf_columns(bar_times, htf_candles) if htf_candles
+           else {col: [None] * len(candles) for col in HTF_COLUMNS})
     has_funding_series = "funding" in snapshot
     if has_funding_series:
         funding_rate = _asof_align(bar_times, snapshot.get("funding") or [], ("funding_rate",))["funding_rate"]
@@ -217,6 +282,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "mark_price": close,
             "index_price": close,
             "mark_index_basis_bps": 0.0,
+            # HTF context: the last CLOSED higher-timeframe candle's read, or None.
+            **{col: htf[col][i] for col in HTF_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (
