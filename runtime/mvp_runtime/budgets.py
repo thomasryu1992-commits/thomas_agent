@@ -34,6 +34,12 @@ TOKENS_PER_AGENT = 8000
 # token allowance rather than an agent's share.
 TRIAGE_TOKEN_ALLOWANCE = 2000
 TRIAGE_TIMEOUT_SECONDS = 30
+# F2: one front-desk conversational turn is the same shape of call as the triage — a short
+# message in, one small typed verdict (a frontdesk_turn) out — so it gets the same modest
+# allowance, per turn, and the same timeout class. The role contract caps it structurally
+# too (max_model_calls: 1 per turn).
+FRONTDESK_TOKEN_ALLOWANCE = 2000
+FRONTDESK_TIMEOUT_SECONDS = 30
 
 
 def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[str, Any]:

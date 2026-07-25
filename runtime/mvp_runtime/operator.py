@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import (
-    approval, control, memory_console, operator_feedback, registry_console, safety_gate,
-    task_registry, timeutil,
+    approval, control, frontdesk, memory_console, operator_feedback, registry_console,
+    safety_gate, task_registry, timeutil,
 )
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .control import ControlStore
@@ -156,6 +156,7 @@ def handle_operator_message(
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
     registry: Any | None = None,
+    frontdesk_provider: Provider | None = None,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
@@ -368,6 +369,29 @@ def handle_operator_message(
     # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
     # the model call takes tens of seconds and the operator otherwise stares at silence.
     stamp = now or timeutil.utc_now_iso()
+
+    # F2: with a front-desk provider wired, an UNMARKED plain-text message is a
+    # conversation turn, not automatically a task — the front desk decides (submit /
+    # query / clarify / chat) through its closed turn contract. Placement is deliberate:
+    # AFTER the kill-switch refusal (a PAUSED runtime stops the conversation LLM — this
+    # is where 'frontdesk model calls are kill-bound' is enforced, once) and AFTER the
+    # marker parse (a `!중요`-marked request is the operator being explicit; deterministic
+    # intent never waits on a model). None back means degraded — fall through to the F1
+    # queue path, so conversation dying never loses a message.
+    if frontdesk_provider is not None and registry is not None and priority == "NORMAL":
+        turn_outcome = frontdesk.run_turn(
+            text, provider=frontdesk_provider, registry=registry,
+            working_memory=working_memory, ledger=store, control_store=control_store,
+            operator_id=registration.operator_id, now=stamp, repo_root=repo_root,
+        )
+        if turn_outcome is not None:
+            return OperatorReply(
+                text=turn_outcome["reply"], accepted=True, status="FRONTDESK",
+                reason_code=turn_outcome["action"],
+                registry_entry_id=turn_outcome.get("registry_entry_id"),
+            )
+        # Degraded: the raw message continues down the F1 path unchanged — same
+        # channel behavior as frontdesk-off, so no message is ever lost to a model.
 
     # F1 increment 2: with a registry wired, the request is QUEUED and the loop's drain
     # runs it between polls. The registry IS the queue, so "no registry" means there is
@@ -862,6 +886,7 @@ def run_operator_once(
     control_store: ControlStore | None = None,
     approval_store: Any | None = None,
     registry: Any | None = None,
+    frontdesk_provider: Provider | None = None,
     max_queued_tasks: int = 1,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
@@ -908,6 +933,7 @@ def run_operator_once(
             working_memory=working_memory, programization=programization,
             now=now, store=store, control_store=control_store,
             approval_store=approval_store, registry=registry,
+            frontdesk_provider=frontdesk_provider,
             independent_validation=independent_validation,
             validator_provider=validator_provider, repo_root=repo_root,
             # The received-working notice, sent back on the same verified chat the request

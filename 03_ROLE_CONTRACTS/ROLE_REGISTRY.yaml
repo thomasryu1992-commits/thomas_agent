@@ -1,5 +1,5 @@
 schema_version: role_registry.v0.3
-document_version: 0.8.0
+document_version: 0.9.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
@@ -26,10 +26,10 @@ non_dynamic_roles:
 # validator enforces routable: false permanently (the thomas.prime precedent).
 - role_id: conversation.frontdesk
   role_type: session_front
-  status: candidate
+  status: active          # D2 flip: explicit Thomas decision, 2026-07-25 (F2 runtime PR)
   routable: false
   definition_path: 03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md
-  definition_sha256: 116b1f0ea308430c01ee73f76d991e3ef279951e25f72755211b95f28f695797
+  definition_sha256: 70f37393f9d58ab000c75fc4ae308059373928c9891956bba0fa08d4cf8dc88b
 roles:
 - role_id: general.specialist
   version: 0.3.0
