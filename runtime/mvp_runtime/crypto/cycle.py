@@ -48,6 +48,7 @@ from .paper import (
     read_outcomes,
     route_entries,
     run_paper_update,
+    split_by_provenance,
 )
 
 CYCLE_VERSION = "crypto_cycle.v0.1"
@@ -218,7 +219,18 @@ def run_crypto_cycle(
     outcomes: list[dict[str, Any]] | None = None
     try:
         outcomes = read_outcomes(root)
-        risk = run_risk_guard(outcomes, now=now)
+        # The risk guard judges **this runtime's own** trading only. The store also holds
+        # history imported from the frozen crypto_AI_System, which is real but was produced by
+        # different code — so it cannot answer "is THIS system losing right now", which is the
+        # only question a breaker asks. Measured 2026-07-25: 112 imported rows worth +266.8R sat
+        # inside the rolling week, so the weekly-loss breaker could not trip however this runtime
+        # performed. A breaker that cannot trip is not a breaker.
+        #
+        # Deliberately scoped to the guard. `run_lifecycle` below keeps the full history on
+        # purpose: imported outcomes carry strategy lineage, and promotion/demotion is a
+        # performance judgement about a strategy, not a safety brake on this runtime.
+        own_outcomes, _imported = split_by_provenance(outcomes)
+        risk = run_risk_guard(own_outcomes, now=now)
     except ToolError as exc:
         risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
         reason_codes.append(exc.reason_code)
