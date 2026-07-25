@@ -120,9 +120,27 @@ these, does not handle real keys, and does not enable live trading.** Steps 1–
 satisfied or are blocked on work that does not exist yet, so this is a map, not a runbook.
 
 **Gate 0 — earn confidence (before any live money)**
-- [x] Paper trading on real data shows positive expectancy over a sustained window
-      (2.36R over 114 closed trades as of 2026-07-23). Check with
-      `python -m runtime.mvp_runtime.crypto.dashboard`.
+- [ ] Paper trading **by this runtime** shows positive expectancy over a sustained window.
+      Check with `python -m runtime.mvp_runtime.crypto.dashboard`.
+
+      **Corrected 2026-07-25.** This box was previously ticked citing "2.36R over 114 closed
+      trades". Those 114 are the **imported crypto_AI_System history**
+      (`provenance: crypto_ai_system_import`, brought in by `scripts/import_crypto_history.py`),
+      not trades this runtime made. On the same day this runtime's own record
+      (`provenance: mvp_paper_kernel`) was **5 closed trades at −0.53R**, and the dashboard's
+      blended headline had hidden that — it also flipped the recommendation from
+      `DROP_CANDIDATE_PROFILE` to `CREATE_CANDIDATE_PROFILE_DRAFT`. The dashboard now reports the
+      two populations on separate lines so the gate cannot be read that way again.
+
+      A go-live gate must be earned by the code that will trade. The predecessor's record is
+      context, not evidence about this runtime. Two things make it unearned today: the sample is
+      5 trades, and the window is days — the digest itself still says
+      `weekly_trend: INSUFFICIENT_SAMPLE`.
+
+      Worth knowing when this is re-judged: the paper kernel is structurally optimistic. Exits
+      settle at the **modelled** stop/target price (a stop-out books exactly −1.00R), and there
+      are **no fees, funding, or slippage** on the paper route. So paper expectancy is an upper
+      bound on live expectancy, not an estimate of it.
 - [ ] The active pool is populated with strategies you trust. The former symbol-starved finding
       is resolved: a crypto schedule with an empty request now fans out over every
       ``(symbol, timeframe)`` the pool routes on — plus every context that holds an open paper
