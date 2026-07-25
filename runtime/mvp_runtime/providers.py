@@ -89,6 +89,51 @@ _ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
     ],
 }
 
+# The SAME 12-key shape as above, in the OpenAI/OpenRouter ``json_schema`` (strict) dialect.
+# Kept as a separate constant rather than shared with _ANALYSIS_RESPONSE_SCHEMA because the
+# two vendor dialects genuinely differ and mixing them fails closed on both sides: OpenAI
+# strict mode requires ``additionalProperties: false`` on every object and expresses a
+# nullable field as a ``["object", "null"]`` type union, whereas Google's ``responseSchema``
+# uses ``nullable: True`` and rejects ``additionalProperties``. The ``required`` key set is
+# identical by construction; ``test_analysis_schemas_do_not_drift`` asserts it so the two
+# cannot silently diverge into different contracts for the same analysis.
+_ANALYSIS_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "key_findings": _STRING_ARRAY,
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"statement": {"type": "string"}, "evidence_refs": _STRING_ARRAY},
+                "required": ["statement", "evidence_refs"],
+            },
+        },
+        "inferences": _STRING_ARRAY,
+        "assumptions": _STRING_ARRAY,
+        "uncertainty": _STRING_ARRAY,
+        "risks": _STRING_ARRAY,
+        "recommendation": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "properties": {"action": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["action", "reason"],
+        },
+        "limitations": _STRING_ARRAY,
+        "next_actions": _STRING_ARRAY,
+        "evidence_quality": {"type": "string"},
+        "unresolved_questions": _STRING_ARRAY,
+    },
+    "required": [
+        "summary", "key_findings", "facts", "inferences", "assumptions", "uncertainty",
+        "risks", "recommendation", "limitations", "next_actions", "evidence_quality",
+        "unresolved_questions",
+    ],
+}
+
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
 VALIDATOR_PROVIDER_ENV = "MVP_VALIDATOR_PROVIDER"
 HOSTED_MODEL_ENV = "MVP_HOSTED_MODEL"
@@ -507,6 +552,12 @@ class _OpenAICompatibleProvider:
     _ENDPOINT: str = ""
     _DEFAULT_MODEL: str = ""
     _API_KEY_ENV: str = ""
+    # How this vendor is asked to constrain its output. The default ``json_object`` only
+    # guarantees syntactically valid JSON, NOT the 12-key shape — a subclass whose gateway
+    # can ENFORCE the schema server-side overrides this (see OpenRouterProvider). Groq keeps
+    # the default deliberately: its json_schema support is model-dependent and a rejected
+    # body fails the call outright (PROVIDER_TRANSPORT, not retryable).
+    _RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
     def __init__(
         self,
@@ -539,7 +590,7 @@ class _OpenAICompatibleProvider:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt + _RESPONSE_INSTRUCTION}],
             "max_tokens": int(max_output_tokens),
-            "response_format": {"type": "json_object"},
+            "response_format": self._RESPONSE_FORMAT,
         }).encode("utf-8")
         request = urllib.request.Request(
             self._ENDPOINT,
@@ -590,12 +641,27 @@ class OpenRouterProvider(_OpenAICompatibleProvider):
     gaining a code path per vendor. See ``DEFAULT_OPENROUTER_MODEL`` for what that costs in
     grant scope — one grant here covers whatever slug is configured, unlike every other
     provider id.
+
+    Unlike Groq, this gateway is asked to ENFORCE the analysis shape server-side via a
+    strict ``json_schema`` response format (``_ANALYSIS_JSON_SCHEMA``), the same guarantee
+    Google gives through ``responseSchema``. Plain ``json_object`` only promises valid JSON,
+    not the 12 required keys, and reasoning models (e.g. ``openai/gpt-oss-20b``) intermittently
+    drop keys or truncate — which the parser can only reject after the call is paid for
+    (MALFORMED_RESPONSE, a failure class the failover chain does NOT switch on). Enforcing the
+    schema turns that intermittent post-hoc rejection into a server-side guarantee. Caveat:
+    the configured model must advertise ``structured_outputs``; a model that does not will
+    have the body rejected outright (a clear config error, not a silent wrong answer). The
+    parser's required-key guard stays as the backstop.
     """
 
     model_id = OPENROUTER
     _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL
     _API_KEY_ENV = "OPENROUTER_API_KEY"
+    _RESPONSE_FORMAT = {
+        "type": "json_schema",
+        "json_schema": {"name": "analysis", "strict": True, "schema": _ANALYSIS_JSON_SCHEMA},
+    }
 
 
 class OpenRouterLightProvider(OpenRouterProvider):
