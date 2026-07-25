@@ -222,6 +222,7 @@ def build_pipeline_audit(
     write_permission_decision: Mapping[str, Any] | None = None,
     programization_pattern: Mapping[str, Any] | None = None,
     programization_triggered: bool = False,
+    revision: Mapping[str, Any] | None = None,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -358,6 +359,33 @@ def build_pipeline_audit(
         related_record_refs=[f"in_memory:{permission_decision['permission_decision_id']}"],
         evidence_refs=[output_ref], payload_sha256=inv_fp,
     ))
+
+    # M3: when the one allowed revision ran, the final MODEL_INVOKED above is the REVISED
+    # call; this event keeps the FIRST (rejected) call on the chain and records the give-up
+    # decision. REVISION_ATTEMPTED always; REVISION_EXHAUSTED when the revised output still
+    # did not PASS (which the FINAL state below then records as BLOCKED). The first call's
+    # own fingerprint is the payload, so its spend is auditable though its output was
+    # superseded and never delivered.
+    if revision is not None and revision.get("attempted"):
+        first_inv = dict(revision.get("first_invocation") or {})
+        first_fp = _fingerprint(first_inv, "invocation")
+        requests = list(revision.get("requests") or [])
+        exhausted = bool(revision.get("exhausted"))
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                         role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+            subject_type="AGENT_OUTPUT", subject_id=agent_output["agent_output_id"],
+            subject_ref=output_ref, subject_fingerprint=output_fp,
+            summary=(f"Revision: a prior version (model {first_inv.get('model_id')}, "
+                     f"{first_inv.get('tokens_used')} tokens) returned REVISE on "
+                     f"{len(requests)} required revision(s); regenerated once"
+                     + (" — still not PASS, exhausted." if exhausted else ".")),
+            outcome="RECORDED",
+            reason_codes=["REVISION_ATTEMPTED"] + (["REVISION_EXHAUSTED"] if exhausted else []),
+            related_record_refs=[f"in_memory:{permission_decision['permission_decision_id']}"],
+            evidence_refs=[output_ref], payload_sha256=first_fp,
+        ))
 
     # R5: if the specialist proposed working-memory candidates, record their creation as its
     # own EVIDENCE_ONLY event. Candidates are proposals (ALLOW/CANDIDATE_CREATION) — the event

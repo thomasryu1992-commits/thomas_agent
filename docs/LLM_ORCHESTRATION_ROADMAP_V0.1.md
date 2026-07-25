@@ -87,18 +87,28 @@ Thomas-decision point.**
 - Governance: reuses the existing gate/provider machinery — **zero** new contracts / schemas /
   registries / gates.
 
-### M3 — verify-fail → bounded LLM revision loop ⚠️ *(1 PR, Thomas decision required)*
+### M3 — verify-fail → bounded LLM revision loop ⚠️ *(done 2026-07-24; Thomas approved opt-in re-introduction)*
 
-- On an independent-validator FAIL, feed the validator's already-collected `next_actions`
-  (`validator.py`) back into the specialist for **at most one** regeneration → re-verify → still
-  FAIL ⇒ current BLOCKED + human hand-off.
-- **Why the decision is mandatory:** an "endless REVISE ratchet" occurred live and the loop was
-  removed on purpose. Re-introduction conditions:
-  - hard cap of **1** retry, not configurable upward;
-  - a **pre-allocated retry budget** (the `TRIAGE_TOKEN_ALLOWANCE` precedent) — over budget ⇒
-    no loop, BLOCKED;
-  - both retry and give-up audited (`REVISION_ATTEMPTED` / `REVISION_EXHAUSTED`).
-- No new contract/schema — a second worker call inside the same run, reusing existing record shapes.
+- A validation **REVISE** earns exactly ONE regeneration: the required revisions (automatic
+  reasons + the independent reviewer's) are fed back to the specialist via
+  `worker.run_analysis_worker(revision_requests=…)`, the revised output is re-validated under the
+  same rules, and the stricter outcome stands. Still not PASS ⇒ BLOCKED + human hand-off.
+- **Re-introduction conditions, all enforced** (the "endless REVISE ratchet" is why):
+  - **Opt-in** (`--revise`, off by default) — Thomas's chosen safest re-introduction; a machine
+    that never passes the flag keeps today's behaviour exactly.
+  - **Hard cap of 1**, structural: a single `if` in `pipeline.run_task`, not a loop — a revised
+    output that still REVISEs is not revised again. **BLOCK is never revised** (unusable, not
+    fixable); only REVISE qualifies.
+  - **Pre-allocated retry budget**: arming `--revise` bumps `planned_agents` up front so the
+    regeneration + re-verify fit the allocation; the same flag gates the allocation and the loop,
+    and the worker still fails closed on an exhausted allocation (over budget ⇒ no loop). Spend is
+    honest — `budget_usage` counts the first (superseded) call and records `revision_cycles: 1`.
+  - **Both retry and give-up audited**: a REVISION event on the hash chain carries
+    `REVISION_ATTEMPTED` (and `REVISION_EXHAUSTED` when the retry still fails), naming the first
+    call so its spend stays auditable though its output was superseded.
+- No new contract/schema/gate — a second worker call reusing existing record shapes; the budget's
+  `max_revision_cycles: 1` already existed. One new ledger record kind (`revision`) registered so
+  the first call's evidence is durably stored, not just fingerprinted.
 
 ### M4 — crypto: align "win-rate + risk-reward" selection ⚠️ *(2 decisions, ~1 PR each)*
 

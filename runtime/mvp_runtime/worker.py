@@ -184,12 +184,27 @@ def _validated_context(validated_entries: list[Mapping[str, Any]] | None) -> str
     return "\n".join(lines) + "\n"
 
 
+def _revision_context(revision_requests: list[str] | None) -> str:
+    """The M3 revision block: the required fixes a prior version failed on, fed back into
+    this one regeneration. Empty on a first attempt. This is guidance to address, not new
+    facts to invent — a missing input is still a limitation to disclose, never fabricate."""
+    if not revision_requests:
+        return ""
+    lines = ["\nA prior version of this analysis did not pass validation. Produce a revised "
+             "version that addresses EACH required revision below; where a revision asks for "
+             "data you do not have, disclose it as a limitation rather than inventing it:"]
+    for index, req in enumerate(revision_requests, start=1):
+        lines.append(f"[R{index}] {req}")
+    return "\n".join(lines) + "\n"
+
+
 def build_prompt(
     task: Mapping[str, Any],
     assignment: Mapping[str, Any],
     search_hits: list[Mapping[str, Any]] | None = None,
     memory_entries: list[Mapping[str, Any]] | None = None,
     validated_entries: list[Mapping[str, Any]] | None = None,
+    revision_requests: list[str] | None = None,
 ) -> str:
     scope = task.get("scope", {})
     role_scope = assignment.get("role_scope", {})
@@ -206,6 +221,7 @@ def build_prompt(
         f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
+        f"{_revision_context(revision_requests)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
         "inferences, disclose assumptions and uncertainty, and do not propose external actions.\n"
         f"{ACCEPTANCE_CRITERIA}"
@@ -337,6 +353,7 @@ def run_analysis_worker(
     validated_entries: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
     prompt_override: str | None = None,
+    revision_requests: list[str] | None = None,
     role_output_keys: Sequence[str] | None = None,
     worker_id: str = WORKER_ID,
     prompt_version: str = PROMPT_VERSION,
@@ -372,7 +389,7 @@ def run_analysis_worker(
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
     prompt = prompt_override if prompt_override is not None else build_prompt(
-        task, assignment, search_hits, memory_entries, validated_entries
+        task, assignment, search_hits, memory_entries, validated_entries, revision_requests
     )
     try:
         result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))

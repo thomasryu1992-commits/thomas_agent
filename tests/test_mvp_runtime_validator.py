@@ -362,6 +362,91 @@ def test_automatic_revise_does_not_spend_the_reviewer():
     assert result["records"]["budget_usage"]["usage"]["model_calls"] == 1
 
 
+# --- M3: opt-in one-shot revision loop ----------------------------------------
+
+class _AlwaysReviseSpecialist(MockProvider):
+    """Every output the AUTOMATIC checks call REVISE (empty uncertainty/assumptions). Counts."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        self.calls += 1
+        r.analysis = {**r.analysis, "uncertainty": [], "assumptions": []}
+        return r
+
+
+class _ReviseThenPassSpecialist(MockProvider):
+    """First output is over-confident (automatic REVISE); the regeneration is the ordinary
+    passing mock output. Proves a revision can recover a REVISE to a delivered PASS."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        self.calls += 1
+        if self.calls == 1:
+            r.analysis = {**r.analysis, "uncertainty": [], "assumptions": []}
+        return r
+
+
+def _revision_events(result):
+    return [e for e in result["records"]["audit_trail"]
+            if "REVISION_ATTEMPTED" in e["event"]["reason_codes"]]
+
+
+@requires_local_core
+def test_m3_revision_recovers_a_revise_to_pass():
+    specialist = _ReviseThenPassSpecialist()
+    result = run_task(REQUEST, provider=specialist, revise=True, now=NOW)
+    assert result["status"] == "COMPLETED" and result["delivered"] is True
+    assert specialist.calls == 2  # one REVISE, exactly one regeneration
+    rev = result["records"]["revision"]
+    assert rev["attempted"] is True and rev["exhausted"] is False
+    usage = result["records"]["budget_usage"]["usage"]
+    assert usage["model_calls"] == 2 and usage["revision_cycles"] == 1
+    events = _revision_events(result)
+    assert len(events) == 1 and "REVISION_EXHAUSTED" not in events[0]["event"]["reason_codes"]
+
+
+@requires_local_core
+def test_m3_revision_exhausted_blocks_after_exactly_one_try():
+    specialist = _AlwaysReviseSpecialist()
+    result = run_task(REQUEST, provider=specialist, revise=True, now=NOW)
+    assert result["status"] == "BLOCKED"
+    assert result["block"]["reason_code"] == "VALIDATION_REVISE"
+    assert specialist.calls == 2  # hard cap: one regeneration, then give up (not a loop)
+    rev = result["records"]["revision"]
+    assert rev["attempted"] is True and rev["exhausted"] is True
+    assert "REVISION_EXHAUSTED" in _revision_events(result)[0]["event"]["reason_codes"]
+    usage = result["records"]["budget_usage"]["usage"]
+    assert usage["model_calls"] == 2 and usage["revision_cycles"] == 1
+
+
+@requires_local_core
+def test_m3_off_by_default_does_not_revise():
+    specialist = _AlwaysReviseSpecialist()
+    result = run_task(REQUEST, provider=specialist, now=NOW)  # revise defaults off
+    assert result["status"] == "BLOCKED"
+    assert specialist.calls == 1  # no regeneration
+    assert "revision" not in result["records"]
+    assert result["records"]["budget_usage"]["usage"]["model_calls"] == 1
+
+
+@requires_local_core
+def test_m3_block_is_never_revised():
+    # An independent BLOCK (unusable, not fixable) is not a revision candidate even with
+    # revise armed — only REVISE earns the regeneration.
+    result = run_task(REQUEST, provider=MockProvider(), validator_provider=FakeVerdictProvider("BLOCK"),
+                      independent_validation=True, revise=True, now=NOW)
+    assert result["status"] == "BLOCKED" and result["block"]["reason_code"] == "VALIDATION_BLOCK"
+    assert "revision" not in result["records"]
+
+
 @requires_local_core
 def test_e2e_default_off_has_no_validator_records():
     result = run_task(REQUEST, now=NOW)
