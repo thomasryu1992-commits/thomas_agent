@@ -1,10 +1,16 @@
 # LP4 Order Adapter — Design Record v0.1
 
-**Status:** Design record. **No code exists yet; nothing here enables trading.** This is the
-proposal to review before LP4 is written.
+**Status:** IMPLEMENTED — increments 1, 2a and 2b all merged 2026-07-25. This is the design
+that was reviewed *before* the code, kept as the decision trail; it is not a description of
+current behaviour. For what the code does now read `CRYPTO_LIVE_EXECUTION_V0.1.md` and
+`runtime/mvp_runtime/crypto/live_execution.py`.
 **Owner:** Thomas
-**Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule; live trading stays
-OFF (`financial_transaction_execution_implemented: false`, `ORDER_PATH_IMPLEMENTED = False`).
+**Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule. **An order path now
+exists** (`financial_transaction_execution_implemented: true`, `ORDER_PATH_IMPLEMENTED = True`,
+both flipped 2026-07-25 in lockstep with increment 2b). That says the *code* exists, not that
+this machine may act: `financial_executor_enabled` stays false, and acting still needs the
+per-machine `live_trading` grant, the confirmation phrase, a registered budget, both kill
+switches, and — for the autonomous path — the canary evidence.
 Sequenced after: verification (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`), the budget
 (steps 6/6b), and the P5 role (step 7). Depends decisions: `LIVE_EXECUTION_GOVERNANCE_V0.1.md`.
 

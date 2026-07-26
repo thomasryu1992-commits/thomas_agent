@@ -1,11 +1,16 @@
 # LP5 Position Kernel + Cycle Routing — Design Record v0.1
 
-**Status:** Design record. **No code exists yet; nothing here enables trading.** This is the
-proposal to review before LP5 is written.
+**Status:** PARTIALLY IMPLEMENTED — LP5.1 (position state + reconciliation), LP5.2 (sizing),
+LP5.4 (the outcome bridge) and LP5.3's *decision* half (`live_entry.plan_live_entry`) all merged
+2026-07-25. **The executing leg + cycle routing remain unbuilt**, and have their own record:
+`LP5_3_LIVE_LEG_DESIGN_V0.1.md`. Kept as the decision trail; current truth is
+`CRYPTO_LIVE_EXECUTION_V0.1.md` and the code.
 **Owner:** Thomas
-**Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule; live trading stays OFF
-(`financial_transaction_execution_implemented: false`, `ORDER_PATH_IMPLEMENTED = False`).
-Sequenced after LP4 (`LP4_ORDER_ADAPTER_DESIGN_V0.1.md`, increment 1 merged; increment 2 pending).
+**Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule. Since LP4 an order
+path exists (`financial_transaction_execution_implemented: true`, `ORDER_PATH_IMPLEMENTED = True`)
+— but nothing routes to it autonomously, which is exactly what the unbuilt executing leg would
+change. `financial_executor_enabled` stays false.
+Sequenced after LP4 (`LP4_ORDER_ADAPTER_DESIGN_V0.1.md`, complete).
 Depends decisions: `LIVE_EXECUTION_GOVERNANCE_V0.1.md`. Verification baseline:
 `CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`.
 

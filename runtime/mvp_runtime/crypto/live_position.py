@@ -45,6 +45,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from ..safety_gate import Authorization
 from .account import AccountSnapshot
+from .coerce import as_float as _f
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -90,14 +91,6 @@ _QTY_ABSOLUTE_TOLERANCE = 1e-9
 EXPOSURE_UNKNOWN_AT_CAP = "EXPOSURE_UNKNOWN_TREATED_AS_AT_CAP"
 
 
-def _f(value: Any, default: float = 0.0) -> float:
-    """Venue and stored numbers may be strings; a malformed one must not crash a read."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 # --- the record ---------------------------------------------------------------
 
 def build_live_position(
@@ -114,6 +107,7 @@ def build_live_position(
     strategy_id: str | None = None,
     candidate_id: str | None = None,
     strategy_rule_hash: str | None = None,
+    strategy_generation_id: str | None = None,
     cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """One OPEN live position, from a real fill. Pure — persisting it is the store's job.
@@ -162,6 +156,10 @@ def build_live_position(
         "strategy_id": strategy_id,
         "candidate_id": candidate_id,
         "strategy_rule_hash": strategy_rule_hash,
+        # The third lineage field the exit reads (`live_leg` -> build_live_outcome_record) and
+        # the one the paper position has always carried. Without it the outcome's generation is
+        # None however faithfully the other two travel.
+        "strategy_generation_id": strategy_generation_id,
         "cycle_id": cycle_id,
     }
     position["position_id"] = integrity.short_id(

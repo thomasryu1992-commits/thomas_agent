@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .coerce import as_float as _f
 from .live_order import build_live_order_intent, evaluate_live_order_guard
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
@@ -67,13 +68,6 @@ INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
 # traded price: a stop that triggers on a single wick print on one venue's tape is the
 # classic way to be stopped out of a position that never actually moved.
 BRACKET_WORKING_TYPE = "MARK_PRICE"
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def price_bracket(

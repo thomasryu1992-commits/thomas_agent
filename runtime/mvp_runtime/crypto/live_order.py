@@ -232,6 +232,18 @@ def build_live_order_intent(
         "stop_loss": plan.get("stop_loss"),
         "take_profit": plan.get("take_profit"),
         "strategy_id": plan.get("strategy_id"),
+        # The lineage, carried for the same reason the paper plan carries it (paper.py's
+        # open_position): `strategy_id` is a DISPLAY id the factory restarts at S001 every
+        # generation, so it cannot attribute a result. LP5.4's bridge, `lifecycle` and the C6
+        # feedback all group live outcomes by these three — and the executing leg reads them
+        # off the intent, which is the record that crosses from planning to execution. Until
+        # 2026-07-26 only `strategy_id` was copied, so a live trade placed through the real
+        # pipeline reached the ledger with no lineage at all: a live loss could not demote the
+        # strategy that caused it, and a later generation answering to the same display name
+        # could inherit or be judged by it. Exactly what LP5.4 exists to prevent.
+        "candidate_id": plan.get("candidate_id"),
+        "strategy_rule_hash": plan.get("strategy_rule_hash"),
+        "strategy_generation_id": plan.get("strategy_generation_id"),
         "position_id": plan.get("position_id"),
         "candle_time": plan.get("candle_time"),
         "connectivity_test": False,
@@ -328,9 +340,14 @@ def evaluate_live_order_guard(
     # always something a caller stated on purpose. `live_position.compute_open_notional_usdt`
     # supplies it from the venue and reports the cap itself when the account is unreadable.
     current_open_notional_usdt: float,
+    # No default, for the same reason `current_open_notional_usdt` has none: a fallback to
+    # `LiveOrderLimits.from_env()` was a SECOND source of caps, and the registered budget is
+    # supposed to be the only one (`resolve_live_order_limits`). Two sources means the
+    # question "which numbers is this order being judged against?" has two answers, and the
+    # env one is reachable by forgetting an argument. Callers state it.
+    limits: LiveOrderLimits,
     budget_registered: bool = False,
     canary: bool = False,
-    limits: LiveOrderLimits | None = None,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
 
@@ -338,9 +355,9 @@ def evaluate_live_order_guard(
     venue, a grant, or a clock. Checks accumulate — the caller sees the complete refusal.
 
     ``budget_registered`` states whether a valid registered live-trading budget backs the
-    ``limits`` — the caller resolves it (``resolve_live_order_limits``). It defaults to
-    ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
-    authorize an order on env-only caps.
+    ``limits`` — the caller resolves both together (``resolve_live_order_limits``). It defaults
+    to ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
+    authorize an order on caps that no budget backs.
 
     ``canary`` marks the deliberate operator canary — the one-at-a-time real order placed to
     BUILD the promotion evidence. It changes exactly two things, and nothing else:
@@ -358,7 +375,7 @@ def evaluate_live_order_guard(
     later cannot land on only one of the two paths. ``canary`` defaults to ``False``, so the
     autonomous path keeps the promotion gate by default (fail-closed).
     """
-    cfg = limits if limits is not None else LiveOrderLimits.from_env()
+    cfg = limits
     blocks: list[str] = []
     repairs: list[str] = []
 
@@ -476,7 +493,7 @@ def evaluate_live_close_guard(
     intent: Mapping[str, Any],
     *,
     gate_open: bool,
-    limits: LiveOrderLimits | None = None,
+    limits: LiveOrderLimits,
 ) -> dict[str, Any]:
     """The deliberately narrower gate for closing an open live position.
 
@@ -486,8 +503,12 @@ def evaluate_live_close_guard(
     position is more dangerous than the halt was meant to prevent. What survives is the
     structural boundary — the grant, the confirmation phrase, and reduceOnly itself, so this
     path can only ever shrink a position, never open one.
+
+    ``limits`` is required here too — see ``evaluate_live_order_guard``. The close path needs
+    only the confirmation phrase from it, but taking it from the same resolved object keeps
+    one answer to "which limits was this judged against".
     """
-    cfg = limits if limits is not None else LiveOrderLimits.from_env()
+    cfg = limits
     blocks: list[str] = []
     if not gate_open:
         blocks.append("live trading grant is not active (safety-flag gate closed)")

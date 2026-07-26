@@ -83,10 +83,19 @@ it must be scoped, expired, and revocable independently of the ability to trade.
 
 ## The rules carried over verbatim, and why
 
-**Zero means "not configured", never "unlimited".** Every cap (`MVP_LIVE_MAX_ORDER_NOTIONAL_USDT`,
-`MVP_LIVE_MAX_DAILY_ORDER_COUNT`, `MVP_LIVE_MAX_OPEN_NOTIONAL_USDT`,
-`MVP_LIVE_DAILY_LOSS_LIMIT_USDT`) defaults to 0, and 0 blocks. A missing risk limit is the
-most dangerous state a trading system can be in, so it must read as halted.
+**Zero means "not configured", never "unlimited".** Every cap (per-order notional, daily order
+count, open exposure, daily loss) defaults to 0, and 0 blocks. A missing risk limit is the most
+dangerous state a trading system can be in, so it must read as halted.
+
+**One source for the caps: the registered budget.** Since step 6b the caps come from the
+self-hashed `live_trading_budget.v0.1` record (`scripts/register_live_trading_budget.py`), read
+by `resolve_live_order_limits`. The `MVP_LIVE_MAX_*` env vars no longer authorize anything — a
+missing, expired or tampered budget yields the blocking defaults above, so there is no cap an
+operator can set outside the registered record. Only three things stay env, because a phrase
+proving intent and a halt are operator state rather than registered caps:
+`MVP_LIVE_CONFIRMATION`, `MVP_LIVE_CANARY_CONFIRMATION`, `MVP_LIVE_MANUAL_KILL_SWITCH`.
+Both guards **require** their `limits` argument (no `from_env()` fallback), so the question
+"which numbers was this order judged against?" has exactly one answer.
 
 **An unconfigured loss limit counts as breached.** `daily_loss_limit_breached(None)` and `(0)`
 both return `True`. This is the single most important line in `live_pnl.py`.
