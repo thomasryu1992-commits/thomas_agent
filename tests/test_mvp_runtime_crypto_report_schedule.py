@@ -73,7 +73,7 @@ def test_fire_renders_and_sends_the_dashboard(tmp_path, monkeypatch):
     assert summary["fired"] == 1
     assert summary["results"][0]["status"].startswith("report_sent")
     assert len(sent) == 1
-    assert "crypto pipeline dashboard" in sent[0]
+    assert "crypto dashboard" in sent[0]
 
 
 def test_delivery_failure_is_reported_never_raised(tmp_path, monkeypatch):
