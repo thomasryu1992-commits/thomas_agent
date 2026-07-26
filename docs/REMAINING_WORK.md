@@ -4,16 +4,21 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-25**, after LP5.3's decision half merged (`main` = `4bc0455`). Every claim
-below was re-checked against `main` and against the code it describes, not carried over.
+Last updated: **2026-07-26**, after the review round, the CLAUDE.md split, and the structural-review
+queue draining (`main` = `6ed1b0a`).
+Every claim below was re-checked against `main` and against the code it describes, not carried over.
 
-> **The one thing to read first:** since 2026-07-25 an order path **exists** and
-> `financial_transaction_execution_implemented` is **true**. Live trading still cannot start —
-> `financial_executor_enabled` is false, no canary order has been placed (0 of 3), and nothing routes
-> to the venue autonomously — but "no code can send an order" is **no longer** the reason. Section C
-> is now safety-critical, and the single item that matters most is **LP5.3's executing leg**: it is
-> the last structural piece between this repository and an autonomous live order, and it is
-> deliberately unbuilt.
+> **The one thing to read first:** an order path **exists**, and since 2026-07-26 so does the
+> **executing leg** that opens, protects and closes a live position. `financial_transaction_execution_implemented`
+> is `true`. Live trading still cannot start, and the reasons are now entirely structural rather than
+> "the code is missing": **no autonomous entry point may import the order path** (a test enforces it,
+> and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
+> **0 of 3** clean canary orders have been placed, and every egress needs the operator's per-machine
+> `live_trading` grant, order key, confirmation phrase and registered budget.
+>
+> The single remaining build item between this repository and an **autonomous** live order is
+> **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
+> is the decision to relax the tripwire test.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -27,11 +32,25 @@ the rules and deliberately claims no status, so that status has as few owners as
 
 ## In-flight PRs
 
-**None** (verified 2026-07-25 18:25 UTC — zero open PRs). Everything below reflects merged `main`
-at `4bc0455`. The whole LP4/LP5 wave landed on 2026-07-25: #184 (LP4 increment 2b + the governance
-flip), #183 (LP5.1 state + reconciliation), #186 (LP5.2 sizing), #187 (LP5.4 the outcome bridge),
-#193 (LP5.3's decision half), plus #191/#192 (the risk-guard provenance scoping and its decision
-record) and #188 (this file's previous refresh).
+**None** (verified 2026-07-26 07:05 UTC). The parallel structural review's two PRs both landed:
+
+- **#201 — the canary confirmation phrase never reached the guard.** `resolve_live_order_limits`
+  dropped `canary_confirmation` on both branches, so **every** canary refused. It failed *closed*,
+  so nothing unsafe happened — but it broke the one live door that has to work before any autonomous
+  path can, and it was only discoverable by an operator standing at a terminal with real keys. Worth
+  remembering for the reason it hid: both sides of the seam were tested, the **join** was not.
+- **#203 — structural review follow-ups**: one cap source (both guards now *require* `limits`, the
+  LP5.1c treatment applied again), one number reader (`coerce.as_float` — the duplicated *rule*
+  mattered more than the duplicated code), design records that state where they stand plus a gate
+  keeping them honest, an end-to-end **seam test** for one live trade, and a test-session guard that
+  no longer blames a test for the live runtime's own writes.
+
+Everything below otherwise reflects merged `main` at `dd900ea`. The LP4/LP5 wave landed 2026-07-25/26:
+#184 (LP4 increment 2b + the governance flip), #183 (LP5.1), #186 (LP5.2), #187 (LP5.4), #193 (LP5.3's
+decision half), **#196 (LP5.3's executing leg)**, then the review round — **#200** (the P5 audit gap,
+the verdict fail-open, readiness drift, `r_basis`) and **#205** (the CLAUDE.md split) — plus #191/#192
+(risk-guard provenance scoping), #199/#202 (dashboard), #204 (operator channel), and #188/#194 (this
+file's previous refreshes).
 
 One PR was **closed unmerged**: **#175** — a second LP4 order adapter written in a worktree without
 re-checking `main`, which by then already carried `live_execution.py` (increment 1) with its reviewed
@@ -123,9 +142,14 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 #184 on 2026-07-25; that doc's own step table remains the authority). Status:
 `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
-**What is left in this section is no longer governance — it is one build decision and one operator
-action:** LP5.3's executing leg (below), and three clean canary orders. Neither is blocked on a
-contract, a schema, or a gate.
+**What is left in this section is no longer governance, and no longer plumbing — it is one build
+decision and one operator action:** cycle routing (below), and three clean canary orders. Neither is
+blocked on a contract, a schema, or a gate.
+
+The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
+the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
+which was the one requirement in that gate with no implementation. Binding also means **no live order
+without an active approved Core**.
 
 The `feat/cost-budget-ledger` dependency this section once recorded is **void** — that branch was
 never pushed and the sequencing was deliberately reversed (2026-07-24); the two claim different
@@ -170,10 +194,11 @@ scopes at different levels, so nothing was owed to it.
       + `ORDER_PATH_IMPLEMENTED = True`, asserted to agree) with both replay bundles regenerated.
       `financial_executor_enabled` and every `runtime_effect`/`cutover` flag stay false.
       **LP4 is complete.** Nothing autonomous routes to the venue — that needs LP5.
-- [~] **LP5** position kernel + cycle routing — design record `LP5_POSITION_KERNEL_DESIGN_V0.1.md`.
-      **Everything except the executing leg has landed.** LP5.1, 5.2 and 5.4 are complete, and 5.3
-      was split at the one line that matters — *decide* vs *send* — with the decide half merged. What
-      remains is the send half, and it is the piece that changes the safety posture.
+- [~] **LP5** position kernel + cycle routing — design records `LP5_POSITION_KERNEL_DESIGN_V0.1.md`
+      and `LP5_3_LIVE_LEG_DESIGN_V0.1.md`. **Everything except cycle routing has landed.** LP5.1, 5.2
+      and 5.4 are complete, and 5.3 was split at the one line that matters — *decide* vs *send* —
+      with **both halves now merged** (#193, #196). What remains is giving the executing leg a
+      caller, which is the piece that changes the safety posture.
   - [x] **LP5.1 — position state + reconciliation** (PR #183, 2026-07-25):
         `crypto/live_position.py`. Live positions live in their own `live_positions/` namespace with
         `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same `binance_futures`
@@ -235,7 +260,10 @@ scopes at different levels, so nothing was owed to it.
           `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
           step, not the leg above: a leg with no caller places no orders.
 - [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
-      source system and did not migrate). **Operator-only, real money** — `scripts/place_canary_order.py`
+      source system and did not migrate). **Unblocked 2026-07-26 (#201):** `resolve_live_order_limits` had
+      dropped `canary_confirmation`, so the canary guard compared an empty phrase and refused every
+      attempt — the one live door there is did not work. It failed *closed*, so nothing unsafe
+      happened, and it is fixed; this is now genuinely actionable. **Operator-only, real money** — `scripts/place_canary_order.py`
       on Thomas's machine with his own keys and its own confirmation phrase
       (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately distinct from the live-trading phrase so neither
       authorizes the other's capability). Claude does not run it.
@@ -255,6 +283,50 @@ scopes at different levels, so nothing was owed to it.
       imported outcomes carry strategy lineage, and promotion/demotion is a performance judgement,
       not a safety brake; a test pins the two call sites as scoped differently. The import script
       itself is untouched.
+
+### Review findings — raised and closed 2026-07-26
+
+A full review of the live stack raised six items. Recording them here because each is a rule with a
+near-miss behind it, and the reasoning is more reusable than the fixes:
+
+- [x] **The money path had no governance record** (#200). `p5_policy_gate` lists
+      `post_action_report_and_audit` among its requirements, and it was the one with no
+      implementation: `build_live_order_permission_decision` had **zero** production callers and
+      `audit.py` had no financial builder. A repository that audits a memory promotion and a file
+      write was about to move real money leaving only one registry row behind.
+- [x] **A fail-open came back** (#200). `plan_live_entry(verdict=None)` skipped the C4 guards
+      entirely when omitted — the same class as the `current_open_notional_usdt = 0.0` default
+      LP5.1c closed, and worse in one way: the **test helper omitted it too**, so the unguarded path
+      was the tested happy path. Now required, with a structural test on the signature.
+- [x] **The readiness board drifted in the way it exists to prevent** (#200). Its computed rows were
+      right; its **prose** described a shipped module as missing. Status moved into a computed row
+      pinned to the real import graph, plus a test asserting the prose makes no build claim.
+- [x] **Paper R and live R are different statistics sharing one pool** (#200). Paper R is measured on
+      intended fills and is cost-free by design; live R on actual fills. Both records now carry
+      `r_basis`. Not corrected — live R is the more pessimistic, so the distortion runs conservative.
+- [x] **Four places claimed status** (#205). `CLAUDE.md`'s 32 KB Status section became
+      `docs/BUILD_HISTORY.md` verbatim; the rules file now points instead of asserting.
+- [x] **Nothing forced the executing leg to consume the decision record** — already true when raised:
+      `execute_live_entry` takes the decision as its first argument and refuses unless `ready` *and*
+      the guard approved.
+- [x] **The canary phrase never reached the guard** (#201) — see the in-flight note above. The one
+      live door there is had been refusing every attempt.
+- [x] **A second source of caps was still reachable** (#203). Both guards defaulted `limits` to
+      `LiveOrderLimits.from_env()`, so forgetting an argument fell back to env caps in a design whose
+      whole point is that the registered budget is the only source. Now required — the same fix
+      LP5.1c applied to `current_open_notional_usdt`, for the same reason.
+- [x] **Stage tests covered every stage and no seam** (#203). Each stage of the live path built its
+      own input, so a field one stage emits and the next reads could be renamed or dropped with the
+      suite still green — which is exactly how #201's bug survived. There is now one end-to-end test
+      walking a single trade through route → decide → submit → book → settle → the R consumers.
+- [x] **Design records asserted a safety claim that had become false** (#203). Two of them still
+      opened with "no code exists yet" and `ORDER_PATH_IMPLEMENTED = False` after LP4 shipped. A gate
+      now refuses a record whose *header* disagrees with the policy or the code — header-scoped, so a
+      record's body may still narrate history.
+
+Two lessons worth carrying, both about **seams rather than units**: #201's bug survived because both
+sides of a join were tested and the join was not, and the P5 gap survived because a policy
+requirement had no test asserting any code satisfied it.
 
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
