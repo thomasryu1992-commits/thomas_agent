@@ -81,11 +81,30 @@ python -m runtime.mvp_runtime.ledger_cli rotate --keep 500 --file records.jsonl
 `status` is read-only and answers in any runtime mode — an operator asking what the store
 costs is usually asking because something is already wrong.
 
+## Scheduled rotation
+
+Explicit Thomas decision, 2026-07-26: run it unattended. The `ledger_rotate` schedule kind
+does exactly what the CLI does, on a cadence:
+
+```bash
+python -m runtime.mvp_runtime.scheduler_cli add --kind ledger_rotate \
+    --interval-seconds 86400 --request 2000
+```
+
+`--request` optionally carries the row limit; anything unparseable falls back to the module
+default rather than guessing a *smaller* one, because guessing small archives more than was
+asked — the lossier direction.
+
+It is safe unattended for one reason and it is worth naming: **rotation archives and can
+delete nothing.** The scheduled path adds no capability — it calls the same `rotate_all`,
+so the two protected ledgers are refused by the retention module itself rather than by this
+caller remembering to skip them. It is **kill-switch bound** like every scheduled execution
+(`kill_blocks: scheduler_execution`), and a fire without a ledger skips rather than
+crashing. Failures ride in the fire's status: a ledger that could not be rotated is one
+that keeps growing, and the operator should see which one.
+
 ## Deliberately not done here
 
-- **Automatic scheduling.** Rotation is archive-only and therefore safe to schedule, but
-  running it unattended is a decision about the evidence store and belongs to Thomas, not
-  to this change. Adding a `ledger_rotate` scheduler kind is a small follow-up.
 - **Archive compression or pruning.** Archives only accumulate. That is deliberate for now:
   the first version of a retention mechanism should not also be the first version of a
   deletion mechanism. When disk actually becomes the constraint, compressing archives is
