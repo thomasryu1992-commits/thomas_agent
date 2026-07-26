@@ -232,10 +232,15 @@ def test_cycle_survives_degraded_funding(tmp_path):
 # --- factory can mint funding specs -------------------------------------------
 
 def test_funding_fade_templates_generate_and_validate():
-    batch = generate_batch("GEN-001", seed=5, count=12, timeframe="1d")
-    families = {s["strategy_family"] for s in batch["specs"]}
+    """One batch is a rotating WINDOW onto the family library, not the whole of it, so
+    cover a full pass (5 batches x 4 = the 20 families) rather than assuming a single
+    generation happens to land on funding_fade."""
+    specs = []
+    for n in range(5):
+        specs.extend(generate_batch(f"GEN-{n:03d}", seed=5, timeframe="1d")["specs"])
+    families = {s["strategy_family"] for s in specs}
     assert {"funding_fade_long", "funding_fade_short"} <= families
-    for spec_dict in batch["specs"]:
+    for spec_dict in specs:
         if spec_dict["strategy_family"].startswith("funding_fade"):
             verdict = validate_strategy(StrategySpec.from_dict(spec_dict))
             assert verdict["approved_for_backtest"] is True
