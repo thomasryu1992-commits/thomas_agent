@@ -292,6 +292,46 @@ def _verbatim_ok(request_text: str, current: str, session: list[dict[str, Any]])
     )
 
 
+def _propose_cancel(entry_id: Any, *, registry: Any, control_store: Any = None) -> dict[str, Any]:
+    """Resolve the entry the model wants cancelled and propose the command — never cancel.
+
+    Read-only by construction: it looks the entry up and hands back the exact `/cancel` to type.
+    An unresolvable or ambiguous id is reported honestly rather than guessed at, and an entry
+    that is no longer cancellable is named as such so the operator does not type a verb that
+    will only refuse — including while the runtime is halted, since `/cancel` is kill-bound and
+    proposing it then would be a false instruction."""
+    if control_store is not None:
+        try:
+            state = control_store.load()
+        except MvpRuntimeError as exc:
+            return {"reply": f"런타임 상태를 읽을 수 없어 취소를 안내할 수 없습니다 ({exc.reason_code}).",
+                    "action": exc.reason_code}
+        if not state.execution_allowed:
+            return {"reply": f"런타임이 {state.mode} 상태입니다 — 취소는 `/resume` 이후에 가능합니다.",
+                    "action": state.refusal_reason_code()}
+    if not (isinstance(entry_id, str) and entry_id.strip()):
+        return {"reply": "어떤 작업을 취소할까요? `/tasks`로 목록을 확인하실 수 있습니다.",
+                "action": "CANCEL_PROPOSAL_NO_ID"}
+    try:
+        entry = registry.find(entry_id.strip())
+    except MvpRuntimeError as exc:
+        # Ambiguous prefix, unreadable registry — the honest typed answer, not a guess.
+        return {"reply": exc.reason, "action": exc.reason_code}
+    if entry is None:
+        return {"reply": f"'{entry_id}'에 해당하는 작업을 찾지 못했습니다. `/tasks`로 확인해 주세요.",
+                "action": "CANCEL_PROPOSAL_NOT_FOUND"}
+    status = getattr(entry, "status", None)
+    full_id = getattr(entry, "registry_entry_id", entry_id)
+    if status != "QUEUED":
+        return {"reply": f"{full_id} 은(는) 현재 {status} 상태라 취소할 수 없습니다.",
+                "action": "CANCEL_PROPOSAL_NOT_CANCELLABLE"}
+    return {
+        "reply": (f"이 작업을 취소하시려면 다음을 보내주세요: `/cancel {full_id}`\n"
+                  f"(대기 중: {getattr(entry, 'request_text', '') or ''}".rstrip() + ")"),
+        "action": "CANCEL_PROPOSAL",
+    }
+
+
 def _answer_runtime_query(
     kind: str,
     *,
@@ -412,7 +452,23 @@ def run_turn(
             schedules=schedules, operator_id=operator_id, now=stamp, root=root,
         )
 
-    elif kind in _TURN_KINDS_REGISTRY or kind == "CANCEL_TASK":
+    elif kind == "CANCEL_TASK":
+        # A cancel is the one MUTATION this turn vocabulary can name, and it used to be
+        # dispatched straight from the model's own `entry_id` — no equivalent of SUBMIT_TASK's
+        # verbatim check. Three ways that went wrong: the model could resolve "그거" to the wrong
+        # queued entry, `registry.find` accepts any unique *prefix* so a short invented one can
+        # match a real entry, and the session prompt can carry externally-sourced text (a
+        # QUERY_RESULT reply embeds search-hit content), so the choice was steerable by data.
+        #
+        # So the model no longer cancels. It RESOLVES the entry read-only and proposes: the reply
+        # names exactly what would be cancelled and the deterministic verb to type. The model
+        # proposes, the operator's explicit /cancel disposes — same division as everywhere else
+        # here, and it keeps the useful half (finding which entry he meant).
+        outcome = _propose_cancel(
+            payload.get("entry_id"), registry=registry, control_store=control_store
+        )
+
+    elif kind in _TURN_KINDS_REGISTRY:
         # Deterministic data beats narration: these answer with the console's own
         # rendering, because a model's account of coordination state can be stale or
         # invented and the listing cannot. The conversational door IS /tasks.
@@ -420,7 +476,6 @@ def run_turn(
             "QUERY_STATUS": ("TASKS", None),
             "QUERY_HISTORY": ("HISTORY", str(payload["limit"]) if payload.get("limit") else None),
             "QUERY_RESULT": ("RESULT", payload.get("entry_id")),
-            "CANCEL_TASK": ("CANCEL", payload.get("entry_id")),
         }[kind]
         try:
             applied = registry_console.apply_registry_command(
