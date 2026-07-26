@@ -97,7 +97,18 @@ whether PM3 is worth building at all.
   Confirmed pairs live in `.runtime_governance_state/predmarket/pairs.jsonl`, audited.
 - **Opportunity detector**, fee-adjusted only: Kalshi's fee is a price function
   (≈ $0.07 × P × (1−P) per contract, rounded up) — unadjusted observations would be
-  systematically fake. Polymarket side models gas + spread cost.
+  systematically fake. ~~Polymarket side models gas + spread cost.~~
+  **Corrected 2026-07-26 (both fee models verified against the venues' own documentation
+  while building `predmarket/fees.py`):** Polymarket now charges a **taker fee of the same
+  shape** — `C × feeRate × p × (1−p)`, with `feeRate` by category (crypto 0.07;
+  sports/economics/culture/weather/other 0.05; finance/politics/mentions/tech 0.04), makers
+  never charged, and **geopolitical / world-event markets fee-free**. "Gas + spread" dated
+  from a period when the venue charged no trading fee, and modelling it that way would have
+  understated the cost of every non-exempt pair by up to 1.75 cents per contract.
+  The practical consequence, and the reason this is the load-bearing constant of PM1: both
+  fees peak at 50/50, so a mid-priced crypto pair costs **~3.5 cents per contract across the
+  two legs** — a 2-cent gross gap is a *loss*, and an unadjusted detector would report it as
+  a find on every scan for weeks.
 - **Observation records**: snapshot + "had we entered here" hypothetical, appended to the
   run's records ledger, every scan audited.
 - **Scheduler**: `pm_scan` template ⚠️ (cadence and per-scan market cap are the decision).

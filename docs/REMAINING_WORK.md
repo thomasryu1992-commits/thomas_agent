@@ -98,7 +98,17 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
-  - [ ] Fee-adjusted opportunity detector (Kalshi fee ≈ $0.07·P·(1−P)/contract; Polymarket gas+spread).
+  - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
+        `opportunity.py`). Both fee models verified against the venues' own docs, which
+        **corrected the roadmap**: Polymarket charges a taker fee of the same
+        `rate·P·(1−P)` shape by category (crypto 0.07 … tech 0.04, geopolitical exempt), not
+        "gas + spread". Both peak at 50/50, so a mid-priced crypto pair costs ~3.5¢/contract
+        across the two legs and a 2¢ gross gap is a **loss** — pinned by the first test.
+        The edge reduces to `yes_bid_B − yes_ask_A` (holding YES on one venue and NO on the
+        other pays $1 either way), so only the YES side of both books is needed. Both
+        directions are judged and the better **net** one wins, since each leg's fee depends
+        on its own price. Unpriceable legs and no-depth touches are recorded as
+        non-readings, never as zeros.
   - [ ] Observation records + `pm_scan` R6 scheduler template ⚠️ (cadence + per-scan market cap).
   - [ ] **Exit artifact:** 2–4 week report — frequency × net margin × **persistence duration** per
         strategy. Persistence decides whether PM3 (minutes of approval latency) can ever catch it.

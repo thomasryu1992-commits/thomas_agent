@@ -1,0 +1,198 @@
+"""PM1 — what a round trip actually costs. Verified against both venues, 2026-07-26.
+
+The roadmap's own invariant: *every observation is fee-adjusted or it is not recorded.* This
+module is why that is enforceable, and it exists as its own file because the constants below
+are the difference between a report about arbitrage and a report about nothing.
+
+**Both venues charge the same shape**, which is the useful discovery:
+
+    fee = rate x contracts x P x (1 - P)
+
+- **Kalshi** (taker): ``roundup(M x 0.07 x C x P x (1-P))``, M defaulting to 1, rounded **up**
+  to a centicent. Maker orders use 0.0175 with M defaulting to 0 — i.e. normally free.
+- **Polymarket** (taker): ``C x feeRate x p x (1-p)`` charged on the shares traded, with
+  ``feeRate`` **by category**: crypto 0.07, sports/economics/culture/weather/other 0.05,
+  finance/politics/mentions/tech 0.04. **Geopolitical and world-event markets are fee-free.**
+  Makers are never charged.
+
+**The roadmap was out of date and this corrects it.** It modelled Polymarket's cost as "gas +
+spread", from a period when the venue charged no trading fee. It does now, and at the prices
+that matter most: the ``P x (1-P)`` shape peaks at 50/50, which is exactly where two venues
+disagree often enough to look like an opportunity. Concretely, a mid-priced Kalshi/crypto pair
+costs about **3 cents per contract** in fees alone (0.07x0.25 + 0.07x0.25), so a 2-cent gross
+gap is not a thin edge — it is a loss. An unadjusted observation would report it as a find,
+every scan, for weeks.
+
+**Rounding is pessimistic on both legs.** Kalshi documents rounding up; Polymarket does not,
+but an observation that rounds a cost down is a claim the trade was cheaper than it was, and
+this whole phase exists to decide whether an edge survives its costs. Where the venues differ,
+the more expensive reading wins.
+
+**Fees are taker-only here, by construction.** Cross-venue arbitrage crosses the spread on
+both legs — that is what makes it immediate — so the maker rates are recorded for completeness
+and never used for an opportunity estimate. Assuming a maker fill would be assuming a fill
+that may never come.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any, Mapping
+
+from ..coerce import as_optional_float
+from .market_data import KALSHI, POLYMARKET, require_venue
+
+FEES_VERSION = "predmarket_fees.v0.1"
+FEES_VERIFIED_ON = "2026-07-26"
+
+# --- Kalshi (docs.kalshi.com fee schedule / fee rounding) -----------------------
+KALSHI_TAKER_RATE = 0.07
+KALSHI_MAKER_RATE = 0.0175          # recorded, unused: an arb leg is a taker
+# "rounded up such that fee + positionCost lands on a centicent" — 1/100 of a cent.
+KALSHI_ROUNDING_UNIT = 0.0001
+
+# --- Polymarket (docs.polymarket.com/trading/fees) ------------------------------
+# Derived from and cross-checked against the venue's own peak table: crypto $1.75 per 100
+# shares at p=0.50 implies 100 x rate x 0.25 = 1.75, i.e. rate 0.07. The other tiers check
+# out the same way ($1.25 -> 0.05, $1.00 -> 0.04), so the rates below are not a guess.
+POLYMARKET_TAKER_RATES: dict[str, float] = {
+    "crypto": 0.07,
+    "sports": 0.05,
+    "economics": 0.05,
+    "culture": 0.05,
+    "weather": 0.05,
+    "other": 0.05,
+    "finance": 0.04,
+    "politics": 0.04,
+    "mentions": 0.04,
+    "tech": 0.04,
+}
+# The venue's own default for a category this map does not name. The HIGHEST rate on purpose:
+# an unknown category must not be quoted the cheapest fee, or a new category silently makes
+# every observation optimistic.
+POLYMARKET_DEFAULT_TAKER_RATE = 0.07
+# Fee-free by venue policy. Kept as data rather than folded into the rate map so the reason
+# ("this category is exempt") stays distinguishable from "this category costs 0.0".
+POLYMARKET_FEE_FREE_CATEGORIES = frozenset({"geopolitics", "world", "world events", "geopolitical"})
+
+# Polymarket publishes no rounding rule; we round up like Kalshi, because an observation that
+# rounds a cost down claims the trade was cheaper than it was.
+POLYMARKET_ROUNDING_UNIT = 0.0001
+
+
+def _round_up(amount: float, unit: float) -> float:
+    """Round ``amount`` up to the next ``unit``. Pessimistic by construction.
+
+    ``steps`` is quantized before the ceiling because rounding up amplifies float
+    representation error into a real charge. ``0.07 x 100 x 0.1 x 0.9`` evaluates to
+    ``0.6300000000000001`` while the same product with the factors swapped is exactly
+    ``0.63`` — without the quantization the first is charged one extra centicent, which
+    breaks the ``P x (1-P)`` symmetry both venues' formulas guarantee and would make a fee
+    depend on which side of the book a caller happened to name. Caught by this module's own
+    symmetry test.
+    """
+    if unit <= 0:
+        return amount
+    steps = round(amount / unit, 9)
+    whole = math.ceil(steps)
+    return round(whole * unit, 10)
+
+
+def polymarket_taker_rate(category: Any) -> float:
+    """The taker rate for one Polymarket category, or the most expensive one if unknown.
+
+    Unknown is priced at the top of the table rather than the middle or the bottom: the cost
+    of over-estimating a fee is a missed observation, and the cost of under-estimating it is
+    a reported opportunity that does not exist.
+    """
+    if not isinstance(category, str) or not category.strip():
+        return POLYMARKET_DEFAULT_TAKER_RATE
+    key = category.strip().lower()
+    if key in POLYMARKET_FEE_FREE_CATEGORIES:
+        return 0.0
+    return POLYMARKET_TAKER_RATES.get(key, POLYMARKET_DEFAULT_TAKER_RATE)
+
+
+def taker_fee(
+    venue: str, *, price: Any, contracts: Any = 1.0, category: Any = None
+) -> float | None:
+    """The taker fee for ``contracts`` at ``price`` on ``venue``, or ``None``.
+
+    ``None`` when the price is not a usable probability — an unpriceable leg has no knowable
+    cost, and returning 0.0 would make it look free. That distinction is the whole reason
+    prices are ``float | None`` upstream.
+
+    The fee is symmetric in ``P``: buying NO at ``1-p`` costs the same as buying YES at ``p``,
+    because ``P x (1-P)`` is unchanged. So a caller never has to say which side it took.
+    """
+    venue = require_venue(venue)
+    p = as_optional_float(price)
+    size = as_optional_float(contracts)
+    if p is None or size is None or not (0.0 < p < 1.0) or size <= 0:
+        return None
+
+    if venue == KALSHI:
+        raw = KALSHI_TAKER_RATE * size * p * (1.0 - p)
+        return _round_up(raw, KALSHI_ROUNDING_UNIT)
+    rate = polymarket_taker_rate(category)
+    if rate <= 0.0:
+        return 0.0
+    return _round_up(rate * size * p * (1.0 - p), POLYMARKET_ROUNDING_UNIT)
+
+
+def round_trip_fee(
+    *,
+    kalshi_price: Any,
+    polymarket_price: Any,
+    contracts: Any = 1.0,
+    polymarket_category: Any = None,
+) -> dict[str, Any]:
+    """Both legs of one cross-venue position. Returns the parts and the total, or ``None``s.
+
+    A cross-venue arb pays a taker fee on **both** venues; reporting one leg would understate
+    the cost by roughly half. If either leg cannot be priced, ``total`` is ``None`` — the
+    position's cost is unknown, and an unknown cost is not a zero cost.
+    """
+    kalshi = taker_fee(KALSHI, price=kalshi_price, contracts=contracts)
+    poly = taker_fee(
+        POLYMARKET, price=polymarket_price, contracts=contracts, category=polymarket_category
+    )
+    total = None if kalshi is None or poly is None else round(kalshi + poly, 10)
+    return {
+        "fees_version": FEES_VERSION,
+        "kalshi_fee_usd": kalshi,
+        "polymarket_fee_usd": poly,
+        "polymarket_taker_rate": polymarket_taker_rate(polymarket_category),
+        "contracts": as_optional_float(contracts),
+        "total_fee_usd": total,
+    }
+
+
+def fee_summary() -> dict[str, Any]:
+    """The constants and where they came from — so a record can carry its own provenance."""
+    return {
+        "fees_version": FEES_VERSION,
+        "verified_on": FEES_VERIFIED_ON,
+        "kalshi_taker_rate": KALSHI_TAKER_RATE,
+        "kalshi_maker_rate_unused": KALSHI_MAKER_RATE,
+        "polymarket_taker_rates": dict(POLYMARKET_TAKER_RATES),
+        "polymarket_default_taker_rate": POLYMARKET_DEFAULT_TAKER_RATE,
+        "polymarket_fee_free_categories": sorted(POLYMARKET_FEE_FREE_CATEGORIES),
+        "shape": "rate * contracts * P * (1 - P), rounded up",
+        "taker_only": True,
+    }
+
+
+__all__ = [
+    "FEES_VERIFIED_ON",
+    "FEES_VERSION",
+    "KALSHI_MAKER_RATE",
+    "KALSHI_TAKER_RATE",
+    "POLYMARKET_DEFAULT_TAKER_RATE",
+    "POLYMARKET_FEE_FREE_CATEGORIES",
+    "POLYMARKET_TAKER_RATES",
+    "fee_summary",
+    "polymarket_taker_rate",
+    "round_trip_fee",
+    "taker_fee",
+]
