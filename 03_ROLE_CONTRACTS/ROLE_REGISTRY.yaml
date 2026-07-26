@@ -1,5 +1,5 @@
 schema_version: role_registry.v0.3
-document_version: 0.9.0
+document_version: 0.10.0
 registry_id: thomas_mvp_role_registry
 status: active_mvp
 owner: Thomas
@@ -29,7 +29,7 @@ non_dynamic_roles:
   status: active          # D2 flip: explicit Thomas decision, 2026-07-25 (F2 runtime PR)
   routable: false
   definition_path: 03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md
-  definition_sha256: 70f37393f9d58ab000c75fc4ae308059373928c9891956bba0fa08d4cf8dc88b
+  definition_sha256: 55ab4f56ccb277d4943c1e68f265020fe2c39aebedce019f0dd13a780d6656db
 roles:
 - role_id: general.specialist
   version: 0.3.0
