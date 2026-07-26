@@ -85,8 +85,19 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         Gamma's `outcomePrices` are a derived figure, and a market whose book was not read
         comes back *unquoted* rather than priced. **No bid is not a bid of zero**: every
         price is `float | None`, and 0 / ≥1 / unparseable all read as "not quoted".
-  - [ ] Event-pair matching — auto candidate generation + **operator confirmation per pair**
-        (the hardest real engineering here; a wrong pair fakes arbitrage forever).
+  - [x] Event-pair matching — auto candidate generation + **operator confirmation per pair**
+        — done 2026-07-26 (`predmarket/matching.py`, `pairs.py`, `pairs_cli.py`).
+        Deterministic only: normalized token overlap + close-date proximity, with **numeric
+        tokens as their own gate** (token overlap alone scores "BTC above 100k" against
+        "Bitcoin above 90k" at 0.71 — boilerplate outvotes the one token that IS the
+        question). Unknown is never mismatch: a Kalshi market has no category, so a missing
+        one is excluded from the decision rather than counted against it. Confirmation
+        **requires a note comparing how both venues resolve the event** — the risk no text
+        comparison can see — and one market belongs to at most one pair. Every judgement,
+        including near-misses, records which gate failed and by how much: that record is what
+        makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
+  - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
+        needs the deterministic matcher above, or "missed" has no meaning).
   - [ ] Fee-adjusted opportunity detector (Kalshi fee ≈ $0.07·P·(1−P)/contract; Polymarket gas+spread).
   - [ ] Observation records + `pm_scan` R6 scheduler template ⚠️ (cadence + per-scan market cap).
   - [ ] **Exit artifact:** 2–4 week report — frequency × net margin × **persistence duration** per
