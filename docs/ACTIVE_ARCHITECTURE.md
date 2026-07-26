@@ -2,8 +2,8 @@
 
 **Status:** Architecture Slimming sequence completed through PR #11; Post-Slimming Consistency Hardening through Fix #4
 **Baseline:** I0.5.5
-**Runtime-authoritative execution: Disabled**
-**Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints
+**Runtime-authoritative execution: Disabled** — this names the deferred *runtime-authoritative entry* lane (`runtime/read_only_entry/`), which remains inert. It does **not** mean nothing runs: the live agent is `runtime/mvp_runtime/`, and it invokes models, searches, writes into `workspace/`, and can place a live order behind per-machine grants. See Safety State below for where each of those answers actually lives.
+**Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints. **Not status** — this document names owners, and asks each owner rather than restating what it says.
 
 ## Architecture on One Screen
 
@@ -18,7 +18,9 @@ Governance Policy
   ↓
 Thomas Prime
   ↓
-Thin Read-only Runtime Kernel
+Runtime
+  live lane    runtime/mvp_runtime/            the agent that actually runs a request
+  replay lane  Thin Read-only Runtime Kernel   deterministic re-execution of recorded runs
   ↓
 Router
   ↓
@@ -70,7 +72,8 @@ The architecture is fail-closed when authority, lineage, source ownership, fresh
 | Role status and routability | `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` |
 | Program status and enablement | `05_REGISTRIES/PROGRAM_REGISTRY.yaml` |
 | Tool status and enablement | `05_REGISTRIES/TOOL_REGISTRY.yaml` |
-| Active Runtime implementation | `runtime/read_only_kernel/` |
+| Live Runtime implementation — the agent that runs a request end to end | `runtime/mvp_runtime/` |
+| Deterministic read-only replay kernel (reused as a library by the live runtime; not extended) | `runtime/read_only_kernel/` |
 | Registry/Definition resolution | `runtime/registry_resolution.py` |
 | Deferred design | `deferred/DEFERRED_ARCHITECTURE.yaml` |
 | Generated classification | `generated/GENERATED_ARTIFACT_INDEX.yaml` |
@@ -107,7 +110,7 @@ kernel facade
 ```text
 Active
   governance/GOVERNANCE_POLICY.yaml  THOMAS_CORE/  roles/registries
-  programs/  tools/  runtime/read_only_kernel/
+  programs/  tools/  runtime/mvp_runtime/  runtime/read_only_kernel/
   active contracts/schemas  tests  scripts
 
 Candidate Reference
@@ -179,26 +182,23 @@ Nightly schedule, manual dispatch, or release tag
 
 ## Safety State
 
-The following remain disabled:
+**This document does not own safety state and deliberately does not restate it.**
 
-```yaml
-runtime_authoritative_entry_enabled: false
-model_invocation_enabled: false
-tool_execution_enabled: false
-program_execution_enabled: false
-network_access_enabled: false
-filesystem_write_enabled: false
-approval_consumption_enabled: false
-executor_handoff_enabled: false
-scheduler_dispatch_enabled: false
-control_channel_dispatch_enabled: false
-runtime_mutation_enabled: false
-permission_expansion_enabled: false
-authority_expansion_enabled: false
-external_action_enabled: false
-financial_action_enabled: false
-core_activation_enabled: false
-```
+It used to carry a `yaml` block of sixteen `*_enabled: false` keys here. Not one of those
+keys existed in any policy, schema, or module — the block was prose shaped like machine-checked
+configuration, and a reader had no way to tell. By 2026-07-26 it was also wrong in substance:
+`model_invocation`, `network_access` and financial action are grantable per machine, so at
+least three lines asserted "false" about capabilities that a given machine may well have on.
+
+The failure mode is the one this repository already knows: status with too many owners drifts,
+and the copy that drifts is the one nobody is asked to update. Ask an owner instead.
+
+| Question | Authority |
+|---|---|
+| What effects may the Runtime have at all? | `governance/GOVERNANCE_POLICY.yaml` → `runtime_effect` (`mode: REVIEW_ONLY`, every grant flag false) |
+| Is a model / network / disk / trading capability live **on this machine**? | the per-machine grant at `.runtime_governance_state/safety_flag_activations/<provider_id>.json`, re-verified at every egress by `runtime/mvp_runtime/safety_gate.py`. Gitignored, so it never travels with the repo |
+| Can this machine place a live order right now? | `python -m runtime.mvp_runtime.crypto.live_readiness` — computed from the real import graph and the real grants, never prose |
+| What has been built, and what is left? | `docs/BUILD_HISTORY.md` and `docs/REMAINING_WORK.md` |
 
 Policy authority, validation evidence, generated evidence, historical evidence, and Runtime execution authority are separate. None can silently grant another.
 
