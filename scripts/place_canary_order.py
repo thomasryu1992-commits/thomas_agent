@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         #    reports at-cap, never 0.0 — the guard's one fail-open path). A canary additionally
         #    refuses outright, because "configure the account feed" is the actionable answer for a
         #    deliberate operator tool, rather than a cap refusal it has to decode.
-        snapshot, account_use = read_account(timeout_seconds=args.timeout_seconds)
+        snapshot, account_use = read_account(timeout_seconds=args.timeout_seconds, root=root)
         open_notional = compute_open_notional_usdt(
             snapshot, at_cap=limits.max_open_notional_usdt
         )
