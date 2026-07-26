@@ -1,9 +1,10 @@
 # Crypto Live Execution v0.1
 
-**Status:** Partially implemented — LP1, LP2, LP3, LP6, **LP4**, and LP5.1/5.2/5.4 shipped, plus
-LP5.3's entry *decision*. **An order path exists** (since 2026-07-25); nothing routes to it
-autonomously. See the table below — that sentence replaced "no order path exists", which had
-become false, and the difference matters more than any other line in this document.
+**Status:** Partially implemented — LP1, LP2, LP3, LP6, **LP4**, and all of LP5 except **cycle
+routing** are shipped, including LP5.3's entry decision *and* its executing leg. **An order path
+exists** (since 2026-07-25) and so does the leg that opens, protects and closes a position; what
+does not exist is any autonomous **caller** for it. See the table below — this replaced "no order
+path exists", which had become false, and the difference matters more than any other line here.
 **Owner:** Thomas
 **Authority:** None. The canonical Governance Policy (`governance/GOVERNANCE_POLICY.yaml`)
 owns every rule this describes. The governance decisions this work needed are recorded
@@ -53,6 +54,7 @@ caller, and therefore the moment the safety posture changes. It is its own decis
 | Canary promotion evidence | Internal record creation | Append behind the `live_trading` grant; reads ungated and verified |
 | **Live order submission** | **External + financial** | **Implemented** (LP4, 2026-07-25) under the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: `FINANCIAL_APPROVED_TRADING_USE` at P5, the `execution.live_trader` role (**candidate, non-routable** — activating it is a separate `ROLE_GOVERNANCE` approval), a registered `live_trading_budget.v0.1`, and the `p5_policy_gate`. Reached only from `scripts/place_canary_order.py`; `financial_executor_enabled` stays `false` |
 | **Live entry decision** (LP5.3) | Internal compute | Pure functions — `live_entry.plan_live_entry` decides and refuses; it holds no adapter, so deciding is not a capability |
+| **Live executing leg** (LP5.3) | **External + financial**, when given an adapter | `live_leg.execute_live_entry` / `execute_live_exit`. The adapter is **injected**, never selected, so the module cannot reach a venue on its own; it also refuses without a governance record. No autonomous entry point may import it (`test_no_autonomous_entry_point_reaches_the_live_order_path`), and the readiness board reports that as the `autonomous_routing_wired` row |
 | **Venue trading rules** (`exchangeInfo`) | External read | `INTERNAL_READ` · ALLOW on the existing `binance_futures` market-data grant; failure **degrades** (`LIVE_FILTERS_DEGRADED`) and sizing then refuses |
 
 ## One grant is the whole switch
@@ -185,27 +187,67 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       (`financial_transaction_execution_implemented: true` + `ORDER_PATH_IMPLEMENTED = True`).
       The governance decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md` are now implemented except
       where that document's own step table says otherwise.
-- [~] **LP5** — state + reconciliation (5.1), sizing (5.2), the entry decision (5.3, this
-      increment), and the outcome bridge (5.4) are merged. The **executing leg + cycle routing**
-      are not, and are what an autonomous live order would need; they are a separate explicit
-      decision, not a remaining chore.
+- [~] **LP5** — state + reconciliation (5.1), sizing (5.2), the entry decision **and the
+      executing leg** (5.3), and the outcome bridge (5.4) are merged. Only **cycle routing** is
+      not: the executing leg takes an injected adapter and no autonomous entry point may import
+      it (a test enforces that, and the readiness board reports it as a computed row). Wiring a
+      caller is what an autonomous live order would need, and it is a separate explicit decision,
+      not a remaining chore.
 
-**Gate 2 — promotion evidence: 3 clean canary orders**
-- [ ] Place canary orders until three are clean. **One exists**, from 2026-07-16 in the source
-      system; it did not migrate, so the count here is currently 0. Each canary is one small
-      real order placed deliberately to prove signing, submission, and reconciliation. Close
-      each canary position on the venue afterwards — canaries only open.
-- [ ] Verify with `python -m runtime.mvp_runtime.crypto.live_readiness`.
+**Gate 2 — configure the boundary (conservative first)**
 
-**Gate 3 — configure the boundary (conservative first)**
+> **Ordering corrected 2026-07-26.** This gate used to be numbered *after* the canary gate, which
+> could not be followed: a canary is exempt from the **promotion gate and nothing else**, so every
+> item below has to be in place before the first canary can be placed at all. Configure, then
+> canary.
+
+- [ ] `git pull`. Before 2026-07-26 `resolve_live_order_limits` dropped `canary_confirmation`, so
+      an older checkout refuses **every** canary with "canary confirmation phrase not present".
+- [ ] **Activate the Core on this machine** (`CLAUDE.md` → "Core activation"). Since the live order
+      path builds a P5 PermissionDecision bound to an active Core, a machine without one refuses
+      with `CORE_NOT_ACTIVATED` *before* the order — governance is prepared before money moves.
+- [ ] Configure the **read-only account feed**: `MVP_ACCOUNT_FEED=binance_account` plus
+      `BINANCE_ACCOUNT_API_KEY` / `BINANCE_ACCOUNT_API_SECRET`. The canary script refuses outright
+      without it — open exposure would be unknown, and the exposure cap cannot be honored on a
+      guess.
 - [ ] Create a **separate** order-capable live API key: enable Futures, **disable withdrawals
       and internal transfer**, IP-whitelist it. Keep it distinct from the read-only account key.
-- [ ] Set the caps. Approved starting values (Thomas, 2026-07-23): 60 USDT per order, 2 orders
-      per day, 120 USDT open exposure, 20 USDT daily loss, against the 200 USDT absolute
-      ceiling.
-- [ ] Set `MVP_LIVE_CONFIRMATION` to the live-trading phrase. It is deliberately distinct from
-      the canary and testnet phrases, so pasting the wrong one authorizes nothing.
-- [ ] Mint the `live_trading` grant (command above).
+      `MVP_LIVE_ORDER_API_KEY` / `MVP_LIVE_ORDER_API_SECRET`.
+- [ ] Register the budget — the caps come from the record, never from env. Approved starting
+      values (Thomas, 2026-07-23): 60 USDT per order, 2 orders per day, 120 USDT open exposure,
+      20 USDT daily loss, against the 200 USDT absolute ceiling.
+
+      ```
+      python -m scripts.register_live_trading_budget --registered-by thomas \
+          --max-order-notional 60 --max-daily-order-count 2 \
+          --max-open-notional 120 --daily-loss-limit 20 --absolute-max-notional 200
+      ```
+- [ ] Set the confirmation phrase **for the capability you are about to use**. They are
+      deliberately distinct, so pasting the wrong one authorizes nothing:
+      `MVP_LIVE_CANARY_CONFIRMATION` for canaries, `MVP_LIVE_CONFIRMATION` for autonomous trading.
+      A canary needs only the first.
+- [ ] Mint the `live_trading` grant (command above) and set `MVP_LIVE_TRADING=real`. The env var
+      alone fails closed.
+
+**Gate 3 — promotion evidence: 3 clean canary orders**
+- [ ] Confirm the board first: `python -m runtime.mvp_runtime.crypto.live_readiness`. Everything
+      except `canary_evidence` must be PASS. That one row staying FAIL at `0/3` is **expected** —
+      it is the single check a canary is exempt from, and the canary is what earns it.
+- [ ] Place canary orders until three are clean. **One exists**, from 2026-07-16 in the source
+      system; it did not migrate, so the count here is currently 0. Each canary is one small
+      real order placed deliberately to prove signing, submission, and reconciliation.
+
+      ```
+      python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price>
+      ```
+
+      `--notional` is **never** back-filled from the cap — state it truthfully, at or under the
+      60 USDT per-order cap and above the venue's own minimum. Check `clean: True` in the output;
+      anything else does not count toward the three.
+- [ ] Close each canary position on the venue afterwards — canaries only **open**.
+- [ ] Budget the calendar: the daily order cap is **2**, so three clean canaries take **at least
+      two UTC days**. Raising the cap to finish sooner would defeat what the canary proves —
+      that the plumbing works at the conservative boundary.
 
 **Gate 4 — verify the gate before any autonomous run**
 - [ ] `python -m runtime.mvp_runtime.crypto.live_readiness` reports READY. A refusal names
