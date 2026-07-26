@@ -72,9 +72,19 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
       Polygon/USDC wallet, and the **Korean regulatory judgment call** (grey area). Blocks PM3 only,
       not PM1/PM2.
-- [ ] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed):
-  - [ ] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
-        `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics.
+- [~] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed): **started
+      2026-07-26** — the venue adapters have landed; matching and the detector are open.
+  - [x] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
+        `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics —
+        done 2026-07-26 (`runtime/mvp_runtime/predmarket/market_data.py`). One normalized
+        shape (YES-side probability in `(0,1)`, sizes in contracts) so no venue's vocabulary
+        reaches the comparison. Field names verified against both API references on the day,
+        which is how we learned **Kalshi now serves decimal-dollar strings**
+        (`yes_bid_dollars`), not the integer cents an older API used — a parser written from
+        memory would have read nothing. Polymarket is quoted from the **CLOB book only**;
+        Gamma's `outcomePrices` are a derived figure, and a market whose book was not read
+        comes back *unquoted* rather than priced. **No bid is not a bid of zero**: every
+        price is `float | None`, and 0 / ≥1 / unparseable all read as "not quoted".
   - [ ] Event-pair matching — auto candidate generation + **operator confirmation per pair**
         (the hardest real engineering here; a wrong pair fakes arbitrage forever).
   - [ ] Fee-adjusted opportunity detector (Kalshi fee ≈ $0.07·P·(1−P)/contract; Polymarket gas+spread).
