@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto.coerce import as_float
+from runtime.mvp_runtime.coerce import as_float, as_optional_float
 
 
 def _short_circuit_on_empty(value, default=0.0):
@@ -77,3 +77,29 @@ def test_zero_is_the_unknown_marker_callers_rely_on():
     )
     assert unusable.step_size == 0.0
     assert unusable.valid() is False
+
+
+# --- the optional reader --------------------------------------------------------
+
+@pytest.mark.parametrize("value", [None, "", "abc", [], {}, object()])
+def test_a_value_that_did_not_arrive_is_none_not_a_number(value):
+    """The other half of the rule: where absent and zero are different facts, absent must
+    say so. `live_leg` computes realized P&L from these — a missing fill price read as 0.0
+    is a free trade — and a prediction market with no resting bid is not a bid at zero."""
+    assert as_optional_float(value) is None
+
+
+def test_a_boolean_is_not_a_price():
+    """`float(True)` is 1.0. A boolean arriving where a price belongs is a malformed
+    payload, not the number one — the one input where plain float() would lie."""
+    assert as_optional_float(True) is None
+    assert as_optional_float(False) is None
+    # ...while the defaulting reader keeps its long-standing behaviour, deliberately.
+    assert as_float(True) == 1.0
+
+
+@pytest.mark.parametrize("value,expected", [("0.45", 0.45), (0.45, 0.45), ("0", 0.0), (0, 0.0)])
+def test_a_real_number_survives_including_zero(value, expected):
+    """Zero itself must pass through: 'no bid' and 'a bid of zero' are different, and only
+    the first is None."""
+    assert as_optional_float(value) == expected
