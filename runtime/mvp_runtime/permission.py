@@ -474,14 +474,26 @@ def build_permission_decision(
         approval_id = integrity.short_id("approval", {"action_fingerprint": action_fingerprint})
 
     decision = disposition  # exactly the policy minimum for this scope
-    # The id seed includes the action_type as well as the scope: two governed actions on
-    # one task may legitimately share an effect class (R7.2's orchestrator triage is
-    # INTERNAL_ANALYSIS exactly like the specialist's analysis), and "one decision per
-    # action" must hold by construction, not by every scope being unique.
+    # One decision id per ACTION, and the action is the fingerprint — so the seed carries it.
+    #
+    # Seeding on {task, revision, ccb, scope, action_type, expires_at} claimed the same
+    # property but did not have it: those six fields are identical for two materially
+    # different actions of the same kind on one task. Two trial asks for the same
+    # role@version with different trial texts (the task text carries only role@version) got
+    # ONE decision id with two different fingerprints and two different approval ids, and
+    # `ApprovalStore.get_permission_decision` is latest-wins — so the second ask shadowed the
+    # first, and answering the first hit the fingerprint cross-check and refused
+    # APPROVAL_SEMANTICS_INVALID forever, with nothing the operator could do from the channel.
+    #
+    # It failed CLOSED (the fingerprint is checked against the approval, which is the
+    # defense-in-depth working as designed), so this was never an authorization hole — it
+    # bricked an ask rather than mis-granting one. Including the fingerprint makes distinct
+    # actions distinct by construction instead of by callers happening to vary the task text.
     permdec_id = integrity.short_id(
         "permdec",
         {"task_id": task_id, "task_revision": revision, "ccb": ccb, "scope": permission_scope,
-         "action_type": action.action_type, "expires_at": expires_at},
+         "action_type": action.action_type, "action_fingerprint": action_fingerprint,
+         "expires_at": expires_at},
     )
 
     record: dict[str, Any] = {
