@@ -86,3 +86,48 @@ def test_every_selected_capability_gets_its_own_line(capsys):
     )
     assert len(lines) == 4
     assert all(line.startswith("SAFETY_GATE: ") for line in lines)
+
+
+# --- every entry point reconfigures stdio ------------------------------------------------
+
+import re                                                             # noqa: E402
+from pathlib import Path                                              # noqa: E402
+
+import pytest                                                         # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME = REPO_ROOT / "runtime"
+
+# `runtime/read_only_kernel/` is the frozen replay kernel — CLAUDE.md forbids modifying it,
+# so its CLI is named here rather than silently skipped. It renders ASCII only.
+EXEMPT = {"runtime/read_only_kernel/cli.py"}
+
+ENTRY_POINTS = sorted(
+    p for p in RUNTIME.rglob("*.py")
+    if re.search(r"^def main\(", p.read_text(encoding="utf-8"), re.M)
+    and p.relative_to(REPO_ROOT).as_posix() not in EXEMPT
+)
+
+
+def test_there_are_entry_points_to_check():
+    assert ENTRY_POINTS, "no module with a main() under runtime/"
+
+
+@pytest.mark.parametrize("path", ENTRY_POINTS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_an_entry_point_reconfigures_stdio_to_utf8(path):
+    """A CLI that writes non-ASCII dies on a Windows cp949 console without this call.
+
+    Six entry points were missing it, and it was not theoretical: the output of
+    `python -m runtime.mvp_runtime.crypto.dashboard` is genuinely not cp949-encodable (the
+    em dash alone fails), so that board raised `UnicodeEncodeError` instead of printing.
+    `console_cli` — the emergency pause/kill console — was among the six.
+
+    Asserted for every entry point rather than the ones that happen to print non-ASCII
+    today: which strings are ASCII is not a property anyone maintains, and a single Korean
+    message added later would reintroduce the bug silently. `force_utf8_io` is a no-op where
+    stdio is already UTF-8, so there is no cost to calling it everywhere.
+    """
+    assert "force_utf8_io" in path.read_text(encoding="utf-8"), (
+        f"{path.relative_to(REPO_ROOT)} defines main() but never calls force_utf8_io(); "
+        f"non-ASCII output will raise UnicodeEncodeError on a cp949 console"
+    )

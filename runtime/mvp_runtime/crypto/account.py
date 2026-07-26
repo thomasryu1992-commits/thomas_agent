@@ -41,6 +41,7 @@ from .. import safety_gate, timeutil
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
+from ..cli_common import force_utf8_io
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -474,6 +475,7 @@ def read_account(
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Live exchange account board (read-only: balance, positions, P&L)."
     )
