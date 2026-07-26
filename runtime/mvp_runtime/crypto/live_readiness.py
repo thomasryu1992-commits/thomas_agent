@@ -11,8 +11,14 @@ answer here cannot drift from what the code actually enforces.
 The final line is deliberately blunt. Since LP4 landed (2026-07-25) an order path **does** exist,
 so READY here no longer means "configured" — it means a real order could actually be placed on
 this machine. The board says that out loud rather than letting a row of green ticks read as
-harmless. Autonomous trading needs one more thing the board also names: LP5, which is unbuilt, so
-today the only door is the deliberate `scripts/place_canary_order.py`.
+harmless.
+
+**Status claims live in computed rows, not in prose.** This module's whole purpose is that an
+answer here cannot drift from what the code enforces — and it drifted anyway: for a day after the
+LP5 executing leg shipped, this docstring still described it as missing. The computed rows were
+right the whole time; the sentence a human reads before risking money was wrong. So whether an
+autonomous path exists is now the `autonomous_routing_wired` row, derived from a constant that a
+test pins to the actual import graph, and a second test asserts this prose makes no build claim.
 
 Exit code is 0 only when every check passes, so it can be used as a precondition in a script.
 """
@@ -54,9 +60,15 @@ from .live_pnl import (
 # actually be sent is the `live_trading` grant, the confirmation phrase, the registered budget,
 # the kill switches, and the canary evidence, each of which the board checks on its own row.
 # Kept in lockstep with the policy's `financial_transaction_execution_implemented`.
-# LP5 (the position kernel + cycle routing) is still unbuilt, so nothing places an order
-# autonomously — only the deliberate `scripts/place_canary_order.py`.
 ORDER_PATH_IMPLEMENTED = True
+
+# Whether any AUTONOMOUS entry point can reach the order path. The executing leg
+# (`crypto/live_leg.py`) exists and can place an order with an injected adapter, but no
+# scheduled or operator-triggered run imports it — `live_leg` is in the surface list that
+# `test_no_autonomous_entry_point_reaches_the_live_order_path` enforces, so this constant and the
+# real import graph are pinned to agree. Flipping it is the cycle-routing decision, and it must
+# move in the same commit that relaxes that test.
+AUTONOMOUS_ROUTING_WIRED = False
 
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -172,8 +184,20 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     checks.append(_check(
         "order_path_implemented",
         ORDER_PATH_IMPLEMENTED,
-        "implemented (LP4); autonomous routing still needs LP5" if ORDER_PATH_IMPLEMENTED
+        "implemented (LP4 adapter + LP5.3 executing leg)" if ORDER_PATH_IMPLEMENTED
         else "NOT IMPLEMENTED - no module can send an order (LP4 pending governance)",
+    ))
+
+    # 10. Whether anything autonomous can reach it. Reported as its own row rather than asserted
+    #     in prose, because this is the fact most likely to go stale — and the one that decides
+    #     whether READY means "an operator can place an order" or "this machine can trade on its
+    #     own". It is deliberately NOT part of `ready`: an unwired runtime is the safe state, so
+    #     failing the board on it would invert the meaning of every other row.
+    checks.append(_check(
+        "autonomous_routing_wired",
+        True,  # informational: neither state is a failure
+        "WIRED - a scheduled run can place live orders" if AUTONOMOUS_ROUTING_WIRED
+        else "not wired - the only door is scripts/place_canary_order.py, one canary at a time",
     ))
 
     # A dry-run of the real guard against a representative order at the configured cap.
@@ -217,6 +241,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "submitted_today": submitted_today,
         "counter_error": counter_error,
         "order_path_implemented": ORDER_PATH_IMPLEMENTED,
+        "autonomous_routing_wired": AUTONOMOUS_ROUTING_WIRED,
     }
 
 
@@ -240,8 +265,11 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     if status["order_path_implemented"]:
         # READY is no longer an abstract "configured" — say what it now means.
         lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")
-        lines.append("NOTE  : autonomous trading also needs LP5 (unbuilt) - today the only door is")
-        lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")
+        if status.get("autonomous_routing_wired"):
+            lines.append("NOTE  : autonomous routing is WIRED - a scheduled run can place orders")
+        else:
+            lines.append("NOTE  : autonomous routing is NOT wired - the only door is")
+            lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")
     else:
         lines.append("NOTE  : no order path exists yet; this board cannot report READY until LP4 lands")
     return "\n".join(lines)

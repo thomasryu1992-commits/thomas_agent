@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: conversation.frontdesk
 role_name: Conversational Frontdesk Role
-role_version: 0.2.0
+role_version: 0.3.0
 status: active
 routable: false
 role_type: session_front
@@ -14,6 +14,7 @@ capabilities:
 - clarifying_question
 - task_submission_translation
 - coordination_state_narration
+- runtime_state_lookup
 - session_context_tracking
 unsupported_capabilities:
 - task_execution
@@ -68,10 +69,11 @@ memory_policy:
   direct_core_write_allowed: false
   secret_candidate_creation_allowed: false
 output_contract:
-  base_contract: frontdesk_turn.v0.1
+  base_contract: frontdesk_turn.v0.2
   invalid_turn_downgrade: CHAT_REPLY
   role_specific_output:
-    turn_kind: SUBMIT_TASK | QUERY_STATUS | QUERY_HISTORY | QUERY_RESULT | CANCEL_TASK | CLARIFY | CHAT_REPLY
+    turn_kind: SUBMIT_TASK | QUERY_STATUS | QUERY_HISTORY | QUERY_RESULT | QUERY_SCHEDULES |
+      QUERY_CONTROL | QUERY_MEMORY | CANCEL_TASK | CLARIFY | CHAT_REPLY
     payload: object
     reply_text: string
 validation_policy:
@@ -148,7 +150,8 @@ validation_block_conditions: []
 |---|---|---|
 | `SUBMIT_TASK` | 상태 변경 | 작업 큐에 등록 (F1 `enqueue` — 이미 governed) |
 | `CANCEL_TASK` | 상태 변경 | QUEUED 항목 취소 (기존 `/cancel` 규칙 그대로) |
-| `QUERY_STATUS` / `QUERY_HISTORY` / `QUERY_RESULT` | 읽기 | 레지스트리/원장 조회 |
+| `QUERY_STATUS` / `QUERY_HISTORY` / `QUERY_RESULT` | 읽기 | 작업 레지스트리/원장 조회 |
+| `QUERY_SCHEDULES` / `QUERY_CONTROL` / `QUERY_MEMORY` | 읽기 | 스케줄러 · 런타임 제어 상태 · 메모리 후보 조회 (v0.2) |
 | `CLARIFY` | 대화 | 되묻기 — 불확실하면 제출하지 않는다 |
 | `CHAT_REPLY` | 대화 | 런타임 행동 없음 |
 
@@ -171,6 +174,11 @@ validation_block_conditions: []
   도구/검색 호출, PermissionDecision 발행, approval 발행/소비, 메모리 승격, 계획/라우팅.
 - 조사가 필요한 질문은 프론트데스크가 답하지 않는다 — `SUBMIT_TASK`로 번역해서
   파이프라인(그리고 specialist의 도구 권한)에 넘긴다.
+- **v0.2 확장의 성격**: 능력을 "푼" 것이 아니라 열거에 항목을 더한 것이다. 세 조회는
+  전부 읽기 전용이고, 채널이 이미 결정론 verb로 보여주던 것과 **같은 렌더러**를 쓴다.
+  프론트데스크가 못 보던 것을 물으면 잡담으로 떨어져 "확인할게요" 같은 지킬 수 없는
+  약속을 하게 되는데, 그 정직성 결함의 해법은 열거를 넓히는 것이지 접근을 여는 것이 아니다.
+  경계 밖은 항상 남으므로, 못 하는 일은 못 한다고 답하는 규칙을 프롬프트가 함께 못박는다.
 
 ## 4. 세션 메모리
 

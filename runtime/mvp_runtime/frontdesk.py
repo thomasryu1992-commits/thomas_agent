@@ -45,7 +45,10 @@ from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from . import memory, registry_console, safety_gate, schema_cache, task_registry, timeutil
+from . import (
+    memory, memory_console, registry_console, safety_gate, schema_cache, task_registry,
+    timeutil,
+)
 from .budgets import FRONTDESK_TIMEOUT_SECONDS, FRONTDESK_TOKEN_ALLOWANCE
 from .errors import MvpRuntimeError, OperatorBlocked, PersistenceError, ProviderError
 from .events import stamped_event
@@ -54,7 +57,7 @@ from .worker import Provider
 
 FRONTDESK_PROVIDER_ENV = "MVP_FRONTDESK_PROVIDER"
 FRONTDESK_ROLE_ID = "conversation.frontdesk"
-TURN_SCHEMA_VERSION = "frontdesk_turn.v0.1"
+TURN_SCHEMA_VERSION = "frontdesk_turn.v0.2"
 TURN_EVENT_TYPE = "frontdesk_turn.v0"
 
 SESSION_SCOPE = "frontdesk_session"
@@ -67,7 +70,14 @@ SESSION_TTL_MINUTES = 12 * 60
 # can still be quoted from.
 SESSION_CONTEXT_TURNS = 10
 
-_TURN_KINDS_READ = frozenset({"QUERY_STATUS", "QUERY_HISTORY", "QUERY_RESULT"})
+# Read turns answered by the task-registry console.
+_TURN_KINDS_REGISTRY = frozenset({"QUERY_STATUS", "QUERY_HISTORY", "QUERY_RESULT"})
+# v0.2 read turns answered by the runtime's OTHER deterministic renderers. Added because
+# the front desk could previously only see the task queue: asked anything else — "what is
+# the crypto scheduler doing?" — it had no action to reach the answer with, so it fell to
+# CHAT_REPLY and narrated a check it could not perform. The fix is a listed capability,
+# not open access: each is read-only and renders from the same source its /verb does.
+_TURN_KINDS_RUNTIME = frozenset({"QUERY_SCHEDULES", "QUERY_CONTROL", "QUERY_MEMORY"})
 _TURN_KINDS_CHAT = frozenset({"CLARIFY", "CHAT_REPLY"})
 
 def select_frontdesk_provider(*, now: str | None = None, root: Path | None = None) -> Provider | None:
@@ -213,11 +223,23 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 7종 중 정확히 하
 - QUERY_STATUS: 지금 무엇이 실행/대기 중인지 물음.
 - QUERY_HISTORY: 지난 작업 목록을 물음. payload.limit은 개수를 말했을 때만.
 - QUERY_RESULT: 특정 작업의 결과를 다시 보여달라 함. payload.entry_id 필요.
+- QUERY_SCHEDULES: 스케줄러/정기 실행에 대해 물음 (예: "crypto 스케줄러 어떻게 돼있어?",
+  "정기 작업 뭐 돌고 있어?", "다음 실행 언제야?").
+- QUERY_CONTROL: 런타임이 가동/일시정지/정지 중인지, 실행이 허용되는지 물음.
+- QUERY_MEMORY: 승격 가능한 메모리 후보 목록을 물음.
 - CANCEL_TASK: 대기 중인 작업 취소 요청. payload.entry_id 필요.
 - CLARIFY: 의도가 불확실하면 추측하지 말고 되물음.
 - CHAT_REPLY: 그 외 대화 (인사, 감사, 잡담, 질문에 대한 짧은 답).
 
-규칙: 불확실하면 SUBMIT_TASK 대신 CLARIFY. reply_text는 항상 Thomas에게 보일 자연어.
+규칙:
+- 불확실하면 SUBMIT_TASK 대신 CLARIFY.
+- reply_text는 항상 Thomas에게 보일 자연어.
+- **할 수 없는 일을 하겠다고 말하지 마세요.** 위 목록에 없는 것을 요청받으면
+  "확인할게요" 같은 약속 대신, 그것은 지금 볼 수 없다고 분명히 답하세요 (CHAT_REPLY).
+  CHAT_REPLY와 CLARIFY는 **아무 행동도 하지 않습니다** — 그 턴의 텍스트가 무언가를
+  했거나 하겠다는 뜻으로 읽히면 그건 거짓말입니다.
+- 조회 턴(QUERY_*)의 reply_text에는 상태를 지어내지 마세요. 실제 데이터는 런타임이
+  붙입니다. 짧게 무엇을 조회하는지만 쓰면 됩니다.
 
 출력: 분석 JSON의 recommendation을 다음 형태로 채우세요.
 "recommendation": {"action": "<턴 종류>", "turn": {"schema_version": "frontdesk_turn.v0.1",
@@ -270,6 +292,52 @@ def _verbatim_ok(request_text: str, current: str, session: list[dict[str, Any]])
     )
 
 
+def _answer_runtime_query(
+    kind: str,
+    *,
+    working_memory: Any,
+    ledger: Any,
+    control_store: Any,
+    schedules: Any,
+    operator_id: str,
+    now: str,
+    root: Path,
+) -> dict[str, Any]:
+    """Answer one read-only runtime query from the runtime's OWN renderer.
+
+    Same rule as the registry queries: the model chose the subject, the runtime produces
+    the words. A model's account of scheduler or control state can be stale or invented;
+    the store's cannot. Each subject is unavailable-not-guessed if its source is not wired.
+    """
+    if kind == "QUERY_SCHEDULES":
+        from .scheduler import ScheduleStore, render_schedule_summary
+
+        store = schedules if schedules is not None else ScheduleStore.default(root)
+        try:
+            listing = render_schedule_summary(store.list(), now=now)
+        except MvpRuntimeError as exc:
+            return {"reply": f"스케줄을 읽을 수 없습니다 ({exc.reason_code}).",
+                    "action": exc.reason_code}
+        return {"reply": listing, "action": "SCHEDULES_LISTED"}
+
+    if kind == "QUERY_CONTROL":
+        from .control import ControlStore, status_lines
+
+        store = control_store if control_store is not None else ControlStore.default(root)
+        return {"reply": status_lines(store.load(), ledger=ledger), "action": "CONTROL_STATUS"}
+
+    # QUERY_MEMORY — the same listing /memory prints, through the same applier. LIST is
+    # read-only there, so it answers in any runtime mode and needs no kill-switch check.
+    try:
+        outcome = memory_console.apply_memory_command(
+            ("LIST", None, None), operator_id=operator_id, working_memory=working_memory,
+            ledger=ledger, control_store=control_store, now=now, repo_root=root,
+        )
+    except OperatorBlocked as exc:
+        return {"reply": exc.reason, "action": exc.reason_code}
+    return {"reply": outcome["reply"], "action": outcome["action"]}
+
+
 def _audit(ledger: Any, action: str, *, now: str, **fields: Any) -> None:
     """One durable note per noteworthy turn outcome. Best-effort — a conversation event
     must never cost the conversation (the operator-probe precedent)."""
@@ -292,6 +360,7 @@ def run_turn(
     working_memory: Any = None,
     ledger: Any = None,
     control_store: Any = None,
+    schedules: Any = None,
     operator_id: str,
     now: str | None = None,
     repo_root: Path | None = None,
@@ -337,7 +406,13 @@ def run_turn(
     if kind in _TURN_KINDS_CHAT:
         outcome = {"reply": reply_text, "action": f"FRONTDESK_{kind}"}
 
-    elif kind in _TURN_KINDS_READ or kind == "CANCEL_TASK":
+    elif kind in _TURN_KINDS_RUNTIME:
+        outcome = _answer_runtime_query(
+            kind, working_memory=working_memory, ledger=ledger, control_store=control_store,
+            schedules=schedules, operator_id=operator_id, now=stamp, root=root,
+        )
+
+    elif kind in _TURN_KINDS_REGISTRY or kind == "CANCEL_TASK":
         # Deterministic data beats narration: these answer with the console's own
         # rendering, because a model's account of coordination state can be stale or
         # invented and the listing cannot. The conversational door IS /tasks.

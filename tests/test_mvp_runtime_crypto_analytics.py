@@ -315,7 +315,7 @@ def test_dashboard_reads_and_renders(tmp_path):
     assert status["performance"]["closed_count"] == 2
     assert status["warnings"] == []
     text = render_status_text(status)
-    assert "crypto pipeline dashboard" in text and "performance" in text
+    assert "crypto dashboard" in text and "성과" in text
 
 
 def test_dashboard_never_blends_imported_history_into_this_runtimes_performance(tmp_path):
@@ -340,8 +340,14 @@ def test_dashboard_never_blends_imported_history_into_this_runtimes_performance(
     assert status["imported_performance"]["closed_count"] == 3   # reported, separately
     assert status["imported_performance"]["expectancy"] > 0
     text = render_status_text(status)
-    assert "THIS runtime's own paper trading" in text
-    assert "NOT this runtime" in text
+    own_line = next(l for l in text.splitlines() if l.startswith("성과"))
+    assert "자체 페이퍼" in own_line and "-" in own_line      # own, and honestly negative
+    imported_line = next(l for l in text.splitlines() if "imported" in l)
+    # Demoted: indented, parenthesised, and disclaimed — a positive predecessor number
+    # sitting flush under a negative own one is exactly how it got misread before.
+    assert imported_line.strip().startswith("(참고:")
+    assert "이 런타임 아님" in imported_line
+    assert text.index(own_line) < text.index(imported_line)
 
 
 def test_dashboard_degrades_unreadable_inputs_to_warnings(tmp_path):
@@ -350,7 +356,10 @@ def test_dashboard_degrades_unreadable_inputs_to_warnings(tmp_path):
     (state / "paper_outcomes.jsonl").write_text("{broken\n", encoding="utf-8")
     status = build_status(tmp_path, now=NOW)
     assert any("outcome store unreadable" in w for w in status["warnings"])
-    assert "WARNING" in render_status_text(status)
+    # Warnings now ride in the headline block, where a reader sees them before the data
+    # they undermine — not appended after everything.
+    rendered = render_status_text(status)
+    assert "⚠ outcome store unreadable" in rendered.split("지금")[0]
 
 
 def test_imported_history_cannot_offset_the_risk_breaker(tmp_path):
@@ -396,3 +405,112 @@ def test_lifecycle_still_sees_the_full_history(tmp_path):
     source = inspect.getsource(cycle_mod.run_crypto_cycle)
     assert "run_risk_guard(own_outcomes" in source      # guard: own only
     assert "run_lifecycle(active_pool, outcomes" in source   # lifecycle: full history
+
+
+# --- dashboard readability (the operator could not judge from the old dump) ---------
+#
+# The board reported state and left every judgement to the reader: the headline number sat
+# above its own INSUFFICIENT_SAMPLE caveat, a positive imported figure sat flush under a
+# negative own one, and "which gate should I change" required doing missed/avoided
+# arithmetic across five lines. Same data; the reading order is what these pin.
+
+def _board(**overrides):
+    status = {
+        "created_at": "2026-07-26T03:55:33Z",
+        "last_cycle": {"at": "2026-07-26T03:55:33Z", "verdict": "ALLOW", "route": "NO_ENTRY",
+                       "feeds": {"funding": "ok", "liquidations": "ok", "open_interest": "ok"},
+                       "degraded": False, "reason_codes": []},
+        "open_position": {"direction": "LONG", "strategy_id": "S003", "entry_price": 570.36},
+        "open_positions": [{}],
+        "pool_size": 71, "pool_status_counts": {"PAPER_ACTIVE": 55, "SUSPENDED": 16},
+        "performance": {"closed_count": 11, "expectancy": -0.30682667,
+                        "max_drawdown": 5.67135024, "recommendation": "DROP_CANDIDATE_PROFILE"},
+        "imported_performance": {"closed_count": 114, "expectancy": 2.3638822, "max_drawdown": 1.0},
+        "digest": None, "counterfactual_closed": 118, "counterfactual_by_reason": {},
+        "grants": [], "warnings": [],
+    }
+    status.update(overrides)
+    return status
+
+
+_GATES = {
+    "MAX_CONSECUTIVE_LOSS_GATE_BLOCKED": {"closed_count": 2, "expectancy_R": 2.0,
+                                          "missed_opportunity": 2, "avoided_loss": 0},
+    "daily_loss_limit_breached": {"closed_count": 65, "expectancy_R": -0.42631077,
+                                  "missed_opportunity": 11, "avoided_loss": 53},
+    "POSITION_LIMIT_GATE_BLOCKED": {"closed_count": 30, "expectancy_R": 0.14859566,
+                                    "missed_opportunity": 15, "avoided_loss": 15},
+}
+
+
+def test_the_verdict_comes_before_the_evidence():
+    text = render_status_text(_board())
+    assert text.splitlines()[2].startswith("판단:")
+    # 11 closed is noise, and the board must say so where the number is decided, not only
+    # in a trends section further down.
+    assert "표본 부족" in text
+
+
+def test_a_thin_sample_never_reads_as_a_green_light():
+    """A positive expectancy off 4 trades is still not evidence."""
+    text = render_status_text(_board(performance={
+        "closed_count": 4, "expectancy": 1.9, "max_drawdown": 0.2, "recommendation": "KEEP"}))
+    assert "표본 부족" in text
+    assert "확대 근거 없음" in text
+
+
+def test_a_real_sample_that_loses_says_so_plainly():
+    text = render_status_text(_board(performance={
+        "closed_count": 80, "expectancy": -0.4, "max_drawdown": 3.0, "recommendation": "DROP"}))
+    assert "손실 중" in text and "확대 근거 없음" in text
+
+
+def test_costing_gates_are_named_in_the_headline_and_sorted_first():
+    text = render_status_text(_board(counterfactual_by_reason=_GATES))
+    assert "게이트 2개가 손해 중" in text
+    gate_lines = [l for l in text.splitlines() if l.startswith("  🔴") or l.startswith("  🟢")]
+    # Costing first, worst first: a gate that blocked only winners is the one to look at.
+    assert gate_lines[0].startswith("  🔴") and "MAX_CONSECUTIVE_LOSS" in gate_lines[0]
+    assert gate_lines[-1].startswith("  🟢")
+
+
+def test_a_gate_that_blocks_losers_is_marked_earning():
+    text = render_status_text(_board(counterfactual_by_reason={
+        "daily_loss_limit_breached": _GATES["daily_loss_limit_breached"]}))
+    assert "🟢 daily_loss_limit_breached" in text
+    assert "손해 중" not in text          # nothing to flag, so the headline stays quiet
+
+
+def test_imported_history_cannot_be_read_as_this_runtimes_result():
+    text = render_status_text(_board())
+    imported = next(l for l in text.splitlines() if "imported" in l)
+    assert imported.strip().startswith("(참고:")     # parenthesised and indented
+    assert "이 런타임 아님" in imported
+
+
+def test_numbers_are_scannable_not_precise_to_eight_places():
+    text = render_status_text(_board())
+    assert "-0.31R" in text and "0.30682667" not in text
+    assert "dd 5.67R" in text          # a magnitude carries no + sign
+
+
+def test_grants_collapse_to_one_line_until_one_is_near_expiry():
+    far = [{"provider_id": "groq", "expires_at": "2026-08-20T01:56:34Z"},
+           {"provider_id": "telegram", "expires_at": "2026-08-18T10:13:20Z"}]
+    text = render_status_text(_board(grants=far))
+    assert len([l for l in text.splitlines() if "권한" in l or "groq" in l]) == 1
+
+    soon = [{"provider_id": "groq", "expires_at": "2026-07-28T01:56:34Z"}]
+    urgent = render_status_text(_board(grants=soon))
+    assert "⚠" in urgent and "groq" in urgent
+
+
+def test_warnings_surface_in_the_headline():
+    text = render_status_text(_board(warnings=["outcome store unreadable (LEDGER_UNREADABLE)"]))
+    assert "⚠ outcome store unreadable" in text.split("지금")[0]
+
+
+def test_an_empty_board_still_renders():
+    text = render_status_text({"created_at": "2026-07-26T03:55:33Z", "performance": {},
+                               "pool_size": 0, "pool_status_counts": {}})
+    assert "판단:" in text and "근거 없음" in text

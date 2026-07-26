@@ -1106,3 +1106,83 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "breaks": breaks,
         "first_break_index": breaks[0]["index"] if breaks else None,
     }
+
+
+def build_live_order_audit(
+    bound_task: Mapping[str, Any],
+    permission_decision: Mapping[str, Any],
+    submit_result: Mapping[str, Any],
+    *,
+    guard_verdict: Mapping[str, Any],
+    purpose: str,
+    now: str,
+    previous_hash: str | None = None,
+    previous_audit_id: str | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Audit one live exchange order — ``p5_policy_gate``'s ``post_action_report_and_audit``.
+
+    The policy has listed that requirement for ``FINANCIAL_APPROVED_TRADING_USE`` since LP4, and
+    it was the one requirement with no implementation: no live-order path built a P5
+    PermissionDecision and no builder here emitted a financial event, so a real order left
+    nothing on the hash chain. A runtime that audits a memory promotion and a workspace file
+    write must not move money silently.
+
+    ``OTHER``-typed with the subtype in ``reason_codes``, the same choice as promotion and the R8
+    write — ``audit_event.v0.1`` has no order type, and adopting a typed vocabulary is a
+    ledger-wide decision rather than a per-builder one (the I0.5.4 precedent).
+
+    **It reports what the VENUE said**, not what was intended: the reconcile status rides in, so
+    a ``MISMATCH`` or ``UNRECONCILABLE`` order is exactly as auditable as a clean one — those are
+    the cases someone will need the trail for. The event records the symbol, side, notional and
+    reconcile outcome; it never records a key, a signature, or a URL.
+
+    One standalone event chained onto the ledger tip (the promotion/approval precedent), because
+    an order happens off any pipeline run. Returns ``(record, event_sha256)``.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    for field, code in (("identity", "LIVE_ORDER_TASK_INVALID"), ("context", "LIVE_ORDER_TASK_INVALID")):
+        if not isinstance(bound_task.get(field), Mapping):
+            raise AuditError(code, "live order audit requires a Core-bound task")
+    permdec_id = permission_decision.get("permission_decision_id")
+    if not (isinstance(permdec_id, str) and permdec_id):
+        raise AuditError("LIVE_ORDER_PERMDEC_MISSING",
+                         "live order audit requires the P5 PermissionDecision it was placed under")
+
+    reconcile_status = str(submit_result.get("reconcile_status") or "UNKNOWN")
+    client_order_id = str(submit_result.get("client_order_id") or "")
+    symbol = str(submit_result.get("symbol") or "")
+    fill = submit_result.get("fill") if isinstance(submit_result.get("fill"), Mapping) else {}
+    fingerprint = _fingerprint(dict(submit_result), "live_order_result")
+
+    return _make_event(
+        root=root, task=bound_task, now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", "thomas"),
+        subject_type="TOOL_USE", subject_id=client_order_id or "unknown_order",
+        subject_ref=f"live_order:{client_order_id}", subject_fingerprint=fingerprint,
+        summary=(
+            f"Live {purpose} order {submit_result.get('order_type')} {symbol}: "
+            f"reconcile={reconcile_status}, filled={fill.get('executed_qty')} @ "
+            f"{fill.get('avg_price')}, exchange_order_id={submit_result.get('exchange_order_id')}."
+        ),
+        # The venue's answer decides the outcome. A submit that did not reconcile is FAILED
+        # rather than RECORDED: reporting an unconfirmed order as recorded is the one thing this
+        # event exists to prevent. (FAILED, not BLOCKED — the order was attempted and the venue
+        # did not confirm it, which is not the same as a gate refusing to attempt one.)
+        outcome="RECORDED" if reconcile_status == "RECONCILED" else "FAILED",
+        reason_codes=[
+            "LIVE_ORDER_SUBMITTED",
+            "EXECUTE_AND_REPORT",
+            "FINANCIAL_APPROVED_TRADING_USE",
+            f"PURPOSE_{purpose.upper()}",
+            f"RECONCILE_{reconcile_status}",
+            "GUARD_APPROVED" if guard_verdict.get("approved") else "GUARD_NOT_APPROVED",
+        ],
+        related_record_refs=[f"in_memory:{permdec_id}"],
+        evidence_refs=[f"live_order:{client_order_id}"],
+        payload_sha256=fingerprint,
+        sequence=1,
+        previous_hash=previous_hash, previous_audit_id=previous_audit_id,
+        id_seed_extra={"client_order_id": client_order_id, "kind": "live_order"},
+    )

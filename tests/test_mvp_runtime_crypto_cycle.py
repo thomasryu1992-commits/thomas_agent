@@ -491,3 +491,67 @@ def test_imported_history_drives_risk_guard(tmp_path):
 
     verdict = run_risk_guard(paper.read_outcomes(tmp_path), now=NOW)
     assert verdict["consecutive_losses"] == 1  # orig_2 is the latest and a loss
+
+
+# --- LP5.3: the risk guard must see LIVE losses -------------------------------
+
+def _write_live_outcomes(root, rows):
+    """Append live outcome records the way the gated ledger does, self-hash included."""
+    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record, state_dir
+
+    target = state_dir(root)
+    target.mkdir(parents=True, exist_ok=True)
+    records = [build_live_outcome_record(**row) for row in rows]
+    with open(target / "live_outcomes.jsonl", "a", encoding="utf-8", newline="\n") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return records
+
+
+def _live_loss(i, *, risk=20.0, when=NOW):
+    return {
+        "realized_pnl_usdt": -20.0, "symbol": "BTCUSDT", "side": "SELL", "quantity": 0.001,
+        "position_id": f"live_p{i}", "risk_usdt": risk, "now": when,
+    }
+
+
+def test_live_losses_reach_the_risk_guard(tmp_path):
+    """The gap the executing leg would otherwise open: live outcomes live in their own store,
+    so the paper provenance split never sees them. Without this the breaker would ignore the
+    only losses that cost real money."""
+    _install_pool(tmp_path, _always_spec())
+    _write_live_outcomes(tmp_path, [_live_loss(i) for i in range(1, 4)])
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert "max_consecutive_losses_breached" in record["verdict_problems"]
+
+
+def test_a_live_loss_with_no_recorded_risk_is_excluded_not_read_as_a_breakeven(tmp_path):
+    """LP5.4's exclusion rule reaching the cycle. `guards._closed_rows` reads a missing
+    result_R as 0.0 — a BREAKEVEN — so an R-less live loss would SHORTEN a loss streak. It is
+    dropped from the R-based guard and the drop is surfaced."""
+    _install_pool(tmp_path, _always_spec())
+    _write_live_outcomes(tmp_path, [_live_loss(1), _live_loss(2), _live_loss(3, risk=None)])
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD" in record["reason_codes"]
+
+
+def test_an_unreadable_live_history_fails_the_guard_closed(tmp_path):
+    """A history that cannot prove itself must not be allowed to argue the breaker is clear."""
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+
+    _install_pool(tmp_path, _always_spec())
+    target = state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "live_outcomes.jsonl").write_text('{"not":"hashed"}\n', encoding="utf-8")
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert "LIVE_HISTORY_TAMPERED" in record["reason_codes"]
+
+
+def test_no_live_history_changes_nothing(tmp_path):
+    """The common case today: zero live outcomes, so this is a no-op."""
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "ALLOW"
+    assert "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD" not in record["reason_codes"]

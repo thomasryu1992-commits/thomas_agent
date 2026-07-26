@@ -15,7 +15,7 @@ import pytest
 
 from runtime.mvp_runtime.crypto import factory
 from runtime.mvp_runtime.crypto.cycle import attach_feeds
-from runtime.mvp_runtime.crypto.features import latest_feature_row
+from runtime.mvp_runtime.crypto.features import build_feature_rows, latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
     OPEN_INTEREST_DEGRADED,
     MockMarketDataCollector,
@@ -60,6 +60,31 @@ def test_normalized_derivatives_are_computed_from_the_series():
     assert row["open_interest"] == pytest.approx(1000 + 50 * 39)
     assert row["open_interest_change_pct"] > 0          # OI still climbing
     assert row["open_interest_zscore"] is not None
+
+
+def test_change_is_measured_between_READINGS_not_between_bars():
+    """The defect this pins. The feed is daily; a context may be 15m/1h/4h. Diffing the
+    ALIGNED column bar-over-bar makes the change exactly zero on every bar between two
+    daily readings — 23 of 24 on an hourly frame. Measured on a real 12,000-bar ETH 1h
+    frame before the fix: the aligned series moved on 4.2% of bars and the squeeze
+    conditions intersected on 0 of 12,000, so the families could not fire at all.
+
+    Here: four hourly bars per daily reading. Every bar must carry the last KNOWN daily
+    change, not 0.0 for the three bars that merely repeat it."""
+    candles = [{
+        "open_time": f"2026-07-{d:02d}T{h:02d}:00:00Z",
+        "close_time": f"2026-07-{d:02d}T{h + 1:02d}:00:00Z",
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0,
+    } for d in (2, 3, 4) for h in (0, 1, 2, 3)]
+    oi = [{"timestamp": f"2026-07-{d:02d}T00:00:00Z", "open_interest": v}
+          for d, v in ((1, 1000.0), (2, 1100.0), (3, 1210.0), (4, 1331.0))]
+
+    rows = build_feature_rows({"symbol": "BTCUSDT", "timeframe": "1h",
+                               "candles": candles, "open_interest": oi})
+    changes = [r["open_interest_change_pct"] for r in rows]
+    assert all(c is not None for c in changes), "a bar between readings lost the change"
+    assert all(c == pytest.approx(0.10) for c in changes), changes  # +10% day over day
+    assert changes.count(0.0) == 0, "bar-over-bar diffing is back"
 
 
 def test_a_falling_series_reports_a_negative_change():

@@ -98,6 +98,7 @@ ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
 # Venue error codes, verified from its error-code reference (2026-07-25).
 VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
 VENUE_DUPLICATE_CLIENT_ORDER_ID = -4116  # the idempotency key already landed => reconcile finds it
+VENUE_UNKNOWN_ORDER = -2011             # a cancelled/filled/never-placed order => already gone
 
 
 def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
@@ -229,6 +230,10 @@ class OrderAdapter(Protocol):
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
     ) -> dict[str, Any] | None: ...
 
+    def cancel_order(
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+    ) -> dict[str, Any] | None: ...
+
 
 class DryRunOrderAdapter:
     """Default, inert adapter: records what WOULD be sent and reports a synthetic FILLED order,
@@ -248,6 +253,16 @@ class DryRunOrderAdapter:
         self._submitted[str(req["newClientOrderId"])] = req
         return {"dry_run": True, "accepted": True, "clientOrderId": req["newClientOrderId"]}
 
+    def cancel_order(
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+    ) -> dict[str, Any] | None:
+        """Forget the order, as a cancel would. ``None`` when there was nothing to cancel."""
+        req = self._submitted.pop(str(client_order_id), None)
+        if req is None:
+            return None
+        return {"symbol": req["symbol"], "clientOrderId": client_order_id,
+                "status": "CANCELED", "dry_run": True}
+
     def fetch_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
     ) -> dict[str, Any] | None:
@@ -256,10 +271,14 @@ class DryRunOrderAdapter:
             return None
         # A closePosition bracket leg carries neither quantity nor reduceOnly (they are mutually
         # exclusive with it at the venue), so the synthetic echo mirrors that shape too.
+        # A CONDITIONAL order rests as NEW until its trigger price is reached — it does not fill
+        # on submission. Echoing FILLED for one would let a dry run "confirm" a protective order
+        # in a state the venue would never report, which is exactly the confidence a dry run
+        # must not manufacture.
         return {
             "symbol": req["symbol"],
             "side": req["side"],
-            "status": "FILLED",
+            "status": "NEW" if req["type"] in CONDITIONAL_ORDER_TYPES else "FILLED",
             "executedQty": req.get("quantity", 0.0),
             "reduceOnly": req.get("reduceOnly", False),
             "closePosition": req.get("closePosition") == "true",
@@ -409,6 +428,34 @@ class BinanceFuturesOrderAdapter:
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}")
+        return body if isinstance(body, dict) else None
+
+    def cancel_order(
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+    ) -> dict[str, Any] | None:
+        """Cancel a resting order. ``None`` when the venue says there was nothing to cancel.
+
+        Needed because the venue documents **no** auto-cancel of a conditional order when the
+        position it protects closes (verified 2026-07-25): after an exit, the surviving bracket
+        leg is still resting and has to be withdrawn explicitly.
+
+        ``-2011`` (unknown order) is the venue's own "already gone" — filled, already cancelled,
+        or never placed — and is the expected answer for the leg that just triggered the close.
+        It is therefore ``None``, not an error. Any other rejection raises, so a cancel that
+        failed for a real reason is surfaced rather than assumed done.
+
+        **This can only remove a resting order, never place one.** A cancel of a protective leg
+        while its position is still open would *increase* risk, which is why the only caller is
+        the exit path, after the position is confirmed closed."""
+        body, code = self._signed_request(
+            "DELETE", ORDER_PATH, {"symbol": symbol, "origClientOrderId": client_order_id},
+            timeout_seconds=timeout_seconds,
+        )
+        if code is not None:
+            if code in (VENUE_UNKNOWN_ORDER, VENUE_ORDER_DOES_NOT_EXIST):
+                return None
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(ORDER_REJECTED, f"venue refused the cancel (code {code}): {msg}")
         return body if isinstance(body, dict) else None
 
 

@@ -26,7 +26,7 @@ port, then the source repo was frozen. This document covers bringing it across.
 | LP3 order intent + final guard | `execution/live_order_final_guard.py` (L2) | yes | no — it only refuses |
 | LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes | no |
 | LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind the `live_trading` grant + the order key + a guard PASS |
-| LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **partly** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry *decision*, 5.4 the outcome bridge | no — the executing leg + cycle routing are unbuilt |
+| LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **almost** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry decision **and the executing leg**, 5.4 the outcome bridge | the executing leg can, with an **injected** adapter — but nothing autonomous may import it (tripwire test), so **cycle routing is the only piece left** |
 
 The honest summary changed on 2026-07-25 and is worth stating without softening: **an order path
 now exists.** What still holds is that nothing reaches it on its own. Every other module either
@@ -36,12 +36,12 @@ autonomous confirmation phrase (or the separate canary phrase), both kill switch
 guard PASS — and even then it is only reached from the deliberate
 `scripts/place_canary_order.py`, one canary at a time.
 
-LP5.3 (this increment) built the **decision** and deliberately not the send:
-`live_entry.plan_live_entry` assembles every door — verdict, reconciliation, concurrency caps,
-venue filters, protective bracket, sizing, final guard — into one auditable answer, and the
-module contains no adapter and imports none. The executing leg and the cycle routing that would
-call it are the remaining LP5.3 work and are the piece that makes an autonomous live order
-structurally reachable, so they are their own decision.
+LP5.3 built the **decision** (`live_entry.plan_live_entry` — no adapter, imports none) and then
+the **executing leg** (`live_leg.execute_live_entry` / `execute_live_exit`). The leg takes its
+adapter as an argument rather than selecting one, so it cannot reach the venue on its own, and
+the tripwire test now refuses to let the cycle, the scheduler, the pipeline or the operator loop
+import it. **What is left is the cycle routing** — the line that gives the leg an autonomous
+caller, and therefore the moment the safety posture changes. It is its own decision.
 
 ## Effect-tier mapping
 
