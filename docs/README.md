@@ -15,6 +15,8 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 | Architecture Slimming principles | [Step 1 — Principles](architecture-slimming/STEP1_PRINCIPLES.md) |
 | Architecture review findings (why C is parked) | [Architecture Review Record](ARCHITECTURE_REVIEW_RECORD.md) |
 | Completed PR #6–#11 migration record | [Architecture Slimming Master](architecture-slimming/ARCHITECTURE_SLIMMING_MASTER.md) |
+| **What is still to build** (the single to-do list) | [Remaining Work](REMAINING_WORK.md) |
+| **What was built, and why it is shaped that way** | [Build History](BUILD_HISTORY.md) |
 | Deferred Architecture | [`deferred/README.md`](../deferred/README.md) |
 | Generated Artifact boundary | [`generated/README.md`](../generated/README.md) |
 | Historical Artifact boundary | [`historical/README.md`](../historical/README.md) |

@@ -715,3 +715,169 @@ def test_free_text_after_the_id_becomes_the_recorded_decision_reason(tmp_path):
     assert decided["status"] == "REJECTED"
     assert decided["decision"]["decision_reason"] == "근거 문서가 부족함"
     assert ch.sent and "Reason recorded: 근거 문서가 부족함" in ch.sent[0][1]
+
+
+# === the 2026-07-25 control-channel review: no typed failure kills the channel ===
+#
+# The loop and run_operator_once catch only OperatorBlocked, so any other typed error escaping
+# handle_operator_message took the whole operator channel down with a traceback. Three branches
+# were missing a guard; each of these asserts a typed reply instead of a raised exception.
+
+class _BrokenLedger:
+    """A ledger whose every write fails — the corrupt/full-disk case."""
+
+    def __init__(self, root=None):
+        self.root = root
+
+    def last_audit_hash(self):
+        return None
+
+    def _boom(self, *a, **k):
+        from runtime.mvp_runtime.errors import PersistenceError
+        raise PersistenceError("LEDGER_WRITE_FAILED", "disk full")
+
+    append_control = append_audit_events = append_records = _boom
+    append_block = append_feedback_event = append_memory_event = _boom
+
+
+def test_a_ledger_failure_on_a_console_command_does_not_kill_the_channel(tmp_path):
+    """/resume saves the new mode BEFORE the ledger append, so an uncaught PersistenceError left
+    the runtime resumed with no reply, no ledger event, and no channel — the worst of the three."""
+    from runtime.mvp_runtime import control
+
+    store = control.ControlStore(tmp_path)
+    control.apply_command(store, "kill", actor="tg-12345", now=NOW)   # writes nothing (no ledger)
+    reply = handle_operator_message(
+        _msg(text="/resume"), registration=REG, control_store=store,
+        store=_BrokenLedger(tmp_path), now=NOW, repo_root=tmp_path,
+    )
+    # A typed reply, not an exception — and it says the state changed but the record did not.
+    assert reply.status == "CONTROL" and reply.reason_code == "LEDGER_WRITE_FAILED"
+    assert store.load().mode == "ACTIVE"          # the command really did take effect
+    assert "원장" in reply.text or "audit" in reply.text.lower()
+
+
+def test_a_broken_approval_store_is_a_typed_refusal_not_a_crash(tmp_path):
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    class _BrokenApprovals:
+        def get(self, *a, **k):
+            raise PersistenceError("APPROVAL_STORE_UNREADABLE", "corrupt approvals.jsonl")
+
+    reply = handle_operator_message(
+        _msg(text="/approve appr_123"), registration=REG, approval_store=_BrokenApprovals(),
+        store=None, now=NOW, repo_root=tmp_path,
+    )
+    assert reply.accepted is False and reply.status == "REFUSED"
+    assert reply.reason_code == "APPROVAL_STORE_UNREADABLE"
+
+
+def test_a_frontdesk_failure_degrades_to_the_queue_instead_of_killing_the_channel(tmp_path):
+    """run_turn handles only ProviderError/TimeoutError, so a corrupt working memory or a revoked
+    provider grant escaped. The module's promise is that conversation dying never loses a
+    message — so any typed failure must fall through to the F1 queue path."""
+    from runtime.mvp_runtime import frontdesk as frontdesk_mod
+    from runtime.mvp_runtime import operator as operator_mod
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    class _Registry:
+        def __init__(self):
+            self.enqueued = []
+
+        def queued_count(self):
+            return 0
+
+        def submit(self, *a, **k):
+            self.enqueued.append((a, k))
+            raise PersistenceError("REGISTRY_WRITE_FAILED", "queue unavailable")
+
+    def _boom(*a, **k):
+        raise PersistenceError("WORKING_MEMORY_UNREADABLE", "corrupt session store")
+
+    registry = _Registry()
+    original = frontdesk_mod.run_turn
+    frontdesk_mod.run_turn = _boom
+    operator_mod.frontdesk.run_turn = _boom
+    try:
+        reply = handle_operator_message(
+            _msg(text="이 아이디어 어때?"), registration=REG, frontdesk_provider=object(),
+            registry=registry, store=None, now=NOW, repo_root=tmp_path,
+        )
+    finally:
+        frontdesk_mod.run_turn = original
+        operator_mod.frontdesk.run_turn = original
+    # It fell through to the queue (which we made fail too) => a typed refusal, never a crash.
+    assert reply.accepted is False and reply.reason_code == "REGISTRY_WRITE_FAILED"
+    assert registry.enqueued, "the frontdesk failure must degrade to the F1 queue path"
+
+
+# === chat-channel command hygiene (2026-07-25 review) ==========================
+
+@pytest.mark.parametrize("text", [
+    "kill it", "pause 잠깐만", "resume 다시", "stop 그거", "cancel 그거",
+    "promote 이거 좋았어", "approve 해줘", "reject 별로야",
+])
+def test_a_bare_state_changing_verb_is_refused_on_a_chat_channel(tmp_path, text):
+    """Verified 2026-07-25: `kill it` HALTED the runtime. Every parser accepts the bare verb —
+    right on a terminal, wrong in prose. A refusal naming the slash form is safe both ways."""
+    from runtime.mvp_runtime import control
+
+    store = control.ControlStore(tmp_path)
+    reply = handle_operator_message(
+        _msg(text=text), registration=REG, control_store=store, store=None,
+        now=NOW, repo_root=tmp_path,
+    )
+    assert reply.accepted is False and reply.reason_code == "SLASH_REQUIRED"
+    assert store.load().mode == "ACTIVE"          # nothing happened
+    assert "/" in reply.text                      # and it says what to type
+
+
+@pytest.mark.parametrize("text", ["status", "audit", "recovery"])
+def test_bare_read_only_verbs_still_work(tmp_path, text):
+    """Only state-changing verbs are narrowed; answering /status to "status" costs nothing."""
+    from runtime.mvp_runtime import control
+
+    reply = handle_operator_message(
+        _msg(text=text), registration=REG, control_store=control.ControlStore(tmp_path),
+        store=None, now=NOW, repo_root=tmp_path,
+    )
+    assert reply.status == "CONTROL"
+
+
+def test_the_slash_form_of_a_state_changing_verb_still_works(tmp_path):
+    from runtime.mvp_runtime import control
+
+    store = control.ControlStore(tmp_path)
+    reply = handle_operator_message(
+        _msg(text="/kill"), registration=REG, control_store=store, store=None,
+        now=NOW, repo_root=tmp_path,
+    )
+    assert reply.status == "CONTROL" and store.load().mode == "KILLED"
+
+
+def test_an_importance_marker_cannot_smuggle_a_command_past_the_unknown_guard(tmp_path, monkeypatch):
+    """Verified 2026-07-25: `!중요 /killl` skipped the unknown-command guard (the marker strip
+    runs after it) and became a pipeline task, spending a model call on a typo'd emergency verb."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime import control
+
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("must not run a task"))
+    reply = handle_operator_message(
+        _msg(text="!중요 /killl"), registration=REG, control_store=control.ControlStore(tmp_path),
+        store=None, now=NOW, repo_root=tmp_path,
+    )
+    assert reply.accepted is False and reply.reason_code == "MARKED_COMMAND"
+
+
+def test_the_operator_loop_always_wires_the_kill_switch():
+    """`handle_operator_message` tolerates `control_store=None` because it is also the
+    library/pipeline-only entry point. What must hold is that the DEPLOYMENT never uses that
+    mode — so the loop's own wiring is asserted here instead of breaking the library contract."""
+    import inspect
+
+    from runtime.mvp_runtime import operator_cli
+
+    source = inspect.getsource(operator_cli)
+    assert "control_store" in source
+    # The loop constructs a ControlStore and hands it down; a refactor that drops it fails here.
+    assert "ControlStore" in source

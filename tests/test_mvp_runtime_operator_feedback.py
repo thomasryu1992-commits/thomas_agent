@@ -246,6 +246,12 @@ def test_loop_skips_pointer_when_send_failed(tmp_path, monkeypatch):
 
 # --- M5a: /feedback bad <note> captures a correction candidate ----------------
 
+def _active(tmp_path):
+    """An ACTIVE control store — the M5a memory capture is kill-bound, so a caller that wants
+    the candidate minted must prove the runtime is running."""
+    return control.ControlStore(tmp_path)
+
+
 def _wm(tmp_path):
     from runtime.mvp_runtime.working_memory import WorkingMemoryStore
     return WorkingMemoryStore(tmp_path / "wm")
@@ -263,7 +269,8 @@ def test_feedback_bad_with_note_mints_a_correction_candidate(tmp_path):
     record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
     wm = _wm(tmp_path)
     outcome = apply_feedback("bad 표를 넣어서 다시 정리해줘", operator_id="tg-12345",
-                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+                             store=_ledger(tmp_path), working_memory=wm, control_store=_active(tmp_path),
+                             now=NOW, repo_root=tmp_path)
     assert outcome["verdict"] == "BAD"
     cand = outcome["learning_candidate"]
     assert cand is not None and cand["status"] == "CANDIDATE" and cand["validated"] is False
@@ -283,7 +290,8 @@ def test_feedback_good_mints_no_correction(tmp_path):
     record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
     wm = _wm(tmp_path)
     outcome = apply_feedback("good 훌륭함", operator_id="tg-1",
-                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+                             store=_ledger(tmp_path), working_memory=wm, control_store=_active(tmp_path),
+                             now=NOW, repo_root=tmp_path)
     assert outcome["learning_candidate"] is None
     assert wm.read_all() == []
 
@@ -293,7 +301,8 @@ def test_feedback_bad_without_note_mints_no_correction(tmp_path):
     record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
     wm = _wm(tmp_path)
     outcome = apply_feedback("bad", operator_id="tg-1",
-                             store=_ledger(tmp_path), working_memory=wm, now=NOW, repo_root=tmp_path)
+                             store=_ledger(tmp_path), working_memory=wm, control_store=_active(tmp_path),
+                             now=NOW, repo_root=tmp_path)
     assert outcome["verdict"] == "BAD" and outcome["learning_candidate"] is None
     assert wm.read_all() == []
     assert len(_feedback_rows(tmp_path)) == 1     # the verdict itself is still recorded
@@ -318,6 +327,47 @@ def test_capture_failure_never_fails_the_recorded_feedback(tmp_path):
 
     record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
     outcome = apply_feedback("bad 표 필요", operator_id="tg-1",
-                             store=_ledger(tmp_path), working_memory=_BrokenWM(), now=NOW, repo_root=tmp_path)
+                             store=_ledger(tmp_path), working_memory=_BrokenWM(),
+                             control_store=_active(tmp_path), now=NOW, repo_root=tmp_path)
     assert outcome["verdict"] == "BAD" and outcome["learning_candidate"] is None
     assert len(_feedback_rows(tmp_path)) == 1     # feedback recorded despite the capture failure
+
+
+# --- the 2026-07-25 control-channel review: memory mutation is kill-bound ------
+
+def test_a_killed_runtime_records_the_verdict_but_mints_no_memory(tmp_path):
+    """The verdict is deliberately answered in any mode — judging delivered work is not new
+    execution. Minting a correction candidate MUTATES working memory, and memory_console gates
+    exactly that on the kill switch. This path did not, so a KILLED runtime still wrote memory."""
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    killed = control.ControlStore(tmp_path)
+    control.apply_command(killed, "kill", actor="tg-1", now=NOW)
+
+    outcome = apply_feedback("bad 표를 넣어줘", operator_id="tg-1", store=_ledger(tmp_path),
+                             working_memory=wm, control_store=killed, now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD"                 # the verdict IS recorded
+    assert len(_feedback_rows(tmp_path)) == 1
+    assert outcome["learning_candidate"] is None       # ...but memory is not mutated
+    assert wm.read_all() == []
+
+
+def test_a_paused_runtime_also_mints_no_memory(tmp_path):
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    paused = control.ControlStore(tmp_path)
+    control.apply_command(paused, "pause", actor="tg-1", now=NOW)
+    outcome = apply_feedback("bad 표를 넣어줘", operator_id="tg-1", store=_ledger(tmp_path),
+                             working_memory=wm, control_store=paused, now=NOW, repo_root=tmp_path)
+    assert outcome["learning_candidate"] is None and wm.read_all() == []
+
+
+def test_no_control_store_means_no_capture(tmp_path):
+    """Fail-closed on a missing safety store, matching memory_console/registry_console: the
+    verdict is safe either way, so refusing to mutate costs nothing."""
+    record_delivery("trace_abc", now=NOW, repo_root=tmp_path)
+    wm = _wm(tmp_path)
+    outcome = apply_feedback("bad 표를 넣어줘", operator_id="tg-1", store=_ledger(tmp_path),
+                             working_memory=wm, control_store=None, now=NOW, repo_root=tmp_path)
+    assert outcome["verdict"] == "BAD" and len(_feedback_rows(tmp_path)) == 1
+    assert outcome["learning_candidate"] is None and wm.read_all() == []

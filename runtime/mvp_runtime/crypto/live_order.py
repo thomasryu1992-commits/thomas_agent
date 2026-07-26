@@ -290,11 +290,11 @@ def resolve_live_order_limits(
     (``autonomous_spend_without_registered_budget: '0'``). The env cap vars (``MVP_LIVE_MAX_*``)
     no longer authorize an order; the registered budget supersedes them.
 
-    **Both** confirmation phrases and the manual kill stay env and are carried through on every
-    branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
+    **Both** confirmation phrases and the manual kill remain env, and are carried through on
+    every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
     deliberate canary), ``MVP_LIVE_MANUAL_KILL_SWITCH``. A phrase proving intent and a halt are
     operator state, not registered caps. The canary phrase was omitted here until 2026-07-26,
-    which left ``place_canary_order.py`` — the only live door there is, and the one that must
+    which left ``place_canary_order.py`` — the only live door there is, and the one that has to
     work before any autonomous path can — permanently refused with "canary confirmation phrase
     not present". Failing closed, but on the step the operator has to take next, and only
     discoverable standing at the terminal with real keys."""
