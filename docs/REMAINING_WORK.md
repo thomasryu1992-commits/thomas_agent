@@ -63,17 +63,21 @@ catalogued in the PR body; the branch is `worktree-crypto-lp4-adapter`.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket) — not started
+## A. Prediction-market trading (Kalshi / Polymarket) — PM1 in progress
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
-**No code exists for this track yet** — every box below is open.
+**PM1's read-and-detect half has landed** (`runtime/mvp_runtime/predmarket/`, 2026-07-26): both venue
+adapters, the deterministic matcher with operator confirmation, and the fee-adjusted detector. Open
+inside PM1: observation records, the `pm_scan` scheduler template, the LLM widening pass, and the
+2–4 week exit report. PM2 and PM3 are untouched. Trust the boxes below over this paragraph.
 Phasing: observe (no money) → paper (no external effect) → approval-gated live (per-order approval).
 
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
       Polygon/USDC wallet, and the **Korean regulatory judgment call** (grey area). Blocks PM3 only,
       not PM1/PM2.
 - [~] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed): **started
-      2026-07-26** — the venue adapters have landed; matching and the detector are open.
+      2026-07-26** — the venue adapters, the matcher and the fee-adjusted detector have landed;
+      observation records and the `pm_scan` scheduler template are what remain before the report.
   - [x] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
         `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics —
         done 2026-07-26 (`runtime/mvp_runtime/predmarket/market_data.py`). One normalized
