@@ -67,6 +67,17 @@ _NETWORK_FLAGS = (NETWORK_ACCESS,)
 # reviewer to that request. Matched case-insensitively as a standalone leading token.
 IMPORTANT_MARKERS = ("!중요", "!important")
 
+# Verbs that CHANGE STATE, across every command family — the ones that must carry a slash on a
+# chat channel (see the gate in handle_operator_message). Read-only verbs (status, audit,
+# recovery, memory, tasks, history, result, feedback) are deliberately absent: answering one of
+# those to a prose message is harmless, so narrowing them would only add friction.
+_MUTATING_VERBS = frozenset({
+    "kill", "pause", "resume", "stop", "stop_task",   # console
+    "approve", "reject",                              # approval decisions
+    "promote",                                        # memory -> VALIDATED
+    "cancel",                                         # queue entry
+})
+
 
 @dataclass(frozen=True)
 class OperatorIdentity:
@@ -219,6 +230,24 @@ def handle_operator_message(
     if not text:
         return OperatorReply(text="Empty request.", accepted=False, status="REFUSED", reason_code="EMPTY_REQUEST")
 
+    # A state-changing verb must carry its slash on a CHAT channel. Every parser below accepts
+    # the bare verb — deliberately, because on the local console you typed it into a terminal on
+    # purpose (`control.command_verb`). Telegram is prose: "kill it" halted the runtime, and
+    # "cancel 그거" cancelled a queued task, with no way for the operator to have meant otherwise.
+    # Read-only verbs stay slash-optional (answering /status to "status?" costs nothing), so this
+    # narrows only the verbs that change state. Refusing with the exact form to type is better
+    # than silently treating it as conversation: if he meant the command, he still gets it in one
+    # more keystroke; if he did not, nothing happened. The parsers are untouched, so the local
+    # console keeps its convenience — this is a property of the channel, not of the grammar.
+    if not text.startswith("/"):
+        first = control.command_verb(text.partition(" ")[0], slash_seen=False)
+        if first in _MUTATING_VERBS:
+            return OperatorReply(
+                text=(f"상태를 바꾸는 명령은 슬래시를 붙여주세요: `/{first}`. "
+                      "(대화로 하신 말이라면 그냥 다시 말씀하시면 됩니다.)"),
+                accepted=False, status="REFUSED", reason_code="SLASH_REQUIRED",
+            )
+
     if control_store is not None:
         # Emergency-console commands are handled before (and regardless of) the run state — a
         # KILLED runtime must still answer /status and accept /resume from the verified operator.
@@ -366,6 +395,15 @@ def handle_operator_message(
 
     if control_store is not None:
         # A task request is refused while the runtime is not ACTIVE (kill blocks new execution).
+        #
+        # `control_store is None` deliberately does NOT refuse here, unlike `memory_console` /
+        # `registry_console`. Those are reached only when a console IS wired, so a missing kill
+        # switch there is an inconsistent wiring and refusing is right. This function also serves
+        # as the library entry point with no console at all (the pipeline-only calling mode much
+        # of the suite uses), where "no control store" means "no console", not "the kill switch
+        # went missing". The real protection is that the deployment always wires it — asserted by
+        # `test_the_operator_loop_always_wires_the_kill_switch` rather than by breaking the
+        # library mode.
         state = control_store.load()
         if not state.execution_allowed:
             reason_code = state.refusal_reason_code()
@@ -386,6 +424,18 @@ def handle_operator_message(
             return OperatorReply(
                 text=f"'{head}' 뒤에 분석할 요청을 함께 보내주세요 (예: {head} 이 사업 아이디어를 분석해줘: ...).",
                 accepted=False, status="REFUSED", reason_code="EMPTY_REQUEST",
+            )
+        # The marker strip happens AFTER the unknown-command guard above, so a slash command
+        # hidden behind it used to skip that guard entirely: `!중요 /killl` became a pipeline
+        # task and spent a model call on a typo'd emergency verb — the exact fail-open the guard
+        # exists to prevent. Re-check the post-marker text. (A marked *real* command is still
+        # refused rather than executed: the marker means "this request is important", and a
+        # command is not a request — mixing the two is a mistake worth naming.)
+        if text.startswith("/"):
+            return OperatorReply(
+                text=("명령에는 '중요' 표시를 붙이지 마세요 — 표시는 분석 요청에만 씁니다. "
+                      f"명령만 따로 보내주세요 (예: {text.partition(' ')[0]})."),
+                accepted=False, status="REFUSED", reason_code="MARKED_COMMAND",
             )
 
     # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
