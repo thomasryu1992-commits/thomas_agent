@@ -102,7 +102,7 @@ def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state
         state,
         {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
         {"venue": POLYMARKET, "market_id": "POLYMARKET-MOCK-00"},
-        {"venue": "predictfun", "market_id": "PREDICTFUN-MOCK-00"},
+        {"venue": "binance", "market_id": "BINANCE-MOCK-00"},
     )
     scan = obs.run_watch_scan(now=NOW, root=state)
     assert scan["observation_count"] == 3

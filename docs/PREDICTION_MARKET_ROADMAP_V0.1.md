@@ -45,11 +45,12 @@ Verified 2026-07-24 (web sources; re-verify at signup):
   until it is made.
 - **PM1 needs none of the above** — both venues expose public market data; observation
   requires no account and no funds. PM0 blocks PM3, not PM1/PM2.
-- **Predict.fun (the venue behind Binance Wallet's prediction markets) — added 2026-07-26.**
-  Binance surfaces these markets in its Wallet, but the venue is **Predict.fun on BNB Smart
-  Chain**: the counterparty, the settlement and the *resolution rules* are Predict.fun's, so
-  the package names it `predictfun` rather than `binance`. Two consequences, both verified
-  against `dev.predict.fun` on 2026-07-26:
+- **Binance prediction markets — added 2026-07-26, third venue.** The package names the
+  venue `binance`, because that is the door: the account, the key, the host and the funds are
+  all Binance's. The underlying markets are **Predict.fun's on BNB Smart Chain**, which matters
+  at exactly one moment — when the operator compares resolution rules before confirming a
+  pairing — and every payload row states it (`vendor: "PREDICT_FUN"`, `chainId: "56"`), so
+  that fact travels with the data rather than in the label. Verified 2026-07-26:
   - **Reached through Binance, not directly (Thomas, 2026-07-26).** The money path decides
     it: funding a Binance prediction account is a transfer from an existing balance, while the
     direct venue needs a self-custodied BNB-chain wallet. Reading through the same door that

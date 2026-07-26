@@ -31,7 +31,7 @@ def _authorized():
     from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
 
     return Authorization(
-        flags=(NETWORK_ACCESS,), provider_id=md.PREDICTFUN_PROVIDER_ID,
+        flags=(NETWORK_ACCESS,), provider_id=md.BINANCE_PROVIDER_ID,
         activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
         evidence_ref=".runtime_governance_state/evidence.md",
     )
@@ -266,7 +266,7 @@ def test_a_collector_failure_fails_closed_for_the_caller_to_degrade():
 
 
 def test_an_unknown_venue_is_refused():
-    for venue in ("binance", "", None, "KALSHI"):
+    for venue in ("bybit", "", None, "KALSHI"):
         with pytest.raises(ToolBlocked) as exc:
             md.require_venue(venue)
         assert exc.value.reason_code == "INVALID_VENUE"
@@ -366,7 +366,7 @@ def test_a_topic_is_listed_unquoted_because_the_list_response_carries_no_prices(
     """`market/list` returns topics whose `markets` array is empty by design, so a price here
     would have to be invented. The outcome tokens come from `market/detail`."""
     topic = md.parse_prediction_topics({"marketTopics": [_topic_row()]})[0]
-    assert topic.venue == md.PREDICTFUN
+    assert topic.venue == md.BINANCE
     assert topic.market_id == "4229564"          # the TOPIC id, replaced by the token later
     assert topic.title == "Will BTC price go UP in the next 1 hour?"
     assert topic.quote.quoted() is False
@@ -434,23 +434,23 @@ def test_an_empty_or_crossed_prediction_book_is_unquoted():
 def test_missing_credentials_are_reported_as_their_own_fact(monkeypatch):
     """Every prediction endpoint is signed, so this venue needs a key AND a secret. "Nobody
     configured them" and "the venue is down" are different facts about a scan."""
-    monkeypatch.delenv(md.PREDICTFUN_API_KEY_ENV, raising=False)
-    monkeypatch.delenv(md.PREDICTFUN_API_SECRET_ENV, raising=False)
-    collector = md.PredictFunCollector(authorization=_authorized())
+    monkeypatch.delenv(md.BINANCE_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(md.BINANCE_API_SECRET_ENV, raising=False)
+    collector = md.BinancePredictionCollector(authorization=_authorized())
     assert collector.credentials_present() is False
     with pytest.raises(ToolError) as exc:
         collector.list_markets(limit=1, timeout_seconds=1)
     assert exc.value.reason_code == md.API_KEY_MISSING
     # The env var NAMES are actionable; the values never appear anywhere.
-    assert md.PREDICTFUN_API_KEY_ENV in exc.value.reason
+    assert md.BINANCE_API_KEY_ENV in exc.value.reason
 
 
 def test_the_secret_never_reaches_a_record(monkeypatch):
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "public-ish-key")
-    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "super-secret-value")
-    collector = md.PredictFunCollector(authorization=_authorized())
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "public-ish-key")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "super-secret-value")
+    collector = md.BinancePredictionCollector(authorization=_authorized())
     assert collector.credentials_present() is True
-    record = md.degraded_pred_market_record(collector, md.PREDICTFUN, md.PREDMARKET_DEGRADED, now=NOW)
+    record = md.degraded_pred_market_record(collector, md.BINANCE, md.PREDMARKET_DEGRADED, now=NOW)
     blob = json.dumps(record)
     assert "super-secret-value" not in blob and "public-ish-key" not in blob
 
@@ -459,40 +459,40 @@ def test_a_signed_key_can_never_be_pointed_at_another_host():
     """Refused at construction, like the account feed: a URL typo must not send a signed
     credential somewhere unexpected."""
     with pytest.raises(ToolBlocked) as exc:
-        md.PredictFunCollector(base_url="https://evil.example.com")
+        md.BinancePredictionCollector(base_url="https://evil.example.com")
     assert exc.value.reason_code == "HOST_NOT_ALLOWED"
 
 
 def test_the_gate_still_comes_first_for_the_third_venue(monkeypatch, tmp_path):
     """A key is not an authorization. Without the grant the collector reaches nothing, even
     with perfectly good credentials set."""
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
-    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
     with pytest.raises(SafetyGateBlocked):
-        md.PredictFunCollector().list_markets(limit=1, timeout_seconds=1)
-    monkeypatch.setenv(md.PREDICTFUN_ENV, md.PREDICTFUN_PROVIDER_ID)
+        md.BinancePredictionCollector().list_markets(limit=1, timeout_seconds=1)
+    monkeypatch.setenv(md.BINANCE_ENV, md.BINANCE_PROVIDER_ID)
     with pytest.raises(SafetyGateBlocked):
-        md.select_pred_market_collector(md.PREDICTFUN, root=tmp_path)
+        md.select_pred_market_collector(md.BINANCE, root=tmp_path)
 
 
 def test_the_whole_three_call_walk_produces_a_quoted_market(monkeypatch):
     """list -> detail -> order-book, with the network stubbed at the one signed-GET seam. What
     it pins is the handover: the token id from the detail is what the book is asked for, and
     the topic's fee rate rides onto the quoted market."""
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
-    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
     asked: list[tuple[str, dict]] = []
 
     def _fake_get(self, path, params, *, timeout_seconds):
         asked.append((path, dict(params)))
-        if path == md.PredictFunCollector.LIST_PATH:
+        if path == md.BinancePredictionCollector.LIST_PATH:
             return {"marketTopics": [_topic_row()]}
-        if path == md.PredictFunCollector.DETAIL_PATH:
+        if path == md.BinancePredictionCollector.DETAIL_PATH:
             return _detail_row()
         return _pm_book()
 
-    monkeypatch.setattr(md.PredictFunCollector, "_signed_get", _fake_get)
-    snapshot = md.PredictFunCollector(authorization=_authorized()).list_markets(
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _fake_get)
+    snapshot = md.BinancePredictionCollector(authorization=_authorized()).list_markets(
         limit=5, timeout_seconds=1
     )
     market = snapshot.markets[0]
@@ -501,7 +501,7 @@ def test_the_whole_three_call_walk_produces_a_quoted_market(monkeypatch):
     assert market.fee_rate_bps == 200
     assert market.quote.quoted() is True
     # The book was asked for the token the detail named, with the vendor spelled out.
-    book_call = [p for path, p in asked if path == md.PredictFunCollector.BOOK_PATH][0]
+    book_call = [p for path, p in asked if path == md.BinancePredictionCollector.BOOK_PATH][0]
     assert book_call["tokenId"] == "112233" and book_call["marketId"] == 5567895
     assert book_call["vendor"] == "predict_fun"
 
@@ -509,16 +509,16 @@ def test_the_whole_three_call_walk_produces_a_quoted_market(monkeypatch):
 def test_a_failed_detail_or_book_leaves_the_market_unquoted_rather_than_dropped(monkeypatch):
     """One topic's second or third call failing is not the scan failing — and an unpriced
     market is still a market we know exists."""
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
-    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
 
     def _fake_get(self, path, params, *, timeout_seconds):
-        if path == md.PredictFunCollector.LIST_PATH:
+        if path == md.BinancePredictionCollector.LIST_PATH:
             return {"marketTopics": [_topic_row()]}
         raise ToolError("TOOL_TRANSPORT", "venue unreachable")
 
-    monkeypatch.setattr(md.PredictFunCollector, "_signed_get", _fake_get)
-    snapshot = md.PredictFunCollector(authorization=_authorized()).list_markets(
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _fake_get)
+    snapshot = md.BinancePredictionCollector(authorization=_authorized()).list_markets(
         limit=5, timeout_seconds=1
     )
     assert len(snapshot.markets) == 1

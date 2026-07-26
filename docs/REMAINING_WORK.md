@@ -96,7 +96,7 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         comparison can see — and one market belongs to at most one pair. Every judgement,
         including near-misses, records which gate failed and by how much: that record is what
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
-  - [x] Third venue **Predict.fun** (the venue behind Binance Wallet's prediction markets) —
+  - [x] Third venue **Binance prediction markets** (markets are Predict.fun's on BNB Chain) —
         done 2026-07-26. Listed-but-unquoted: no order-book endpoint is published, and its
         per-outcome `prices` are a derived figure this package already refuses to quote from.
         Carries the venue's own `polymarketConditionIds` cross-reference, which the matcher
@@ -105,7 +105,7 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         ticket), so PM1's "no account needed" property does not extend to it; a missing key is
         reported as `PREDMARKET_API_KEY_MISSING`, never as an outage. Its fee schedule is
         unread, so its legs report **no knowable cost** rather than a guessed one.
-  - [x] Predict.fun order book + fee — resolved 2026-07-26 by routing through **Binance's**
+  - [x] Order book + fee — resolved 2026-07-26 by routing through **Binance's**
         Prediction Trading REST API instead of the venue directly (Thomas's call; funding is
         why). Binance publishes a real `/order-book` and a per-topic `feeRateBps`, so this
         venue is now **quoted**, not merely listed. All endpoints are signed. The fee

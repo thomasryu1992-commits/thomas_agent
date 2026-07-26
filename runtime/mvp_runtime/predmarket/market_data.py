@@ -67,27 +67,28 @@ PREDMARKET_TOOL_CLASS = "read"
 
 KALSHI = "kalshi"
 POLYMARKET = "polymarket"
-# Named for what it is, not for its storefront. Binance Wallet surfaces these markets, but the
-# venue is Predict.fun on BNB Smart Chain: the counterparty, the settlement and — the part that
-# decides pairing — the **resolution rules** are Predict.fun's. Calling it "binance" would put
-# the wrong name in front of the operator at exactly the moment they compare those rules.
-PREDICTFUN = "predictfun"
-VENUES = (KALSHI, POLYMARKET, PREDICTFUN)
+# Named for the door, because that is what the operator uses: the account, the key, the host
+# and the funds are all Binance's, and every market here arrives through Binance's prediction
+# API. The markets themselves are Predict.fun's on BNB Smart Chain — which matters at exactly
+# one moment, when the operator compares resolution rules — and the payload says so on every
+# row (`vendor: "PREDICT_FUN"`), so that fact is carried by the data rather than by the label.
+BINANCE = "binance"
+VENUES = (KALSHI, POLYMARKET, BINANCE)
 
 # One grant per venue, per the roadmap: they are independent capabilities, not a failover
 # chain, so revoking one must not touch the others.
 KALSHI_PROVIDER_ID = "kalshi_market_data"
 POLYMARKET_PROVIDER_ID = "polymarket_market_data"
-PREDICTFUN_PROVIDER_ID = "binance_prediction"
+BINANCE_PROVIDER_ID = "binance_prediction"
 KALSHI_ENV = "MVP_KALSHI_MARKET_DATA"
 POLYMARKET_ENV = "MVP_POLYMARKET_MARKET_DATA"
-PREDICTFUN_ENV = "MVP_BINANCE_PREDICTION"
+BINANCE_ENV = "MVP_BINANCE_PREDICTION"
 # The one venue of the three that is NOT keyless. Every prediction endpoint is SIGNED, so a
 # key and a secret are both needed. Metadata only ever: the names are reported, the values are
 # never logged, audited or recorded (the standing secrets rule), and because the signature
 # rides in the query string a transport failure is reported generically.
-PREDICTFUN_API_KEY_ENV = "BINANCE_PREDICTION_API_KEY"
-PREDICTFUN_API_SECRET_ENV = "BINANCE_PREDICTION_API_SECRET"
+BINANCE_API_KEY_ENV = "BINANCE_PREDICTION_API_KEY"
+BINANCE_API_SECRET_ENV = "BINANCE_PREDICTION_API_SECRET"
 
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
@@ -422,12 +423,12 @@ def select_pred_market_collector(
             root=root,
         )
     return safety_gate.select_gated(
-        env_var=PREDICTFUN_ENV,
-        opt_in_value=PREDICTFUN_PROVIDER_ID,
+        env_var=BINANCE_ENV,
+        opt_in_value=BINANCE_PROVIDER_ID,
         flags=_NETWORK_FLAGS,
-        provider_id=PREDICTFUN_PROVIDER_ID,
-        default_factory=lambda: MockPredMarketCollector(PREDICTFUN),
-        gated_factory=lambda authorization: PredictFunCollector(authorization=authorization),
+        provider_id=BINANCE_PROVIDER_ID,
+        default_factory=lambda: MockPredMarketCollector(BINANCE),
+        gated_factory=lambda authorization: BinancePredictionCollector(authorization=authorization),
         now=now,
         root=root,
     )
@@ -705,23 +706,20 @@ def parse_clob_book(payload: Any) -> VenueQuote:
     )
 
 
-# --- Predict.fun markets, reached through Binance -------------------------------
+# --- Binance prediction markets -------------------------------------------------
 
-class PredictFunCollector:
-    """Predict.fun markets over **Binance's** Prediction Trading REST API.
-
-    Two names, one venue, and the split is deliberate:
-
-    - the **venue** is Predict.fun on BNB Smart Chain — whose markets these are, and whose
-      resolution rules the operator compares at confirmation time. The API says so itself
-      (``vendor: "PREDICT_FUN"``);
-    - the **route** is Binance, which is where the credential, the host and the rate limit
-      come from. Hence the grant ``binance_prediction`` and the ``BINANCE_PREDICTION_*`` keys.
+class BinancePredictionCollector:
+    """Prediction markets over Binance's Prediction Trading REST API.
 
     Chosen over Predict.fun's own REST API (Thomas, 2026-07-26) because the money path
     decides it: funding a Binance prediction account is a transfer from an existing balance,
     while the direct venue needs a self-custodied BNB-chain wallet. Reading through the same
     door that will later trade keeps one credential and one identifier space.
+
+    **The underlying markets are Predict.fun's on BNB Smart Chain**, which matters at exactly
+    one moment — when the operator compares resolution rules before confirming a pairing. The
+    payload states it on every row (``vendor``, ``chainId``), so the fact travels with the data
+    and does not need to live in the venue's name.
 
     Verified against the published spec on 2026-07-26, and it changed two earlier refusals:
 
@@ -741,10 +739,10 @@ class PredictFunCollector:
     come back **unquoted** rather than dropped or guessed.
     """
 
-    venue = PREDICTFUN
+    venue = BINANCE
     tool_id = PREDMARKET_TOOL_ID
     tool_version = f"{PREDMARKET_TOOL_VERSION}-binance-prediction"
-    provider_id = PREDICTFUN_PROVIDER_ID
+    provider_id = BINANCE_PROVIDER_ID
     network_egress = True
     source = "binance_prediction"
 
@@ -775,20 +773,20 @@ class PredictFunCollector:
 
     def credentials_present(self) -> bool:
         return bool(
-            os.environ.get(PREDICTFUN_API_KEY_ENV, "").strip()
-            and os.environ.get(PREDICTFUN_API_SECRET_ENV, "").strip()
+            os.environ.get(BINANCE_API_KEY_ENV, "").strip()
+            and os.environ.get(BINANCE_API_SECRET_ENV, "").strip()
         )
 
     def _signed_get(self, path: str, params: Mapping[str, Any], *, timeout_seconds: int) -> Any:
-        api_key = os.environ.get(PREDICTFUN_API_KEY_ENV, "").strip()
-        api_secret = os.environ.get(PREDICTFUN_API_SECRET_ENV, "").strip()
+        api_key = os.environ.get(BINANCE_API_KEY_ENV, "").strip()
+        api_secret = os.environ.get(BINANCE_API_SECRET_ENV, "").strip()
         if not api_key or not api_secret:
             # Names only — the absence of a credential is reportable, its value never is.
             # A distinct code from a degrade: an unfinished setup step is not an outage.
             raise ToolError(
                 API_KEY_MISSING,
                 f"prediction credentials are not configured "
-                f"({PREDICTFUN_API_KEY_ENV}/{PREDICTFUN_API_SECRET_ENV})",
+                f"({BINANCE_API_KEY_ENV}/{BINANCE_API_SECRET_ENV})",
             )
         query = dict(params)
         query.setdefault("recvWindow", self.RECV_WINDOW_MS)
@@ -857,7 +855,7 @@ class PredictFunCollector:
             except ToolError:
                 book = None
             markets.append(PredMarket(
-                venue=PREDICTFUN,
+                venue=BINANCE,
                 # Keyed on the outcome token, like Polymarket: it is what the book and any
                 # later order key on.
                 market_id=token_id,
@@ -917,7 +915,7 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
             continue
         fee_bps = row.get("feeRateBps")
         topics.append(PredMarket(
-            venue=PREDICTFUN,
+            venue=BINANCE,
             market_id=str(topic_id),
             group_id=None,
             title=str(row.get("question") or row.get("title") or topic_id),
@@ -1006,11 +1004,11 @@ __all__ = [
     "POLYMARKET",
     "POLYMARKET_ENV",
     "POLYMARKET_PROVIDER_ID",
-    "PREDICTFUN",
-    "PREDICTFUN_API_KEY_ENV",
-    "PREDICTFUN_API_SECRET_ENV",
-    "PREDICTFUN_ENV",
-    "PREDICTFUN_PROVIDER_ID",
+    "BINANCE",
+    "BINANCE_API_KEY_ENV",
+    "BINANCE_API_SECRET_ENV",
+    "BINANCE_ENV",
+    "BINANCE_PROVIDER_ID",
     "PREDMARKET_DEGRADED",
     "PREDMARKET_TOOL_ID",
     "PREDMARKET_TOOL_VERSION",
@@ -1018,7 +1016,7 @@ __all__ = [
     "KalshiPublicCollector",
     "MockPredMarketCollector",
     "PolymarketPublicCollector",
-    "PredictFunCollector",
+    "BinancePredictionCollector",
     "PredMarket",
     "PredMarketCollector",
     "PredMarketSnapshot",
