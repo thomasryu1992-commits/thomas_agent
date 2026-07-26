@@ -28,7 +28,8 @@ from pathlib import Path
 from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.crypto import live_execution, live_promotion
+from runtime.mvp_runtime.audit import AuditError
+from runtime.mvp_runtime.crypto import live_execution, live_governance, live_promotion
 from runtime.mvp_runtime.crypto.account import read_account
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_ENV,
@@ -42,6 +43,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
 from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
 from runtime.mvp_runtime.errors import MvpRuntimeError
+from runtime.mvp_runtime.store import LedgerStore
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -132,6 +134,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"(the canary phrase env is {CANARY_CONFIRMATION_ENV})\n"
             )
             return EXIT_BLOCKED
+
+        # 5b. The governance record, BEFORE the order. `p5_policy_gate` requires
+        #     `post_action_report_and_audit` for FINANCIAL_APPROVED_TRADING_USE, and until this
+        #     landed a real order left nothing on the hash chain. Preparing it first means a
+        #     governance failure (no active Core, an authority conflict) costs nothing — it
+        #     refuses before any money moves. It grants nothing; the guard above is what permits.
+        governance = live_governance.prepare_live_order_governance(
+            intent, purpose=live_governance.PURPOSE_CANARY, now=now, repo_root=root,
+        )
+
         # 6. Send exactly one order, then learn the truth from the venue.
         result = live_execution.submit_and_reconcile(
             intent, adapter=adapter, guard_verdict=verdict, now=now,
@@ -155,12 +167,26 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             # The order is already at the venue; say so rather than implying nothing happened.
             registry_error = exc.reason_code
+
+        # 8. The report half of EXECUTE_AND_REPORT: one audit event on the durable chain,
+        #    carrying what the VENUE said. Best-effort by the same reasoning as the registry
+        #    write above — the money has already moved, so a failure here is reported, never
+        #    swallowed and never allowed to imply the order did not happen.
+        audit_error = None
+        try:
+            event, _sha = live_governance.report_live_order(
+                governance, result, guard_verdict=verdict, now=now, repo_root=root,
+            )
+            LedgerStore(root).append_audit_events([event])
+        except (MvpRuntimeError, AuditError) as exc:
+            audit_error = getattr(exc, "reason_code", type(exc).__name__)
     except MvpRuntimeError as exc:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return EXIT_BLOCKED
 
     payload = {"guard": verdict, "result": result, "canary_record": record,
-               "registry_error": registry_error}
+               "registry_error": registry_error, "audit_error": audit_error,
+               "permission_decision_id": governance["permission_decision"]["permission_decision_id"]}
     if args.json:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=1, default=str) + "\n")
     else:
@@ -175,6 +201,11 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(f"  MISMATCH  : {'; '.join(result['mismatches'])}\n")
         if registry_error:
             sys.stdout.write(f"  REGISTRY  : NOT recorded ({registry_error}) — the order IS placed\n")
+        sys.stdout.write(
+            f"  permdec   : {governance['permission_decision']['permission_decision_id']} (P5)\n"
+        )
+        if audit_error:
+            sys.stdout.write(f"  AUDIT     : NOT recorded ({audit_error}) — the order IS placed\n")
         sys.stdout.write(
             "\nClose this canary position on the venue yourself — a canary only opens.\n"
         )

@@ -77,6 +77,7 @@ EXIT_CLOSED = "EXIT_CLOSED"                    # closed, brackets cancelled, out
 
 # Reason codes.
 NOT_READY = "LIVE_ENTRY_NOT_READY"
+NO_GOVERNANCE = "LIVE_ORDER_NO_GOVERNANCE_RECORD"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
 BRACKET_FAILED = "LIVE_BRACKET_FAILED"
 NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
@@ -238,6 +239,7 @@ def execute_live_entry(
     adapter: Any,
     position_store: Any,
     counter: Any = None,
+    governance: Mapping[str, Any] | None = None,
     gate_open: bool,
     limits: Any,
     now: str,
@@ -249,6 +251,13 @@ def execute_live_entry(
     unless that decision is ``ready`` **and** carries an approved guard verdict — the same
     belt-and-suspenders ``submit_and_reconcile`` applies, restated here because this is the
     function that turns a plan into money.
+
+    ``governance`` is ``live_governance.prepare_live_order_governance``'s record — the P5
+    PermissionDecision this order is placed under. It is **required** to send: the policy's
+    ``p5_policy_gate`` lists ``post_action_report_and_audit`` among its requirements, and an
+    order with no governance record cannot satisfy it. Passing ``None`` therefore refuses rather
+    than sending an unaudited order. (It is a keyword with a default only so the refusal is a
+    reported ``ENTRY_REFUSED`` rather than a TypeError at the call site.)
 
     Returns a result record. ``position`` is non-None only on ``ENTRY_OPENED``.
     """
@@ -268,6 +277,14 @@ def execute_live_entry(
     if not (decision.get("ready") is True and isinstance(guard, Mapping) and guard.get("approved") is True):
         result["reason_codes"] = [NOT_READY]
         return result
+
+    # No governance record, no order. The P5 policy gate requires a post-action report, which is
+    # impossible without the decision the order is placed under — so this refuses here rather
+    # than sending something that could not be audited afterwards.
+    if not (isinstance(governance, Mapping) and governance.get("permission_decision")):
+        result["reason_codes"] = [NO_GOVERNANCE]
+        return result
+    result["permission_decision_id"] = governance["permission_decision"].get("permission_decision_id")
 
     intent = decision["intent"]
     bracket = decision["bracket"]
@@ -682,6 +699,7 @@ __all__ = [
     "NAKED_CLOSE_FAILED",
     "NAKED_POSITION_CLOSED",
     "NOT_READY",
+    "NO_GOVERNANCE",
     "OUTCOME_PERSIST_FAILED",
     "POSITION_PERSIST_FAILED",
     "build_bracket_intent",
