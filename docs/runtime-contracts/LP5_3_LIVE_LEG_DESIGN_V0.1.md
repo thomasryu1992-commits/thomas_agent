@@ -1,7 +1,9 @@
 # LP5.3 — The Executing Leg + Cycle Routing: Design Record v0.1
 
-**Status:** Design record for the **remaining half** of LP5.3. **No code; nothing here enables
-trading.** This is the proposal to review before the executing leg is written.
+**Status:** **The executing leg is built** (`crypto/live_leg.py`, Thomas 2026-07-25). The **cycle
+routing is not**, and remains the line that makes an autonomous live order reachable. Nothing
+here enables trading: the leg takes an injected adapter, and no autonomous entry point may
+import it (the tripwire below now covers `live_leg`).
 **Owner:** Thomas
 **Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule.
 
@@ -118,13 +120,64 @@ Building the executing leg before (1) and (2) means the autonomous path becomes 
 anyone has evidence it should be. The recommendation in this record is therefore explicit:
 **do not build LP5.3's remainder until this runtime's own paper record justifies it.**
 
-## Proposed sequencing, when it is built
+## What implementation found that the design did not (2026-07-25)
 
-1. `execute_live_entry` + `execute_live_exit` in a new `crypto/live_leg.py`, with the adapter
-   injected — so every branch (not RECONCILED, bracket failure → naked close, cancel-on-close,
-   realized PnL from fills) is testable with a fake adapter and **zero network**.
-2. Extend the guard scope to include live outcomes (above).
-3. Only then the cycle routing, which is the line that removes
-   `test_no_autonomous_entry_point_reaches_the_live_order_path`. That test's removal should be
-   its own reviewable commit, because it is the moment the safety posture changes.
-4. First supervised runs with the smallest configured caps, watched live.
+Both were discovered by a test failing against the design as written, and both changed the code
+rather than the test.
+
+**1. "Not RECONCILED" is not the same as "nothing happened", and the gap is the dangerous case.**
+The design says an unconfirmed entry should *record, open nothing, stop*. But LP4 reconciles a
+**partial fill as MISMATCH** (it compares `executedQty` against the intent), and a fill whose
+price will not parse fails too — while in both the venue reports real filled quantity. That is an
+open, **unprotected** position, and stopping there would leave it that way, which is precisely
+what rule 2 forbids. So the leg now closes any exposure **the venue actually reported**, even
+when the entry as a whole is refused.
+
+The boundary is drawn at reported-vs-guessed: an `UNRECONCILABLE` result (no venue answer at all)
+reports nothing, so nothing is assumed and nothing is sent. Firing a close against an unknown
+account state would be acting on a guess; the next cycle's reconciliation sees the drift and
+refuses new entries on that symbol, which is the honest handling of "we do not know".
+
+**2. A protective order rests as `NEW`; `submit_and_reconcile` cannot confirm one.** That
+function reconciles against `status == FILLED`, which is right for an entry or a close and wrong
+for a bracket — reusing it would report every healthy stop as a MISMATCH. Bracket placement
+therefore has its own confirmation (`place_bracket_leg`), and the inert `DryRunOrderAdapter` was
+corrected to echo `NEW` for conditional types, because a dry run that "confirmed" a protective
+order in a state the venue never reports is exactly the confidence a dry run must not manufacture.
+
+**A related honesty note:** the dry-run adapter reports no fill *price*, so a dry run cannot book
+a position at all. That was left as-is rather than "fixed" by inventing a price — a fabricated
+entry price entering the book is the same class of mistake as a mock inventing a lot step.
+
+## Known limitation carried into the implementation
+
+Realized P&L is computed from the venue's actual fill figures and is therefore **gross of fees
+and funding**. The fee-inclusive figure is the account snapshot's `realized_windows`, but that is
+per-window rather than per-position, so attributing it to one trade is unsound while more than
+one position can be open. Every outcome records `fees_included: false`, `pnl_source`, and both
+legs' quote amounts so a later reconciliation can correct it. **The direction of the error is
+named because it matters:** gross P&L understates a loss by roughly the taker fee on both legs,
+which moves the daily-loss breaker the *permissive* way.
+
+## Sequencing — where it stands
+
+1. [x] `execute_live_entry` + `execute_live_exit` in `crypto/live_leg.py`, adapter **injected**,
+       so every branch (not RECONCILED, partial-fill exposure, bracket failure → naked close,
+       cancel-on-close, realized P&L from fills, ledger-before-book-clear) is exercised with a
+       fake adapter and **zero network**. Done 2026-07-25.
+2. [x] The guard scope extended to live outcomes. Live results are this runtime's own trading and
+       the only kind that costs real money, and they live in their own store — so the paper
+       provenance split never saw them and the breaker would have ignored every live loss. Routed
+       through LP5.4's bridge rather than concatenated raw, because `guards._closed_rows` reads a
+       missing `result_R` as `0.0` (a *breakeven*), so an R-less live loss would have **shortened**
+       a loss streak. An unreadable or tampered live history fails the guard closed, exactly like
+       an unreadable paper one.
+3. [ ] **The cycle routing.** Still unbuilt, still the moment the safety posture changes. The
+       tripwire now covers `live_leg` as well, so wiring an autonomous entry point to the
+       executing leg fails a test rather than happening quietly — and relaxing that test should be
+       its own reviewable commit.
+4. [ ] First supervised runs with the smallest configured caps, watched live.
+
+The preconditions above (this runtime's own paper record, ≥ 3 clean canaries, the operator
+grants) are unchanged by steps 1 and 2: an executing leg with no autonomous caller places no
+orders. They bind step 3.
