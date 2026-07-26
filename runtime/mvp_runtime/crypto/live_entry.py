@@ -13,7 +13,8 @@ here be tested exhaustively with no venue, no grant, and no key.
 Order of checks, and why:
 
 1. **route** — is there an entry candidate at all;
-2. **verdict** — did the C4 guards allow a new position this cycle;
+2. **verdict** — did the C4 guards allow a new position this cycle (**required**: an absent or
+   malformed verdict refuses, it does not skip the check);
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
@@ -142,7 +143,12 @@ def plan_live_entry(
     submitted_today: int,
     equity_usdt: float,
     now: str,
-    verdict: Mapping[str, Any] | None = None,
+    # No default. It used to be `= None`, skipped when absent — which silently opened the C4
+    # door: a caller that forgot the verdict got an entry the data-health and risk guards never
+    # saw. That is the same fail-open class as `current_open_notional_usdt = 0.0`, which LP5.1c
+    # closed, and it was worse in one way: the test helper omitted it too, so the untested
+    # branch was the *guarded* one. A missing or malformed verdict now refuses.
+    verdict: Mapping[str, Any],
     filters_reason: str | None = None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
 ) -> dict[str, Any]:
@@ -165,9 +171,13 @@ def plan_live_entry(
         return _decision(STATUS_NO_ROUTE, [NO_PLAN], symbol=symbol, now=now)
 
     # 2-4. The cheap doors, accumulated so a refusal names every closed one at once.
-    if verdict is not None and not bool(verdict.get("allow_new_position")):
+    if not isinstance(verdict, Mapping) or not bool(verdict.get("allow_new_position")):
+        # A malformed verdict is refused rather than ignored: "I could not read the guards" and
+        # "the guards said no" have the same correct consequence here.
         reasons.append(VERDICT_REFUSED)
-        detail["verdict_problems"] = list(verdict.get("problems") or [])
+        detail["verdict_problems"] = (
+            list(verdict.get("problems") or []) if isinstance(verdict, Mapping) else ["verdict missing or malformed"]
+        )
 
     if not entry_allowed(reconciliation, symbol):
         reasons.append(RECONCILE_REFUSED)

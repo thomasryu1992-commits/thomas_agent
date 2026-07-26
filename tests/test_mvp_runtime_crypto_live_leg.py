@@ -160,12 +160,21 @@ class FakeCounter:
         return self.count
 
 
+GOVERNANCE = {
+    "purpose": "autonomous",
+    "order_fingerprint": "sha256:abc",
+    "bound_task": {"identity": {"task_id": "T1"}, "context": {"core_context_binding_id": "CCB1"}},
+    "permission_decision": {"permission_decision_id": "permdec_1"},
+}
+
+
 def _entry(**kw):
     return ll.execute_live_entry(
         kw.pop("decision", DECISION),
         adapter=kw.pop("adapter", FakeAdapter()),
         position_store=kw.pop("position_store", FakeStore()),
         counter=kw.pop("counter", None),
+        governance=kw.pop("governance", GOVERNANCE),
         gate_open=kw.pop("gate_open", True),
         limits=kw.pop("limits", LIMITS),
         now=kw.pop("now", NOW),
@@ -293,6 +302,23 @@ def test_a_decision_that_is_not_ready_sends_nothing():
     assert result["status"] == ll.ENTRY_REFUSED
     assert result["reason_codes"] == [ll.NOT_READY]
     assert adapter.submitted == []
+
+
+@pytest.mark.parametrize("governance", [None, {}, {"permission_decision": None}, "nope"])
+def test_no_governance_record_means_no_order(governance):
+    """`p5_policy_gate` requires a post-action report, which is impossible without the P5
+    decision the order was placed under. An order that could not be audited afterwards is not
+    sent at all."""
+    adapter = FakeAdapter()
+    result = _entry(adapter=adapter, governance=governance)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [ll.NO_GOVERNANCE]
+    assert adapter.submitted == []
+
+
+def test_the_permission_decision_id_rides_into_the_result():
+    """So the audit event and the order can be tied together afterwards."""
+    assert _entry()["permission_decision_id"] == "permdec_1"
 
 
 def test_a_ready_flag_cannot_override_a_refusing_guard():

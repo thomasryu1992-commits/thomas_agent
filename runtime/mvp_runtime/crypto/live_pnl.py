@@ -52,6 +52,12 @@ STATE_REL = ".runtime_governance_state/crypto"
 LIVE_OUTCOMES_FILENAME = "live_outcomes.jsonl"
 LIVE_PROVENANCE = "mvp_live_kernel"
 
+# How an outcome's `result_R` was measured. Paper: intended fills, no costs. Live: actual fills,
+# slippage included (fees still excluded — see `live_leg`). Recorded on every row so a consumer
+# pooling both populations can see it is doing so.
+R_BASIS_INTENT = "intent"
+R_BASIS_FILLED = "filled"
+
 LIVE_HISTORY_UNREADABLE = "LIVE_HISTORY_UNREADABLE"
 LIVE_HISTORY_TAMPERED = "LIVE_HISTORY_TAMPERED"
 LIVE_HISTORY_DUPLICATE = "LIVE_HISTORY_DUPLICATE"
@@ -138,6 +144,16 @@ def build_live_outcome_record(
         "outcome_closed": True,
         "stage": "live",
         "provenance": LIVE_PROVENANCE,
+        # What this R is measured against. Paper R is computed on INTENDED fills and is
+        # deliberately cost-free (`cost.py`: costs are confined to the factory backtest, and the
+        # live paper kernel never imports the cost model). Live R is computed on ACTUAL fills, so
+        # slippage is already inside it. The two are therefore not the same statistic, and the
+        # consumers that pool them — the risk guard, the lifecycle demoter, the C6 report — can
+        # only be read honestly if the difference is visible in the row rather than known by
+        # whoever remembers it. Live R is the more pessimistic of the two, so the breaker trips
+        # sooner and demotion comes faster: the distortion runs in the conservative direction,
+        # which is why this is recorded rather than corrected.
+        "r_basis": R_BASIS_FILLED,
     }
     body["outcome_id"] = integrity.short_id(
         "live_out", {"position_id": position_id, "closed_at": now, "symbol": symbol}

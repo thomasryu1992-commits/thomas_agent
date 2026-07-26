@@ -69,9 +69,17 @@ def _position(symbol="BTCUSDT", side="LONG", quantity=0.001, notional=60.0):
     )
 
 
+ALLOWING_VERDICT = {"allow_new_position": True, "problems": []}
+
+
 def _plan(**kw):
-    """Every door open by default; each test closes exactly one."""
+    """Every door open by default; each test closes exactly one.
+
+    The verdict is supplied explicitly, like every other fact. It used to be omitted, which made
+    the *unguarded* path the tested happy path — the review finding that closed this fail-open.
+    """
     args = dict(
+        verdict=kw.pop("verdict", ALLOWING_VERDICT),
         plan=kw.pop("plan", PLAN),
         symbol=kw.pop("symbol", "BTCUSDT"),
         reconciliation=kw.pop("reconciliation", reconcile_positions([], FLAT, now=NOW)),
@@ -152,6 +160,26 @@ def test_a_refusing_verdict_stops_the_entry():
 
 def test_an_allowing_verdict_passes_through():
     assert _plan(verdict={"allow_new_position": True, "problems": []})["status"] == le.STATUS_READY
+
+
+@pytest.mark.parametrize("verdict", [None, {}, "ALLOW", 1, {"problems": []}])
+def test_an_absent_or_malformed_verdict_refuses_rather_than_skipping_the_check(verdict):
+    """The fail-open this closed. `verdict` used to default to None and be skipped when absent,
+    so a caller that forgot it got an entry the C4 guards never saw — the same class as the
+    `current_open_notional_usdt = 0.0` default LP5.1c closed. 'I could not read the guards' and
+    'the guards said no' have the same correct consequence."""
+    decision = _plan(verdict=verdict)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.VERDICT_REFUSED in decision["reasons"]
+
+
+def test_the_verdict_has_no_default():
+    """Structural, not merely tested: omitting it is a TypeError, so no future caller can
+    reintroduce the skip by forgetting the argument."""
+    import inspect
+
+    parameter = inspect.signature(le.plan_live_entry).parameters["verdict"]
+    assert parameter.default is inspect.Parameter.empty
 
 
 def test_a_drifted_book_refuses_the_entry():

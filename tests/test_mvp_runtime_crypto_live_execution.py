@@ -470,3 +470,30 @@ def test_an_unreconciled_order_reports_an_unknown_fill_not_a_free_trade():
         guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == lx.UNRECONCILABLE
     assert res["fill"] == {"avg_price": None, "executed_qty": None, "cum_quote": None}
+
+
+def test_the_readiness_board_constant_agrees_with_the_import_graph():
+    """B1: the readiness board exists so an answer cannot drift from what the code enforces, and
+    its prose still claimed "LP5 is unbuilt" for a day after LP5 shipped. Status now lives in a
+    computed row backed by this constant — and the constant is pinned to the same import graph
+    the tripwire above checks, so the two cannot disagree."""
+    from pathlib import Path
+
+    from runtime.mvp_runtime.crypto.live_readiness import AUTONOMOUS_ROUTING_WIRED
+    from runtime.mvp_runtime.paths import repo_root
+
+    entry_points = [
+        "runtime/mvp_runtime/crypto/cycle.py",
+        "runtime/mvp_runtime/scheduler.py",
+        "runtime/mvp_runtime/pipeline.py",
+        "runtime/mvp_runtime/operator.py",
+    ]
+    wired = any(
+        "live_leg" in (Path(repo_root()) / rel).read_text(encoding="utf-8")
+        for rel in entry_points
+        if (Path(repo_root()) / rel).is_file()
+    )
+    assert AUTONOMOUS_ROUTING_WIRED == wired, (
+        "live_readiness.AUTONOMOUS_ROUTING_WIRED disagrees with the real import graph; "
+        "the board would report a build state that is not true"
+    )
