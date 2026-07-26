@@ -360,3 +360,70 @@ def test_confirm_then_list_round_trips_through_the_cli(cli_root, capsys):
 
     stored = pairs.read_groups(cli_root)
     assert len(stored) == 1 and stored[0]["authorizes_trading"] is False
+
+
+# --- the third venue, and the one piece of evidence that is not a heuristic ------
+
+def _predictfun(title="Will the Fed cut rates in December?", **kw):
+    return _market(
+        "predictfun", kw.pop("market_id", "12345"), title,
+        **{k: v for k, v in kw.items() if k != "group_id"}
+    )
+
+
+def test_a_venue_asserted_cross_reference_outranks_the_wording_gate():
+    """Predict.fun publishes the Polymarket condition it mirrors. That is an assertion by a
+    party that knows, not a similarity score — so it carries a pairing whose wording the
+    rules would have refused."""
+    from dataclasses import replace
+
+    poly = replace(_poly("Fed decision: cut?"), group_id="0xcondition")
+    pf = replace(_predictfun("Will the central bank lower rates at the December meeting?"),
+                 group_id="0xcondition")
+    judged = matching.judge_pair(pf, poly)
+    assert matching.venue_cross_reference(pf, poly) is True
+    assert judged.title_similarity < matching.MIN_TITLE_SIMILARITY
+    assert judged.venue_asserted is True
+    assert judged.is_candidate is True and judged.refusals == ()
+
+
+def test_a_cross_reference_does_not_outrank_a_numeric_conflict():
+    """If the venue points at a market naming different numbers, one of the two venues
+    cross-referenced the wrong thing. That is a finding, not a licence."""
+    from dataclasses import replace
+
+    poly = replace(_poly("Will BTC close above 90k on Dec 31?"), group_id="0xcondition")
+    pf = replace(_predictfun("Will BTC close above 100k on Dec 31?"), group_id="0xcondition")
+    judged = matching.judge_pair(pf, poly)
+    assert judged.venue_asserted is True
+    assert matching.NUMERIC_MISMATCH in judged.refusals
+    assert judged.is_candidate is False
+
+
+def test_a_missing_or_mismatched_reference_is_simply_no_evidence():
+    from dataclasses import replace
+
+    assert matching.venue_cross_reference(_predictfun(), _poly()) is False
+    left = replace(_predictfun(), group_id="0xaaa")
+    right = replace(_poly(), group_id="0xbbb")
+    assert matching.venue_cross_reference(left, right) is False
+    # An empty string on either side is absence, not a match of two blanks.
+    assert matching.venue_cross_reference(replace(left, group_id=""), replace(right, group_id="")) is False
+
+
+def test_a_group_may_hold_the_third_venue(tmp_path):
+    """The whole point of the group generalisation: adding Predict.fun is a leg, and the
+    pairings it creates come for free."""
+    group = pairs.build_event_group(
+        legs=[
+            {"venue": KALSHI, "market_id": "K1"},
+            {"venue": POLYMARKET, "market_id": "P1"},
+            {"venue": "predictfun", "market_id": "12345"},
+        ],
+        criteria_note="all three settle on the official FOMC statement for December",
+        confirmed_by="thomas",
+        now=NOW,
+    )
+    stored = pairs.confirm_group(group, root=tmp_path)
+    assert stored["venues"] == [KALSHI, POLYMARKET, "predictfun"]
+    assert len(pairs.pairings_of(stored)) == 3

@@ -42,6 +42,7 @@ var alone fails closed.
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -63,19 +64,33 @@ PREDMARKET_TOOL_CLASS = "read"
 
 KALSHI = "kalshi"
 POLYMARKET = "polymarket"
-VENUES = (KALSHI, POLYMARKET)
+# Named for what it is, not for its storefront. Binance Wallet surfaces these markets, but the
+# venue is Predict.fun on BNB Smart Chain: the counterparty, the settlement and — the part that
+# decides pairing — the **resolution rules** are Predict.fun's. Calling it "binance" would put
+# the wrong name in front of the operator at exactly the moment they compare those rules.
+PREDICTFUN = "predictfun"
+VENUES = (KALSHI, POLYMARKET, PREDICTFUN)
 
-# One grant per venue, per the roadmap: the two are independent capabilities, not a
-# failover chain, so revoking one must not touch the other.
+# One grant per venue, per the roadmap: they are independent capabilities, not a failover
+# chain, so revoking one must not touch the others.
 KALSHI_PROVIDER_ID = "kalshi_market_data"
 POLYMARKET_PROVIDER_ID = "polymarket_market_data"
+PREDICTFUN_PROVIDER_ID = "predictfun_market_data"
 KALSHI_ENV = "MVP_KALSHI_MARKET_DATA"
 POLYMARKET_ENV = "MVP_POLYMARKET_MARKET_DATA"
+PREDICTFUN_ENV = "MVP_PREDICTFUN_MARKET_DATA"
+# The one venue of the three that is NOT keyless. Metadata only ever: the name is reported,
+# the value is never logged, audited or recorded (the standing secrets rule).
+PREDICTFUN_API_KEY_ENV = "MVP_PREDICTFUN_API_KEY"
 
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
 # A read that failed is recorded, never silent — the crypto MARKET_DATA_DEGRADED posture.
 PREDMARKET_DEGRADED = "PREDMARKET_DATA_DEGRADED"
+# Deliberately NOT the same code as a degrade. "Nobody configured a key" and "the venue is
+# down" are different facts about a scan, and a report that conflated them would show an
+# outage where there was an unfinished setup step.
+API_KEY_MISSING = "PREDMARKET_API_KEY_MISSING"
 
 # Bounds. A scan asks for markets, not for the whole venue: the per-scan cap is a scheduler
 # decision (roadmap decision #1, still open), and these are the hard ceilings under it.
@@ -385,24 +400,35 @@ def select_pred_market_collector(
             now=now,
             root=root,
         )
+    if venue == POLYMARKET:
+        return safety_gate.select_gated(
+            env_var=POLYMARKET_ENV,
+            opt_in_value=POLYMARKET_PROVIDER_ID,
+            flags=_NETWORK_FLAGS,
+            provider_id=POLYMARKET_PROVIDER_ID,
+            default_factory=lambda: MockPredMarketCollector(POLYMARKET),
+            gated_factory=lambda authorization: PolymarketPublicCollector(authorization=authorization),
+            now=now,
+            root=root,
+        )
     return safety_gate.select_gated(
-        env_var=POLYMARKET_ENV,
-        opt_in_value=POLYMARKET_PROVIDER_ID,
+        env_var=PREDICTFUN_ENV,
+        opt_in_value=PREDICTFUN_PROVIDER_ID,
         flags=_NETWORK_FLAGS,
-        provider_id=POLYMARKET_PROVIDER_ID,
-        default_factory=lambda: MockPredMarketCollector(POLYMARKET),
-        gated_factory=lambda authorization: PolymarketPublicCollector(authorization=authorization),
+        provider_id=PREDICTFUN_PROVIDER_ID,
+        default_factory=lambda: MockPredMarketCollector(PREDICTFUN),
+        gated_factory=lambda authorization: PredictFunCollector(authorization=authorization),
         now=now,
         root=root,
     )
 
 
-def _get_json(url: str, *, timeout_seconds: int) -> Any:
+def _get_json(url: str, *, timeout_seconds: int, headers: Mapping[str, str] | None = None) -> Any:
     """One public GET, parsed. Transport errors are deliberately generic — the URL never
     reaches a message, log or record (the R3 posture; here it also keeps venue query
     parameters out of the audit trail)."""
     request = urllib.request.Request(
-        url, method="GET", headers={"Accept": "application/json"}
+        url, method="GET", headers={"Accept": "application/json", **(dict(headers or {}))}
     )
     try:
         with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
@@ -669,7 +695,129 @@ def parse_clob_book(payload: Any) -> VenueQuote:
     )
 
 
+# --- Predict.fun (the venue behind Binance Wallet's prediction markets) ----------
+
+class PredictFunCollector:
+    """Predict.fun markets over its public REST API. **Lists markets; quotes none.**
+
+    Verified against ``dev.predict.fun`` on 2026-07-26, and two findings shape this class.
+
+    **It is not keyless.** Unlike Kalshi and Polymarket, every read wants an ``x-api-key``
+    header — on mainnet *and* testnet — obtained by opening a ticket on the venue's Discord.
+    So PM1's "no account, no funds" property does not extend to this venue, and a missing key
+    is reported as ``API_KEY_MISSING`` rather than a degrade: an unfinished setup step is not
+    an outage, and a report that showed one as the other would send someone to debug a venue
+    that was never asked anything.
+
+    **No order-book endpoint is documented in the published API spec**, only per-outcome
+    ``prices``. Those are a derived figure, exactly like Polymarket's Gamma ``outcomePrices``,
+    and this package already refuses to quote from those — a fee-adjusted comparison against a
+    non-executable price is how a paper edge becomes an imaginary one. So markets come back
+    **unquoted** until the book endpoint is verified, and the venue contributes identity and
+    cross-references rather than prices.
+
+    That is still worth having now, because of the second finding: a Predict.fun market
+    carries ``polymarketConditionIds`` — the venue naming the Polymarket market it mirrors.
+    That is pairing evidence *asserted by a venue*, which no title comparison can match.
+    """
+
+    venue = PREDICTFUN
+    tool_id = PREDMARKET_TOOL_ID
+    tool_version = f"{PREDMARKET_TOOL_VERSION}-predictfun"
+    provider_id = PREDICTFUN_PROVIDER_ID
+    network_egress = True
+    source = "predictfun_public"
+
+    BASE = "https://api.predict.fun/v1"
+    PAGE_LIMIT = 100
+
+    def __init__(self, *, authorization: Authorization | None = None, api_key: str | None = None):
+        self._authorization = authorization
+        # Read once at construction so the value never has to travel further. Never stored in
+        # a record, never printed, never part of an error message.
+        self._api_key = (api_key if api_key is not None else os.environ.get(PREDICTFUN_API_KEY_ENV, "")).strip()
+
+    def api_key_present(self) -> bool:
+        return bool(self._api_key)
+
+    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
+        # Chokepoint: re-verify at the moment of egress (defense in depth).
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        if not self._api_key:
+            # Fail closed, and say which fact is missing. The grant being open does not conjure
+            # a key, and pretending the venue answered nothing would read as an outage.
+            raise ToolError(
+                API_KEY_MISSING,
+                f"{PREDICTFUN_API_KEY_ENV} is not set; Predict.fun reads are key-authenticated "
+                "on mainnet and testnet alike (request one via the venue's Discord)",
+            )
+        started = time.monotonic()
+        params = {"first": min(int(limit), self.PAGE_LIMIT), "status": "OPEN"}
+        payload = _get_json(
+            f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
+            timeout_seconds=timeout_seconds,
+            headers={"x-api-key": self._api_key},
+        )
+        return PredMarketSnapshot(
+            venue=self.venue,
+            markets=parse_predictfun_markets(payload)[:limit],
+            source=self.source,
+            is_synthetic=False,
+            collector_version=self.tool_version,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+
+
+def parse_predictfun_markets(payload: Any) -> list[PredMarket]:
+    """Predict.fun's ``/v1/markets`` payload as normalized, **unquoted** markets. Pure.
+
+    Unquoted on purpose — see :class:`PredictFunCollector`. What this does carry is the
+    venue's own ``polymarketConditionIds``: a cross-reference the matcher can trust far more
+    than any similarity score, because the venue is asserting the correspondence rather than
+    a heuristic inferring it.
+
+    ``tradingStatus`` rather than ``status`` decides tradability: a market can be REGISTERED
+    while its trading is CLOSED, and pairing a market nobody can trade is a pairing that can
+    never be acted on.
+    """
+    rows = payload if isinstance(payload, list) else None
+    if rows is None and isinstance(payload, Mapping):
+        for key in ("data", "markets", "items"):
+            if isinstance(payload.get(key), list):
+                rows = payload[key]
+                break
+    if rows is None:
+        raise ToolError("MALFORMED_RESULT", "predict.fun markets payload is not a list")
+
+    markets: list[PredMarket] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        market_id = row.get("id")
+        if market_id is None or str(market_id).strip() == "":
+            continue
+        cross = [c for c in _maybe_json_list(row.get("polymarketConditionIds")) if isinstance(c, str) and c]
+        markets.append(PredMarket(
+            venue=PREDICTFUN,
+            market_id=str(market_id),
+            # The venue's own cross-reference rides in `group_id` — the field the matcher
+            # already reads for "what does this venue think this market belongs to".
+            group_id=cross[0] if cross else None,
+            title=str(row.get("question") or row.get("title") or market_id),
+            category=row.get("categorySlug") if isinstance(row.get("categorySlug"), str) else None,
+            close_time=row.get("endDate") if isinstance(row.get("endDate"), str) else None,
+            status=row.get("tradingStatus") if isinstance(row.get("tradingStatus"), str) else None,
+        ))
+    return markets
+
+
 __all__ = [
+    "API_KEY_MISSING",
     "DEFAULT_BOOK_LIMIT",
     "DEFAULT_MARKET_LIMIT",
     "KALSHI",
@@ -680,6 +828,10 @@ __all__ = [
     "POLYMARKET",
     "POLYMARKET_ENV",
     "POLYMARKET_PROVIDER_ID",
+    "PREDICTFUN",
+    "PREDICTFUN_API_KEY_ENV",
+    "PREDICTFUN_ENV",
+    "PREDICTFUN_PROVIDER_ID",
     "PREDMARKET_DEGRADED",
     "PREDMARKET_TOOL_ID",
     "PREDMARKET_TOOL_VERSION",
@@ -687,6 +839,7 @@ __all__ = [
     "KalshiPublicCollector",
     "MockPredMarketCollector",
     "PolymarketPublicCollector",
+    "PredictFunCollector",
     "PredMarket",
     "PredMarketCollector",
     "PredMarketSnapshot",
@@ -696,6 +849,7 @@ __all__ = [
     "parse_clob_book",
     "parse_gamma_markets",
     "parse_kalshi_markets",
+    "parse_predictfun_markets",
     "require_venue",
     "select_pred_market_collector",
 ]

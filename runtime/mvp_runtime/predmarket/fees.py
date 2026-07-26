@@ -115,8 +115,15 @@ def polymarket_taker_rate(category: Any) -> float:
 
 # One row per venue, so a third venue is a data addition rather than another branch. Every
 # row is `rate x contracts x P x (1-P)` rounded up; venues differ only in the rate (flat or
-# per category) and the rounding unit. `require_venue` fails closed on anything not here, so
-# a venue whose fees nobody looked up cannot be quoted a zero cost by accident.
+# per category) and the rounding unit.
+#
+# **A venue with no row here has no knowable cost, and says so.** Predict.fun is deliberately
+# absent: its fee schedule has not been read from the venue, and the two available answers
+# would both be lies — a guessed rate fabricates a cost, and no rate at all reads as free. So
+# `taker_fee` returns None for it, every pairing involving it reports `net_edge: None`, and the
+# fix is a verified row rather than a plausible number. It costs nothing today because the
+# venue is unquoted anyway (no documented order book), and it self-corrects the moment someone
+# reads the schedule.
 _VENUE_FEES: dict[str, dict[str, Any]] = {
     KALSHI: {
         "rate_of": lambda _category: KALSHI_TAKER_RATE,
@@ -147,7 +154,9 @@ def taker_fee(
     if p is None or size is None or not (0.0 < p < 1.0) or size <= 0:
         return None
 
-    schedule = _VENUE_FEES[venue]
+    schedule = _VENUE_FEES.get(venue)
+    if schedule is None:
+        return None  # fees never read from this venue — see _VENUE_FEES
     rate = schedule["rate_of"](category)
     if rate <= 0.0:
         return 0.0
@@ -171,11 +180,15 @@ def round_trip_fee(
     for leg in legs:
         venue = require_venue((leg or {}).get("venue"))
         category = leg.get("category")
+        schedule = _VENUE_FEES.get(venue)
         fee = taker_fee(venue, price=leg.get("price"), contracts=contracts, category=category)
         priced.append({
             "venue": venue,
             "price": as_optional_float(leg.get("price")),
-            "taker_rate": _VENUE_FEES[venue]["rate_of"](category),
+            # None, not 0.0: "we have not read this venue's fee schedule" is a different fact
+            # from "this leg is free", and only the second one is ever good news.
+            "taker_rate": schedule["rate_of"](category) if schedule is not None else None,
+            "fee_schedule_verified": schedule is not None,
             "fee_usd": fee,
         })
         if fee is None or total is None:
@@ -200,6 +213,7 @@ def fee_summary() -> dict[str, Any]:
         "polymarket_taker_rates": dict(POLYMARKET_TAKER_RATES),
         "polymarket_default_taker_rate": POLYMARKET_DEFAULT_TAKER_RATE,
         "polymarket_fee_free_categories": sorted(POLYMARKET_FEE_FREE_CATEGORIES),
+        "venues_with_a_verified_schedule": sorted(_VENUE_FEES),
         "shape": "rate * contracts * P * (1 - P), rounded up",
         "taker_only": True,
     }

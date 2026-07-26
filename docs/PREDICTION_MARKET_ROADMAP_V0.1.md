@@ -45,6 +45,20 @@ Verified 2026-07-24 (web sources; re-verify at signup):
   until it is made.
 - **PM1 needs none of the above** — both venues expose public market data; observation
   requires no account and no funds. PM0 blocks PM3, not PM1/PM2.
+- **Predict.fun (the venue behind Binance Wallet's prediction markets) — added 2026-07-26.**
+  Binance surfaces these markets in its Wallet, but the venue is **Predict.fun on BNB Smart
+  Chain**: the counterparty, the settlement and the *resolution rules* are Predict.fun's, so
+  the package names it `predictfun` rather than `binance`. Two consequences, both verified
+  against `dev.predict.fun` on 2026-07-26:
+  - **It is not keyless.** Every read wants an `x-api-key`, on mainnet *and* testnet,
+    obtained by opening a ticket on the venue's Discord. **PM1's "no account needed" property
+    does not extend to this venue** — an API key is a new operator precondition, and the only
+    PM0 item that blocks PM1 rather than PM3.
+  - **No order-book endpoint is published**, only per-outcome `prices` — a derived figure like
+    Gamma's `outcomePrices`. Its markets are therefore carried **unquoted** until a book
+    endpoint is verified.
+  - Its fee schedule has not been read, so the runtime treats a Predict.fun leg as having **no
+    knowable cost** (`taker_fee` returns `None`) rather than guessing one.
 
 ## Relationship to the crypto pipeline
 
@@ -88,13 +102,20 @@ whether approval-gated trading (minutes of latency) can ever catch the opportuni
 whether PM3 is worth building at all.
 
 - **Venue adapters** (read-only): Kalshi public REST; Polymarket Gamma (markets) + CLOB
-  (books). Selection through `safety_gate.select_gated`; mock backends default; env alone
-  fails closed.
-- **Event-pair matching** — the hardest real engineering here. Deterministic candidate
-  generation (category + close-date + text similarity; optionally LLM-assisted under the
-  existing triage-style budgeted call), then **operator confirmation per pair**. A wrong
-  pair manufactures fake arbitrage signals forever, so confirmation is human by design.
-  Confirmed pairs live in `.runtime_governance_state/predmarket/pairs.jsonl`, audited.
+  (books); Predict.fun `/v1/markets` (identity + cross-references only, key-authenticated).
+  Selection through `safety_gate.select_gated`; mock backends default; env alone fails closed.
+- **Event matching** — the hardest real engineering here. Deterministic candidate generation
+  (category + close-date + text similarity + a numeric gate), then **operator confirmation per
+  event**. A wrong pairing manufactures fake arbitrage signals forever, so confirmation is
+  human by design. Confirmed **event groups** (not pairs — one group per event, N legs, so a
+  new venue costs one review rather than one per existing leg) live in
+  `.runtime_governance_state/predmarket/events.jsonl`, self-hashed.
+  **Venue-asserted cross-references outrank the wording gate** (added 2026-07-26): Predict.fun
+  publishes the `polymarketConditionIds` it mirrors, which is an assertion by a party that
+  knows rather than a similarity score. It does **not** outrank the evidence gates — a
+  cross-reference pointing at a market naming different numbers means one venue referenced the
+  wrong thing, which is a finding — and it does not replace operator confirmation, because
+  "the same question" and "settles the same way" are different claims.
 - **Opportunity detector**, fee-adjusted only: Kalshi's fee is a price function
   (≈ $0.07 × P × (1−P) per contract, rounded up) — unadjusted observations would be
   systematically fake. ~~Polymarket side models gas + spread cost.~~

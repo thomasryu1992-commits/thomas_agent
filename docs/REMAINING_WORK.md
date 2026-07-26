@@ -96,6 +96,19 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         comparison can see — and one market belongs to at most one pair. Every judgement,
         including near-misses, records which gate failed and by how much: that record is what
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
+  - [x] Third venue **Predict.fun** (the venue behind Binance Wallet's prediction markets) —
+        done 2026-07-26. Listed-but-unquoted: no order-book endpoint is published, and its
+        per-outcome `prices` are a derived figure this package already refuses to quote from.
+        Carries the venue's own `polymarketConditionIds` cross-reference, which the matcher
+        treats as evidence outranking the wording gate. **New operator precondition:** unlike
+        Kalshi and Polymarket it is key-authenticated (`MVP_PREDICTFUN_API_KEY`, Discord
+        ticket), so PM1's "no account needed" property does not extend to it; a missing key is
+        reported as `PREDMARKET_API_KEY_MISSING`, never as an outage. Its fee schedule is
+        unread, so its legs report **no knowable cost** rather than a guessed one.
+  - [ ] Predict.fun order book + fee schedule (both need the API key; until then its legs are
+        listed, never priced).
+  - [ ] Observation store + `pm_scan` scheduler (watch 2 min over confirmed groups /
+        discovery 6 h over listings, per decision #1).
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,

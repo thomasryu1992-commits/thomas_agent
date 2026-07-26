@@ -15,12 +15,26 @@ API served integer cents, and a parser written from memory would have read nothi
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime.predmarket import market_data as md
 
 NOW = "2026-07-26T12:00:00Z"
+
+
+def _authorized():
+    """A hand-built authorization, so the egress check passes and the NEXT refusal is the
+    one under test."""
+    from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
+
+    return Authorization(
+        flags=(NETWORK_ACCESS,), provider_id=md.PREDICTFUN_PROVIDER_ID,
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    )
 
 
 # --- recorded payload shapes ----------------------------------------------------
@@ -300,3 +314,91 @@ def test_the_module_cannot_place_an_order():
     assert "nothing here trades" in source
     for forbidden in ("submit", "place_order", "sign", "private_key", "wallet"):
         assert not hasattr(md, forbidden), forbidden
+
+
+# --- the third venue: not keyless, and not quoted -------------------------------
+
+def _predictfun_row(**over):
+    row = {
+        "id": 12345,
+        "question": "Will the Fed cut rates in December?",
+        "title": "Fed December decision",
+        "categorySlug": "economics",
+        "tradingStatus": "OPEN",
+        "status": "REGISTERED",
+        "endDate": "2026-12-31T23:59:00Z",
+        "outcomes": [{"name": "Yes", "prices": ["0.56"]}, {"name": "No", "prices": ["0.44"]}],
+        "polymarketConditionIds": ["0xcondition"],
+    }
+    row.update(over)
+    return row
+
+
+def test_predictfun_markets_are_listed_but_never_quoted():
+    """No order-book endpoint is documented, only per-outcome `prices` — a derived figure
+    exactly like Gamma's outcomePrices, which this package already refuses to quote from. A
+    fee-adjusted comparison against a non-executable price is how a paper edge becomes an
+    imaginary one."""
+    market = md.parse_predictfun_markets({"data": [_predictfun_row()]})[0]
+    assert market.venue == md.PREDICTFUN
+    assert market.market_id == "12345"
+    assert market.title == "Will the Fed cut rates in December?"
+    assert market.category == "economics"
+    assert market.quote.quoted() is False
+
+
+def test_the_venues_own_cross_reference_is_carried():
+    """`polymarketConditionIds` is the venue naming the market it mirrors — pairing evidence
+    no title comparison can match. It rides in `group_id`, which the matcher already reads."""
+    market = md.parse_predictfun_markets([_predictfun_row()])[0]
+    assert market.group_id == "0xcondition"
+    # Stringified JSON is accepted too, since venues disagree about which shape they send.
+    as_string = md.parse_predictfun_markets([_predictfun_row(polymarketConditionIds='["0xother"]')])[0]
+    assert as_string.group_id == "0xother"
+    # No cross-reference is simply no evidence, not an error.
+    assert md.parse_predictfun_markets([_predictfun_row(polymarketConditionIds=None)])[0].group_id is None
+
+
+def test_trading_status_is_what_decides_tradability():
+    """A market can be REGISTERED while its trading is CLOSED. Pairing one nobody can trade
+    is a pairing that could never be acted on."""
+    market = md.parse_predictfun_markets([_predictfun_row(tradingStatus="CLOSED")])[0]
+    assert market.status == "CLOSED"
+
+
+def test_a_row_without_an_id_is_skipped():
+    rows = [_predictfun_row(), _predictfun_row(id=None), _predictfun_row(id="")]
+    assert [m.market_id for m in md.parse_predictfun_markets(rows)] == ["12345"]
+
+
+def test_a_missing_api_key_is_reported_as_its_own_fact(monkeypatch):
+    """The one venue of the three that is not keyless. "Nobody configured a key" and "the
+    venue is down" are different facts about a scan; conflating them shows an outage where
+    there was an unfinished setup step."""
+    monkeypatch.delenv(md.PREDICTFUN_API_KEY_ENV, raising=False)
+    collector = md.PredictFunCollector(authorization=_authorized())
+    assert collector.api_key_present() is False
+    with pytest.raises(ToolError) as exc:
+        collector.list_markets(limit=1, timeout_seconds=1)
+    assert exc.value.reason_code == md.API_KEY_MISSING
+    # The env var NAME is actionable; the value never appears anywhere.
+    assert md.PREDICTFUN_API_KEY_ENV in exc.value.reason
+
+
+def test_the_key_never_reaches_a_record_or_a_message(monkeypatch):
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "super-secret-key-value")
+    collector = md.PredictFunCollector(authorization=_authorized())
+    assert collector.api_key_present() is True
+    record = md.degraded_pred_market_record(collector, md.PREDICTFUN, md.PREDMARKET_DEGRADED, now=NOW)
+    assert "super-secret-key-value" not in json.dumps(record)
+
+
+def test_the_gate_still_comes_first_for_the_third_venue(monkeypatch, tmp_path):
+    """A key is not an authorization. Without the grant the collector reaches nothing, even
+    with a perfectly good key set."""
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "key")
+    with pytest.raises(SafetyGateBlocked):
+        md.PredictFunCollector().list_markets(limit=1, timeout_seconds=1)
+    monkeypatch.setenv(md.PREDICTFUN_ENV, md.PREDICTFUN_PROVIDER_ID)
+    with pytest.raises(SafetyGateBlocked):
+        md.select_pred_market_collector(md.PREDICTFUN, root=tmp_path)
