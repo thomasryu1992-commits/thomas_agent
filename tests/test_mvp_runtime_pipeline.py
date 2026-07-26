@@ -267,6 +267,61 @@ def test_m5a_first_pass_success_mints_no_correction(tmp_path):
 
 
 @requires_local_core
+def test_m5a_a_correction_that_was_not_stored_is_not_audited_as_captured(tmp_path):
+    """The learning event's own contract is that a candidate WAS captured. It lived in a
+    separate try block from the append, so a failed append still put that tamper-evident
+    claim on the ledger — and `/promote` on the id it names refuses CANDIDATE_GONE while the
+    audit says it exists. `operator_feedback._capture_correction` already had this right."""
+    from runtime.mvp_runtime.errors import PersistenceError
+    from runtime.mvp_runtime.store import LedgerStore
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+
+    class _AppendFails(WorkingMemoryStore):
+        def append(self, entries):
+            raise PersistenceError("WORKING_MEMORY_WRITE_FAILED", "disk full")
+
+    store = LedgerStore(tmp_path / "ledger")
+    r = run_task(REQUEST, provider=_ReviseThenPassSpecialist(),
+                 working_memory=_AppendFails(tmp_path / "wm"), store=store, revise=True, now=NOW)
+
+    # The run still delivers — working memory is enrichment, and the analysis was audited.
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    # Nothing was stored, so nothing claims it was.
+    assert [c for c in WorkingMemoryStore(tmp_path / "wm").read_all()
+            if c.get("learning_source") == "revision"] == []
+    assert _learning_events(tmp_path) == []
+    assert "learning_candidates" not in r
+    # ...and the loss is reported, on both the general and the correction-specific key.
+    assert r["working_memory_error"] == "WORKING_MEMORY_WRITE_FAILED"
+    assert r["learning_error"] == "WORKING_MEMORY_WRITE_FAILED"
+
+
+@requires_local_core
+def test_recorded_retries_cover_every_model_call_the_run_made(tmp_path):
+    """`retry_count` counted only the specialist and the reviewer, so a run whose triage or
+    pre-revision calls retried a 503 reported 0 and read as a clean first try — while
+    `tokens_used` in the same call already summed all of them. Recording provider
+    instability is the entire reason the field exists."""
+    from runtime.mvp_runtime.store import LedgerStore
+
+    class _RetryingSpecialist(_ReviseThenPassSpecialist):
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            r = super().generate(prompt, max_output_tokens=max_output_tokens,
+                                 timeout_seconds=timeout_seconds)
+            r.retries = 1          # every call needed one transient retry
+            return r
+
+    r = run_task(REQUEST, provider=_RetryingSpecialist(), store=LedgerStore(tmp_path / "ledger"),
+                 revise=True, now=NOW)
+    assert r["status"] == "COMPLETED"
+    usage = r["records"]["budget_usage"]["usage"]
+    # Two specialist calls (the first, then the regeneration), each retried once. Before the
+    # fix the pre-revision call's retry was dropped and this read 1.
+    assert usage["retry_count"] == 2
+    assert usage["revision_cycles"] == 1
+
+
+@requires_local_core
 def test_m5a_revision_without_working_memory_is_safe():
     """No working-memory store => nothing to accumulate into; the revision still delivers and
     the run does not crash reaching for a store that isn't there."""

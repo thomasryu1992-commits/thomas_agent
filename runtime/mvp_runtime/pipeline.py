@@ -437,7 +437,7 @@ def run_task(
         # pre-allocated above; the worker still fails closed on an exhausted allocation, so
         # the loop cannot overspend even if this guard drifted.
         revision = None
-        rev_agent_invocations = rev_model_calls = rev_tokens = 0
+        rev_agent_invocations = rev_model_calls = rev_tokens = rev_retries = 0
         if revise and outcome == "REVISE":
             revision_requests = list(validation["validation"]["result_reasons"])
             if independent_validation_result is not None:
@@ -450,6 +450,8 @@ def run_task(
             rev_model_calls = rev_agent_invocations
             rev_tokens = (int(first_invocation.get("tokens_used", 0))
                           + int((first_validator_invocation or {}).get("tokens_used", 0)))
+            rev_retries = (int(first_invocation.get("retry_count", 0))
+                           + int((first_validator_invocation or {}).get("retry_count", 0)))
 
             agent_output, invocation = run_analysis_worker(
                 plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
@@ -604,9 +606,15 @@ def run_task(
             ),
             validation_cycles=2 if independent_validation_result is not None else 1,
             revision_cycles=1 if revision is not None else 0,
+            # Every model call this run made, matching what tokens_used already sums. It
+            # counted only the specialist and the reviewer, so a run whose triage retried a
+            # 503 — or whose pre-revision calls did — reported retry_count 0 and read as a
+            # clean first try. Recording these is the whole reason the field exists.
             retry_count=(
                 int(invocation.get("retry_count", 0))
                 + int((validator_invocation or {}).get("retry_count", 0))
+                + int((triage_invocation or {}).get("retry_count", 0))
+                + rev_retries
             ),
         )
 
@@ -646,23 +654,36 @@ def run_task(
         # but does not withhold a delivered, durably-audited result. M5a's correction
         # candidate (if the revision loop minted one) rides the same append.
         if working_memory is not None:
+            stored = True
             try:
                 working_memory.append(
                     list(agent_output.get("memory_candidates", [])) + learning_candidates
                 )
             except PersistenceError as exc:
+                # Nothing landed: the correction rides the same single append as the ordinary
+                # candidates, so a failure loses both.
+                stored = False
                 result.setdefault("working_memory_error", exc.reason_code)
+                if learning_candidates:
+                    result.setdefault("learning_error", exc.reason_code)
             # M5a: audit the minted correction on the memory-event stream (retention
             # precedent — a working-memory maintenance action, not a run-audit record).
-            # Best-effort: the candidate is already stored; a failed audit note never
-            # withholds the delivered, durably-audited result.
-            if store is not None and learning_events:
+            # Best-effort: a failed audit note never withholds the delivered, durably-audited
+            # result.
+            #
+            # Gated on the append having SUCCEEDED. The event's own contract is that a
+            # candidate "was captured", so writing it after a failed append put a
+            # tamper-evident claim on the ledger for a candidate that is in no store — and
+            # `/promote` on that id refuses CANDIDATE_GONE while the audit says it exists.
+            # `operator_feedback._capture_correction` already had this right (one try, event
+            # after append); these two lived in separate try blocks, so this door did not.
+            if stored and store is not None and learning_events:
                 try:
                     for event in learning_events:
                         store.append_memory_event(event)
                 except PersistenceError as exc:
                     result.setdefault("learning_error", exc.reason_code)
-            if learning_candidates:
+            if stored and learning_candidates:
                 result["learning_candidates"] = learning_candidates
         result["status"] = "COMPLETED"
         result["delivered"] = True
