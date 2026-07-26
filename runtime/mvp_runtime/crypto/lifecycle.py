@@ -323,3 +323,42 @@ def run_lifecycle(
             thresholds=thresholds, now=now,
         ))
     return decisions
+
+
+# --- what the LEDGER keeps ---------------------------------------------------
+
+def is_noteworthy(decision: Mapping[str, Any]) -> bool:
+    """True when a lifecycle decision decided or flagged anything at all.
+
+    A cycle evaluates every active strategy, so most decisions conclude "nothing to do".
+    Those carry exactly one fact — *this strategy was evaluated* — and 20,020 of them on
+    the live host agreed on all nine other fields (``status_changed`` false, no reasons,
+    no flags, zero consecutive failures, status unchanged). Their ``created_at_utc`` is the
+    cycle's own timestamp and their id is a hash of the rest, so neither is independent
+    information either.
+
+    Anything that is NOT that exact default is noteworthy and kept whole — including a
+    strategy merely *approaching* demotion (``consecutive_failures`` above zero), which is
+    an early warning a count would erase. The rule is deliberately "not the boring default"
+    rather than a list of interesting fields, so a field added later is kept by default
+    instead of silently dropped.
+    """
+    if decision.get("status_changed"):
+        return True
+    if decision.get("consecutive_failures"):
+        return True
+    if decision.get("reasons"):
+        return True
+    return any(decision.get(flag) for flag in
+               ("is_escalation", "is_recovery", "new_entry_blocked",
+                "requires_manual_reactivation"))
+
+
+def split_for_record(decisions: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split evaluated decisions into ``(noteworthy_in_full, unchanged_strategy_ids)``.
+
+    The runtime keeps working with the FULL list — ``pool.update_statuses`` still receives
+    every decision. This only governs what is persisted."""
+    noteworthy = [dict(d) for d in decisions if is_noteworthy(d)]
+    quiet = [str(d.get("strategy_id")) for d in decisions if not is_noteworthy(d)]
+    return noteworthy, quiet
