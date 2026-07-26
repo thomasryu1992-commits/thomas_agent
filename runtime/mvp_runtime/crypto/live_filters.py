@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..errors import ToolBlocked, ToolError
+from .coerce import as_float as _f
 from .live_sizing import SymbolFilters
 
 FILTERS_VERSION = "live_filters.v0.1"
@@ -45,15 +46,6 @@ _MIN_NOTIONAL = "MIN_NOTIONAL"
 _PRICE_FILTER = "PRICE_FILTER"
 
 _TRADING = "TRADING"
-
-
-def _f(value: Any) -> float:
-    """Venue numbers arrive as strings. An unparseable one is 0.0, and 0.0 is 'unknown',
-    which :meth:`SymbolFilters.valid` treats as unusable — never as unrestricted."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _filters_by_type(row: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:

@@ -40,6 +40,7 @@ from typing import Any, Protocol
 from .. import safety_gate, timeutil
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
+from .coerce import as_float as _f
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -131,14 +132,6 @@ class AccountFeed(Protocol):
     feed_version: str
 
     def account_snapshot(self, *, timeout_seconds: int) -> AccountSnapshot | None: ...
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    """Venue numbers arrive as strings; a malformed one must not crash a read."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 class NoAccountFeed:

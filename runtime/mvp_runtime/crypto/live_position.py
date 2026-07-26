@@ -45,6 +45,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from ..safety_gate import Authorization
 from .account import AccountSnapshot
+from .coerce import as_float as _f
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -88,14 +89,6 @@ _QTY_ABSOLUTE_TOLERANCE = 1e-9
 # What an unreadable account means for the exposure cap. Not 0.0 — see
 # `compute_open_notional_usdt`.
 EXPOSURE_UNKNOWN_AT_CAP = "EXPOSURE_UNKNOWN_TREATED_AS_AT_CAP"
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    """Venue and stored numbers may be strings; a malformed one must not crash a read."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 # --- the record ---------------------------------------------------------------
