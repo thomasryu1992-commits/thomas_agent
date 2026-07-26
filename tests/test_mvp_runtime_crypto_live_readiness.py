@@ -48,6 +48,7 @@ _LIVE_ENVS = (
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
     "MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "MVP_LIVE_MIN_CLEAN_CANARY_ORDERS",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
+    "MVP_MARKET_DATA",
 )
 
 
@@ -228,8 +229,24 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
-        "order_path_implemented", "autonomous_routing_wired",
+        "market_data_visibility", "order_path_implemented", "autonomous_routing_wired",
     }
+
+
+def test_the_board_reports_the_canarys_market_data_precondition(tmp_path, clean_env):
+    """A precondition only a document knows about gets discovered at a terminal with real keys —
+    #201's lesson. The canary checks its declared notional against the venue's price, so the feed
+    it needs is a row here. Env alone must not turn it green: the gate is what opens it."""
+    row = next(c for c in
+               live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "market_data_visibility")
+    assert row["ok"] is False and "declared notional" in row["detail"]
+
+    clean_env.setenv("MVP_MARKET_DATA", "binance_futures")
+    row = next(c for c in
+               live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "market_data_visibility")
+    assert row["ok"] is False and "ACTIVATION_MISSING" in row["detail"]
 
 
 def test_unconfigured_loss_limit_shows_as_breached(tmp_path, clean_env):

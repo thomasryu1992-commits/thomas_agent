@@ -210,6 +210,13 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       `BINANCE_ACCOUNT_API_KEY` / `BINANCE_ACCOUNT_API_SECRET`. The canary script refuses outright
       without it — open exposure would be unknown, and the exposure cap cannot be honored on a
       guess.
+- [ ] Configure the **read-only market-data feed**: `MVP_MARKET_DATA=binance_futures` plus a
+      `network_access` grant for the `binance_futures` provider (`scripts/activate_safety_flag.py`).
+      A canary precondition since 2026-07-26: the script checks the `--notional` you declare against
+      the notional `--quantity` actually implies at the venue's latest price, and without this feed
+      the mock collector is selected — its price is a hash of the symbol, not a market, so the check
+      refuses rather than clear a real order against a fabricated number. Public endpoints, no API
+      key; the grant is for crossing the network, not for a secret.
 - [ ] Create a **separate** order-capable live API key: enable Futures, **disable withdrawals
       and internal transfer**, IP-whitelist it. Keep it distinct from the read-only account key.
       `MVP_LIVE_ORDER_API_KEY` / `MVP_LIVE_ORDER_API_SECRET`.
@@ -242,8 +249,17 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       ```
 
       `--notional` is **never** back-filled from the cap — state it truthfully, at or under the
-      60 USDT per-order cap and above the venue's own minimum. Check `clean: True` in the output;
-      anything else does not count toward the three.
+      60 USDT per-order cap and above the venue's own minimum. Since 2026-07-26 that is
+      **checked, not trusted**: the script reads the venue's latest closed 1m price and refuses with
+      `ORDER_NOTIONAL_UNDERSTATED` when your declaration falls more than 1% below
+      `quantity x price`. Over-declaring passes (it only tightens every cap); an unreadable,
+      synthetic or stale price refuses with `ORDER_NOTIONAL_PRICE_UNKNOWN`.
+
+      Work out the quantity from the price at the moment you place it — deliberately no example
+      number here, because the one that used to be in this file and in the script's own docstring
+      (`--quantity 0.001 --notional 60`) was written against an older BTC price and understated the
+      real order by ~7% by the time anyone copied it. Check `clean: True` in the output; anything
+      else does not count toward the three.
 - [ ] Close each canary position on the venue afterwards — canaries only **open**.
 - [ ] Budget the calendar: the daily order cap is **2**, so three clean canaries take **at least
       two UTC days**. Raising the cap to finish sooner would defeat what the canary proves —

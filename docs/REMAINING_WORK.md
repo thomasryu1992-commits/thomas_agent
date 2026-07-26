@@ -332,6 +332,45 @@ requirement had no test asserting any code satisfied it.
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
 
+### Canary-precondition walk — raised and closed 2026-07-26
+
+- [x] **The per-order cap was checking a number the operator typed, not the order.** In
+      `scripts/place_canary_order.py`, `--quantity` and `--notional` were independent inputs with
+      nothing comparing them: the quantity is what reaches the venue, the notional is only what
+      `evaluate_live_order_guard` measures against `max_order_notional_usdt`. So an under-declared
+      notional walked a larger real position through the per-order **and** exposure caps, and the
+      only control was the operator's honesty. Not hypothetical: the script's own documented example
+      (`--quantity 0.001 --notional 60`) was written against an older BTC price and understated the
+      real order by ~7% at 64,512 — following the docs produced a wrong declaration, and would drift
+      further with every price move.
+
+      Closed by verifying the declaration instead of trusting it: `market_data.read_reference_price`
+      (one candle over the existing gated collector — same tool identity, same evidence record) and
+      the pure `live_order.check_declared_notional`, which refuses with `ORDER_NOTIONAL_UNDERSTATED`
+      when the declaration falls more than `NOTIONAL_TOLERANCE_FRACTION` below `quantity x price`.
+      Fail-closed on the price too: absent, synthetic (the mock's hash-derived walk), stale, or
+      clock-disagreeing all refuse with `ORDER_NOTIONAL_PRICE_UNKNOWN` — "nothing to check" must not
+      read as "approved", least of all on the runs where market data is broken. Over-declaring still
+      passes, because a larger declared notional only makes every cap stricter.
+
+      Consequence for the runbook: the **read-only market-data feed is now a canary precondition**
+      alongside the account feed. The checklist says so, and — more importantly — the readiness
+      board has a `market_data_visibility` row, because #201's lesson is that a precondition only a
+      document knows about gets discovered by an operator standing at a terminal with real keys.
+      Two notes on shape, both deliberate:
+      the check sits at the canary door rather than inside the guard, because that is the only place
+      the two numbers are independent — the autonomous path derives both from one
+      `size_live_order` computation, so they agree by construction, and the guard has two callers
+      with no price to give it. If a second independent-declaration caller is ever added, the check
+      belongs in the shared guard instead, for the reason the canary shares one guard at all. And no
+      example notional appears in the docs any more: any constant would be wrong at tomorrow's price,
+      which is how this drifted in the first place.
+
+      The lesson is the same one the section above records, one layer out: `check`-side and
+      `price`-side were each defensible, and **the join between an operator's declaration and the
+      order it describes was nobody's invariant**. There is now a test at the door itself, not only
+      on its halves.
+
 ---
 
 ## Per-machine setup that does NOT travel via git

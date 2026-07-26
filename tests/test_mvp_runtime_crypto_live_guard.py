@@ -17,12 +17,16 @@ from runtime.mvp_runtime.crypto import live_pnl
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
     LIVE_CONFIRMATION_PHRASE,
+    NOTIONAL_PRICE_UNKNOWN,
+    NOTIONAL_TOLERANCE_FRACTION,
+    NOTIONAL_UNDERSTATED,
     STATUS_BLOCKED,
     STATUS_READY,
     STATUS_REPAIR_REQUIRED,
     LiveOrderCounter,
     LiveOrderLimits,
     build_live_order_intent,
+    check_declared_notional,
     count_today,
     enrich_order_identity,
     evaluate_live_close_guard,
@@ -686,3 +690,100 @@ def test_neither_guard_has_an_env_cap_fallback():
         evaluate_live_order_guard(_intent(), **facts)
     with pytest.raises(TypeError):
         evaluate_live_close_guard(_intent(reduce_only=True), gate_open=True)
+
+
+# === the declared notional, checked against the market =============================
+#
+# `--quantity` is what reaches the venue; `--notional` is only what the caps are judged
+# against. They were independent operator inputs with nothing comparing them, so the
+# per-order cap was arithmetic on a number typed by hand.
+
+def test_a_truthful_declaration_is_consistent():
+    check = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=64.51, reference_price_usdt=64512.0
+    )
+    assert check["consistent"] is True and check["reason_code"] is None
+    assert check["implied_notional_usdt"] == pytest.approx(64.51)
+
+
+def test_the_docstrings_own_stale_example_now_refuses():
+    """The exact drift this check exists for: `--quantity 0.001 --notional 60` was written
+    against an older BTC price and understates the real order by ~7% at 64,512."""
+    check = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=60.0, reference_price_usdt=64512.0
+    )
+    assert check["consistent"] is False
+    assert check["reason_code"] == NOTIONAL_UNDERSTATED
+    assert check["shortfall_usdt"] == pytest.approx(4.51)
+    assert check["minimum_declarable_usdt"] == pytest.approx(63.87, abs=0.01)
+
+
+def test_an_understated_notional_would_otherwise_have_passed_the_cap():
+    """Why this is a money bug and not a tidiness one: the guard approves the under-declared
+    intent — 60 is under the 60 cap — while the position it opens is 64.51 USDT. Two
+    independent inputs, no check, so the cap bound the declaration rather than the order."""
+    verdict = evaluate_live_order_guard(
+        _intent(quantity=0.001, order_notional_usdt=60.0), **_ready()
+    )
+    assert verdict["approved"] is True
+    check = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=60.0, reference_price_usdt=64512.0
+    )
+    assert check["consistent"] is False
+
+
+def test_over_declaring_passes():
+    """Over-declaring only makes every cap check stricter, so it is never refused."""
+    check = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=120.0, reference_price_usdt=64512.0
+    )
+    assert check["consistent"] is True
+
+
+def test_the_tolerance_absorbs_the_reference_prices_own_lag():
+    """The price is the last closed 1m candle, so a small shortfall is lag, not a claim."""
+    implied = 0.001 * 64512.0
+    inside = check_declared_notional(
+        quantity=0.001,
+        declared_notional_usdt=implied * (1 - NOTIONAL_TOLERANCE_FRACTION / 2),
+        reference_price_usdt=64512.0,
+    )
+    outside = check_declared_notional(
+        quantity=0.001,
+        declared_notional_usdt=implied * (1 - NOTIONAL_TOLERANCE_FRACTION * 2),
+        reference_price_usdt=64512.0,
+    )
+    assert inside["consistent"] is True
+    assert outside["consistent"] is False and outside["reason_code"] == NOTIONAL_UNDERSTATED
+
+
+@pytest.mark.parametrize("price", [None, 0.0, -1.0])
+def test_no_price_means_no_order(price):
+    """Fail-closed: an unknown price cannot clear a declaration. Treating it as 'nothing to
+    check' would restore the honesty system this replaces, on exactly the runs where market
+    data is broken."""
+    check = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=60.0, reference_price_usdt=price
+    )
+    assert check["consistent"] is False
+    assert check["reason_code"] == NOTIONAL_PRICE_UNKNOWN
+
+
+def test_malformed_inputs_keep_the_modules_existing_reason_codes():
+    no_qty = check_declared_notional(
+        quantity=0.0, declared_notional_usdt=60.0, reference_price_usdt=64512.0
+    )
+    no_notional = check_declared_notional(
+        quantity=0.001, declared_notional_usdt=0.0, reference_price_usdt=64512.0
+    )
+    assert no_qty["reason_code"] == "MISSING_ORDER_QUANTITY"
+    assert no_notional["reason_code"] == "MISSING_ORDER_NOTIONAL"
+
+
+def test_a_refusal_names_the_number_to_declare_instead():
+    """A refusal an operator can act on: the reason carries the implied notional and the
+    floor, so the fix is visible without recomputing it at the terminal."""
+    check = check_declared_notional(
+        quantity=0.002, declared_notional_usdt=50.0, reference_price_usdt=64512.0
+    )
+    assert "129.02" in check["reason"] and "127.73" in check["reason"]

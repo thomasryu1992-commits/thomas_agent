@@ -18,6 +18,11 @@ Three rules carried over verbatim, each learned the expensive way:
 ``blocks`` are policy or configuration refusals. ``repairs`` are the four malformed-intent
 problems that a corrected intent would fix. Blocks outrank repairs; only a clean ``READY``
 verdict is ``approved``.
+
+One rule is **not** carried over — it was learned here, on 2026-07-26: the guard checks the
+notional it is *given*, and where quantity and notional are independent inputs that number is
+a claim about the order rather than a property of it. ``check_declared_notional`` verifies the
+claim against the venue's price before the guard ever judges it.
 """
 
 from __future__ import annotations
@@ -249,6 +254,104 @@ def build_live_order_intent(
         "connectivity_test": False,
     }
     return enrich_order_identity(intent)
+
+
+# --- the declared notional, checked against the market -----------------------------
+
+# How far BELOW the implied notional (quantity x reference price) a declared one may sit
+# before the order refuses. It absorbs the reference price's own lag — the last closed 1m
+# candle, so up to ~2 minutes behind — and nothing else. It is deliberately small and
+# deliberately one-sided: over-declaring always passes, because a larger declared notional
+# only makes every cap check stricter, while under-declaring is the direction that would let
+# a bigger real position through a cap. 1% of a 60 USDT canary is 0.6 USDT.
+NOTIONAL_TOLERANCE_FRACTION = 0.01
+
+NOTIONAL_UNDERSTATED = "ORDER_NOTIONAL_UNDERSTATED"
+NOTIONAL_PRICE_UNKNOWN = "ORDER_NOTIONAL_PRICE_UNKNOWN"
+
+
+def check_declared_notional(
+    *,
+    quantity: float,
+    declared_notional_usdt: float,
+    reference_price_usdt: float | None,
+    tolerance_fraction: float = NOTIONAL_TOLERANCE_FRACTION,
+) -> dict[str, Any]:
+    """Does a declared notional actually describe ``quantity`` at the market price? Pure.
+
+    ``quantity`` is what reaches the venue; ``declared_notional_usdt`` is only what the caps
+    are checked against (``evaluate_live_order_guard``'s per-order and exposure checks). Where
+    a caller derives both from one sizing computation they agree by construction
+    (``live_sizing.size_live_order``), but where they are two independent inputs — the operator
+    typing them into ``scripts/place_canary_order.py`` — nothing made them agree, and an
+    under-declared notional let a larger real position pass the per-order cap. The cap was
+    doing arithmetic on a number the operator had to get right by hand.
+
+    So the notional is verified against the venue's own price rather than trusted. Fail-closed
+    in both of the ways that matter:
+
+    - **no price means no order** (``NOTIONAL_PRICE_UNKNOWN``). An unknown price cannot clear
+      a declaration; treating it as "nothing to check" would restore the honesty system this
+      replaces, on exactly the runs where market data is broken.
+    - **only understatement blocks** (``NOTIONAL_UNDERSTATED``), beyond ``tolerance_fraction``.
+      Over-declaring is conservative and passes.
+
+    Returns a record either way — ``consistent`` plus both notionals and the price behind
+    them — so an operator reading a refusal sees the number to declare instead, and an
+    approved run records what the declaration was checked against.
+    """
+    quantity = float(quantity or 0.0)
+    declared = float(declared_notional_usdt or 0.0)
+    price = float(reference_price_usdt or 0.0)
+    tolerance = max(0.0, float(tolerance_fraction))
+    record: dict[str, Any] = {
+        "consistent": False,
+        "reason_code": None,
+        "reason": "",
+        "quantity": quantity,
+        "declared_notional_usdt": round(declared, 2),
+        "reference_price_usdt": price if price > 0 else None,
+        "implied_notional_usdt": None,
+        "minimum_declarable_usdt": None,
+        "shortfall_usdt": None,
+        "tolerance_fraction": tolerance,
+    }
+    # The two malformed-input cases keep the module's existing vocabulary rather than minting
+    # new codes for conditions build_live_order_intent already names.
+    if quantity <= 0:
+        record["reason_code"] = "MISSING_ORDER_QUANTITY"
+        record["reason"] = "quantity must be positive to imply a notional"
+        return record
+    if declared <= 0:
+        record["reason_code"] = "MISSING_ORDER_NOTIONAL"
+        record["reason"] = "declared notional must be positive"
+        return record
+    if price <= 0:
+        record["reason_code"] = NOTIONAL_PRICE_UNKNOWN
+        record["reason"] = (
+            "no reference price, so the declared notional cannot be checked against the "
+            "quantity actually being sent"
+        )
+        return record
+
+    implied = quantity * price
+    floor = implied * (1.0 - tolerance)
+    record["implied_notional_usdt"] = round(implied, 2)
+    record["minimum_declarable_usdt"] = round(floor, 2)
+    if declared + 1e-9 < floor:
+        record["shortfall_usdt"] = round(implied - declared, 2)
+        record["reason_code"] = NOTIONAL_UNDERSTATED
+        record["reason"] = (
+            f"declared notional {declared:.2f} USDT understates {quantity:g} at {price:.2f} "
+            f"= {implied:.2f} USDT; declare at least {floor:.2f}"
+        )
+        return record
+    record["consistent"] = True
+    record["reason"] = (
+        f"declared {declared:.2f} USDT covers the implied {implied:.2f} USDT "
+        f"({quantity:g} at {price:.2f})"
+    )
+    return record
 
 
 def _notional_of(intent: Mapping[str, Any]) -> float:

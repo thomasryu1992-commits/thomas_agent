@@ -367,6 +367,88 @@ def select_market_data_collector(
     )
 
 
+# --- one reference price -----------------------------------------------------------
+
+# The timeframe a reference price is read from, and how far off ``now`` that read may sit.
+# 1m is the finest bar the venue serves and the collector drops the still-forming one, so a
+# healthy read is at most ~2 minutes behind the market; the window is wider than that so a
+# slow read or a coarse clock does not refuse on its own. Past it the number has stopped
+# describing the market it is being used to judge, and a stale price is not a price.
+REFERENCE_PRICE_TIMEFRAME = "1m"
+REFERENCE_PRICE_MAX_AGE_SECONDS = 300
+
+# Each says exactly why there is no usable price, so a caller's refusal is actionable.
+REFERENCE_PRICE_UNAVAILABLE = "REFERENCE_PRICE_UNAVAILABLE"  # no candle, or a non-positive close
+REFERENCE_PRICE_SYNTHETIC = "REFERENCE_PRICE_SYNTHETIC"      # the mock's hash-derived price walk
+REFERENCE_PRICE_STALE = "REFERENCE_PRICE_STALE"              # the read is too old to describe now
+
+
+def _price_refusal(record: dict[str, Any], reason_code: str) -> tuple[None, dict[str, Any]]:
+    record["degraded"] = True
+    record["degraded_reason_code"] = reason_code
+    return None, record
+
+
+def read_reference_price(
+    symbol: str, *, now: str, timeout_seconds: int = 10, root: Path | None = None
+) -> tuple[float | None, dict[str, Any]]:
+    """The venue's latest **closed** price for one symbol, or ``(None, record)`` with a reason.
+
+    A thin, single-candle read over the existing collection path — same gate, same tool
+    identity, same evidence record — for callers that need one number rather than a window.
+    Its first user is the canary tool, which uses it to check the notional an operator
+    declared against the notional the quantity actually implies.
+
+    **Refuses rather than approximating**, on every unhappy path, because a price that is
+    wrong in the low direction would silently let a larger real position past a notional cap:
+
+    - the mock collector's synthetic price walk is refused outright
+      (``REFERENCE_PRICE_SYNTHETIC``) — it is a deterministic hash of the symbol, not a
+      market, so judging a real order against it is worse than having no check at all;
+    - a transport, symbol or parse failure degrades to ``MARKET_DATA_DEGRADED`` with the
+      underlying ``error_reason_code``;
+    - no candle or a non-positive close is ``REFERENCE_PRICE_UNAVAILABLE``;
+    - a candle whose close sits further than ``REFERENCE_PRICE_MAX_AGE_SECONDS`` from ``now``
+      — in **either** direction, since a clock disagreement is as disqualifying as a stale
+      read — is ``REFERENCE_PRICE_STALE``.
+
+    The gate is unchanged: without ``MVP_MARKET_DATA=binance_futures`` and a valid local
+    ``network_access`` grant for ``binance_futures``, the mock is selected and this refuses.
+    """
+    collector = select_market_data_collector(now=now, root=root)
+    try:
+        snapshot, record = collect_market_data(
+            symbol,
+            REFERENCE_PRICE_TIMEFRAME,
+            collector=collector,
+            now=now,
+            limit=1,
+            timeout_seconds=timeout_seconds,
+        )
+    except ToolBlocked as exc:
+        record = degraded_market_data_record(
+            collector, str(symbol), REFERENCE_PRICE_TIMEFRAME, MARKET_DATA_DEGRADED, now=now
+        )
+        record["error_reason_code"] = exc.reason_code
+        return None, record
+
+    if bool(snapshot.get("is_synthetic")):
+        return _price_refusal(record, REFERENCE_PRICE_SYNTHETIC)
+    price = snapshot.get("last_close")
+    if not isinstance(price, (int, float)) or isinstance(price, bool) or float(price) <= 0:
+        return _price_refusal(record, REFERENCE_PRICE_UNAVAILABLE)
+    try:
+        age_seconds = (
+            timeutil.parse_iso(now) - timeutil.parse_iso(str(snapshot.get("last_candle_time")))
+        ).total_seconds()
+    except ValueError:
+        return _price_refusal(record, REFERENCE_PRICE_UNAVAILABLE)
+    record["reference_price_age_seconds"] = round(age_seconds, 3)
+    if abs(age_seconds) > REFERENCE_PRICE_MAX_AGE_SECONDS:
+        return _price_refusal(record, REFERENCE_PRICE_STALE)
+    return float(price), record
+
+
 class BinanceFuturesCollector:
     """Real OHLCV via Binance USD-M Futures public klines (read-only, no API key).
 

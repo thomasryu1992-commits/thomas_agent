@@ -1,7 +1,7 @@
 """Place ONE deliberate live canary order (LP4 increment 2b) — an operator tool.
 
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60 --json
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price>
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price> --json
 
 A canary is one small **real** order, placed on purpose, to prove that signing, submission, and
 reconciliation actually work at the venue. Three clean canaries are what the autonomous path's
@@ -9,6 +9,22 @@ promotion gate requires — so this is the only door that is *not* gated on that
 it is what earns it. Everything else still applies: the `live_trading` grant, the **canary**
 confirmation phrase (distinct from the autonomous one), a valid registered budget, both kill
 switches, the daily-loss breaker, and the size / daily-count / exposure caps.
+
+**`--quantity` and `--notional` must describe the same order, and that is checked.** The
+quantity is what reaches the venue; the notional is only what the caps are judged against. They
+were independent inputs until 2026-07-26, so an under-declared notional let a larger real
+position pass the per-order cap — the cap was doing arithmetic on a number the operator had to
+get right by hand, and this file's own example (`--quantity 0.001 --notional 60`) was itself
+~7% short once BTC moved past 64,512. So the quantity's implied notional is now read from the
+venue (`market_data.read_reference_price`, the last closed 1m candle) and a declaration that
+understates it by more than `live_order.NOTIONAL_TOLERANCE_FRACTION` refuses with
+`ORDER_NOTIONAL_UNDERSTATED`. Over-declaring passes — it only makes every cap stricter. There
+is no example notional here on purpose: any constant would be wrong at tomorrow's price.
+
+That makes the **read-only market-data feed a canary precondition** alongside the account feed
+(`MVP_MARKET_DATA=binance_futures` plus a `network_access` grant for `binance_futures`). Without
+it the mock collector is selected, its price is a hash of the symbol rather than a market, and
+the check refuses rather than clearing a real order against a fabricated number.
 
 **Real money. Every step here is Thomas's.** Claude does not run this, does not handle the keys,
 and does not enable live trading. Without the grant and the canary phrase this command refuses;
@@ -34,6 +50,7 @@ from runtime.mvp_runtime.crypto.account import read_account
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_ENV,
     build_live_order_intent,
+    check_declared_notional,
     count_today,
     enrich_order_identity,
     evaluate_live_order_guard,
@@ -42,6 +59,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 )
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
 from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
+from runtime.mvp_runtime.crypto.market_data import read_reference_price
 from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.store import LedgerStore
 
@@ -56,7 +74,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--quantity", type=float, required=True,
                         help="base-asset quantity (keep a canary small)")
     parser.add_argument("--notional", type=float, required=True,
-                        help="the order's notional in USDT (never back-filled from the cap)")
+                        help="the order's notional in USDT: quantity x current price. Never "
+                             "back-filled from the cap, and verified against the venue's own "
+                             "price — a declaration that understates the quantity refuses")
     parser.add_argument("--timeout-seconds", type=int, default=10)
     parser.add_argument("--json", action="store_true", help="emit the full result as JSON")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
@@ -84,7 +104,27 @@ def main(argv: list[str] | None = None) -> int:
         clean_count, canary_error = live_promotion.clean_canary_order_count(root)
         submitted_today = count_today(root)
 
-        # 3. Open exposure from the VENUE, via LP5's fail-closed supplier (an unreadable account
+        # 3. Does `--notional` actually describe `--quantity`? The quantity is what the venue
+        #    receives; the notional is only what the caps are checked against, and until
+        #    2026-07-26 nothing compared them — an under-declared notional walked a larger real
+        #    position past the per-order cap. The implied value comes from the venue, never from
+        #    the operator and never from the mock (a synthetic price would clear anything).
+        #
+        #    Reported here, before the account refusal below, so an operator who has to fix both
+        #    sees both in one run rather than discovering the second one afterwards.
+        reference_price, price_use = read_reference_price(
+            args.symbol, now=now, timeout_seconds=args.timeout_seconds, root=root
+        )
+        notional_check = check_declared_notional(
+            quantity=args.quantity,
+            declared_notional_usdt=args.notional,
+            reference_price_usdt=reference_price,
+        )
+        if reference_price is None:
+            notional_check["price_reason_code"] = price_use.get("degraded_reason_code")
+        sys.stdout.write(f"notional check: {notional_check['reason']}\n")
+
+        # 4. Open exposure from the VENUE, via LP5's fail-closed supplier (an unreadable account
         #    reports at-cap, never 0.0 — the guard's one fail-open path). A canary additionally
         #    refuses outright, because "configure the account feed" is the actionable answer for a
         #    deliberate operator tool, rather than a cap refusal it has to decode.
@@ -100,13 +140,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_BLOCKED
 
-        # 4. The gate. Selecting the adapter is what proves the grant: an inert dry-run adapter
+        # 5. The gate. Selecting the adapter is what proves the grant: an inert dry-run adapter
         #    means no grant is active, so nothing can be sent — and the guard is told so rather
         #    than being handed an optimistic assumption.
         adapter = live_execution.select_order_adapter(now=now, root=root)
         grant_open = bool(getattr(adapter, "network_egress", False))
 
-        # 5. The intent, then the guard in CANARY mode: every check except the promotion gate,
+        # 6. The intent, then the guard in CANARY mode: every check except the promotion gate,
         #    authorized by the canary phrase.
         intent = enrich_order_identity(build_live_order_intent(
             {"direction": args.direction}, symbol=args.symbol, quantity=args.quantity,
@@ -128,14 +168,25 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(render_guard_text(verdict) + "\n")
         if canary_error:
             sys.stdout.write(f"canary history: {canary_error}\n")
+        # Both refusals are reported together, for the reason the guard accumulates its own
+        # checks: the operator should see everything that is wrong in one run, not the first
+        # thing alphabetically.
+        if not notional_check["consistent"]:
+            sys.stderr.write(
+                f"BLOCKED {notional_check['reason_code']}: {notional_check['reason']}"
+                + (f" (price: {notional_check['price_reason_code']})"
+                   if notional_check.get("price_reason_code") else "")
+                + "\n"
+            )
         if not verdict["approved"]:
             sys.stderr.write(
                 "BLOCKED: the canary guard refused; fix what it names rather than working around it.\n"
                 f"(the canary phrase env is {CANARY_CONFIRMATION_ENV})\n"
             )
+        if not (verdict["approved"] and notional_check["consistent"]):
             return EXIT_BLOCKED
 
-        # 5b. The governance record, BEFORE the order. `p5_policy_gate` requires
+        # 7. The governance record, BEFORE the order. `p5_policy_gate` requires
         #     `post_action_report_and_audit` for FINANCIAL_APPROVED_TRADING_USE, and until this
         #     landed a real order left nothing on the hash chain. Preparing it first means a
         #     governance failure (no active Core, an authority conflict) costs nothing — it
@@ -144,14 +195,16 @@ def main(argv: list[str] | None = None) -> int:
             intent, purpose=live_governance.PURPOSE_CANARY, now=now, repo_root=root,
         )
 
-        # 6. Send exactly one order, then learn the truth from the venue.
+        # 8. Send exactly one order, then learn the truth from the venue.
         result = live_execution.submit_and_reconcile(
             intent, adapter=adapter, guard_verdict=verdict, now=now,
             timeout_seconds=args.timeout_seconds,
         )
 
-        # 7. Record it. `clean` is derived by the record from the reconcile facts — this tool
-        #    cannot assert that its own canary was clean.
+        # 9. Record it. `clean` is derived by the record from the reconcile facts — this tool
+        #    cannot assert that its own canary was clean. `notional_usdt` is the declared figure
+        #    the guard judged, which step 3 has verified describes the quantity actually sent; the
+        #    implied value and the price behind it ride in the `--json` payload.
         record = live_promotion.build_canary_order_record(
             reconcile_status=result["reconcile_status"],
             symbol=result["symbol"],
@@ -168,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             # The order is already at the venue; say so rather than implying nothing happened.
             registry_error = exc.reason_code
 
-        # 8. The report half of EXECUTE_AND_REPORT: one audit event on the durable chain,
+        # 10. The report half of EXECUTE_AND_REPORT: one audit event on the durable chain,
         #    carrying what the VENUE said. Best-effort by the same reasoning as the registry
         #    write above — the money has already moved, so a failure here is reported, never
         #    swallowed and never allowed to imply the order did not happen.
@@ -184,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return EXIT_BLOCKED
 
-    payload = {"guard": verdict, "result": result, "canary_record": record,
+    payload = {"guard": verdict, "notional_check": notional_check, "price_use": price_use,
+               "result": result, "canary_record": record,
                "registry_error": registry_error, "audit_error": audit_error,
                "permission_decision_id": governance["permission_decision"]["permission_decision_id"]}
     if args.json:
@@ -196,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
             f"  clean     : {record['clean']}\n"
             f"  venue id  : {result['exchange_order_id']}\n"
             f"  fill      : {result['fill']}\n"
+            f"  declared  : {notional_check['declared_notional_usdt']} USDT "
+            f"(implied {notional_check['implied_notional_usdt']} at "
+            f"{notional_check['reference_price_usdt']})\n"
         )
         if result["mismatches"]:
             sys.stdout.write(f"  MISMATCH  : {'; '.join(result['mismatches'])}\n")

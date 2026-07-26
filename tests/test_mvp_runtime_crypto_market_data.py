@@ -19,15 +19,22 @@ from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
     FACTORY_DEPTH_DAYS,
+    MARKET_DATA_DEGRADED,
     MARKET_DATA_ENV,
     MAX_CANDLES,
+    REFERENCE_PRICE_STALE,
+    REFERENCE_PRICE_SYNTHETIC,
+    REFERENCE_PRICE_TIMEFRAME,
+    REFERENCE_PRICE_UNAVAILABLE,
     TIMEFRAMES,
     BinanceFuturesCollector,
+    Candle,
     MarketSnapshot,
     MockMarketDataCollector,
     collect_market_data,
     degraded_market_data_record,
     factory_candle_target,
+    read_reference_price,
     select_market_data_collector,
 )
 from runtime.mvp_runtime.crypto.strategy import ALLOWED_TIMEFRAMES
@@ -413,3 +420,111 @@ def test_binance_page_budget_bounds_one_collection(monkeypatch):
     )
     assert len(venue.calls) == 3
     assert len(result.candles) <= 30
+
+
+# --- read_reference_price: one price, or an honest refusal --------------------
+#
+# The canary tool checks a hand-declared notional against this number, so a price that is
+# absent, fabricated or stale must refuse rather than approximate — an implied notional that
+# reads LOW is exactly what would let a larger real position past a per-order cap.
+
+class _PriceCollector:
+    """A venue-shaped collector: one closed candle at a chosen price and close time."""
+
+    tool_id, tool_version = "crypto.market_data.readonly", "0.1.0"
+    network_egress = True
+    source = "fake_venue"
+
+    def __init__(self, close: float, close_time: str, *, is_synthetic: bool = False,
+                 candles: bool = True):
+        self._close = close
+        self._close_time = close_time
+        self._is_synthetic = is_synthetic
+        self._candles = candles
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        rows = [Candle(
+            open_time="2026-07-22T08:58:00Z", open=self._close, high=self._close,
+            low=self._close, close=self._close, volume=1.0, close_time=self._close_time,
+        )] if self._candles else []
+        return MarketSnapshot(
+            symbol=symbol, timeframe=timeframe, candles=rows, source=self.source,
+            is_synthetic=self._is_synthetic,
+        )
+
+
+def _use_collector(monkeypatch, collector):
+    monkeypatch.setattr(
+        "runtime.mvp_runtime.crypto.market_data.select_market_data_collector",
+        lambda **kwargs: collector,
+    )
+
+
+def test_reference_price_returns_the_last_closed_price(monkeypatch):
+    _use_collector(monkeypatch, _PriceCollector(64512.0, "2026-07-22T08:59:00Z"))
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price == pytest.approx(64512.0)
+    assert record.get("degraded") is None
+    assert record["reference_price_age_seconds"] == pytest.approx(60.0)
+    assert record["timeframe"] == REFERENCE_PRICE_TIMEFRAME
+
+
+def test_reference_price_refuses_the_mock_collectors_synthetic_walk(monkeypatch):
+    """The default collector's price is a hash of the symbol. Clearing a real order against
+    it would be worse than having no check, so an ungated run refuses."""
+    monkeypatch.delenv(MARKET_DATA_ENV, raising=False)
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == REFERENCE_PRICE_SYNTHETIC
+
+
+def test_reference_price_refuses_a_stale_read(monkeypatch):
+    _use_collector(monkeypatch, _PriceCollector(64512.0, "2026-07-22T08:30:00Z"))
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == REFERENCE_PRICE_STALE
+
+
+def test_reference_price_refuses_a_candle_from_the_future(monkeypatch):
+    """A clock disagreement disqualifies a price as surely as staleness does — the age check
+    is two-sided, so a venue or host clock that is wildly off cannot supply a price."""
+    _use_collector(monkeypatch, _PriceCollector(64512.0, "2026-07-22T09:30:00Z"))
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == REFERENCE_PRICE_STALE
+
+
+def test_reference_price_tolerates_a_clock_a_few_seconds_behind(monkeypatch):
+    """`now` is stamped before the read, so a candle can close between the two. That is not
+    staleness and must not refuse."""
+    _use_collector(monkeypatch, _PriceCollector(64512.0, "2026-07-22T09:00:20Z"))
+    price, _record = read_reference_price("BTCUSDT", now=NOW)
+    assert price == pytest.approx(64512.0)
+
+
+@pytest.mark.parametrize("collector", [
+    _PriceCollector(64512.0, "2026-07-22T08:59:00Z", candles=False),
+    _PriceCollector(0.0, "2026-07-22T08:59:00Z"),
+    _PriceCollector(64512.0, "not-a-timestamp"),
+])
+def test_reference_price_refuses_without_a_usable_number(monkeypatch, collector):
+    _use_collector(monkeypatch, collector)
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == REFERENCE_PRICE_UNAVAILABLE
+
+
+def test_reference_price_degrades_on_a_backend_failure(monkeypatch):
+    _use_collector(monkeypatch, _ErrorCollector())
+    price, record = read_reference_price("BTCUSDT", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == MARKET_DATA_DEGRADED
+    assert record["error_reason_code"] == "TOOL_ERROR"
+
+
+def test_reference_price_degrades_on_a_rejected_symbol(monkeypatch):
+    _use_collector(monkeypatch, _PriceCollector(64512.0, "2026-07-22T08:59:00Z"))
+    price, record = read_reference_price("btcusdt", now=NOW)
+    assert price is None
+    assert record["degraded_reason_code"] == MARKET_DATA_DEGRADED
+    assert record["error_reason_code"] == "INVALID_SYMBOL"

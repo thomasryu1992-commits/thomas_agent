@@ -53,6 +53,7 @@ from .live_pnl import (
     REAL_LIVE_TRADING,
     live_risk_snapshot,
 )
+from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
@@ -178,6 +179,37 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         account_configured,
         "live account read configured" if account_configured
         else f"{ACCOUNT_FEED_ENV} / {ACCOUNT_API_KEY_ENV} / {ACCOUNT_API_SECRET_ENV} not all set",
+    ))
+
+    # 8b. The market-data read (C2) — a canary precondition since 2026-07-26, because the canary
+    #     tool checks the notional the operator declares against the notional the quantity implies
+    #     at the venue's own price. Without this feed the mock collector is selected and its price
+    #     is a hash of the symbol, so `check_declared_notional` refuses rather than clear a real
+    #     order against a fabricated number.
+    #
+    #     Reported as its own row for the reason #201 exists: a precondition that only a document
+    #     knows about is discovered by an operator standing at a terminal with real keys. Env AND
+    #     grant, like row 1 — the env var alone fails closed, so checking only the var would show a
+    #     green tick for a machine that still refuses.
+    market_data_opted_in = (
+        os.environ.get(MARKET_DATA_ENV, "").strip().lower() == BINANCE_FUTURES
+    )
+    market_data_error: str | None = None
+    try:
+        safety_gate.authorize(
+            (safety_gate.NETWORK_ACCESS,), provider_id=BINANCE_FUTURES, now=now, root=root
+        )
+    except MvpRuntimeError as exc:
+        market_data_error = exc.reason_code
+    market_data_ok = market_data_error is None and market_data_opted_in
+    checks.append(_check(
+        "market_data_visibility",
+        market_data_ok,
+        "live market-data read configured (the canary's notional check needs a real price)"
+        if market_data_ok
+        else f"grant: {market_data_error or 'ok'}; "
+             f"{MARKET_DATA_ENV}={'set' if market_data_opted_in else 'unset'} - a canary cannot "
+             "verify its declared notional without a real price",
     ))
 
     # 9. The order path itself.
