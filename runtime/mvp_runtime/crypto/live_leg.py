@@ -49,6 +49,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ..coerce import as_optional_float as _f
 from ..errors import ToolError
 from .live_execution import (
     ORDER_TYPE_MARKET,
@@ -95,16 +96,6 @@ BRACKET_RESTING_STATUSES = frozenset({"NEW"})
 
 # Close reasons written onto the outcome record.
 CLOSE_REASON_NAKED = "naked_position_close"
-
-
-def _f(value: Any) -> float | None:
-    """A number, or None. Never a default — a missing fill figure must not read as zero."""
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 # --- the bracket ---------------------------------------------------------------
