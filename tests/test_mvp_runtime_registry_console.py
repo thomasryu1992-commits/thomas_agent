@@ -145,13 +145,21 @@ def test_history_respects_and_caps_its_limit(tmp_path):
         store.transition(entry.registry_entry_id, DELIVERED, now=LATER)
     assert _apply(("HISTORY", "2"), registry=store)["reply"].count("• ") == 2
     # Out-of-range values clamp rather than refuse; the count reported is the true total.
-    assert _apply(("HISTORY", "999"), registry=store)["count"] == 4
+    clamped = _apply(("HISTORY", "999"), registry=store)
+    assert clamped["count"] == 4
+    # ...and the clamp is stated: 999 was asked for, 50 was shown.
+    assert "999" in clamped["reply"] and "50" in clamped["reply"]
 
 
-def test_history_with_a_non_numeric_argument_is_a_usage_refusal(tmp_path):
-    with pytest.raises(OperatorBlocked) as exc:
-        _apply(("HISTORY", "많이"), registry=_registry(tmp_path))
-    assert exc.value.reason_code == "USAGE"
+def test_history_with_a_non_numeric_argument_answers_and_says_it_defaulted(tmp_path):
+    """A mistyped count on a read-only verb never denies the read (the `/audit` rule, now
+    shared), but the substituted number is never silent either."""
+    store = _registry(tmp_path)
+    entry = _entry(store, text="작업", now="2026-07-25T09:00:00Z")
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER)
+    outcome = _apply(("HISTORY", "많이"), registry=store)
+    assert outcome["action"] == "HISTORY_LISTED"
+    assert "많이" in outcome["reply"] and "10" in outcome["reply"]
 
 
 # --- /result -----------------------------------------------------------------

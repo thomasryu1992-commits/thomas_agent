@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from . import task_registry, timeutil
-from .control import command_verb
+from .control import command_verb, parse_count_arg, with_note
 from .errors import MvpRuntimeError, OperatorBlocked, PersistenceError, TaskRegistryBlocked
 from .events import stamped_event
 from .task_registry import RegistryEntry, TaskRegistryStore
@@ -224,17 +224,14 @@ def apply_registry_command(
                 "count": len(open_entries)}
 
     if action == "HISTORY":
-        limit = DEFAULT_HISTORY
-        if argument:
-            try:
-                limit = int(argument.split()[0])
-            except (TypeError, ValueError):
-                raise OperatorBlocked(
-                    "USAGE", "사용법: /history [개수] — 개수는 숫자여야 합니다 (예: /history 20)."
-                ) from None
-            limit = max(1, min(limit, MAX_HISTORY))
+        # Shared with `/audit`, which had the opposite behavior on the same typo: a mistyped
+        # count refused here and silently defaulted there. Both are read-only, so neither
+        # denies the operator their read — the count is clamped and the substitution stated.
+        limit, note = parse_count_arg(
+            argument, default=DEFAULT_HISTORY, maximum=MAX_HISTORY, usage="사용법: /history [개수]",
+        )
         finished = [e for e in entries if e.is_terminal]
-        return {"reply": _format_history(finished[:limit], len(finished)),
+        return {"reply": with_note(_format_history(finished[:limit], len(finished)), note),
                 "action": "HISTORY_LISTED", "count": len(finished)}
 
     if action == "RESULT":

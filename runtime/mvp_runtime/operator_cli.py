@@ -214,9 +214,19 @@ def main(
                 # The work is durable (ledger/control/approval stores); only the reply's
                 # delivery failed. Surface it so a systematically undeliverable reply
                 # (e.g. a dead bot token) is visible instead of silently swallowed.
+                partial = summary.get("partial_sends") or 0
+                total = summary["send_failures"]
+                # A long analysis goes out as several numbered parts, so "the reply was not
+                # delivered" was a false statement about the ones where part of it did arrive.
+                detail = "the reply was not delivered"
+                if partial:
+                    detail = (f"{partial} of them delivered only part of the answer "
+                              f"(Thomas has an incomplete reply; /result <id> re-sends it)")
+                    if partial < total:
+                        detail += f"; the other {total - partial} delivered nothing"
                 sys.stderr.write(
-                    f"OPERATOR: {summary['send_failures']} reply delivery failure(s) this batch "
-                    "(handled work is recorded; the reply was not delivered)\n"
+                    f"OPERATOR: {total} reply delivery failure(s) this batch "
+                    f"(handled work is recorded; {detail})\n"
                 )
             channel_egress = channel_egress or bool(summary.get("network_egress"))
             for reply in summary["replies"]:

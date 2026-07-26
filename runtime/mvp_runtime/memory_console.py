@@ -17,7 +17,9 @@ never drift on what counts as a command:
 - ``/memory`` (or ``/memory list``) — read-only listing of the LIVE candidates eligible
   for promotion (status CANDIDATE, in the working-memory scope, not expired), most recent
   first. Read-only, so (like ``/status`` and ``/feedback``) it is answered in ANY runtime
-  mode; a PAUSED/KILLED runtime must still let Thomas see what is promotable.
+  mode; a PAUSED/KILLED runtime must still let Thomas see what is promotable. Anything typed
+  after the verb still lists — but the reply says the tail was not used, because there is no
+  verb here that would have stored it.
 - ``/promote <candidate_id> <reason>`` — the EXECUTE_AND_REPORT promotion. Kill-switch
   bound (checked first; a PAUSED/KILLED runtime refuses — promotion mutates VALIDATED
   memory and ``kill_allows`` is read-only only), latest-wins candidate lookup, expired
@@ -53,11 +55,15 @@ _PREVIEW_CHARS = 80
 def parse_memory_command(text: Any) -> tuple[str, str | None, str | None] | None:
     """Classify a memory-console command, or return None if ``text`` is not one.
 
-    Returns ``(action, candidate_id, reason)`` where ``action`` is ``"LIST"`` or
-    ``"PROMOTE"``. For LIST both trailing fields are None. For PROMOTE either field may be
-    None when the operator omitted it — :func:`apply_memory_command` turns that into a typed
-    usage refusal rather than guessing. Same tokenizer as the console/approval/feedback
-    parsers (leading slash optional, ``@botname`` menu suffix stripped)."""
+    Returns ``(action, argument, reason)`` where ``action`` is ``"LIST"`` or ``"PROMOTE"``.
+    For PROMOTE the argument is the candidate id, and either trailing field may be None when
+    the operator omitted it — :func:`apply_memory_command` turns that into a typed usage
+    refusal rather than guessing. For LIST the argument is whatever the operator typed after
+    the verb and did not need: listing still happens (it is the only read verb here), but the
+    tail is carried through so the reply can say it was not used, instead of answering
+    ``/memory 이거 기억해줘`` with a bare listing as though nothing else had been asked. Same
+    tokenizer as the console/approval/feedback parsers (leading slash optional, ``@botname``
+    menu suffix stripped)."""
     if not isinstance(text, str):
         return None
     stripped = text.strip()
@@ -69,7 +75,9 @@ def parse_memory_command(text: Any) -> tuple[str, str | None, str | None] | None
     if verb == LIST_COMMAND:
         # `/memory`, `/memory list`, or `/memory <anything>` all list — listing is the only
         # read verb, so an unrecognized tail is treated as "just list" rather than refused.
-        return ("LIST", None, None)
+        # `list` itself is the documented spelling of "no argument", so it is not a tail.
+        tail = None if rest.lower() == _LIST_SUBVERB else (rest or None)
+        return ("LIST", tail, None)
     if verb == PROMOTE_COMMAND:
         candidate_id, _, reason = rest.partition(" ")
         candidate_id = candidate_id.strip() or None
@@ -140,7 +148,15 @@ def apply_memory_command(
     if action == "LIST":
         # Read-only: no kill-switch gate, answered in any runtime mode.
         live = _live_candidates(working_memory, stamp)
-        return {"reply": _format_listing(live), "action": "MEMORY_LISTED", "count": len(live)}
+        reply = _format_listing(live)
+        if candidate_id:
+            # The tail was dropped, so say so. `/memory 이거 기억해줘` reads as an instruction
+            # and used to be answered with a listing as if the operator had typed a bare
+            # `/memory` — this channel has no verb that stores what he typed there, and the
+            # listing is not an answer to it. Naming the two real verbs beats guessing.
+            reply += (f"\n\n('{candidate_id}' 부분은 사용하지 않았습니다 — /memory 는 목록만 보여줍니다. "
+                      "승격은 /promote <candidate_id> <사유>, 분석 요청은 명령 없이 그냥 보내주세요.)")
+        return {"reply": reply, "action": "MEMORY_LISTED", "count": len(live)}
 
     # --- PROMOTE (EXECUTE_AND_REPORT) ---------------------------------------------------
     if not candidate_id:
