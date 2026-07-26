@@ -114,6 +114,7 @@ def build_live_position(
     strategy_id: str | None = None,
     candidate_id: str | None = None,
     strategy_rule_hash: str | None = None,
+    strategy_generation_id: str | None = None,
     cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """One OPEN live position, from a real fill. Pure — persisting it is the store's job.
@@ -162,6 +163,10 @@ def build_live_position(
         "strategy_id": strategy_id,
         "candidate_id": candidate_id,
         "strategy_rule_hash": strategy_rule_hash,
+        # The third lineage field the exit reads (`live_leg` -> build_live_outcome_record) and
+        # the one the paper position has always carried. Without it the outcome's generation is
+        # None however faithfully the other two travel.
+        "strategy_generation_id": strategy_generation_id,
         "cycle_id": cycle_id,
     }
     position["position_id"] = integrity.short_id(

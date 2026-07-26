@@ -232,6 +232,18 @@ def build_live_order_intent(
         "stop_loss": plan.get("stop_loss"),
         "take_profit": plan.get("take_profit"),
         "strategy_id": plan.get("strategy_id"),
+        # The lineage, carried for the same reason the paper plan carries it (paper.py's
+        # open_position): `strategy_id` is a DISPLAY id the factory restarts at S001 every
+        # generation, so it cannot attribute a result. LP5.4's bridge, `lifecycle` and the C6
+        # feedback all group live outcomes by these three — and the executing leg reads them
+        # off the intent, which is the record that crosses from planning to execution. Until
+        # 2026-07-26 only `strategy_id` was copied, so a live trade placed through the real
+        # pipeline reached the ledger with no lineage at all: a live loss could not demote the
+        # strategy that caused it, and a later generation answering to the same display name
+        # could inherit or be judged by it. Exactly what LP5.4 exists to prevent.
+        "candidate_id": plan.get("candidate_id"),
+        "strategy_rule_hash": plan.get("strategy_rule_hash"),
+        "strategy_generation_id": plan.get("strategy_generation_id"),
         "position_id": plan.get("position_id"),
         "candle_time": plan.get("candle_time"),
         "connectivity_test": False,
