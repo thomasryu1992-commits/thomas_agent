@@ -514,3 +514,82 @@ def test_an_empty_board_still_renders():
     text = render_status_text({"created_at": "2026-07-26T03:55:33Z", "performance": {},
                                "pool_size": 0, "pool_status_counts": {}})
     assert "판단:" in text and "근거 없음" in text
+
+
+# --- the dashboard must not hold the ledger in memory --------------------------------
+#
+# It used to read_text() the whole record ledger, splitlines() it, and parse every row into
+# a list — to keep the last twelve. On the live host that ledger is 56MB / 3881 rows, and
+# parsed JSON is several times its text size: the read OOM-killed on a host with 400MB
+# free, and would have taken the scheduler down with it at the next daily report.
+
+def _ledger_with_cycles(root, *, cycles: int, noise: int, filler: int = 0):
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+    path = root / LEDGER_REL / RECORDS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for index in range(noise):
+            handle.write(json.dumps({"kind": "agent_output", "trace_id": f"t{index}",
+                                     "record": {"pad": "x" * filler}}) + "\n")
+        for index in range(cycles):
+            handle.write(json.dumps({"kind": "crypto_cycle", "trace_id": f"c{index}",
+                                     "record": {"created_at": f"2026-07-26T00:{index:02d}:00Z",
+                                                "verdict_status": "ALLOW",
+                                                "pad": "x" * filler}}) + "\n")
+    return path
+
+
+def test_cycle_read_keeps_only_the_window_it_needs(tmp_path):
+    import tracemalloc
+    from runtime.mvp_runtime.crypto.dashboard import _read_cycle_records
+
+    # ~8MB of ledger; the old implementation's peak scaled with this, the new one does not.
+    _ledger_with_cycles(tmp_path, cycles=400, noise=400, filler=10_000)
+    tracemalloc.start()
+    rows, warning = _read_cycle_records(tmp_path, 12)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert warning is None
+    assert len(rows) == 12
+    assert rows[-1]["created_at"] == "2026-07-26T00:399:00Z"
+    # A bounded window: nowhere near the ~8MB the file occupies, let alone its parsed size.
+    assert peak < 2 * 1024 * 1024, f"peak {peak} suggests the ledger is being held in memory"
+
+
+def test_the_window_is_the_most_recent_cycles(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import _read_cycle_records
+
+    _ledger_with_cycles(tmp_path, cycles=30, noise=5)
+    rows, _ = _read_cycle_records(tmp_path, 3)
+    assert [r["created_at"][-6:-1] for r in rows] == ["27:00", "28:00", "29:00"]
+
+
+def test_a_corrupt_row_elsewhere_no_longer_blinds_the_board(tmp_path):
+    """One bad line anywhere used to fail the whole read. A row that is not a cycle is not
+    this reader's business."""
+    from runtime.mvp_runtime.crypto.dashboard import _read_cycle_records
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    path = _ledger_with_cycles(tmp_path, cycles=2, noise=0)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("{not json at all\n")
+    rows, warning = _read_cycle_records(tmp_path, 12)
+    assert len(rows) == 2 and warning is None
+
+
+def test_a_corrupt_cycle_row_is_reported(tmp_path):
+    """A row that looks like a cycle and will not parse IS this reader's business."""
+    from runtime.mvp_runtime.crypto.dashboard import _read_cycle_records
+
+    path = _ledger_with_cycles(tmp_path, cycles=2, noise=0)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "crypto_cycle", broken\n')
+    rows, warning = _read_cycle_records(tmp_path, 12)
+    assert len(rows) == 2
+    assert "unparsable" in warning
+
+
+def test_a_missing_ledger_is_not_an_error(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import _read_cycle_records
+    assert _read_cycle_records(tmp_path, 12) == ([], None)
