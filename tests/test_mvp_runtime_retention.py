@@ -222,3 +222,104 @@ def test_cli_refuses_a_protected_ledger(tmp_path, capsys):
     _fill(store, AUDIT_FILE, 300)
     assert ledger_cli.main(["rotate", "--file", AUDIT_FILE], store=store, now=NOW) != 0
     assert len(_read_lines(store.root / AUDIT_FILE)) == 300
+
+
+# --- scheduled rotation ------------------------------------------------------
+#
+# Safe to run unattended for exactly one reason: rotation archives and can delete nothing.
+# These pin that the scheduled path inherits every guard rather than reimplementing any —
+# including the kill switch, which binds it like every other scheduled execution.
+
+def _rotate_schedule(tmp_path, *, request: str = "", now: str = NOW):
+    from runtime.mvp_runtime import scheduler
+    store = scheduler.ScheduleStore(tmp_path)
+    store.add(scheduler.build_schedule(kind=scheduler.KIND_ROTATE, request=request,
+                                       interval_seconds=3600, created_by="test", now=now))
+    return store
+
+
+def _due(now: str) -> str:
+    from runtime.mvp_runtime import timeutil
+    return timeutil.plus_seconds(now, 3601)
+
+
+def test_a_scheduled_fire_rotates_and_reports_what_moved(tmp_path):
+    from runtime.mvp_runtime import scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    schedules = _rotate_schedule(tmp_path)
+
+    summary = scheduler.run_due(schedules, now=_due(NOW), ledger=ledger, repo_root=tmp_path)
+
+    assert summary["fired"] == 1
+    assert "rotated=" in summary["results"][0]["status"]
+    assert len(_read_lines(ledger.root / RECORDS_FILE)) == retention.DEFAULT_KEEP_ROWS \
+        or len(_read_lines(ledger.root / RECORDS_FILE)) == 300      # below the default limit
+
+
+def test_the_schedule_may_carry_its_own_row_limit(tmp_path):
+    from runtime.mvp_runtime import scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    schedules = _rotate_schedule(tmp_path, request="50")
+
+    scheduler.run_due(schedules, now=_due(NOW), ledger=ledger, repo_root=tmp_path)
+
+    assert len(_read_lines(ledger.root / RECORDS_FILE)) == 50
+
+
+def test_an_unparseable_limit_falls_back_to_the_default_never_to_a_smaller_one(tmp_path):
+    """Guessing a smaller number would archive more than asked — the lossier direction."""
+    from runtime.mvp_runtime import scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    schedules = _rotate_schedule(tmp_path, request="every-day-please")
+
+    scheduler.run_due(schedules, now=_due(NOW), ledger=ledger, repo_root=tmp_path)
+
+    # 300 < DEFAULT_KEEP_ROWS, so the default means "nothing to do" — nothing was archived.
+    assert len(_read_lines(ledger.root / RECORDS_FILE)) == 300
+
+
+def test_scheduled_rotation_never_touches_the_protected_ledgers(tmp_path):
+    from runtime.mvp_runtime import scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    _fill(ledger, AUDIT_FILE, 300)
+    _fill(ledger, CONTROL_FILE, 300)
+    before = {n: (ledger.root / n).read_bytes() for n in (AUDIT_FILE, CONTROL_FILE)}
+    schedules = _rotate_schedule(tmp_path, request="10")
+
+    scheduler.run_due(schedules, now=_due(NOW), ledger=ledger, repo_root=tmp_path)
+
+    assert {n: (ledger.root / n).read_bytes() for n in before} == before
+
+
+def test_the_kill_switch_stops_a_due_rotation(tmp_path):
+    """Bound like every scheduled execution — `kill_blocks: scheduler_execution`."""
+    from runtime.mvp_runtime import control, scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    control_store = control.ControlStore(tmp_path / "control")
+    control_store.save(control.ControlState(mode=control.KILLED, updated_by="tg-1",
+                                            updated_at=NOW, reason="test"))
+    schedules = _rotate_schedule(tmp_path, request="10")
+
+    summary = scheduler.run_due(schedules, now=_due(NOW), ledger=ledger,
+                                control_store=control_store, repo_root=tmp_path)
+
+    assert summary["fired"] == 0 and summary["skipped"] == 1
+    assert len(_read_lines(ledger.root / RECORDS_FILE)) == 300
+
+
+def test_a_fire_without_a_ledger_skips_rather_than_crashing(tmp_path):
+    from runtime.mvp_runtime import scheduler
+
+    schedules = _rotate_schedule(tmp_path)
+    summary = scheduler.run_due(schedules, now=_due(NOW), ledger=None, repo_root=tmp_path)
+    assert summary["results"][0]["status"] == "skipped_no_ledger"

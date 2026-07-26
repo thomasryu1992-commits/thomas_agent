@@ -14,6 +14,9 @@ Governance and safety:
   concurrency control is a later increment.
 - Each scheduled task runs through the **full pipeline** (`run_task`) — same intake, planning,
   permission, budget, and audit as an operator request; the scheduler grants no new authority.
+- Maintenance kinds do only what their module already allows unattended: `memory_prune`
+  deletes expired working-memory candidates (R5 retention), `ledger_rotate` archives ledger
+  rows and can delete nothing at all (LEDGER_RETENTION_V0.1).
 - Every fire (or kill-skip) is recorded to the durable ledger.
 
 State is local, per-machine, gitignored (like the ledger, control state, and working memory):
@@ -29,7 +32,7 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from . import jsonl, memory, task_registry, timeutil
+from . import jsonl, memory, retention, task_registry, timeutil
 from .events import stamped_event
 from .control import ControlStore
 from .errors import MvpRuntimeError, SchedulerBlocked, ToolBlocked
@@ -64,8 +67,13 @@ KIND_FACTORY = "crypto_factory"
 KIND_REPORT = "crypto_report"
 KIND_PROPOSER = "crypto_propose"
 KIND_DATA_REVIEW = "crypto_data_review"
+# Ledger retention (LEDGER_RETENTION_V0.1). Safe to run unattended for one reason only:
+# rotation ARCHIVES, it never deletes — a scheduled job that can only move bytes between
+# files cannot conceal anything, and the audit chain and control-event ledger are refused
+# by the retention module itself, not by this caller remembering to skip them.
+KIND_ROTATE = "ledger_rotate"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
-                   KIND_PROPOSER, KIND_DATA_REVIEW})
+                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -453,6 +461,27 @@ def _execute(
             return "skipped_no_memory_store"
         summary = memory.prune_working_memory(working_memory, ledger, now=now, reason=f"scheduled:{schedule.schedule_id}")
         return f"pruned:{summary['removed_count']}"
+    if schedule.kind == KIND_ROTATE:
+        if ledger is None:
+            return "skipped_no_ledger"
+        # `request` optionally carries the row limit ("500"); anything unparseable falls
+        # back to the module default rather than guessing a smaller, lossier number.
+        keep = retention.DEFAULT_KEEP_ROWS
+        raw = schedule.request.split()
+        if raw:
+            try:
+                keep = int(raw[0])
+            except ValueError:
+                pass
+        summary = retention.rotate_all(ledger, keep_rows=keep, now=now)
+        detail = f"rotated={summary['rotated_rows']} keep={keep}"
+        if summary["failures"]:
+            # Reported in the fire's status, not swallowed: a ledger that could not be
+            # rotated is one that keeps growing, and the operator should see which.
+            detail += " failed=" + ",".join(f["filename"] for f in summary["failures"])
+        if summary.get("event_error"):
+            detail += f" unrecorded={summary['event_error']}"
+        return detail
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the
