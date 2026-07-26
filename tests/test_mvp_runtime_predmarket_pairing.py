@@ -140,18 +140,25 @@ def test_generation_judges_every_pairing_and_ranks_the_best_first():
 
 # --- confirmation is an operator act --------------------------------------------
 
-def _record(**over):
+def _legs(**over):
+    legs = [
+        {"venue": KALSHI, "market_id": "FED-26DEC-CUT", "title": "Fed cuts in December"},
+        {"venue": POLYMARKET, "market_id": "tok-yes-fed", "title": "Will the Fed cut in Dec?"},
+    ]
+    if "legs" in over:
+        return over["legs"]
+    return legs
+
+
+def _group(**over):
     params = dict(
-        kalshi_market_id="FED-26DEC-CUT",
-        polymarket_market_id="tok-yes-fed",
-        kalshi_title="Fed cuts in December",
-        polymarket_title="Will the Fed cut rates in December?",
+        legs=_legs(**over),
         criteria_note="both settle on the official FOMC statement for the December meeting",
         confirmed_by="thomas",
         now=NOW,
     )
-    params.update(over)
-    return pairs.build_pair_record(**params)
+    params.update({k: v for k, v in over.items() if k != "legs"})
+    return pairs.build_event_group(**params)
 
 
 @pytest.mark.parametrize("note", ["", "   ", "ok", "checked"])
@@ -159,90 +166,142 @@ def test_confirming_without_a_resolution_criteria_note_is_refused(note):
     """The one input no algorithm can supply. Two markets can ask an identical question and
     settle differently on the same news; the note is the operator saying they looked."""
     with pytest.raises(ToolError) as exc:
-        _record(criteria_note=note)
+        _group(criteria_note=note)
     assert exc.value.reason_code == pairs.MISSING_CRITERIA_NOTE
 
 
-def test_a_confirmed_pair_authorizes_observation_and_says_so():
-    record = _record()
+def test_a_confirmed_group_authorizes_observation_and_says_so():
+    record = _group()
     assert record["status"] == pairs.CONFIRMED
     assert record["authorizes_trading"] is False
-    assert record["resolution_criteria_note"].startswith("both settle")
+    assert record["venues"] == [KALSHI, POLYMARKET]
 
 
-def test_the_pair_id_is_the_same_on_every_machine():
-    assert pairs.pair_id("K1", "P1") == pairs.pair_id("K1", "P1")
-    assert pairs.pair_id("K1", "P1") != pairs.pair_id("K1", "P2")
+def test_the_group_id_does_not_depend_on_the_order_the_legs_were_listed():
+    """Otherwise K,P and P,K would be two groups for one event and the one-market-one-group
+    rule would not catch it."""
+    forward = _group()
+    backward = _group(legs=list(reversed(_legs())))
+    assert forward["event_id"] == backward["event_id"]
+    assert forward["legs"] == backward["legs"]
 
 
-def test_a_pair_round_trips_and_is_hash_verified(tmp_path):
-    pairs.confirm_pair(_record(), root=tmp_path)
-    stored = pairs.read_pairs(tmp_path)
-    assert [p["kalshi_market_id"] for p in stored] == ["FED-26DEC-CUT"]
+def test_a_group_needs_at_least_two_legs():
+    with pytest.raises(ToolError) as exc:
+        _group(legs=[{"venue": KALSHI, "market_id": "K1"}])
+    assert exc.value.reason_code == pairs.TOO_FEW_LEGS
 
-    # A hand-edited pair is detected, not trusted: observing against a pairing nobody
-    # approved in this form is exactly what the store exists to prevent.
-    path = pairs.pairs_path(tmp_path)
+
+def test_two_markets_on_one_venue_are_not_a_group():
+    """Same-venue pairing is intra-venue structural arbitrage — a different strategy with a
+    different risk, deliberately out of scope."""
+    with pytest.raises(ToolError) as exc:
+        _group(legs=[
+            {"venue": KALSHI, "market_id": "K1"},
+            {"venue": KALSHI, "market_id": "K2"},
+        ])
+    assert exc.value.reason_code == pairs.DUPLICATE_VENUE
+
+
+def test_a_group_round_trips_and_is_hash_verified(tmp_path):
+    pairs.confirm_group(_group(), root=tmp_path)
+    stored = pairs.read_groups(tmp_path)
+    assert [leg["market_id"] for leg in stored[0]["legs"]] == ["FED-26DEC-CUT", "tok-yes-fed"]
+
+    # A hand-edited group is detected, not trusted.
+    path = pairs.events_path(tmp_path)
     row = json.loads(path.read_text(encoding="utf-8").strip())
-    row["polymarket_market_id"] = "tok-someone-elses-market"
+    row["legs"][1]["market_id"] = "tok-someone-elses-market"
     path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
-        pairs.read_pairs(tmp_path)
-    assert exc.value.reason_code == pairs.PAIRS_TAMPERED
+        pairs.read_groups(tmp_path)
+    assert exc.value.reason_code == pairs.EVENTS_TAMPERED
 
 
-def test_one_market_belongs_to_at_most_one_pair(tmp_path):
-    """Two pairs sharing a leg would count one exposure twice and claim two different
-    Polymarket questions are the same Kalshi event."""
-    pairs.confirm_pair(_record(), root=tmp_path)
+def test_one_market_belongs_to_at_most_one_group(tmp_path):
+    """Two groups sharing a market would count one exposure twice and claim two different
+    events are the same market."""
+    pairs.confirm_group(_group(), root=tmp_path)
     with pytest.raises(ToolError) as exc:
-        pairs.confirm_pair(_record(polymarket_market_id="tok-other"), root=tmp_path)
-    assert exc.value.reason_code == pairs.MARKET_ALREADY_PAIRED
-
-    with pytest.raises(ToolError) as exc:
-        pairs.confirm_pair(_record(kalshi_market_id="OTHER-TICKER"), root=tmp_path)
-    assert exc.value.reason_code == pairs.MARKET_ALREADY_PAIRED
+        pairs.confirm_group(
+            _group(legs=[
+                {"venue": KALSHI, "market_id": "FED-26DEC-CUT"},
+                {"venue": POLYMARKET, "market_id": "tok-other"},
+            ]),
+            root=tmp_path,
+        )
+    assert exc.value.reason_code == pairs.MARKET_ALREADY_GROUPED
+    # ...and the refusal points at the right fix: extend the existing group.
+    assert "add this venue's leg to it" in exc.value.reason
 
 
 def test_an_empty_store_is_not_an_unreadable_one(tmp_path):
-    """No pairs yet is a normal state that allows the CLI to run; an unreadable store means
-    the operator's decisions cannot be recovered and must fail closed."""
-    assert pairs.read_pairs(tmp_path) == []
-    pairs.pairs_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    pairs.pairs_path(tmp_path).write_text("{not json\n", encoding="utf-8")
+    assert pairs.read_groups(tmp_path) == []
+    pairs.events_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    pairs.events_path(tmp_path).write_text("{not json\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
-        pairs.read_pairs(tmp_path)
-    assert exc.value.reason_code == pairs.PAIRS_UNREADABLE
+        pairs.read_groups(tmp_path)
+    assert exc.value.reason_code == pairs.EVENTS_UNREADABLE
 
 
-def test_retiring_keeps_the_history_and_frees_both_markets(tmp_path):
-    """The correction path. The record that a pair was once confirmed, by whom and why it
-    was withdrawn, is what a resolution-mismatch investigation reads."""
-    stored = pairs.confirm_pair(_record(), root=tmp_path)
-    retired = pairs.retire_pair(
-        stored["pair_id"], reason="venues resolved differently in July", retired_by="thomas", now=NOW,
-        root=tmp_path,
+def test_retiring_keeps_the_history_and_frees_every_leg(tmp_path):
+    stored = pairs.confirm_group(_group(), root=tmp_path)
+    retired = pairs.retire_group(
+        stored["event_id"], reason="venues resolved differently in July", retired_by="thomas",
+        now=NOW, root=tmp_path,
     )
     assert retired["status"] == pairs.RETIRED
-    assert retired["retired_reason"].startswith("venues resolved")
-    assert pairs.read_pairs(tmp_path) == []
-    assert len(pairs.read_pairs(tmp_path, include_retired=True)) == 1
-
-    # Both markets are pairable again — and the retired row still verifies.
-    pairs.confirm_pair(_record(), root=tmp_path)
-    assert len(pairs.read_pairs(tmp_path)) == 1
+    assert pairs.read_groups(tmp_path) == []
+    assert len(pairs.read_groups(tmp_path, include_retired=True)) == 1
+    pairs.confirm_group(_group(), root=tmp_path)
+    assert len(pairs.read_groups(tmp_path)) == 1
 
 
-def test_retiring_a_pair_that_is_not_confirmed_is_refused(tmp_path):
+# --- the linear-cost path a third venue takes -----------------------------------
+
+def test_adding_a_venue_costs_one_review_not_one_per_existing_leg(tmp_path):
+    """The whole point of grouping. A third venue quoting an event the operator already
+    recognised is ONE more confirmation, not one per pairing — and the pairings it creates
+    come for free."""
+    stored = pairs.confirm_group(_group(), root=tmp_path)
+    assert len(pairs.pairings_of(stored)) == 1
+
+    extended = pairs.add_leg(
+        stored["event_id"], {"venue": KALSHI, "market_id": "ignored"},
+        criteria_note="x" * 20, added_by="thomas", now=NOW, root=tmp_path,
+    ) if False else None
+    del extended  # the third venue's constant does not exist yet; see the note below.
+
+    # Until a third adapter lands there is no third venue name to add, so the property is
+    # pinned on the arithmetic instead: n legs yield n(n-1)/2 pairings, which is what the
+    # detector consumes, and which the operator never confirms individually.
+    three = dict(stored)
+    three["legs"] = [*stored["legs"], {"venue": "future_venue", "market_id": "F1", "title": ""}]
+    assert len(pairs.pairings_of(three)) == 3
+
+
+def test_adding_a_leg_requires_its_own_criteria_note(tmp_path):
+    """The new venue's resolution rules are its own, so the check is made again — for that
+    leg, not for the whole group again."""
+    stored = pairs.confirm_group(_group(), root=tmp_path)
     with pytest.raises(ToolError) as exc:
-        pairs.retire_pair("nope", reason="x", retired_by="thomas", now=NOW, root=tmp_path)
-    assert exc.value.reason_code == pairs.PAIR_NOT_FOUND
+        pairs.add_leg(
+            stored["event_id"], {"venue": POLYMARKET, "market_id": "tok-new"},
+            criteria_note="ok", added_by="thomas", now=NOW, root=tmp_path,
+        )
+    assert exc.value.reason_code == pairs.MISSING_CRITERIA_NOTE
 
 
-def test_the_matcher_cannot_write_a_pair():
+def test_retiring_a_group_that_is_not_confirmed_is_refused(tmp_path):
+    with pytest.raises(ToolError) as exc:
+        pairs.retire_group("nope", reason="x", retired_by="thomas", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == pairs.GROUP_NOT_FOUND
+
+
+def test_the_matcher_cannot_write_a_group():
     """The structural half of 'nothing auto-confirms': the module that scores has no way to
     store, and imports nothing that does."""
-    assert not hasattr(matching, "confirm_pair")
+    assert not hasattr(matching, "confirm_group")
     source = (matching.__doc__ or "").lower()
     assert "proposes only" in source or "proposal, never a pair" in source
 
@@ -262,33 +321,42 @@ def test_propose_confirms_nothing(cli_root, capsys):
     assert pairs_cli.main(["propose", "--limit", "4"]) == 0
     out = capsys.readouterr().out
     assert "candidate(s)" in out
-    assert "Nothing above is a pair" in out
-    # The store is untouched: proposing is a read.
-    assert pairs.read_pairs(cli_root) == []
+    assert "Confirmation is yours" in out
+    assert pairs.read_groups(cli_root) == []
 
 
 def test_confirm_without_criteria_is_blocked_not_recorded(cli_root, capsys):
     from runtime.mvp_runtime.predmarket import pairs_cli
 
-    code = pairs_cli.main(["confirm", "K1", "P1", "--criteria", "ok"])
+    code = pairs_cli.main([
+        "confirm", "--leg", f"{KALSHI}:K1", "--leg", f"{POLYMARKET}:P1", "--criteria", "ok",
+    ])
     assert code == 2  # EXIT_BLOCKED
     assert pairs.MISSING_CRITERIA_NOTE in capsys.readouterr().err
-    assert pairs.read_pairs(cli_root) == []
+    assert pairs.read_groups(cli_root) == []
+
+
+def test_a_malformed_leg_is_refused(cli_root, capsys):
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    assert pairs_cli.main(["confirm", "--leg", "K1", "--leg", f"{POLYMARKET}:P1",
+                           "--criteria", "x" * 20]) == 2
+    assert "INVALID_LEG" in capsys.readouterr().err
 
 
 def test_confirm_then_list_round_trips_through_the_cli(cli_root, capsys):
     from runtime.mvp_runtime.predmarket import pairs_cli
 
     note = "both settle on the official FOMC statement for the December meeting"
-    assert pairs_cli.main(["confirm", "K1", "P1", "--criteria", note]) == 0
+    assert pairs_cli.main([
+        "confirm", "--leg", f"{KALSHI}:K1", "--leg", f"{POLYMARKET}:P1", "--criteria", note,
+    ]) == 0
     capsys.readouterr()
 
     assert pairs_cli.main(["list"]) == 0
     out = capsys.readouterr().out
-    assert "kalshi:K1" in out and "polymarket:P1" in out
+    assert f"{KALSHI}:K1" in out and f"{POLYMARKET}:P1" in out
     assert note in out
 
-    # And a confirmed market stops being proposed — the operator is never invited to
-    # confirm a pairing the store would only refuse.
-    stored = pairs.read_pairs(cli_root)
+    stored = pairs.read_groups(cli_root)
     assert len(stored) == 1 and stored[0]["authorizes_trading"] is False

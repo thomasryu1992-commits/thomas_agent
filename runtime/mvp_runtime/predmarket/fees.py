@@ -37,7 +37,7 @@ that may never come.
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..coerce import as_optional_float
 from .market_data import KALSHI, POLYMARKET, require_venue
@@ -113,6 +113,22 @@ def polymarket_taker_rate(category: Any) -> float:
     return POLYMARKET_TAKER_RATES.get(key, POLYMARKET_DEFAULT_TAKER_RATE)
 
 
+# One row per venue, so a third venue is a data addition rather than another branch. Every
+# row is `rate x contracts x P x (1-P)` rounded up; venues differ only in the rate (flat or
+# per category) and the rounding unit. `require_venue` fails closed on anything not here, so
+# a venue whose fees nobody looked up cannot be quoted a zero cost by accident.
+_VENUE_FEES: dict[str, dict[str, Any]] = {
+    KALSHI: {
+        "rate_of": lambda _category: KALSHI_TAKER_RATE,
+        "rounding_unit": KALSHI_ROUNDING_UNIT,
+    },
+    POLYMARKET: {
+        "rate_of": lambda category: polymarket_taker_rate(category),
+        "rounding_unit": POLYMARKET_ROUNDING_UNIT,
+    },
+}
+
+
 def taker_fee(
     venue: str, *, price: Any, contracts: Any = 1.0, category: Any = None
 ) -> float | None:
@@ -131,38 +147,44 @@ def taker_fee(
     if p is None or size is None or not (0.0 < p < 1.0) or size <= 0:
         return None
 
-    if venue == KALSHI:
-        raw = KALSHI_TAKER_RATE * size * p * (1.0 - p)
-        return _round_up(raw, KALSHI_ROUNDING_UNIT)
-    rate = polymarket_taker_rate(category)
+    schedule = _VENUE_FEES[venue]
+    rate = schedule["rate_of"](category)
     if rate <= 0.0:
         return 0.0
-    return _round_up(rate * size * p * (1.0 - p), POLYMARKET_ROUNDING_UNIT)
+    return _round_up(rate * size * p * (1.0 - p), schedule["rounding_unit"])
 
 
 def round_trip_fee(
-    *,
-    kalshi_price: Any,
-    polymarket_price: Any,
-    contracts: Any = 1.0,
-    polymarket_category: Any = None,
+    legs: Sequence[Mapping[str, Any]], *, contracts: Any = 1.0
 ) -> dict[str, Any]:
-    """Both legs of one cross-venue position. Returns the parts and the total, or ``None``s.
+    """Every leg of one cross-venue position. Returns the per-leg parts and the total.
 
-    A cross-venue arb pays a taker fee on **both** venues; reporting one leg would understate
-    the cost by roughly half. If either leg cannot be priced, ``total`` is ``None`` — the
+    ``legs`` is ``[{"venue": ..., "price": ..., "category": ...}, ...]`` — venue-agnostic on
+    purpose, so a third venue costs a row in ``_VENUE_FEES`` and nothing here.
+
+    A cross-venue position pays a taker fee on **every** leg; charging one would understate the
+    cost by roughly half. If any leg cannot be priced, ``total_fee_usd`` is ``None`` — the
     position's cost is unknown, and an unknown cost is not a zero cost.
     """
-    kalshi = taker_fee(KALSHI, price=kalshi_price, contracts=contracts)
-    poly = taker_fee(
-        POLYMARKET, price=polymarket_price, contracts=contracts, category=polymarket_category
-    )
-    total = None if kalshi is None or poly is None else round(kalshi + poly, 10)
+    priced: list[dict[str, Any]] = []
+    total: float | None = 0.0
+    for leg in legs:
+        venue = require_venue((leg or {}).get("venue"))
+        category = leg.get("category")
+        fee = taker_fee(venue, price=leg.get("price"), contracts=contracts, category=category)
+        priced.append({
+            "venue": venue,
+            "price": as_optional_float(leg.get("price")),
+            "taker_rate": _VENUE_FEES[venue]["rate_of"](category),
+            "fee_usd": fee,
+        })
+        if fee is None or total is None:
+            total = None
+        else:
+            total = round(total + fee, 10)
     return {
         "fees_version": FEES_VERSION,
-        "kalshi_fee_usd": kalshi,
-        "polymarket_fee_usd": poly,
-        "polymarket_taker_rate": polymarket_taker_rate(polymarket_category),
+        "legs": priced,
         "contracts": as_optional_float(contracts),
         "total_fee_usd": total,
     }

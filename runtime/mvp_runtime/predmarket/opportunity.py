@@ -1,7 +1,7 @@
 """PM1 — is the gap between two venues real once it is paid for? Read-only; decides nothing.
 
-The observation half of the track. Given one operator-confirmed pair and both venues' current
-quotes, this computes what a market-neutral cross-venue position would actually earn, net of
+The observation half of the track. Given one operator-confirmed event group and its venues'
+current quotes, this computes what a market-neutral cross-venue position would actually earn, net of
 the taker fee on **both** legs, and records it. Repeated over weeks, those records answer the
 three questions PM1 exists to answer: **how often, how large, and how long they last.**
 
@@ -41,13 +41,14 @@ from typing import Any, Mapping
 from runtime.read_only_kernel import integrity
 
 from .fees import round_trip_fee
-from .market_data import KALSHI, POLYMARKET, PredMarket, VenueQuote
+from .market_data import PredMarket, VenueQuote
 
 OPPORTUNITY_VERSION = "predmarket_opportunity.v0.1"
 
-# Directions, named from where the YES leg is bought.
-BUY_YES_KALSHI = "BUY_YES_KALSHI_SELL_YES_POLYMARKET"
-BUY_YES_POLYMARKET = "BUY_YES_POLYMARKET_SELL_YES_KALSHI"
+def direction_name(buy_venue: str, sell_venue: str) -> str:
+    """The direction, named from where the YES leg is bought. Derived rather than enumerated,
+    so a third venue needs no new constant."""
+    return f"BUY_YES_{buy_venue.upper()}_SELL_YES_{sell_venue.upper()}"
 
 # Why no number could be produced. An observation with a reason is still worth recording:
 # "we looked and could not see" is different from "we did not look", and a report that
@@ -77,20 +78,20 @@ def _direction(
     sell_venue: str,
     sell_price: float | None,
     sell_size: float | None,
-    polymarket_category: Any,
+    buy_category: Any,
+    sell_category: Any,
     contracts: float,
 ) -> dict[str, Any] | None:
     """One direction's economics, or ``None`` when either leg is unquoted."""
     if buy_price is None or sell_price is None:
         return None
     gross = round(sell_price - buy_price, 10)
-    kalshi_price = buy_price if buy_venue == KALSHI else sell_price
-    poly_price = buy_price if buy_venue == POLYMARKET else sell_price
     fees = round_trip_fee(
-        kalshi_price=kalshi_price,
-        polymarket_price=poly_price,
+        [
+            {"venue": buy_venue, "price": buy_price, "category": buy_category},
+            {"venue": sell_venue, "price": sell_price, "category": sell_category},
+        ],
         contracts=contracts,
-        polymarket_category=polymarket_category,
     )
     total_fee = fees["total_fee_usd"]
     # Per contract, so gross and net are comparable regardless of the size at the touch.
@@ -101,7 +102,7 @@ def _direction(
     sizes = [s for s in (buy_size, sell_size) if s is not None]
     size_at_touch = min(sizes) if len(sizes) == 2 else None
     return {
-        "direction": BUY_YES_KALSHI if buy_venue == KALSHI else BUY_YES_POLYMARKET,
+        "direction": direction_name(buy_venue, sell_venue),
         "buy": Leg(buy_venue, "BUY_YES", buy_price, buy_size).as_dict(),
         # Selling YES is buying NO; named as sell because that is what the YES book shows.
         "sell": Leg(sell_venue, "SELL_YES", sell_price, sell_size).as_dict(),
@@ -114,38 +115,43 @@ def _direction(
     }
 
 
-def evaluate_pair(
-    kalshi: PredMarket,
-    polymarket: PredMarket,
+def evaluate_pairing(
+    left: PredMarket,
+    right: PredMarket,
     *,
     contracts: float = 1.0,
     now: str,
-    pair_id: str | None = None,
+    event_id: str | None = None,
 ) -> dict[str, Any]:
-    """One observation of one confirmed pair. Pure: no I/O, no venue, no order.
+    """One observation of one leg pairing inside a confirmed event group. Pure: no I/O.
+
+    Venue-agnostic by construction: the two markets are ``left`` and ``right``, not "the
+    Kalshi one" and "the Polymarket one", so a third venue is compared by the same code that
+    compares the first two. ``pairs.pairings_of`` enumerates which pairings exist; this
+    prices one of them.
 
     Both directions are computed and the better *net* one is reported as ``best``. Better by
-    net rather than gross on purpose: the two directions can pay different fees, because the
-    fee depends on each leg's own price, so the wider gross gap is not always the one worth
+    net rather than gross on purpose: the two directions can pay different fees, because each
+    leg's fee depends on its own price, so the wider gross gap is not always the one worth
     having.
     """
-    k_quote: VenueQuote = kalshi.quote
-    p_quote: VenueQuote = polymarket.quote
+    left_quote: VenueQuote = left.quote
+    right_quote: VenueQuote = right.quote
 
     reasons: list[str] = []
-    if not (k_quote.quoted() and p_quote.quoted()):
+    if not (left_quote.quoted() and right_quote.quoted()):
         reasons.append(NOT_QUOTED)
 
     directions = [
         _direction(
-            buy_venue=KALSHI, buy_price=k_quote.yes_ask, buy_size=k_quote.yes_ask_size,
-            sell_venue=POLYMARKET, sell_price=p_quote.yes_bid, sell_size=p_quote.yes_bid_size,
-            polymarket_category=polymarket.category, contracts=contracts,
+            buy_venue=left.venue, buy_price=left_quote.yes_ask, buy_size=left_quote.yes_ask_size,
+            sell_venue=right.venue, sell_price=right_quote.yes_bid, sell_size=right_quote.yes_bid_size,
+            buy_category=left.category, sell_category=right.category, contracts=contracts,
         ),
         _direction(
-            buy_venue=POLYMARKET, buy_price=p_quote.yes_ask, buy_size=p_quote.yes_ask_size,
-            sell_venue=KALSHI, sell_price=k_quote.yes_bid, sell_size=k_quote.yes_bid_size,
-            polymarket_category=polymarket.category, contracts=contracts,
+            buy_venue=right.venue, buy_price=right_quote.yes_ask, buy_size=right_quote.yes_ask_size,
+            sell_venue=left.venue, sell_price=left_quote.yes_bid, sell_size=left_quote.yes_bid_size,
+            buy_category=right.category, sell_category=left.category, contracts=contracts,
         ),
     ]
     priced = [d for d in directions if d is not None and d["net_edge"] is not None]
@@ -154,14 +160,16 @@ def evaluate_pair(
         # Priced but with no depth on one side: an edge nobody could take any of.
         reasons.append(NO_SIZE)
 
+    legs = [
+        {"venue": left.venue, "market_id": left.market_id, "category": left.category,
+         "quote": left_quote.as_dict()},
+        {"venue": right.venue, "market_id": right.market_id, "category": right.category,
+         "quote": right_quote.as_dict()},
+    ]
     record = {
         "opportunity_version": OPPORTUNITY_VERSION,
-        "pair_id": pair_id,
-        "kalshi_market_id": kalshi.market_id,
-        "polymarket_market_id": polymarket.market_id,
-        "kalshi_quote": k_quote.as_dict(),
-        "polymarket_quote": p_quote.as_dict(),
-        "polymarket_category": polymarket.category,
+        "event_id": event_id,
+        "legs": legs,
         "contracts": contracts,
         "directions": [d for d in directions if d is not None],
         "best": best,
@@ -176,34 +184,64 @@ def evaluate_pair(
     }
     record["observation_id"] = integrity.short_id(
         "predmarket_observation",
-        {"pair": str(pair_id), "k": kalshi.market_id, "p": polymarket.market_id, "at": now},
+        {"event": str(event_id),
+         "legs": [f"{leg['venue']}:{leg['market_id']}" for leg in legs],
+         "at": now},
     )
     return record
 
 
+def evaluate_group(
+    group: Mapping[str, Any],
+    markets_by_key: Mapping[str, PredMarket],
+    *,
+    contracts: float = 1.0,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Every pairing inside one confirmed group, priced. ``markets_by_key`` is keyed
+    ``"venue:market_id"``.
+
+    This is what grouping bought: one operator confirmation yields ``n(n-1)/2`` observations,
+    and a venue added later contributes its pairings without another confirmation. A leg with
+    no current market (that venue's scan degraded) is skipped here rather than compared
+    against nothing — the pairings that *were* readable still get recorded.
+    """
+    from .pairs import pairings_of  # local: pairs imports nothing from here, keep it that way
+
+    observations: list[dict[str, Any]] = []
+    for left_leg, right_leg in pairings_of(group):
+        left = markets_by_key.get(f"{left_leg['venue']}:{left_leg['market_id']}")
+        right = markets_by_key.get(f"{right_leg['venue']}:{right_leg['market_id']}")
+        if left is None or right is None:
+            continue
+        observations.append(evaluate_pairing(
+            left, right, contracts=contracts, now=now, event_id=group.get("event_id")
+        ))
+    return observations
+
+
 def observation_status_line(record: Mapping[str, Any]) -> str:
     """One ASCII line for the console (Windows consoles are cp949)."""
+    legs = " <-> ".join(
+        f"{leg.get('venue')}:{leg.get('market_id')}" for leg in record.get("legs") or []
+    )
     if record.get("reasons"):
-        return (
-            f"{record.get('kalshi_market_id')} <-> {record.get('polymarket_market_id')}: "
-            f"no reading ({','.join(record['reasons'])})"
-        )
+        return f"{legs}: no reading ({','.join(record['reasons'])})"
     best = record.get("best") or {}
     verdict = "OPPORTUNITY" if record.get("is_opportunity") else "no edge"
     return (
-        f"{record.get('kalshi_market_id')} <-> {record.get('polymarket_market_id')}: {verdict} "
-        f"gross={record.get('gross_edge')} net={record.get('net_edge')} "
+        f"{legs}: {verdict} gross={record.get('gross_edge')} net={record.get('net_edge')} "
         f"size={best.get('size_at_touch')} [{best.get('direction')}]"
     )
 
 
 __all__ = [
-    "BUY_YES_KALSHI",
-    "BUY_YES_POLYMARKET",
     "NOT_QUOTED",
     "NO_SIZE",
     "OPPORTUNITY_VERSION",
     "Leg",
-    "evaluate_pair",
+    "direction_name",
+    "evaluate_group",
+    "evaluate_pairing",
     "observation_status_line",
 ]

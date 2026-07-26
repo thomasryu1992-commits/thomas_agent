@@ -1,17 +1,24 @@
 """The operator's door to event pairing — propose, confirm, list, retire.
 
     python -m runtime.mvp_runtime.predmarket.pairs_cli propose
-    python -m runtime.mvp_runtime.predmarket.pairs_cli confirm KALSHI-TICKER TOKEN-ID \\
+    python -m runtime.mvp_runtime.predmarket.pairs_cli confirm \\
+        --leg kalshi:KALSHI-TICKER --leg polymarket:TOKEN-ID \\
         --criteria "both settle on the official BLS CPI release for the same month"
+    python -m runtime.mvp_runtime.predmarket.pairs_cli add-leg <event_id> --leg kalshi:TICKER \\
+        --criteria "this venue resolves on the same release, one day later"
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
-    python -m runtime.mvp_runtime.predmarket.pairs_cli retire <pair_id> --reason "..."
+    python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
 
 ``propose`` reads both venues (through the gate — the mock by default, so this runs on any
 machine with no grant), judges every cross-venue pairing deterministically, and prints the
 candidates with their score breakdown plus the near-misses. **It confirms nothing.**
 
-``confirm`` is the only thing that creates a pair, and it demands the one input no algorithm
-can supply: a note comparing how the two venues *resolve* the event. That is the risk the
+The unit is an **event group**, not a pair: one confirmation covers however many venues quote
+the event, and ``add-leg`` extends it when a new venue appears. The operator's work therefore
+grows with the number of venues, not with the number of pairings between them.
+
+``confirm`` is the only thing that creates a group, and it demands the one input no algorithm
+can supply: a note comparing how the venues *resolve* the event. That is the risk the
 whole strategy turns on — two markets can ask the same question and settle differently — and
 a wrong pair does not error, it manufactures arbitrage forever.
 """
@@ -83,11 +90,11 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     result = matching.generate_candidates(kalshi, poly)
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
-    confirmed = pairs.read_pairs()
-    kalshi_taken, poly_taken = pairs.confirmed_market_ids(confirmed)
+    taken = pairs.grouped_market_keys(pairs.read_groups())
     result["candidates"] = [
         c for c in result["candidates"]
-        if c["kalshi_market_id"] not in kalshi_taken and c["polymarket_market_id"] not in poly_taken
+        if f"{KALSHI}:{c['kalshi_market_id']}" not in taken
+        and f"{POLYMARKET}:{c['polymarket_market_id']}" not in taken
     ]
 
     if args.json:
@@ -107,8 +114,8 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             f"  kalshi     : {row['kalshi_market_id']}  {row['kalshi_title']}\n"
             f"  polymarket : {row['polymarket_market_id']}  {row['polymarket_title']}\n"
             f"  shared     : {', '.join(row['shared_tokens']) or '-'}\n"
-            f"  confirm    : pairs_cli confirm {row['kalshi_market_id']} "
-            f"{row['polymarket_market_id']} --criteria \"...\"\n"
+            f"  confirm    : pairs_cli confirm --leg {KALSHI}:{row['kalshi_market_id']} "
+            f"--leg {POLYMARKET}:{row['polymarket_market_id']} --criteria \"...\"\n"
         )
     if args.near_misses and result["near_misses"]:
         sys.stdout.write("\n-- near misses (why the rules refused; the input for fixing them) --\n")
@@ -118,56 +125,70 @@ def _cmd_propose(args: argparse.Namespace) -> int:
                 f"    {row['kalshi_title']}\n    {row['polymarket_title']}\n"
                 f"    unshared: {', '.join(row['unshared_tokens']) or '-'}\n"
             )
-    sys.stdout.write("\nNothing above is a pair. Confirmation is yours, per pair.\n")
+    sys.stdout.write("\nNothing above is a group. Confirmation is yours, per event.\n")
     return EXIT_OK
 
 
+def _parse_leg(spec: str) -> dict[str, str]:
+    """``venue:market_id`` — the venue is explicit because a market id alone cannot say
+    which book it belongs to, and guessing would put a leg on the wrong venue's fee table."""
+    venue, _, market_id = str(spec).partition(":")
+    if not venue or not market_id:
+        raise MvpRuntimeError("INVALID_LEG", f"--leg must be venue:market_id, got {spec!r}")
+    return {"venue": venue.strip().lower(), "market_id": market_id.strip()}
+
+
 def _cmd_confirm(args: argparse.Namespace) -> int:
-    now = pairs.now_iso()
-    record = pairs.build_pair_record(
-        kalshi_market_id=args.kalshi_market_id,
-        polymarket_market_id=args.polymarket_market_id,
-        kalshi_title=args.kalshi_title or "",
-        polymarket_title=args.polymarket_title or "",
+    record = pairs.build_event_group(
+        legs=[_parse_leg(spec) for spec in args.leg],
         criteria_note=args.criteria,
         confirmed_by=args.by,
-        now=now,
+        now=pairs.now_iso(),
     )
-    stored = pairs.confirm_pair(record)
-    sys.stdout.write(pairs.pair_status_line(stored) + "\n")
+    stored = pairs.confirm_group(record)
+    sys.stdout.write(pairs.group_status_line(stored) + "\n")
     sys.stdout.write(
-        "Recorded. This authorizes OBSERVATION of the pair, and nothing else — "
+        "Recorded. This authorizes OBSERVATION of the group, and nothing else — "
         "no paper position, no order.\n"
     )
     return EXIT_OK
 
 
+def _cmd_add_leg(args: argparse.Namespace) -> int:
+    updated = pairs.add_leg(
+        args.event_id, _parse_leg(args.leg), criteria_note=args.criteria,
+        added_by=args.by, now=pairs.now_iso(),
+    )
+    sys.stdout.write(pairs.group_status_line(updated) + "\n")
+    return EXIT_OK
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
-    rows = pairs.read_pairs(include_retired=args.all)
+    rows = pairs.read_groups(include_retired=args.all)
     if args.json:
         sys.stdout.write(json.dumps(rows, ensure_ascii=False, indent=1) + "\n")
         return EXIT_OK
     if not rows:
-        sys.stdout.write("no confirmed pairs yet\n")
+        sys.stdout.write("no confirmed event groups yet\n")
         return EXIT_OK
     for row in rows:
-        sys.stdout.write(pairs.pair_status_line(row) + "\n")
+        sys.stdout.write(pairs.group_status_line(row) + "\n")
         sys.stdout.write(f"  criteria: {row.get('resolution_criteria_note')}\n")
     return EXIT_OK
 
 
 def _cmd_retire(args: argparse.Namespace) -> int:
-    retired = pairs.retire_pair(
-        args.pair_id, reason=args.reason, retired_by=args.by, now=pairs.now_iso()
+    retired = pairs.retire_group(
+        args.event_id, reason=args.reason, retired_by=args.by, now=pairs.now_iso()
     )
-    sys.stdout.write(pairs.pair_status_line(retired) + "\n")
+    sys.stdout.write(pairs.group_status_line(retired) + "\n")
     return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predmarket-pairs",
-        description="Propose, confirm, list and retire cross-venue event pairs (PM1).",
+        description="Propose, confirm, extend, list and retire cross-venue event groups (PM1).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -178,25 +199,32 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--near-miss-limit", type=int, default=10)
     propose.set_defaults(handler=_cmd_propose)
 
-    confirm = sub.add_parser("confirm", help="record ONE operator-confirmed pair")
-    confirm.add_argument("kalshi_market_id")
-    confirm.add_argument("polymarket_market_id")
+    confirm = sub.add_parser("confirm", help="record ONE operator-confirmed event group")
+    confirm.add_argument(
+        "--leg", action="append", required=True, metavar="VENUE:MARKET_ID",
+        help="repeat for each venue quoting this event (at least two)",
+    )
     confirm.add_argument(
         "--criteria", required=True,
-        help="how BOTH venues resolve this event — the check no algorithm can make",
+        help="how the venues resolve this event — the check no algorithm can make",
     )
-    confirm.add_argument("--kalshi-title", default="")
-    confirm.add_argument("--polymarket-title", default="")
     confirm.add_argument("--by", default="thomas")
     confirm.set_defaults(handler=_cmd_confirm)
 
-    listing = sub.add_parser("list", help="confirmed pairs")
+    extend = sub.add_parser("add-leg", help="add a new venue's leg to a confirmed group")
+    extend.add_argument("event_id")
+    extend.add_argument("--leg", required=True, metavar="VENUE:MARKET_ID")
+    extend.add_argument("--criteria", required=True, help="how THIS venue resolves the event")
+    extend.add_argument("--by", default="thomas")
+    extend.set_defaults(handler=_cmd_add_leg)
+
+    listing = sub.add_parser("list", help="confirmed event groups")
     listing.add_argument("--json", action="store_true")
     listing.add_argument("--all", action="store_true", help="include retired pairs")
     listing.set_defaults(handler=_cmd_list)
 
-    retire = sub.add_parser("retire", help="withdraw a pair that turned out to be wrong")
-    retire.add_argument("pair_id")
+    retire = sub.add_parser("retire", help="withdraw a group that turned out to be wrong")
+    retire.add_argument("event_id")
     retire.add_argument("--reason", required=True)
     retire.add_argument("--by", default="thomas")
     retire.set_defaults(handler=_cmd_retire)
