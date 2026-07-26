@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -32,20 +33,46 @@ from . import account, counterfactual, digest, feedback, paper, pool
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
+    """The last ``limit`` crypto-cycle records, read without holding the ledger in memory.
+
+    This used to ``read_text()`` the whole record ledger, ``splitlines()`` it (a second full
+    copy), and ``json.loads`` **every** row into a list — then keep the last twelve. On the
+    live host that ledger is 56MB / 3881 rows, and parsed JSON is several times its text
+    size, so a board that needs twelve records was allocating on the order of a gigabyte.
+    It OOM-killed on a host with 400MB free, which would have taken the scheduler down with
+    it the next time the daily report fired.
+
+    Now: stream the file, keep a bounded window, and skip the parse entirely for rows that
+    cannot be a cycle. Memory is one line plus ``limit`` records regardless of ledger size.
+
+    The substring pre-filter is a cheap *candidate* test, never the decision — a matching
+    row is still parsed and checked on ``kind``, so a false positive costs one parse and
+    changes nothing. A row that looks like a cycle and will not parse IS this reader's
+    business and becomes a warning; a corrupt row elsewhere in the ledger is not, and no
+    longer blinds the crypto board the way one bad line anywhere used to.
+    """
     path = root / LEDGER_REL / RECORDS_FILE
     if not path.is_file():
         return [], None
+    recent: deque[dict[str, Any]] = deque(maxlen=max(1, limit))
+    unparsable = 0
     try:
-        rows = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("kind") == "crypto_cycle":
-                rows.append(row.get("record") or {})
-        return rows[-limit:], None
-    except (OSError, ValueError) as exc:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if "crypto_cycle" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    unparsable += 1
+                    continue
+                if row.get("kind") == "crypto_cycle":
+                    recent.append(row.get("record") or {})
+    except OSError as exc:
         return [], f"cycle ledger unreadable: {type(exc).__name__}"
+    if unparsable:
+        return list(recent), f"cycle ledger has {unparsable} unparsable row(s)"
+    return list(recent), None
 
 
 def _grants(root: Path) -> list[dict[str, Any]]:
