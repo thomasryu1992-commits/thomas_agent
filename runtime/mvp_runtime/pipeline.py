@@ -178,6 +178,103 @@ def _finalize_block(
     return result
 
 
+def _planned_allocation(
+    *, auto_policy: bool, independent_validation: bool | str, revise: bool
+) -> tuple[int, int]:
+    """``(planned_agents, planned_triage_calls)`` — the ceiling this run is planned under.
+
+    The allocation must cover every agent the plan MAY invoke, because the contract forbids an
+    assignment from exceeding its parent task's remaining budget: two assignments each granted
+    one model call under a task allocated exactly one is the
+    ``subtasks_and_new_assignments_cannot_increase_parent_remaining_budget`` breach, which the
+    runtime silently committed on every validated run until this arithmetic existed.
+
+    M3: an armed revision loop pre-allocates its retry here — a regenerated specialist call
+    plus a re-verify — so a revision can never spend past what the run was planned under
+    (over budget => no loop). A ceiling, not a claim: a run that passes first time simply
+    spends less than it allocated (the triage precedent).
+    """
+    base_agents = 2 if (auto_policy or independent_validation) else 1
+    return base_agents + (2 if revise else 0), (1 if auto_policy else 0)
+
+
+def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path: bool) -> None:
+    """Put the plan's governance records on the run's record set.
+
+    The conditional halves are the point: a validator assignment exists only when one was
+    planned, and the write grant is recorded only when a write was asked for — the ledger must
+    hold the decision an action was taken under, not merely the audit event reporting it.
+    """
+    records.update({
+        "task": plan["task"], "binding": plan["binding"],
+        "permission_decision": plan["permission_decision"],
+        "search_permission_decision": plan["search_permission_decision"],
+        "role_assignment": plan["role_assignment"],
+    })
+    if "validator_assignment" in plan:
+        records["validator_permission_decision"] = plan["validator_permission_decision"]
+        records["validator_assignment"] = plan["validator_assignment"]
+    if wrote_path:
+        records["write_permission_decision"] = plan["write_permission_decision"]
+
+
+def _settle_reviewer(
+    plan: Mapping[str, Any],
+    records: dict[str, Any],
+    *,
+    auto_policy: bool,
+    independent_validation: bool | str,
+    triage_provider: Provider,
+    now: str,
+) -> tuple[bool, dict[str, Any] | None, dict[str, Any] | None]:
+    """R7.2: decide whether the PLANNED reviewer actually runs.
+
+    Returns ``(validate_run, triage_result, triage_invocation)``. Two paths, and they write
+    different records, which is why this is worth a name of its own:
+
+    * the classification already decided — an important priority or ORANGE/RED risk means no
+      triage is owed, so none was planned and none is called;
+    * otherwise the orchestrator's own governed triage call judges the request, and its
+      permission decision, verdict and invocation all go on the record.
+
+    Without the auto policy there is nothing to settle: the caller's flag is the answer.
+    """
+    if not auto_policy:
+        return bool(independent_validation), None, None
+    triage_permdec = plan.get("triage_permission_decision")
+    if triage_permdec is None:
+        return True, None, None     # classification already required the review
+    records["triage_permission_decision"] = triage_permdec
+    triage_result, triage_invocation = run_triage(
+        plan["task"], provider=triage_provider, created_at=now,
+    )
+    records["triage_result"] = triage_result
+    if triage_invocation is not None:
+        records["triage_invocation"] = triage_invocation
+    return triage_result["verdict"] == VERDICT_HIGH, triage_result, triage_invocation
+
+
+def _select_specialist_provider(
+    provider: Provider,
+    records: dict[str, Any],
+    *,
+    tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None,
+    triage_result: Mapping[str, Any] | None,
+) -> Provider:
+    """M2: let the M1 difficulty pick the specialist's model tier, or keep the base provider.
+
+    Only when triage produced a difficulty AND a selector is wired — so the default and every
+    mock run are unchanged. A missing tier grant degrades to the base chain (TIER_DEGRADED),
+    recorded, never blocking. The tiered model serves the SPECIALIST only; the validator and
+    the triage keep their own provider.
+    """
+    if tiered_provider_selector is None or triage_result is None:
+        return provider
+    specialist_provider, tier_selection = tiered_provider_selector(triage_result["difficulty"])
+    records["model_tier_selection"] = tier_selection
+    return specialist_provider
+
+
 @dataclass(frozen=True)
 class _RevisionSpend:
     """What the M3 revision loop's FIRST attempt cost, on top of the final one.
@@ -645,13 +742,16 @@ def run_task(
         # past the allocation the run was planned under (over budget => no loop). The
         # allocation is a ceiling, not a claim: a run that passes first time simply spends
         # less than it allocated (the triage precedent).
-        base_agents = 2 if (auto_policy or independent_validation) else 1
+        planned_agents, planned_triage_calls = _planned_allocation(
+            auto_policy=auto_policy, independent_validation=independent_validation, revise=revise,
+        )
         task = build_task(
             raw_request, now=now,
-            planned_agents=base_agents + (2 if revise else 0),
-            planned_triage_calls=1 if auto_policy else 0,
+            planned_agents=planned_agents, planned_triage_calls=planned_triage_calls,
             **intake_kwargs,
         )
+        # Set BEFORE planning can fail: `_finalize_block` reads it for the block record's
+        # trace_id, so a run that dies in `plan_task` still names which request it was.
         received_task = task
         records["received_task"] = task
 
@@ -660,49 +760,17 @@ def run_task(
             independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
         )
-        records.update({
-            "task": plan["task"], "binding": plan["binding"],
-            "permission_decision": plan["permission_decision"],
-            "search_permission_decision": plan["search_permission_decision"],
-            "role_assignment": plan["role_assignment"],
-        })
-        if "validator_assignment" in plan:
-            records["validator_permission_decision"] = plan["validator_permission_decision"]
-            records["validator_assignment"] = plan["validator_assignment"]
-        if write_path is not None:
-            # Persist the grant that authorizes the write, not just the audit event that
-            # reports it: the ledger must hold the decision the action was taken under.
-            records["write_permission_decision"] = plan["write_permission_decision"]
+        _record_plan(plan, records, wrote_path=write_path is not None)
 
-        # R7.2: settle whether the planned reviewer RUNS. The classification decides
-        # first (an important priority or ORANGE/RED risk = no triage owed); otherwise
-        # the orchestrator's governed triage call judges the request itself.
-        triage_result = triage_invocation = None
-        if auto_policy:
-            triage_permdec = plan.get("triage_permission_decision")
-            if triage_permdec is None:
-                validate_run = True     # classification already required the review
-            else:
-                records["triage_permission_decision"] = triage_permdec
-                triage_result, triage_invocation = run_triage(
-                    plan["task"], provider=triage_provider, created_at=now,
-                )
-                records["triage_result"] = triage_result
-                if triage_invocation is not None:
-                    records["triage_invocation"] = triage_invocation
-                validate_run = triage_result["verdict"] == VERDICT_HIGH
-        else:
-            validate_run = bool(independent_validation)
-
-        # M2: the M1 difficulty (from triage) picks the specialist's OpenRouter model tier.
-        # Only when triage produced a difficulty AND a selector is wired; otherwise the base
-        # provider serves unchanged (the default and every mock run). A missing tier grant
-        # degrades to the base chain (TIER_DEGRADED) — recorded, never blocking. The tiered
-        # model serves the specialist ONLY; the validator/triage keep their own provider.
-        specialist_provider = provider
-        if tiered_provider_selector is not None and triage_result is not None:
-            specialist_provider, tier_selection = tiered_provider_selector(triage_result["difficulty"])
-            records["model_tier_selection"] = tier_selection
+        validate_run, triage_result, triage_invocation = _settle_reviewer(
+            plan, records, auto_policy=auto_policy,
+            independent_validation=independent_validation,
+            triage_provider=triage_provider, now=now,
+        )
+        specialist_provider = _select_specialist_provider(
+            provider, records,
+            tiered_provider_selector=tiered_provider_selector, triage_result=triage_result,
+        )
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
