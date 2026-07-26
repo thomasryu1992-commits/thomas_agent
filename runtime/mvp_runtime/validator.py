@@ -304,6 +304,9 @@ def run_validation_worker(
             "validator_role_id": validator_assignment.get("role_id"),
             "validator_role_version": validator_assignment.get("role_version"),
             "validator_execution_context_id": integrity.short_id("valctx", seed),
+            # The GOVERNANCE mandate (risk only), not "a reviewer ran" — which is why this
+            # is False on an operator-marked GREEN run that this very record reviews.
+            # See the note above validation.INDEPENDENT_RISK_LEVELS.
             "independent_required": task.get("classification", {}).get("risk_level") in INDEPENDENT_RISK_LEVELS,
             "independence_verified": bool(independence_verified),
         },

@@ -24,7 +24,7 @@ from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 from .strategy import StrategySpec
 
 ROBUSTNESS_SCORER_VERSION = "robustness_scorer.v1"
