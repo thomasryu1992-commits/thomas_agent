@@ -172,14 +172,29 @@ def main(argv: list[str] | None = None) -> int:
         #    carrying what the VENUE said. Best-effort by the same reasoning as the registry
         #    write above — the money has already moved, so a failure here is reported, never
         #    swallowed and never allowed to imply the order did not happen.
+        #
+        #    `LedgerStore.default(root)` rather than `LedgerStore(root)`: the constructor takes
+        #    the ledger DIRECTORY, so the bare form both crashed on the `--root` default of None
+        #    (`Path(None)`) and, when given a root, would have written the chain beside the repo
+        #    instead of under `.runtime_governance_state/runtime_ledger/`. Every other caller
+        #    appends `LEDGER_REL` for exactly this reason; `default()` is that resolution.
         audit_error = None
         try:
             event, _sha = live_governance.report_live_order(
                 governance, result, guard_verdict=verdict, now=now, repo_root=root,
             )
-            LedgerStore(root).append_audit_events([event])
+            LedgerStore.default(root).append_audit_events([event])
         except (MvpRuntimeError, AuditError) as exc:
             audit_error = getattr(exc, "reason_code", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — see below; breadth is the point
+            # Past the point of no return: the order is AT THE VENUE. An unexpected exception
+            # here must not become a traceback, because a traceback is indistinguishable from
+            # "the order never happened" to the operator reading it — and that is the single
+            # most expensive thing this tool can communicate wrongly. The `TypeError` above
+            # escaped the narrow tuple and did exactly that: a filled canary reported as a
+            # crash, with the audit event built but never appended. Report and carry on to the
+            # summary; the caller learns the order landed AND that its record did not.
+            audit_error = f"UNEXPECTED_{type(exc).__name__}"
     except MvpRuntimeError as exc:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return EXIT_BLOCKED
@@ -210,7 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             "\nClose this canary position on the venue yourself — a canary only opens.\n"
         )
     # A placed-but-unrecorded canary, or one that did not reconcile, is not a success.
-    if registry_error or not record["clean"]:
+    # `audit_error` counts too: `post_action_report_and_audit` is what `p5_policy_gate` requires
+    # of FINANCIAL_APPROVED_TRADING_USE, so an order the durable chain never recorded has left a
+    # governance obligation unmet — exiting 0 would report that as a clean canary.
+    if registry_error or audit_error or not record["clean"]:
         return EXIT_BLOCKED
     return EXIT_OK
 
