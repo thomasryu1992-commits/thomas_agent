@@ -165,47 +165,181 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     }
 
 
-def render_status_text(status: dict[str, Any]) -> str:
-    lines = ["=== crypto pipeline dashboard ==="]
-    last = status.get("last_cycle")
-    if last:
-        lines.append(f"last cycle  : {last['at']}  verdict={last['verdict']} route={last['route']} "
-                     f"feeds={last['feeds']}")
-        if last.get("reason_codes"):
-            lines.append(f"reasons     : {', '.join(last['reason_codes'])}")
+# A dashboard that only reports state makes the reader do the judging. These are the two
+# judgements the board can make honestly from what it already has, and they belong at the
+# TOP, because everything under them is evidence for them.
+#
+# Sample size is the first: `feedback` recommends on the numbers, but a recommendation off
+# 11 closed trades is noise, and the board already knows to say INSUFFICIENT_SAMPLE about
+# its trends while saying nothing about the headline it prints two lines above them.
+MIN_MEANINGFUL_SAMPLE = 30
+# The second: a gate whose BLOCKED trades would have been profitable is costing money. The
+# numbers for that were always printed; the subtraction was left to the reader.
+_GATE_COSTING = "손해"
+_GATE_EARNING = "이익"
+# Grants are nine lines of noise until one is near expiry, and then they are the only
+# lines that matter.
+GRANT_EXPIRY_WARNING_DAYS = 7
+
+
+def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
+    """R-values to two decimals. ``-0.30682667R`` is not more truthful than ``-0.31R``, it
+    is only harder to scan, and this board is read on a phone. Signed by default because
+    the sign IS the reading for expectancy; ``signed=False`` for magnitudes like drawdown,
+    where a ``+`` only invites reading a loss as a gain."""
+    if value is None:
+        return "?"
+    try:
+        return f"{float(value):{'+' if signed else ''}.{digits}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _stamp(value: Any) -> str:
+    """``2026-07-26T03:55:33Z`` -> ``07-26 03:55``. The year is the same on every line."""
+    text = str(value or "")
+    return f"{text[5:10]} {text[11:16]}" if len(text) >= 16 else text
+
+
+def _gate_rows(status: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    """Gates as ``(verdict, reason, bucket)``, costing first, each side worst-first.
+
+    A gate blocks trades; ``expectancy_R`` is what those blocked trades would have
+    returned. Positive means the gate blocked winners — it is costing money. Negative
+    means it blocked losers — it is earning. Sorting by that sign is the whole point:
+    the operator's question is "which gate should I change", and the answer was
+    previously spread across five lines of missed/avoided arithmetic."""
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    for reason, bucket in (status.get("counterfactual_by_reason") or {}).items():
+        expectancy = bucket.get("expectancy_R")
+        try:
+            costing = float(expectancy) > 0
+        except (TypeError, ValueError):
+            continue        # an unusable number is not a verdict; leave it out of the ranking
+        rows.append((_GATE_COSTING if costing else _GATE_EARNING, reason, bucket))
+    rows.sort(key=lambda row: (row[0] != _GATE_COSTING, -abs(float(row[2].get("expectancy_R") or 0))))
+    return rows
+
+
+def _headline(status: dict[str, Any]) -> list[str]:
+    """The two or three lines that answer "so what", before any evidence."""
+    perf = status.get("performance") or {}
+    closed = perf.get("closed_count") or 0
+    expectancy = perf.get("expectancy")
+    lines: list[str] = []
+
+    if not closed:
+        lines.append("판단: 자체 페이퍼 성과 없음 — 라이브 판단 근거 없음")
     else:
-        lines.append("last cycle  : (no cycle records yet)")
+        thin = closed < MIN_MEANINGFUL_SAMPLE
+        try:
+            losing = float(expectancy) < 0
+        except (TypeError, ValueError):
+            losing = False
+        if thin:
+            verdict = f"표본 부족 ({closed}건 < {MIN_MEANINGFUL_SAMPLE}건) — 확대 근거 없음"
+        elif losing:
+            verdict = f"자체 성과 손실 중 ({_r(expectancy)}R) — 확대 근거 없음"
+        else:
+            verdict = f"자체 성과 {_r(expectancy)}R × {closed}건 — 검토 가능"
+        lines.append(f"판단: {verdict}")
+
+    costing = [row for row in _gate_rows(status) if row[0] == _GATE_COSTING]
+    if costing:
+        lines.append(f"      게이트 {len(costing)}개가 손해 중 → 검토 필요")
+    for warning in status.get("warnings") or []:
+        lines.append(f"      ⚠ {warning}")
+    return lines
+
+
+def render_status_text(status: dict[str, Any]) -> str:
+    """Render the board for a human deciding something, not for a log.
+
+    Same data as before, reordered so the decisions surface: the judgement first, the
+    evidence under it, and the parts that are only noise until they are not (grants)
+    collapsed to one line."""
+    lines = [f"=== crypto dashboard === {_stamp(status.get('created_at'))}", ""]
+    lines += _headline(status)
+    lines.append("")
+
+    # --- now ---------------------------------------------------------------------
+    last = status.get("last_cycle")
     position = status.get("open_position")
-    lines.append(
-        "position    : "
-        + (f"{position['direction']} {position['strategy_id']} @ {position['entry_price']}" if position else "none")
-    )
-    lines.append(f"pool        : {status['pool_size']} strategies {status['pool_status_counts']}")
-    perf = status["performance"]
-    lines.append(f"performance : {perf['closed_count']} closed, expectancy {perf['expectancy']}R, "
-                 f"dd {perf['max_drawdown']}R, recommend {perf['recommendation']}")
-    lines.append("              ^ THIS runtime's own paper trading (mvp_paper_kernel)")
+    positions = status.get("open_positions") or []
+    where = (f"{position['direction']} {position['strategy_id']} @ {position['entry_price']}"
+             + (f" (외 {len(positions) - 1}건)" if len(positions) > 1 else "")) if position else "포지션 없음"
+    lines.append(f"지금   {where}")
+    if last:
+        feeds = last.get("feeds") or {}
+        ok = sum(1 for state in feeds.values() if state == "ok")
+        degraded = " ⚠ degraded" if last.get("degraded") else ""
+        lines.append(f"       마지막 {last.get('verdict')}/{last.get('route')} · "
+                     f"피드 {ok}/{len(feeds)}{degraded} · {_stamp(last.get('at'))}")
+        if last.get("reason_codes"):
+            lines.append(f"       사유 {', '.join(last['reason_codes'])}")
+    else:
+        lines.append("       마지막 사이클 기록 없음")
+    counts = status.get("pool_status_counts") or {}
+    breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
+    lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    lines.append("")
+
+    # --- performance -------------------------------------------------------------
+    perf = status.get("performance") or {}
+    closed = perf.get("closed_count") or 0
+    lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 · "
+                 f"dd {_r(perf.get('max_drawdown'), signed=False)}R → {perf.get('recommendation')}")
+    if closed and closed < MIN_MEANINGFUL_SAMPLE:
+        # Attached to the number it qualifies, not stranded in a trends section below.
+        lines.append(f"       ⚠ {closed}건은 판단 불가 표본 ({MIN_MEANINGFUL_SAMPLE}건 이상 필요)")
+    digest_block = status.get("digest") or {}
+    trends = [f"{label.split('_')[0]} {((digest_block.get(label) or {}).get('verdict'))}"
+              for label in ("weekly_trend", "monthly_trend") if digest_block.get(label)]
+    if trends:
+        lines.append("       추세 " + " · ".join(trends))
     imported = status.get("imported_performance") or {}
     if imported.get("closed_count"):
-        lines.append(
-            f"imported    : {imported['closed_count']} closed, expectancy {imported['expectancy']}R, "
-            f"dd {imported['max_drawdown']}R  <- crypto_AI_System history, NOT this runtime"
-        )
-    if status.get("digest"):
-        for label in ("weekly_trend", "monthly_trend"):
-            trend = status["digest"].get(label) or {}
-            lines.append(f"{label:12}: {trend.get('verdict')}"
-                         + (f" (Δ {trend.get('expectancy_delta_R')}R)" if trend.get("expectancy_delta_R") is not None else ""))
-    if status.get("counterfactual_by_reason"):
-        lines.append(f"gates       : {status['counterfactual_closed']} shadow outcomes")
-        for reason, bucket in sorted(status["counterfactual_by_reason"].items()):
-            lines.append(f"  {reason:34}: {bucket['closed_count']} closed, expectancy {bucket['expectancy_R']}R "
-                         f"({bucket['missed_opportunity']} missed / {bucket['avoided_loss']} avoided)")
-    for grant in status.get("grants") or []:
-        lines.append(f"grant       : {grant['provider_id']:24} expires {grant['expires_at']}")
-    for warning in status.get("warnings") or []:
-        lines.append(f"WARNING     : {warning}")
-    return "\n".join(lines)
+        # Indented and parenthesised on purpose: sitting flush under a negative own-result,
+        # a positive imported number reads as "we are up", which is the opposite of true.
+        lines.append(f"       (참고: imported {_r(imported.get('expectancy'))}R × "
+                     f"{imported['closed_count']}건 = crypto_AI_System 이력, 이 런타임 아님)")
+    lines.append("")
+
+    # --- gates -------------------------------------------------------------------
+    rows = _gate_rows(status)
+    if rows:
+        lines.append(f"게이트 {status.get('counterfactual_closed')} 섀도우 — 막은 거래의 기대값 기준")
+        for verdict, reason, bucket in rows:
+            mark = "🔴" if verdict == _GATE_COSTING else "🟢"
+            lines.append(
+                f"  {mark} {reason[:44]:<44} {_r(bucket.get('expectancy_R'))}R × "
+                f"{bucket.get('closed_count')}건 · {bucket.get('missed_opportunity')} 놓침 / "
+                f"{bucket.get('avoided_loss')} 회피"
+            )
+        lines.append("")
+
+    # --- grants ------------------------------------------------------------------
+    grants = status.get("grants") or []
+    if grants:
+        soonest = min(grants, key=lambda g: str(g.get("expires_at") or ""))
+        expiry = str(soonest.get("expires_at") or "")
+        days = _days_until(expiry, status.get("created_at"))
+        urgent = days is not None and days <= GRANT_EXPIRY_WARNING_DAYS
+        summary = (f"권한   {len(grants)}건 · 가장 이른 만료 {expiry[:10]} "
+                   f"({soonest.get('provider_id')})")
+        lines.append(summary + (f" ⚠ {days}일 남음" if urgent else
+                                (f" — {days}일 남음" if days is not None else "")))
+        if urgent:
+            for grant in sorted(grants, key=lambda g: str(g.get("expires_at") or "")):
+                lines.append(f"       {grant['provider_id']:24} {str(grant['expires_at'])[:10]}")
+    return "\n".join(lines).rstrip()
+
+
+def _days_until(expires_at: str, now: Any) -> int | None:
+    try:
+        return int((timeutil.parse_iso(expires_at) - timeutil.parse_iso(str(now))).total_seconds() // 86400)
+    except (MvpRuntimeError, TypeError, ValueError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
