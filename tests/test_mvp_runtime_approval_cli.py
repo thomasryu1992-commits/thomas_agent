@@ -17,7 +17,7 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL, bind_task_to_core
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
 from runtime.mvp_runtime.consumption import _CapableConsumer
 from runtime.mvp_runtime.intake import build_task
-from runtime.mvp_runtime.memory import CANDIDATE_SCOPE, CANDIDATE_STATUS
+from runtime.mvp_runtime.memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, is_expired
 from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION, Authorization
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
@@ -59,7 +59,13 @@ def _seed_candidate(wm, content=CONTENT):
         "scope": CANDIDATE_SCOPE, "status": CANDIDATE_STATUS,
         "validated": False, "promotable": False,
         "content": content, "evidence_refs": ["model:analysis"],
-        "created_at": NOW, "expires_at": timeutil.plus_minutes(NOW, 7 * 24 * 60),
+        # Live against the REAL clock, not against NOW. `approval_cli.main` takes no
+        # `now` (see _patch_defaults: "the CLI has no injection seam") and checks
+        # candidate expiry with timeutil.utc_now_iso(), so a fixture dated from the
+        # fixed NOW is a time bomb: NOW + 7 days landed on 2026-07-26T12:00:00Z and
+        # every consume test on main went red at that minute, on both runners at once.
+        "created_at": NOW,
+        "expires_at": timeutil.plus_minutes(timeutil.utc_now_iso(), 7 * 24 * 60),
         "origin": {
             "task_id": ident["task_id"], "task_revision": ident["task_revision"],
             "trace_id": ident["trace_id"],
@@ -67,6 +73,10 @@ def _seed_candidate(wm, content=CONTENT):
             "data_sensitivity": ctx["data_sensitivity"],
         },
     }
+    assert not is_expired(candidate, timeutil.utc_now_iso()), (
+        "the seeded candidate must be live for the real clock the CLI reads — an\n"
+        "absolute expiry here fails as an unrelated stderr mismatch later"
+    )
     wm.append([candidate])
     return candidate
 
