@@ -23,6 +23,71 @@ _STATE_DIR = Path(__file__).resolve().parents[1] / ".runtime_governance_state"
 # remaining test fail with the same finding, burying it under 1900 identical errors.
 _state_leak_reported = False
 
+
+def live_state_writers(root: Path | None = None) -> list[dict[str, object]]:
+    """Services whose heartbeat says a loop is *currently* writing this tree's state.
+
+    The per-test leak guard below compares the state directory before and after each test
+    and blames the test for any difference. That inference only holds while the suite is
+    the sole writer. On the deployed tree it is not: the operator and scheduler loops stamp
+    a heartbeat every pass, so whichever test happened to be running when a pass landed was
+    named as the culprit — an innocent test, a wrong fix line, and the real finding (the
+    suite is running against live state) buried inside it.
+
+    Heartbeats are the signal the runtime already publishes for exactly this question, so
+    it is asked here rather than re-derived: FRESH means a loop turned within its own
+    declared cadence. STALE / MISSING / UNREADABLE all mean *not currently writing*, which
+    is the only claim this function makes — it is not a health check, and a halted or
+    crashed service is deliberately not reported here.
+    """
+    from runtime.mvp_runtime import heartbeat  # local: keeps conftest import cheap
+
+    base = root if root is not None else _STATE_DIR.parent
+    directory = heartbeat.heartbeats_dir(base)
+    if not directory.is_dir():
+        return []
+    live: list[dict[str, object]] = []
+    for path in sorted(directory.glob("*.json")):
+        status = heartbeat.check_heartbeat(path.stem, root=base)
+        if status.get("status") == heartbeat.FRESH:
+            live.append(status)
+    return live
+
+
+def pytest_sessionstart(session):
+    """Refuse to run the suite in a tree whose state a live runtime owns.
+
+    Two separate reasons, either one sufficient:
+
+    1. **Attribution.** A concurrently writing service makes the per-test leak guard
+       unsound — it would blame a test for a heartbeat the operator loop wrote.
+    2. **Damage.** The suite writes as whoever runs it; on the server that is root, and a
+       root-owned file in the volume the containers own as uid 10001 is exactly what
+       stopped `/feedback` binding and made every task submission fail with
+       ``REGISTRY_WRITE_FAILED`` on 2026-07-25.
+
+    Refusing up front, before a single test runs, is the same posture ``state_guard`` takes
+    for the runtime itself: name the condition and the fix, do not proceed part-way. There
+    is deliberately no override env var — a git worktree has its own root, so the escape
+    hatch is one command rather than one more knob.
+    """
+    live = live_state_writers()
+    if not live:
+        return
+    named = "\n".join(
+        f"  - {row.get('service')}: {row.get('detail')}" for row in live
+    )
+    pytest.exit(
+        "a live runtime is writing this tree's state directory "
+        f"({_STATE_DIR.name}/):\n{named}\n"
+        "Running the suite here would both misattribute those writes to whichever test is "
+        "running and leave files the services cannot write. Run it in a git worktree "
+        "instead:\n"
+        "  git worktree add ../thomas-tests HEAD && cd ../thomas-tests && python -m pytest tests/ -q",
+        returncode=1,
+    )
+
+
 # Every Safety-Flag Gate opt-in env var. Tests that exercise a gate opt-in set the var
 # themselves via monkeypatch.setenv, which applies after this autouse teardown-safe clear.
 _GATE_ENV_VARS = (
@@ -133,9 +198,14 @@ def _tests_never_touch_the_real_state_dir():
     production, and it is the *test* that must not use them. Detection is per-test so the
     failure names the culprit instead of leaving a whole-suite mystery.
 
-    Reported once per session: on a machine where the services are running concurrently,
-    their own writes trip this too — which is itself the correct answer (do not run the
-    suite against live state), but it should be said once, not 1900 times.
+    **What this can and cannot prove.** It observes that the directory changed while one
+    test ran, which is only evidence *about that test* while the suite is the sole writer.
+    ``pytest_sessionstart`` establishes that by refusing to start when a live runtime is
+    stamping heartbeats here, so the common false accusation is gone before any test runs.
+    A writer that appears mid-session (a service started, another shell running a CLI
+    against this tree) is still possible and cannot be distinguished from a real leak, so
+    the failure below names the test *and* that alternative rather than asserting only the
+    first. Reported once per session either way: 1900 copies of one finding buries it.
     """
     before = _state_snapshot()
     yield
@@ -152,12 +222,14 @@ def _tests_never_touch_the_real_state_dir():
     shown = "\n".join(f"  - {path.relative_to(_STATE_DIR)}" for path in touched[:10])
     more = f"\n  … and {len(touched) - 10} more" if len(touched) > 10 else ""
     pytest.fail(
-        f"this test wrote to the repo's real state directory ({_STATE_DIR.name}/):\n"
-        f"{shown}{more}\n"
-        "Pass an explicit repo_root/tmp_path to whatever runtime helper was called — its "
-        "default resolves to the REPO's state, which on the live server is the volume the "
-        "running containers own as uid 10001.\n"
-        "If the services are running on this machine, that is the finding: run the suite "
-        "in a git worktree, not in the deployed tree.",
+        f"the repo's real state directory ({_STATE_DIR.name}/) changed while this test "
+        f"ran:\n{shown}{more}\n"
+        "Most likely this test called a runtime helper without an explicit "
+        "repo_root/tmp_path — the default resolves to the REPO's state, which on the live "
+        "server is the volume the running containers own as uid 10001.\n"
+        "Otherwise a writer appeared mid-session (a service started, or another shell "
+        "running a CLI against this tree). No live writer was stamping heartbeats when the "
+        "session began, or it would have refused to start; re-run in a git worktree to "
+        "settle which it is.",
         pytrace=False,
     )

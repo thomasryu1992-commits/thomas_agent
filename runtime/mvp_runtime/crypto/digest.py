@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping
 from runtime.read_only_kernel import integrity
 
 from .. import timeutil
+from .coerce import as_float as _f
 from .feedback import summarize_outcomes
 
 PERFORMANCE_DIGEST_VERSION = "performance_digest.v1"
@@ -32,13 +33,6 @@ IMPROVING = "IMPROVING"
 DEGRADING = "DEGRADING"
 STABLE = "STABLE"
 INSUFFICIENT_SAMPLE = "INSUFFICIENT_SAMPLE"
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value) if value not in {None, ""} else default
-    except (TypeError, ValueError):
-        return default
 
 
 def _parse(value: Any) -> datetime | None:

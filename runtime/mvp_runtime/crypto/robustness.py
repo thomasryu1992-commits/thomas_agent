@@ -24,6 +24,7 @@ from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
+from .coerce import as_float as _f
 from .strategy import StrategySpec
 
 ROBUSTNESS_SCORER_VERSION = "robustness_scorer.v1"
@@ -86,13 +87,6 @@ def count_free_parameters(spec: StrategySpec) -> int:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value) if value is not None else default
-    except (TypeError, ValueError):
-        return default
 
 
 def _sample_adequacy(trades_per_parameter: float) -> float:

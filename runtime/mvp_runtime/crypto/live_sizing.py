@@ -35,6 +35,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .coerce import as_float as _f
+
 SIZING_VERSION = "live_sizing.v0.1"
 
 # Fraction of usable equity risked on one trade. A module constant, not a budget field:
@@ -58,13 +60,6 @@ BELOW_MIN_NOTIONAL = "SIZING_BELOW_VENUE_MIN_NOTIONAL"
 ROUNDS_TO_ZERO = "SIZING_ROUNDS_TO_ZERO"
 EXCEEDS_BUDGET = "SIZING_EXCEEDS_BUDGET_CAP"
 ABOVE_MAX_QTY = "SIZING_ABOVE_VENUE_MAX_QTY"
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 @dataclass(frozen=True)

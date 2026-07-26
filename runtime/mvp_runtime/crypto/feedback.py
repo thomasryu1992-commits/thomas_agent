@@ -28,6 +28,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from . import paper
+from .coerce import as_float as _f
 
 PERFORMANCE_REPORT_VERSION = "performance_report.v1-mvp"
 
@@ -46,13 +47,6 @@ RECOMMEND_EXPAND_TEST_COVERAGE = "EXPAND_TEST_COVERAGE"
 RECOMMEND_REPEAT_IN_PAPER = "REPEAT_IN_PAPER"
 RECOMMEND_DROP_CANDIDATE_PROFILE = "DROP_CANDIDATE_PROFILE"
 RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT = "CREATE_CANDIDATE_PROFILE_DRAFT"
-
-
-def _f(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value) if value not in {None, ""} else default
-    except (TypeError, ValueError):
-        return default
 
 
 def summarize_outcomes(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

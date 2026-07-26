@@ -390,6 +390,7 @@ def execute_live_entry(
         strategy_id=intent.get("strategy_id"),
         candidate_id=decision.get("sizing", {}).get("candidate_id") or intent.get("candidate_id"),
         strategy_rule_hash=intent.get("strategy_rule_hash"),
+        strategy_generation_id=intent.get("strategy_generation_id"),
     )
     # The bracket ids ride on the stored record (additive keys, so LP5.1's builder is untouched)
     # because the exit path has to cancel exactly these orders and nothing else.
