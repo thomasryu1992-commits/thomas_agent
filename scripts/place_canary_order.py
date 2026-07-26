@@ -43,6 +43,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
 from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
 from runtime.mvp_runtime.errors import MvpRuntimeError
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run
 from runtime.mvp_runtime.store import LedgerStore
 
 
@@ -74,6 +75,13 @@ def main(argv: list[str] | None = None) -> int:
     now = timeutil.utc_now_iso()
 
     try:
+        # 0. Before anything else, and emphatically before the venue: a host-side root run
+        #    would leave this canary's registry row and audit event root-owned, and the uid the
+        #    services run as could never write them again. That refusal has to come BEFORE the
+        #    order, because afterwards the only options are a broken registry or a real
+        #    position with no local record of it.
+        assert_not_foreign_root_run(root)
+
         # 1. Caps come from the REGISTERED budget (never the env cap vars).
         limits, budget = resolve_live_order_limits(root, now=now)
 
