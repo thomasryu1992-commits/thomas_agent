@@ -41,8 +41,8 @@ VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
 FUNDING_Z_WINDOW = 100      # features.funding_z_window source default
 FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods for the funding z
-OI_CHANGE_PERIOD = 1        # bars between the two OI reads a change compares
-OI_Z_WINDOW = 30            # how unusual the current OI level is, against its own history
+OI_CHANGE_PERIOD = 1        # OI READINGS between the two reads a change compares (feed cadence, not bars)
+OI_Z_WINDOW = 30            # OI readings the z-score judges the current level against
 OI_Z_MIN_PERIODS = 10
 LIQ_MA_WINDOW = 50          # liquidation spike baseline window
 LIQ_MA_MIN_PERIODS = 10
@@ -95,6 +95,32 @@ def _asof_align(
             except (TypeError, ValueError):
                 out[col].append(None)
     return out
+
+
+def _open_interest_event_columns(levels: list[Any]) -> dict[str, list]:
+    """Change and z-score of the OI series, in the series' OWN time base.
+
+    ``levels`` are consecutive readings of the feed (daily today), so a change here is
+    day against day regardless of the bar size the caller will align onto. Non-numeric
+    or non-positive readings break the chain rather than being coerced: a change
+    against a missing or zero base is not zero, it is unknown."""
+    numeric: list[float | None] = []
+    for value in levels:
+        try:
+            numeric.append(float(value) if value is not None else None)
+        except (TypeError, ValueError):
+            numeric.append(None)
+    change_pct: list[float | None] = []
+    for index, current in enumerate(numeric):
+        previous = numeric[index - OI_CHANGE_PERIOD] if index >= OI_CHANGE_PERIOD else None
+        if current is None or previous in (None, 0):
+            change_pct.append(None)
+        else:
+            change_pct.append((current - previous) / previous)
+    return {
+        "change_pct": change_pct,
+        "zscore": indicators.zscore(numeric, OI_Z_WINDOW, OI_Z_MIN_PERIODS),
+    }
 
 
 def classify_market_regime(row: dict[str, Any], adx_threshold: float = ADX_TREND_THRESHOLD) -> str:
@@ -250,15 +276,31 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # empty) both leave every column None — indeterminate, never a constant. That is
     # the liquidation posture deliberately, not the spike-ratio one: a missing feed
     # must not let an oi_* condition match on a fabricated zero.
+    # **Derive in the series' own time base, then align.** The OI feed is daily while a
+    # context may be 15m/1h/4h, so a bar-over-bar diff of the ALIGNED column is zero on
+    # every bar between two daily values — 23 of 24 on an hourly frame. Measured on a
+    # real 12,000-bar ETH 1h frame: the aligned series changed on 4.2% of bars and the
+    # squeeze conditions intersected on 0 of 12,000, i.e. the families could not fire at
+    # all. Computing the change and the z-score over the EVENTS (day against day) and
+    # aligning the results instead gives every bar the last KNOWN daily reading, which
+    # is what a point-in-time feature should carry, and makes the z-score's window mean
+    # 30 daily observations rather than 30 repeats of one.
     if "open_interest" in snapshot:
-        open_interest = _asof_align(bar_times, snapshot.get("open_interest") or [],
-                                    ("open_interest",))["open_interest"]
-        oi_prev = [None] * OI_CHANGE_PERIOD + open_interest[:-OI_CHANGE_PERIOD or None]
-        open_interest_change_pct = [
-            ((cur - prev) / prev) if (cur is not None and prev not in (None, 0)) else None
-            for cur, prev in zip(open_interest, oi_prev)
+        events = [e for e in (snapshot.get("open_interest") or []) if isinstance(e, dict)]
+        events = sorted(events, key=lambda e: str(e.get("timestamp") or ""))
+        levels = [e.get("open_interest") for e in events]
+        derived = _open_interest_event_columns(levels)
+        enriched = [
+            {**event, "open_interest_change_pct": change, "open_interest_zscore": z}
+            for event, change, z in zip(events, derived["change_pct"], derived["zscore"])
         ]
-        open_interest_zscore = indicators.zscore(open_interest, OI_Z_WINDOW, OI_Z_MIN_PERIODS)
+        aligned = _asof_align(
+            bar_times, enriched,
+            ("open_interest", "open_interest_change_pct", "open_interest_zscore"),
+        )
+        open_interest = aligned["open_interest"]
+        open_interest_change_pct = aligned["open_interest_change_pct"]
+        open_interest_zscore = aligned["open_interest_zscore"]
     else:
         open_interest = open_interest_change_pct = open_interest_zscore = [None] * len(candles)
 
