@@ -106,8 +106,10 @@ def test_a_round_trip_charges_both_venues():
 
 
 def test_an_unknown_venue_is_refused():
+    """A venue nobody added is refused rather than priced. `binance` is a known venue now, so
+    the case is pinned on one that is not."""
     with pytest.raises(ToolBlocked):
-        fees.taker_fee("binance", price=0.5)
+        fees.taker_fee("bybit", price=0.5)
 
 
 # --- the detector ---------------------------------------------------------------

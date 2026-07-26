@@ -56,6 +56,11 @@ CLOSE_TIME_UNKNOWN = "CLOSE_TIME_UNKNOWN"
 CATEGORY_CONFLICT = "CATEGORY_CONFLICT"
 NUMERIC_MISMATCH = "NUMERIC_MISMATCH"
 
+# The one piece of evidence that does not come from a heuristic: a venue naming the other
+# venue's market as the one it mirrors (Predict.fun carries `polymarketConditionIds`). It is
+# not a similarity score, it is an assertion by a party that knows.
+VENUE_ASSERTED = "VENUE_ASSERTED_CROSS_REFERENCE"
+
 # Refusals that are *evidence*, not threshold guesses. A near miss is meant to say "our
 # rules may have been wrong"; these two say "these are different questions", so a pair
 # refused by one of them is not worth a reviewer's second look.
@@ -163,6 +168,27 @@ def _category_agreement(left: PredMarket, right: PredMarket) -> bool | None:
     return left.category.strip().lower() == right.category.strip().lower()
 
 
+def venue_cross_reference(left: PredMarket, right: PredMarket) -> bool:
+    """Does either venue name the other's market as the one it mirrors?
+
+    Predict.fun publishes ``polymarketConditionIds``; this package carries the first of them
+    in ``group_id``. When it equals the other side's own group id (Polymarket's
+    ``conditionId``), the venue itself is asserting the correspondence — evidence of a
+    different kind from any text comparison, and the only kind that cannot be fooled by two
+    events that happen to be worded alike.
+
+    **It still does not confirm a pairing.** A venue asserting "this is the same question"
+    says nothing about "this settles the same way", and the second is what the operator's
+    note is for. What it does is make the candidate near-certain, and — more useful — give
+    the deterministic rules an answer key: a pairing the venue asserted and the rules missed
+    is a rule to fix.
+    """
+    left_ref, right_ref = (left.group_id or "").strip(), (right.group_id or "").strip()
+    if not left_ref or not right_ref:
+        return False
+    return left_ref == right_ref
+
+
 @dataclass(frozen=True)
 class MatchCandidate:
     """One judged (Kalshi, Polymarket) pairing, with the reasoning that produced it."""
@@ -177,6 +203,7 @@ class MatchCandidate:
     close_delta_hours: float | None
     category_agreement: bool | None
     numeric_agreement: bool | None
+    venue_asserted: bool
     is_candidate: bool
     refusals: tuple[str, ...]
 
@@ -213,6 +240,7 @@ class MatchCandidate:
             "close_delta_hours": self.close_delta_hours,
             "category_agreement": self.category_agreement,
             "numeric_agreement": self.numeric_agreement,
+            "venue_asserted": self.venue_asserted,
             "is_candidate": self.is_candidate,
             "near_miss": self.near_miss(),
             "refusals": list(self.refusals),
@@ -235,9 +263,14 @@ def judge_pair(kalshi: PredMarket, polymarket: PredMarket) -> MatchCandidate:
     delta = close_delta_hours(kalshi.close_time, polymarket.close_time)
     category = _category_agreement(kalshi, polymarket)
     numeric = _numeric_agreement(kalshi.title, polymarket.title)
+    asserted = venue_cross_reference(kalshi, polymarket)
 
     refusals: list[str] = []
-    if similarity < MIN_TITLE_SIMILARITY:
+    # A venue-asserted cross-reference outranks the wording gate — the venue knows which
+    # market it mirrors better than a token overlap does. It does NOT outrank the evidence
+    # gates below: if the two markets name different numbers, one of the two venues has
+    # cross-referenced the wrong market, and that is a finding rather than a licence.
+    if similarity < MIN_TITLE_SIMILARITY and not asserted:
         refusals.append(TITLE_TOO_DIFFERENT)
     if delta is None:
         refusals.append(CLOSE_TIME_UNKNOWN)
@@ -259,6 +292,7 @@ def judge_pair(kalshi: PredMarket, polymarket: PredMarket) -> MatchCandidate:
         close_delta_hours=delta,
         category_agreement=category,
         numeric_agreement=numeric,
+        venue_asserted=asserted,
         is_candidate=not refusals,
         refusals=tuple(refusals),
     )
@@ -330,6 +364,7 @@ __all__ = [
     "MIN_TITLE_SIMILARITY",
     "NEAR_MISS_TITLE_SIMILARITY",
     "TITLE_TOO_DIFFERENT",
+    "VENUE_ASSERTED",
     "MatchCandidate",
     "candidate_status_line",
     "close_delta_hours",
@@ -338,4 +373,5 @@ __all__ = [
     "normalize_tokens",
     "numeric_tokens",
     "title_similarity",
+    "venue_cross_reference",
 ]

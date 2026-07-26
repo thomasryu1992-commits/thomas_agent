@@ -45,6 +45,31 @@ Verified 2026-07-24 (web sources; re-verify at signup):
   until it is made.
 - **PM1 needs none of the above** — both venues expose public market data; observation
   requires no account and no funds. PM0 blocks PM3, not PM1/PM2.
+- **Binance prediction markets — added 2026-07-26, third venue.** The package names the
+  venue `binance`, because that is the door: the account, the key, the host and the funds are
+  all Binance's. The underlying markets are **Predict.fun's on BNB Smart Chain**, which matters
+  at exactly one moment — when the operator compares resolution rules before confirming a
+  pairing — and every payload row states it (`vendor: "PREDICT_FUN"`, `chainId: "56"`), so
+  that fact travels with the data rather than in the label. Verified 2026-07-26:
+  - **Reached through Binance, not directly (Thomas, 2026-07-26).** The money path decides
+    it: funding a Binance prediction account is a transfer from an existing balance, while the
+    direct venue needs a self-custodied BNB-chain wallet. Reading through the same door that
+    will later trade keeps one credential and one identifier space. The venue is still
+    Predict.fun — the API says so itself (`vendor: "PREDICT_FUN"`) — and its resolution rules
+    are still what the operator compares; only the route and the credential are Binance's.
+  - **Preconditions are heavier than the other two venues** and are operator steps, all
+    completed 2026-07-26: KYC, a Prediction Account created in the Binance app, Prediction SAS
+    authorization, and "Prediction Trading" enabled on the API key. **Availability varies by
+    region** per Binance's own notice — a live question wherever the operator is.
+  - **Everything is signed** (`timestamp` + HMAC, `X-MBX-APIKEY`); there is no public read, so
+    `BINANCE_PREDICTION_API_KEY`/`_SECRET` are required and a missing pair reports
+    `PREDMARKET_API_KEY_MISSING`, never an outage.
+  - **There IS an order book** (`/sapi/v1/w3w/wallet/prediction/order-book`), which the direct
+    Predict.fun API did not publish — so this venue can be quoted, not merely listed.
+  - **The venue reports its own fee** (`feeRateBps` per topic), so its legs no longer have "no
+    knowable cost". The *formula* is not published, so the runtime applies the bps rate flat on
+    notional — larger than the `P x (1-P)` shape at every price — and records
+    `fee_model: assumed_flat_rate*P_of_notional` so the assumption is visible and correctable.
 
 ## Relationship to the crypto pipeline
 
@@ -88,13 +113,20 @@ whether approval-gated trading (minutes of latency) can ever catch the opportuni
 whether PM3 is worth building at all.
 
 - **Venue adapters** (read-only): Kalshi public REST; Polymarket Gamma (markets) + CLOB
-  (books). Selection through `safety_gate.select_gated`; mock backends default; env alone
-  fails closed.
-- **Event-pair matching** — the hardest real engineering here. Deterministic candidate
-  generation (category + close-date + text similarity; optionally LLM-assisted under the
-  existing triage-style budgeted call), then **operator confirmation per pair**. A wrong
-  pair manufactures fake arbitrage signals forever, so confirmation is human by design.
-  Confirmed pairs live in `.runtime_governance_state/predmarket/pairs.jsonl`, audited.
+  (books); Predict.fun `/v1/markets` (identity + cross-references only, key-authenticated).
+  Selection through `safety_gate.select_gated`; mock backends default; env alone fails closed.
+- **Event matching** — the hardest real engineering here. Deterministic candidate generation
+  (category + close-date + text similarity + a numeric gate), then **operator confirmation per
+  event**. A wrong pairing manufactures fake arbitrage signals forever, so confirmation is
+  human by design. Confirmed **event groups** (not pairs — one group per event, N legs, so a
+  new venue costs one review rather than one per existing leg) live in
+  `.runtime_governance_state/predmarket/events.jsonl`, self-hashed.
+  **Venue-asserted cross-references outrank the wording gate** (added 2026-07-26): Predict.fun
+  publishes the `polymarketConditionIds` it mirrors, which is an assertion by a party that
+  knows rather than a similarity score. It does **not** outrank the evidence gates — a
+  cross-reference pointing at a market naming different numbers means one venue referenced the
+  wrong thing, which is a finding — and it does not replace operator confirmation, because
+  "the same question" and "settles the same way" are different claims.
 - **Opportunity detector**, fee-adjusted only: Kalshi's fee is a price function
   (≈ $0.07 × P × (1−P) per contract, rounded up) — unadjusted observations would be
   systematically fake. ~~Polymarket side models gas + spread cost.~~
