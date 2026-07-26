@@ -1,0 +1,159 @@
+"""The canary tool's report half — the step that runs AFTER real money has moved.
+
+This file exists because of a live failure on 2026-07-26. A canary order FILLED at the venue
+(BTCUSDT 0.001 @ 64,491) and the operator saw a `TypeError` traceback instead of the fill:
+step 8 called ``LedgerStore(root)`` with ``--root``'s default of ``None``, so ``Path(None)``
+raised, the narrow ``except (MvpRuntimeError, AuditError)`` did not catch it, and the process
+died between "the order is at the venue" and "here is what the venue said". The audit event was
+built and never appended — a real order with nothing on the durable chain, which is precisely
+what ``p5_policy_gate``'s ``post_action_report_and_audit`` exists to prevent.
+
+The bare constructor was wrong twice over, and the second way was silent: ``LedgerStore``
+takes the ledger DIRECTORY, so with a real ``--root`` it would have written the chain to the
+root itself rather than under ``.runtime_governance_state/runtime_ledger/``. Every other caller
+in ``scripts/`` appends ``LEDGER_REL``; ``LedgerStore.default()`` is that resolution, and it
+accepts ``None``.
+
+Nothing here touches a venue or a real ledger: every collaborator across the point of no return
+is a stub, and the assertions are about where the store is rooted and what the tool reports.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
+from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore
+from scripts import place_canary_order as pco
+
+ARGV = ["--symbol", "BTCUSDT", "--direction", "LONG", "--quantity", "0.001", "--notional", "65"]
+
+
+class _Limits:
+    daily_loss_limit_usdt = 20.0
+    max_open_notional_usdt = 120.0
+
+
+class _Control:
+    execution_allowed = True
+
+    def __init__(self, root=None):
+        self.root = root
+
+    def load(self):
+        return self
+
+    @classmethod
+    def default(cls, root=None):
+        return cls(root)
+
+
+class _Adapter:
+    network_egress = True
+
+
+_RESULT = {
+    "reconcile_status": "RECONCILED",
+    "symbol": "BTCUSDT",
+    "exchange_order_id": "4242",
+    "client_order_id": "canary-1",
+    "mismatches": [],
+    "fill": {"avg_price": 64491.0, "executed_qty": 0.001, "cum_quote": 64.491},
+}
+_RECORD = {"canary_order_id": "canary_abc", "reconcile_status": "RECONCILED", "clean": True}
+
+
+@pytest.fixture
+def approved(monkeypatch):
+    """Every collaborator up to and past the venue call, stubbed to the happy path.
+
+    The order "lands" without a socket, so the tests below are about step 8 alone.
+    """
+    monkeypatch.setattr(pco, "resolve_live_order_limits", lambda root, now: (_Limits(), {"valid": True}))
+    monkeypatch.setattr(pco, "ControlStore", _Control)
+    monkeypatch.setattr(pco, "live_risk_snapshot",
+                        lambda **kw: {"daily_loss_limit_breached": False})
+    monkeypatch.setattr(pco.live_promotion, "clean_canary_order_count", lambda root: (0, None))
+    monkeypatch.setattr(pco, "count_today", lambda root: 0)
+    monkeypatch.setattr(pco, "read_account", lambda **kw: (object(), {}))
+    monkeypatch.setattr(pco, "compute_open_notional_usdt", lambda snapshot, at_cap: 0.0)
+    monkeypatch.setattr(pco.live_execution, "select_order_adapter", lambda **kw: _Adapter())
+    monkeypatch.setattr(pco, "build_live_order_intent", lambda *a, **kw: {"symbol": "BTCUSDT"})
+    monkeypatch.setattr(pco, "enrich_order_identity", lambda intent: intent)
+    monkeypatch.setattr(pco, "evaluate_live_order_guard", lambda *a, **kw: {"approved": True})
+    monkeypatch.setattr(pco, "render_guard_text", lambda verdict: "live order guard: READY")
+    monkeypatch.setattr(pco.live_governance, "prepare_live_order_governance",
+                        lambda *a, **kw: {"permission_decision": {"permission_decision_id": "pd_1"}})
+    monkeypatch.setattr(pco.live_execution, "submit_and_reconcile", lambda *a, **kw: dict(_RESULT))
+    monkeypatch.setattr(pco.live_promotion, "build_canary_order_record", lambda **kw: dict(_RECORD))
+    monkeypatch.setattr(pco.live_promotion, "select_canary_registry",
+                        lambda **kw: type("_R", (), {"append_canary_order": lambda self, r: None})())
+    monkeypatch.setattr(pco.live_governance, "report_live_order",
+                        lambda *a, **kw: ({"event_type": "live_order"}, "sha256:test"))
+
+
+@pytest.fixture
+def appended(monkeypatch):
+    """Records the ledger root every append lands on, without writing a chain."""
+    seen: list[Path] = []
+    monkeypatch.setattr(LedgerStore, "append_audit_events",
+                        lambda self, events: seen.append(self.root))
+    return seen
+
+
+def test_the_audit_event_lands_under_the_ledger_dir_not_the_state_root(approved, appended, tmp_path):
+    """The silent half of the bug: a bare ``LedgerStore(root)`` roots the chain at ``root``.
+
+    Asserting the resolved path rather than "it did not crash" is what separates the two
+    defects — this one would have passed a no-exception test while writing the ledger to the
+    wrong directory.
+    """
+    assert pco.main([*ARGV, "--root", str(tmp_path)]) == EXIT_OK
+    assert appended == [tmp_path / LEDGER_REL]
+
+
+def test_the_default_root_does_not_crash_after_the_order_is_placed(approved, appended, monkeypatch):
+    """``--root`` defaults to None, and ``Path(None)`` is a TypeError.
+
+    The regression under test is the *whole* invocation form the docstring documents:
+    no ``--root`` at all. `LedgerStore.default(None)` resolves the repo ledger, so the store is
+    rooted rather than exploding; the append itself is stubbed, so no real chain is touched.
+    """
+    assert pco.main(ARGV) == EXIT_OK
+    assert len(appended) == 1
+    assert appended[0].name == Path(LEDGER_REL).name
+    assert appended[0].is_absolute()
+
+
+def test_an_unexpected_failure_past_the_venue_is_reported_not_raised(approved, monkeypatch, capsys):
+    """A traceback here reads as "the order never happened". It must never be the output.
+
+    ``TypeError`` is deliberately the exception raised: it is the exact class that escaped the
+    narrow ``(MvpRuntimeError, AuditError)`` tuple and turned a filled canary into a crash.
+    """
+    def boom(self, events):
+        raise TypeError("argument should be a str or an os.PathLike object")
+
+    monkeypatch.setattr(LedgerStore, "append_audit_events", boom)
+
+    # BLOCKED, not OK: the order landed but the chain has no record of it, so the P5
+    # post-action audit obligation is unmet and a 0 exit would call that a clean canary.
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    out = capsys.readouterr().out
+    assert "UNEXPECTED_TypeError" in out
+    assert "the order IS placed" in out
+    assert _RESULT["exchange_order_id"] in out
+
+
+def test_a_governed_audit_failure_still_blocks(approved, monkeypatch, capsys):
+    """The pre-existing narrow path keeps its behavior, and now also fails the exit code."""
+    from runtime.mvp_runtime.audit import AuditError
+
+    def boom(self, events):
+        raise AuditError("LEDGER_WRITE_FAILED")
+
+    monkeypatch.setattr(LedgerStore, "append_audit_events", boom)
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    assert "the order IS placed" in capsys.readouterr().out

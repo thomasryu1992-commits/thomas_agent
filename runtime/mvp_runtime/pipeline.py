@@ -177,6 +177,155 @@ def _finalize_block(
     return result
 
 
+# --- enrichment seams -----------------------------------------------------------------
+#
+# Three things a completed run does BESIDES producing its answer: capture what a revision
+# taught, persist that capture, and count the run toward a repetition pattern. They share one
+# rule, and it is the reason they are named here instead of sitting inline in `run_task`:
+#
+#     **enrichment never fails a delivered run.**
+#
+# Each catches its own typed failures and reports them on the result (`learning_error`,
+# `working_memory_error`, `programization_error`) rather than raising. That matters
+# structurally: all three run INSIDE `run_task`'s outer `except MvpRuntimeError`, which turns
+# any escape into a full BLOCK — so an un-caught enrichment failure would withhold an analysis
+# that was already produced and durably audited. Extracted as functions so the rule is stated
+# once and each seam's inputs are visible, rather than being three unlabelled stretches of a
+# 500-line function.
+
+
+def _mint_revision_correction(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    *,
+    raw_request: str,
+    revision_requests: list[str],
+    now: str,
+    working_memory: WorkingMemoryStore | None,
+    outcome: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """M5a: the correction a revision taught, as a working-memory CANDIDATE + its audit event.
+
+    Returns ``(candidate, event, error_code)`` — all None when there is nothing to learn: no
+    store wired, the revision did not recover to PASS, or the assignment does not permit
+    candidate creation. CANDIDATE-status only, so even Thomas's own correction is captured
+    rather than trusted; promotion stays his explicit step.
+    """
+    if working_memory is None or outcome != "PASS":
+        return None, None, None
+    ctype = candidate_type_for(assignment)
+    if ctype is None:
+        return None, None, None
+    identity = task.get("identity", {})
+    ctx = task.get("context", {})
+    goal = task.get("request", {}).get("normalized_goal") or raw_request
+    delta = "; ".join(dict.fromkeys(revision_requests))
+    content = (
+        f"교정 학습: «{goal[:200]}» 유형의 요청에서 첫 분석이 다음을 "
+        f"수정한 뒤에야 통과했습니다 — {delta}"
+    )
+    try:
+        correction = build_correction_candidate(
+            content, source=LEARNING_SOURCE_REVISION, now=now, candidate_type=ctype,
+            seed={"trace_id": identity.get("trace_id"), "task_id": identity.get("task_id")},
+            origin={
+                "task_id": identity.get("task_id"),
+                "task_revision": identity.get("task_revision"),
+                "trace_id": identity.get("trace_id"),
+                "core_context_binding_id": ctx.get("core_context_binding_id"),
+                "data_sensitivity": ctx.get("data_sensitivity"),
+            },
+            correction_ref=f"trace:{identity.get('trace_id')}",
+        )
+    except MvpRuntimeError as exc:
+        # A secret-bearing delta or a bad origin loses the capture, never the run.
+        return None, None, exc.reason_code
+    if correction is None:
+        return None, None, None
+    return correction, build_learning_event(
+        correction, source=LEARNING_SOURCE_REVISION, now=now,
+        trace_id=identity.get("trace_id"),
+    ), None
+
+
+def _persist_learning(
+    *,
+    working_memory: WorkingMemoryStore | None,
+    store: LedgerStore | None,
+    agent_output: Mapping[str, Any],
+    learning_candidates: list[dict[str, Any]],
+    learning_events: list[dict[str, Any]],
+) -> tuple[bool, str | None, str | None]:
+    """Accumulate this run's memory candidates and audit any minted correction.
+
+    Returns ``(stored, working_memory_error, learning_error)``. The audit is gated on the
+    append having SUCCEEDED: the event's own contract is that a candidate "was captured", so
+    emitting it after a failed append would put a tamper-evident claim on the ledger for a
+    candidate that is in no store — and ``/promote`` on that id would refuse CANDIDATE_GONE
+    while the audit said it existed.
+    """
+    if working_memory is None:
+        return False, None, None
+    try:
+        working_memory.append(
+            list(agent_output.get("memory_candidates", [])) + learning_candidates
+        )
+    except PersistenceError as exc:
+        # Nothing landed: the correction rides the same single append as the ordinary
+        # candidates, so a failure loses both.
+        return False, exc.reason_code, (exc.reason_code if learning_candidates else None)
+    if store is not None and learning_events:
+        try:
+            for event in learning_events:
+                store.append_memory_event(event)
+        except PersistenceError as exc:
+            return True, None, exc.reason_code
+    return True, None, None
+
+
+def _observe_repetition(
+    programization: ProgramizationStore | None,
+    *,
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    outcome: str,
+    working_memory: WorkingMemoryStore | None,
+    independently_validated: bool,
+    wrote: bool,
+    specialist_provider: Any,
+    now: str,
+    repo_root: Path | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, str | None]:
+    """Count one COMPLETED+PASS run toward its repetition pattern (Programization Policy).
+
+    Returns ``(observation, pattern, triggered, error_code)``. Threshold-many valid
+    independent repetitions raise a **review trigger only** — no Program is created or
+    activated here or anywhere.
+    """
+    if programization is None or outcome != "PASS":
+        return None, None, False, None
+    steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
+    if working_memory is not None:
+        steps_run.append("memory_retrieval")
+    steps_run += ["analysis_worker", "automatic_validation"]
+    if independently_validated:
+        steps_run.append("independent_validation")
+    if wrote:
+        steps_run.append("controlled_write")
+    try:
+        observation, pattern, triggered = observe_completed_run(
+            programization, task=task, assignment=assignment, steps=steps_run,
+            # A provider with no network egress is an in-process mock: a synthetic run,
+            # observed but never counted (policy §4). The specialist provider is what
+            # actually produced this run's output (tiered when M2 selected one).
+            synthetic=not bool(getattr(specialist_provider, "network_egress", False)),
+            now=now, repo_root=repo_root,
+        )
+    except (PersistenceError, ProgramizationBlocked) as exc:
+        return None, None, False, exc.reason_code
+    return observation, pattern, triggered, None
+
+
 def run_task(
     raw_request: str,
     *,
@@ -484,48 +633,18 @@ def run_task(
             }
             records["revision"] = revision
 
-            # M5a: a revision that recovered a REVISE to a PASS is a correction — mint it as
-            # a working-memory CANDIDATE so a later similar request starts closer to the
-            # accepted answer. ALLOW-tier and best-effort: only when the assignment permits
-            # candidate creation, and a failure here (secret-bearing delta, bad origin) is
-            # noted, never allowed to block an otherwise-delivered run. The candidate is
-            # appended + audited on the delivered path below.
-            if working_memory is not None and outcome == "PASS":
-                ctype = candidate_type_for(plan["role_assignment"])
-                if ctype is not None:
-                    identity = plan["task"].get("identity", {})
-                    ctx = plan["task"].get("context", {})
-                    goal = plan["task"].get("request", {}).get("normalized_goal") or raw_request
-                    delta = "; ".join(dict.fromkeys(revision_requests))
-                    content = (
-                        f"교정 학습: «{goal[:200]}» 유형의 요청에서 첫 분석이 다음을 "
-                        f"수정한 뒤에야 통과했습니다 — {delta}"
-                    )
-                    try:
-                        correction = build_correction_candidate(
-                            content, source=LEARNING_SOURCE_REVISION, now=now, candidate_type=ctype,
-                            seed={"trace_id": identity.get("trace_id"), "task_id": identity.get("task_id")},
-                            origin={
-                                "task_id": identity.get("task_id"),
-                                "task_revision": identity.get("task_revision"),
-                                "trace_id": identity.get("trace_id"),
-                                "core_context_binding_id": ctx.get("core_context_binding_id"),
-                                "data_sensitivity": ctx.get("data_sensitivity"),
-                            },
-                            correction_ref=f"trace:{identity.get('trace_id')}",
-                        )
-                    except MvpRuntimeError as exc:
-                        # Local catch: this block is inside the run's outer MvpRuntimeError
-                        # handler, which turns any escape into a full BLOCK — M5a must never
-                        # do that. Capture failing is enrichment lost, not a run withheld.
-                        correction = None
-                        result.setdefault("learning_error", exc.reason_code)
-                    if correction is not None:
-                        learning_candidates.append(correction)
-                        learning_events.append(build_learning_event(
-                            correction, source=LEARNING_SOURCE_REVISION, now=now,
-                            trace_id=identity.get("trace_id"),
-                        ))
+            # M5a: a revision that recovered a REVISE to a PASS is a correction — captured
+            # for later similar requests. Enrichment: see the seam functions above.
+            correction, correction_event, mint_error = _mint_revision_correction(
+                plan["task"], plan["role_assignment"],
+                raw_request=raw_request, revision_requests=revision_requests, now=now,
+                working_memory=working_memory, outcome=outcome,
+            )
+            if mint_error is not None:
+                result.setdefault("learning_error", mint_error)
+            if correction is not None:
+                learning_candidates.append(correction)
+                learning_events.append(correction_event)
 
         # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
         # Only a PASSING result is written: a rejected analysis must not leave an artifact
@@ -557,32 +676,21 @@ def run_task(
         # a review trigger ONLY (audited below) — no Program is created or activated.
         # Best-effort like working-memory accumulation: the counter is enrichment, so a
         # failure is noted on the result, never blocks a delivered run.
-        programization_pattern = None
-        programization_triggered = False
-        if programization is not None and outcome == "PASS":
-            steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
-            if working_memory is not None:
-                steps_run.append("memory_retrieval")
-            steps_run += ["analysis_worker", "automatic_validation"]
-            if independent_validation_result is not None:
-                steps_run.append("independent_validation")
-            if write_use is not None:
-                steps_run.append("controlled_write")
-            try:
-                observation, programization_pattern, programization_triggered = observe_completed_run(
-                    programization, task=plan["task"], assignment=plan["role_assignment"],
-                    steps=steps_run,
-                    # A provider with no network egress is an in-process mock: a synthetic
-                    # run, observed but never counted (policy §4). The specialist provider is
-                    # what actually produced this run's output (tiered when M2 selected one).
-                    synthetic=not bool(getattr(specialist_provider, "network_egress", False)),
-                    now=now, repo_root=repo_root,
-                )
-                records["programization_observation"] = observation
-                records["programization_pattern"] = programization_pattern
-            except (PersistenceError, ProgramizationBlocked) as exc:
-                programization_pattern = None
-                result.setdefault("programization_error", exc.reason_code)
+        observation, programization_pattern, programization_triggered, obs_error = _observe_repetition(
+            programization,
+            task=plan["task"], assignment=plan["role_assignment"], outcome=outcome,
+            working_memory=working_memory,
+            independently_validated=independent_validation_result is not None,
+            wrote=write_use is not None,
+            specialist_provider=specialist_provider, now=now, repo_root=repo_root,
+        )
+        # Same shape as the try/except this replaced: on success the observation and its
+        # pattern are recorded, on failure only the reason code is.
+        if obs_error is not None:
+            result.setdefault("programization_error", obs_error)
+        elif observation is not None:
+            records["programization_observation"] = observation
+            records["programization_pattern"] = programization_pattern
 
         # What the run actually spent, against the allocation it ran under. The task and
         # assignment records are allocations built before execution, so their zeroed usage
@@ -653,38 +761,16 @@ def run_task(
         # working memory is enrichment, not the audit of record, so a write failure is noted
         # but does not withhold a delivered, durably-audited result. M5a's correction
         # candidate (if the revision loop minted one) rides the same append.
-        if working_memory is not None:
-            stored = True
-            try:
-                working_memory.append(
-                    list(agent_output.get("memory_candidates", [])) + learning_candidates
-                )
-            except PersistenceError as exc:
-                # Nothing landed: the correction rides the same single append as the ordinary
-                # candidates, so a failure loses both.
-                stored = False
-                result.setdefault("working_memory_error", exc.reason_code)
-                if learning_candidates:
-                    result.setdefault("learning_error", exc.reason_code)
-            # M5a: audit the minted correction on the memory-event stream (retention
-            # precedent — a working-memory maintenance action, not a run-audit record).
-            # Best-effort: a failed audit note never withholds the delivered, durably-audited
-            # result.
-            #
-            # Gated on the append having SUCCEEDED. The event's own contract is that a
-            # candidate "was captured", so writing it after a failed append put a
-            # tamper-evident claim on the ledger for a candidate that is in no store — and
-            # `/promote` on that id refuses CANDIDATE_GONE while the audit says it exists.
-            # `operator_feedback._capture_correction` already had this right (one try, event
-            # after append); these two lived in separate try blocks, so this door did not.
-            if stored and store is not None and learning_events:
-                try:
-                    for event in learning_events:
-                        store.append_memory_event(event)
-                except PersistenceError as exc:
-                    result.setdefault("learning_error", exc.reason_code)
-            if stored and learning_candidates:
-                result["learning_candidates"] = learning_candidates
+        stored, wm_error, learn_error = _persist_learning(
+            working_memory=working_memory, store=store, agent_output=agent_output,
+            learning_candidates=learning_candidates, learning_events=learning_events,
+        )
+        if wm_error is not None:
+            result.setdefault("working_memory_error", wm_error)
+        if learn_error is not None:
+            result.setdefault("learning_error", learn_error)
+        if stored and learning_candidates:
+            result["learning_candidates"] = learning_candidates
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(

@@ -170,6 +170,61 @@ def report_live_order(
     )
 
 
+def prepare_unreported_order_recording(
+    canary_record: Mapping[str, Any],
+    *,
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """A Core-bound task for **recording** an unreported order — not for placing one.
+
+    The task text names the recording, because that is the action being audited. Its P5 sibling
+    is deliberately absent: no PermissionDecision is built, because recording a known fact is not
+    a financial capability and minting a P5 decision now would imply an authority this action
+    neither has nor needs. The order's own decision is unrecoverable, and inventing a stand-in is
+    the thing :func:`~runtime.mvp_runtime.audit.build_unreported_live_order_audit` exists to avoid.
+
+    Fails closed with ``CORE_NOT_ACTIVATED`` when no Core is active, like every bound action.
+    """
+    symbol = str(canary_record.get("symbol") or "")
+    canary_order_id = str(canary_record.get("canary_order_id") or "")
+    task = build_task(
+        f"Record a live {symbol} order that reached the venue and was never audited "
+        f"(canary order {canary_order_id}, exchange order "
+        f"{canary_record.get('exchange_order_id')}).",
+        requester_id="thomas",
+        channel="api",
+        data_sensitivity="SENSITIVE",
+        priority="HIGH",
+        now=now,
+        repo_root=repo_root,
+    )
+    _binding, bound_task = bind_task_to_core(task, repo_root=repo_root, now=now)
+    return {"bound_task": bound_task, "canary_order_id": canary_order_id}
+
+
+def report_unreported_live_order(
+    recording: Mapping[str, Any],
+    canary_record: Mapping[str, Any],
+    *,
+    reason: str,
+    now: str,
+    previous_hash: str | None = None,
+    previous_audit_id: str | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    """The late record itself. Returns ``(record, event_sha256)``; the caller appends it."""
+    return audit_module.build_unreported_live_order_audit(
+        recording["bound_task"],
+        canary_record,
+        reason=reason,
+        now=now,
+        previous_hash=previous_hash,
+        previous_audit_id=previous_audit_id,
+        repo_root=repo_root,
+    )
+
+
 __all__ = [
     "LIVE_GOVERNANCE_VERSION",
     "LIVE_TRADER_ROLE_CEILING",
@@ -177,5 +232,7 @@ __all__ = [
     "PURPOSE_CANARY",
     "order_fingerprint",
     "prepare_live_order_governance",
+    "prepare_unreported_order_recording",
     "report_live_order",
+    "report_unreported_live_order",
 ]

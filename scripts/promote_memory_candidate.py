@@ -47,6 +47,7 @@ from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.memory import is_expired, promote_candidate  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root as _repo_root  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore, find_candidate, mark_promoted  # noqa: E402
 
@@ -69,6 +70,15 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
          ledger: LedgerStore | None = None, control_store: ControlStore | None = None,
          now: str | None = None) -> int:
     args = _parse_args(argv)
+    # This script's only mode promotes, so the guard belongs at the door. Injected stores are
+    # left alone deliberately: a caller that supplies its own stores (the suite) may be writing
+    # somewhere else entirely, and the state directory is what this check is about.
+    try:
+        assert_not_foreign_root_run(args.root)
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return 3
+
     if store is None:
         store = WorkingMemoryStore(args.root / ".runtime_governance_state/working_memory") if args.root \
             else WorkingMemoryStore.default()

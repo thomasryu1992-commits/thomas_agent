@@ -51,6 +51,7 @@ from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
@@ -241,6 +242,15 @@ def main(argv: list[str] | None = None) -> int:
         print("BLOCKED: --candidate-ids is required (or use --list)")
         return EXIT_USAGE
     selectors = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
+
+    # Past `--list`, every remaining branch writes: `--request` stores an approval and audits it,
+    # `--confirm` rewrites the active pool. Placed here rather than at the top of main so a
+    # read-only listing stays runnable from anywhere.
+    try:
+        assert_not_foreign_root_run()
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return EXIT_BLOCKED
 
     if args.request:
         prepared = run_request(selectors=selectors, keep_active=args.keep_active)
