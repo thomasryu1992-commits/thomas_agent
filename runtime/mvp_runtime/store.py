@@ -165,8 +165,18 @@ class LedgerStore:
         is no sanctioned repair path. Per-file sidecar locks, so writers to different
         files never serialize against each other."""
         jsonl_path = self._root / filename
-        with locked(self._root / (filename + ".lock"), code="LEDGER_WRITE_FAILED", label=label):
+        with self.file_lock(filename, label=label):
             jsonl.append_lines(jsonl_path, rows, write_code="LEDGER_WRITE_FAILED", label=label)
+
+    def file_lock(self, filename: str, *, label: str | None = None):
+        """This ledger file's cross-process lock — the same one appends take.
+
+        Public because retention rotates these files and MUST hold the writer's lock while
+        it does: a rotation that interleaved with an append would tear the file the append
+        was careful not to tear. One owner for the sidecar-path convention, so a second
+        caller cannot invent a slightly different lock and think it is holding this one."""
+        return locked(self._root / (filename + ".lock"),
+                      code="LEDGER_WRITE_FAILED", label=label or f"the {filename} ledger")
 
     def last_audit_hash(self) -> str | None:
         """Return the last persisted event's ``event_sha256`` (the chain tip), or None.
