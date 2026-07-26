@@ -137,6 +137,24 @@ def test_cancel_turn_is_kill_switch_bound_via_the_console(tmp_path):
     assert registry.latest()[0].status == QUEUED
 
 
+def test_a_running_task_proposal_names_the_verb_that_would_stop_it(tmp_path):
+    """The proposal said "현재 RUNNING 상태라 취소할 수 없습니다" and stopped there, leaving
+    Thomas without the verb that WOULD stop it. It now borrows the console's own answer, so the
+    conversational door and /cancel cannot give different reasons."""
+    registry = TaskRegistryStore(tmp_path)
+    entry, _ = enqueue(registry, request_text="실행 중인 작업", origin="TELEGRAM",
+                       requester_id="tg-12345", now=NOW)
+    registry.claim_next_queued(now=NOW)          # QUEUED -> RUNNING
+    provider = TurnProvider(_turn("CANCEL_TASK", {"entry_id": entry.registry_entry_id}))
+
+    outcome = _run("그거 취소해줘", provider, tmp_path, registry=registry,
+                   control_store=ControlStore(tmp_path / "control"))
+
+    assert outcome["action"] == "CANCEL_PROPOSAL_NOT_CANCELLABLE"
+    assert "/kill" in outcome["reply"]           # the verb that actually stops it
+    assert registry.latest()[0].status == "RUNNING"
+
+
 def test_chat_and_clarify_do_nothing_but_reply(tmp_path):
     registry = TaskRegistryStore(tmp_path)
     for kind in ("CHAT_REPLY", "CLARIFY"):

@@ -11,10 +11,21 @@ id and a registered private-chat id must match. Group/channel messages, a differ
 and forwarded messages are invalid sources. This module enforces exactly those identity
 rules and **fails closed** — an unverified message never runs a task.
 
-Network-free by construction: like ``MockProvider`` / ``MockSearchTool``, this handles an
-already-received message. The real Telegram network adapter (long-poll/webhook, bot token
-by env var) goes behind the Safety-Flag Gate in a later increment; nothing here opens a
-socket. Emergency operator-console controls (pause/stop/kill/status) are also later.
+**This module does open sockets** — that sentence used to read "network-free by construction
+… nothing here opens a socket … emergency controls are also later", written when both were
+true and left in place through the increments that made them false. ``TelegramChannel`` below
+is the real long-poll adapter, and every console verb family routes through
+``handle_operator_message``. Anyone reasoning about this file's egress from its own docstring
+was reasoning from a promise it had stopped keeping.
+
+What is actually true, and is the property that matters:
+
+- ``handle_operator_message`` and ``verify_control_channel`` are pure message handling — they
+  open nothing, which is why the whole identity gate is testable with no network.
+- The network lives in exactly one place, ``TelegramChannel``, and it is only ever *reachable*
+  through ``select_operator_channel``, which returns ``MockOperatorChannel`` unless the
+  Safety-Flag Gate authorized ``network_access`` for the ``telegram`` provider. The env var
+  alone opens nothing; the capable object is not constructed before the gate opens.
 """
 
 from __future__ import annotations

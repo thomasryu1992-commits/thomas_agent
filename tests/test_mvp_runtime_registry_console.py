@@ -316,6 +316,41 @@ def test_cancel_a_finished_entry_is_refused(tmp_path):
     assert exc.value.reason_code == "TASK_ALREADY_FINISHED"
 
 
+def test_a_cancel_that_loses_the_race_says_what_actually_happened(tmp_path):
+    """The status check is unlocked and `transition` re-checks under the store lock, so a task
+    that starts running while the operator types lands in the except branch. It answered
+    "취소를 기록하지 못했습니다: ... is not a legal transition", which describes a storage
+    failure — the truthful answer is the one the pre-check would have given a moment later."""
+    store = _registry(tmp_path)
+    entry = _entry(store, status=QUEUED)
+    real_transition = store.transition
+
+    def racing_transition(entry_id, target, **kw):
+        # The drain claims it between the pre-check and the write.
+        store.transition = real_transition
+        real_transition(entry_id, RUNNING, now=LATER)
+        return real_transition(entry_id, target, **kw)
+    store.transition = racing_transition
+
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("CANCEL", entry.registry_entry_id), registry=store,
+               control_store=_control(tmp_path))
+    assert exc.value.reason_code == "TASK_ALREADY_RUNNING"
+    assert "/kill" in exc.value.reason
+    assert "기록하지 못했습니다" not in exc.value.reason
+    assert store.find(entry.registry_entry_id).status == RUNNING
+
+
+def test_one_authority_answers_why_a_cancel_is_refused(tmp_path):
+    """The verb, its lost-race path and the front desk's proposal all ask the same helper, so
+    the conversational door cannot give a different reason than /cancel does."""
+    store = _registry(tmp_path)
+    running = _entry(store, status=RUNNING)
+    code, message = registry_console.cancel_refusal(store.find(running.registry_entry_id))
+    assert code == "TASK_ALREADY_RUNNING" and "/kill" in message
+    assert registry_console.cancel_refusal(_entry(store, now=LATER, status=QUEUED)) is None
+
+
 # --- read verbs answer while the runtime is down -----------------------------
 
 @pytest.mark.parametrize("mode", [control.PAUSED, control.KILLED])
