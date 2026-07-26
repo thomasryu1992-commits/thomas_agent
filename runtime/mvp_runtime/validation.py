@@ -56,8 +56,22 @@ def stricter_result(a: str, b: str) -> str:
 
 
 # The risk levels whose classification REQUIRES an independent validation (policy §3.4).
-# One authority: the automatic validation record, the independent validation record, and
-# the pipeline's auto policy must all agree on which risks mandate the second reviewer.
+# One authority for the RISK half: the automatic validation record, the independent
+# validation record, and the pipeline's auto policy all read this same set.
+#
+# The two halves below are deliberately NOT interchangeable, and reading them as one is an
+# easy and wrong "fix" (attempted 2026-07-26, refused by
+# `test_auto_policy_validates_an_important_request`):
+#
+# * `INDEPENDENT_RISK_LEVELS` answers "did GOVERNANCE mandate a reviewer?" — it is what the
+#   two validation records store in `validator.independent_required`.
+# * `independent_validation_required` (risk OR priority) answers "does THIS RUN get a
+#   reviewer?" — it is what `prime` decides with, so a GREEN request the operator marked
+#   important gets one.
+#
+# So an operator-marked GREEN run legitimately records `independent_required: false` while a
+# reviewer ran: nothing required it, Thomas asked for it. Merging them would make the record
+# claim a governance mandate that does not exist.
 INDEPENDENT_RISK_LEVELS = frozenset({"ORANGE", "RED"})
 # The priorities the operator uses to mark a request important enough for the second
 # reviewer even at GREEN risk (the `!중요` / `!important` intake marker maps here).
@@ -191,6 +205,8 @@ def validate_agent_output(
     ]
 
     risk_level = task.get("classification", {}).get("risk_level")
+    # RISK ONLY, on purpose — this field records the governance mandate, not whether a
+    # reviewer ran. See the note above INDEPENDENT_RISK_LEVELS before changing it.
     independent_required = risk_level in INDEPENDENT_RISK_LEVELS
 
     seed = {
