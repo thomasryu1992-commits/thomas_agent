@@ -197,7 +197,9 @@ def test_stranded_running_entry_gets_an_honest_terminal(tmp_path):
     done = store.submit(_entry(now=LATER, status=RUNNING))
     store.transition(done.registry_entry_id, DELIVERED, now=LATER)
 
-    reconciled = reconcile_stale_running(store, now="2026-07-25T10:00:00Z")
+    reconciled = reconcile_stale_running(
+        store, now="2026-07-25T10:00:00Z", origins=task_registry.OPERATOR_ORIGINS,
+    )
 
     assert [e.registry_entry_id for e in reconciled] == [running.registry_entry_id]
     stranded = store.find(running.registry_entry_id)
@@ -205,6 +207,47 @@ def test_stranded_running_entry_gets_an_honest_terminal(tmp_path):
     assert stranded.last_reason_code == task_registry.ABANDONED_REASON_CODE
     # A finished entry is never touched.
     assert store.find(done.registry_entry_id).status == DELIVERED
+
+
+def test_one_service_never_abandons_another_services_live_run(tmp_path):
+    """The shipped deployment is two processes on ONE state volume. Reconciling everything
+    meant an operator restart marked the scheduler's in-flight analysis RUN_ABANDONED, its own
+    honest close then hit the (correctly) illegal FAILED -> DELIVERED, and `close_entry`
+    swallowed it — so a completed scheduled run was recorded as abandoned forever and lost the
+    trace_id `/result` needs. Reproduced end to end here."""
+    store = _store(tmp_path)
+    scheduled = store.submit(_entry(origin="SCHEDULER", requester_id="mvp.scheduler:s1", status=RUNNING))
+
+    # The operator service restarts while that run is genuinely in flight.
+    assert reconcile_stale_running(
+        store, now=LATER, origins=task_registry.OPERATOR_ORIGINS,
+    ) == []
+    assert store.find(scheduled.registry_entry_id).status == RUNNING
+
+    # ...so the scheduler's own close still lands, with the pointer /result needs.
+    task_registry.close_entry(store, scheduled, status=DELIVERED, now=LATER,
+                              trace_id="trace_real", result_ref="ledger:trace_real")
+    closed = store.find(scheduled.registry_entry_id)
+    assert closed.status == DELIVERED and closed.trace_id == "trace_real"
+
+
+def test_each_service_still_closes_its_own_stranded_run(tmp_path):
+    """Scoping must not become a hole: the scheduler reconciles SCHEDULER origins at its own
+    startup, which is the half that never happened before (only the operator reconciled)."""
+    store = _store(tmp_path)
+    stranded = store.submit(_entry(origin="SCHEDULER", requester_id="mvp.scheduler:s1", status=RUNNING))
+    reconciled = reconcile_stale_running(
+        store, now=LATER, origins=task_registry.SCHEDULER_ORIGINS,
+    )
+    assert [e.registry_entry_id for e in reconciled] == [stranded.registry_entry_id]
+    assert store.find(stranded.registry_entry_id).last_reason_code == task_registry.ABANDONED_REASON_CODE
+
+
+def test_the_two_ownership_sets_are_disjoint_and_known_origins():
+    """Overlap would put both services back to abandoning each other's work; an origin in
+    neither set is one nobody would ever close."""
+    assert not (task_registry.OPERATOR_ORIGINS & task_registry.SCHEDULER_ORIGINS)
+    assert (task_registry.OPERATOR_ORIGINS | task_registry.SCHEDULER_ORIGINS) <= task_registry.ORIGINS
 
 
 # --- the best-effort recording seam ------------------------------------------

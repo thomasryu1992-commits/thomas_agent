@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, operator, scheduler, timeutil
+from . import heartbeat, operator, scheduler, task_registry, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -276,6 +276,23 @@ def main(
         startup_stamp = now or timeutil.utc_now_iso()
         report_startup_gap(store, now=startup_stamp, ledger=ledger, alerter=alerter)
         report_abandoned_runs(ledger=ledger, now=startup_stamp, alerter=alerter)
+        # ...and the coordination view of the same thing. A KIND_TASK fire opens a RUNNING
+        # registry entry (`scheduler.py`), so a scheduler killed mid-analysis strands it — and
+        # nothing closed it, because only the operator service reconciled and it (correctly, as
+        # of this change) no longer touches another service's origins. Scoped to SCHEDULER for
+        # the same reason: an operator request in flight is not this process's to abandon.
+        # Best-effort, like the operator's: bookkeeping must not stop the service.
+        try:
+            stranded = task_registry.reconcile_stale_running(
+                TaskRegistryStore.default(repo_root), now=startup_stamp,
+                origins=task_registry.SCHEDULER_ORIGINS,
+            )
+            if stranded:
+                sys.stderr.write(
+                    f"SCHEDULER: {len(stranded)} interrupted scheduled task(s) marked RUN_ABANDONED\n"
+                )
+        except MvpRuntimeError as exc:
+            sys.stderr.write(f"SCHEDULER: task registry not reconciled ({exc.reason_code})\n")
 
         # Stamp once before the first tick so a probe has an answer from the moment the
         # service is up, and once per completed pass thereafter. Best-effort: a heartbeat

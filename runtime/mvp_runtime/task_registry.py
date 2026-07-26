@@ -39,6 +39,13 @@ with no terminal, the same blind spot ``scheduler.py`` names for a fire that nev
 write its outcome. The next startup is the only vantage point that can see it, so
 :func:`reconcile_stale_running` supplies the missing terminal there. Until it runs, a
 stranded entry says RUNNING; it never silently becomes DELIVERED.
+
+**Two writers, one file.** Execution is single-task-at-a-time *per service*, but the shipped
+deployment runs TWO services against one mounted state volume (``operator`` and
+``scheduler``), and both open entries here. So "still RUNNING" does not mean "abandoned" —
+it means abandoned *by whoever owns that origin*. Every read-modify-write already holds the
+cross-process lock; what needed saying is the ownership, which is why ``OPERATOR_ORIGINS`` /
+``SCHEDULER_ORIGINS`` exist and why ``reconcile_stale_running`` refuses to guess at it.
 """
 
 from __future__ import annotations
@@ -82,6 +89,14 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK"})
+
+# WHICH SERVICE EXECUTES an entry of each origin — that is, whose death strands it at RUNNING.
+# The shipped deployment is TWO long-lived processes sharing ONE state volume (see
+# docker-compose.yml), so "a RUNNING entry belongs to a dead process" is only true about the
+# process that owns that origin. `reconcile_stale_running` takes an explicit ownership set for
+# exactly this reason; see its docstring for what went wrong without one.
+OPERATOR_ORIGINS = frozenset({"TELEGRAM", "FRONTDESK"})
+SCHEDULER_ORIGINS = frozenset({"SCHEDULER"})
 _FLAG_NAMES = ("important", "independent_validation", "revise", "write_output")
 
 # The terminal supplied by the next startup for an entry whose process died mid-run.
@@ -415,21 +430,35 @@ class TaskRegistryStore:
         return RegistryEntry.from_record(latest)
 
 
-def reconcile_stale_running(store: TaskRegistryStore, *, now: str) -> list[RegistryEntry]:
+def reconcile_stale_running(
+    store: TaskRegistryStore, *, now: str, origins: Iterable[str],
+) -> list[RegistryEntry]:
     """Supply the terminal that a process killed mid-run never wrote. Call at startup.
 
     A RUNNING entry can only be genuinely in flight while the process that claimed it is
-    alive; the MVP runs tasks one at a time in a single process, so any entry still RUNNING
-    when a fresh process starts belongs to a dead one. Marking it FAILED
-    (``RUN_ABANDONED``) is the honest terminal — the run did not deliver, and the registry
-    must not keep telling the operator that something is running when nothing is.
+    alive, so a fresh process may honestly close the ones IT would have been running.
+    Marking those FAILED (``RUN_ABANDONED``) beats leaving the operator told that something
+    is running when nothing is.
+
+    ``origins`` is **required**, and it is the whole correctness of this function. The shipped
+    deployment is two long-lived services — ``operator`` and ``scheduler`` — sharing one state
+    volume, so this file is not single-process state. Reconciling *everything* meant that an
+    operator restart (a crash, a ``compose up`` touching only that service) marked the
+    scheduler's genuinely-live analysis ``RUN_ABANDONED`` mid-run; the scheduler's own honest
+    close then hit ``FAILED -> DELIVERED``, which is correctly refused as an illegal transition
+    and swallowed by the best-effort ``close_entry``. A completed scheduled analysis was
+    recorded as abandoned forever, and because the refused transition never wrote its
+    ``trace_id``, ``/result`` could not fetch the run either. Pass ``OPERATOR_ORIGINS`` /
+    ``SCHEDULER_ORIGINS``; there is no default, so no future caller can reconcile another
+    service's work by forgetting to think about it.
 
     Deliberately startup-only, and deliberately not a timeout: a long model call is not a
     dead process, and guessing from elapsed time would abandon healthy runs.
     """
+    owned = frozenset(origins)
     reconciled: list[RegistryEntry] = []
     for entry in store.latest():
-        if entry.status != RUNNING:
+        if entry.status != RUNNING or entry.origin not in owned:
             continue
         reconciled.append(store.transition(
             entry.registry_entry_id, FAILED, now=now, reason_code=ABANDONED_REASON_CODE,
