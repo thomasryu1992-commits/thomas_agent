@@ -23,6 +23,7 @@ MockProvider), and no tool/program execution.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -175,6 +176,91 @@ def _finalize_block(
         result["block"]["persist_error"] = secondary.reason_code
         result["persist_error"] = secondary.reason_code
     return result
+
+
+@dataclass(frozen=True)
+class _RevisionSpend:
+    """What the M3 revision loop's FIRST attempt cost, on top of the final one.
+
+    The usage block reads the FINAL ``invocation`` / ``validator_invocation``, so a revised run
+    has to add the attempt those replaced. Four loose ``rev_*`` locals carried that across 120
+    lines of ``run_task``; as one value the rule sits next to the arithmetic, and the eventual
+    revision-loop extraction has something to return.
+    """
+
+    agent_invocations: int = 0
+    model_calls: int = 0
+    tokens: int = 0
+    retries: int = 0
+
+    @classmethod
+    def from_first_attempt(
+        cls, invocation: Mapping[str, Any], validator_invocation: Mapping[str, Any] | None
+    ) -> "_RevisionSpend":
+        """The spend of the attempt a revision replaced.
+
+        Only the FIRST run's calls are extra: the regenerated specialist and its re-verify ARE
+        the final invocation pair the usage block already counts.
+        """
+        agents = 1 + (1 if validator_invocation is not None else 0)
+        return cls(
+            agent_invocations=agents,
+            model_calls=agents,
+            tokens=(int(invocation.get("tokens_used", 0))
+                    + int((validator_invocation or {}).get("tokens_used", 0))),
+            retries=(int(invocation.get("retry_count", 0))
+                     + int((validator_invocation or {}).get("retry_count", 0))),
+        )
+
+
+def _record_spend(
+    limits: Mapping[str, Any],
+    *,
+    invocation: Mapping[str, Any],
+    validator_invocation: Mapping[str, Any] | None,
+    triage_invocation: Mapping[str, Any] | None,
+    revision_spend: _RevisionSpend,
+    independently_validated: bool,
+    revised: bool,
+) -> dict[str, Any]:
+    """What the run actually spent, against the allocation it ran under.
+
+    The task and assignment records are allocations built BEFORE execution, so their zeroed
+    usage can never answer "what did this run spend?" — this record is what satisfies the
+    contract's ``usage_must_be_recorded_for_audit``.
+
+    Two counting rules live here rather than in the caller's locals:
+
+    * the R7.2 triage is Prime's model call, not an agent's, so it counts toward
+      ``model_calls`` and ``tokens_used`` but never toward ``agent_invocations``;
+    * a revision's first attempt is additive to the final spend (see :class:`_RevisionSpend`),
+      and ``revision_cycles`` surfaces the retry on its own rather than hiding it inside a
+      larger ``model_calls``.
+    """
+    agents = 2 if validator_invocation is not None else 1
+    return recorded_usage_budget(
+        limits,
+        agent_invocations=agents + revision_spend.agent_invocations,
+        model_calls=(agents + (1 if triage_invocation is not None else 0)
+                     + revision_spend.model_calls),
+        tokens_used=(
+            int(invocation.get("tokens_used", 0))
+            + int((validator_invocation or {}).get("tokens_used", 0))
+            + int((triage_invocation or {}).get("tokens_used", 0))
+            + revision_spend.tokens
+        ),
+        validation_cycles=2 if independently_validated else 1,
+        revision_cycles=1 if revised else 0,
+        # Every model call the run made, matching what tokens_used sums. It counted only the
+        # specialist and the reviewer, so a run whose triage retried a 503 — or whose
+        # pre-revision calls did — reported 0 and read as a clean first try.
+        retry_count=(
+            int(invocation.get("retry_count", 0))
+            + int((validator_invocation or {}).get("retry_count", 0))
+            + int((triage_invocation or {}).get("retry_count", 0))
+            + revision_spend.retries
+        ),
+    )
 
 
 # --- enrichment seams -----------------------------------------------------------------
@@ -586,21 +672,13 @@ def run_task(
         # pre-allocated above; the worker still fails closed on an exhausted allocation, so
         # the loop cannot overspend even if this guard drifted.
         revision = None
-        rev_agent_invocations = rev_model_calls = rev_tokens = rev_retries = 0
+        revision_spend = _RevisionSpend()
         if revise and outcome == "REVISE":
             revision_requests = list(validation["validation"]["result_reasons"])
             if independent_validation_result is not None:
                 revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
             first_invocation = invocation
-            first_validator_invocation = validator_invocation
-            # Only the FIRST run's calls are extra here — the regenerated specialist and its
-            # re-verify are the FINAL invocation/validator_invocation the usage block counts.
-            rev_agent_invocations = 1 + (1 if first_validator_invocation is not None else 0)
-            rev_model_calls = rev_agent_invocations
-            rev_tokens = (int(first_invocation.get("tokens_used", 0))
-                          + int((first_validator_invocation or {}).get("tokens_used", 0)))
-            rev_retries = (int(first_invocation.get("retry_count", 0))
-                           + int((first_validator_invocation or {}).get("retry_count", 0)))
+            revision_spend = _RevisionSpend.from_first_attempt(invocation, validator_invocation)
 
             agent_output, invocation = run_analysis_worker(
                 plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
@@ -692,38 +770,14 @@ def run_task(
             records["programization_observation"] = observation
             records["programization_pattern"] = programization_pattern
 
-        # What the run actually spent, against the allocation it ran under. The task and
-        # assignment records are allocations built before execution, so their zeroed usage
-        # can never answer this — the contract's usage_must_be_recorded_for_audit invariant
-        # had no record satisfying it until this one.
-        # M3: the revision's FIRST-run calls (rev_*) are additive to the FINAL-run spend the
-        # formulas below read off invocation/validator_invocation — so a revised run reports
-        # every model call it made, and revision_cycles surfaces the retry on its own.
-        records["budget_usage"] = recorded_usage_budget(
+        records["budget_usage"] = _record_spend(
             plan["task"].get("execution_budget", {}).get("limits", {}),
-            agent_invocations=(2 if validator_invocation is not None else 1) + rev_agent_invocations,
-            # The R7.2 triage is Prime's model call, not an agent's — it counts toward
-            # model_calls/tokens but never toward agent_invocations.
-            model_calls=(2 if validator_invocation is not None else 1)
-                        + (1 if triage_invocation is not None else 0) + rev_model_calls,
-            tokens_used=(
-                int(invocation.get("tokens_used", 0))
-                + int((validator_invocation or {}).get("tokens_used", 0))
-                + int((triage_invocation or {}).get("tokens_used", 0))
-                + rev_tokens
-            ),
-            validation_cycles=2 if independent_validation_result is not None else 1,
-            revision_cycles=1 if revision is not None else 0,
-            # Every model call this run made, matching what tokens_used already sums. It
-            # counted only the specialist and the reviewer, so a run whose triage retried a
-            # 503 — or whose pre-revision calls did — reported retry_count 0 and read as a
-            # clean first try. Recording these is the whole reason the field exists.
-            retry_count=(
-                int(invocation.get("retry_count", 0))
-                + int((validator_invocation or {}).get("retry_count", 0))
-                + int((triage_invocation or {}).get("retry_count", 0))
-                + rev_retries
-            ),
+            invocation=invocation,
+            validator_invocation=validator_invocation,
+            triage_invocation=triage_invocation,
+            revision_spend=revision_spend,
+            independently_validated=independent_validation_result is not None,
+            revised=revision is not None,
         )
 
         records["audit_trail"] = build_pipeline_audit(
