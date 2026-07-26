@@ -165,6 +165,50 @@ def test_chat_and_clarify_do_nothing_but_reply(tmp_path):
     assert registry.latest() == []
 
 
+# --- what a conversation costs per turn ---------------------------------------
+
+def test_a_long_paste_does_not_become_permanent_prompt_weight(tmp_path):
+    """The front desk fires for EVERY plain-text message, including "고마워", and carries ten
+    session turns. The reply half of a session entry was capped and the operator half was not,
+    so one pasted business plan sat in every later prompt for the whole 12-hour TTL. Measured:
+    a 1,637-char paste across ten turns took the prompt from 1,398 to 18,183 chars."""
+    from runtime.mvp_runtime.budgets import MAX_SESSION_ENTRY_CHARS
+
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    long_msg = "이 사업 아이디어를 분석해줘: " + ("구독형 세차의 단위경제와 재방문율. " * 60)
+    for _ in range(10):
+        frontdesk._record_exchange(wm, operator_text=long_msg, turn_kind="SUBMIT_TASK",
+                                   reply="접수했습니다", now=NOW)
+    session = frontdesk._session_entries(wm, NOW)
+    prompt = frontdesk._build_prompt(session, "그거 어떻게 됐어?")
+    assert len(session) == 10                     # the window itself is unchanged
+    assert len(prompt) < 10_000, f"prompt grew to {len(prompt)} chars"
+    assert "chars omitted]" in prompt             # and says it clipped
+
+
+def test_clipping_the_prompt_does_not_break_the_verbatim_guard(tmp_path):
+    """The catch: SUBMIT_TASK is only accepted when the text is genuinely Thomas's words, and
+    `_verbatim_ok` searches the session. Clipping the stored `operator_text` would have made a
+    long request unquotable and silently unsubmittable — so only the PROMPT-facing `content`
+    is clipped; the raw words stay whole for the check."""
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    long_msg = "이 사업 아이디어를 분석해줘: " + ("구독형 세차의 단위경제. " * 60)
+    frontdesk._record_exchange(wm, operator_text=long_msg, turn_kind="CLARIFY",
+                               reply="어떤 부분을 보길 원하세요?", now=NOW)
+    from runtime.mvp_runtime.budgets import MAX_SESSION_ENTRY_CHARS
+
+    session = frontdesk._session_entries(wm, NOW)
+    entry = session[0]
+    # The prompt-facing half is clipped...
+    assert "chars omitted]" in entry["content"]
+    assert long_msg not in entry["content"]
+    assert len(entry["content"]) < MAX_SESSION_ENTRY_CHARS + 200
+    # ...while the raw words are kept whole, so the request stays quotable...
+    assert entry["operator_text"] == long_msg
+    # ...and the submit is therefore still accepted as verbatim.
+    assert frontdesk._verbatim_ok(long_msg, "응 그거 해줘", session) is True
+
+
 # --- the instruction the model actually reads ---------------------------------
 #
 # Every test above builds its own turn with the right schema_version, which is exactly why
