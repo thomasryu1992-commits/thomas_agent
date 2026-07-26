@@ -147,6 +147,44 @@ def test_chat_and_clarify_do_nothing_but_reply(tmp_path):
     assert registry.latest() == []
 
 
+# --- the instruction the model actually reads ---------------------------------
+#
+# Every test above builds its own turn with the right schema_version, which is exactly why
+# nobody noticed that the PROMPT told the model to emit `frontdesk_turn.v0.1` long after the
+# validator's const moved to v0.2. An obedient model therefore failed validation on every
+# turn and got downgraded to CHAT_REPLY — the whole vocabulary silently dead, with only
+# FRONTDESK_TURN_INVALID in the ledger. These check the prompt, not our own fixtures.
+
+def test_a_turn_built_exactly_as_the_prompt_instructs_is_accepted(tmp_path):
+    """Round-trip through the prompt's own words: whatever schema_version the instruction
+    names must be one the runtime accepts."""
+    import re
+
+    instructed = re.findall(r"frontdesk_turn\.v\d+\.\d+", frontdesk._prompt_header())
+    assert instructed, "the prompt no longer tells the model which schema_version to emit"
+    for version in set(instructed):
+        turn = {"schema_version": version, "turn_kind": "SUBMIT_TASK",
+                "payload": {"request_text": "이 사업 아이디어를 분석해줘: 구독 세차",
+                            "important": False, "independent_validation": False},
+                "reply_text": "접수하겠습니다"}
+        assert frontdesk._extract_turn({"recommendation": {"turn": turn}}, ROOT) is not None, (
+            f"the prompt instructs schema_version={version!r}, which the validator rejects"
+        )
+
+
+def test_the_prompt_lists_every_turn_kind_the_schema_allows():
+    """A kind in the schema but not the prompt is a capability the model cannot know it has;
+    a kind in the prompt but not the schema is an instruction that can only fail validation."""
+    import json
+
+    schema = json.loads(
+        (ROOT / "schemas" / f"{frontdesk.TURN_SCHEMA_VERSION}.schema.json").read_text(encoding="utf-8")
+    )
+    prompt = frontdesk._prompt_header()
+    for kind in schema["properties"]["turn_kind"]["enum"]:
+        assert kind in prompt, f"{kind} is allowed by the schema but absent from the prompt"
+
+
 # --- fail directions ---------------------------------------------------------
 
 def test_invalid_turn_downgrades_to_chat_reply(tmp_path):
