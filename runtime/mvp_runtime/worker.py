@@ -26,6 +26,13 @@ from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import schema_cache
+from .budgets import (
+    MAX_MEMORY_CONTENT_CHARS,
+    MAX_SEARCH_SNIPPET_CHARS,
+    clip_for_prompt,
+    output_allowance,
+    response_was_truncated,
+)
 from .errors import ProviderError, WorkerBlocked
 from .memory import build_memory_candidates
 from .paths import repo_root as _repo_root
@@ -157,7 +164,9 @@ def _search_context(search_hits: list[Mapping[str, Any]] | None) -> str:
         return ""
     lines = ["\nRead-only web search results (use as supporting evidence; cite by [S#]):"]
     for index, hit in enumerate(search_hits, start=1):
-        lines.append(f"[S{index}] {hit.get('title', '')} — {hit.get('url', '')}: {hit.get('snippet', '')}")
+        # The snippet is a web page's content — sized by the page, not by us.
+        snippet = clip_for_prompt(hit.get("snippet", ""), MAX_SEARCH_SNIPPET_CHARS)
+        lines.append(f"[S{index}] {hit.get('title', '')} — {hit.get('url', '')}: {snippet}")
     return "\n".join(lines) + "\n"
 
 
@@ -167,7 +176,8 @@ def _memory_context(memory_entries: list[Mapping[str, Any]] | None) -> str:
         return ""
     lines = ["\nRelevant prior working memory (candidates only — unverified, do not over-rely):"]
     for index, entry in enumerate(memory_entries, start=1):
-        lines.append(f"[M{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+        content = clip_for_prompt(entry.get("content", ""), MAX_MEMORY_CONTENT_CHARS)
+        lines.append(f"[M{index}] ({entry.get('candidate_type', 'memory')}) {content}")
     return "\n".join(lines) + "\n"
 
 
@@ -186,14 +196,15 @@ def _validated_context(validated_entries: list[Mapping[str, Any]] | None) -> str
     lines = ["\nValidated memory (operator-approved reusable knowledge; cite by [V#]):"]
     has_correction = False
     for index, entry in enumerate(validated_entries, start=1):
+        content = clip_for_prompt(entry.get("content", ""), MAX_MEMORY_CONTENT_CHARS)
         if entry.get("learning_source"):
             has_correction = True
             lines.append(
                 f"[V{index}] (operator-approved correction — apply to this similar request) "
-                f"{entry.get('content', '')}"
+                f"{content}"
             )
         else:
-            lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+            lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {content}")
     if has_correction:
         lines.append("Where a [V#] is marked a correction, prefer its guidance over your default approach.")
     return "\n".join(lines) + "\n"
@@ -407,9 +418,26 @@ def run_analysis_worker(
         task, assignment, search_hits, memory_entries, validated_entries, revision_requests
     )
     try:
-        result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
+        result = provider.generate(
+            prompt,
+            # NOT the whole token_budget: that figure caps input+output and is checked
+            # below, so handing all of it to the provider as an output allowance made an
+            # obedient answer breach by the size of the prompt (see budgets.py).
+            max_output_tokens=output_allowance(token_budget),
+            timeout_seconds=int(timeout_seconds),
+        )
     except (ProviderError, TimeoutError) as exc:
         raise WorkerBlocked("PROVIDER_ERROR", str(exc)) from exc
+
+    if response_was_truncated(result.finish_reason):
+        # Say what went wrong. A response cut off at the cap reaches _require_analysis as
+        # a malformed one and used to be reported as malformed — naming the symptom and
+        # sending the operator looking for a bad model instead of a small allowance.
+        raise WorkerBlocked(
+            "RESPONSE_TRUNCATED",
+            f"provider stopped at the output cap ({result.finish_reason}); the answer is "
+            "incomplete, not malformed",
+        )
 
     tokens_used = int(result.input_tokens) + int(result.output_tokens)
     if token_budget and tokens_used > int(token_budget):

@@ -51,7 +51,12 @@ from . import (
     memory, memory_console, registry_console, safety_gate, schema_cache, task_registry,
     timeutil,
 )
-from .budgets import FRONTDESK_TIMEOUT_SECONDS, FRONTDESK_TOKEN_ALLOWANCE
+from .budgets import (
+    FRONTDESK_TIMEOUT_SECONDS,
+    FRONTDESK_TOKEN_ALLOWANCE,
+    MAX_SESSION_ENTRY_CHARS,
+    clip_for_prompt,
+)
 from .errors import MvpRuntimeError, OperatorBlocked, PersistenceError, ProviderError
 from .events import stamped_event
 from .paths import repo_root as _repo_root
@@ -196,9 +201,13 @@ def _record_exchange(
         "status": memory.CANDIDATE_STATUS,
         "validated": False,
         "promotable": False,
-        # The prompt context, compact. reply capped so a re-sent analysis does not balloon
-        # the session store — the ledger keeps the full text, this is conversation memory.
-        "content": f"Thomas: {operator_text}\nFrontdesk[{turn_kind}]: {reply[:400]}",
+        # The prompt context, compact. BOTH halves capped: the reply always was, but
+        # `operator_text` was not — so one pasted business plan became permanent prompt
+        # weight in every later turn for the whole 12-hour TTL. Measured: a 1.6k-char paste
+        # across ten turns took the front-desk prompt from 1,398 to 18,183 chars, on a call
+        # that fires for every plain-text message including "고마워".
+        "content": (f"Thomas: {clip_for_prompt(operator_text, MAX_SESSION_ENTRY_CHARS)}\n"
+                    f"Frontdesk[{turn_kind}]: {clip_for_prompt(reply, 400)}"),
         # The raw operator words, kept verbatim for the SUBMIT_TASK check window.
         "operator_text": operator_text,
         "created_at": now,

@@ -105,3 +105,78 @@ def test_independent_validation_allocates_and_records_two_model_calls(tmp_path):
     usage = _records(store, "budget_usage")[0]["usage"]
     assert usage["model_calls"] == 2 and usage["agent_invocations"] == 2
     assert usage["model_calls"] <= task_limits["max_model_calls"]   # spent within allocation
+
+
+# --- the input/output split (2026-07-26 token-cost review) ---------------------
+
+def test_output_allowance_leaves_room_for_the_prompt():
+    """The same figure cannot be both the output allowance and the cap on input+output."""
+    from runtime.mvp_runtime.budgets import TOKENS_PER_AGENT, output_allowance
+
+    assert 0 < output_allowance(TOKENS_PER_AGENT) < TOKENS_PER_AGENT
+    # Never zero: a budget too small to split still buys one token, not a refused call.
+    assert output_allowance(1) == 1
+    assert output_allowance(0) == 1
+    assert output_allowance(None) == 1
+    assert output_allowance("nonsense") == 1
+
+
+def test_truncation_is_recognized_in_every_vendor_spelling():
+    from runtime.mvp_runtime.budgets import response_was_truncated
+
+    for truncated in ("length", "LENGTH", "MAX_TOKENS", " max_tokens "):
+        assert response_was_truncated(truncated) is True, truncated
+    for finished in ("stop", "STOP", "", None, "content_filter"):
+        assert response_was_truncated(finished) is False, finished
+
+
+def test_clip_for_prompt_states_what_it_dropped():
+    """A model handed a silently truncated source can cite it as though it read the whole
+    thing, and the reader cannot tell. The marker costs less than the sentence it replaces."""
+    from runtime.mvp_runtime.budgets import clip_for_prompt
+
+    assert clip_for_prompt("짧다", 100) == "짧다"          # under the limit: untouched
+    clipped = clip_for_prompt("가" * 500, 100)
+    assert clipped.startswith("가" * 100)
+    assert "400 chars omitted]" in clipped
+    assert clip_for_prompt(None, 10) == ""
+
+
+# --- the input/output split and the prompt caps (2026-07-26 token review) ------
+
+def test_output_allowance_leaves_room_for_the_prompt():
+    """`token_budget` caps input+output and is checked after the call, so it cannot also be
+    the output allowance. Both worker and validator passed the whole figure, so an obedient
+    answer breached by the size of the prompt."""
+    from runtime.mvp_runtime.budgets import TOKENS_PER_AGENT, output_allowance
+
+    assert output_allowance(TOKENS_PER_AGENT) < TOKENS_PER_AGENT
+    assert output_allowance(8000) == 4000
+    # Never zero: a call the provider must refuse for being allowed to emit nothing is worse
+    # than a tiny one. Junk reads as the smallest allowance rather than raising.
+    assert output_allowance(1) >= 1
+    assert output_allowance(0) >= 1
+    assert output_allowance(None) >= 1
+    assert output_allowance("nonsense") >= 1
+
+
+def test_truncation_is_recognized_in_both_vendor_spellings():
+    """OpenAI-compatible says "length", Google says "MAX_TOKENS"; the adapters pass each
+    through raw, so the check has to know both."""
+    from runtime.mvp_runtime.budgets import response_was_truncated
+
+    assert response_was_truncated("length") is True
+    assert response_was_truncated("MAX_TOKENS") is True
+    assert response_was_truncated("stop") is False
+    assert response_was_truncated(None) is False
+
+
+def test_clip_for_prompt_marks_what_it_dropped():
+    """Silence would let a model cite a clipped source as though it had read the whole page."""
+    from runtime.mvp_runtime.budgets import clip_for_prompt
+
+    assert clip_for_prompt("short", 100) == "short"
+    clipped = clip_for_prompt("가" * 1000, 100)
+    assert clipped.startswith("가" * 100)
+    assert "900 chars omitted]" in clipped
+    assert clip_for_prompt(None, 10) == ""
