@@ -45,7 +45,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from ..safety_gate import Authorization
 from .account import AccountSnapshot
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
