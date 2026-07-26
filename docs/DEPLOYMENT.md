@@ -210,7 +210,7 @@ the shell you are about to run the canary from, and close that shell afterwards.
 # it on converts a bounded loss into an unbounded one and buys no capability.
 export BINANCE_ACCOUNT_API_KEY='...'
 export BINANCE_ACCOUNT_API_SECRET='...'
-export MVP_ACCOUNT_FEED=binance_account
+export MVP_ACCOUNT_FEED=binance_futures_account
 
 # The order-capable key. Kept as its OWN variables even when the same key fills both,
 # so splitting them into two keys later is an edit here and nothing else.

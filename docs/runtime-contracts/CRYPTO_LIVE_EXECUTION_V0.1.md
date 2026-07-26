@@ -206,7 +206,7 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - [ ] **Activate the Core on this machine** (`CLAUDE.md` → "Core activation"). Since the live order
       path builds a P5 PermissionDecision bound to an active Core, a machine without one refuses
       with `CORE_NOT_ACTIVATED` *before* the order — governance is prepared before money moves.
-- [ ] Configure the **read-only account feed**: `MVP_ACCOUNT_FEED=binance_account` plus
+- [ ] Configure the **read-only account feed**: `MVP_ACCOUNT_FEED=binance_futures_account` plus
       `BINANCE_ACCOUNT_API_KEY` / `BINANCE_ACCOUNT_API_SECRET`. The canary script refuses outright
       without it — open exposure would be unknown, and the exposure cap cannot be honored on a
       guess.
