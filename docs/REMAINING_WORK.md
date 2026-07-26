@@ -19,6 +19,10 @@ Keep it current — when a milestone ships, tick its box or delete it here in th
 
 Authoritative detail for each item lives in the linked roadmap docs; this file is the index.
 
+Its counterpart is [`BUILD_HISTORY.md`](BUILD_HISTORY.md) — what has already been **delivered**, and
+why each piece is shaped the way it is. The two together are the whole picture; `CLAUDE.md` states
+the rules and deliberately claims no status, so that status has as few owners as possible.
+
 ---
 
 ## In-flight PRs
