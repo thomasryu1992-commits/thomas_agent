@@ -478,3 +478,29 @@ def test_an_escaping_write_path_blocks_the_run(workspace_repo):
     assert r["status"] == "BLOCKED"
     assert r["block"]["reason_code"] == "PATH_ESCAPE"
     assert not (workspace_repo.parent / "escaped.md").exists()
+
+
+@requires_local_core
+def test_a_revision_that_fails_mid_way_still_records_what_it_produced(tmp_path, monkeypatch):
+    """`_revise_once` takes `records` and writes it step by step, which looks like a leaked
+    parameter and is not: if the re-verify raises, run_task's handler persists whatever the
+    revision had already produced, so a blocked run's trail still shows the regenerated output
+    and its validation. Returning everything at the end would lose exactly that."""
+    import runtime.mvp_runtime.pipeline as pipeline_mod
+    from runtime.mvp_runtime.errors import WorkerBlocked
+
+    def _boom(*args, **kwargs):
+        raise WorkerBlocked("PROVIDER_ERROR", "re-verify exploded")
+
+    monkeypatch.setattr(pipeline_mod, "run_validation_worker", _boom)
+    result = run_task(REQUEST, provider=_ReviseThenPassSpecialist(),
+                      independent_validation=True, revise=True, now=NOW)
+
+    assert result["status"] == "BLOCKED"
+    assert result["block"]["reason_code"] == "PROVIDER_ERROR"
+    # The regenerated attempt is on the trail even though the run was withheld...
+    assert "agent_output" in result["records"]
+    assert "validation_result" in result["records"]
+    # ...and `revision` is absent, because the failure happened before that line — the same
+    # place the original inline block would have stopped.
+    assert "revision" not in result["records"]

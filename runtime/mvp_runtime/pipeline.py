@@ -412,6 +412,116 @@ def _observe_repetition(
     return observation, pattern, triggered, None
 
 
+@dataclass(frozen=True)
+class _RevisionAttempt:
+    """What the one governed regeneration replaced, and what it produced.
+
+    Eleven values that used to be assignments into ``run_task``'s scope. As one returned value
+    the caller's rebinding is a visible list rather than a block of statements buried mid-
+    function, and the M3 rule — a revision REPLACES the first attempt's output, validation and
+    review — is legible from the field names.
+    """
+
+    agent_output: dict[str, Any]
+    invocation: dict[str, Any]
+    validation: dict[str, Any]
+    independent_validation_result: dict[str, Any] | None
+    validator_invocation: dict[str, Any] | None
+    outcome: str
+    revision: dict[str, Any]
+    spend: _RevisionSpend
+    correction: dict[str, Any] | None
+    correction_event: dict[str, Any] | None
+    correction_error: str | None
+
+
+def _revise_once(
+    plan: Mapping[str, Any],
+    records: dict[str, Any],
+    *,
+    raw_request: str,
+    validation: Mapping[str, Any],
+    independent_validation_result: Mapping[str, Any] | None,
+    invocation: Mapping[str, Any],
+    validator_invocation: Mapping[str, Any] | None,
+    validate_run: bool,
+    specialist_provider: Provider,
+    validator_provider: Provider,
+    search_hits: list[dict[str, Any]],
+    memory_entries: list[dict[str, Any]],
+    validated_entries: list[dict[str, Any]],
+    working_memory: WorkingMemoryStore | None,
+    now: str,
+    repo_root: Path | None,
+) -> _RevisionAttempt:
+    """M3: spend the ONE pre-allocated regeneration a validation REVISE earns.
+
+    The required revisions — the automatic reasons plus the independent reviewer's — are fed
+    back to the specialist, the revised output is re-validated under the same rules, and the
+    stricter outcome stands. A hard cap of one: this is called from a single ``if``, never a
+    loop, so a revised output that still REVISEs is not revised again, it BLOCKs
+    (REVISION_EXHAUSTED). BLOCK is never revised at all (unusable, not fixable).
+
+    ``records`` is written **incrementally**, as each step completes, and that is deliberate
+    rather than a leaked parameter: if the re-verify raises, ``run_task``'s handler persists
+    whatever the revision had already produced, so a blocked run's trail still shows the
+    regenerated output and its validation. Returning everything at the end and letting the
+    caller record it would lose exactly that on the failure path.
+    """
+    revision_requests = list(validation["validation"]["result_reasons"])
+    if independent_validation_result is not None:
+        revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
+    first_invocation = invocation
+    spend = _RevisionSpend.from_first_attempt(invocation, validator_invocation)
+
+    agent_output, invocation = run_analysis_worker(
+        plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
+        search_hits=search_hits, memory_entries=memory_entries,
+        validated_entries=validated_entries, repo_root=repo_root,
+        revision_requests=revision_requests,
+    )
+    records["agent_output"] = agent_output
+    records["invocation"] = invocation
+
+    validation = validate_agent_output(
+        agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
+    records["validation_result"] = validation
+
+    independent_validation_result = validator_invocation = None
+    if validate_run and validation["validation"]["result"] == "PASS":
+        independent_validation_result, validator_invocation = run_validation_worker(
+            plan["task"], plan["validator_assignment"], agent_output,
+            provider=validator_provider, created_at=now, repo_root=repo_root,
+        )
+        records["independent_validation_result"] = independent_validation_result
+        records["validator_invocation"] = validator_invocation
+
+    outcome = validation["validation"]["result"]
+    if independent_validation_result is not None:
+        outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
+    revision = {
+        "attempted": True, "exhausted": outcome != "PASS",
+        "requests": revision_requests, "first_invocation": first_invocation,
+    }
+    records["revision"] = revision
+
+    # M5a: a revision that recovered a REVISE to a PASS is a correction — captured for later
+    # similar requests. Enrichment: see the seam functions above.
+    correction, correction_event, correction_error = _mint_revision_correction(
+        plan["task"], plan["role_assignment"],
+        raw_request=raw_request, revision_requests=revision_requests, now=now,
+        working_memory=working_memory, outcome=outcome,
+    )
+    return _RevisionAttempt(
+        agent_output=agent_output, invocation=invocation, validation=validation,
+        independent_validation_result=independent_validation_result,
+        validator_invocation=validator_invocation, outcome=outcome,
+        revision=revision, spend=spend,
+        correction=correction, correction_event=correction_event,
+        correction_error=correction_error,
+    )
+
+
 def run_task(
     raw_request: str,
     *,
@@ -674,55 +784,31 @@ def run_task(
         revision = None
         revision_spend = _RevisionSpend()
         if revise and outcome == "REVISE":
-            revision_requests = list(validation["validation"]["result_reasons"])
-            if independent_validation_result is not None:
-                revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
-            first_invocation = invocation
-            revision_spend = _RevisionSpend.from_first_attempt(invocation, validator_invocation)
-
-            agent_output, invocation = run_analysis_worker(
-                plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
+            attempt = _revise_once(
+                plan, records,
+                raw_request=raw_request, validation=validation,
+                independent_validation_result=independent_validation_result,
+                invocation=invocation, validator_invocation=validator_invocation,
+                validate_run=validate_run,
+                specialist_provider=specialist_provider, validator_provider=validator_provider,
                 search_hits=search_hits, memory_entries=memory_entries,
-                validated_entries=validated_entries, repo_root=repo_root,
-                revision_requests=revision_requests,
+                validated_entries=validated_entries, working_memory=working_memory,
+                now=now, repo_root=repo_root,
             )
-            records["agent_output"] = agent_output
-            records["invocation"] = invocation
-
-            validation = validate_agent_output(
-                agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
-            records["validation_result"] = validation
-
-            independent_validation_result = validator_invocation = None
-            if validate_run and validation["validation"]["result"] == "PASS":
-                independent_validation_result, validator_invocation = run_validation_worker(
-                    plan["task"], plan["validator_assignment"], agent_output,
-                    provider=validator_provider, created_at=now, repo_root=repo_root,
-                )
-                records["independent_validation_result"] = independent_validation_result
-                records["validator_invocation"] = validator_invocation
-
-            outcome = validation["validation"]["result"]
-            if independent_validation_result is not None:
-                outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
-            revision = {
-                "attempted": True, "exhausted": outcome != "PASS",
-                "requests": revision_requests, "first_invocation": first_invocation,
-            }
-            records["revision"] = revision
-
-            # M5a: a revision that recovered a REVISE to a PASS is a correction — captured
-            # for later similar requests. Enrichment: see the seam functions above.
-            correction, correction_event, mint_error = _mint_revision_correction(
-                plan["task"], plan["role_assignment"],
-                raw_request=raw_request, revision_requests=revision_requests, now=now,
-                working_memory=working_memory, outcome=outcome,
-            )
-            if mint_error is not None:
-                result.setdefault("learning_error", mint_error)
-            if correction is not None:
-                learning_candidates.append(correction)
-                learning_events.append(correction_event)
+            # A revision REPLACES the first attempt's output, validation and review.
+            agent_output = attempt.agent_output
+            invocation = attempt.invocation
+            validation = attempt.validation
+            independent_validation_result = attempt.independent_validation_result
+            validator_invocation = attempt.validator_invocation
+            outcome = attempt.outcome
+            revision = attempt.revision
+            revision_spend = attempt.spend
+            if attempt.correction_error is not None:
+                result.setdefault("learning_error", attempt.correction_error)
+            if attempt.correction is not None:
+                learning_candidates.append(attempt.correction)
+                learning_events.append(attempt.correction_event)
 
         # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
         # Only a PASSING result is written: a rejected analysis must not leave an artifact
