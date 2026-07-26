@@ -143,6 +143,42 @@ def _format_history(entries: list[RegistryEntry], total: int) -> str:
     return "\n".join(lines)
 
 
+def cancel_refusal(entry: Any) -> tuple[str, str] | None:
+    """``(reason_code, message)`` when this entry cannot be cancelled, else None.
+
+    ONE authority for "why not", used by three callers that used to answer differently: the
+    ``/cancel`` pre-check, the same verb's lost-race path (a task that started running while
+    the operator typed), and the front desk's cancel *proposal*, which only said "현재 X
+    상태라 취소할 수 없습니다" and left Thomas without the verb that would actually stop it.
+    """
+    if getattr(entry, "status", None) == task_registry.RUNNING:
+        # Deliberately not cancellable here: stopping in-flight execution is the kill
+        # switch's authority, and duplicating it in a coordination verb would give the
+        # operator two different answers to "how do I stop this".
+        return ("TASK_ALREADY_RUNNING",
+                "이미 실행 중인 작업입니다 — 실행을 멈추려면 /pause 또는 /kill 을 사용하세요.")
+    if getattr(entry, "is_terminal", False):
+        status = getattr(entry, "status", "?")
+        return ("TASK_ALREADY_FINISHED",
+                f"이미 {_STATUS_MARK.get(status, status)}로 끝난 작업입니다.")
+    return None
+
+
+def _raced_refusal(registry: TaskRegistryStore, entry: RegistryEntry) -> tuple[str, str]:
+    """The honest reason a cancel lost its race, read back from the state that won."""
+    try:
+        current = registry.find(entry.registry_entry_id)
+    except MvpRuntimeError:
+        current = None
+    refusal = cancel_refusal(current) if current is not None else None
+    if refusal is not None:
+        return refusal
+    # The status moved but not into anything this verb explains (or it cannot be re-read):
+    # say that plainly rather than invent a cause.
+    return ("TASK_STATE_CHANGED",
+            "취소하려는 동안 작업 상태가 바뀌었습니다 — /tasks 로 현재 상태를 확인해 주세요.")
+
+
 def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
     """Re-render a delivered response from the run's records, or None if unavailable.
 
@@ -278,25 +314,24 @@ def apply_registry_command(
                 f"런타임이 {state.mode} 상태입니다 — 취소는 ACTIVE일 때만 가능합니다 "
                 "(/resume 후 다시 시도하세요).",
             )
-        if entry.status == task_registry.RUNNING:
-            # Deliberately not handled here: stopping in-flight execution is the kill
-            # switch's authority, and duplicating it in a coordination verb would give the
-            # operator two different answers to "how do I stop this".
-            raise OperatorBlocked(
-                "TASK_ALREADY_RUNNING",
-                "이미 실행 중인 작업입니다 — 실행을 멈추려면 /pause 또는 /kill 을 사용하세요.",
-            )
-        if entry.is_terminal:
-            raise OperatorBlocked(
-                "TASK_ALREADY_FINISHED",
-                f"이미 {_STATUS_MARK.get(entry.status, entry.status)}로 끝난 작업입니다.",
-            )
+        refusal = cancel_refusal(entry)
+        if refusal is not None:
+            raise OperatorBlocked(*refusal)
         try:
             cancelled = registry.transition(
                 entry.registry_entry_id, task_registry.CANCELLED,
                 now=stamp, reason_code="OPERATOR_CANCELLED",
             )
-        except (TaskRegistryBlocked, PersistenceError) as exc:
+        except TaskRegistryBlocked as exc:
+            # The check above is unlocked and `transition` re-checks under the store lock, so
+            # a task that started running in between lands here. That is not a storage
+            # failure, and saying "취소를 기록하지 못했습니다" about it described the wrong
+            # event — the truthful answer is the same one the pre-check would have given a
+            # moment later, so ask the same helper about the state that actually won.
+            if exc.reason_code == "TRANSITION_INVALID":
+                raise OperatorBlocked(*_raced_refusal(registry, entry)) from None
+            raise OperatorBlocked(exc.reason_code, f"취소를 기록하지 못했습니다: {exc.reason}") from None
+        except PersistenceError as exc:
             raise OperatorBlocked(exc.reason_code, f"취소를 기록하지 못했습니다: {exc.reason}") from None
         if ledger is not None:
             try:

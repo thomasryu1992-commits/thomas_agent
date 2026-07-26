@@ -9,9 +9,14 @@ Governance and safety:
   scheduler_execution`): before each fire, the runtime control state is checked; while PAUSED or
   KILLED a due schedule is **skipped, never run** — and its next run advances so a kill drops the
   occurrence rather than queueing a burst for resume.
-- **Overlap-safe:** the MVP is single-process and `run_due` executes due schedules sequentially,
-  each at most once per tick, so a schedule can never overlap itself. Real cross-process
-  concurrency control is a later increment.
+- **Overlap-safe**, and not because the runtime is single-process — it is not. The shipped
+  deployment runs an `operator` service alongside this one on the same state volume, and the
+  compose contract is "at most ONE scheduler per volume" precisely because that is a deployment
+  guarantee rather than a code one. What actually prevents a schedule overlapping itself is
+  `claim_due`: the find-and-claim happens inside one cross-process lock acquisition and
+  advances `next_run_at` before the fire, so a second claimant finds nothing due. Saying
+  "single-process" instead named a premise that had stopped being true — the same stale premise
+  let `reconcile_stale_running` abandon this service's live runs from the operator's startup.
 - Each scheduled task runs through the **full pipeline** (`run_task`) — same intake, planning,
   permission, budget, and audit as an operator request; the scheduler grants no new authority.
 - Maintenance kinds do only what their module already allows unattended: `memory_prune`

@@ -334,10 +334,16 @@ def _propose_cancel(entry_id: Any, *, registry: Any, control_store: Any = None) 
     if entry is None:
         return {"reply": f"'{entry_id}'에 해당하는 작업을 찾지 못했습니다. `/tasks`로 확인해 주세요.",
                 "action": "CANCEL_PROPOSAL_NOT_FOUND"}
-    status = getattr(entry, "status", None)
     full_id = getattr(entry, "registry_entry_id", entry_id)
-    if status != "QUEUED":
-        return {"reply": f"{full_id} 은(는) 현재 {status} 상태라 취소할 수 없습니다.",
+    # The console's own answer to "why not", not a second wording: telling Thomas the status
+    # and stopping there left him without the verb that WOULD stop a running task.
+    refusal = registry_console.cancel_refusal(entry)
+    if refusal is not None:
+        return {"reply": f"{full_id}: {refusal[1]}", "action": "CANCEL_PROPOSAL_NOT_CANCELLABLE"}
+    if getattr(entry, "status", None) != task_registry.QUEUED:
+        # Only QUEUED is proposable. Anything the console does not explain (a status added
+        # later) is reported rather than turned into a `/cancel` that would only refuse.
+        return {"reply": f"{full_id} 은(는) 현재 {getattr(entry, 'status', '?')} 상태라 취소할 수 없습니다.",
                 "action": "CANCEL_PROPOSAL_NOT_CANCELLABLE"}
     return {
         "reply": (f"이 작업을 취소하시려면 다음을 보내주세요: `/cancel {full_id}`\n"

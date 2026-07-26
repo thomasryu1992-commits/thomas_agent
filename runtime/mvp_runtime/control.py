@@ -516,8 +516,10 @@ def apply_command(
     """Apply a console command and return ``{reply, mode, changed, action}``.
 
     ``status`` is read-only (no state change, no ledger event). ``pause``/``kill``/``resume``
-    transition the state; ``stop`` records a stop request for ``arg`` (a task id). Every state
-    change is persisted and, when a ``ledger`` is given, recorded as a durable control event.
+    transition the state. ``stop`` records an auditable stop request for the task id in ``arg``
+    and **stops nothing** — nothing on any execution path reads ``stop_requested_task_ids``, so
+    its reply says so and names ``/cancel`` and ``/kill``, which do. Every state change is
+    persisted and, when a ``ledger`` is given, recorded as a durable control event.
     ``resume`` clears any pause/kill — callers must only invoke it for the authenticated
     operator (`resume_requires_thomas_authentication`).
 
@@ -558,22 +560,35 @@ def apply_command(
     if command == CMD_STOP:
         if not (isinstance(arg, str) and arg.strip()):
             raise ControlBlocked("MISSING_TASK_ID", "stop requires a task id: /stop <task_id>")
-        task_id = arg.strip()
-        # The MVP runs each task synchronously to completion within one call, so there is no
-        # long-running in-flight task to interrupt. The stop request is still recorded (durably,
-        # for audit) and will apply once R6 introduces persistent/long-running tasks.
+        # The FIRST token is the id; the rest is the operator's reason — the same split
+        # `/approve <id> <reason>` and `/result <id>` already use. Taking the whole remainder
+        # recorded `/stop treg_a1 급하게 멈춰줘` as a stop request for the task id
+        # "treg_a1 급하게 멈춰줘", which can never match anything, with a confirmation that
+        # named it back as though it were an id.
+        task_id, _, tail = arg.strip().partition(" ")
+        stated_stop = _stated_reason(reason, tail)
         pending = tuple(dict.fromkeys((*current.stop_requested_task_ids, task_id)))
         new_state = ControlState(
             mode=current.mode, updated_by=actor, updated_at=stamp,
-            reason=reason or f"stop requested for task {task_id}", stop_requested_task_ids=pending,
+            reason=stated_stop or f"stop requested for task {task_id}",
+            stop_requested_task_ids=pending,
         )
         store.save(new_state)
         if ledger is not None:
             ledger.append_control(_control_event(CMD_STOP, new_state, now=stamp, task_id=task_id))
         return {
+            # What this verb does and does NOT do. It records an auditable request and stops
+            # nothing: `stop_requested_task_ids` is read by no execution path (grep it — only
+            # this module writes and displays it), and the old reply's "will apply once R6
+            # introduces long-running tasks" never came true. Meanwhile `/cancel <id>` really
+            # does cancel a queued task and `/kill` really does halt execution, so an operator
+            # who typed /stop and got a confirmation must be pointed at the verb that works
+            # rather than left believing this one did something.
             "reply": (
-                f"Recorded stop request for task {task_id}. Note: the MVP runs tasks synchronously, "
-                f"so there is no long-running task to interrupt; the request is logged for audit."
+                f"기록했습니다 (감사 로그): {task_id} 중지 요청.\n"
+                "다만 이 명령은 실행을 멈추지 않습니다 — 대기 중인 작업은 `/cancel <id>`, "
+                "실행 중인 작업은 `/pause` 또는 `/kill` 을 사용하세요."
+                + (f"\n(이유 기록: {stated_stop})" if stated_stop else "")
             ),
             "mode": new_state.mode, "changed": True, "action": CMD_STOP,
         }

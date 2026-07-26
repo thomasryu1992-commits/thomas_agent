@@ -165,6 +165,31 @@ def test_stop_requires_task_id(tmp_path):
     assert exc.value.reason_code == "MISSING_TASK_ID"
 
 
+def test_stop_takes_the_first_token_as_the_id_and_the_rest_as_the_reason(tmp_path):
+    """`/stop treg_a1 급하게 멈춰줘` recorded a stop request for the task id
+    "treg_a1 급하게 멈춰줘" — an id nothing can ever match — and named it back as if it were
+    one. Same id/reason split `/approve <id> <reason>` and `/result <id>` already use."""
+    store, ledger = _store(tmp_path), FakeLedger()
+    out = control.apply_command(store, control.CMD_STOP, actor="op", now=NOW,
+                                arg="treg_a1b2c3 급하게 멈춰줘", ledger=ledger)
+    state = store.load()
+    assert state.stop_requested_task_ids == ("treg_a1b2c3",)
+    assert state.reason == "급하게 멈춰줘"
+    assert ledger.control[-1]["task_id"] == "treg_a1b2c3"
+    assert "급하게 멈춰줘" in out["reply"]
+
+
+def test_stop_says_it_stopped_nothing_and_names_the_verbs_that_do(tmp_path):
+    """Nothing on any execution path reads `stop_requested_task_ids` (grep it: only this
+    module writes and displays it), and the old reply's "will apply once R6 introduces
+    long-running tasks" never came true. Meanwhile /cancel really cancels a queued task. A
+    confirmation that let the operator believe this verb stopped his task was the defect."""
+    out = control.apply_command(_store(tmp_path), control.CMD_STOP, actor="op", now=NOW,
+                                arg="treg_a1b2c3")
+    assert "실행을 멈추지 않습니다" in out["reply"]
+    assert "/cancel" in out["reply"] and "/kill" in out["reply"]
+
+
 def test_stop_records_request_and_event(tmp_path):
     store = _store(tmp_path)
     ledger = FakeLedger()
