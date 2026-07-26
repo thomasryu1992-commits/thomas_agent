@@ -276,9 +276,16 @@ def resolve_live_order_limits(
     blocking-default caps and a status whose ``valid`` is ``False``, so the guard's budget check
     (and its unconfigured-caps checks) block — no live order without a registered budget
     (``autonomous_spend_without_registered_budget: '0'``). The env cap vars (``MVP_LIVE_MAX_*``)
-    no longer authorize an order; the registered budget supersedes them. Only the confirmation
-    phrase (``MVP_LIVE_CONFIRMATION``) and the manual kill (``MVP_LIVE_MANUAL_KILL_SWITCH``)
-    remain env — a phrase proving intent and a halt are operator state, not a registered cap."""
+    no longer authorize an order; the registered budget supersedes them.
+
+    **Both** confirmation phrases and the manual kill remain env, and are carried through on
+    every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
+    deliberate canary), ``MVP_LIVE_MANUAL_KILL_SWITCH``. A phrase proving intent and a halt are
+    operator state, not registered caps. The canary phrase was omitted here until 2026-07-26,
+    which left ``place_canary_order.py`` — the only live door there is, and the one that has to
+    work before any autonomous path can — permanently refused with "canary confirmation phrase
+    not present". Failing closed, but on the step the operator has to take next, and only
+    discoverable standing at the terminal with real keys."""
     from . import live_budget  # lazy: live_budget imports LiveOrderLimits
 
     status = live_budget.budget_status(root, now=now or timeutil.utc_now_iso())
@@ -293,13 +300,16 @@ def resolve_live_order_limits(
             daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
             min_clean_canary_orders=int(caps["min_clean_canary_orders"]),
             confirmation=env.confirmation,
+            canary_confirmation=env.canary_confirmation,
             manual_kill_switch=env.manual_kill_switch,
         )
     else:
         # No valid budget: caps stay at the blocking defaults (0), so even the per-order / daily /
         # exposure / loss caps read as unconfigured on top of the budget block.
         limits = LiveOrderLimits(
-            confirmation=env.confirmation, manual_kill_switch=env.manual_kill_switch
+            confirmation=env.confirmation,
+            canary_confirmation=env.canary_confirmation,
+            manual_kill_switch=env.manual_kill_switch,
         )
     return limits, status
 

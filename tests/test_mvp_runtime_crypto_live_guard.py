@@ -588,3 +588,89 @@ def test_a_canary_still_refuses_a_manual_kill_and_a_connectivity_probe():
         canary_confirmation=CANARY_CONFIRMATION_PHRASE))
     verdict = evaluate_live_order_guard(_intent(connectivity_test=True), canary=True, **probe)
     assert verdict["approved"] is False
+
+
+# --- the seam: resolved limits, not hand-built ones -----------------------------
+#
+# Every canary test above builds its limits with `_ready_limits(canary_confirmation=...)`.
+# The canary SCRIPT does not — it calls `resolve_live_order_limits`, which until 2026-07-26
+# dropped the canary phrase on both branches. Both sides were tested; the join was not, so
+# `place_canary_order.py` was permanently refused with "canary confirmation phrase not
+# present" — the only live door there is, and the one that has to work before any autonomous
+# path can. These test the join.
+
+def _register_budget(root, **cap_overrides):
+    from runtime.mvp_runtime.crypto import live_budget
+
+    caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
+                max_daily_order_count=2, max_open_notional_usdt=120.0,
+                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+    caps.update(cap_overrides)
+    record = live_budget.build_live_trading_budget_record(
+        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
+        valid_until="2026-08-25T00:00:00Z", registered_by="thomas",
+        registered_at="2026-07-25T00:00:00Z")
+    live_budget.write_registered_budget(record, root=root)
+
+
+@pytest.mark.parametrize("with_budget", [True, False])
+def test_resolve_carries_both_operator_phrases_on_every_branch(tmp_path, monkeypatch, with_budget):
+    """The caps come from the registered budget; the phrases and the manual kill stay env,
+    and must survive BOTH branches — the branch taken when no budget is registered is the
+    one an operator hits first."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        CANARY_CONFIRMATION_PHRASE, LIVE_CONFIRMATION_PHRASE, resolve_live_order_limits,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_CONFIRMATION", LIVE_CONFIRMATION_PHRASE)
+    monkeypatch.setenv("MVP_LIVE_CANARY_CONFIRMATION", CANARY_CONFIRMATION_PHRASE)
+    if with_budget:
+        _register_budget(tmp_path)
+
+    limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
+    assert status["valid"] is with_budget
+    assert limits.confirmation_present() is True
+    assert limits.canary_confirmation_present() is True
+
+
+def test_the_canary_the_script_would_place_is_actually_approvable(tmp_path, monkeypatch):
+    """The regression this section exists for: resolve + the canary guard, exactly as
+    `scripts/place_canary_order.py` composes them, must be able to reach approved."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        CANARY_CONFIRMATION_PHRASE, resolve_live_order_limits,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_CANARY_CONFIRMATION", CANARY_CONFIRMATION_PHRASE)
+    _register_budget(tmp_path)
+    limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
+
+    verdict = evaluate_live_order_guard(
+        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
+        # 0 clean canaries is the real state before the first one; canary mode is what
+        # exempts the promotion gate, and the whole point of this path.
+        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        budget_registered=status["valid"], limits=limits, canary=True,
+    )
+    assert verdict["blocks"] == []
+    assert verdict["approved"] is True
+
+
+def test_the_autonomous_phrase_alone_still_cannot_authorize_a_canary(tmp_path, monkeypatch):
+    """One phrase per capability survives the fix: setting only the autonomous phrase must
+    not let a canary through the resolved-limits path either."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        LIVE_CONFIRMATION_PHRASE, resolve_live_order_limits,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_CONFIRMATION", LIVE_CONFIRMATION_PHRASE)
+    monkeypatch.delenv("MVP_LIVE_CANARY_CONFIRMATION", raising=False)
+    _register_budget(tmp_path)
+    limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
+
+    verdict = evaluate_live_order_guard(
+        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
+        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        budget_registered=status["valid"], limits=limits, canary=True,
+    )
+    assert verdict["approved"] is False
+    assert any("canary confirmation phrase not present" in b for b in verdict["blocks"])
