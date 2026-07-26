@@ -36,6 +36,7 @@ from runtime.read_only_kernel.integrity import IntegrityError
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import schema_cache
+from .budgets import output_allowance, response_was_truncated
 from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import ProviderError, WorkerBlocked
 from .paths import repo_root as _repo_root
@@ -213,10 +214,23 @@ def run_validation_worker(
 
     prompt = build_validator_prompt(task, agent_output)
     try:
-        result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
+        result = provider.generate(
+            prompt,
+            # The output half only — the same double-count the specialist had (budgets.py).
+            max_output_tokens=output_allowance(token_budget),
+            timeout_seconds=int(timeout_seconds),
+        )
     except (ProviderError, TimeoutError) as exc:
         # No review happened — fail closed (pipeline BLOCK), same as the specialist worker.
         raise WorkerBlocked("PROVIDER_ERROR", f"validator provider failed: {exc}") from exc
+
+    if response_was_truncated(result.finish_reason):
+        # A half-read review is not a verdict. Fail closed with the real cause rather than
+        # letting `_verdict_of` score a cut-off answer as an unparseable one.
+        raise WorkerBlocked(
+            "RESPONSE_TRUNCATED",
+            f"validator stopped at the output cap ({result.finish_reason}); no usable verdict",
+        )
 
     tokens_used = int(result.input_tokens) + int(result.output_tokens)
     if token_budget and tokens_used > int(token_budget):
