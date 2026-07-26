@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, timeutil
+from . import heartbeat, task_registry, timeutil
 from .approval_store import ApprovalStore
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
@@ -140,12 +140,16 @@ def main(
     # F1: the task-coordination registry, wired for the same reason as the approval store —
     # without it /tasks and /history would be refused on the one entrypoint they exist for.
     registry = registry if registry is not None else TaskRegistryStore.default(repo_root)
-    # An entry still RUNNING when this process starts belongs to a dead one (the MVP runs
-    # tasks one at a time, single-process), so it gets the terminal that process never
-    # wrote. Startup is the only vantage point that can see it — the scheduler's
-    # `abandoned` precedent. Best-effort: bookkeeping must not stop the service.
+    # An entry of OUR origin still RUNNING when this process starts belongs to a dead copy of
+    # this process, so it gets the terminal that copy never wrote. Startup is the only vantage
+    # point that can see it — the scheduler's `abandoned` precedent. Scoped to the origins this
+    # loop actually executes: the scheduler service shares this file, and reconciling its
+    # in-flight run from here marked a live analysis abandoned. Best-effort either way:
+    # bookkeeping must not stop the service.
     try:
-        abandoned = reconcile_stale_running(registry, now=timeutil.utc_now_iso())
+        abandoned = reconcile_stale_running(
+            registry, now=timeutil.utc_now_iso(), origins=task_registry.OPERATOR_ORIGINS,
+        )
         if abandoned:
             sys.stderr.write(f"OPERATOR: {len(abandoned)} interrupted task(s) marked RUN_ABANDONED\n")
     except MvpRuntimeError as exc:

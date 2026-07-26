@@ -183,7 +183,9 @@ def test_the_claim_precedes_the_run_so_a_crash_never_reruns_it(tmp_path):
     enqueue(store, request_text="작업", origin="TELEGRAM", requester_id="tg-12345", now=NOW)
     store.claim_next_queued(now=NOW)
 
-    task_registry.reconcile_stale_running(store, now="2026-07-25T10:00:00Z")
+    task_registry.reconcile_stale_running(
+        store, now="2026-07-25T10:00:00Z", origins=task_registry.OPERATOR_ORIGINS,
+    )
 
     entry = store.latest()[0]
     assert entry.status == task_registry.FAILED

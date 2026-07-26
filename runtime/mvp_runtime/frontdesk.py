@@ -2,9 +2,11 @@
 
 Thomas talks to the channel in plain language; this module turns each message into exactly
 one governed action. The privilege separation is structural, not behavioral: the model's
-output is forced into the closed ``frontdesk_turn.v0.1`` shape (seven typed turns, no field
-that could name a tool, file, provider, or permission), and the two turns that change state
-feed exclusively the already-governed F1 task queue. The front desk holds the conversation;
+output is forced into the closed ``frontdesk_turn`` shape (ten typed turns, no field
+that could name a tool, file, provider, or permission), and the ONE turn that changes state
+(``SUBMIT_TASK``) feeds exclusively the already-governed F1 task queue. ``CANCEL_TASK`` used to
+be the second; it now only *proposes* the ``/cancel`` for Thomas to type, so the model's own
+output can no longer mutate coordination state at all. The front desk holds the conversation;
 it never holds authority.
 
 Reuse over invention, per the contract (`03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md`):
@@ -212,8 +214,8 @@ def _record_exchange(
 # --- the model turn ----------------------------------------------------------
 
 
-_PROMPT_HEADER = """당신은 Thomas Agent 런타임의 대화형 프런트데스크(conversation.frontdesk)입니다.
-Thomas의 텔레그램 메시지 하나를 읽고, 아래 7종 중 정확히 하나의 턴으로 응답합니다.
+_PROMPT_TEMPLATE = """당신은 Thomas Agent 런타임의 대화형 프런트데스크(conversation.frontdesk)입니다.
+Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 하나의 턴으로 응답합니다.
 
 턴 종류:
 - SUBMIT_TASK: Thomas가 분석/작업을 요청함. payload.request_text에는 Thomas의 요청 문장을
@@ -242,13 +244,25 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 7종 중 정확히 하
   붙입니다. 짧게 무엇을 조회하는지만 쓰면 됩니다.
 
 출력: 분석 JSON의 recommendation을 다음 형태로 채우세요.
-"recommendation": {"action": "<턴 종류>", "turn": {"schema_version": "frontdesk_turn.v0.1",
+"recommendation": {"action": "<턴 종류>", "turn": {"schema_version": "%(schema_version)s",
 "turn_kind": "<턴 종류>", "payload": {...}, "reply_text": "..."}}
 """
 
 
+def _prompt_header() -> str:
+    """The instruction block, with the schema version the runtime ACTUALLY enforces.
+
+    Interpolated rather than typed out: the header hard-coded ``frontdesk_turn.v0.1`` while the
+    validator's ``const`` had moved to v0.2, so a model that followed the instruction exactly
+    produced a turn that failed validation — and every failed turn is downgraded to CHAT_REPLY.
+    The whole vocabulary (SUBMIT_TASK, every QUERY_*, CANCEL_TASK) was one obedient model away
+    from being dead, silently, with only ``FRONTDESK_TURN_INVALID`` in the ledger to say so. The
+    version now comes from the same constant the validation uses, so the two cannot drift."""
+    return _PROMPT_TEMPLATE % {"schema_version": TURN_SCHEMA_VERSION}
+
+
 def _build_prompt(session: list[dict[str, Any]], text: str) -> str:
-    lines = [_PROMPT_HEADER]
+    lines = [_prompt_header()]
     if session:
         lines.append("최근 대화:")
         lines += [str(e.get("content", "")) for e in session]
