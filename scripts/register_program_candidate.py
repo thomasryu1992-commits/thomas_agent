@@ -47,6 +47,7 @@ from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.programization import ProgramizationStore  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 EXIT_OK = 0
@@ -149,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         print("BLOCKED: --candidate-id and --definition-input are required (or use --list)")
         return EXIT_USAGE
     definition_input = _load_definition_input(args.definition_input)
+
+    # Past `--list`, every remaining branch writes: `--request` stores an approval and audits it,
+    # `--confirm` writes the registry entry. Placed here so a read-only listing stays runnable.
+    try:
+        assert_not_foreign_root_run()
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return EXIT_BLOCKED
 
     if args.request:
         prepared = run_request(candidate_id=args.candidate_id, definition_input=definition_input)

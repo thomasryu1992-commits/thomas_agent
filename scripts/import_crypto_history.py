@@ -42,7 +42,9 @@ from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.paper import OUTCOMES_FILENAME, read_outcomes, state_dir  # noqa: E402
 from runtime.mvp_runtime.crypto.strategy import SpecParseError, load_strategy_pool  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
+from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.filelock import locked  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 IMPORT_EVENT_TYPE = "crypto_import_event.v0"
@@ -194,6 +196,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.activate_pool and not args.confirm:
         print("BLOCKED: --activate-pool requires --confirm")
         return EXIT_USAGE
+
+    # Only the confirmed run writes; the default is a dry-run report, which must stay runnable
+    # from anywhere because reading before writing is the whole point of having that mode.
+    if args.confirm:
+        try:
+            assert_not_foreign_root_run()
+        except MvpRuntimeError as exc:
+            print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+            return EXIT_BLOCKED
 
     summary = run_import(source=Path(args.source), confirm=args.confirm, activate_pool=args.activate_pool)
     mode = "IMPORTED" if args.confirm else "DRY-RUN (nothing written; re-run with --confirm)"
