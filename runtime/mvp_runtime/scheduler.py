@@ -77,8 +77,13 @@ KIND_DATA_REVIEW = "crypto_data_review"
 # files cannot conceal anything, and the audit chain and control-event ledger are refused
 # by the retention module itself, not by this caller remembering to skip them.
 KIND_ROTATE = "ledger_rotate"
+# PM1's observation scan. Two cadences under one kind, chosen by the schedule's request text
+# ("watch" or "discovery"), because they differ in what they read rather than in what they
+# are: watch prices the confirmed groups often enough to measure how long an edge lasts,
+# discovery only lists markets so the matcher has candidates. Decision #1, 2026-07-26.
+KIND_PM_SCAN = "pm_scan"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
-                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE})
+                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -487,6 +492,24 @@ def _execute(
         if summary.get("event_error"):
             detail += f" unrecorded={summary['event_error']}"
         return detail
+    if schedule.kind == KIND_PM_SCAN:
+        # PM1 observation. Every venue read goes through its own Safety-Flag chokepoint at
+        # fire time, so a deleted grant is a live revocation here as everywhere else, and a
+        # venue that cannot be read degrades the scan rather than failing the tick.
+        #
+        # Records observations; confirms nothing. A scan can never add an event group — an
+        # operator does that, per event, after comparing resolution criteria.
+        from .predmarket import observations as pm_observations
+
+        mode = (schedule.request or "watch").strip().lower().split()[0] if schedule.request else "watch"
+        if mode == "discovery":
+            # Discovery is candidate generation for the operator, not measurement: it lists
+            # markets and prices nothing, so it is deliberately NOT this scan. Until the
+            # matcher runs on a schedule it is a no-op that says so rather than silently
+            # doing the watch scan under a different name.
+            return "skipped_discovery_not_scheduled_yet"
+        scan = pm_observations.run_watch_scan(now=now, root=repo_root)
+        return pm_observations.scan_status_line(scan)
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the

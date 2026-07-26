@@ -107,8 +107,19 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         unread, so its legs report **no knowable cost** rather than a guessed one.
   - [ ] Predict.fun order book + fee schedule (both need the API key; until then its legs are
         listed, never priced).
-  - [ ] Observation store + `pm_scan` scheduler (watch 2 min over confirmed groups /
-        discovery 6 h over listings, per decision #1).
+  - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
+        (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
+        the venues a confirmed group needs**, prices every pairing inside every group, and
+        appends self-hashed rows to `observations.jsonl`. **A non-reading is still a row** —
+        "how often" is a ratio whose denominator is the attempts, so a scan that dropped the
+        times it could not price a group would claim it was observable when it was not. A
+        venue outage and a delisted market are recorded as different reasons. The scan
+        confirms nothing: it holds no writer for the group store.
+  - [ ] The 2–4 week run itself, then the exit report (frequency × net margin ×
+        **persistence**). Needs the schedule registered on the machine that will run it.
+  - [ ] `discovery` cadence — the scheduler kind accepts it and deliberately reports
+        `skipped_discovery_not_scheduled_yet` rather than silently running the watch scan
+        under another name; it lands with the matcher-on-a-schedule work.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
