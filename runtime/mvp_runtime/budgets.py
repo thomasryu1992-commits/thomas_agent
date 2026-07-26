@@ -41,6 +41,67 @@ TRIAGE_TIMEOUT_SECONDS = 30
 FRONTDESK_TOKEN_ALLOWANCE = 2000
 FRONTDESK_TIMEOUT_SECONDS = 30
 
+# `token_budget` caps input+output, and it is checked AFTER the call — so it cannot also be
+# the number handed to the provider as its output allowance. It was: both `worker` and
+# `validator` passed the whole budget as ``max_output_tokens`` while comparing
+# ``input_tokens + output_tokens`` against the same figure, so a provider that emitted
+# exactly what it had been granted breached by the size of the prompt. A 200-token prompt
+# and an obedient 8000-token answer produced "used 8200 tokens > budget 8000" — the call
+# made, the tokens paid for, and the analysis withheld.
+#
+# Half is the split: the prompt gets a reserve, the answer gets an allowance, and the
+# post-hoc check can only fire when one of them genuinely overruns its own half.
+OUTPUT_SHARE_OF_TOKEN_BUDGET = 0.5
+
+# Vendor spellings for "I stopped because I hit the output cap" (OpenAI-compatible: "length";
+# Google: "MAX_TOKENS"). Recorded on every invocation and, until now, never read — so a
+# truncated answer arrived as a malformed analysis and was reported as one, naming the
+# symptom instead of the cause. It matters more now that the output allowance is a half.
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def output_allowance(token_budget: Any) -> int:
+    """The output cap to hand a provider under ``token_budget``, leaving room for the prompt.
+
+    Never zero: a budget too small to split still buys one token rather than a call the
+    provider must refuse for asking to emit nothing."""
+    try:
+        budget = int(token_budget)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, int(budget * OUTPUT_SHARE_OF_TOKEN_BUDGET))
+
+
+def response_was_truncated(finish_reason: Any) -> bool:
+    """True when the provider says it stopped at the output cap rather than at an ending."""
+    return str(finish_reason or "").strip().lower() in TRUNCATED_FINISH_REASONS
+
+
+# --- what may enter a prompt ---------------------------------------------------------
+#
+# Every string below is sized by something outside the runtime — a web page's content, a
+# stored memory entry, a message Thomas pasted — and each one is interpolated into a prompt
+# whose input half is now a bounded reserve. Unbounded context does not fail gracefully: it
+# converts straight into a paid-for-then-withheld run via the check above. Measured on the
+# specialist prompt: 1,012 chars with no context, 21,489 with five search hits and ten
+# memory entries. These caps are the ceiling on that growth, in one place so the three
+# call sites cannot drift.
+MAX_SEARCH_SNIPPET_CHARS = 700
+MAX_MEMORY_CONTENT_CHARS = 500
+MAX_SESSION_ENTRY_CHARS = 600
+
+
+def clip_for_prompt(text: Any, limit: int) -> str:
+    """``text`` bounded to ``limit`` characters, marked when anything was dropped.
+
+    The marker is not decoration: a model handed a silently truncated source can cite it as
+    though it had read the whole thing, and a reader cannot tell. Saying so is cheaper than
+    the sentence it replaces."""
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    return value[:limit] + f"…[{len(value) - limit} chars omitted]"
+
 
 def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[str, Any]:
     """A fresh ``execution_budget.v0.1`` allocation with zeroed usage.

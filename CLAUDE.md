@@ -76,6 +76,15 @@ stays green everywhere.
   `THOMAS_CORE/activations/` records stay local.
 - Never commit `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`, or
   `THOMAS_CORE/approvals/` — they are local runtime state.
+- **Run state-writing CLIs through the container, never on the host as root.** The
+  services run as uid 10001 and mount `.runtime_governance_state/`; a host-side root run
+  leaves root-owned files there that the service can no longer write, and it fails later,
+  in a different process, with nothing pointing back at the command that caused it (this
+  happened twice on 2026-07-25/26 — a safety-flag activation and an operator notify
+  pointer). Use `docker exec thomas-scheduler python scripts/<script>.py …`.
+  `state_guard.assert_not_foreign_root_run` refuses the dangerous case at the door, and
+  `assert_state_writable` refuses to start a service whose state is already broken;
+  neither self-heals — if you are told to `chown -R 10001:10001`, that is the fix.
 
 ## Conventions & guardrails (do not violate without explicit Thomas approval)
 

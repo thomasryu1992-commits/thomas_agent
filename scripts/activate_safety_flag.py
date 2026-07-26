@@ -47,6 +47,7 @@ if str(ROOT) not in sys.path:
 from runtime.mvp_runtime import safety_gate  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, SafetyGateBlocked  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 GOV_STATE_REL = ".runtime_governance_state"
@@ -94,6 +95,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     root = args.root.resolve()
+    # Before writing anything: a host-side root run would leave this activation record
+    # owned by root, and the uid the services run as could then never refresh or revoke
+    # it. Refuse here rather than let that surface later as a service that will not start.
+    try:
+        assert_not_foreign_root_run(root)
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return 3
+
     now = datetime.now(timezone.utc)
     activated_at = _fmt(now)
     expires_at = _fmt(now + timedelta(minutes=args.ttl_minutes))
