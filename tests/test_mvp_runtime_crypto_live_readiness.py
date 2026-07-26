@@ -228,7 +228,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
-        "order_path_implemented",
+        "order_path_implemented", "autonomous_routing_wired",
     }
 
 
@@ -344,3 +344,25 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     # The board must not let green ticks read as harmless now that a path exists.
     assert "an order path EXISTS" in text and "a real order can be placed" in text
     assert "LP5" in text and "place_canary_order.py" in text
+
+
+def test_autonomous_routing_is_reported_and_never_fails_the_board(tmp_path, clean_env):
+    """B1: whether an autonomous path exists is the fact most likely to go stale in prose, so it
+    is a computed row. It is deliberately informational — an UNWIRED runtime is the safe state,
+    and failing the board on it would invert the meaning of every other row."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "autonomous_routing_wired")
+    assert row["ok"] is True
+    assert ("not wired" in row["detail"]) is (not live_readiness.AUTONOMOUS_ROUTING_WIRED)
+    assert status["autonomous_routing_wired"] is live_readiness.AUTONOMOUS_ROUTING_WIRED
+
+
+def test_the_board_prose_makes_no_build_claims(tmp_path, clean_env):
+    """The module whose purpose is anti-drift must not assert a build state in prose — that is
+    exactly what went stale. Status belongs in the rows."""
+    import runtime.mvp_runtime.crypto.live_readiness as module
+
+    text = (module.__doc__ or "") + live_readiness.render_readiness_text(
+        live_readiness.build_readiness(root=tmp_path, now=NOW)
+    )
+    assert "unbuilt" not in text.lower()

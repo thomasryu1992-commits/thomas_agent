@@ -59,6 +59,8 @@ _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 STATE_REL = ".runtime_governance_state/crypto"
 PAPER_PROVENANCE = "mvp_paper_kernel"
+# See live_pnl.R_BASIS_* — paper R is measured on intended fills and is cost-free by design.
+from .live_pnl import R_BASIS_INTENT  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
 # THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
@@ -521,6 +523,10 @@ def build_outcome_record(
         # observed ones instead of treating every outcome as equally measured.
         "exit_resolution": position.get("exit_resolution") or "unambiguous",
         "provenance": PAPER_PROVENANCE,
+        # Paper R is measured on INTENDED fills and carries no costs by design (see cost.py).
+        # Stated on the row so a consumer pooling it with live R — which is measured on actual
+        # fills — can see that the two statistics differ.
+        "r_basis": R_BASIS_INTENT,
     }
     # Idempotency key: one position settles exactly once, so the settlement's
     # identity derives from the position alone — a retried settlement of the same
