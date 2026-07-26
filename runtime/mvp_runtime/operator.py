@@ -231,6 +231,19 @@ def handle_operator_message(
                 )
             except ControlBlocked as exc:
                 return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+            except PersistenceError as exc:
+                # A ledger write failure must not escape: `run_operator_once` and the loop
+                # catch only OperatorBlocked, so an uncaught PersistenceError killed the whole
+                # control channel with a traceback — and it does so AFTER apply_command has
+                # already saved the new mode, meaning a /resume could take effect with no
+                # reply, no ledger event, and no operator channel left to ask. The state
+                # change is already durable, so this reports the gap rather than pretending
+                # the command failed (the approval-audit-gap precedent below).
+                return OperatorReply(
+                    text=(f"명령은 적용되었지만 원장 기록에 실패했습니다 ({exc.reason_code}). "
+                          "`/audit`와 `/recovery`로 상태를 확인하세요."),
+                    accepted=True, status="CONTROL", reason_code=exc.reason_code,
+                )
             return OperatorReply(text=outcome["reply"], accepted=True, status="CONTROL", reason_code=outcome["action"])
 
     # R9: /approve <id> and /reject <id>. Handled after the identity gate and, like the
@@ -254,6 +267,12 @@ def handle_operator_message(
                     ),
                 )
             except ApprovalBlocked as exc:
+                return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+            except PersistenceError as exc:
+                # A corrupt/unwritable approval store must be a typed refusal, not a dead
+                # channel: ApprovalStore.get / get_permission_decision / append all raise
+                # PersistenceError, and nothing upstream catches it. Refusing is the safe
+                # direction here — unlike the control branch, no state was changed yet.
                 return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
             if store is not None:
                 try:
@@ -291,7 +310,10 @@ def handle_operator_message(
         try:
             outcome = operator_feedback.apply_feedback(
                 feedback_payload, operator_id=registration.operator_id,
-                store=store, working_memory=working_memory, now=now, repo_root=repo_root,
+                store=store, working_memory=working_memory,
+                # The verdict is answered in any mode; the M5a memory candidate is a mutation
+                # and is kill-bound inside apply_feedback (memory_console's rule).
+                control_store=control_store, now=now, repo_root=repo_root,
             )
         except (OperatorBlocked, PersistenceError) as exc:
             return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
@@ -379,11 +401,20 @@ def handle_operator_message(
     # intent never waits on a model). None back means degraded — fall through to the F1
     # queue path, so conversation dying never loses a message.
     if frontdesk_provider is not None and registry is not None and priority == "NORMAL":
-        turn_outcome = frontdesk.run_turn(
-            text, provider=frontdesk_provider, registry=registry,
-            working_memory=working_memory, ledger=store, control_store=control_store,
-            operator_id=registration.operator_id, now=stamp, repo_root=repo_root,
-        )
+        try:
+            turn_outcome = frontdesk.run_turn(
+                text, provider=frontdesk_provider, registry=registry,
+                working_memory=working_memory, ledger=store, control_store=control_store,
+                operator_id=registration.operator_id, now=stamp, repo_root=repo_root,
+            )
+        except MvpRuntimeError:
+            # `run_turn` handles only ProviderError/TimeoutError itself, so a corrupt working
+            # memory (PersistenceError from the session read), a revoked provider grant
+            # (SafetyGateBlocked), or any other typed failure escaped and killed the channel —
+            # the loop catches only OperatorBlocked. The module's promise is "conversation dying
+            # never loses a message", so every typed failure degrades to the F1 queue path
+            # exactly like a provider error does, instead of taking the operator channel down.
+            turn_outcome = None
         if turn_outcome is not None:
             return OperatorReply(
                 text=turn_outcome["reply"], accepted=True, status="FRONTDESK",

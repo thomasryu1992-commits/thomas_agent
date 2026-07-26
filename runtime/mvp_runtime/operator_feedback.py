@@ -36,7 +36,7 @@ from typing import Any
 
 from . import memory, timeutil
 from .control import command_verb
-from .errors import MemoryBlocked, OperatorBlocked, PersistenceError
+from .errors import MemoryBlocked, MvpRuntimeError, OperatorBlocked, PersistenceError
 from .events import stamped_event
 from .paths import repo_root as _repo_root
 
@@ -155,6 +155,7 @@ def _capture_correction(
     operator_id: str,
     working_memory: Any,
     store: Any,
+    control_store: Any,
     now: str,
 ) -> dict[str, Any] | None:
     """M5a: mint a working-memory correction CANDIDATE from a ``/feedback bad <note>``, or None.
@@ -165,8 +166,23 @@ def _capture_correction(
     not auto-trusted. Best-effort by construction: the feedback verdict is already durably
     recorded by the time this runs, so a candidate/audit failure is swallowed (returns None),
     never turning a recorded feedback into an error. No live assignment exists on the control
-    channel, so origin is left unstamped (allowed) and the default candidate type is used."""
+    channel, so origin is left unstamped (allowed) and the default candidate type is used.
+
+    **Kill-switch bound.** Recording the *verdict* is deliberately answered in any runtime mode
+    — judging already-delivered work is not new execution. Minting a memory candidate is a
+    different thing: it **mutates working memory**, and `memory_console` gates exactly that on
+    the kill switch. This path did not, so a KILLED runtime still wrote memory (found in the
+    2026-07-25 control-channel review). Absent or unreadable control state means **no capture**:
+    the verdict is safe either way, so the fail-closed direction costs nothing here."""
     if working_memory is None or verdict != "BAD" or not comment.strip():
+        return None
+    if control_store is None:
+        return None
+    try:
+        if not control_store.load().execution_allowed:
+            return None
+    except MvpRuntimeError:
+        # Unreadable control state: cannot prove the runtime is ACTIVE, so do not mutate.
         return None
     try:
         candidate = memory.build_correction_candidate(
@@ -192,6 +208,7 @@ def apply_feedback(
     operator_id: str,
     store: Any,
     working_memory: Any | None = None,
+    control_store: Any | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -230,7 +247,8 @@ def apply_feedback(
     store.append_feedback_event(event)
     correction = _capture_correction(
         comment=comment, verdict=verdict, trace_id=target["trace_id"],
-        operator_id=operator_id, working_memory=working_memory, store=store, now=stamp,
+        operator_id=operator_id, working_memory=working_memory, store=store,
+        control_store=control_store, now=stamp,
     )
     reply = f"피드백을 기록했습니다 ({verdict}) — 대상 실행: {target['trace_id']}."
     if correction is not None:
