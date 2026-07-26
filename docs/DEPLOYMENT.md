@@ -189,6 +189,92 @@ the container on exit; the named scratch volume is disposable (`docker volume rm
 thomas-smoke-state`). Never point a `docker run` at the real state bind or the real service
 names — that is the collision this section exists to prevent.
 
+## Live trading env — the `.env` file is fine; the `environment:` block is not
+
+Two different things get confused here, so state them separately:
+
+- **Compose only forwards what a service's `environment:` block names.** A variable that sits in
+  `.env` but is not referenced there reaches **no container**. Compose reads `.env` for variable
+  substitution, nothing more.
+- Today `docker-compose.yml` names `MVP_MARKET_DATA` and `MVP_PAPER_TRADING` and nothing else
+  crypto-related, so **no live-trading or account variable reaches either container** — and that
+  is the property worth keeping.
+
+So the live-trading credentials **can** live in the same `.env` as everything else, which is one
+gitignored file to manage instead of a ritual of manual exports. What must not happen is adding
+them to a service's `environment:` block: a long-running container holding an order-capable key
+is armed for as long as it runs, which outlives the intent that set it. A live order is supposed
+to happen when a human types the command.
+
+Load the file into the shell you are about to run the canary from:
+
+```bash
+set -a; . ./.env; set +a
+```
+
+```text
+# --- live trading (append to the same gitignored .env) ------------------------------------------
+# ONE Binance API key: Futures trading ON, withdrawals and internal transfer OFF,
+# IP-whitelisted. Withdrawal permission is the one that matters: every risk control
+# in this runtime caps ORDER size (60/order, 120 open, 20 daily loss, 200 ceiling),
+# and none of them governs a withdrawal, because no code path here calls one. Leaving
+# it on converts a bounded loss into an unbounded one and buys no capability.
+BINANCE_ACCOUNT_API_KEY=...
+BINANCE_ACCOUNT_API_SECRET=...
+MVP_ACCOUNT_FEED=binance_account
+
+# The order-capable key. Kept as its OWN variables even when the same key fills both,
+# so splitting them into two keys later is an edit here and nothing else.
+MVP_LIVE_ORDER_API_KEY=${BINANCE_ACCOUNT_API_KEY}
+MVP_LIVE_ORDER_API_SECRET=${BINANCE_ACCOUNT_API_SECRET}
+
+# The switch. Fails closed on its own: without the per-machine `live_trading` grant
+# this authorizes nothing.
+MVP_LIVE_TRADING=real
+
+# One phrase per capability. Set ONLY the one you are exercising — the canary phrase
+# cannot authorize autonomous trading and the autonomous phrase cannot authorize a canary.
+MVP_LIVE_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER
+# MVP_LIVE_CONFIRMATION=I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY
+
+# Operator halt. Set it to refuse every live ENTRY; closes stay permitted.
+# MVP_LIVE_MANUAL_KILL_SWITCH=true
+```
+
+**The caps are not here.** `MVP_LIVE_MAX_*` no longer authorizes anything — the per-order,
+daily-count, exposure and loss limits come from the registered `live_trading_budget.v0.1` record
+(`scripts/register_live_trading_budget.py`). There is deliberately no cap an operator can set
+outside that record.
+
+Two grants are still required, and they are separate on purpose so the read can be revoked
+without revoking the ability to trade, or the reverse:
+
+```bash
+python scripts/activate_safety_flag.py --provider-id binance_futures_account \
+    --flags network_access --authority-level P2 \
+    --reason "read-only account visibility" --ttl-minutes 43200
+
+python scripts/activate_safety_flag.py --provider-id live_trading \
+    --flags network_access,filesystem_write --authority-level P5 \
+    --reason "canary orders" --ttl-minutes 43200
+```
+
+Verify before spending anything — both commands are read-only and place no order:
+
+```bash
+python -m runtime.mvp_runtime.crypto.account          # the balance the caps are judged against
+python -m runtime.mvp_runtime.crypto.live_readiness   # every gate, computed
+```
+
+`canary_evidence 0/3` staying FAIL on that board is **expected**: it is the one check a canary is
+exempt from, and the canary is what earns it. Everything else must be PASS. The full operator
+sequence is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gates 2 and 3.
+
+**When the session is done:** close the shell, and delete the `live_trading` grant file if you
+are not placing another canary soon. Deleting it is a live revocation, re-checked at every
+egress — which is the control that does not depend on remembering to unset anything. The key
+sitting in `.env` authorizes nothing on its own; the grant is the switch.
+
 ## Emergency controls on a running service
 
 The operator console works two ways against the same mounted control state, so a `kill` from
