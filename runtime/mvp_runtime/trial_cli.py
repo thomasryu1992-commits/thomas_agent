@@ -93,7 +93,7 @@ def _run(args: argparse.Namespace) -> int:
     # None so trial.run_trial substitutes its role-aware MockTrialProvider.
     provider = select_provider()
     validator_provider = select_validator_provider()
-    gate_banners(provider=provider)
+    gate_banners(analysis_provider=provider)
     result = trial.run_trial(
         args.approval_id,
         provider=None if isinstance(provider, MockProvider) else provider,
