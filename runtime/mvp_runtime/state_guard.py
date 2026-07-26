@@ -108,7 +108,13 @@ def _default_owner_uid(path: Path) -> int:
 
 
 def _default_euid() -> int:
-    return os.geteuid()
+    """This process's effective uid, or a never-root sentinel where uids do not exist.
+
+    Windows has no ``geteuid``; answering -1 keeps the guard a no-op there through the
+    DEFAULT lookup, instead of a platform test inside the check itself — which would
+    have made the injected lookups unreachable on that platform, and the behaviour
+    untestable there for exactly the reason injection exists."""
+    return os.geteuid() if hasattr(os, "geteuid") else -1
 
 
 def foreign_state_owner(
@@ -130,9 +136,9 @@ def foreign_state_owner(
     a file this process creates will be owned by this process, so the service's ability to
     write it afterwards is decided by uid, not by what root can currently do. Returns None
     when there is nothing to warn about (no state dir yet, not root, or already the owner).
+    ``euid``/``owner_uid`` are injectable exactly as ``writable`` is above — the suite
+    often runs AS root, where the failure cannot be reproduced with real uids at all.
     """
-    if not hasattr(os, "geteuid"):
-        return None  # non-POSIX: uid framing does not apply
     base = (root if root is not None else _repo_root()) / STATE_DIR_REL
     if not base.exists() or euid() != 0:
         return None
