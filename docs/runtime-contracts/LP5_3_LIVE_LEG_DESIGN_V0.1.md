@@ -1,9 +1,9 @@
 # LP5.3 — The Executing Leg + Cycle Routing: Design Record v0.1
 
-**Status:** **The executing leg is built** (`crypto/live_leg.py`, Thomas 2026-07-25). The **cycle
-routing is not**, and remains the line that makes an autonomous live order reachable. Nothing
-here enables trading: the leg takes an injected adapter, and no autonomous entry point may
-import it (the tripwire below now covers `live_leg`).
+**Status:** PARTIALLY IMPLEMENTED — **the executing leg is built** (`crypto/live_leg.py`, Thomas
+2026-07-25). The **cycle routing is not**, and remains the line that makes an autonomous live
+order reachable. Nothing here enables trading: the leg takes an injected adapter, and no
+autonomous entry point may import it (the tripwire below now covers `live_leg`).
 **Owner:** Thomas
 **Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule.
 
