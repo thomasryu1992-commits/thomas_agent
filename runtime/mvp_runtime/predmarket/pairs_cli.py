@@ -59,6 +59,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
             close_time=row.get("close_time"),
             status=row.get("status"),
             category=row.get("category"),
+            fee_rate_bps=row.get("fee_rate_bps"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
                 yes_bid_size=quote.get("yes_bid_size"), yes_ask_size=quote.get("yes_ask_size"),

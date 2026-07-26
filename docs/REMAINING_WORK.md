@@ -105,8 +105,15 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         ticket), so PM1's "no account needed" property does not extend to it; a missing key is
         reported as `PREDMARKET_API_KEY_MISSING`, never as an outage. Its fee schedule is
         unread, so its legs report **no knowable cost** rather than a guessed one.
-  - [ ] Predict.fun order book + fee schedule (both need the API key; until then its legs are
-        listed, never priced).
+  - [x] Predict.fun order book + fee — resolved 2026-07-26 by routing through **Binance's**
+        Prediction Trading REST API instead of the venue directly (Thomas's call; funding is
+        why). Binance publishes a real `/order-book` and a per-topic `feeRateBps`, so this
+        venue is now **quoted**, not merely listed. All endpoints are signed. The fee
+        *formula* is still unpublished, so the bps rate is applied flat on notional (the
+        pessimistic reading) and every leg records `fee_model` saying so.
+  - [ ] Confirm the Binance prediction fee formula (flat vs `P x (1-P)`), then drop the
+        assumption. Until then costs are over-estimated, which skips observations rather than
+        inventing them.
   - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
         (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
         the venues a confirmed group needs**, prices every pairing inside every group, and

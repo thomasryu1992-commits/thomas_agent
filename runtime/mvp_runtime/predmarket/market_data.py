@@ -41,6 +41,8 @@ var alone fails closed.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -48,6 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -75,13 +78,16 @@ VENUES = (KALSHI, POLYMARKET, PREDICTFUN)
 # chain, so revoking one must not touch the others.
 KALSHI_PROVIDER_ID = "kalshi_market_data"
 POLYMARKET_PROVIDER_ID = "polymarket_market_data"
-PREDICTFUN_PROVIDER_ID = "predictfun_market_data"
+PREDICTFUN_PROVIDER_ID = "binance_prediction"
 KALSHI_ENV = "MVP_KALSHI_MARKET_DATA"
 POLYMARKET_ENV = "MVP_POLYMARKET_MARKET_DATA"
-PREDICTFUN_ENV = "MVP_PREDICTFUN_MARKET_DATA"
-# The one venue of the three that is NOT keyless. Metadata only ever: the name is reported,
-# the value is never logged, audited or recorded (the standing secrets rule).
-PREDICTFUN_API_KEY_ENV = "MVP_PREDICTFUN_API_KEY"
+PREDICTFUN_ENV = "MVP_BINANCE_PREDICTION"
+# The one venue of the three that is NOT keyless. Every prediction endpoint is SIGNED, so a
+# key and a secret are both needed. Metadata only ever: the names are reported, the values are
+# never logged, audited or recorded (the standing secrets rule), and because the signature
+# rides in the query string a transport failure is reported generically.
+PREDICTFUN_API_KEY_ENV = "BINANCE_PREDICTION_API_KEY"
+PREDICTFUN_API_SECRET_ENV = "BINANCE_PREDICTION_API_SECRET"
 
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
@@ -180,6 +186,9 @@ class PredMarket:
     status: str | None
     quote: VenueQuote = field(default_factory=VenueQuote)
     category: str | None = None
+    # The venue's own fee rate for THIS market, when it publishes one (Binance's prediction
+    # API returns `feeRateBps` per topic). A rate the venue stated beats a rate from a table.
+    fee_rate_bps: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +199,7 @@ class PredMarket:
             "category": self.category,
             "close_time": self.close_time,
             "status": self.status,
+            "fee_rate_bps": self.fee_rate_bps,
             "quote": self.quote.as_dict(),
         }
 
@@ -695,50 +705,113 @@ def parse_clob_book(payload: Any) -> VenueQuote:
     )
 
 
-# --- Predict.fun (the venue behind Binance Wallet's prediction markets) ----------
+# --- Predict.fun markets, reached through Binance -------------------------------
 
 class PredictFunCollector:
-    """Predict.fun markets over its public REST API. **Lists markets; quotes none.**
+    """Predict.fun markets over **Binance's** Prediction Trading REST API.
 
-    Verified against ``dev.predict.fun`` on 2026-07-26, and two findings shape this class.
+    Two names, one venue, and the split is deliberate:
 
-    **It is not keyless.** Unlike Kalshi and Polymarket, every read wants an ``x-api-key``
-    header — on mainnet *and* testnet — obtained by opening a ticket on the venue's Discord.
-    So PM1's "no account, no funds" property does not extend to this venue, and a missing key
-    is reported as ``API_KEY_MISSING`` rather than a degrade: an unfinished setup step is not
-    an outage, and a report that showed one as the other would send someone to debug a venue
-    that was never asked anything.
+    - the **venue** is Predict.fun on BNB Smart Chain — whose markets these are, and whose
+      resolution rules the operator compares at confirmation time. The API says so itself
+      (``vendor: "PREDICT_FUN"``);
+    - the **route** is Binance, which is where the credential, the host and the rate limit
+      come from. Hence the grant ``binance_prediction`` and the ``BINANCE_PREDICTION_*`` keys.
 
-    **No order-book endpoint is documented in the published API spec**, only per-outcome
-    ``prices``. Those are a derived figure, exactly like Polymarket's Gamma ``outcomePrices``,
-    and this package already refuses to quote from those — a fee-adjusted comparison against a
-    non-executable price is how a paper edge becomes an imaginary one. So markets come back
-    **unquoted** until the book endpoint is verified, and the venue contributes identity and
-    cross-references rather than prices.
+    Chosen over Predict.fun's own REST API (Thomas, 2026-07-26) because the money path
+    decides it: funding a Binance prediction account is a transfer from an existing balance,
+    while the direct venue needs a self-custodied BNB-chain wallet. Reading through the same
+    door that will later trade keeps one credential and one identifier space.
 
-    That is still worth having now, because of the second finding: a Predict.fun market
-    carries ``polymarketConditionIds`` — the venue naming the Polymarket market it mirrors.
-    That is pairing evidence *asserted by a venue*, which no title comparison can match.
+    Verified against the published spec on 2026-07-26, and it changed two earlier refusals:
+
+    - **there is a real order book** (``/order-book`` returns ``bids``/``asks`` of
+      ``{price, size}``), so this venue can be *quoted*. The direct Predict.fun API published
+      none, which is why the first version of this collector listed markets and priced none.
+    - **the venue reports its own fee**, ``feeRateBps`` per topic, so its legs no longer have
+      to be treated as having no knowable cost.
+
+    **Everything is signed.** Every prediction endpoint takes a ``timestamp`` and an HMAC
+    signature; there is no public read here, so the key is not an optimisation but the
+    price of entry. The signing follows ``crypto/account.py`` exactly, including the rule
+    that a transport failure is reported generically because the signature is in the URL.
+
+    Three calls deep, and bounded: ``market/list`` gives topics, ``market/detail`` gives each
+    topic's outcome tokens, ``order-book`` gives one token's book. Markets past the budget
+    come back **unquoted** rather than dropped or guessed.
     """
 
     venue = PREDICTFUN
     tool_id = PREDMARKET_TOOL_ID
-    tool_version = f"{PREDMARKET_TOOL_VERSION}-predictfun"
+    tool_version = f"{PREDMARKET_TOOL_VERSION}-binance-prediction"
     provider_id = PREDICTFUN_PROVIDER_ID
     network_egress = True
-    source = "predictfun_public"
+    source = "binance_prediction"
 
-    BASE = "https://api.predict.fun/v1"
-    PAGE_LIMIT = 100
+    BASE = "https://api.binance.com"
+    ALLOWED_HOSTS = frozenset({"api.binance.com"})
+    LIST_PATH = "/sapi/v1/w3w/wallet/prediction/market/list"
+    DETAIL_PATH = "/sapi/v1/w3w/wallet/prediction/market/detail"
+    BOOK_PATH = "/sapi/v1/w3w/wallet/prediction/order-book"
+    PAGE_LIMIT = 100          # the venue's documented max for market/list
+    RECV_WINDOW_MS = 5000
+    VENDOR = "predict_fun"    # the order-book call names the vendor explicitly
 
-    def __init__(self, *, authorization: Authorization | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        *,
+        authorization: Authorization | None = None,
+        book_limit: int = DEFAULT_BOOK_LIMIT,
+        base_url: str = BASE,
+    ):
+        host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+        if host not in self.ALLOWED_HOSTS:
+            # Refuse at construction: a signed key must never be pointed at an unexpected
+            # host, and a URL typo should fail loudly rather than leak a credential.
+            raise ToolBlocked("HOST_NOT_ALLOWED", "prediction base URL is not an allowed host")
+        self._base_url = base_url.rstrip("/")
         self._authorization = authorization
-        # Read once at construction so the value never has to travel further. Never stored in
-        # a record, never printed, never part of an error message.
-        self._api_key = (api_key if api_key is not None else os.environ.get(PREDICTFUN_API_KEY_ENV, "")).strip()
+        self._book_limit = _clamp(book_limit, DEFAULT_BOOK_LIMIT, MAX_BOOK_LIMIT)
 
-    def api_key_present(self) -> bool:
-        return bool(self._api_key)
+    def credentials_present(self) -> bool:
+        return bool(
+            os.environ.get(PREDICTFUN_API_KEY_ENV, "").strip()
+            and os.environ.get(PREDICTFUN_API_SECRET_ENV, "").strip()
+        )
+
+    def _signed_get(self, path: str, params: Mapping[str, Any], *, timeout_seconds: int) -> Any:
+        api_key = os.environ.get(PREDICTFUN_API_KEY_ENV, "").strip()
+        api_secret = os.environ.get(PREDICTFUN_API_SECRET_ENV, "").strip()
+        if not api_key or not api_secret:
+            # Names only — the absence of a credential is reportable, its value never is.
+            # A distinct code from a degrade: an unfinished setup step is not an outage.
+            raise ToolError(
+                API_KEY_MISSING,
+                f"prediction credentials are not configured "
+                f"({PREDICTFUN_API_KEY_ENV}/{PREDICTFUN_API_SECRET_ENV})",
+            )
+        query = dict(params)
+        query.setdefault("recvWindow", self.RECV_WINDOW_MS)
+        query["timestamp"] = int(time.time() * 1000)
+        encoded = urllib.parse.urlencode(query)
+        signature = hmac.new(
+            api_secret.encode("utf-8"), encoded.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        request = urllib.request.Request(
+            f"{self._base_url}{path}?{encoded}&signature={signature}",
+            method="GET",
+            headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError):
+            # Generic on purpose: the URL carries the signature.
+            raise ToolError("TOOL_TRANSPORT", "prediction request failed or timed out") from None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "prediction backend returned an unparseable response") from None
 
     def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
@@ -748,24 +821,60 @@ class PredictFunCollector:
             provider_id=self.provider_id,
             now=timeutil.utc_now_iso(),
         )
-        if not self._api_key:
-            # Fail closed, and say which fact is missing. The grant being open does not conjure
-            # a key, and pretending the venue answered nothing would read as an outage.
-            raise ToolError(
-                API_KEY_MISSING,
-                f"{PREDICTFUN_API_KEY_ENV} is not set; Predict.fun reads are key-authenticated "
-                "on mainnet and testnet alike (request one via the venue's Discord)",
-            )
         started = time.monotonic()
-        params = {"first": min(int(limit), self.PAGE_LIMIT), "status": "OPEN"}
-        payload = _get_json(
-            f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
+        listing = self._signed_get(
+            self.LIST_PATH,
+            {"limit": min(int(limit), self.PAGE_LIMIT), "offset": 0},
             timeout_seconds=timeout_seconds,
-            headers={"x-api-key": self._api_key},
         )
+        topics = parse_prediction_topics(listing)[:limit]
+
+        markets: list[PredMarket] = []
+        for index, topic in enumerate(topics):
+            if index >= self._book_limit:
+                markets.append(topic)   # past the call budget: unquoted, never guessed
+                continue
+            try:
+                detail = self._signed_get(
+                    self.DETAIL_PATH,
+                    {"marketTopicId": topic.market_id},
+                    timeout_seconds=timeout_seconds,
+                )
+                outcome = parse_prediction_yes_outcome(detail)
+            except ToolError:
+                markets.append(topic)   # one topic's detail failing is not the scan failing
+                continue
+            if outcome is None:
+                markets.append(topic)
+                continue
+            market_id, token_id, condition_id = outcome
+            try:
+                book = self._signed_get(
+                    self.BOOK_PATH,
+                    {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
+                    timeout_seconds=timeout_seconds,
+                )
+            except ToolError:
+                book = None
+            markets.append(PredMarket(
+                venue=PREDICTFUN,
+                # Keyed on the outcome token, like Polymarket: it is what the book and any
+                # later order key on.
+                market_id=token_id,
+                # The cross-reference axis. Predict.fun's conditionId is the same shape as
+                # Polymarket's, so a group can be matched on it rather than on wording.
+                group_id=condition_id or topic.group_id,
+                title=topic.title,
+                category=topic.category,
+                close_time=topic.close_time,
+                status=topic.status,
+                fee_rate_bps=topic.fee_rate_bps,
+                quote=parse_prediction_book(book) if book is not None else VenueQuote(),
+            ))
+
         return PredMarketSnapshot(
             venue=self.venue,
-            markets=parse_predictfun_markets(payload)[:limit],
+            markets=markets,
             source=self.source,
             is_synthetic=False,
             collector_version=self.tool_version,
@@ -773,47 +882,116 @@ class PredictFunCollector:
         )
 
 
-def parse_predictfun_markets(payload: Any) -> list[PredMarket]:
-    """Predict.fun's ``/v1/markets`` payload as normalized, **unquoted** markets. Pure.
+def _ms_to_iso(value: Any) -> str | None:
+    """A venue epoch-millisecond stamp as UTC ISO-8601, or ``None``. The rest of this package
+    compares close times as ISO strings, so the conversion belongs at the boundary."""
+    parsed = as_optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return timeutil.format_iso(datetime.fromtimestamp(parsed / 1000.0, tz=timezone.utc))
 
-    Unquoted on purpose — see :class:`PredictFunCollector`. What this does carry is the
-    venue's own ``polymarketConditionIds``: a cross-reference the matcher can trust far more
-    than any similarity score, because the venue is asserting the correspondence rather than
-    a heuristic inferring it.
 
-    ``tradingStatus`` rather than ``status`` decides tradability: a market can be REGISTERED
-    while its trading is CLOSED, and pairing a market nobody can trade is a pairing that can
-    never be acted on.
+def parse_prediction_topics(payload: Any) -> list[PredMarket]:
+    """``market/list`` as normalized, **unquoted** topics. Pure — no network.
+
+    A topic is the event; its tradable outcomes come from ``market/detail``. Carried unquoted
+    because the list response's ``markets`` array is empty by design, so a price here would
+    have to be invented.
+
+    ``market_id`` is temporarily the **topic id** — the detail call needs it — and is replaced
+    by the outcome token id once the detail is read. A topic that never gets that far is
+    returned as-is, which is honest: it is a market we know exists and could not price.
     """
-    rows = payload if isinstance(payload, list) else None
-    if rows is None and isinstance(payload, Mapping):
-        for key in ("data", "markets", "items"):
-            if isinstance(payload.get(key), list):
-                rows = payload[key]
-                break
-    if rows is None:
-        raise ToolError("MALFORMED_RESULT", "predict.fun markets payload is not a list")
+    if not isinstance(payload, Mapping):
+        raise ToolError("MALFORMED_RESULT", "prediction markets payload is not an object")
+    rows = payload.get("marketTopics")
+    if not isinstance(rows, list):
+        raise ToolError("MALFORMED_RESULT", "prediction markets payload carries no marketTopics")
 
-    markets: list[PredMarket] = []
+    topics: list[PredMarket] = []
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        market_id = row.get("id")
-        if market_id is None or str(market_id).strip() == "":
+        topic_id = row.get("marketTopicId")
+        if topic_id is None or str(topic_id).strip() == "":
             continue
-        cross = [c for c in _maybe_json_list(row.get("polymarketConditionIds")) if isinstance(c, str) and c]
-        markets.append(PredMarket(
+        fee_bps = row.get("feeRateBps")
+        topics.append(PredMarket(
             venue=PREDICTFUN,
-            market_id=str(market_id),
-            # The venue's own cross-reference rides in `group_id` — the field the matcher
-            # already reads for "what does this venue think this market belongs to".
-            group_id=cross[0] if cross else None,
-            title=str(row.get("question") or row.get("title") or market_id),
-            category=row.get("categorySlug") if isinstance(row.get("categorySlug"), str) else None,
-            close_time=row.get("endDate") if isinstance(row.get("endDate"), str) else None,
-            status=row.get("tradingStatus") if isinstance(row.get("tradingStatus"), str) else None,
+            market_id=str(topic_id),
+            group_id=None,
+            title=str(row.get("question") or row.get("title") or topic_id),
+            category=row.get("chartType") if isinstance(row.get("chartType"), str) else None,
+            close_time=_ms_to_iso(row.get("endDate")),
+            # tradingStatus lives on the individual markets; the topic's own status is the
+            # coarser one, and a topic that is not REGISTERED cannot be traded either way.
+            status=row.get("status") if isinstance(row.get("status"), str) else None,
+            fee_rate_bps=int(fee_bps) if isinstance(fee_bps, (int, float)) and not isinstance(fee_bps, bool) else None,
         ))
-    return markets
+    return topics
+
+
+def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None] | None:
+    """``market/detail`` → ``(marketId, YES tokenId, conditionId)``, or ``None``. Pure.
+
+    Takes the first market whose ``tradingStatus`` is OPEN and reads its YES outcome. A topic
+    with no open market, or an outcome with no token id, yields ``None`` — there is nothing
+    to price and nothing a later order could key on.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    for market in payload.get("markets") or []:
+        if not isinstance(market, Mapping):
+            continue
+        if str(market.get("tradingStatus") or "").upper() != "OPEN":
+            continue
+        market_id = market.get("marketId")
+        if not isinstance(market_id, int):
+            continue
+        for outcome in market.get("outcomes") or []:
+            if not isinstance(outcome, Mapping):
+                continue
+            if str(outcome.get("name") or "").upper() != "YES":
+                continue
+            token_id = outcome.get("tokenId")
+            if not (isinstance(token_id, str) and token_id.strip()):
+                continue
+            condition = market.get("conditionId")
+            return (
+                market_id,
+                token_id.strip(),
+                condition.strip() if isinstance(condition, str) and condition.strip() else None,
+            )
+    return None
+
+
+def parse_prediction_book(payload: Any) -> VenueQuote:
+    """``/order-book`` as the best YES bid/ask. Pure.
+
+    Same shape as Polymarket's book (``{price, size}`` strings in ``[0,1]``) and the same
+    caution: take the max bid and the min ask rather than trusting page order, so a
+    mis-sorted page cannot quote the worst price on the book as the best.
+    """
+    if not isinstance(payload, Mapping):
+        return VenueQuote()
+    best_bid = best_bid_size = None
+    best_ask = best_ask_size = None
+    for level in payload.get("bids") or []:
+        if not isinstance(level, Mapping):
+            continue
+        price = _probability(level.get("price"))
+        if price is not None and (best_bid is None or price > best_bid):
+            best_bid, best_bid_size = price, _size(level.get("size"))
+    for level in payload.get("asks") or []:
+        if not isinstance(level, Mapping):
+            continue
+        price = _probability(level.get("price"))
+        if price is not None and (best_ask is None or price < best_ask):
+            best_ask, best_ask_size = price, _size(level.get("size"))
+    return VenueQuote(
+        yes_bid=best_bid, yes_ask=best_ask,
+        yes_bid_size=best_bid_size, yes_ask_size=best_ask_size,
+    )
 
 
 __all__ = [
@@ -830,6 +1008,7 @@ __all__ = [
     "POLYMARKET_PROVIDER_ID",
     "PREDICTFUN",
     "PREDICTFUN_API_KEY_ENV",
+    "PREDICTFUN_API_SECRET_ENV",
     "PREDICTFUN_ENV",
     "PREDICTFUN_PROVIDER_ID",
     "PREDMARKET_DEGRADED",
@@ -849,7 +1028,9 @@ __all__ = [
     "parse_clob_book",
     "parse_gamma_markets",
     "parse_kalshi_markets",
-    "parse_predictfun_markets",
+    "parse_prediction_book",
+    "parse_prediction_topics",
+    "parse_prediction_yes_outcome",
     "require_venue",
     "select_pred_market_collector",
 ]

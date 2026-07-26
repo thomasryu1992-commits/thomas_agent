@@ -50,15 +50,25 @@ Verified 2026-07-24 (web sources; re-verify at signup):
   Chain**: the counterparty, the settlement and the *resolution rules* are Predict.fun's, so
   the package names it `predictfun` rather than `binance`. Two consequences, both verified
   against `dev.predict.fun` on 2026-07-26:
-  - **It is not keyless.** Every read wants an `x-api-key`, on mainnet *and* testnet,
-    obtained by opening a ticket on the venue's Discord. **PM1's "no account needed" property
-    does not extend to this venue** — an API key is a new operator precondition, and the only
-    PM0 item that blocks PM1 rather than PM3.
-  - **No order-book endpoint is published**, only per-outcome `prices` — a derived figure like
-    Gamma's `outcomePrices`. Its markets are therefore carried **unquoted** until a book
-    endpoint is verified.
-  - Its fee schedule has not been read, so the runtime treats a Predict.fun leg as having **no
-    knowable cost** (`taker_fee` returns `None`) rather than guessing one.
+  - **Reached through Binance, not directly (Thomas, 2026-07-26).** The money path decides
+    it: funding a Binance prediction account is a transfer from an existing balance, while the
+    direct venue needs a self-custodied BNB-chain wallet. Reading through the same door that
+    will later trade keeps one credential and one identifier space. The venue is still
+    Predict.fun — the API says so itself (`vendor: "PREDICT_FUN"`) — and its resolution rules
+    are still what the operator compares; only the route and the credential are Binance's.
+  - **Preconditions are heavier than the other two venues** and are operator steps, all
+    completed 2026-07-26: KYC, a Prediction Account created in the Binance app, Prediction SAS
+    authorization, and "Prediction Trading" enabled on the API key. **Availability varies by
+    region** per Binance's own notice — a live question wherever the operator is.
+  - **Everything is signed** (`timestamp` + HMAC, `X-MBX-APIKEY`); there is no public read, so
+    `BINANCE_PREDICTION_API_KEY`/`_SECRET` are required and a missing pair reports
+    `PREDMARKET_API_KEY_MISSING`, never an outage.
+  - **There IS an order book** (`/sapi/v1/w3w/wallet/prediction/order-book`), which the direct
+    Predict.fun API did not publish — so this venue can be quoted, not merely listed.
+  - **The venue reports its own fee** (`feeRateBps` per topic), so its legs no longer have "no
+    knowable cost". The *formula* is not published, so the runtime applies the bps rate flat on
+    notional — larger than the `P x (1-P)` shape at every price — and records
+    `fee_model: assumed_flat_rate*P_of_notional` so the assumption is visible and correctable.
 
 ## Relationship to the crypto pipeline
 

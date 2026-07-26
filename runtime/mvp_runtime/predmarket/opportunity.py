@@ -80,6 +80,8 @@ def _direction(
     sell_size: float | None,
     buy_category: Any,
     sell_category: Any,
+    buy_fee_bps: Any,
+    sell_fee_bps: Any,
     contracts: float,
 ) -> dict[str, Any] | None:
     """One direction's economics, or ``None`` when either leg is unquoted."""
@@ -88,8 +90,10 @@ def _direction(
     gross = round(sell_price - buy_price, 10)
     fees = round_trip_fee(
         [
-            {"venue": buy_venue, "price": buy_price, "category": buy_category},
-            {"venue": sell_venue, "price": sell_price, "category": sell_category},
+            {"venue": buy_venue, "price": buy_price, "category": buy_category,
+             "fee_rate_bps": buy_fee_bps},
+            {"venue": sell_venue, "price": sell_price, "category": sell_category,
+             "fee_rate_bps": sell_fee_bps},
         ],
         contracts=contracts,
     )
@@ -146,12 +150,14 @@ def evaluate_pairing(
         _direction(
             buy_venue=left.venue, buy_price=left_quote.yes_ask, buy_size=left_quote.yes_ask_size,
             sell_venue=right.venue, sell_price=right_quote.yes_bid, sell_size=right_quote.yes_bid_size,
-            buy_category=left.category, sell_category=right.category, contracts=contracts,
+            buy_category=left.category, sell_category=right.category,
+            buy_fee_bps=left.fee_rate_bps, sell_fee_bps=right.fee_rate_bps, contracts=contracts,
         ),
         _direction(
             buy_venue=right.venue, buy_price=right_quote.yes_ask, buy_size=right_quote.yes_ask_size,
             sell_venue=left.venue, sell_price=left_quote.yes_bid, sell_size=left_quote.yes_bid_size,
-            buy_category=right.category, sell_category=left.category, contracts=contracts,
+            buy_category=right.category, sell_category=left.category,
+            buy_fee_bps=right.fee_rate_bps, sell_fee_bps=left.fee_rate_bps, contracts=contracts,
         ),
     ]
     priced = [d for d in directions if d is not None and d["net_edge"] is not None]

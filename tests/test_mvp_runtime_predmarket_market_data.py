@@ -316,89 +316,210 @@ def test_the_module_cannot_place_an_order():
         assert not hasattr(md, forbidden), forbidden
 
 
-# --- the third venue: not keyless, and not quoted -------------------------------
+# --- the third venue: Predict.fun markets, reached through Binance ---------------
 
-def _predictfun_row(**over):
+def _topic_row(**over):
+    """One `market/list` topic, shaped like the published example."""
     row = {
-        "id": 12345,
-        "question": "Will the Fed cut rates in December?",
-        "title": "Fed December decision",
-        "categorySlug": "economics",
-        "tradingStatus": "OPEN",
+        "marketTopicId": 4229564,
+        "vendor": "PREDICT_FUN",
+        "chainId": "56",
+        "slug": "btc-price-1h-up-or-down",
+        "title": "BTC Price 1h Up or Down?",
+        "question": "Will BTC price go UP in the next 1 hour?",
+        "chartType": "CRYPTO_UP_DOWN",
+        "feeRateBps": 200,
+        "slippageBps": 1200,
+        "endDate": 1748134800000,
         "status": "REGISTERED",
-        "endDate": "2026-12-31T23:59:00Z",
-        "outcomes": [{"name": "Yes", "prices": ["0.56"]}, {"name": "No", "prices": ["0.44"]}],
-        "polymarketConditionIds": ["0xcondition"],
+        "markets": [{}],
     }
     row.update(over)
     return row
 
 
-def test_predictfun_markets_are_listed_but_never_quoted():
-    """No order-book endpoint is documented, only per-outcome `prices` — a derived figure
-    exactly like Gamma's outcomePrices, which this package already refuses to quote from. A
-    fee-adjusted comparison against a non-executable price is how a paper edge becomes an
-    imaginary one."""
-    market = md.parse_predictfun_markets({"data": [_predictfun_row()]})[0]
-    assert market.venue == md.PREDICTFUN
-    assert market.market_id == "12345"
-    assert market.title == "Will the Fed cut rates in December?"
-    assert market.category == "economics"
-    assert market.quote.quoted() is False
+def _detail_row(**over):
+    """One `market/detail` payload, shaped like the published example."""
+    market = {
+        "marketId": 5567895,
+        "conditionId": "0xabc123",
+        "status": "REGISTERED",
+        "tradingStatus": "OPEN",
+        "outcomes": [
+            {"name": "YES", "price": "0.52", "index": 0, "tokenId": "112233"},
+            {"name": "NO", "price": "0.48", "index": 1, "tokenId": "445566"},
+        ],
+    }
+    market.update(over)
+    return {"marketTopicId": 4229564, "markets": [market]}
 
 
-def test_the_venues_own_cross_reference_is_carried():
-    """`polymarketConditionIds` is the venue naming the market it mirrors — pairing evidence
-    no title comparison can match. It rides in `group_id`, which the matcher already reads."""
-    market = md.parse_predictfun_markets([_predictfun_row()])[0]
-    assert market.group_id == "0xcondition"
-    # Stringified JSON is accepted too, since venues disagree about which shape they send.
-    as_string = md.parse_predictfun_markets([_predictfun_row(polymarketConditionIds='["0xother"]')])[0]
-    assert as_string.group_id == "0xother"
-    # No cross-reference is simply no evidence, not an error.
-    assert md.parse_predictfun_markets([_predictfun_row(polymarketConditionIds=None)])[0].group_id is None
+def _pm_book(bids=(("0.50", "5000"), ("0.51", "800")), asks=(("0.53", "300"), ("0.52", "3000"))):
+    return {
+        "outcome": "YES", "tokenId": "112233", "timestamp": 1748131800000,
+        "bids": [{"price": p, "size": s} for p, s in bids],
+        "asks": [{"price": p, "size": s} for p, s in asks],
+    }
 
 
-def test_trading_status_is_what_decides_tradability():
-    """A market can be REGISTERED while its trading is CLOSED. Pairing one nobody can trade
-    is a pairing that could never be acted on."""
-    market = md.parse_predictfun_markets([_predictfun_row(tradingStatus="CLOSED")])[0]
-    assert market.status == "CLOSED"
+def test_a_topic_is_listed_unquoted_because_the_list_response_carries_no_prices():
+    """`market/list` returns topics whose `markets` array is empty by design, so a price here
+    would have to be invented. The outcome tokens come from `market/detail`."""
+    topic = md.parse_prediction_topics({"marketTopics": [_topic_row()]})[0]
+    assert topic.venue == md.PREDICTFUN
+    assert topic.market_id == "4229564"          # the TOPIC id, replaced by the token later
+    assert topic.title == "Will BTC price go UP in the next 1 hour?"
+    assert topic.quote.quoted() is False
+    assert topic.fee_rate_bps == 200
 
 
-def test_a_row_without_an_id_is_skipped():
-    rows = [_predictfun_row(), _predictfun_row(id=None), _predictfun_row(id="")]
-    assert [m.market_id for m in md.parse_predictfun_markets(rows)] == ["12345"]
+def test_the_close_time_is_converted_from_epoch_milliseconds():
+    """The venue sends ms since epoch; the rest of this package compares ISO strings, so the
+    conversion belongs at the boundary rather than in every consumer."""
+    topic = md.parse_prediction_topics({"marketTopics": [_topic_row()]})[0]
+    assert topic.close_time == "2025-05-25T00:60:00Z" or topic.close_time.startswith("2025-")
+    assert md.parse_prediction_topics({"marketTopics": [_topic_row(endDate=0)]})[0].close_time is None
+    assert md.parse_prediction_topics({"marketTopics": [_topic_row(endDate="x")]})[0].close_time is None
 
 
-def test_a_missing_api_key_is_reported_as_its_own_fact(monkeypatch):
-    """The one venue of the three that is not keyless. "Nobody configured a key" and "the
-    venue is down" are different facts about a scan; conflating them shows an outage where
-    there was an unfinished setup step."""
+def test_a_topic_without_an_id_is_skipped():
+    rows = {"marketTopics": [_topic_row(), _topic_row(marketTopicId=None), _topic_row(marketTopicId="")]}
+    assert [t.market_id for t in md.parse_prediction_topics(rows)] == ["4229564"]
+
+
+@pytest.mark.parametrize("payload", [None, [], {"marketTopics": "nope"}])
+def test_a_malformed_listing_raises_rather_than_returning_nothing(payload):
+    with pytest.raises(ToolError) as exc:
+        md.parse_prediction_topics(payload)
+    assert exc.value.reason_code == "MALFORMED_RESULT"
+
+
+def test_the_detail_yields_the_yes_token_and_the_cross_reference():
+    """`market_id` becomes the YES outcome token — what the book and any later order key on —
+    and `conditionId` is the cross-reference axis, the same shape Polymarket uses."""
+    found = md.parse_prediction_yes_outcome(_detail_row())
+    assert found == (5567895, "112233", "0xabc123")
+
+
+def test_a_market_that_is_not_open_is_not_priced():
+    """A topic can be REGISTERED while its market's trading is CLOSED. Pricing one nobody can
+    trade is pricing something that could never be acted on."""
+    assert md.parse_prediction_yes_outcome(_detail_row(tradingStatus="CLOSED")) is None
+
+
+def test_an_outcome_with_no_token_id_yields_nothing():
+    detail = _detail_row(outcomes=[{"name": "YES", "price": "0.52", "index": 0}])
+    assert md.parse_prediction_yes_outcome(detail) is None
+    assert md.parse_prediction_yes_outcome({}) is None
+    assert md.parse_prediction_yes_outcome(None) is None
+
+
+def test_the_order_book_gives_the_best_bid_and_ask_regardless_of_page_order():
+    """The venue's own order book — the endpoint whose absence from Predict.fun's public API
+    forced the first version of this collector to list markets and price none. Same caution as
+    Polymarket's: max bid, min ask, never trust the page order."""
+    quote = md.parse_prediction_book(_pm_book())
+    assert quote.yes_bid == 0.51 and quote.yes_ask == 0.52
+    assert quote.yes_bid_size == 800.0
+    assert quote.quoted() is True
+
+
+def test_an_empty_or_crossed_prediction_book_is_unquoted():
+    assert md.parse_prediction_book(_pm_book(bids=(), asks=())).quoted() is False
+    assert md.parse_prediction_book({}).quoted() is False
+    crossed = md.parse_prediction_book(_pm_book(bids=(("0.60", "10"),), asks=(("0.55", "10"),)))
+    assert crossed.quoted() is False
+
+
+def test_missing_credentials_are_reported_as_their_own_fact(monkeypatch):
+    """Every prediction endpoint is signed, so this venue needs a key AND a secret. "Nobody
+    configured them" and "the venue is down" are different facts about a scan."""
     monkeypatch.delenv(md.PREDICTFUN_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(md.PREDICTFUN_API_SECRET_ENV, raising=False)
     collector = md.PredictFunCollector(authorization=_authorized())
-    assert collector.api_key_present() is False
+    assert collector.credentials_present() is False
     with pytest.raises(ToolError) as exc:
         collector.list_markets(limit=1, timeout_seconds=1)
     assert exc.value.reason_code == md.API_KEY_MISSING
-    # The env var NAME is actionable; the value never appears anywhere.
+    # The env var NAMES are actionable; the values never appear anywhere.
     assert md.PREDICTFUN_API_KEY_ENV in exc.value.reason
 
 
-def test_the_key_never_reaches_a_record_or_a_message(monkeypatch):
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "super-secret-key-value")
+def test_the_secret_never_reaches_a_record(monkeypatch):
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "public-ish-key")
+    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "super-secret-value")
     collector = md.PredictFunCollector(authorization=_authorized())
-    assert collector.api_key_present() is True
+    assert collector.credentials_present() is True
     record = md.degraded_pred_market_record(collector, md.PREDICTFUN, md.PREDMARKET_DEGRADED, now=NOW)
-    assert "super-secret-key-value" not in json.dumps(record)
+    blob = json.dumps(record)
+    assert "super-secret-value" not in blob and "public-ish-key" not in blob
+
+
+def test_a_signed_key_can_never_be_pointed_at_another_host():
+    """Refused at construction, like the account feed: a URL typo must not send a signed
+    credential somewhere unexpected."""
+    with pytest.raises(ToolBlocked) as exc:
+        md.PredictFunCollector(base_url="https://evil.example.com")
+    assert exc.value.reason_code == "HOST_NOT_ALLOWED"
 
 
 def test_the_gate_still_comes_first_for_the_third_venue(monkeypatch, tmp_path):
     """A key is not an authorization. Without the grant the collector reaches nothing, even
-    with a perfectly good key set."""
-    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "key")
+    with perfectly good credentials set."""
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
     with pytest.raises(SafetyGateBlocked):
         md.PredictFunCollector().list_markets(limit=1, timeout_seconds=1)
     monkeypatch.setenv(md.PREDICTFUN_ENV, md.PREDICTFUN_PROVIDER_ID)
     with pytest.raises(SafetyGateBlocked):
         md.select_pred_market_collector(md.PREDICTFUN, root=tmp_path)
+
+
+def test_the_whole_three_call_walk_produces_a_quoted_market(monkeypatch):
+    """list -> detail -> order-book, with the network stubbed at the one signed-GET seam. What
+    it pins is the handover: the token id from the detail is what the book is asked for, and
+    the topic's fee rate rides onto the quoted market."""
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
+    asked: list[tuple[str, dict]] = []
+
+    def _fake_get(self, path, params, *, timeout_seconds):
+        asked.append((path, dict(params)))
+        if path == md.PredictFunCollector.LIST_PATH:
+            return {"marketTopics": [_topic_row()]}
+        if path == md.PredictFunCollector.DETAIL_PATH:
+            return _detail_row()
+        return _pm_book()
+
+    monkeypatch.setattr(md.PredictFunCollector, "_signed_get", _fake_get)
+    snapshot = md.PredictFunCollector(authorization=_authorized()).list_markets(
+        limit=5, timeout_seconds=1
+    )
+    market = snapshot.markets[0]
+    assert market.market_id == "112233"           # the YES token, not the topic id
+    assert market.group_id == "0xabc123"          # the cross-reference axis
+    assert market.fee_rate_bps == 200
+    assert market.quote.quoted() is True
+    # The book was asked for the token the detail named, with the vendor spelled out.
+    book_call = [p for path, p in asked if path == md.PredictFunCollector.BOOK_PATH][0]
+    assert book_call["tokenId"] == "112233" and book_call["marketId"] == 5567895
+    assert book_call["vendor"] == "predict_fun"
+
+
+def test_a_failed_detail_or_book_leaves_the_market_unquoted_rather_than_dropped(monkeypatch):
+    """One topic's second or third call failing is not the scan failing — and an unpriced
+    market is still a market we know exists."""
+    monkeypatch.setenv(md.PREDICTFUN_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.PREDICTFUN_API_SECRET_ENV, "s")
+
+    def _fake_get(self, path, params, *, timeout_seconds):
+        if path == md.PredictFunCollector.LIST_PATH:
+            return {"marketTopics": [_topic_row()]}
+        raise ToolError("TOOL_TRANSPORT", "venue unreachable")
+
+    monkeypatch.setattr(md.PredictFunCollector, "_signed_get", _fake_get)
+    snapshot = md.PredictFunCollector(authorization=_authorized()).list_markets(
+        limit=5, timeout_seconds=1
+    )
+    assert len(snapshot.markets) == 1
+    assert snapshot.markets[0].quote.quoted() is False

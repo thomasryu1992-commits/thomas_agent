@@ -117,13 +117,14 @@ def polymarket_taker_rate(category: Any) -> float:
 # row is `rate x contracts x P x (1-P)` rounded up; venues differ only in the rate (flat or
 # per category) and the rounding unit.
 #
-# **A venue with no row here has no knowable cost, and says so.** Predict.fun is deliberately
-# absent: its fee schedule has not been read from the venue, and the two available answers
-# would both be lies — a guessed rate fabricates a cost, and no rate at all reads as free. So
-# `taker_fee` returns None for it, every pairing involving it reports `net_edge: None`, and the
-# fix is a verified row rather than a plausible number. It costs nothing today because the
-# venue is unquoted anyway (no documented order book), and it self-corrects the moment someone
-# reads the schedule.
+# **A venue with no row here has no knowable cost, and says so** — `taker_fee` returns None,
+# every pairing involving it reports `net_edge: None`, and the fix is a verified row rather
+# than a plausible number.
+#
+# Predict.fun has no row and does not need one: **the venue reports its own rate per market**
+# (`feeRateBps` on Binance's prediction topics), which beats any table. A leg may therefore
+# carry `fee_rate_bps` and it wins over the venue schedule — a rate the venue stated about
+# THIS market is better evidence than a constant about the venue.
 _VENUE_FEES: dict[str, dict[str, Any]] = {
     KALSHI: {
         "rate_of": lambda _category: KALSHI_TAKER_RATE,
@@ -136,8 +137,23 @@ _VENUE_FEES: dict[str, dict[str, Any]] = {
 }
 
 
+# How a venue-reported bps rate is applied. Binance publishes `feeRateBps` per market but not
+# the formula, and the two candidates differ: `rate x P x (1-P)` (the Kalshi/Polymarket shape)
+# or a flat `rate x P` of notional. Flat is larger at every price, so it is the one used until
+# the formula is confirmed — over-estimating a cost skips an observation, under-estimating
+# reports an opportunity that is not there. Recorded as `fee_model` so it is visible and
+# correctable rather than assumed silently.
+FEE_MODEL_SHAPED = "rate*P*(1-P)"
+FEE_MODEL_FLAT_ASSUMED = "assumed_flat_rate*P_of_notional"
+
+
 def taker_fee(
-    venue: str, *, price: Any, contracts: Any = 1.0, category: Any = None
+    venue: str,
+    *,
+    price: Any,
+    contracts: Any = 1.0,
+    category: Any = None,
+    fee_rate_bps: Any = None,
 ) -> float | None:
     """The taker fee for ``contracts`` at ``price`` on ``venue``, or ``None``.
 
@@ -154,9 +170,17 @@ def taker_fee(
     if p is None or size is None or not (0.0 < p < 1.0) or size <= 0:
         return None
 
+    stated = as_optional_float(fee_rate_bps)
+    if stated is not None and stated >= 0:
+        # The venue said what this market costs. Applied flat (the pessimistic reading) until
+        # the formula is confirmed — see FEE_MODEL_FLAT_ASSUMED.
+        if stated == 0:
+            return 0.0
+        return _round_up((stated / 10_000.0) * size * p, POLYMARKET_ROUNDING_UNIT)
+
     schedule = _VENUE_FEES.get(venue)
     if schedule is None:
-        return None  # fees never read from this venue — see _VENUE_FEES
+        return None  # no stated rate and no schedule — see _VENUE_FEES
     rate = schedule["rate_of"](category)
     if rate <= 0.0:
         return 0.0
@@ -181,14 +205,21 @@ def round_trip_fee(
         venue = require_venue((leg or {}).get("venue"))
         category = leg.get("category")
         schedule = _VENUE_FEES.get(venue)
-        fee = taker_fee(venue, price=leg.get("price"), contracts=contracts, category=category)
+        stated_bps = as_optional_float(leg.get("fee_rate_bps"))
+        fee = taker_fee(
+            venue, price=leg.get("price"), contracts=contracts, category=category,
+            fee_rate_bps=leg.get("fee_rate_bps"),
+        )
         priced.append({
             "venue": venue,
             "price": as_optional_float(leg.get("price")),
+            "fee_rate_bps": stated_bps,
+            "fee_model": FEE_MODEL_FLAT_ASSUMED if stated_bps is not None else FEE_MODEL_SHAPED,
             # None, not 0.0: "we have not read this venue's fee schedule" is a different fact
             # from "this leg is free", and only the second one is ever good news.
             "taker_rate": schedule["rate_of"](category) if schedule is not None else None,
-            "fee_schedule_verified": schedule is not None,
+            # A stated rate is its own verification: the venue told us about this market.
+            "fee_schedule_verified": schedule is not None or stated_bps is not None,
             "fee_usd": fee,
         })
         if fee is None or total is None:
@@ -220,6 +251,8 @@ def fee_summary() -> dict[str, Any]:
 
 
 __all__ = [
+    "FEE_MODEL_FLAT_ASSUMED",
+    "FEE_MODEL_SHAPED",
     "FEES_VERIFIED_ON",
     "FEES_VERSION",
     "KALSHI_MAKER_RATE",
