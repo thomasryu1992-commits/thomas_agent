@@ -35,7 +35,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 
 SIZING_VERSION = "live_sizing.v0.1"
 
