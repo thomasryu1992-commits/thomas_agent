@@ -25,7 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from runtime.mvp_runtime.crypto import live_budget
-from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run
 
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -53,6 +54,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.valid_days < 1:
         print("ERROR: --valid-days must be >= 1", file=sys.stderr)
         return 2
+
+    # Before the record exists: a host-side root run would leave the budget file root-owned,
+    # and re-registering a cap is how every limit change lands — so the service would be stuck
+    # with the caps from the last root run, unable to rewrite them. Exit 3 matches the guard's
+    # first adopter (`activate_safety_flag.py`) rather than this script's own generic 2.
+    try:
+        assert_not_foreign_root_run(args.root.resolve())
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return 3
 
     now = datetime.now(timezone.utc)
     valid_from = now.strftime(_ISO)
