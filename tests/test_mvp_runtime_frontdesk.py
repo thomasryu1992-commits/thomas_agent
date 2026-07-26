@@ -530,3 +530,63 @@ def test_the_new_turns_change_no_state(tmp_path):
              control_store=ControlStore(tmp_path / "control"))
     assert registry.latest() == []
     assert [e for e in wm.read_all() if e.get("scope") != frontdesk.SESSION_SCOPE] == []
+
+
+# --- the model proposes a cancel; the operator's /cancel disposes ---------------
+
+def test_a_cancel_turn_never_cancels_it_proposes(tmp_path):
+    """The one MUTATION this vocabulary can name used to dispatch straight from the model's own
+    entry_id — no equivalent of SUBMIT_TASK's verbatim check. It now resolves read-only and hands
+    back the deterministic verb, so a model-chosen id cannot change coordination state."""
+    registry = TaskRegistryStore(tmp_path)
+    entry, _ = enqueue(registry, request_text="취소 대상 작업", origin="TELEGRAM",
+                       requester_id="tg-12345", now=NOW)
+    provider = TurnProvider(_turn("CANCEL_TASK", {"entry_id": entry.registry_entry_id}))
+
+    outcome = _run("그 작업 취소해줘", provider, tmp_path, registry=registry,
+                   control_store=ControlStore(tmp_path / "control"))
+
+    assert outcome["action"] == "CANCEL_PROPOSAL"
+    assert registry.latest()[0].status == QUEUED          # nothing was cancelled
+    assert "/cancel" in outcome["reply"]                   # the operator is told what to type
+    assert entry.registry_entry_id in outcome["reply"]      # ...on which entry, in full
+
+
+def test_a_short_invented_prefix_cannot_stand_in_for_a_real_entry(tmp_path):
+    """`registry.find` accepts any unique prefix, so a model-invented short id could match a real
+    entry. Proposing instead of cancelling makes that harmless — but the entry it names must be
+    the FULL id so the operator can see whether it is the one he meant."""
+    registry = TaskRegistryStore(tmp_path)
+    entry, _ = enqueue(registry, request_text="유일한 작업", origin="TELEGRAM",
+                       requester_id="tg-12345", now=NOW)
+    short = entry.registry_entry_id[:3]
+    provider = TurnProvider(_turn("CANCEL_TASK", {"entry_id": short}))
+
+    outcome = _run("취소", provider, tmp_path, registry=registry,
+                   control_store=ControlStore(tmp_path / "control"))
+
+    assert outcome["action"] == "CANCEL_PROPOSAL"
+    assert registry.latest()[0].status == QUEUED
+    assert entry.registry_entry_id in outcome["reply"]     # full id, not the model's 3 chars
+
+
+def test_an_unknown_entry_is_reported_not_guessed(tmp_path):
+    provider = TurnProvider(_turn("CANCEL_TASK", {"entry_id": "does-not-exist"}))
+    outcome = _run("취소", provider, tmp_path,
+                   control_store=ControlStore(tmp_path / "control"))
+    assert outcome["action"] == "CANCEL_PROPOSAL_NOT_FOUND"
+
+
+def test_a_non_queued_entry_is_named_rather_than_proposed(tmp_path):
+    """Do not tell the operator to type a verb that will only refuse."""
+    registry = TaskRegistryStore(tmp_path)
+    entry, _ = enqueue(registry, request_text="이미 시작된 작업", origin="TELEGRAM",
+                       requester_id="tg-12345", now=NOW)
+    registry.claim_next_queued(now=NOW)                    # -> RUNNING
+    provider = TurnProvider(_turn("CANCEL_TASK", {"entry_id": entry.registry_entry_id}))
+
+    outcome = _run("취소", provider, tmp_path, registry=registry,
+                   control_store=ControlStore(tmp_path / "control"))
+
+    assert outcome["action"] == "CANCEL_PROPOSAL_NOT_CANCELLABLE"
+    assert "/cancel" not in outcome["reply"]
