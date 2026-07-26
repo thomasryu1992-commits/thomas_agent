@@ -281,6 +281,85 @@ _WRITE_ACTION = _ActionSpec(
     ),
 )
 
+_TRIAL_WORK_ACTION = _ActionSpec(
+    action_type="internal.analysis.candidate_trial",
+    target_suffix="candidate_trial_work",
+    tool_id=None,
+    data_scope=("task.request",),
+    normalized_parameters={"assignment_mode": "candidate_trial", "visibility": "internal"},
+    risk_reason="Isolated internal trial analysis; no external, financial, or runtime effect.",
+    authority_reason="Trial execution within the approved trial scope and the candidate role's ceiling.",
+    decision_reason="Authority is sufficient and the trial work is internal, isolated, and read-only.",
+    constraint="No external action, tool/program execution, memory access, or runtime mutation.",
+)
+
+
+# --- the fixed grants ----------------------------------------------------------
+#
+# Five of this module's builders differ only in *which* constants they pass: a scope, a
+# least-privilege level, and an action spec. They were five near-identical bodies, which
+# made the one question an operator or reviewer actually asks — "what can this runtime
+# grant itself, at what level, under which scope?" — a 400-line read instead of a table.
+#
+# So the constants live in one table and the builders below delegate to it. The named
+# builders stay: they are what every call site imports, each carries the reasoning for its
+# own grant, and a grep for `build_write_permission_decision` must keep finding a function.
+# What is gone is the repeated plumbing, and with it the chance of two grants drifting in
+# how they pass it.
+#
+# **Only genuinely fixed grants belong here.** A builder whose action depends on its
+# payload — the memory candidate, the trial's role + text, the registration's definition
+# hash, one live order — binds that payload into the action fingerprint and keeps its own
+# body. Flattening those into a table would hide the binding that makes an approved action
+# un-re-pointable, which is the opposite of the point.
+
+@dataclass(frozen=True)
+class _FixedGrant:
+    """One governed action whose scope, level and action identity are constants."""
+
+    scope: str
+    level: str
+    action: "_ActionSpec"
+
+
+_FIXED_GRANTS: dict[str, _FixedGrant] = {
+    "search": _FixedGrant(SEARCH_PERMISSION_SCOPE, SEARCH_REQUIRED_PERMISSION_LEVEL, _SEARCH_ACTION),
+    "triage": _FixedGrant(TRIAGE_PERMISSION_SCOPE, TRIAGE_REQUIRED_PERMISSION_LEVEL, _TRIAGE_ACTION),
+    "validation": _FixedGrant(
+        VALIDATION_PERMISSION_SCOPE, VALIDATION_REQUIRED_PERMISSION_LEVEL, _VALIDATION_ACTION
+    ),
+    "trial_work": _FixedGrant(
+        TRIAL_WORK_PERMISSION_SCOPE, TRIAL_WORK_REQUIRED_PERMISSION_LEVEL, _TRIAL_WORK_ACTION
+    ),
+    "write": _FixedGrant(WRITE_PERMISSION_SCOPE, WRITE_REQUIRED_PERMISSION_LEVEL, _WRITE_ACTION),
+}
+
+
+def _build_fixed(
+    grant: str,
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str,
+    ttl_minutes: int,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """Build the decision for one fixed grant. Every check stays in
+    :func:`build_permission_decision`; this only supplies the three constants."""
+    spec = _FIXED_GRANTS[grant]
+    return build_permission_decision(
+        bound_task,
+        permission_scope=spec.scope,
+        required_permission_level=spec.level,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=spec.action,
+    )
+
 
 def build_live_order_action(
     *, symbol: str, side: str, notional_usdt: float, order_fingerprint: str
@@ -625,20 +704,13 @@ def build_search_permission_decision(
 ) -> dict[str, Any]:
     """Build the ALLOW PermissionDecision for the R3 read-only web search.
 
-    A thin wrapper over :func:`build_permission_decision` fixing the search scope
-    (``INTERNAL_READ``), least-privilege level (P1 READ), and the search action spec.
-    Fails closed identically. Used by the pipeline to authorize the search before the
-    specialist may use the (gated) search tool."""
-    return build_permission_decision(
-        bound_task,
-        permission_scope=SEARCH_PERMISSION_SCOPE,
-        required_permission_level=SEARCH_REQUIRED_PERMISSION_LEVEL,
-        role_permission_ceiling=role_permission_ceiling,
-        now=now,
-        actor_id=actor_id,
-        ttl_minutes=ttl_minutes,
-        repo_root=repo_root,
-        action=_SEARCH_ACTION,
+    The ``search`` row of :data:`_FIXED_GRANTS`: the search scope (``INTERNAL_READ``), its
+    least-privilege level (P1 READ), and the search action spec. Fails closed identically.
+    Used by the pipeline to authorize the search before the specialist may use the (gated)
+    search tool."""
+    return _build_fixed(
+        "search", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
+        actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
@@ -653,20 +725,13 @@ def build_triage_permission_decision(
 ) -> dict[str, Any]:
     """Build the ALLOW PermissionDecision for the R7.2 orchestrator triage.
 
-    A thin wrapper over :func:`build_permission_decision` fixing the triage scope
-    (``INTERNAL_ANALYSIS``), least-privilege level (P2 ANALYZE), and the triage action
-    spec. Fails closed identically. Prime's importance-judging model call acts under this
-    decision — a governed action of its own, never a side effect of planning."""
-    return build_permission_decision(
-        bound_task,
-        permission_scope=TRIAGE_PERMISSION_SCOPE,
-        required_permission_level=TRIAGE_REQUIRED_PERMISSION_LEVEL,
-        role_permission_ceiling=role_permission_ceiling,
-        now=now,
-        actor_id=actor_id,
-        ttl_minutes=ttl_minutes,
-        repo_root=repo_root,
-        action=_TRIAGE_ACTION,
+    The ``triage`` row of :data:`_FIXED_GRANTS`: the triage scope (``INTERNAL_ANALYSIS``),
+    its least-privilege level (P2 ANALYZE), and the triage action spec. Fails closed
+    identically. Prime's importance-judging model call acts under this decision — a governed
+    action of its own, never a side effect of planning."""
+    return _build_fixed(
+        "triage", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
+        actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
@@ -681,20 +746,13 @@ def build_validation_permission_decision(
 ) -> dict[str, Any]:
     """Build the ALLOW PermissionDecision for the R7 independent validation review.
 
-    A thin wrapper over :func:`build_permission_decision` fixing the validation scope
-    (``SIMULATION_VALIDATION``), the least-privilege level (P2 ANALYZE), and the review
+    The ``validation`` row of :data:`_FIXED_GRANTS`: the validation scope
+    (``SIMULATION_VALIDATION``), its least-privilege level (P2 ANALYZE), and the review
     action spec. Fails closed identically. The validator agent acts under this decision,
     separate from the specialist's analysis grant."""
-    return build_permission_decision(
-        bound_task,
-        permission_scope=VALIDATION_PERMISSION_SCOPE,
-        required_permission_level=VALIDATION_REQUIRED_PERMISSION_LEVEL,
-        role_permission_ceiling=role_permission_ceiling,
-        now=now,
-        actor_id=actor_id,
-        ttl_minutes=ttl_minutes,
-        repo_root=repo_root,
-        action=_VALIDATION_ACTION,
+    return _build_fixed(
+        "validation", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
+        actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
@@ -991,27 +1049,9 @@ def build_trial_work_permission_decision(
     same ALLOW-tier effect class as a normal specialist run, at P2 ANALYZE, and gets its
     own least-privilege decision exactly like the validator's or the triage's. A distinct
     action_type keeps the decision id apart from a normal analysis."""
-    action = _ActionSpec(
-        action_type="internal.analysis.candidate_trial",
-        target_suffix="candidate_trial_work",
-        tool_id=None,
-        data_scope=("task.request",),
-        normalized_parameters={"assignment_mode": "candidate_trial", "visibility": "internal"},
-        risk_reason="Isolated internal trial analysis; no external, financial, or runtime effect.",
-        authority_reason="Trial execution within the approved trial scope and the candidate role's ceiling.",
-        decision_reason="Authority is sufficient and the trial work is internal, isolated, and read-only.",
-        constraint="No external action, tool/program execution, memory access, or runtime mutation.",
-    )
-    return build_permission_decision(
-        bound_task,
-        permission_scope=TRIAL_WORK_PERMISSION_SCOPE,
-        required_permission_level=TRIAL_WORK_REQUIRED_PERMISSION_LEVEL,
-        role_permission_ceiling=role_permission_ceiling,
-        now=now,
-        actor_id=actor_id,
-        ttl_minutes=ttl_minutes,
-        repo_root=repo_root,
-        action=action,
+    return _build_fixed(
+        "trial_work", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
+        actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
@@ -1026,24 +1066,17 @@ def build_write_permission_decision(
 ) -> dict[str, Any]:
     """Build the EXECUTE_AND_REPORT PermissionDecision for the R8 controlled write.
 
-    A thin wrapper over :func:`build_permission_decision` fixing the write scope
-    (``WORKSPACE_REVERSIBLE_WRITE``), the least-privilege level (P3 CREATE), and the write
+    The ``write`` row of :data:`_FIXED_GRANTS`: the write scope
+    (``WORKSPACE_REVERSIBLE_WRITE``), its least-privilege level (P3 CREATE), and the write
     action spec. Fails closed identically — including on authority: a role whose ceiling is
     below P3 cannot obtain this grant.
 
     Unlike its siblings this decision is **EXECUTE_AND_REPORT, not ALLOW** — the runtime's
     first. The disposition comes from the canonical Governance Policy, not from here; the
     caller owes the "report" half (audit + operator report), which the pipeline provides."""
-    return build_permission_decision(
-        bound_task,
-        permission_scope=WRITE_PERMISSION_SCOPE,
-        required_permission_level=WRITE_REQUIRED_PERMISSION_LEVEL,
-        role_permission_ceiling=role_permission_ceiling,
-        now=now,
-        actor_id=actor_id,
-        ttl_minutes=ttl_minutes,
-        repo_root=repo_root,
-        action=_WRITE_ACTION,
+    return _build_fixed(
+        "write", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
+        actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
