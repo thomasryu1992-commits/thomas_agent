@@ -90,9 +90,13 @@ def test_different_seed_different_params():
 
 
 def test_known_hashes_are_never_reminted():
+    """Same generation id AND seed, so the second call would re-mint exactly the first
+    batch: that is the collision the dedup exists for. (Using two DIFFERENT generation
+    ids no longer collides — they now rotate onto different families — so it would
+    assert nothing about deduplication.)"""
     a = generate_batch("GEN-001", seed=7, timeframe="1d")
     hashes = frozenset(s["strategy_rule_hash"] for s in a["specs"])
-    b = generate_batch("GEN-002", seed=7, timeframe="1d", known_rule_hashes=hashes)
+    b = generate_batch("GEN-001", seed=7, timeframe="1d", known_rule_hashes=hashes)
     assert not hashes & {s["strategy_rule_hash"] for s in b["specs"]}
     assert any(r.get("reason") == "duplicate_rule_hash" for r in b["rejected"])
 
@@ -104,6 +108,36 @@ def test_mutation_respects_bounds():
         out = mutate_params({"x": 1.5, "n": 7}, space, rng)
         assert 1.0 <= out["x"] <= 2.0
         assert isinstance(out["n"], int) and 5 <= out["n"] <= 10
+
+
+def test_every_family_in_the_library_is_reachable_across_generations():
+    """The defect this pins. The picker was ``templates[len(accepted) % len(templates)]``
+    and a batch is four specs, so it selected templates[0..3] on EVERY run — 228 of 228
+    factory candidates came from those four families while the other sixteen (htf_*,
+    oi_*, funding_fade_*, mean_reversion*, macd_momentum*, bollinger_*) sat in the
+    library unreachable. Porting a family was invisible work.
+
+    Consecutive generations must walk the whole list, and do it without overlap so the
+    walk is a rotation rather than a random sample that might miss one for weeks."""
+    templates = templates_for_timeframe("1h")
+    families = {t.family for t in templates}
+    runs = -(-len(templates) // 4)  # ceil: batches needed to cover the library once
+    seen, minted = set(), []
+    for n in range(runs):
+        batch = generate_batch(f"GEN-{n:03d}", seed=n, timeframe="1h")
+        got = [spec["strategy_family"] for spec in batch["specs"]]
+        minted.extend(got)
+        seen.update(got)
+    assert seen == families, f"unreachable families: {sorted(families - seen)}"
+    assert len(minted) == len(set(minted)), "a rotation must not repeat within one pass"
+
+
+def test_the_rotation_is_deterministic():
+    a = generate_batch("GEN-042", seed=7, timeframe="1h")
+    b = generate_batch("GEN-042", seed=7, timeframe="1h")
+    assert a == b
+    assert ([s["strategy_family"] for s in a["specs"]]
+            != [s["strategy_family"] for s in generate_batch("GEN-043", seed=7, timeframe="1h")["specs"]])
 
 
 def test_generated_specs_carry_generation_lineage():

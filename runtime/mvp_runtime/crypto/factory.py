@@ -512,6 +512,17 @@ def build_spec_dict(
     }
 
 
+def _rotation_offset(generation_id: str, seed: int, count: int, total: int) -> int:
+    """The first family index this generation mints. Deterministic, marches forward."""
+    if total <= 0:
+        return 0
+    try:
+        step = int(str(generation_id).rsplit("-", 1)[1])
+    except (ValueError, IndexError):
+        step = int(seed)
+    return (step * max(count, 1)) % total
+
+
 def generate_batch(
     generation_id: str, *, seed: int, start_index: int = 1, count: int = DEFAULT_BATCH_SIZE,
     symbol: str = "BTCUSDT", timeframe: str = "1d",
@@ -523,6 +534,16 @@ def generate_batch(
     candidate store, so a batch never re-mints a strategy that already exists."""
     rng = random.Random(seed)
     templates = templates_for_timeframe(timeframe)
+    # Which slice of the family list THIS run mints. Without it the picker was
+    # ``templates[len(accepted) % len(templates)]``, and since a batch is four specs
+    # that selected templates[0..3] on every run ever: 228 of 228 factory candidates
+    # came from those four families, while the other sixteen — htf_*, oi_*,
+    # funding_fade_*, mean_reversion*, macd_momentum*, bollinger_* — existed in the
+    # library and could never be minted at all. Porting a family was therefore
+    # invisible work. Stepping by ``count`` per generation walks the whole list in
+    # ceil(len/count) runs with no overlap, and stays deterministic (generations are
+    # sequential; the seed is the fallback when an id is not parseable).
+    offset = _rotation_offset(generation_id, seed, count, len(templates))
     accepted: list[StrategySpec] = []
     validations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -531,7 +552,7 @@ def generate_batch(
     attempts = 0
     while len(accepted) < count and attempts < count * _MAX_ATTEMPTS_PER_SPEC:
         attempts += 1
-        template = templates[len(accepted) % len(templates)]
+        template = templates[(offset + len(accepted)) % len(templates)]
         params = mutate_params(template.base_params, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
