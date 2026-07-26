@@ -40,7 +40,7 @@ from .market_data import (
     degraded_market_data_record,
 )
 from .counterfactual import run_counterfactual_update
-from .lifecycle import run_lifecycle
+from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .paper import (
     PaperStore,
@@ -332,6 +332,10 @@ def run_crypto_cycle(
                 + (" (manual reactivation required)" if decision["requires_manual_reactivation"] else "")
             )
 
+    # The full list stays in play for the runtime (update_statuses above already used it);
+    # this governs only what the ledger keeps.
+    lifecycle_noteworthy, lifecycle_unchanged = lifecycle_split(lifecycle_decisions)
+
     record = {
         "feeds": feed_status,
         "cycle_version": CYCLE_VERSION,
@@ -347,7 +351,14 @@ def run_crypto_cycle(
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
         "paper_records": paper_records,
-        "lifecycle_decisions": lifecycle_decisions,
+        # Only decisions that DECIDED something are stored whole. A cycle evaluates every
+        # active strategy and most conclude "nothing to do"; persisting all of those made
+        # lifecycle_decisions 90% of a 24KB record and 99.7% of a 56MB ledger, for one bit
+        # each ("evaluated"). That bit is kept — as an id in lifecycle_unchanged — and the
+        # count below says how many were evaluated in total, so nothing is unaccounted for.
+        "lifecycle_decisions": lifecycle_noteworthy,
+        "lifecycle_unchanged": lifecycle_unchanged,
+        "lifecycle_evaluated": len(lifecycle_decisions),
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,
         "report_status": report.get("status") if report else None,

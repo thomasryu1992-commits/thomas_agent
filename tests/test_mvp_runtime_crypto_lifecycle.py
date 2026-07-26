@@ -300,3 +300,73 @@ def test_suspended_strategy_stops_routing_next_cycle(tmp_path):
     # Next cycle: the suspended strategy no longer occupies a routing slot.
     record2 = _run_cycle(tmp_path, RealPaperStore(root=tmp_path, authorization=_AUTH))
     assert record2["route_status"] == "NO_ENTRY"
+
+
+# --- what the ledger keeps ---------------------------------------------------
+#
+# A cycle evaluates every active strategy, and on the live host 114,565 of those decisions
+# concluded "nothing to do" — 90% of a 24KB record and 99.7% of a 56MB ledger, for one bit
+# each. That bit is kept; the nine constant fields around it are not.
+
+def _decision(strategy_id: str, **overrides):
+    base = {"strategy_id": strategy_id, "status_changed": False, "consecutive_failures": 0,
+            "reasons": [], "is_escalation": False, "is_recovery": False,
+            "new_entry_blocked": False, "requires_manual_reactivation": False,
+            "previous_status": "PAPER_ACTIVE", "new_status": "PAPER_ACTIVE"}
+    base.update(overrides)
+    return base
+
+
+def test_a_decision_that_decided_nothing_is_not_noteworthy():
+    from runtime.mvp_runtime.crypto.lifecycle import is_noteworthy
+    assert is_noteworthy(_decision("S1")) is False
+
+
+@pytest.mark.parametrize("overrides", [
+    {"status_changed": True},
+    {"consecutive_failures": 1},          # approaching demotion — an early warning
+    {"reasons": ["win_rate_below_floor"]},
+    {"is_escalation": True},
+    {"is_recovery": True},
+    {"new_entry_blocked": True},
+    {"requires_manual_reactivation": True},
+])
+def test_anything_that_decided_or_flagged_is_kept_whole(overrides):
+    from runtime.mvp_runtime.crypto.lifecycle import is_noteworthy
+    assert is_noteworthy(_decision("S1", **overrides)) is True
+
+
+def test_a_field_added_later_is_kept_by_default():
+    """The rule is "not the boring default", not a list of interesting fields — so a new
+    signal cannot be silently dropped by a check that never learned about it."""
+    from runtime.mvp_runtime.crypto.lifecycle import is_noteworthy
+    quiet = _decision("S1")
+    assert is_noteworthy(quiet) is False
+    assert is_noteworthy({**quiet, "reasons": ["a_new_reason_code"]}) is True
+
+
+def test_the_split_keeps_every_strategy_accounted_for():
+    from runtime.mvp_runtime.crypto.lifecycle import split_for_record
+
+    decisions = [_decision(f"S{i}") for i in range(50)]
+    decisions.append(_decision("S50", consecutive_failures=2))
+    decisions.append(_decision("S51", status_changed=True, new_status="SUSPENDED"))
+
+    noteworthy, unchanged = split_for_record(decisions)
+
+    assert [d["strategy_id"] for d in noteworthy] == ["S50", "S51"]
+    assert len(unchanged) == 50
+    # Nothing vanishes: every evaluated strategy is in exactly one of the two.
+    assert len(noteworthy) + len(unchanged) == len(decisions)
+    assert set(unchanged) | {d["strategy_id"] for d in noteworthy} == \
+        {d["strategy_id"] for d in decisions}
+
+
+def test_the_split_does_not_mutate_the_runtime_list():
+    """update_statuses still receives the full list — only what is PERSISTED changes."""
+    from runtime.mvp_runtime.crypto.lifecycle import split_for_record
+
+    decisions = [_decision("S1"), _decision("S2", status_changed=True)]
+    before = [dict(d) for d in decisions]
+    split_for_record(decisions)
+    assert decisions == before
