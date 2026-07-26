@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..errors import ToolBlocked, ToolError
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 from .live_sizing import SymbolFilters
 
 FILTERS_VERSION = "live_filters.v0.1"

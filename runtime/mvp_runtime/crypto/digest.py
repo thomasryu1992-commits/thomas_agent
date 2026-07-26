@@ -19,7 +19,7 @@ from typing import Any, Iterable, Mapping
 from runtime.read_only_kernel import integrity
 
 from .. import timeutil
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 from .feedback import summarize_outcomes
 
 PERFORMANCE_DIGEST_VERSION = "performance_digest.v1"
