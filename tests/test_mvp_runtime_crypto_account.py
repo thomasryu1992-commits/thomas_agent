@@ -136,6 +136,41 @@ def test_unrelated_env_value_stays_inert(tmp_path, monkeypatch):
     assert isinstance(select_account_feed(now=NOW, root=tmp_path), NoAccountFeed)
 
 
+def test_the_docs_name_the_opt_in_value_the_code_actually_compares():
+    """Drift gate on the one failure this selector cannot report.
+
+    `test_unrelated_env_value_stays_inert` above is the deliberate behavior: a value that is
+    not the opt-in falls back to the inert feed. It fails *closed*, but it also fails
+    *silently* — no error, no warning, just an account board that reads "not configured"
+    while a correct grant sits activated next to it. The setup docs are therefore the only
+    place a typo can be caught, and both of them carried `binance_account` (missing
+    `futures_`) against a constant of `binance_futures_account`, so an operator following
+    them exactly got the inert feed and nothing to explain why.
+
+    Pinning the docs to the constant rather than to a literal: the constant is the authority,
+    so renaming the provider updates the assertion, not the other way round.
+    """
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    root = Path(repo_root())
+    docs = [
+        root / "docs" / "DEPLOYMENT.md",
+        root / "docs" / "runtime-contracts" / "CRYPTO_LIVE_EXECUTION_V0.1.md",
+    ]
+    for doc in docs:
+        assert doc.is_file(), f"{doc.name} moved; this gate needs its new path"
+        for line in doc.read_text(encoding="utf-8").splitlines():
+            if ACCOUNT_FEED_ENV not in line:
+                continue
+            assert f"{ACCOUNT_FEED_ENV}={BINANCE_ACCOUNT}" in line, (
+                f"{doc.name} sets {ACCOUNT_FEED_ENV} to a value the gate does not "
+                f"compare equal to {BINANCE_ACCOUNT!r}; an operator following this doc "
+                f"gets the inert feed with no error: {line.strip()!r}"
+            )
+
+
 def test_egress_refused_without_authorization(monkeypatch):
     """A directly constructed feed cannot bypass the gate: egress re-verifies."""
     _creds(monkeypatch)
