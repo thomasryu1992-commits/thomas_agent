@@ -76,6 +76,45 @@ def test_permission_decision_is_deterministic():
 
 
 @requires_local_core
+def test_two_different_actions_of_one_kind_get_different_decision_ids():
+    """"One decision per action" has to hold by CONSTRUCTION, not because callers happen to
+    vary the task text. The seed was {task, revision, ccb, scope, action_type, expires_at} —
+    all six identical for two materially different actions of the same kind on one task — so
+    two promotion asks for different candidates shared a decision id while carrying different
+    fingerprints and different approval ids."""
+    bound = _bound_task()
+    a = permission.build_memory_promotion_permission_decision(
+        bound, {"candidate_id": "memcand_AAA", "content": "A라는 지식"}, now=FIXED_NOW)
+    b = permission.build_memory_promotion_permission_decision(
+        bound, {"candidate_id": "memcand_BBB", "content": "B라는 전혀 다른 지식"}, now=FIXED_NOW)
+    assert a["action_fingerprint"] != b["action_fingerprint"]
+    assert a["permission_decision_id"] != b["permission_decision_id"]
+    # Same action twice is still ONE id — this is identity, not a nonce.
+    again = permission.build_memory_promotion_permission_decision(
+        bound, {"candidate_id": "memcand_AAA", "content": "A라는 지식"}, now=FIXED_NOW)
+    assert again["permission_decision_id"] == a["permission_decision_id"]
+
+
+@requires_local_core
+def test_two_trial_asks_for_one_role_version_get_different_decision_ids():
+    """The reachable case: `trial.request_trial` builds its task text from role@version only,
+    so two asks to trial the SAME candidate role on DIFFERENT task texts differed in nothing
+    the id seed read. `ApprovalStore.get_permission_decision` is latest-wins, so the second
+    ask shadowed the first and answering the first refused APPROVAL_SEMANTICS_INVALID forever
+    — fail-closed (the fingerprint cross-check working), but the ask was unanswerable."""
+    role = {"role_id": "research.analyst", "version": "0.1.0",
+            "definition_sha256": "sha256:" + "ab" * 32, "permission_ceiling": "P3"}
+    task = build_task(f"후보 역할 트라이얼 검토: {role['role_id']}@{role['version']}", now=FIXED_NOW)
+    _, bound = bind_task_to_core(task, now=FIXED_NOW)
+    x = permission.build_trial_permission_decision(
+        bound, role, trial_request="시장 규모를 조사해줘", now=FIXED_NOW)
+    y = permission.build_trial_permission_decision(
+        bound, role, trial_request="경쟁사를 번역 요약해줘", now=FIXED_NOW)
+    assert x["approval"]["approval_id"] != y["approval"]["approval_id"]
+    assert x["permission_decision_id"] != y["permission_decision_id"]
+
+
+@requires_local_core
 def test_unknown_scope_blocks():
     with pytest.raises(PlannerBlocked) as exc:
         _decide(_bound_task(), permission_scope="NONSENSE_SCOPE")
