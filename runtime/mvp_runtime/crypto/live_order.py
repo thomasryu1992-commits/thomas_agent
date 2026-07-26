@@ -290,11 +290,11 @@ def resolve_live_order_limits(
     (``autonomous_spend_without_registered_budget: '0'``). The env cap vars (``MVP_LIVE_MAX_*``)
     no longer authorize an order; the registered budget supersedes them.
 
-    **Both** confirmation phrases and the manual kill remain env, and are carried through on
-    every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
+    **Both** confirmation phrases and the manual kill stay env and are carried through on every
+    branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
     deliberate canary), ``MVP_LIVE_MANUAL_KILL_SWITCH``. A phrase proving intent and a halt are
     operator state, not registered caps. The canary phrase was omitted here until 2026-07-26,
-    which left ``place_canary_order.py`` — the only live door there is, and the one that has to
+    which left ``place_canary_order.py`` — the only live door there is, and the one that must
     work before any autonomous path can — permanently refused with "canary confirmation phrase
     not present". Failing closed, but on the step the operator has to take next, and only
     discoverable standing at the terminal with real keys."""
@@ -340,9 +340,14 @@ def evaluate_live_order_guard(
     # always something a caller stated on purpose. `live_position.compute_open_notional_usdt`
     # supplies it from the venue and reports the cap itself when the account is unreadable.
     current_open_notional_usdt: float,
+    # No default, for the same reason `current_open_notional_usdt` has none: a fallback to
+    # `LiveOrderLimits.from_env()` was a SECOND source of caps, and the registered budget is
+    # supposed to be the only one (`resolve_live_order_limits`). Two sources means the
+    # question "which numbers is this order being judged against?" has two answers, and the
+    # env one is reachable by forgetting an argument. Callers state it.
+    limits: LiveOrderLimits,
     budget_registered: bool = False,
     canary: bool = False,
-    limits: LiveOrderLimits | None = None,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
 
@@ -350,9 +355,9 @@ def evaluate_live_order_guard(
     venue, a grant, or a clock. Checks accumulate — the caller sees the complete refusal.
 
     ``budget_registered`` states whether a valid registered live-trading budget backs the
-    ``limits`` — the caller resolves it (``resolve_live_order_limits``). It defaults to
-    ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
-    authorize an order on env-only caps.
+    ``limits`` — the caller resolves both together (``resolve_live_order_limits``). It defaults
+    to ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
+    authorize an order on caps that no budget backs.
 
     ``canary`` marks the deliberate operator canary — the one-at-a-time real order placed to
     BUILD the promotion evidence. It changes exactly two things, and nothing else:
@@ -370,7 +375,7 @@ def evaluate_live_order_guard(
     later cannot land on only one of the two paths. ``canary`` defaults to ``False``, so the
     autonomous path keeps the promotion gate by default (fail-closed).
     """
-    cfg = limits if limits is not None else LiveOrderLimits.from_env()
+    cfg = limits
     blocks: list[str] = []
     repairs: list[str] = []
 
@@ -488,7 +493,7 @@ def evaluate_live_close_guard(
     intent: Mapping[str, Any],
     *,
     gate_open: bool,
-    limits: LiveOrderLimits | None = None,
+    limits: LiveOrderLimits,
 ) -> dict[str, Any]:
     """The deliberately narrower gate for closing an open live position.
 
@@ -498,8 +503,12 @@ def evaluate_live_close_guard(
     position is more dangerous than the halt was meant to prevent. What survives is the
     structural boundary — the grant, the confirmation phrase, and reduceOnly itself, so this
     path can only ever shrink a position, never open one.
+
+    ``limits`` is required here too — see ``evaluate_live_order_guard``. The close path needs
+    only the confirmation phrase from it, but taking it from the same resolved object keeps
+    one answer to "which limits was this judged against".
     """
-    cfg = limits if limits is not None else LiveOrderLimits.from_env()
+    cfg = limits
     blocks: list[str] = []
     if not gate_open:
         blocks.append("live trading grant is not active (safety-flag gate closed)")

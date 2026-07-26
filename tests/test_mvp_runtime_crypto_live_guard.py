@@ -674,3 +674,15 @@ def test_the_autonomous_phrase_alone_still_cannot_authorize_a_canary(tmp_path, m
     )
     assert verdict["approved"] is False
     assert any("canary confirmation phrase not present" in b for b in verdict["blocks"])
+
+
+def test_neither_guard_has_an_env_cap_fallback():
+    """`limits` used to default to `LiveOrderLimits.from_env()` — a second source of caps,
+    reachable by forgetting an argument, in a design whose whole point is that the registered
+    budget is the only one. Omitting it is now a TypeError, not a quiet fallback."""
+    facts = _ready()
+    facts.pop("limits")
+    with pytest.raises(TypeError):
+        evaluate_live_order_guard(_intent(), **facts)
+    with pytest.raises(TypeError):
+        evaluate_live_close_guard(_intent(reduce_only=True), gate_open=True)
