@@ -809,3 +809,75 @@ def test_a_frontdesk_failure_degrades_to_the_queue_instead_of_killing_the_channe
     # It fell through to the queue (which we made fail too) => a typed refusal, never a crash.
     assert reply.accepted is False and reply.reason_code == "REGISTRY_WRITE_FAILED"
     assert registry.enqueued, "the frontdesk failure must degrade to the F1 queue path"
+
+
+# === chat-channel command hygiene (2026-07-25 review) ==========================
+
+@pytest.mark.parametrize("text", [
+    "kill it", "pause 잠깐만", "resume 다시", "stop 그거", "cancel 그거",
+    "promote 이거 좋았어", "approve 해줘", "reject 별로야",
+])
+def test_a_bare_state_changing_verb_is_refused_on_a_chat_channel(tmp_path, text):
+    """Verified 2026-07-25: `kill it` HALTED the runtime. Every parser accepts the bare verb —
+    right on a terminal, wrong in prose. A refusal naming the slash form is safe both ways."""
+    from runtime.mvp_runtime import control
+
+    store = control.ControlStore(tmp_path)
+    reply = handle_operator_message(
+        _msg(text=text), registration=REG, control_store=store, store=None,
+        now=NOW, repo_root=tmp_path,
+    )
+    assert reply.accepted is False and reply.reason_code == "SLASH_REQUIRED"
+    assert store.load().mode == "ACTIVE"          # nothing happened
+    assert "/" in reply.text                      # and it says what to type
+
+
+@pytest.mark.parametrize("text", ["status", "audit", "recovery"])
+def test_bare_read_only_verbs_still_work(tmp_path, text):
+    """Only state-changing verbs are narrowed; answering /status to "status" costs nothing."""
+    from runtime.mvp_runtime import control
+
+    reply = handle_operator_message(
+        _msg(text=text), registration=REG, control_store=control.ControlStore(tmp_path),
+        store=None, now=NOW, repo_root=tmp_path,
+    )
+    assert reply.status == "CONTROL"
+
+
+def test_the_slash_form_of_a_state_changing_verb_still_works(tmp_path):
+    from runtime.mvp_runtime import control
+
+    store = control.ControlStore(tmp_path)
+    reply = handle_operator_message(
+        _msg(text="/kill"), registration=REG, control_store=store, store=None,
+        now=NOW, repo_root=tmp_path,
+    )
+    assert reply.status == "CONTROL" and store.load().mode == "KILLED"
+
+
+def test_an_importance_marker_cannot_smuggle_a_command_past_the_unknown_guard(tmp_path, monkeypatch):
+    """Verified 2026-07-25: `!중요 /killl` skipped the unknown-command guard (the marker strip
+    runs after it) and became a pipeline task, spending a model call on a typo'd emergency verb."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime import control
+
+    monkeypatch.setattr(operator_mod, "run_task", lambda *a, **k: pytest.fail("must not run a task"))
+    reply = handle_operator_message(
+        _msg(text="!중요 /killl"), registration=REG, control_store=control.ControlStore(tmp_path),
+        store=None, now=NOW, repo_root=tmp_path,
+    )
+    assert reply.accepted is False and reply.reason_code == "MARKED_COMMAND"
+
+
+def test_the_operator_loop_always_wires_the_kill_switch():
+    """`handle_operator_message` tolerates `control_store=None` because it is also the
+    library/pipeline-only entry point. What must hold is that the DEPLOYMENT never uses that
+    mode — so the loop's own wiring is asserted here instead of breaking the library contract."""
+    import inspect
+
+    from runtime.mvp_runtime import operator_cli
+
+    source = inspect.getsource(operator_cli)
+    assert "control_store" in source
+    # The loop constructs a ControlStore and hands it down; a refactor that drops it fails here.
+    assert "ControlStore" in source
