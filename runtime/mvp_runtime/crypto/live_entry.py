@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 from .live_order import build_live_order_intent, evaluate_live_order_guard
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order

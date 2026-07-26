@@ -28,7 +28,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from . import paper
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 
 PERFORMANCE_REPORT_VERSION = "performance_report.v1-mvp"
 

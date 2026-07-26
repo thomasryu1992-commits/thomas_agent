@@ -97,7 +97,18 @@ whether PM3 is worth building at all.
   Confirmed pairs live in `.runtime_governance_state/predmarket/pairs.jsonl`, audited.
 - **Opportunity detector**, fee-adjusted only: Kalshi's fee is a price function
   (≈ $0.07 × P × (1−P) per contract, rounded up) — unadjusted observations would be
-  systematically fake. Polymarket side models gas + spread cost.
+  systematically fake. ~~Polymarket side models gas + spread cost.~~
+  **Corrected 2026-07-26 (both fee models verified against the venues' own documentation
+  while building `predmarket/fees.py`):** Polymarket now charges a **taker fee of the same
+  shape** — `C × feeRate × p × (1−p)`, with `feeRate` by category (crypto 0.07;
+  sports/economics/culture/weather/other 0.05; finance/politics/mentions/tech 0.04), makers
+  never charged, and **geopolitical / world-event markets fee-free**. "Gas + spread" dated
+  from a period when the venue charged no trading fee, and modelling it that way would have
+  understated the cost of every non-exempt pair by up to 1.75 cents per contract.
+  The practical consequence, and the reason this is the load-bearing constant of PM1: both
+  fees peak at 50/50, so a mid-priced crypto pair costs **~3.5 cents per contract across the
+  two legs** — a 2-cent gross gap is a *loss*, and an unadjusted detector would report it as
+  a find on every scan for weeks.
 - **Observation records**: snapshot + "had we entered here" hypothetical, appended to the
   run's records ledger, every scan audited.
 - **Scheduler**: `pm_scan` template ⚠️ (cadence and per-scan market cap are the decision).
@@ -174,13 +185,60 @@ PM2 numbers, governance implementation.
 
 | # | Decision | Phase | Status |
 |---|---|---|---|
-| 1 | `pm_scan` scheduler template (cadence, market cap) | PM1 | ⚠️ open |
-| 2 | LLM-assisted pair matching on/off (deterministic-only is the default) | PM1 | ⚠️ open |
+| 1 | `pm_scan` scheduler template (cadence, market cap) | PM1 | **decided 2026-07-26** — see below |
+| 2 | LLM-assisted pair matching on/off (deterministic-only is the default) | PM1 | **decided 2026-07-26** — see below |
 | 3 | PM3 entry criteria as numbers | PM2 | ⚠️ open — must precede PM2 end |
 | 4 | Trading-budget record shape for prediction venues | PM3 | ⚠️ open |
 | 5 | Third consumption scope (per-order spend) | PM3 | ⚠️ open |
 | 6 | Korean regulatory judgment | PM0 | Thomas, outside the repo |
 | 7 | PM4 bounded autonomy | — | not on the table |
+
+### Decisions 1 and 2, as taken (Thomas, 2026-07-26)
+
+**#1 — one scan was the wrong unit; there are two.** The register asked for "cadence and
+market cap", which forced a single number to serve three requirements that pull apart: read
+often enough to *measure how long an opportunity lasts* (PM1's whole exit artifact, and the
+number that decides whether PM3's minutes-of-approval latency can ever catch anything), read
+widely enough to *find* new markets, and stay polite to two public APIs. Splitting resolves
+it:
+
+- **Watch scan — every confirmed pair, every 2 minutes.** This is the measurement. Cost is
+  one Kalshi call (its `/markets` returns up to 1000 markets *with prices*) plus one CLOB
+  book call per pair. At 20 pairs that is ~0.17 req/s against a documented 150 req/s book
+  limit — about 0.1% of it, which is why 2 minutes was chosen over 5: the resolution is
+  effectively free, and a 15-minute cadence cannot distinguish a 10-second opportunity from
+  a 14-minute one.
+- **Discovery scan — market lists only, no order books, every 6 hours**, with a rotating
+  offset so a capped slice still covers the venue within a day. This feeds the matcher, and
+  needs no prices.
+- **Over budget is reported, never truncated**: `skipped_pairs:N` on the audit stream (the
+  M4b backlog precedent). Silent truncation reads as "everything was observed".
+
+Neither venue bills per call — both read paths are public and unauthenticated; the limits
+are IP-based rate limits (Polymarket) and account tiers (Kalshi, irrelevant here since PM1
+needs no account). Verified 2026-07-26. **The constraint was never cost**, which is what
+made the fine cadence affordable.
+
+**#2 — deterministic in the path, LLM on a schedule, and the gap is the deliverable.**
+Matching stays deterministic and operator-confirmed (see `predmarket/matching.py`,
+`predmarket/pairs.py`). A scheduled LLM pass — a later increment — runs over the *unmatched
+remainder only* and proposes pairs the rules missed. What makes this more than "add a model":
+every deterministic judgement already records **which gate failed and by how much**, so an
+LLM-only find is a diagnosis, not just a result — it names the synonym, threshold or missing
+field to fix. The fix is a reviewed rule change, never a model preference.
+
+Consequences that follow, and are binding:
+
+- **Operator confirmation is unchanged on both paths.** The LLM widens candidates; it
+  approves nothing.
+- **Order is forced**: the deterministic matcher must exist first, or "missed" has no
+  meaning. Hence PR 2 (rules + confirmation + breakdown) before PR 4 (LLM pass + gap
+  lineage).
+- **The loop is measurable**: track the share of confirmed pairs the rules did not propose.
+  Falling means the rules are improving; flat means the difference is not expressible as a
+  rule, which is itself the finding that would justify keeping the LLM pass permanently.
+- LLM call volume is bounded by the existing **unreviewed-backlog cap** pattern (M4b): once
+  too many unconfirmed candidates are waiting, a scheduled pass skips rather than piling on.
 
 ## Invariants every milestone keeps
 

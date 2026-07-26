@@ -169,3 +169,62 @@ def test_the_guard_does_not_repair_anything(tmp_path):
     with pytest.raises(PersistenceError):
         assert_state_writable(tmp_path, writable=_blocking("task_registry.jsonl"))
     assert target.stat().st_mode == before
+
+
+# --- producer side: the host-run root guard ------------------------------------
+#
+# Injected the same way writability is above, and for the same reason: the suite often
+# runs AS root, so the failure cannot be reproduced with real uids at all.
+
+def _service_state(tmp_path):
+    directory = tmp_path / state_guard.STATE_DIR_REL
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _as(euid, owner):
+    return {"euid": lambda: euid, "owner_uid": lambda _p: owner}
+
+
+def test_root_writing_into_service_owned_state_is_refused(tmp_path):
+    """The blind spot the startup guard cannot see. ``unwritable_paths`` asks "can I
+    write?" and root can write anything — so a host-side root run passes every check,
+    succeeds, prints a happy summary, and leaves root-owned files the uid-10001 service
+    then cannot write. The damage lands on a different process, later; that is why it
+    recurred twice in two days."""
+    _service_state(tmp_path)
+    with pytest.raises(PersistenceError) as exc:
+        state_guard.assert_not_foreign_root_run(tmp_path, **_as(euid=0, owner=10001))
+    assert exc.value.reason_code == "STATE_FOREIGN_ROOT_RUN"
+    message = str(exc.value)
+    assert "uid 10001" in message
+    assert "docker exec" in message             # the remedy that avoids the damage
+    assert "chown -R 10001:10001" in message    # and the one that repairs it
+
+
+@pytest.mark.parametrize("euid,owner,case", [
+    (10001, 10001, "the service writing its own state"),
+    (0, 0, "root on root-owned state — nothing to break"),
+    (10001, 0, "non-root caller: writability, not ownership, is that story"),
+])
+def test_safe_combinations_are_allowed(tmp_path, euid, owner, case):
+    _service_state(tmp_path)
+    state_guard.assert_not_foreign_root_run(tmp_path, **_as(euid, owner))  # must not raise
+    assert state_guard.foreign_state_owner(tmp_path, **_as(euid, owner)) is None, case
+
+
+def test_absent_state_directory_is_not_a_finding(tmp_path):
+    """A fresh machine creates it on first write — the rule the startup guard already uses."""
+    state_guard.assert_not_foreign_root_run(tmp_path, **_as(euid=0, owner=10001))
+    assert state_guard.foreign_state_owner(tmp_path, **_as(euid=0, owner=10001)) is None
+
+
+def test_the_guard_never_repairs_what_it_refuses(tmp_path):
+    """Deliberately not self-healing, exactly like the startup guard: a script that quietly
+    chowned governed state would be granting itself the one thing this repo makes explicit
+    everywhere else."""
+    state = _service_state(tmp_path)
+    before = state.stat().st_uid
+    with pytest.raises(PersistenceError):
+        state_guard.assert_not_foreign_root_run(tmp_path, **_as(euid=0, owner=10001))
+    assert state.stat().st_uid == before
