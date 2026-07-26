@@ -62,6 +62,9 @@ def _ledger(tmp_path):
     ("/memory list", ("LIST", None, None)),
     ("/MEMORY", ("LIST", None, None)),
     ("/memory@thomas_bot", ("LIST", None, None)),
+    # A tail on the read verb still lists, but is carried through so the reply can say it
+    # was not used — `/memory 이거 기억해줘` reads as an instruction, not as "just list".
+    ("/memory 이거 기억해줘", ("LIST", "이거 기억해줘", None)),
     ("/promote memcand_x1 confirmed reuse", ("PROMOTE", "memcand_x1", "confirmed reuse")),
     ("promote memcand_x1", ("PROMOTE", "memcand_x1", None)),
     ("/promote", ("PROMOTE", None, None)),
@@ -98,6 +101,28 @@ def test_list_shows_live_only(tmp_path):
     )
     assert out["count"] == 1
     assert "memcand_live" in out["reply"] and "memcand_exp" not in out["reply"]
+
+
+def test_a_tail_on_the_list_verb_is_reported_as_unused(tmp_path):
+    """There is no verb here that stores what the operator typed, and the listing is not an
+    answer to it. Listing anyway (it is a read) but naming the two real verbs beats answering
+    an instruction with a candidate list as though nothing else had been asked."""
+    wm = _wm(tmp_path)
+    wm.append([_candidate(candidate_id="memcand_live", content="live finding")])
+    out = memory_console.apply_memory_command(
+        ("LIST", "이거 기억해줘", None), operator_id="Thomas",
+        working_memory=wm, ledger=None, control_store=None, now=NOW,
+    )
+    assert out["action"] == "MEMORY_LISTED" and out["count"] == 1
+    assert "memcand_live" in out["reply"]          # the read still happened
+    assert "이거 기억해줘" in out["reply"] and "사용하지 않았습니다" in out["reply"]
+
+    # `/memory list` is the documented spelling of "no argument" — it gets no note.
+    plain = memory_console.apply_memory_command(
+        ("LIST", None, None), operator_id="Thomas",
+        working_memory=wm, ledger=None, control_store=None, now=NOW,
+    )
+    assert "사용하지 않았습니다" not in plain["reply"]
 
 
 def test_list_needs_store():

@@ -78,6 +78,55 @@ _MUTATING_VERBS = frozenset({
     "cancel",                                         # queue entry
 })
 
+# A long reply is sent as several numbered parts; when some of them land and a later one
+# fails, the outcome is neither "delivered" nor "not delivered". This is the third answer,
+# so no caller has to describe a partial delivery as a total loss.
+PARTIAL_DELIVERY_REASON = "CHANNEL_PARTIAL_DELIVERY"
+
+# EVERY verb this channel answers, and the governance authority that permits it.
+#
+# The drift gate used to cover only `control.COMMANDS` against the policy's
+# `emergency_controls_allowed`, so the four families added since (approval, memory, registry,
+# feedback) grew on the same verified door with no governance edit anywhere and nothing that
+# would notice a fifth. Adding those verbs to `emergency_controls_allowed` would be the WRONG
+# fix: that list is the *emergency* console grant, and putting `/tasks` in it would widen an
+# emergency authority to cover ordinary coordination reads. So the completeness gate lives
+# here — one inventory of the whole door — and the test asserts it both ways: no verb without a
+# named authority, no named authority without a verb. A new family fails the gate until its
+# author writes down what permits it.
+_EMERGENCY_GRANT = "policy:control_channel.local_operator_console.emergency_controls_allowed"
+CHANNEL_VERB_AUTHORITY: dict[str, str] = {
+    # control.py — the emergency console. Every one of these is named in the policy list, which
+    # the gate still checks verb-by-verb (that is the /resume drift this started as).
+    "status": _EMERGENCY_GRANT,
+    "pause": _EMERGENCY_GRANT,
+    "kill": _EMERGENCY_GRANT,
+    "resume": _EMERGENCY_GRANT,
+    "stop": _EMERGENCY_GRANT,
+    "audit": _EMERGENCY_GRANT,
+    "recovery": _EMERGENCY_GRANT,
+    # approval.py — R9. The policy models the ask/answer lifecycle itself, and requires exactly
+    # this channel's verified identity as the verification (`approval_lifetime`, and
+    # `control_channel.explicit_approval_expression_required`).
+    "approve": "policy:approval_lifetime + control_channel.explicit_approval_expression_required",
+    "reject": "policy:approval_lifetime + control_channel.explicit_approval_expression_required",
+    # memory_console.py — R5. Listing is an INTERNAL_READ; promotion is the
+    # SENSITIVE_MEMORY_GOVERNANCE (P4) action, which is APPROVAL_REQUIRED and reaches Thomas
+    # only through this identity gate.
+    "memory": "policy:permission_model INTERNAL_READ (ALLOW)",
+    "promote": "policy:permission_model SENSITIVE_MEMORY_GOVERNANCE (APPROVAL_REQUIRED)",
+    # registry_console.py — F1 task coordination. The three reads ride `kill_allows:
+    # read_only_status`; /cancel mutates coordination state only (no effect outside the queue)
+    # and is kill-switch bound like every other mutating door.
+    "tasks": "policy:kill_switch.kill_allows read_only_status",
+    "history": "policy:kill_switch.kill_allows read_only_status",
+    "result": "policy:kill_switch.kill_allows read_only_status",
+    "cancel": "policy:permission_model INTERNAL_MODIFY of runtime coordination state",
+    # operator_feedback.py — E1. Recording Thomas's verdict on a delivered run; the operator
+    # identity IS the authority, and the record is an append-only internal note.
+    "feedback": "policy:permission_model INTERNAL_WRITE of operator feedback (ALLOW)",
+}
+
 
 @dataclass(frozen=True)
 class OperatorIdentity:
@@ -178,13 +227,20 @@ def handle_operator_message(
     raises for a fail-closed condition — those become a REFUSED reply.
 
     ``ack`` (optional, ``Callable[[str], None]``) is called with a short "received, working"
-    notice at exactly one point: after EVERY refusal path (identity gate, empty request,
-    console/approval command routing, unknown-command refusal, kill switch) and immediately
-    before the pipeline runs. A pipeline run holds the channel for the length of a model
-    call, and to the operator that silence was indistinguishable from a dead service. The
-    ack is a ``CONTROL_CHANNEL_RESPONSE`` (ALLOW) on the already-verified channel, and it is
-    **best-effort**: a failed ack send must never cost the run itself, so failures are
-    swallowed here rather than propagated.
+    notice at exactly one point: on the **inline path only** — after every refusal path has
+    passed and immediately before ``run_task`` runs. An inline run holds the channel for the
+    length of a model call, and to the operator that silence was indistinguishable from a dead
+    service. The ack is a ``CONTROL_CHANNEL_RESPONSE`` (ALLOW) on the already-verified channel,
+    and it is **best-effort**: a failed ack send must never cost the run itself, so failures
+    are swallowed here rather than propagated.
+
+    **With a ``registry`` wired — which every deployment has since F1 — ``ack`` never fires**,
+    because the request is QUEUED and the queue receipt IS the immediate reply. So this
+    parameter covers only the registry-less inline mode (the library/pipeline calling mode the
+    suite uses, and any deployment that turns the queue off). It is kept rather than deleted
+    because that mode is real and would otherwise answer a request with nothing at all until
+    the model returned; the loop passes it unconditionally so turning the registry off cannot
+    also silently turn the notice off.
 
     When ``control_store`` is provided, an emergency-console command (``/status`` ``/pause``
     ``/kill`` ``/resume`` ``/stop <task_id>``) is handled as a control action rather than a
@@ -438,8 +494,8 @@ def handle_operator_message(
                 accepted=False, status="REFUSED", reason_code="MARKED_COMMAND",
             )
 
-    # Every refusal path is behind us: this message WILL run the pipeline. Say so now —
-    # the model call takes tens of seconds and the operator otherwise stares at silence.
+    # Every refusal path is behind us. What happens next is one of three things, in order: a
+    # front-desk conversation turn, a queued task, or (with no registry) an inline run.
     stamp = now or timeutil.utc_now_iso()
 
     # F2: with a front-desk provider wired, an UNMARKED plain-text message is a
@@ -769,12 +825,31 @@ class TelegramChannel:
     # Telegram rejects a sendMessage over 4096 UTF-16 code units. Split just under that so a
     # substantive analysis is delivered as several messages instead of failing outright — an
     # undeliverable reply after a completed run burns the model call and loses the answer.
+    # The 96 units of headroom below the real cap hold the `(i/n)` counter added per chunk.
     _MAX_SEND_UNITS = 4000
 
     def send(self, chat_id: str, text: str) -> None:
         token = self._assert()
-        for chunk in _split_for_send(text, self._MAX_SEND_UNITS):
-            self._call(token, "sendMessage", {"chat_id": chat_id, "text": chunk}, timeout=30)
+        chunks = _split_for_send(text, self._MAX_SEND_UNITS)
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            # A multi-part answer is NUMBERED. Without this, losing part 3 of 5 to a transport
+            # error left Thomas reading an analysis that simply stopped mid-sentence with
+            # nothing to say a piece was missing — the reply looked complete and was not.
+            body = f"({index}/{total})\n{chunk}" if total > 1 else chunk
+            try:
+                self._call(token, "sendMessage", {"chat_id": chat_id, "text": body}, timeout=30)
+            except OperatorBlocked as exc:
+                if index == 1:
+                    raise       # nothing arrived: an ordinary delivery failure
+                # Parts already landed, so "the reply was not delivered" is a false report.
+                # A distinct code lets the caller say what actually happened; the counter
+                # above is what tells Thomas the same thing on the channel itself.
+                raise OperatorBlocked(
+                    PARTIAL_DELIVERY_REASON,
+                    f"delivered {index - 1} of {total} message parts before failing "
+                    f"({exc.reason_code}); the answer reached Thomas incomplete",
+                ) from exc
 
 
 def _split_for_send(text: str, limit: int) -> list[str]:
@@ -838,13 +913,14 @@ def run_queued_task(
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
-) -> tuple[OperatorReply, bool]:
+) -> tuple[OperatorReply, bool, bool]:
     """Run one already-claimed queued entry, deliver its result, and close the entry.
 
-    Returns ``(reply, delivered)``. ``delivered`` is reported separately rather than folded
-    into ``reply.reason_code``, which for a blocked run already carries the block's own
+    Returns ``(reply, delivered, partial)``. ``delivered`` is reported separately rather than
+    folded into ``reply.reason_code``, which for a blocked run already carries the block's own
     code — overloading it would have made a send failure invisible in the batch summary
-    exactly when the run was withheld.
+    exactly when the run was withheld. ``partial`` is True when the send failed *after* some
+    numbered message parts had already arrived: not delivered, but not lost either.
 
     The entry arrives RUNNING (``claim_next_queued`` claimed it under the store lock), so
     this owns exactly one thing: turn it into a terminal that matches what actually
@@ -874,10 +950,12 @@ def run_queued_task(
     ))
 
     delivered = True
+    partial = False
     try:
         channel.send(registration.chat_id, reply.text)
-    except OperatorBlocked:
+    except OperatorBlocked as exc:
         delivered = False
+        partial = exc.reason_code == PARTIAL_DELIVERY_REASON
 
     if delivered and reply.status == "COMPLETED" and reply.trace_id:
         # E1: the pointer /feedback binds to. Recorded here rather than in the message
@@ -890,8 +968,11 @@ def run_queued_task(
             pass        # best-effort: losing the pointer must not cost the run
 
     if reply.status == "COMPLETED":
+        # Still not DELIVERED on a partial send — Thomas does not have the whole answer, and
+        # `/result <id>` re-renders it from the ledger — but the reason says which of the two
+        # happened instead of calling a half-delivered analysis a plain send failure.
         status = task_registry.DELIVERED if delivered else task_registry.FAILED
-        reason_code = None if delivered else "SEND_FAILED"
+        reason_code = None if delivered else ("SEND_INCOMPLETE" if partial else "SEND_FAILED")
     else:
         # A withheld run has no deliverable to lose, so the send outcome does not change
         # what happened to it — only whether Thomas heard about it.
@@ -902,7 +983,7 @@ def run_queued_task(
         result_ref=f"ledger:{reply.trace_id}" if reply.trace_id else None,
         reason_code=reason_code,
     )
-    return replace(reply, registry_entry_id=entry.registry_entry_id), delivered
+    return replace(reply, registry_entry_id=entry.registry_entry_id), delivered, partial
 
 
 def drain_queue(
@@ -914,8 +995,13 @@ def drain_queue(
     max_tasks: int,
     now: str | None = None,
     **run_kwargs: Any,
-) -> tuple[list[OperatorReply], int]:
-    """Execute up to ``max_tasks`` queued entries. Returns ``(replies, send_failures)``.
+) -> tuple[list[OperatorReply], int, int]:
+    """Execute up to ``max_tasks`` queued entries.
+
+    Returns ``(replies, send_failures, partial_sends)``, where ``partial_sends`` counts the
+    subset of the failures on which some message parts had already reached Thomas. They are
+    counted, not folded into the failures, because "the reply was not delivered" is a false
+    statement about a half-delivered analysis and the operator's log said exactly that.
 
     ``max_tasks`` defaults to 1 at the call site on purpose: returning to the poll between
     tasks is the entire point of the queue. A drain that emptied the whole backlog in one
@@ -929,8 +1015,9 @@ def drain_queue(
     """
     executed: list[OperatorReply] = []
     send_failures = 0
+    partial_sends = 0
     if registry is None:
-        return executed, send_failures
+        return executed, send_failures, partial_sends
     while len(executed) < max_tasks:
         if control_store is not None and not control_store.load().execution_allowed:
             break
@@ -943,14 +1030,15 @@ def drain_queue(
             break
         if entry is None:
             break
-        reply, delivered = run_queued_task(
+        reply, delivered, partial = run_queued_task(
             entry, channel=channel, registration=registration, registry=registry,
             now=now, **run_kwargs,
         )
         executed.append(reply)
         if not delivered:
             send_failures += 1
-    return executed, send_failures
+            partial_sends += int(partial)
+    return executed, send_failures, partial_sends
 
 
 def run_operator_once(
@@ -996,6 +1084,7 @@ def run_operator_once(
     handled: list[OperatorReply] = []
     dropped = 0
     send_failures = 0
+    partial_sends = 0
     effective_long_poll = long_poll_seconds
     if registry is not None and long_poll_seconds:
         try:
@@ -1017,20 +1106,24 @@ def run_operator_once(
             frontdesk_provider=frontdesk_provider,
             independent_validation=independent_validation,
             validator_provider=validator_provider, repo_root=repo_root,
-            # The received-working notice, sent back on the same verified chat the request
-            # came from. handle_operator_message fires it only once every refusal path has
-            # passed, and swallows a send failure (the notice is a courtesy, not the job).
+            # The received-working notice, sent back on the same verified chat the request came
+            # from, and swallowed on failure (the notice is a courtesy, not the job). With the
+            # registry wired below this never fires — the QUEUED receipt is the immediate reply.
+            # Passed unconditionally anyway: running without a registry must not also mean
+            # running without the notice.
             ack=lambda text, _chat=message.chat_id: channel.send(_chat, text),
         )
         try:
             channel.send(message.chat_id, reply.text)
-        except OperatorBlocked:
+        except OperatorBlocked as exc:
             # The batch is already claimed (the poll cursor advanced before handling), so a
             # failed delivery must not abort the remaining messages — a /kill or /approve
             # queued behind this one would be lost forever. The handled work itself is
             # durable (ledger, control state, approval store); only this reply's delivery
             # is lost, and the summary reports it.
             send_failures += 1
+            if exc.reason_code == PARTIAL_DELIVERY_REASON:
+                partial_sends += 1
         else:
             if reply.status == "COMPLETED" and reply.trace_id:
                 # E1: a completed analysis actually reached Thomas — record the pointer
@@ -1061,7 +1154,7 @@ def run_operator_once(
 
     # The drain runs AFTER the batch is handled, so a /kill or /cancel that arrived in this
     # very batch is already in effect before the next task starts.
-    executed, drain_send_failures = drain_queue(
+    executed, drain_send_failures, drain_partial_sends = drain_queue(
         channel=channel, registration=registration, registry=registry,
         control_store=control_store, max_tasks=max_queued_tasks, now=now,
         provider=provider, search_tool=search_tool, working_memory=working_memory,
@@ -1070,11 +1163,15 @@ def run_operator_once(
         validator_provider=validator_provider, repo_root=repo_root,
     )
     send_failures += drain_send_failures
+    partial_sends += drain_partial_sends
     return {
         "handled": len(handled),
         "dropped": dropped,
         "executed": len(executed),
         "send_failures": send_failures,
+        # The subset of send_failures on which part of the answer DID arrive. Reported
+        # separately so the operator log stops calling those "not delivered".
+        "partial_sends": partial_sends,
         "replies": handled,
         "executed_replies": executed,
         "network_egress": bool(getattr(channel, "network_egress", False)),

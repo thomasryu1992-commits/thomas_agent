@@ -71,6 +71,11 @@ _ALIASES = {"stop_task": CMD_STOP}
 AUDIT_TAIL_DEFAULT = 10
 AUDIT_TAIL_MAX = 100
 
+# How much of an operator-typed reason is recorded. The reason lands in the local state file
+# and in every control event on the durable ledger, so it is bounded — but truncation is
+# stated in the reply rather than silent, like every other substitution on this channel.
+MAX_REASON_CHARS = 300
+
 
 @dataclass(frozen=True)
 class ControlState:
@@ -148,14 +153,50 @@ def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
     return "\n".join(lines)
 
 
-def _audit_limit(arg: Any) -> int:
-    """How many recent events to show. A bad value clamps rather than refuses: this is a
-    read-only diagnostic and an operator typo should not deny them their audit trail."""
+def parse_count_arg(arg: Any, *, default: int, maximum: int, usage: str) -> tuple[int, str]:
+    """Read an operator-typed count off a read-only console verb. Returns ``(count, note)``,
+    where ``note`` is empty when the argument was absent or used exactly as typed.
+
+    A read-only diagnostic is never *denied* over a typo — ``/audit`` is the command an
+    operator runs when things are already broken, and it must answer while KILLED — but a
+    substituted number is never silent either. ``/audit abc`` used to show the default 10
+    events as though ``abc`` had been the request, and ``/audit 500`` showed 100: in both
+    cases the operator was looking at a different window than the one they asked for and had
+    no way to tell. Answer with the clamped count and say what happened.
+
+    The same shape of typo used to be a typed refusal on ``/history`` and a silent default
+    here. One helper for both, so the two read verbs on the same channel cannot drift on what
+    a mistyped count means (``command_verb`` is shared for the same reason)."""
+    if arg is None or not str(arg).strip():
+        return default, ""
+    raw = str(arg).strip().split()[0]
     try:
-        requested = int(str(arg).strip())
+        requested = int(raw)
     except (TypeError, ValueError):
-        return AUDIT_TAIL_DEFAULT
-    return max(1, min(requested, AUDIT_TAIL_MAX))
+        return default, f"'{raw}'는 숫자가 아니라 기본값 {default}개를 보여드립니다 — {usage}"
+    count = max(1, min(requested, maximum))
+    if count != requested:
+        return count, f"{requested}개는 범위를 벗어나 {count}개로 조정했습니다 (1–{maximum})."
+    return count, ""
+
+
+def with_note(reply: str, note: str) -> str:
+    """Append a substitution note to a console reply, when there is one."""
+    return f"{reply}\n\n({note})" if note else reply
+
+
+def _stated_reason(reason: str, arg: Any) -> str:
+    """The operator's own words for a pause/kill/resume, from either door.
+
+    The local console passes ``--reason``; over Telegram there are no options, so the text
+    after the verb IS the reason (``/kill 시장 급변으로 중단``). That tail used to be parsed and
+    then dropped, which recorded 'killed by operator' in the state file and on the ledger and
+    lost the one field that answers *why* the runtime was stopped. An explicit ``reason=``
+    still wins — it is the caller being deliberate, not a channel artifact."""
+    stated = reason.strip() if isinstance(reason, str) else ""
+    if not stated and isinstance(arg, str):
+        stated = arg.strip()
+    return " ".join(stated.split())[:MAX_REASON_CHARS]
 
 
 def _audit_gap_summary(ledger: Any) -> list[dict[str, Any]]:
@@ -478,7 +519,13 @@ def apply_command(
     transition the state; ``stop`` records a stop request for ``arg`` (a task id). Every state
     change is persisted and, when a ``ledger`` is given, recorded as a durable control event.
     ``resume`` clears any pause/kill — callers must only invoke it for the authenticated
-    operator (`resume_requires_thomas_authentication`)."""
+    operator (`resume_requires_thomas_authentication`).
+
+    For ``pause``/``kill``/``resume``, ``arg`` is the operator's stated reason (the text after
+    the verb — the only way to give one over Telegram, which has no ``--reason`` option) and is
+    recorded on the state and the ledger event unless an explicit ``reason`` overrides it. For
+    ``audit`` it is the event count. Whatever this function does with an argument it says so in
+    the reply: a count it had to clamp, a reason it recorded, or a reason it could not."""
     if command not in COMMANDS:
         raise ControlBlocked("UNKNOWN_COMMAND", f"unknown control command: {command!r}")
     stamp = now or timeutil.utc_now_iso()
@@ -494,8 +541,11 @@ def apply_command(
     # that appends to the log it is reading would race its own chain tip, and `status` set the
     # precedent that a read is not an event.
     if command == CMD_AUDIT:
+        limit, note = parse_count_arg(
+            arg, default=AUDIT_TAIL_DEFAULT, maximum=AUDIT_TAIL_MAX, usage="사용법: /audit [개수]",
+        )
         return {
-            "reply": audit_lines(ledger, limit=_audit_limit(arg)),
+            "reply": with_note(audit_lines(ledger, limit=limit), note),
             "mode": current.mode, "changed": False, "action": CMD_AUDIT,
         }
 
@@ -528,6 +578,12 @@ def apply_command(
             "mode": new_state.mode, "changed": True, "action": CMD_STOP,
         }
 
+    # pause/kill/resume: the operator's own words, from `--reason` on the local console or from
+    # the text after the verb over Telegram. Recorded on the state and on the ledger event, and
+    # echoed back so the operator can see that it landed (and `/status` will still say it later).
+    stated = _stated_reason(reason, arg)
+    reason_note = f"\n(이유 기록: {stated})" if stated else ""
+
     if command == CMD_PAUSE:
         if current.mode == KILLED:
             # A kill is the stronger stop, and `pause` is not the verb for clearing one —
@@ -536,25 +592,30 @@ def apply_command(
             # a command that never asked to.
             return {
                 "reply": ("Runtime is KILLED, which already blocks everything /pause would. "
-                          "Left as KILLED — /resume (authenticated operator) is the only way out."),
+                          "Left as KILLED — /resume (authenticated operator) is the only way out."
+                          # Nothing changed, so there was no state to record a reason on. Say
+                          # that rather than let the operator assume their words were logged.
+                          + ("\n(상태가 그대로이므로 적어주신 이유는 기록되지 않았습니다.)" if stated else "")),
                 "mode": KILLED, "changed": False, "action": CMD_PAUSE,
             }
         new_state = ControlState(mode=PAUSED, updated_by=actor, updated_at=stamp,
-                                 reason=reason or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids)
-        verb_reply = "Paused. New task requests are refused until /resume."
+                                 reason=stated or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids)
+        verb_reply = "Paused. New task requests are refused until /resume." + reason_note
     elif command == CMD_KILL:
         new_state = ControlState(mode=KILLED, updated_by=actor, updated_at=stamp,
-                                 reason=reason or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids)
-        verb_reply = "KILLED. All new/pending execution is blocked; only status and audit reads remain. /resume to clear."
+                                 reason=stated or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids)
+        verb_reply = ("KILLED. All new/pending execution is blocked; only status and audit reads "
+                      "remain. /resume to clear." + reason_note)
     else:  # CMD_RESUME
         # Pending stop requests survive the resume: they are operator intent about specific
         # tasks, not part of the pause/kill they happened to be recorded during. Dropping
         # them silently (the old default-empty tuple) discarded that intent with no event
         # saying so.
         new_state = ControlState(mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                                 reason=reason or "resumed by operator",
+                                 reason=stated or "resumed by operator",
                                  stop_requested_task_ids=current.stop_requested_task_ids)
-        verb_reply = "Resumed. The runtime is ACTIVE and will accept task requests again."
+        verb_reply = ("Resumed. The runtime is ACTIVE and will accept task requests again."
+                      + reason_note)
 
     store.save(new_state)
     if ledger is not None:

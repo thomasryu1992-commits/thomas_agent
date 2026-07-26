@@ -136,7 +136,7 @@ def test_the_result_is_sent_as_its_own_message(tmp_path, monkeypatch):
 
 
 def test_an_empty_queue_drains_nothing(tmp_path):
-    executed, failures = drain_queue(
+    executed, failures, _partial = drain_queue(
         channel=MockOperatorChannel(), registration=REG, registry=_registry(tmp_path),
         control_store=None, max_tasks=1, now=NOW,
     )
@@ -223,7 +223,7 @@ def test_the_kill_switch_stops_the_drain_without_dropping_the_backlog(tmp_path, 
     enqueue(store, request_text="대기 중인 작업", origin="TELEGRAM",
             requester_id="tg-12345", now=NOW)
 
-    executed, _failures = drain_queue(
+    executed, _failures, _partial = drain_queue(
         channel=MockOperatorChannel(), registration=REG, registry=store,
         control_store=_control(tmp_path, mode), max_tasks=1, now=NOW,
     )
@@ -250,7 +250,7 @@ def test_the_kill_switch_is_rechecked_before_every_claim(tmp_path, monkeypatch):
 
     monkeypatch.setattr("runtime.mvp_runtime.operator.run_task", _run)
 
-    executed, _failures = drain_queue(
+    executed, _failures, _partial = drain_queue(
         channel=MockOperatorChannel(), registration=REG, registry=store,
         control_store=control_store, max_tasks=10, now=NOW,
     )
@@ -305,7 +305,7 @@ def test_an_unusable_registry_stops_the_drain(tmp_path):
     store = _registry(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text("{not json\n", encoding="utf-8")
-    executed, failures = drain_queue(
+    executed, failures, _partial = drain_queue(
         channel=MockOperatorChannel(), registration=REG, registry=store,
         control_store=None, max_tasks=1, now=NOW,
     )

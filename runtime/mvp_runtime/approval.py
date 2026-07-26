@@ -478,7 +478,9 @@ def format_decision_history(history: Mapping[str, Any]) -> str:
 
 CMD_APPROVE = "approve"
 CMD_REJECT = "reject"
-_COMMANDS = frozenset({CMD_APPROVE, CMD_REJECT})
+# Public like `control.COMMANDS` / `registry_console.COMMANDS`: the channel-wide verb
+# inventory in `operator.py` reads every family's set, so none of them can be private.
+COMMANDS = frozenset({CMD_APPROVE, CMD_REJECT})
 
 # The boilerplate recorded when Thomas answers without his own reason. One authority:
 # apply_command records these, and the decision-history summary uses the same strings to
@@ -510,7 +512,7 @@ def parse_approval_command(text: Any) -> tuple[str, str | None, str | None] | No
     # One tokenizer with the console parser (control.command_verb): leading slash,
     # lowercasing, and the Telegram @botname suffix are handled identically there.
     verb = command_verb(head, slash_seen=stripped.startswith("/"))
-    if verb not in _COMMANDS:
+    if verb not in COMMANDS:
         return None
     approval_ref, _, reason = rest.strip().partition(" ")
     return verb, (approval_ref or None), (reason.strip() or None)
@@ -533,7 +535,7 @@ def apply_command(
     bound PermissionDecision cannot be found — an answer that cannot be tied back to the
     exact action it authorizes is not evidence of anything.
     """
-    if verb not in _COMMANDS:
+    if verb not in COMMANDS:
         raise ApprovalBlocked("UNKNOWN_COMMAND", f"unknown approval command: {verb!r}")
     if not approval_id:
         # The policy forbids acting on an ambiguous expression: name the approval.

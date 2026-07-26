@@ -301,6 +301,105 @@ def test_unreadable_control_ledger_with_no_state_file_fails_closed(tmp_path):
     assert store.load().mode == KILLED
 
 
+# --- the operator's own words -------------------------------------------------
+#
+# Telegram has no `--reason` option, so the text after the verb IS the reason. It used to be
+# parsed and then dropped: `/kill 시장 급변으로 중단` recorded "killed by operator" and the one
+# field that answers *why* the runtime is stopped was lost on both the state and the ledger.
+
+def test_kill_records_the_text_after_the_verb_as_the_reason(tmp_path):
+    store, ledger = _store(tmp_path), FakeLedger()
+    outcome = control.apply_command(
+        store, control.CMD_KILL, actor="tg-12345", now=NOW, arg="시장 급변으로 중단", ledger=ledger,
+    )
+    assert store.load().reason == "시장 급변으로 중단"
+    assert ledger.control[-1]["reason"] == "시장 급변으로 중단"
+    # ...and it is echoed, so the operator can see that it landed.
+    assert "시장 급변으로 중단" in outcome["reply"]
+
+
+def test_pause_and_resume_record_their_reason_too(tmp_path):
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_PAUSE, actor="op", now=NOW, arg="점검 중")
+    assert store.load().reason == "점검 중"
+    control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW, arg="점검 완료")
+    assert store.load().reason == "점검 완료"
+
+
+def test_an_explicit_reason_wins_over_the_verb_tail(tmp_path):
+    """`--reason` is the caller being deliberate; the tail is a channel artifact."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW,
+                          reason="explicit", arg="tail")
+    assert store.load().reason == "explicit"
+
+
+def test_a_recorded_reason_is_normalized_and_bounded(tmp_path):
+    """It lands in a state file and on every control event, so it is bounded — and collapsed
+    to one line, because a multi-line reason makes the /status report unreadable."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW,
+                          arg="첫 줄\n\n둘째 줄   " + "가" * 400)
+    reason = store.load().reason
+    assert "\n" not in reason
+    assert reason.startswith("첫 줄 둘째 줄 ")
+    assert len(reason) == control.MAX_REASON_CHARS
+
+
+def test_no_reason_still_gets_the_default_and_no_echo(tmp_path):
+    store = _store(tmp_path)
+    outcome = control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    assert store.load().reason == "killed by operator"
+    assert "이유 기록" not in outcome["reply"]
+
+
+def test_a_reason_on_a_no_op_pause_is_reported_as_not_recorded(tmp_path):
+    """`/pause` over a KILLED runtime changes nothing, so there is no state to carry the
+    reason. Saying nothing would let the operator assume their words were logged."""
+    store = _store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    outcome = control.apply_command(store, control.CMD_PAUSE, actor="op", now=NOW, arg="일단 멈춤")
+    assert outcome["changed"] is False
+    assert "기록되지 않았습니다" in outcome["reply"]
+    assert store.load().reason == "killed by operator"
+
+
+def test_kill_with_a_reason_arrives_through_the_telegram_parser(tmp_path):
+    """End to end: the channel's own parser must hand the tail through as the argument."""
+    assert control.parse_command("/kill 시장 급변") == (control.CMD_KILL, "시장 급변")
+    store = _store(tmp_path)
+    reply = handle_operator_message(
+        InboundMessage(text="/kill 시장 급변", sender_id="tg-12345", chat_id="chat-777",
+                       chat_type="private", is_forwarded=False, channel="telegram_private"),
+        registration=REG, control_store=store, now=NOW,
+    )
+    assert reply.status == "CONTROL" and store.load().reason == "시장 급변"
+
+
+# --- read-only verbs answer, but never silently substitute ---------------------
+
+def test_a_mistyped_audit_count_answers_and_says_it_defaulted(tmp_path):
+    """`/audit` is the command an operator runs when things are already broken and must
+    answer while KILLED — so a typo never denies the read. It also never passes silently:
+    the operator was looking at a different window than the one they asked for."""
+    outcome = control.apply_command(_store(tmp_path), control.CMD_AUDIT, actor="op", now=NOW,
+                                    arg="abc", ledger=LedgerStore(tmp_path / "ledger"))
+    assert outcome["action"] == control.CMD_AUDIT
+    assert "abc" in outcome["reply"] and str(control.AUDIT_TAIL_DEFAULT) in outcome["reply"]
+
+
+def test_an_out_of_range_audit_count_states_the_clamp(tmp_path):
+    outcome = control.apply_command(_store(tmp_path), control.CMD_AUDIT, actor="op", now=NOW,
+                                    arg="500", ledger=LedgerStore(tmp_path / "ledger"))
+    assert "500" in outcome["reply"] and str(control.AUDIT_TAIL_MAX) in outcome["reply"]
+
+
+def test_a_usable_audit_count_gets_no_note(tmp_path):
+    limit, note = control.parse_count_arg("5", default=10, maximum=100, usage="…")
+    assert (limit, note) == (5, "")
+    assert control.parse_count_arg(None, default=10, maximum=100, usage="…") == (10, "")
+
+
 # --- transition guards --------------------------------------------------------
 
 def test_pause_does_not_downgrade_a_kill(tmp_path):
@@ -381,3 +480,51 @@ def test_console_verbs_stay_within_the_policy_grant():
             f"console verb {verb!r} is not granted by the Governance Policy - "
             "either drop the verb or extend emergency_controls_allowed explicitly"
         )
+
+
+def test_every_channel_verb_names_the_authority_that_permits_it():
+    """The gate above covers only the EMERGENCY console. Four more verb families grew on the
+    same verified door (approval, memory, registry, feedback) with no governance edit anywhere,
+    and nothing would have noticed a fifth. `operator.CHANNEL_VERB_AUTHORITY` is the inventory
+    of the whole door; this asserts it both ways, so a new family fails until its author writes
+    down what permits it. (Extending `emergency_controls_allowed` instead would be wrong — that
+    grant is for emergency controls, not for ordinary reads like /tasks.)"""
+    from runtime.mvp_runtime import approval, memory_console, operator, operator_feedback, registry_console
+
+    reachable = (
+        set(control.COMMANDS)
+        | set(approval.COMMANDS)
+        | {memory_console.LIST_COMMAND, memory_console.PROMOTE_COMMAND}
+        | set(registry_console.COMMANDS)
+        | {operator_feedback.COMMAND}
+    )
+    inventory = set(operator.CHANNEL_VERB_AUTHORITY)
+    assert reachable - inventory == set(), (
+        "a control-channel verb has no recorded governance authority - add it to "
+        "operator.CHANNEL_VERB_AUTHORITY with the policy clause that permits it"
+    )
+    assert inventory - reachable == set(), (
+        "operator.CHANNEL_VERB_AUTHORITY lists a verb the channel no longer answers"
+    )
+    # No entry may be blank, and every emergency-grant claim must be true in the policy.
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load(
+        (repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
+    )
+    allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
+    policy_name = {control.CMD_STOP: "stop_task"}
+    for verb, authority in operator.CHANNEL_VERB_AUTHORITY.items():
+        assert authority.strip(), f"{verb!r} has an empty authority"
+        if authority == operator._EMERGENCY_GRANT:
+            assert policy_name.get(verb, verb) in allowed, (
+                f"{verb!r} claims the emergency grant but the policy does not list it"
+            )
+
+    # And the state-changing subset stays a subset: a mutating verb missing from
+    # `_MUTATING_VERBS` would skip the chat channel's slash requirement. (`_MUTATING_VERBS`
+    # matches raw tokens, so it also carries the `stop_task` alias the inventory canonicalizes.)
+    mutating = {control._ALIASES.get(v, v) for v in operator._MUTATING_VERBS}
+    assert mutating <= inventory

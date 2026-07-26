@@ -15,6 +15,7 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.errors import OperatorBlocked, SafetyGateBlocked
 from runtime.mvp_runtime.operator import (
     OPERATOR_CHANNEL_ENV,
+    PARTIAL_DELIVERY_REASON,
     InboundMessage,
     MockOperatorChannel,
     OperatorIdentity,
@@ -418,10 +419,51 @@ def test_telegram_send_chunks_long_replies(monkeypatch):
     long_reply = "\n".join("사업성 분석 결과 문단 " + "상세 " * 50 for _ in range(60))
     calls = _capture_urlopen(monkeypatch, [{"ok": True, "result": []}] * 10)
     TelegramChannel(authorization=_TG_AUTH).send("chat-777", long_reply)
-    assert len(calls) > 1                               # split into several sendMessage calls
-    assert "".join(c["text"] for c in calls) == long_reply
-    for c in calls:
-        assert sum(2 if ord(ch) > 0xFFFF else 1 for ch in c["text"]) <= 4000
+    total = len(calls)
+    assert total > 1                                    # split into several sendMessage calls
+    # Each part is numbered, so a missing one is visible to Thomas rather than reading as an
+    # analysis that just stopped mid-sentence. The counter is a prefix line, not content.
+    bodies = []
+    for index, c in enumerate(calls, start=1):
+        head, _, body = c["text"].partition("\n")
+        assert head == f"({index}/{total})"
+        bodies.append(body)
+        # The counter fits in the headroom between the split limit and Telegram's real cap.
+        assert sum(2 if ord(ch) > 0xFFFF else 1 for ch in c["text"]) <= 4096
+    # The split cuts AFTER a newline, so each body keeps its own line break — plain
+    # concatenation must reproduce the reply exactly.
+    assert "".join(bodies) == long_reply                # nothing lost, nothing duplicated
+
+
+def test_a_short_reply_is_not_numbered(monkeypatch):
+    """One part is not a series — numbering it would put a `(1/1)` on every ordinary answer."""
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    calls = _capture_urlopen(monkeypatch, [{"ok": True, "result": []}])
+    TelegramChannel(authorization=_TG_AUTH).send("chat-777", "짧은 답변")
+    assert [c["text"] for c in calls] == ["짧은 답변"]
+
+
+def test_a_failure_after_the_first_part_is_reported_as_partial(monkeypatch):
+    """"The reply was not delivered" is false when three of five parts arrived. A distinct
+    reason code exists so nothing downstream has to describe it that way."""
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    long_reply = "\n".join("사업성 분석 결과 문단 " + "상세 " * 50 for _ in range(60))
+    calls = _capture_urlopen(monkeypatch, [{"ok": True, "result": []}, {"ok": False}])
+    with pytest.raises(OperatorBlocked) as exc:
+        TelegramChannel(authorization=_TG_AUTH).send("chat-777", long_reply)
+    assert exc.value.reason_code == PARTIAL_DELIVERY_REASON
+    assert "1 of 3" in exc.value.reason
+    assert len(calls) == 2                              # the first landed, the second failed
+
+
+def test_a_failure_on_the_very_first_part_stays_an_ordinary_send_failure(monkeypatch):
+    """Nothing arrived, so it is not partial — the caller must keep treating it as a plain
+    delivery failure (FAILED/SEND_FAILED on the queue entry)."""
+    monkeypatch.setenv(TOKEN_ENV, "test-token")
+    _capture_urlopen(monkeypatch, [{"ok": False}])       # the only part is rejected
+    with pytest.raises(OperatorBlocked) as exc:
+        TelegramChannel(authorization=_TG_AUTH).send("chat-777", "짧은 답변")
+    assert exc.value.reason_code == "CHANNEL_TRANSPORT"
 
 
 # --- a failed send must not abort the rest of an already-claimed batch --------
@@ -591,6 +633,26 @@ def test_no_ack_for_refused_or_command_messages(tmp_path, monkeypatch):
     ch = MockOperatorChannel(inbound=[_msg(sender_id="tg-99999")])
     run_operator_once(ch, REG, provider=MockProvider(), now=NOW)
     assert ch.sent == []
+
+
+def test_with_a_registry_the_queue_receipt_replaces_the_ack(tmp_path, monkeypatch):
+    """The ack's docstring says it fires only on the inline path — pin that, because every
+    deployment wires a registry (``operator_cli`` always builds one), so the ack is dead code
+    there and the QUEUED receipt is what tells the operator they were heard. A `handled`
+    message must never leave the channel silent whichever path it took."""
+    import runtime.mvp_runtime.operator as operator_mod
+    from runtime.mvp_runtime.task_registry import TaskRegistryStore
+    monkeypatch.setattr(operator_mod, "run_task",
+                        lambda *a, **k: pytest.fail("a queued request must not run inline"))
+
+    ch = MockOperatorChannel(inbound=[_msg()])
+    summary = run_operator_once(ch, REG, provider=MockProvider(), now=NOW,
+                               registry=TaskRegistryStore(tmp_path / "registry"),
+                               max_queued_tasks=0, repo_root=tmp_path)
+    assert summary["handled"] == 1
+    assert len(ch.sent) == 1                              # the receipt only — no ack
+    assert "분석 중" not in ch.sent[0][1]
+    assert "접수했습니다" in ch.sent[0][1]
 
 
 def test_a_failed_ack_does_not_cost_the_run(tmp_path, monkeypatch):
