@@ -189,6 +189,80 @@ the container on exit; the named scratch volume is disposable (`docker volume rm
 thomas-smoke-state`). Never point a `docker run` at the real state bind or the real service
 names — that is the collision this section exists to prevent.
 
+## Live trading env — a shell session, **never** the compose `.env`
+
+Note what `docker-compose.yml` passes through today: `MVP_MARKET_DATA` and `MVP_PAPER_TRADING`,
+and nothing else crypto-related. **No live-trading or account variable reaches either container**,
+and that is deliberate rather than an omission. A live order is supposed to happen when a human
+types the command, so the credentials live in that human's terminal for the length of that
+session — not in a long-running service's environment, where they would arm the container
+permanently and outlive the intent that set them.
+
+So do **not** add anything below to `docker-compose.yml` or to the compose `.env`. Export it in
+the shell you are about to run the canary from, and close that shell afterwards.
+
+```bash
+# --- live trading (canary session) ------------------------------------------
+# ONE Binance API key: Futures trading ON, withdrawals and internal transfer OFF,
+# IP-whitelisted. Withdrawal permission is the one that matters: every risk control
+# in this runtime caps ORDER size (60/order, 120 open, 20 daily loss, 200 ceiling),
+# and none of them governs a withdrawal, because no code path here calls one. Leaving
+# it on converts a bounded loss into an unbounded one and buys no capability.
+export BINANCE_ACCOUNT_API_KEY='...'
+export BINANCE_ACCOUNT_API_SECRET='...'
+export MVP_ACCOUNT_FEED=binance_account
+
+# The order-capable key. Kept as its OWN variables even when the same key fills both,
+# so splitting them into two keys later is an edit here and nothing else.
+export MVP_LIVE_ORDER_API_KEY="$BINANCE_ACCOUNT_API_KEY"
+export MVP_LIVE_ORDER_API_SECRET="$BINANCE_ACCOUNT_API_SECRET"
+
+# The switch. Fails closed on its own: without the per-machine `live_trading` grant
+# this authorizes nothing.
+export MVP_LIVE_TRADING=real
+
+# One phrase per capability. Export ONLY the one you are exercising — the canary phrase
+# cannot authorize autonomous trading and the autonomous phrase cannot authorize a canary.
+export MVP_LIVE_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER
+# export MVP_LIVE_CONFIRMATION=I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY
+
+# Operator halt. Set it to refuse every live ENTRY; closes stay permitted.
+# export MVP_LIVE_MANUAL_KILL_SWITCH=true
+```
+
+**The caps are not here.** `MVP_LIVE_MAX_*` no longer authorizes anything — the per-order,
+daily-count, exposure and loss limits come from the registered `live_trading_budget.v0.1` record
+(`scripts/register_live_trading_budget.py`). There is deliberately no cap an operator can set
+outside that record.
+
+Two grants are still required, and they are separate on purpose so the read can be revoked
+without revoking the ability to trade, or the reverse:
+
+```bash
+python scripts/activate_safety_flag.py --provider-id binance_futures_account \
+    --flags network_access --authority-level P2 \
+    --reason "read-only account visibility" --ttl-minutes 43200
+
+python scripts/activate_safety_flag.py --provider-id live_trading \
+    --flags network_access,filesystem_write --authority-level P5 \
+    --reason "canary orders" --ttl-minutes 43200
+```
+
+Verify before spending anything — both commands are read-only and place no order:
+
+```bash
+python -m runtime.mvp_runtime.crypto.account          # the balance the caps are judged against
+python -m runtime.mvp_runtime.crypto.live_readiness   # every gate, computed
+```
+
+`canary_evidence 0/3` staying FAIL on that board is **expected**: it is the one check a canary is
+exempt from, and the canary is what earns it. Everything else must be PASS. The full operator
+sequence is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gates 2 and 3.
+
+**When the session is done:** `unset` the variables or close the shell, and delete the
+`live_trading` grant file if you are not placing another canary soon — deleting it is a live
+revocation, checked at every egress.
+
 ## Emergency controls on a running service
 
 The operator console works two ways against the same mounted control state, so a `kill` from
