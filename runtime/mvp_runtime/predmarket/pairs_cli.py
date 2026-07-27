@@ -41,8 +41,7 @@ from ..errors import MvpRuntimeError
 from . import matching, pairs, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
-    KALSHI,
-    POLYMARKET,
+    VENUES,
     collect_pred_markets,
     degraded_pred_market_record,
     PREDMARKET_DEGRADED,
@@ -110,57 +109,69 @@ def _read_venue(
 def _cmd_propose(args: argparse.Namespace) -> int:
     now = pairs.now_iso()
     horizon = float(args.min_horizon_hours)
-    kalshi, kalshi_screen, kalshi_error = _read_venue(
-        KALSHI, limit=args.limit, now=now, min_horizon_hours=horizon)
-    poly, poly_screen, poly_error = _read_venue(
-        POLYMARKET, limit=args.limit, now=now, min_horizon_hours=horizon)
+    venues = [v for v in (args.venue or VENUES) if v in VENUES]
 
-    result = matching.generate_candidates(kalshi, poly)
+    markets: dict[str, list[PredMarket]] = {}
+    screens: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for venue in venues:
+        observable, screen, error = _read_venue(
+            venue, limit=args.limit, now=now, min_horizon_hours=horizon)
+        markets[venue], screens[venue] = observable, screen
+        if error:
+            errors[venue] = error
+
+    result = matching.generate_candidates(markets)
     # Carried into the result so `--json` reports it too: a run that judged nothing because
     # every market was screened out is a different finding from a run that judged everything
     # and matched nothing, and only the screen can tell them apart.
     result["screening"] = {
-        KALSHI: {k: v for k, v in kalshi_screen.items() if k != "observable"},
-        POLYMARKET: {k: v for k, v in poly_screen.items() if k != "observable"},
+        venue: {k: v for k, v in screen.items() if k != "observable"}
+        for venue, screen in screens.items()
     }
+    result["venue_errors"] = errors
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
     taken = pairs.grouped_market_keys(pairs.read_groups())
     result["candidates"] = [
         c for c in result["candidates"]
-        if f"{KALSHI}:{c['kalshi_market_id']}" not in taken
-        and f"{POLYMARKET}:{c['polymarket_market_id']}" not in taken
+        if f"{c['left_venue']}:{c['left_market_id']}" not in taken
+        and f"{c['right_venue']}:{c['right_market_id']}" not in taken
     ]
 
     if args.json:
-        sys.stdout.write(json.dumps(
-            {**result, "kalshi_error": kalshi_error, "polymarket_error": poly_error},
-            ensure_ascii=False, indent=1) + "\n")
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=1) + "\n")
         return EXIT_OK
 
-    for venue, error in ((KALSHI, kalshi_error), (POLYMARKET, poly_error)):
-        if error:
-            sys.stdout.write(f"DEGRADED {venue}: {error} (no candidates from this venue)\n")
-    for venue, screen in ((KALSHI, kalshi_screen), (POLYMARKET, poly_screen)):
-        sys.stdout.write(f"{venue:<11}: {screening.screening_status_line(screen)}\n")
+    for venue in venues:
+        if venue in errors:
+            sys.stdout.write(f"DEGRADED {venue}: {errors[venue]} (no candidates from this venue)\n")
+        sys.stdout.write(f"{venue:<11}: {screening.screening_status_line(screens[venue])}\n")
     sys.stdout.write(matching.candidate_status_line(result) + "\n")
     for row in result["candidates"]:
         sys.stdout.write(
             f"\nCANDIDATE similarity={row['title_similarity']} "
             f"close_delta_h={row['close_delta_hours']}\n"
-            f"  kalshi     : {row['kalshi_market_id']}  {row['kalshi_title']}\n"
-            f"  polymarket : {row['polymarket_market_id']}  {row['polymarket_title']}\n"
+            f"  {row['left_venue']:<10} : {row['left_market_id']}  {row['left_title']}\n"
+            f"  {row['right_venue']:<10} : {row['right_market_id']}  {row['right_title']}\n"
             f"  shared     : {', '.join(row['shared_tokens']) or '-'}\n"
-            f"  confirm    : pairs_cli confirm --leg {KALSHI}:{row['kalshi_market_id']} "
-            f"--leg {POLYMARKET}:{row['polymarket_market_id']} --criteria \"...\"\n"
+            f"  confirm    : pairs_cli confirm "
+            f"--leg {row['left_venue']}:{row['left_market_id']} "
+            f"--leg {row['right_venue']}:{row['right_market_id']} --criteria \"...\"\n"
         )
     if args.near_misses and result["near_misses"]:
         sys.stdout.write("\n-- near misses (why the rules refused; the input for fixing them) --\n")
         for row in result["near_misses"][: args.near_miss_limit]:
             sys.stdout.write(
                 f"  {row['title_similarity']:>6} {','.join(row['refusals'])}\n"
-                f"    {row['kalshi_title']}\n    {row['polymarket_title']}\n"
+                f"    {row['left_venue']}: {row['left_title']}\n"
+                f"    {row['right_venue']}: {row['right_title']}\n"
                 f"    unshared: {', '.join(row['unshared_tokens']) or '-'}\n"
+            )
+        if result["near_miss_truncated"]:
+            sys.stdout.write(
+                f"  ... {result['near_miss_truncated']} more near-miss(es) not carried "
+                f"(of {result['near_miss_total']} total)\n"
             )
     sys.stdout.write("\nNothing above is a group. Confirmation is yours, per event.\n")
     return EXIT_OK
@@ -231,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     propose = sub.add_parser("propose", help="judge cross-venue pairings; confirms nothing")
     propose.add_argument("--limit", type=int, default=DEFAULT_MARKET_LIMIT)
+    propose.add_argument(
+        "--venue", action="append", choices=sorted(VENUES),
+        help=("repeat to restrict which venues are read; default is all of them. Every "
+              "cross-venue pairing among those read is judged."),
+    )
     propose.add_argument("--json", action="store_true")
     propose.add_argument("--near-misses", action="store_true", default=True)
     propose.add_argument("--near-miss-limit", type=int, default=10)
