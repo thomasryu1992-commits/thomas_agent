@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from .. import timeutil
-from .market_data import PredMarket
+from .market_data import PredMarket, is_re_readable
 
 SCREENING_VERSION = "predmarket_screening.v0.1"
 
@@ -70,6 +70,10 @@ DERIVED_COMBINATION = "DERIVED_COMBINATION"
 HORIZON_TOO_SHORT = "HORIZON_TOO_SHORT"
 CLOSE_TIME_UNKNOWN = "CLOSE_TIME_UNKNOWN"
 NOT_ACCEPTING_ORDERS = "NOT_ACCEPTING_ORDERS"
+# The id a candidate carries is a promise: every scan after confirmation re-reads its
+# legs by it. A market the venue cannot be asked about again is proposable and
+# unobservable — see `market_data.is_re_readable`.
+MARKET_ID_NOT_RE_READABLE = "MARKET_ID_NOT_RE_READABLE"
 
 
 def hours_to_close(close_time: Any, *, now: str) -> float | None:
@@ -138,6 +142,12 @@ def screen_market(
 
     if market.accepting_orders is False:
         reasons.append(NOT_ACCEPTING_ORDERS)
+
+    # Last, because it is the only gate about *us* rather than about the market. The market
+    # is fine; we are holding an id we cannot use, and proposing it would spend an operator's
+    # confirmation on a group that can never produce a reading.
+    if not is_re_readable(market):
+        reasons.append(MARKET_ID_NOT_RE_READABLE)
 
     return Screen(
         venue=market.venue,
@@ -238,6 +248,7 @@ __all__ = [
     "CLOSE_TIME_UNKNOWN",
     "DERIVED_COMBINATION",
     "HORIZON_TOO_SHORT",
+    "MARKET_ID_NOT_RE_READABLE",
     "MIN_HORIZON_HOURS",
     "NOT_ACCEPTING_ORDERS",
     "SCREENING_VERSION",
