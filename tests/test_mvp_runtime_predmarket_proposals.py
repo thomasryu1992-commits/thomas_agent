@@ -194,6 +194,23 @@ def test_discovery_resolves_grants_against_the_root_it_was_given(state, monkeypa
     assert seen == [state, state]
 
 
+def test_scheduled_discovery_inherits_the_refusal_to_read_the_mock(state):
+    """The third door, and the one that got the guard for free.
+
+    Discovery on a cadence arrived after the synthetic guard, and it proposes candidates
+    without an operator present to notice the venue names — so a scheduled run on a closed
+    gate would append a proposal record of fabricated pairings every six hours. It routes
+    through `_read_venue`, so it inherits the refusal rather than needing its own copy: the
+    reason the check lives there and not in the two callers that existed at the time.
+    """
+    from runtime.mvp_runtime.predmarket import pairs_cli
+    from runtime.mvp_runtime.predmarket.market_data import SYNTHETIC_SOURCE
+
+    result = pairs_cli.run_discovery(now=NOW, root=state, venues=["kalshi", "polymarket"])
+    assert result["candidates"] == []
+    assert result["venue_errors"] == {"kalshi": SYNTHETIC_SOURCE, "polymarket": SYNTHETIC_SOURCE}
+
+
 # --- head, and a tail that has to earn its keep ---------------------------------
 
 def test_the_record_counts_how_many_candidates_came_from_the_tail():

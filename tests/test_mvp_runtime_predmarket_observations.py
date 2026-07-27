@@ -21,7 +21,8 @@ import pytest
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.predmarket import observations as obs
 from runtime.mvp_runtime.predmarket import pairs
-from runtime.mvp_runtime.predmarket.market_data import KALSHI, POLYMARKET
+from runtime.mvp_runtime.predmarket.market_data import KALSHI, POLYMARKET, SYNTHETIC_SOURCE
+from tests._helpers import LiveLikePredMarketCollector
 
 NOW = "2026-07-26T12:00:00Z"
 
@@ -31,6 +32,15 @@ def state(tmp_path, monkeypatch):
     """A throwaway state root for both stores (they share a directory)."""
     monkeypatch.setattr(pairs, "_repo_root", lambda: tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def live_venues(monkeypatch):
+    """Scan against data claiming to have come from the venues, not from the mock."""
+    monkeypatch.setattr(
+        obs, "select_pred_market_collector",
+        lambda venue, **kw: LiveLikePredMarketCollector(venue),
+    )
 
 
 def _group(root, *legs):
@@ -81,8 +91,8 @@ def test_a_scan_with_no_confirmed_groups_reads_nothing(state):
     assert scan["venues_read"] == [] and scan["observation_count"] == 0
 
 
-def test_a_scan_prices_every_pairing_in_every_confirmed_group(state):
-    """The mock venues quote the same events at deliberately different prices, so a scan over
+def test_a_scan_prices_every_pairing_in_every_confirmed_group(state, live_venues):
+    """The two venues quote the same events at deliberately different prices, so a scan over
     a confirmed group produces a priced reading."""
     _group(state)
     scan = obs.run_watch_scan(now=NOW, root=state)
@@ -94,10 +104,15 @@ def test_a_scan_prices_every_pairing_in_every_confirmed_group(state):
     assert obs.read_observations(state)[0]["event_id"] == pairs.read_groups(state)[0]["event_id"]
 
 
-def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state):
+def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state, live_venues):
     """What the group generalisation bought: the third venue's pairings are enumerated, not
-    confirmed again. Predict.fun is unquoted and its fees unread, so those two pairings are
-    recorded as non-readings — which is the honest state, not a gap."""
+    confirmed again. One confirmation, three pairings, three rows.
+
+    It used to also assert the third venue came back unreadable, because its fee rate was
+    unknown on the watch path and an unknown cost is not a zero cost. That was true and is
+    now fixed — the venue has a fallback schedule — so the assertion that survives is the one
+    about the group, not the one about the gap.
+    """
     _group(
         state,
         {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
@@ -106,10 +121,12 @@ def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state
     )
     scan = obs.run_watch_scan(now=NOW, root=state)
     assert scan["observation_count"] == 3
-    assert scan["readable_count"] < 3
+    assert scan["groups_observed"] == 1
+    assert {leg["venue"] for row in obs.read_observations(state) for leg in row["legs"]} == {
+        KALSHI, POLYMARKET, "binance"}
 
 
-def test_a_non_reading_is_still_a_row(state):
+def test_a_non_reading_is_still_a_row(state, live_venues):
     """'How often' is a ratio whose denominator is the attempts. Dropping the times a group
     could not be priced would claim it was observable when it was not."""
     _group(
@@ -124,7 +141,7 @@ def test_a_non_reading_is_still_a_row(state):
     assert row["net_edge"] is None and row["is_opportunity"] is False
 
 
-def test_a_venue_outage_is_distinguished_from_a_delisted_market(state, monkeypatch):
+def test_a_venue_outage_is_distinguished_from_a_delisted_market(state, monkeypatch, live_venues):
     """Two different findings. A venue that did not answer is an outage; a venue that
     answered and no longer lists the market means the group is stale or resolved."""
     _group(state)
@@ -146,7 +163,91 @@ def test_a_venue_outage_is_distinguished_from_a_delisted_market(state, monkeypat
     assert obs.VENUE_UNREADABLE in row["reasons"]
 
 
-def test_a_dry_run_produces_the_scan_without_writing_anything(state):
+def test_a_mock_answer_never_becomes_a_priced_observation(state):
+    """The worse of the two pre-fix failures — note no ``live_venues``, so this runs on the
+    gate's real default, which is the mock.
+
+    Reachable through the propose path: a both-venues-on-mock ``propose`` yields clean-looking
+    candidates (the mocks carry the same titles at different prices), and confirming one writes
+    mock ids into the group store. Every later scan then *matches* those ids and priced them —
+    measured pre-fix: ``net_edge = -0.0243``, counted ``readable 1/1``. A number computed
+    entirely from ``(venue, index)`` sitting in the store the 2–4 week report is built from,
+    inside the denominator of "how often".
+    """
+    _group(state)
+    scan = obs.run_watch_scan(now=NOW, root=state)
+    row = obs.read_observations(state)[0]
+    assert obs.SOURCE_SYNTHETIC in row["reasons"]
+    assert row["net_edge"] is None and row["is_opportunity"] is False
+    assert scan["readable_count"] == 0
+
+
+def test_a_mock_answer_is_not_recorded_as_a_delisted_market(state):
+    """The other pre-fix failure, and the one a correctly-confirmed group hits.
+
+    A real group holds the venues' own ids. The mock knows only its own, so it returns zero
+    matches — successfully, unlike an outage — and every leg was filed ``MARKET_NOT_LISTED``:
+    the runtime reporting that Thomas's confirmed market had been delisted, about a venue it
+    never reached. Only ``MARKET_NOT_LISTED`` says anything about the market, so it is the one
+    reason that must never be inferred from a venue the scan did not read.
+    """
+    _group(
+        state,
+        {"venue": KALSHI, "market_id": "KXBTCD-25DEC31-B100000"},
+        {"venue": POLYMARKET, "market_id": "0xabc123"},
+    )
+    obs.run_watch_scan(now=NOW, root=state)
+    row = obs.read_observations(state)[0]
+    assert obs.SOURCE_SYNTHETIC in row["reasons"]
+    assert obs.MARKET_NOT_LISTED not in row["reasons"]
+    assert obs.VENUE_UNREADABLE not in row["reasons"]
+
+
+def test_a_venue_the_scan_never_reached_is_not_a_venue_it_read(state):
+    """``venues_read`` is the report's coverage and the console's degraded list. A mock answer
+    must count as neither read nor quietly fine."""
+    _group(state)
+    scan = obs.run_watch_scan(now=NOW, root=state)
+    assert scan["venues_read"] == []
+    assert scan["venue_errors"] == {KALSHI: SYNTHETIC_SOURCE, POLYMARKET: SYNTHETIC_SOURCE}
+    assert scan["readable_count"] == 0
+    assert "degraded=" in obs.scan_status_line(scan)
+
+
+def test_the_three_non_reading_reasons_stay_distinct(state, monkeypatch):
+    """One venue down, one venue on the mock, one market genuinely gone — three findings that
+    must not collapse into each other. Only ``MARKET_NOT_LISTED`` claims anything about the
+    market, so it is the only one that may be inferred from a venue's silence."""
+    from runtime.mvp_runtime.predmarket import market_data as md
+
+    real = md.collect_pred_markets
+
+    def _kalshi_is_down(venue, **kw):
+        if venue == KALSHI:
+            raise ToolError("TOOL_TRANSPORT", "venue unreachable")
+        return real(venue, **kw)
+
+    # Polymarket answers for real; Kalshi is down; Binance is left on the gate's mock default.
+    def _collector(venue, **kw):
+        if venue == POLYMARKET:
+            return LiveLikePredMarketCollector(venue)
+        return md.MockPredMarketCollector(venue)
+
+    _group(
+        state,
+        {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
+        {"venue": POLYMARKET, "market_id": "no-such-market"},
+        {"venue": "binance", "market_id": "BINANCE-MOCK-00"},
+    )
+    monkeypatch.setattr(obs, "select_pred_market_collector", _collector)
+    monkeypatch.setattr(obs, "collect_pred_markets", _kalshi_is_down)
+    obs.run_watch_scan(now=NOW, root=state)
+
+    seen = {reason for row in obs.read_observations(state) for reason in row["reasons"]}
+    assert seen == {obs.VENUE_UNREADABLE, obs.SOURCE_SYNTHETIC, obs.MARKET_NOT_LISTED}
+
+
+def test_a_dry_run_produces_the_scan_without_writing_anything(state, live_venues):
     _group(state)
     scan = obs.run_watch_scan(now=NOW, root=state, persist=False)
     assert scan["observation_count"] == 1 and scan["persisted_count"] == 0
@@ -205,7 +306,7 @@ def test_discovery_never_runs_the_watch_scan_under_a_different_name(state, monke
     assert len(proposals.read_proposals(state)) == 1
 
 
-def test_a_watch_schedule_actually_runs_the_scan(state, monkeypatch):
+def test_a_watch_schedule_actually_runs_the_scan(state, monkeypatch, live_venues):
     from runtime.mvp_runtime import scheduler
     from runtime.mvp_runtime.scheduler import Schedule
 

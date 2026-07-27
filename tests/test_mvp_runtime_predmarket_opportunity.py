@@ -218,3 +218,79 @@ def test_the_detector_cannot_trade():
     """PM1's standing property: this module holds no order path and imports none."""
     for forbidden in ("submit", "place_order", "sign", "wallet", "confirm_group"):
         assert not hasattr(opportunity, forbidden), forbidden
+
+
+# --- a venue whose rate the watch scan cannot see --------------------------------
+
+def test_a_binance_leg_is_priceable_without_the_venue_stating_a_rate():
+    """Found by the first confirmed group. A watch scan re-reads a Binance leg by
+    `marketId:tokenId`; `market/detail` is keyed by `marketTopicId` and the order-book
+    response carries no fee at all, so the venue's own `feeRateBps` is simply not in hand.
+
+    Without a fallback every observation came back `net_edge: None` — real books on both
+    sides, a computed gross edge, and still filed as unreadable, forever. That is not
+    caution, it is a venue this phase can never collect data on.
+    """
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    assert fees.taker_fee(BINANCE, price=0.40, contracts=100) is not None
+    assert fees.round_trip_fee(
+        [{"venue": BINANCE, "price": 0.401},
+         {"venue": POLYMARKET, "price": 0.39, "category": "crypto"}]
+    )["total_fee_usd"] is not None
+
+
+def test_the_fallback_never_costs_less_than_the_rate_it_stands_in_for():
+    """THE property. The stated rate is applied flat (`rate x P`); a shaped fallback
+    (`rate x P x (1-P)`) is cheaper at every price because `(1-P) < 1`. A fallback that
+    under-charges the case it replaces is worse than no fallback — it turns "we could not
+    price this" into "this looks profitable"."""
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    for price in (0.05, 0.25, 0.5, 0.75, 0.95):
+        stated = fees.taker_fee(BINANCE, price=price, contracts=100, fee_rate_bps=200)
+        fallback = fees.taker_fee(BINANCE, price=price, contracts=100)
+        assert fallback >= stated, f"fallback undercharges at p={price}"
+
+
+def test_a_stated_rate_still_wins_over_the_fallback():
+    """Discovery sees `feeRateBps` on the topic listing. When the venue has spoken, its
+    number is used — the table is only for when it has not."""
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    assert fees.taker_fee(BINANCE, price=0.4, contracts=100, fee_rate_bps=0) == 0.0
+    assert fees.taker_fee(BINANCE, price=0.4, contracts=100, fee_rate_bps=500) > \
+        fees.taker_fee(BINANCE, price=0.4, contracts=100)
+
+
+def test_an_observed_rate_is_never_recorded_as_a_verified_schedule():
+    """The rate is what this repo observed the venue publishing, not what the venue
+    documented. A record calling it verified would launder the difference — and
+    `fee_schedule_verified` is exactly the field a later reader trusts."""
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    legs = fees.round_trip_fee(
+        [{"venue": BINANCE, "price": 0.4},
+         {"venue": POLYMARKET, "price": 0.4, "category": "crypto"}])["legs"]
+    binance_leg = next(l for l in legs if l["venue"] == BINANCE)
+    poly_leg = next(l for l in legs if l["venue"] == POLYMARKET)
+    assert binance_leg["fee_schedule_verified"] is False
+    assert binance_leg["fee_model"] == fees.FEE_MODEL_FLAT_ASSUMED
+    assert poly_leg["fee_schedule_verified"] is True
+    assert poly_leg["fee_model"] == fees.FEE_MODEL_SHAPED
+
+
+def test_the_documented_venues_are_untouched_by_the_fallback():
+    """Kalshi and Polymarket publish their formulas; nothing above may quietly re-price
+    them."""
+    assert fees.taker_fee(KALSHI, price=0.5, contracts=100) == pytest.approx(1.75, abs=1e-4)
+    assert fees.taker_fee(POLYMARKET, price=0.5, contracts=100, category="crypto") == \
+        pytest.approx(1.75, abs=1e-4)
+
+
+def test_an_unpriceable_binance_leg_is_still_unpriceable():
+    """The fallback supplies a missing RATE, never a missing price."""
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    assert fees.taker_fee(BINANCE, price=None, contracts=100) is None
+    assert fees.taker_fee(BINANCE, price=0.0, contracts=100) is None
