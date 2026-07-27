@@ -689,7 +689,8 @@ Task
 
 이 절은 설계 기준이 아니라 현재 위치를 가리키는 포인터다. §6–§8의 MVP 레이어는 대부분
 구현되어 있다 (intake → Prime planning → routing → gated model call → independent
-validation → audit → memory; R2–R10 및 이후 증분 — 현황은 리포 루트 `CLAUDE.md`의 Status
-절과 [Active Architecture](./ACTIVE_ARCHITECTURE.md)가 소유한다). 새로운 설계 작업은
+validation → audit → memory; R2–R10 및 이후 증분 — 구조와 소유권은
+[Active Architecture](./ACTIVE_ARCHITECTURE.md), 전달 이력은 [Build History](./BUILD_HISTORY.md),
+남은 작업은 [Remaining Work](./REMAINING_WORK.md)가 소유한다). 새로운 설계 작업은
 이 문서의 레이어와 §12–§16 기준에 근거를 두어야 하며, 근거 없는 확장은 §16 가드레일
 위반으로 본다.
