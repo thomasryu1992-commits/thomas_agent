@@ -62,8 +62,10 @@ from .market_data import (
     rotation_index,
     collect_pred_markets,
     degraded_pred_market_record,
+    is_synthetic_snapshot,
     PREDMARKET_DEGRADED,
     PredMarket,
+    SYNTHETIC_SOURCE,
     VenueQuote,
     select_pred_market_collector,
 )
@@ -128,6 +130,17 @@ def _read_venue(
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
         return [], screening.screen_markets([], now=now), exc.reason_code, set()
+    if is_synthetic_snapshot(snapshot):
+        # Degraded exactly like an unreadable venue, and this door matters more than the scan's:
+        # a confirmation is durable. The mocks deliberately carry the *same titles at different
+        # prices*, which is the shape the matcher is built to find — so a both-venues-on-mock
+        # propose run yields clean-looking candidates out of fabricated data, and confirming one
+        # would write mock ids into the group store, where every later scan re-reads them
+        # forever. A rehearsal must not be able to author a confirmed pair.
+        #
+        # No tail either: the rotation window is a slice of a corpus this run never read.
+        degraded_pred_market_record(collector, venue, SYNTHETIC_SOURCE, now=now)
+        return [], screening.screen_markets([], now=now), SYNTHETIC_SOURCE, set()
     screened = screening.screen_markets(
         _markets_of(snapshot), now=now, min_horizon_hours=min_horizon_hours
     )

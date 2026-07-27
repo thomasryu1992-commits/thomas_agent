@@ -13,12 +13,17 @@ from runtime.mvp_runtime import control, scheduler
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import PersistenceError, SchedulerBlocked
 from runtime.mvp_runtime.scheduler import (
+    KIND_PM_SCAN,
     KIND_PROPOSER,
     KIND_PRUNE,
     KIND_TASK,
     MIN_INTERVAL_SECONDS,
+    PM_SCAN_DISCOVERY,
+    PM_SCAN_MODES,
+    PM_SCAN_WATCH,
     ScheduleStore,
     build_schedule,
+    pm_scan_mode,
     run_due,
 )
 from runtime.mvp_runtime.store import LedgerStore
@@ -69,6 +74,52 @@ def test_build_schedule_fail_closed(kwargs, code):
 def test_prune_schedule_needs_no_request():
     s = build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400, created_by="op", now=T0)
     assert s.kind == KIND_PRUNE
+
+
+# --- pm_scan names one of two jobs, and a typo must not pick the other ------
+
+@pytest.mark.parametrize("request_text", ["discvery", "Discovery-scan", "wach", "observe"])
+def test_a_misspelled_pm_scan_mode_is_refused_at_registration(request_text):
+    """The failure this closes is silent and long-lived.
+
+    The dispatch tests for "discovery" and lets everything else fall through to the watch
+    scan. That is right for the default and wrong for a typo: `--request discvery` used to
+    register cleanly and then run the *watch* scan every six hours, while the operator
+    believed discovery was running and `proposals.jsonl` stayed empty with nothing anywhere
+    saying why. A schedule is typed by hand once and then trusted for weeks, so the refusal
+    has to happen at the keyboard.
+    """
+    with pytest.raises(SchedulerBlocked) as exc:
+        build_schedule(kind=KIND_PM_SCAN, request=request_text, interval_seconds=21600,
+                       created_by="op", now=T0)
+    assert exc.value.reason_code == "UNKNOWN_PM_SCAN_MODE"
+    assert request_text in exc.value.reason        # names what was typed, not just the rule
+
+
+@pytest.mark.parametrize("request_text, mode", [
+    ("watch", PM_SCAN_WATCH),
+    ("discovery", PM_SCAN_DISCOVERY),
+    ("", PM_SCAN_WATCH),                            # empty keeps the original meaning
+    ("  DISCOVERY  ", PM_SCAN_DISCOVERY),           # trimmed and case-folded
+    ("watch every confirmed pair", PM_SCAN_WATCH),  # trailing words are a note, not a mode
+])
+def test_the_modes_that_name_a_real_job_are_accepted(request_text, mode):
+    s = build_schedule(kind=KIND_PM_SCAN, request=request_text, interval_seconds=120,
+                       created_by="op", now=T0)
+    assert pm_scan_mode(s.request) == mode and mode in PM_SCAN_MODES
+
+
+def test_validation_and_dispatch_read_the_mode_through_one_function():
+    """The structural half. Two readers would drift, and the drift is silent in the worst
+    direction — the dispatch's fall-through is the *other* scan, so anything validation let
+    past would quietly do the wrong job. `_execute` must call `pm_scan_mode`, not re-derive."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler
+
+    source = inspect.getsource(scheduler._execute)      # noqa: SLF001 - the dispatch under test
+    assert "pm_scan_mode(schedule.request)" in source
+    assert '.strip().lower().split()' not in source     # the re-derivation this replaced
 
 
 # --- store CRUD -------------------------------------------------------------
