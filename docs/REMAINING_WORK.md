@@ -14,8 +14,9 @@ Every claim below was re-checked against `main` and against the code it describe
 > is `true`. Live trading still cannot start, and the reasons are now entirely structural rather than
 > "the code is missing": **no autonomous entry point may import the order path** (a test enforces it,
 > and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
-> **0 of 3** clean canary orders have been placed, and every egress needs the operator's per-machine
-> `live_trading` grant, order key, confirmation phrase and registered budget.
+> the clean-canary evidence threshold is not met **on any machine this file can speak for** (the
+> count is per-machine state — ask the board, below), and every egress needs the operator's
+> per-machine `live_trading` grant, order key, confirmation phrase and registered budget.
 >
 > The single remaining build item between this repository and an **autonomous** live order is
 > **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
@@ -206,8 +207,10 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
 **What is left in this section is no longer governance, and no longer plumbing — it is one build
-decision and one operator action:** cycle routing (below), and three clean canary orders. Neither is
-blocked on a contract, a schema, or a gate.
+decision and one operator action:** cycle routing (below), and three clean canary orders on the
+machine that would run. Neither is blocked on a contract, a schema, or a gate — and clearing the
+canary row **enables nothing on its own**: it satisfies one precondition of a step (cycle routing)
+that is still deliberately unbuilt.
 
 The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
 the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
@@ -322,8 +325,20 @@ scopes at different levels, so nothing was owed to it.
           states — this runtime's own paper record (6 closed trades at −0.39R,
           `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
           step, not the leg above: a leg with no caller places no orders.
-- [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
-      source system and did not migrate). **Unblocked 2026-07-26 (#201):** `resolve_live_order_limits` had
+- [ ] **≥ 3 clean canary orders** before any autonomous run. **This file cannot tell you the count**
+      and no longer pretends to: the evidence store is
+      `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
+      Core pointer and the safety-flag grants — so a number written here is a claim about whichever
+      machine last edited it. It said "0" until 2026-07-27, when Thomas reported canaries placed on
+      his own machine; the fix is not a new number, it is to stop asserting one.
+      Ask the machine: `python -m runtime.mvp_runtime.crypto.live_readiness`, the `canary_evidence`
+      row. Two things that count differently from "how many did I place": only records with
+      `clean: true` count, and a registry that fails **any** verification — line not JSON, self-hash
+      mismatch, duplicate `canary_order_id` — counts as **zero** with a named reason rather than
+      being partially trusted (`clean_canary_order_count`). A canary placed while the grant was not
+      active also leaves no evidence at all: `DryRunCanaryRegistry` accepts and discards, because
+      unbacked evidence here would unlock autonomous trading.
+      (1 canary existed in the frozen source system and did not migrate.) **Unblocked 2026-07-26 (#201):** `resolve_live_order_limits` had
       dropped `canary_confirmation`, so the canary guard compared an empty phrase and refused every
       attempt — the one live door there is did not work. It failed *closed*, so nothing unsafe
       happened, and it is fixed; this is now genuinely actionable. **Operator-only, real money** — `scripts/place_canary_order.py`
