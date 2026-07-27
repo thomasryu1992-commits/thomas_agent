@@ -236,6 +236,15 @@ class PredMarket:
     # Whether the venue says it will currently accept an order (Polymarket's
     # `enableOrderBook`/`acceptingOrders`). `None` is *did not say*, never *no*.
     accepting_orders: bool | None = None
+    # How the venue says this market settles, in the venue's own words (Kalshi
+    # `rules_primary`, Gamma `description`, Binance `markets[].description`). Populated only
+    # on a discovery read that asked for it: this is reading material for the one judgement
+    # no algorithm can make, and an observation record has no use for a kilobyte of prose.
+    #
+    # It is NOT a comparison. Two venues can publish near-identical text and still settle
+    # differently on the same news — that is the risk the whole strategy turns on, and
+    # putting both texts side by side is help with the reading, not a substitute for it.
+    resolution_rules: str | None = None
     # Traded volume as the venue reports it (Kalshi `volume_fp`, Gamma `volumeNum`, Binance
     # `tradeVolume`). Not comparable ACROSS venues — different units, different histories —
     # and never used as one. It ranks a venue's own markets against each other, which is how
@@ -254,6 +263,7 @@ class PredMarket:
             "fee_rate_bps": self.fee_rate_bps,
             "derived_from": list(self.derived_from) if self.derived_from is not None else None,
             "accepting_orders": self.accepting_orders,
+            "resolution_rules": self.resolution_rules,
             "volume": self.volume,
             "quote": self.quote.as_dict(),
         }
@@ -864,6 +874,7 @@ def _kalshi_market(
         close_time=row.get("close_time") if isinstance(row.get("close_time"), str) else None,
         status=row.get("status") if isinstance(row.get("status"), str) else None,
         derived_from=parse_kalshi_mve_legs(row),
+        resolution_rules=_text(row.get("rules_primary")),
         volume=_size(row.get("volume_fp")),
         quote=VenueQuote(
             yes_bid=_probability(row.get("yes_bid_dollars")),
@@ -1125,9 +1136,29 @@ def parse_gamma_markets(payload: Any) -> list[PredMarket]:
             close_time=row.get("endDate") if isinstance(row.get("endDate"), str) else None,
             status="active" if row.get("active") and not row.get("closed") else "inactive",
             accepting_orders=_gamma_accepting_orders(row),
+            resolution_rules=_gamma_rules(row),
             volume=as_optional_float(row.get("volumeNum")),
         ))
     return markets
+
+
+def _text(value: Any) -> str | None:
+    """A non-empty string, or ``None``. Blank prose is not prose."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _gamma_rules(row: Mapping[str, Any]) -> str | None:
+    """Polymarket's settlement text: the market description, plus who decides when it says.
+
+    Two separate facts joined on purpose — *what* resolves it and *who* resolves it are both
+    load-bearing when comparing venues, and an operator reading one without the other has
+    half the answer. The join is explicit rather than silent so the seam is visible.
+    """
+    description = _text(row.get("description"))
+    source = _text(row.get("resolutionSource"))
+    if description and source:
+        return f"{description}\n\nResolution source: {source}"
+    return description or (f"Resolution source: {source}" if source else None)
 
 
 def _gamma_accepting_orders(row: Mapping[str, Any]) -> bool | None:
@@ -1402,7 +1433,7 @@ class BinancePredictionCollector:
             if outcome is None:
                 markets.append(topic)
                 continue
-            market_id, token_id, condition_id = outcome
+            market_id, token_id, condition_id, rules = outcome
             book = None
             if with_quotes:
                 # `detail` above stays: it carries the conditionId that becomes `group_id`,
@@ -1431,6 +1462,7 @@ class BinancePredictionCollector:
                 close_time=topic.close_time,
                 status=topic.status,
                 fee_rate_bps=topic.fee_rate_bps,
+                resolution_rules=rules,
                 volume=topic.volume,
                 quote=parse_prediction_book(book) if book is not None else VenueQuote(),
             ))
@@ -1566,8 +1598,12 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
     return topics
 
 
-def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None] | None:
-    """``market/detail`` → ``(marketId, YES tokenId, conditionId)``, or ``None``. Pure.
+def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None, str | None] | None:
+    """``market/detail`` → ``(marketId, YES tokenId, conditionId, description)``. Pure.
+
+    The description comes back with the rest rather than through a second pass over the same
+    payload: it belongs to the market that was *selected* here, and a separate reader picking
+    "the first open market" again could quietly select a different one.
 
     Takes the first market whose ``tradingStatus`` is OPEN and reads its YES outcome. A topic
     with no open market, or an outcome with no token id, yields ``None`` — there is nothing
@@ -1596,6 +1632,7 @@ def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None] | 
                 market_id,
                 token_id.strip(),
                 condition.strip() if isinstance(condition, str) and condition.strip() else None,
+                _text(market.get("description")),
             )
     return None
 
