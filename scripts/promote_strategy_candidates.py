@@ -244,6 +244,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"        {count:4d}  {basis}")
             print("      A candidate scored at 2.5 bps paid half the fee one scored at 5.0 did.")
             print("      Rank tiers are comparable within a basis, not across them.")
+        # The mixing is reported, but it is also fixable for the number that matters most:
+        # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
+        # is exactly derivable from what its evidence already records. `exp@` below is that
+        # figure. What it cannot repair is named rather than glossed: win-rate, reward:risk
+        # and the holdout verdict all need per-trade signs, and the store keeps aggregates.
+        flipped = [
+            c for c in candidates
+            if (pool_store.candidate_quality(c)["expectancy_at_current_costs"] or 0) <= 0
+            < (c.get("backtest_evidence") or {}).get("expectancy", 0)
+        ]
+        if flipped:
+            print(f"      {len(flipped)} candidate(s) show a POSITIVE stored expectancy that is "
+                  f"negative at {cost_mod.DEFAULT_TAKER_FEE_BPS} bps (marked FLIPS below).")
+            print("      win_rate and rr are NOT re-derivable — those still reflect the old rate.")
         print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
@@ -253,13 +267,22 @@ def main(argv: list[str] | None = None) -> int:
             evidence = c.get("backtest_evidence") or {}
             q = pool_store.candidate_quality(c)
             rr = "inf" if q["all_wins"] else ("-" if q["reward_risk"] is None else f"{q['reward_risk']:.2f}")
+            at_now = q["expectancy_at_current_costs"]
+            stored_exp = evidence.get("expectancy")
+            if at_now is None:
+                exp_now = " exp@now=-"
+            elif isinstance(stored_exp, (int, float)) and stored_exp > 0 >= at_now:
+                exp_now = f" exp@now={at_now:+.4f} FLIPS"
+            else:
+                exp_now = f" exp@now={at_now:+.4f}"
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
                   f"verdict={q['verdict'] or '-':11} "
                   f"oos={q['holdout_status']:12} "
                   f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
-                  f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}")
+                  f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}"
+                  f"{exp_now}")
         return EXIT_OK
 
     if not args.strategy_ids:
