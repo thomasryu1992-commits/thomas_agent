@@ -445,3 +445,49 @@ def test_every_venue_records_what_was_asked_for_not_what_arrived():
         quoted = collector.list_markets(limit=4, timeout_seconds=5)
         assert listing.quotes_requested is False, venue
         assert quoted.quotes_requested is True, venue
+
+
+# --- an id we cannot use again --------------------------------------------------
+
+def test_a_binance_topic_id_is_not_a_candidate():
+    """Found live 2026-07-27: 72 of 92 Binance markets carried a topic id rather than the
+    `marketId:tokenId` its order book needs, because `market/detail` runs only for the first
+    `book_limit` topics. All 72 passed screening.
+
+    A candidate's id is a promise — every scan after confirmation re-reads its legs by it.
+    Proposing one we cannot ask about again spends the scarcest resource in the pipeline (a
+    human comparing resolution rules) and then records a permanent non-reading.
+    """
+    topic_only = _market(BINANCE, market_id="4445372", title="Bitcoin Up or Down on July 27?")
+    verdict = screening.screen_market(topic_only, now=NOW)
+    assert verdict.observable is False
+    assert screening.MARKET_ID_NOT_RE_READABLE in verdict.reasons
+
+    resolved = _market(BINANCE, market_id="6797387:949728")
+    assert screening.screen_market(resolved, now=NOW).observable is True
+
+
+def test_the_other_venues_ids_are_re_readable_as_they_stand():
+    """Kalshi tickers and Polymarket CLOB token ids are what their endpoints already take;
+    only Binance needs a composite. A gate that refused them would empty the pipeline."""
+    assert screening.screen_market(
+        _market(KALSHI, market_id="KXPRESNOMD-28-AOC"), now=NOW).observable is True
+    assert screening.screen_market(
+        _market(POLYMARKET, market_id="10706498543549433311339"), now=NOW).observable is True
+
+
+def test_an_empty_market_id_is_refused_on_every_venue():
+    for venue in (KALSHI, POLYMARKET, BINANCE):
+        verdict = screening.screen_market(_market(venue, market_id="  "), now=NOW)
+        assert screening.MARKET_ID_NOT_RE_READABLE in verdict.reasons, venue
+
+
+def test_the_watch_scan_can_still_price_everything_discovery_proposes():
+    """The property the gate exists to guarantee, stated as a round trip: anything that
+    survives screening carries an id the watch scan's own splitter accepts."""
+    for market_id, usable in (("6797387:949728", True), ("4445372", False), ("5:abc", True)):
+        market = _market(BINANCE, market_id=market_id)
+        observable = screening.screen_market(market, now=NOW).observable
+        assert observable is usable
+        if observable:
+            assert md.split_binance_market_id(market.market_id) is not None

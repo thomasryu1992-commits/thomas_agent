@@ -1321,6 +1321,29 @@ class BinancePredictionCollector:
         )
 
 
+def is_re_readable(market: PredMarket) -> bool:
+    """Can a later scan ask this venue for THIS market again?
+
+    A candidate's id is a promise: an operator confirms a group, and every scan after that
+    re-reads its legs by id. A market whose id the venue cannot be asked about again is
+    proposable and unobservable — it spends the scarcest resource in the whole pipeline (a
+    human comparing resolution rules) and then produces a permanent non-reading.
+
+    Found live 2026-07-27: **72 of 92** Binance markets carried a topic id rather than the
+    ``marketId:tokenId`` its order book needs, because ``market/detail`` is only called for
+    the first ``book_limit`` topics. All 72 passed screening.
+
+    Per-venue because only this module knows what each venue's ids mean. Kalshi tickers and
+    Polymarket CLOB token ids are re-readable as they stand; Binance needs the composite.
+    """
+    market_id = market.market_id
+    if not isinstance(market_id, str) or not market_id.strip():
+        return False
+    if market.venue == BINANCE:
+        return split_binance_market_id(market_id) is not None
+    return True
+
+
 def split_binance_market_id(market_id: Any) -> tuple[int, str] | None:
     """``"5567895:112233"`` as ``(marketId, tokenId)``, or ``None``.
 
@@ -1509,6 +1532,7 @@ __all__ = [
     "PredMarketSnapshot",
     "VenueQuote",
     "collect_pred_markets",
+    "is_re_readable",
     "degraded_pred_market_record",
     "parse_clob_book",
     "parse_gamma_markets",
