@@ -17,16 +17,28 @@ and deliberately nothing more.
 
 Zero new contracts, schemas of a new *concept*, registries, gates, permission scopes, or
 safety flags. Recording what was asked and how it ended is `INTERNAL_READ`-tier bookkeeping
-over the runtime's own local state. The one new schema (`task_registry_entry.v0.1`) is the
-record format for that bookkeeping, not a new authority: the task itself stays the
-authority of `task.v0.3` and the run's evidence stays in the durable ledger.
+over the runtime's own local state. The one new schema (`task_registry_entry.v0.1`, bumped to
+`v0.2` on 2026-07-27 — see below) is the record format for that bookkeeping, not a new
+authority: the task itself stays the authority of `task.v0.3` and the run's evidence stays in
+the durable ledger.
 
 That is also why it could ship first. The proposal stages F1 ahead of F2/F3 precisely
 because this part needs no gate widening to be useful.
 
 ## The entry
 
-`schemas/task_registry_entry.v0.1.schema.json` (closed, `additionalProperties: false`).
+`schemas/task_registry_entry.v0.2.schema.json` (closed, `additionalProperties: false`).
+
+**v0.2 (2026-07-27)** adds one field, `request_kind`: the architecture §8.5 routing kind a
+request was submitted with, or `null` for the default analysis routing. A string beside the
+boolean `flags` rather than inside them — flags answer yes/no about one run option, this names
+which capability set (and therefore which Role) the request needs. It exists because the queue
+is **durable and unattended**: a request queued as a translation must still be a translation
+when the drain picks it up minutes later, and a kind that survived only in the operator's
+message would silently become an analysis. Additive and backward-compatible: v0.1 rows already
+on disk carry no such key and are read as `null`, which *is* the routing they were queued with.
+An unroutable kind is refused at **submission**, not at drain — a bad kind accepted into the
+queue would surface later as a blocked run with nobody watching.
 Stored at `.runtime_governance_state/task_registry.jsonl` — per-machine, gitignored, exactly
 like `schedules.jsonl`, whose `ScheduleStore` this deliberately mirrors: append-only JSONL,
 latest row per id wins, and every read-modify-write under one cross-process sidecar lock

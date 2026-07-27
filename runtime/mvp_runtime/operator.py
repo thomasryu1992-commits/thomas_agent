@@ -78,6 +78,21 @@ _NETWORK_FLAGS = (NETWORK_ACCESS,)
 # reviewer to that request. Matched case-insensitively as a standalone leading token.
 IMPORTANT_MARKERS = ("!중요", "!important")
 
+# 8.5: a leading kind marker routes the request to the Role whose capabilities that kind
+# needs. Same shape as the importance marker and parsed by the same loop — one marker parser,
+# so the empty-request and hidden-command guards below cannot apply to one marker and not the
+# other. The marker names a KIND, never a Role: `planner` maps kinds to capabilities and the
+# Role Registry decides who covers them.
+#
+# Only kinds with a Korean word worth typing are aliased; the canonical name always works, so
+# this table adds convenience and never adds a kind. A kind here that `planner` does not know
+# would be caught by `test_every_operator_kind_marker_is_a_real_kind` rather than at run time.
+KIND_MARKERS = {
+    "!번역": "translation", "!translate": "translation",
+    "!조사": "research", "!research": "research",
+    "!분석": "analysis", "!analysis": "analysis",
+}
+
 # Verbs that CHANGE STATE, across every command family — the ones that must carry a slash on a
 # chat channel (see the gate in handle_operator_message). Read-only verbs (status, audit,
 # recovery, memory, tasks, history, result, feedback) are deliberately absent: answering one of
@@ -481,26 +496,40 @@ def handle_operator_message(
 
     # R7.1: a leading importance marker raises the task's priority, which (under the
     # "auto" validation policy) adds the independent reviewer to exactly this request.
-    # The marker must be its own leading token — "!중요한 아이디어..." is prose, not a flag.
+    # 8.5: a leading kind marker routes it to the Role that kind's capabilities need.
+    #
+    # ONE loop for both, and they may appear in either order ("!중요 !번역 ..." and
+    # "!번역 !중요 ..." mean the same thing) — two parsers would inevitably guard one marker
+    # and not the other. Each marker must be its own leading token: "!중요한 아이디어..." is
+    # prose, not a flag. At most one of each; a repeat stops the scan and stays in the text,
+    # where the request itself will show it rather than a marker silently winning.
     priority = "NORMAL"
-    head, _, rest = text.partition(" ")
-    if head.lower() in IMPORTANT_MARKERS:
-        priority = "HIGH"
+    request_kind: str | None = None
+    while True:
+        head, _, rest = text.partition(" ")
+        lowered = head.lower()
+        if lowered in IMPORTANT_MARKERS and priority == "NORMAL":
+            priority = "HIGH"
+        elif lowered in KIND_MARKERS and request_kind is None:
+            request_kind = KIND_MARKERS[lowered]
+        else:
+            break
         text = rest.strip()
         if not text:
             return OperatorReply(
-                text=f"'{head}' 뒤에 분석할 요청을 함께 보내주세요 (예: {head} 이 사업 아이디어를 분석해줘: ...).",
+                text=f"'{head}' 뒤에 요청 내용을 함께 보내주세요 (예: {head} 이 사업 아이디어를 분석해줘: ...).",
                 accepted=False, status="REFUSED", reason_code="EMPTY_REQUEST",
             )
         # The marker strip happens AFTER the unknown-command guard above, so a slash command
         # hidden behind it used to skip that guard entirely: `!중요 /killl` became a pipeline
         # task and spent a model call on a typo'd emergency verb — the exact fail-open the guard
         # exists to prevent. Re-check the post-marker text. (A marked *real* command is still
-        # refused rather than executed: the marker means "this request is important", and a
-        # command is not a request — mixing the two is a mistake worth naming.)
+        # refused rather than executed: the marker means "this request is important" or "route
+        # it this way", and a command is not a request — mixing the two is a mistake worth
+        # naming.) Inside the loop, so the guard covers every marker, not just the first.
         if text.startswith("/"):
             return OperatorReply(
-                text=("명령에는 '중요' 표시를 붙이지 마세요 — 표시는 분석 요청에만 씁니다. "
+                text=("명령에는 표시를 붙이지 마세요 — 표시는 요청에만 씁니다. "
                       f"명령만 따로 보내주세요 (예: {text.partition(' ')[0]})."),
                 accepted=False, status="REFUSED", reason_code="MARKED_COMMAND",
             )
@@ -517,7 +546,8 @@ def handle_operator_message(
     # marker parse (a `!중요`-marked request is the operator being explicit; deterministic
     # intent never waits on a model). None back means degraded — fall through to the F1
     # queue path, so conversation dying never loses a message.
-    if frontdesk_provider is not None and registry is not None and priority == "NORMAL":
+    if (frontdesk_provider is not None and registry is not None
+            and priority == "NORMAL" and request_kind is None):
         try:
             turn_outcome = frontdesk.run_turn(
                 text, provider=frontdesk_provider, registry=registry,
@@ -554,6 +584,7 @@ def handle_operator_message(
                 requester_id=registration.operator_id, now=stamp,
                 flags={"important": priority == "HIGH",
                        "independent_validation": bool(independent_validation)},
+                request_kind=request_kind,
             )
         except MvpRuntimeError as exc:
             # NOT swallowed, unlike the bookkeeping seam: a request that failed to queue
@@ -599,6 +630,7 @@ def handle_operator_message(
         independent_validation=independent_validation,
         validator_provider=validator_provider,
         priority=priority,
+        request_kind=request_kind,
         channel="telegram",
         requester_type="real_thomas",
         requester_id=registration.operator_id,
@@ -953,6 +985,10 @@ def run_queued_task(
         independent_validation=independent_validation,
         validator_provider=validator_provider,
         priority="HIGH" if entry.flags.get("important") else "NORMAL",
+        # The kind has to come off the ENTRY, not off a message that is long gone: the drain
+        # runs minutes after submission, so a kind that lived only in the operator's text
+        # would silently become an analysis by the time it ran.
+        request_kind=entry.request_kind,
         channel="telegram",
         requester_type="real_thomas",
         requester_id=registration.operator_id,

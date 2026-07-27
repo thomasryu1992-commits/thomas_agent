@@ -454,8 +454,12 @@ absence is compliance.
         `bind_role_output_keys` (a copy, not a mutation). A hosted run of a non-analysis kind
         works; a network provider that *cannot* bind is still refused by name, so the
         fail-closed direction is preserved. See `BUILD_HISTORY.md`.
-  - [ ] **Operator-channel kind markers** (`!번역` / `!조사`, the `!중요` precedent). The CLI has
-        `--kind`; the chat door does not yet. Purely additive.
+  - [x] **Operator-channel kind markers** (`!번역` / `!조사` / `!분석`) — done 2026-07-27. Not
+        "purely additive" as first written: the queue is durable, so the kind had to survive it
+        (`task_registry_entry` **v0.2** adds `request_kind`; v0.1 rows read as `null`, which is
+        the routing they ran under). One marker parser handles both marker families in either
+        order, so the empty-request and hidden-command guards cannot cover one and miss the
+        other. See `BUILD_HISTORY.md`.
   - [ ] The three still-candidate roles (`business.analysis`, `content.general`,
         `development.general`) stay candidates — each activation is its own Thomas decision.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
