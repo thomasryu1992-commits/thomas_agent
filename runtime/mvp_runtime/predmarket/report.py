@@ -213,9 +213,14 @@ def build_pm1_report(
     # Pair-mismatch and outage incidents, which the roadmap asks for by name. A group whose
     # market stopped being listed is a stale or resolved pairing — an operator action, not a
     # scanner bug — and it must not be filed under "venue was down".
+    #
+    # SOURCE_SYNTHETIC is the third: the gate was closed and the mock answered, so the runtime
+    # never reached the venue at all. It has to be tallied here or a report can show coverage
+    # collapsing to INSUFFICIENT_COVERAGE with both other counts at zero — the number with no
+    # explanation next to it.
     incidents = {
-        obs.MARKET_NOT_LISTED: sum(1 for r in observed if obs.MARKET_NOT_LISTED in (r.get("reasons") or [])),
-        obs.VENUE_UNREADABLE: sum(1 for r in observed if obs.VENUE_UNREADABLE in (r.get("reasons") or [])),
+        code: sum(1 for r in observed if code in (r.get("reasons") or []))
+        for code in (obs.MARKET_NOT_LISTED, obs.VENUE_UNREADABLE, obs.SOURCE_SYNTHETIC)
     }
 
     days = (window_seconds or 0.0) / 86400.0
