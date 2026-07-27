@@ -33,7 +33,9 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked
+from .errors import (
+    MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked, WorkerBlocked,
+)
 from .intake import build_task
 from .memory import (
     LEARNING_SOURCE_REVISION,
@@ -50,13 +52,70 @@ from .tools import MockSearchTool, SearchTool, degraded_search_record, run_searc
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
 from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
-from .worker import MockProvider, Provider, run_analysis_worker
+from .planner import DEFAULT_SPECIALIST_ROLE_ID, role_output_spec
+from .worker import (
+    MockProvider, MockTrialProvider, Provider, build_role_prompt, run_analysis_worker,
+)
 from .working_memory import WorkingMemoryStore
 from .workspace import DryRunWriter, WorkspaceWriter, run_write
 
 # R7.1: the selective-validation policy value for ``independent_validation`` — validate
 # only when the task's classification requires it (see independent_validation_required).
 AUTO_VALIDATION = "auto"
+
+
+# §8.5: the Role that was actually selected decides the prompt, the output mapping and the
+# validation requirement. `general.specialist` keeps the business-analysis path byte-identical
+# (its own contract is what `_role_specific_output(None)` already emits, perspectives included);
+# any other routable Role runs against ITS declared contract instead. Returned as the two
+# arguments the worker and the validator each need, so no call site re-derives them.
+def _role_output_spec(plan: Mapping[str, Any]) -> dict[str, str] | None:
+    """The selected Role's declared output contract, or None for the business analyst
+    (whose contract is what the worker already emits by default)."""
+    definition = plan.get("role_definition")
+    if not definition or definition.get("role_id") == DEFAULT_SPECIALIST_ROLE_ID:
+        return None
+    return role_output_spec(definition)
+
+
+def _role_execution(plan: Mapping[str, Any], **prompt_context) -> tuple[str | None, list[str] | None]:
+    """``(prompt_override, role_output_keys)`` for the selected Role — (None, None) for the
+    business analyst, whose prompt and output shape are the worker's defaults."""
+    spec = _role_output_spec(plan)
+    if spec is None:
+        return None, None
+    prompt = build_role_prompt(
+        plan["task"], plan["role_assignment"], plan["role_definition"], spec, **prompt_context)
+    return prompt, list(spec)
+
+
+def _provider_for_role(provider: Provider, spec: Mapping[str, str] | None) -> Provider:
+    """The provider that can actually answer the selected Role's output contract.
+
+    Two honest outcomes, no third:
+
+    * the deterministic path — swap the business-analysis ``MockProvider`` for a role-shaped
+      one built from the Role's own declared keys. That is the trial path's existing
+      ``MockTrialProvider``, reused rather than reinvented: "a mock that answers exactly this
+      role's contract" is the same idea both times.
+    * a network provider — **refuse**, by name. The hosted response schemas are strict
+      (``additionalProperties: false``) and name only the analysis keys, so a hosted model
+      *cannot* return ``translated_text``; the request would come back without it and the run
+      would fail its own output check, reading like a model quality problem when it is a
+      transport contract problem. Making the schema role-aware means threading the Role's keys
+      into provider construction, which happens before the plan exists — a real change, and the
+      remaining piece of §8.5. Until it lands, this refuses at the door instead of misleading.
+    """
+    if spec is None:
+        return provider
+    if getattr(provider, "network_egress", False):
+        raise WorkerBlocked(
+            "ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER",
+            f"the hosted analysis response schema names only the business-analysis keys, so "
+            f"{provider.model_id} cannot return {sorted(spec)}; run this request kind on the "
+            "deterministic provider until the response schema is role-aware",
+        )
+    return MockTrialProvider(dict(spec))
 
 
 def render_response(
@@ -584,17 +643,22 @@ def _revise_once(
     first_invocation = invocation
     spend = _RevisionSpend.from_first_attempt(invocation, validator_invocation)
 
+    role_prompt, role_output_keys = _role_execution(
+        plan, search_hits=search_hits, memory_entries=memory_entries,
+        validated_entries=validated_entries, revision_requests=revision_requests)
     agent_output, invocation = run_analysis_worker(
         plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
         search_hits=search_hits, memory_entries=memory_entries,
         validated_entries=validated_entries, repo_root=repo_root,
         revision_requests=revision_requests,
+        prompt_override=role_prompt, role_output_keys=role_output_keys,
     )
     records["agent_output"] = agent_output
     records["invocation"] = invocation
 
     validation = validate_agent_output(
-        agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
+        agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root,
+        required_role_output_keys=role_output_keys)
     records["validation_result"] = validation
 
     independent_validation_result = validator_invocation = None
@@ -643,6 +707,7 @@ def run_task(
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
     independent_validation: bool | str = False,
+    request_kind: str | None = None,
     validator_provider: Provider | None = None,
     tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None = None,
     revise: bool = False,
@@ -772,6 +837,7 @@ def run_task(
             task, now=now, repo_root=repo_root,
             independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
+            request_kind=request_kind,
         )
         _record_plan(plan, records, wrote_path=write_path is not None)
 
@@ -784,6 +850,9 @@ def run_task(
             provider, records,
             tiered_provider_selector=tiered_provider_selector, triage_result=triage_result,
         )
+        # §8.5: a Role that is not the business analyst needs a provider that can answer ITS
+        # declared contract. Refuses by name rather than producing a confusing REVISE.
+        specialist_provider = _provider_for_role(specialist_provider, _role_output_spec(plan))
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
@@ -815,15 +884,21 @@ def run_task(
         )
         records["validated_memory_retrieved"] = validated_entries
 
+        role_prompt, role_output_keys = _role_execution(
+            plan, search_hits=search_hits, memory_entries=memory_entries,
+            validated_entries=validated_entries)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
             validated_entries=validated_entries, repo_root=repo_root,
+            prompt_override=role_prompt, role_output_keys=role_output_keys,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
 
-        validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
+        validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"],
+                                           now=now, repo_root=repo_root,
+                                           required_role_output_keys=role_output_keys)
         records["validation_result"] = validation
 
         # R7 (opt-in): the independent validator reviews the output in a fresh context.

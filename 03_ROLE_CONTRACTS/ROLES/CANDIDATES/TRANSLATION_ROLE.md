@@ -2,9 +2,9 @@
 schema_version: role_definition.v0.2
 role_id: translation.general
 role_name: Translation Role
-role_version: 0.3.0
-status: candidate
-routable: false
+role_version: 0.4.0
+status: active
+routable: true
 role_type: dynamic_specialist
 purpose: Translate content while preserving meaning, terminology, audience, tone,
   and disclosed ambiguities.
