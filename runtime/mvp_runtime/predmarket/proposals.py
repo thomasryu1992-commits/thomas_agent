@@ -96,6 +96,14 @@ def build_proposal_record(
         "candidates_truncated": len(candidates) - len(kept),
         "near_miss_total": result.get("near_miss_total"),
         "boilerplate_only_count": result.get("boilerplate_only_count"),
+        # The open question, made countable. Rotation reads past each venue's busiest
+        # markets on the theory that overlap also lives further down; nobody knows whether
+        # it does. `candidates_from_tail` is the answer accumulating one run at a time — and
+        # if it stays zero, rotation goes on evidence rather than on opinion.
+        "rotation": result.get("rotation"),
+        "candidates_from_tail": sum(
+            1 for c in (result.get("candidates") or []) if c.get("discovery_slice") == "tail"
+        ),
         # Why a venue contributed nothing: screened out, or unreadable. Kept apart, because
         # "the venue had no usable markets" and "the venue did not answer" would otherwise
         # both look like a quiet day.
@@ -164,13 +172,15 @@ def proposal_status_line(record: Mapping[str, Any], *, new_count: int | None = N
     counts = record.get("market_counts") or {}
     venues = ", ".join(f"{v}={n}" for v, n in sorted(counts.items())) or "-"
     errors = record.get("venue_errors") or {}
-    tail = f" degraded={','.join(sorted(errors))}" if errors else ""
+    degraded = f" degraded={','.join(sorted(errors))}" if errors else ""
     fresh = "" if new_count is None else f", {new_count} new"
     truncated = record.get("candidates_truncated") or 0
     cut = f" ({truncated} not recorded)" if truncated else ""
+    tail_count = record.get("candidates_from_tail") or 0
+    from_tail = f", {tail_count} from the rotating tail" if tail_count else ""
     return (
-        f"pm_scan discovery: {record.get('candidate_count')} candidate(s){cut}{fresh} "
-        f"from {record.get('judged_count')} judged pairings [{venues}]{tail}"
+        f"pm_scan discovery: {record.get('candidate_count')} candidate(s){cut}{fresh}{from_tail} "
+        f"from {record.get('judged_count')} judged pairings [{venues}]{degraded}"
     )
 
 
@@ -187,4 +197,79 @@ __all__ = [
     "proposal_status_line",
     "proposals_path",
     "read_proposals",
+    "render_confirmation_sheet",
 ]
+
+
+# --- the operator's reading material --------------------------------------------
+
+def render_confirmation_sheet(result: Mapping[str, Any], *, now: str) -> str:
+    """Candidates with both venues' settlement text side by side, and a runnable command.
+
+    The bottleneck this exists for: the pipeline proposes thirty-odd pairings every six
+    hours and **not one of them becomes data until a human decides two venues settle the
+    same event the same way**. That decision needs the venues' own words, which arrive in
+    payloads discovery already fetches and used to discard.
+
+    What it deliberately does NOT do is compare them. Two venues can publish near-identical
+    text and still settle differently on the same news — that is the risk the whole strategy
+    turns on, and a similarity score over settlement prose would read as an answer while
+    being exactly as blind as the title matcher. This puts the two texts next to each other;
+    the judgement stays where it belongs.
+
+    Markdown because the texts are paragraphs, and a console line wraps them into mush.
+    """
+    candidates = list(result.get("candidates") or [])
+    counts = result.get("market_counts") or {}
+    lines = [
+        f"# PM1 confirmation sheet — {now}",
+        "",
+        f"{len(candidates)} candidate(s) from {result.get('judged_count')} judged pairings "
+        f"({', '.join(f'{v}={n}' for v, n in sorted(counts.items())) or '-'}).",
+        "",
+        "**Nothing here is a group.** Each needs the one judgement no algorithm can make:",
+        "*do these two venues resolve this event the same way?* The settlement text below is",
+        "each venue's own, placed side by side — it is help with the reading, not a verdict.",
+        "",
+    ]
+    errors = result.get("venue_errors") or {}
+    if errors:
+        lines += [f"> Degraded this run: {', '.join(f'{v} ({c})' for v, c in sorted(errors.items()))}",
+                  "> — no candidates from those venues, which is not the same as none existing.", ""]
+
+    for index, candidate in enumerate(candidates, 1):
+        slice_note = " · from the rotating tail" if candidate.get("discovery_slice") == "tail" else ""
+        lines += [
+            f"## {index}. similarity {candidate.get('title_similarity')} · "
+            f"close delta {candidate.get('close_delta_hours')}h{slice_note}",
+            "",
+        ]
+        for side in ("left", "right"):
+            venue = candidate.get(f"{side}_venue")
+            market_id = candidate.get(f"{side}_market_id")
+            rules = candidate.get(f"{side}_resolution_rules")
+            lines += [
+                f"**{venue}** `{market_id}`  ",
+                f"> {candidate.get(f'{side}_title')}",
+                "",
+                f"*Resolves:* {rules or '(this venue published no settlement text)'}",
+                "",
+            ]
+        shared = ", ".join(candidate.get("distinctive_shared_tokens") or []) or "-"
+        lines += [
+            f"*Matched on:* {shared}",
+            "",
+            "```bash",
+            "docker exec thomas-scheduler python -m runtime.mvp_runtime.predmarket.pairs_cli confirm \\",
+            f"  --leg {candidate.get('left_venue')}:{candidate.get('left_market_id')} \\",
+            f"  --leg {candidate.get('right_venue')}:{candidate.get('right_market_id')} \\",
+            '  --criteria "REPLACE: how both venues settle this, and where they could differ"',
+            "```",
+            "",
+            "---",
+            "",
+        ]
+    if not candidates:
+        lines += ["No candidates this run. The screen counts above say whether that is a quiet",
+                  "market or a read that saw nothing usable.", ""]
+    return "\n".join(lines)

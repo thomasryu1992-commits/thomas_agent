@@ -9,6 +9,15 @@
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
     python -m runtime.mvp_runtime.predmarket.pairs_cli report [--json]
+    python -m runtime.mvp_runtime.predmarket.pairs_cli sheet [--out sheet.md]
+
+``sheet`` is the one aimed squarely at the bottleneck. The pipeline proposes thirty-odd
+pairings every six hours and **none of them becomes data until a human decides two venues
+settle the same event the same way** — a judgement that needs the venues' own settlement
+text, which discovery already fetches and used to throw away. It prints the candidates with
+both texts side by side and a runnable ``confirm`` command per pairing. It compares nothing:
+two venues can publish near-identical wording and still settle differently on the same news,
+so the reading is made easy and the judgement is left where it belongs.
 
 ``report`` is the far end of the same workflow and lives here rather than behind a second
 entry point: propose -> confirm -> the scheduler observes -> read what it found. It answers
@@ -45,10 +54,12 @@ from typing import Any, Sequence
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs, report, screening
+from . import matching, pairs, proposals, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
+    DISCOVERY_MARKET_LIMIT,
     VENUES,
+    rotation_index,
     collect_pred_markets,
     degraded_pred_market_record,
     PREDMARKET_DEGRADED,
@@ -77,6 +88,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
                 if isinstance(row.get("derived_from"), (list, tuple)) else None
             ),
             accepting_orders=row.get("accepting_orders"),
+            resolution_rules=row.get("resolution_rules"),
             volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
@@ -87,8 +99,9 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
 
 
 def _read_venue(
-    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None
-) -> tuple[list[PredMarket], dict[str, Any], str | None]:
+    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None,
+    rotation: int = 0,
+) -> tuple[list[PredMarket], dict[str, Any], str | None, set[str]]:
     """One venue's *screenable* markets, its screen result, and any degrade reason.
 
     Never raises: a venue being unreadable is not a failed command. Proposing from one venue
@@ -107,25 +120,30 @@ def _read_venue(
         venue,
         min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours),
         root=root,
+        rotation=rotation,
     )
     try:
-        snapshot, _record = collect_pred_markets(venue, collector=collector, now=now, limit=limit)
+        snapshot, _record = collect_pred_markets(
+            venue, collector=collector, now=now, limit=limit, with_quotes=False)
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
-        return [], screening.screen_markets([], now=now), exc.reason_code
+        return [], screening.screen_markets([], now=now), exc.reason_code, set()
     screened = screening.screen_markets(
         _markets_of(snapshot), now=now, min_horizon_hours=min_horizon_hours
     )
-    return list(screened["observable"]), screened, None
+    tail = {f"{venue}:{mid}" for mid in (snapshot.get("tail_market_ids") or [])}
+    return list(screened["observable"]), screened, None, tail
 
 
 def run_discovery(
     *,
     now: str,
-    limit: int = DEFAULT_MARKET_LIMIT,
+    limit: int = DISCOVERY_MARKET_LIMIT,
     min_horizon_hours: float | None = None,
     venues: Sequence[str] | None = None,
     root: Path | None = None,
+    rotation: int | None = None,
+    with_rules: bool = False,
 ) -> dict[str, Any]:
     """Read every venue, screen, and judge every cross-venue pairing. Confirms nothing.
 
@@ -135,14 +153,20 @@ def run_discovery(
     """
     horizon = screening.MIN_HORIZON_HOURS if min_horizon_hours is None else float(min_horizon_hours)
     wanted = [v for v in (venues or VENUES) if v in VENUES]
+    # One rotation index for the whole run, derived from the clock. Every venue advances its
+    # window together, so a run is one coherent slice of the corpus rather than three
+    # unrelated ones drifting apart.
+    turn = rotation_index(now) if rotation is None else int(rotation)
 
     markets: dict[str, list[PredMarket]] = {}
     screens: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
+    tail_keys: set[str] = set()
     for venue in wanted:
-        observable, screen, error = _read_venue(
-            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root)
+        observable, screen, error, tail = _read_venue(
+            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root, rotation=turn)
         markets[venue], screens[venue] = observable, screen
+        tail_keys |= tail
         if error:
             errors[venue] = error
 
@@ -155,6 +179,27 @@ def run_discovery(
         for venue, screen in screens.items()
     }
     result["venue_errors"] = errors
+    result["rotation"] = turn
+    # Which slice each candidate came from, so "was reading past the head worth it?" is
+    # answered by the record rather than argued. `tail` means at least ONE leg would not
+    # have been read without rotation — which is exactly the pairing rotation paid for.
+    for candidate in result["candidates"] + result["near_misses"]:
+        from_tail = (
+            f"{candidate['left_venue']}:{candidate['left_market_id']}" in tail_keys
+            or f"{candidate['right_venue']}:{candidate['right_market_id']}" in tail_keys
+        )
+        candidate["discovery_slice"] = "tail" if from_tail else "head"
+
+    if with_rules:
+        # Opt-in, and the scheduled scan does not ask. Settlement text is a kilobyte of prose
+        # per leg; carrying it into a store written four times a day would add megabytes a
+        # year to records nobody reads it from. The sheet asks; the cadence does not.
+        rules = {f"{m.venue}:{m.market_id}": m.resolution_rules
+                 for venue_markets in markets.values() for m in venue_markets}
+        for candidate in result["candidates"]:
+            for side in ("left", "right"):
+                key = f"{candidate[f'{side}_venue']}:{candidate[f'{side}_market_id']}"
+                candidate[f"{side}_resolution_rules"] = rules.get(key)
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
     taken = pairs.grouped_market_keys(pairs.read_groups(root))
@@ -277,6 +322,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_sheet(args: argparse.Namespace) -> int:
+    now = pairs.now_iso()
+    result = run_discovery(now=now, limit=args.limit, with_rules=True)
+    sheet = proposals.render_confirmation_sheet(result, now=now)
+    if args.out:
+        Path(args.out).write_text(sheet, encoding="utf-8")
+        sys.stdout.write(f"wrote {len(result['candidates'])} candidate(s) to {args.out}\n")
+        return EXIT_OK
+    sys.stdout.write(sheet)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predmarket-pairs",
@@ -285,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     propose = sub.add_parser("propose", help="judge cross-venue pairings; confirms nothing")
-    propose.add_argument("--limit", type=int, default=DEFAULT_MARKET_LIMIT)
+    propose.add_argument("--limit", type=int, default=DISCOVERY_MARKET_LIMIT)
     propose.add_argument(
         "--venue", action="append", choices=sorted(VENUES),
         help=("repeat to restrict which venues are read; default is all of them. Every "
@@ -341,6 +398,12 @@ def build_parser() -> argparse.ArgumentParser:
               "seeing an edge at 09:00 and again at 11:00 is not evidence it was there at 10:00."),
     )
     reporting.set_defaults(handler=_cmd_report)
+
+    sheet = sub.add_parser(
+        "sheet", help="candidates with both venues' settlement text, ready to confirm")
+    sheet.add_argument("--limit", type=int, default=DISCOVERY_MARKET_LIMIT)
+    sheet.add_argument("--out", help="write the markdown here instead of stdout")
+    sheet.set_defaults(handler=_cmd_sheet)
     return parser
 
 

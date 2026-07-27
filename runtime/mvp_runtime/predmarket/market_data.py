@@ -119,6 +119,31 @@ MAX_MARKET_LIMIT = 500
 DEFAULT_BOOK_LIMIT = 25
 MAX_BOOK_LIMIT = 100
 
+# --- how wide a discovery read goes, and which slice it takes ---------------------
+#
+# Every venue is read head-first, ranked by its own traded volume: a market heavily traded
+# on one venue is the kind of market the other venues also list, and that is where the
+# cross-venue overlap lives. But "always the head" and "cover the venue eventually" are both
+# real goals, and choosing one costs the other — so a discovery read takes the head PLUS a
+# window that rotates through everything below it.
+#
+# Whether the tail is worth reading is an OPEN QUESTION, deliberately left measurable rather
+# than argued: every candidate records the slice it came from, so after a week the answer is
+# in the data. If nothing confirmable ever comes from the tail, rotation goes — with
+# evidence, not opinion.
+DISCOVERY_HEAD_SHARE = 0.5
+# The cadence the window advances on. Matches the discovery schedule, so consecutive runs
+# see consecutive windows rather than the same one twice.
+ROTATION_PERIOD_SECONDS = 21600.0
+
+# Per venue, because their costs differ by two orders of magnitude (measured 2026-07-27):
+#   kalshi     — 5 calls fetch ~6,500 markets; widening costs matcher CPU, not calls
+#   polymarket — 1 call per 100 markets
+#   binance    — one SIGNED call per topic, because only a resolved topic has a usable id
+DISCOVERY_MARKET_LIMIT = 300
+POLYMARKET_DISCOVERY_PAGES = 3
+BINANCE_DISCOVERY_DETAIL_LIMIT = 40
+
 
 def _probability(value: Any) -> float | None:
     """A venue price as a probability in ``(0, 1)``, or ``None``.
@@ -211,6 +236,15 @@ class PredMarket:
     # Whether the venue says it will currently accept an order (Polymarket's
     # `enableOrderBook`/`acceptingOrders`). `None` is *did not say*, never *no*.
     accepting_orders: bool | None = None
+    # How the venue says this market settles, in the venue's own words (Kalshi
+    # `rules_primary`, Gamma `description`, Binance `markets[].description`). Populated only
+    # on a discovery read that asked for it: this is reading material for the one judgement
+    # no algorithm can make, and an observation record has no use for a kilobyte of prose.
+    #
+    # It is NOT a comparison. Two venues can publish near-identical text and still settle
+    # differently on the same news — that is the risk the whole strategy turns on, and
+    # putting both texts side by side is help with the reading, not a substitute for it.
+    resolution_rules: str | None = None
     # Traded volume as the venue reports it (Kalshi `volume_fp`, Gamma `volumeNum`, Binance
     # `tradeVolume`). Not comparable ACROSS venues — different units, different histories —
     # and never used as one. It ranks a venue's own markets against each other, which is how
@@ -229,6 +263,7 @@ class PredMarket:
             "fee_rate_bps": self.fee_rate_bps,
             "derived_from": list(self.derived_from) if self.derived_from is not None else None,
             "accepting_orders": self.accepting_orders,
+            "resolution_rules": self.resolution_rules,
             "volume": self.volume,
             "quote": self.quote.as_dict(),
         }
@@ -242,6 +277,14 @@ class PredMarketSnapshot:
     is_synthetic: bool
     collector_version: str = PREDMARKET_TOOL_VERSION
     latency_ms: int = 0
+    # Which of these markets came from the rotating tail rather than the head. Carried on the
+    # SNAPSHOT and not on PredMarket: it describes this read, not the market, and a watch
+    # scan's observations have no business storing it forever.
+    tail_market_ids: tuple[str, ...] = ()
+    # Whether order books were asked for at all. Without it, a discovery read's
+    # `quoted_count: 0` is indistinguishable from a venue with an empty book on every
+    # market — the same "absence read as a value" mistake this module exists to avoid.
+    quotes_requested: bool = True
 
 
 class PredMarketCollector(Protocol):
@@ -250,7 +293,12 @@ class PredMarketCollector(Protocol):
     tool_version: str
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot: ...
 
 
@@ -282,7 +330,12 @@ class MockPredMarketCollector:
         self.source = f"mock.{self.venue}"
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # A small deterministic offset per venue, so the same event is priced differently on
         # the two mocks — the cross-venue gap the detector is supposed to find.
@@ -308,13 +361,70 @@ class MockPredMarketCollector:
         if market_ids is not None:
             wanted = set(market_ids)
             markets = [m for m in markets if m.market_id in wanted]
+        if not with_quotes:
+            # The mock's prices cost nothing, but it honours the contract anyway: a caller
+            # that forgot to ask for quotes must behave the same here as against a venue.
+            markets = [
+                PredMarket(
+                    venue=m.venue, market_id=m.market_id, group_id=m.group_id, title=m.title,
+                    close_time=m.close_time, status=m.status, category=m.category,
+                    fee_rate_bps=m.fee_rate_bps, derived_from=m.derived_from,
+                    accepting_orders=m.accepting_orders, volume=m.volume, quote=VenueQuote(),
+                )
+                for m in markets
+            ]
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
             source=self.source,
             is_synthetic=True,
             collector_version=self.tool_version,
+            quotes_requested=with_quotes,
         )
+
+
+def rotation_index(now: Any, *, period_seconds: float = ROTATION_PERIOD_SECONDS) -> int:
+    """Which rotation window ``now`` falls in. Derived, never stored.
+
+    A stored counter would be one more piece of per-machine state to keep consistent, and it
+    would reset on every redeploy — so the window would sit on whatever slice a restart left
+    it at. Deriving it from the clock means consecutive discovery runs see consecutive
+    windows, restarts change nothing, and two machines reading at the same hour agree.
+    """
+    try:
+        return int(timeutil.parse_iso(str(now)).timestamp() // max(1.0, float(period_seconds)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def select_head_and_tail(
+    ranked: Sequence[Any], *, limit: int, rotation: int = 0, head_share: float = DISCOVERY_HEAD_SHARE
+) -> tuple[list[Any], list[Any]]:
+    """Split a volume-ranked list into the head (always taken) and one rotating tail window.
+
+    ``ranked`` must already be busiest-first. Returns ``(head, tail_window)`` rather than one
+    concatenated list, because the caller needs to know which markets came from where — that
+    is what makes "was the tail worth reading?" answerable later instead of arguable now.
+
+    The window walks the tail and wraps, so over ``ceil(tail / tail_slots)`` runs every
+    market below the head has been looked at exactly once. A tail shorter than its slots is
+    returned whole and the rotation does nothing, which is the honest degenerate case: there
+    is nothing to rotate through.
+    """
+    limit = max(0, int(limit))
+    if not ranked or not limit:
+        return [], []
+    head_slots = min(len(ranked), max(0, min(limit, int(round(limit * max(0.0, min(1.0, head_share)))))))
+    head = list(ranked[:head_slots])
+    tail_slots = limit - head_slots
+    tail_pool = list(ranked[head_slots:])
+    if not tail_slots or not tail_pool:
+        return head, []
+    if len(tail_pool) <= tail_slots:
+        return head, tail_pool
+    windows = -(-len(tail_pool) // tail_slots)      # ceil
+    start = (int(rotation) % windows) * tail_slots
+    return head, tail_pool[start:start + tail_slots]
 
 
 def require_venue(venue: Any) -> str:
@@ -341,6 +451,7 @@ def collect_pred_markets(
     limit: int = DEFAULT_MARKET_LIMIT,
     timeout_seconds: int = 10,
     market_ids: Sequence[str] | None = None,
+    with_quotes: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Collect one venue's open markets. Returns ``(snapshot, tool_use_record)``.
 
@@ -354,7 +465,8 @@ def collect_pred_markets(
     limit = _clamp(limit, DEFAULT_MARKET_LIMIT, MAX_MARKET_LIMIT)
     try:
         result = collector.list_markets(
-            limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids
+            limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids,
+            with_quotes=with_quotes,
         )
     except (ToolError, TimeoutError) as exc:
         raise ToolBlocked("TOOL_ERROR", str(exc)) from exc
@@ -370,13 +482,22 @@ def collect_pred_markets(
         # compare, and a scan where that number is most of the list is a degraded scan even
         # though every call succeeded.
         "quoted_count": len(quoted),
+        # Reported so `quoted_count: 0` can never be misread. A discovery read asks for no
+        # books at all, and "nobody is quoting these" is a different finding from "we did
+        # not ask" — the module's own rule about absences, applied to itself.
+        "quotes_requested": bool(getattr(result, "quotes_requested", True)),
+        # Which of these came from the rotating tail. Carried so a later reader can ask the
+        # question this whole mechanism was built to answer empirically: was reading past
+        # the head worth the calls?
+        "tail_market_ids": sorted(getattr(result, "tail_market_ids", ()) or ()),
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
         "created_at": now,
     }
     input_sha256 = integrity.sha256_record(
         {"tool_id": collector.tool_id, "venue": venue, "limit": limit,
-         "market_ids": sorted(market_ids) if market_ids is not None else None}
+         "market_ids": sorted(market_ids) if market_ids is not None else None,
+         "with_quotes": bool(with_quotes)}
     )
     record = {
         "tool_id": collector.tool_id,
@@ -387,6 +508,7 @@ def collect_pred_markets(
         "input_sha256": input_sha256,
         "market_count": len(markets),
         "quoted_count": len(quoted),
+        "quotes_requested": bool(getattr(result, "quotes_requested", True)),
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
         "output_sha256": integrity.sha256_record({"markets": markets}),
@@ -434,6 +556,7 @@ def select_pred_market_collector(
     now: str | None = None,
     root: Path | None = None,
     min_close_time: str | None = None,
+    rotation: int = 0,
 ) -> PredMarketCollector:
     """Choose one venue's collector — the enforced Safety-Flag Gate chokepoint.
 
@@ -458,7 +581,7 @@ def select_pred_market_collector(
             provider_id=KALSHI_PROVIDER_ID,
             default_factory=lambda: MockPredMarketCollector(KALSHI),
             gated_factory=lambda authorization: KalshiPublicCollector(
-                authorization=authorization, min_close_time=min_close_time
+                authorization=authorization, min_close_time=min_close_time, rotation=rotation
             ),
             now=now,
             root=root,
@@ -471,7 +594,7 @@ def select_pred_market_collector(
             provider_id=POLYMARKET_PROVIDER_ID,
             default_factory=lambda: MockPredMarketCollector(POLYMARKET),
             gated_factory=lambda authorization: PolymarketPublicCollector(
-                authorization=authorization, min_close_time=min_close_time
+                authorization=authorization, min_close_time=min_close_time, rotation=rotation
             ),
             now=now,
             root=root,
@@ -483,7 +606,7 @@ def select_pred_market_collector(
         provider_id=BINANCE_PROVIDER_ID,
         default_factory=lambda: MockPredMarketCollector(BINANCE),
         gated_factory=lambda authorization: BinancePredictionCollector(
-            authorization=authorization, min_close_time=min_close_time
+            authorization=authorization, min_close_time=min_close_time, rotation=rotation
         ),
         now=now,
         root=root,
@@ -561,12 +684,24 @@ class KalshiPublicCollector:
     # advancing, and a short page is never mistaken for the end of the listing.
     MAX_EVENT_PAGES = 5
 
-    def __init__(self, *, authorization: Authorization | None = None, min_close_time: str | None = None):
+    def __init__(
+        self,
+        *,
+        authorization: Authorization | None = None,
+        min_close_time: str | None = None,
+        rotation: int = 0,
+    ):
         self._authorization = authorization
         self._min_close_time = min_close_time
+        self._rotation = int(rotation)
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
@@ -576,10 +711,11 @@ class KalshiPublicCollector:
             now=timeutil.utc_now_iso(),
         )
         started = time.monotonic()
+        tail: list[PredMarket] = []
         if market_ids:
             markets = self._read_named(market_ids, limit=limit, timeout_seconds=timeout_seconds)
         else:
-            markets = self._read_events(limit=limit, timeout_seconds=timeout_seconds)
+            markets, tail = self._read_events(limit=limit, timeout_seconds=timeout_seconds)
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
@@ -587,6 +723,12 @@ class KalshiPublicCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            tail_market_ids=tuple(m.market_id for m in tail),
+            # False on a discovery read even though these markets ARE quoted: `/events`
+            # returns prices inline, so Kalshi costs nothing extra for them and throwing
+            # away data already paid for would be worse. The flag records what was asked
+            # for, not what happened to arrive.
+            quotes_requested=with_quotes,
         )
 
     def _read_named(
@@ -607,7 +749,7 @@ class KalshiPublicCollector:
         )
         return parse_kalshi_markets(payload)[:limit]
 
-    def _read_events(self, *, limit: int, timeout_seconds: int) -> list[PredMarket]:
+    def _read_events(self, *, limit: int, timeout_seconds: int) -> tuple[list[PredMarket], list[PredMarket]]:
         """Discovery, through the event index: sweep several pages, then keep the busiest.
 
         ``status=open`` and ``min_close_ts`` are both honoured here (checked against a
@@ -652,7 +794,11 @@ class KalshiPublicCollector:
             cursor = payload.get("cursor") if isinstance(payload, Mapping) else None
             if not cursor:
                 break
-        return rank_by_volume(markets)[:limit]
+        # The sweep is already paid for, so widening here costs matcher CPU rather than
+        # calls — which is why this venue takes the largest slice of the three.
+        head, tail = select_head_and_tail(
+            rank_by_volume(markets), limit=limit, rotation=self._rotation)
+        return head + tail, tail
 
 
 def rank_by_volume(markets: Sequence[PredMarket]) -> list[PredMarket]:
@@ -728,6 +874,7 @@ def _kalshi_market(
         close_time=row.get("close_time") if isinstance(row.get("close_time"), str) else None,
         status=row.get("status") if isinstance(row.get("status"), str) else None,
         derived_from=parse_kalshi_mve_legs(row),
+        resolution_rules=_text(row.get("rules_primary")),
         volume=_size(row.get("volume_fp")),
         quote=VenueQuote(
             yes_bid=_probability(row.get("yes_bid_dollars")),
@@ -827,13 +974,22 @@ class PolymarketPublicCollector:
         authorization: Authorization | None = None,
         book_limit: int = DEFAULT_BOOK_LIMIT,
         min_close_time: str | None = None,
+        rotation: int = 0,
+        pages: int = POLYMARKET_DISCOVERY_PAGES,
     ):
         self._authorization = authorization
         self._book_limit = _clamp(book_limit, DEFAULT_BOOK_LIMIT, MAX_BOOK_LIMIT)
         self._min_close_time = min_close_time
+        self._rotation = int(rotation)
+        self._pages = max(1, int(pages))
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         safety_gate.assert_authorization(
             self._authorization,
@@ -853,11 +1009,30 @@ class PolymarketPublicCollector:
                 # closed: false` whose end date passed months ago (observed 2026-07-27), so
                 # without this the page is partly already-expired markets.
                 params["end_date_min"] = self._min_close_time
-        payload = _get_json(
-            f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(params)}",
-            timeout_seconds=timeout_seconds,
-        )
-        markets = parse_gamma_markets(payload)[:limit]
+        markets: list[PredMarket] = []
+        tail: list[PredMarket] = []
+        if market_ids is None:
+            # Gamma caps a page at 100 and honours `offset`, so reach is a handful of cheap
+            # calls rather than a design problem. Rank across ALL of them before slicing —
+            # ranking one page at a time would just re-order each page's own head.
+            for page in range(self._pages):
+                page_params = {**params, "offset": page * int(params["limit"])}
+                rows = parse_gamma_markets(_get_json(
+                    f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(page_params)}",
+                    timeout_seconds=timeout_seconds,
+                ))
+                markets.extend(rows)
+                if not rows:
+                    break
+            head, tail = select_head_and_tail(
+                rank_by_volume(markets), limit=limit, rotation=self._rotation)
+            markets = head + tail
+        else:
+            payload = _get_json(
+                f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(params)}",
+                timeout_seconds=timeout_seconds,
+            )
+            markets = parse_gamma_markets(payload)[:limit]
         if market_ids is not None:
             # A watch scan wants the confirmed legs, not the front of the listing. Filtering
             # BEFORE the per-market book calls is the whole saving: one Gamma call plus one
@@ -865,6 +1040,18 @@ class PolymarketPublicCollector:
             # to be listed first.
             wanted = set(market_ids)
             markets = [m for m in markets if m.market_id in wanted]
+
+        if not with_quotes:
+            # Discovery reads listings only. The matcher compares titles, close times,
+            # categories and cross-references — it never looks at a price — so a book call
+            # here buys a number nobody reads, one HTTP round trip at a time.
+            return PredMarketSnapshot(
+                venue=self.venue, markets=markets, source=self.source, is_synthetic=False,
+                collector_version=self.tool_version,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                quotes_requested=False,
+                tail_market_ids=tuple(m.market_id for m in tail),
+            )
 
         priced: list[PredMarket] = []
         for index, market in enumerate(markets):
@@ -893,6 +1080,8 @@ class PolymarketPublicCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            quotes_requested=with_quotes,
+            tail_market_ids=tuple(m.market_id for m in tail),
         )
 
 
@@ -947,9 +1136,29 @@ def parse_gamma_markets(payload: Any) -> list[PredMarket]:
             close_time=row.get("endDate") if isinstance(row.get("endDate"), str) else None,
             status="active" if row.get("active") and not row.get("closed") else "inactive",
             accepting_orders=_gamma_accepting_orders(row),
+            resolution_rules=_gamma_rules(row),
             volume=as_optional_float(row.get("volumeNum")),
         ))
     return markets
+
+
+def _text(value: Any) -> str | None:
+    """A non-empty string, or ``None``. Blank prose is not prose."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _gamma_rules(row: Mapping[str, Any]) -> str | None:
+    """Polymarket's settlement text: the market description, plus who decides when it says.
+
+    Two separate facts joined on purpose — *what* resolves it and *who* resolves it are both
+    load-bearing when comparing venues, and an operator reading one without the other has
+    half the answer. The join is explicit rather than silent so the seam is visible.
+    """
+    description = _text(row.get("description"))
+    source = _text(row.get("resolutionSource"))
+    if description and source:
+        return f"{description}\n\nResolution source: {source}"
+    return description or (f"Resolution source: {source}" if source else None)
 
 
 def _gamma_accepting_orders(row: Mapping[str, Any]) -> bool | None:
@@ -1057,6 +1266,8 @@ class BinancePredictionCollector:
         book_limit: int = DEFAULT_BOOK_LIMIT,
         base_url: str = BASE,
         min_close_time: str | None = None,
+        rotation: int = 0,
+        detail_limit: int = BINANCE_DISCOVERY_DETAIL_LIMIT,
     ):
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in self.ALLOWED_HOSTS:
@@ -1067,6 +1278,12 @@ class BinancePredictionCollector:
         self._authorization = authorization
         self._book_limit = _clamp(book_limit, DEFAULT_BOOK_LIMIT, MAX_BOOK_LIMIT)
         self._min_close_time = min_close_time
+        self._rotation = int(rotation)
+        # This venue's real width. Only a topic that got `market/detail` has an id a later
+        # scan can re-read, so the detail budget IS how many markets discovery can propose —
+        # and every one of them is a signed call, which is why this tail rotates rather than
+        # simply getting bigger.
+        self._detail_limit = max(1, int(detail_limit))
 
     def credentials_present(self) -> bool:
         return bool(
@@ -1161,7 +1378,12 @@ class BinancePredictionCollector:
         )
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
@@ -1186,17 +1408,18 @@ class BinancePredictionCollector:
             # at a time on markets that close before an operator could read the proposal.
             # The topic already carries `close_time`, so the skip costs nothing to decide.
             topics = [t for t in topics if _reaches_horizon(t.close_time, self._min_close_time)]
-        # Busiest first, and here it decides more than the order of a list: only the first
-        # `book_limit` topics get a detail and a book call, so this is what those scarce
-        # signed calls are spent on. Untouched when specific ids were named — that path
-        # returns above, before any of this.
-        topics = rank_by_volume(topics)
+        # Busiest first, and here it decides more than the order of a list: only a resolved
+        # topic can be proposed at all, so this is what the scarce signed calls are spent on.
+        # Untouched when specific ids were named — that path returns above, before any of
+        # this.
+        head, tail = select_head_and_tail(
+            rank_by_volume(topics), limit=min(limit, self._detail_limit), rotation=self._rotation)
+        tail_topic_ids = {t.market_id for t in tail}
+        topics = head + tail
 
         markets: list[PredMarket] = []
-        for index, topic in enumerate(topics):
-            if index >= self._book_limit:
-                markets.append(topic)   # past the call budget: unquoted, never guessed
-                continue
+        tail_markets: list[PredMarket] = []
+        for topic in topics:
             try:
                 detail = self._signed_get(
                     self.DETAIL_PATH,
@@ -1210,15 +1433,20 @@ class BinancePredictionCollector:
             if outcome is None:
                 markets.append(topic)
                 continue
-            market_id, token_id, condition_id = outcome
-            try:
-                book = self._signed_get(
-                    self.BOOK_PATH,
-                    {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
-                    timeout_seconds=timeout_seconds,
-                )
-            except ToolError:
-                book = None
+            market_id, token_id, condition_id, rules = outcome
+            book = None
+            if with_quotes:
+                # `detail` above stays: it carries the conditionId that becomes `group_id`,
+                # and a venue-asserted cross-reference is the strongest matching evidence
+                # there is. Only the BOOK is price-only, so only the book is skipped.
+                try:
+                    book = self._signed_get(
+                        self.BOOK_PATH,
+                        {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
+                        timeout_seconds=timeout_seconds,
+                    )
+                except ToolError:
+                    book = None
             markets.append(PredMarket(
                 venue=BINANCE,
                 # `marketId:tokenId`, because the order book needs BOTH and only the token is
@@ -1234,9 +1462,12 @@ class BinancePredictionCollector:
                 close_time=topic.close_time,
                 status=topic.status,
                 fee_rate_bps=topic.fee_rate_bps,
+                resolution_rules=rules,
                 volume=topic.volume,
                 quote=parse_prediction_book(book) if book is not None else VenueQuote(),
             ))
+            if topic.market_id in tail_topic_ids:
+                tail_markets.append(markets[-1])
 
         return PredMarketSnapshot(
             venue=self.venue,
@@ -1245,7 +1476,32 @@ class BinancePredictionCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            quotes_requested=with_quotes,
+            tail_market_ids=tuple(m.market_id for m in tail_markets),
         )
+
+
+def is_re_readable(market: PredMarket) -> bool:
+    """Can a later scan ask this venue for THIS market again?
+
+    A candidate's id is a promise: an operator confirms a group, and every scan after that
+    re-reads its legs by id. A market whose id the venue cannot be asked about again is
+    proposable and unobservable — it spends the scarcest resource in the whole pipeline (a
+    human comparing resolution rules) and then produces a permanent non-reading.
+
+    Found live 2026-07-27: **72 of 92** Binance markets carried a topic id rather than the
+    ``marketId:tokenId`` its order book needs, because ``market/detail`` is only called for
+    the first ``book_limit`` topics. All 72 passed screening.
+
+    Per-venue because only this module knows what each venue's ids mean. Kalshi tickers and
+    Polymarket CLOB token ids are re-readable as they stand; Binance needs the composite.
+    """
+    market_id = market.market_id
+    if not isinstance(market_id, str) or not market_id.strip():
+        return False
+    if market.venue == BINANCE:
+        return split_binance_market_id(market_id) is not None
+    return True
 
 
 def split_binance_market_id(market_id: Any) -> tuple[int, str] | None:
@@ -1342,8 +1598,12 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
     return topics
 
 
-def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None] | None:
-    """``market/detail`` → ``(marketId, YES tokenId, conditionId)``, or ``None``. Pure.
+def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None, str | None] | None:
+    """``market/detail`` → ``(marketId, YES tokenId, conditionId, description)``. Pure.
+
+    The description comes back with the rest rather than through a second pass over the same
+    payload: it belongs to the market that was *selected* here, and a separate reader picking
+    "the first open market" again could quietly select a different one.
 
     Takes the first market whose ``tradingStatus`` is OPEN and reads its YES outcome. A topic
     with no open market, or an outcome with no token id, yields ``None`` — there is nothing
@@ -1372,6 +1632,7 @@ def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None] | 
                 market_id,
                 token_id.strip(),
                 condition.strip() if isinstance(condition, str) and condition.strip() else None,
+                _text(market.get("description")),
             )
     return None
 
@@ -1436,6 +1697,7 @@ __all__ = [
     "PredMarketSnapshot",
     "VenueQuote",
     "collect_pred_markets",
+    "is_re_readable",
     "degraded_pred_market_record",
     "parse_clob_book",
     "parse_gamma_markets",
