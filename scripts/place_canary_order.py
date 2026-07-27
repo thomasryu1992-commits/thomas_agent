@@ -61,7 +61,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     render_guard_text,
     resolve_live_order_limits,
 )
-from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
+from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot, venue_daily_realized_net
 from runtime.mvp_runtime.crypto.market_data import (
     read_reference_price,
     select_market_data_collector,
@@ -171,8 +171,11 @@ def main(argv: list[str] | None = None) -> int:
         #     and this path is entry-only, so reading it here yields 0.0 forever and the limit
         #     bounds nothing. The snapshot above already carries the venue's own realized figure
         #     — fees and funding included — at no extra request, so the breaker gets a real
-        #     number from a read this tool was making anyway.
-        venue_realized = (snapshot.realized_windows.get("1d") or {}).get("net")
+        #     number from a read this tool was making anyway. It reads the STRICTER of the UTC
+        #     calendar day and the rolling 24h: this used to take `1d` alone, and a net sum over
+        #     a wider window can be less negative, so yesterday evening's profit could mask
+        #     today's loss on the one measure meant to stop the day.
+        venue_realized = venue_daily_realized_net(snapshot.realized_windows)
         risk = live_risk_snapshot(
             limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
             venue_realized_pnl_usdt=venue_realized,
