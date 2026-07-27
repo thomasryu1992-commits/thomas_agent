@@ -84,6 +84,11 @@ def approved(monkeypatch):
                         lambda **kw: {"daily_loss_limit_breached": False})
     monkeypatch.setattr(pco.live_promotion, "clean_canary_order_count", lambda root: (0, None))
     monkeypatch.setattr(pco, "count_today", lambda root: 0)
+    # A reference price the declaration in ARGV actually matches: 0.001 x 65,000 = 65.00 USDT.
+    # Without this the declared-notional check refuses before the venue call, which is the
+    # point of it — these tests are about what happens *after* the order lands.
+    monkeypatch.setattr(pco, "select_market_data_collector", lambda **kw: object())
+    monkeypatch.setattr(pco, "read_reference_price", lambda symbol, **kw: (65_000.0, None))
     # A bare object() was enough until the breaker started reading the venue's realized figure
     # off this snapshot. The stub now carries the field the real AccountSnapshot does, so the
     # test exercises the same shape the tool actually receives.
@@ -288,3 +293,71 @@ def test_every_caller_of_the_venue_also_counts_the_order():
         assert "record_submission()" in path.read_text(encoding="utf-8"), (
             f"{path.name} can place a live order but never records it on the daily counter"
         )
+
+
+# --- the declared notional: the number the caps actually measure -----------------------
+
+def test_the_declaration_is_checked_against_the_quantity(approved, appended, monkeypatch, capsys):
+    """The gap this closes: `--quantity` and `--notional` were independent operator inputs.
+
+    The quantity reaches the venue; the notional is only what `evaluate_live_order_guard`
+    compares to the registered budget's caps. Nothing related them, so declaring less walked a
+    larger real position through the per-order and exposure limits — the caps did arithmetic on
+    a number the operator had to get right by hand. The script's own documented example,
+    `--quantity 0.001 --notional 60`, was written at BTC 60,000 and was 7% short at 64,512.
+    """
+    monkeypatch.setattr(pco, "read_reference_price", lambda symbol, **kw: (64_512.0, None))
+    # 0.001 x 64,512 = 64.51; declaring 60 is the documented example's drift.
+    argv = ["--symbol", "BTCUSDT", "--quantity", "0.001", "--notional", "60"]
+
+    assert pco.main(argv) == EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "ORDER_NOTIONAL_UNDERSTATED" in err
+    assert "64.51" in err, "the refusal must name the number to declare instead"
+
+
+def test_a_refused_declaration_never_reaches_the_venue(approved, appended, monkeypatch, capsys):
+    """The join, which is where this class of bug hides — both halves can be right separately.
+
+    `submit_and_reconcile` is booby-trapped: if the refusal does not actually stop the run, a
+    real order goes out with the caps having measured a smaller one.
+    """
+    def _must_not_run(*a, **kw):
+        raise AssertionError("a refused canary reached the order path")
+
+    monkeypatch.setattr(pco.live_execution, "submit_and_reconcile", _must_not_run)
+    monkeypatch.setattr(pco, "read_reference_price", lambda symbol, **kw: (64_512.0, None))
+
+    assert pco.main(["--symbol", "BTCUSDT", "--quantity", "0.001", "--notional", "60"]) == EXIT_BLOCKED
+
+
+def test_over_declaring_passes_because_it_only_tightens_the_caps(approved, appended, monkeypatch):
+    """Refusing a conservative operator would be the wrong direction."""
+    monkeypatch.setattr(pco, "read_reference_price", lambda symbol, **kw: (64_512.0, None))
+    assert pco.main(["--symbol", "BTCUSDT", "--quantity", "0.001", "--notional", "200"]) == EXIT_OK
+
+
+def test_no_price_is_a_refusal_not_a_skip(approved, appended, monkeypatch, capsys):
+    """"Nothing to check" must not read as "approved" — least of all when data is broken.
+
+    A price that reads low is exactly what lets a bigger position past a cap, so the run where
+    the price is missing is the run where skipping the check is most dangerous.
+    """
+    monkeypatch.setattr(pco, "read_reference_price",
+                        lambda symbol, **kw: (None, "REFERENCE_PRICE_SYNTHETIC"))
+
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "ORDER_NOTIONAL_PRICE_UNKNOWN" in err
+    assert "REFERENCE_PRICE_SYNTHETIC" in err, "say WHY there was no price"
+
+
+def test_both_refusals_are_reported_in_one_run(approved, appended, monkeypatch, capsys):
+    """An operator fixing two things should not need two runs to discover the second."""
+    monkeypatch.setattr(pco, "read_reference_price", lambda symbol, **kw: (64_512.0, None))
+    monkeypatch.setattr(pco, "read_account",
+                        lambda **kw: (None, {"degraded_reason_code": "ACCOUNT_FEED_ABSENT"}))
+
+    assert pco.main(["--symbol", "BTCUSDT", "--quantity", "0.001", "--notional", "60"]) == EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "ORDER_NOTIONAL_UNDERSTATED" in err and "NO_ACCOUNT_VISIBILITY" in err

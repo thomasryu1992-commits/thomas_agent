@@ -55,6 +55,7 @@ from .live_pnl import (
     LIVE_PNL_NO_SOURCE,
     live_risk_snapshot,
 )
+from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
@@ -200,6 +201,34 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         account_configured,
         "live account read configured" if account_configured
         else f"{ACCOUNT_FEED_ENV} / {ACCOUNT_API_KEY_ENV} / {ACCOUNT_API_SECRET_ENV} not all set",
+    ))
+
+    # 8b. Market data — a canary PRECONDITION since the declared-notional check landed, not a
+    #     nicety. `place_canary_order` verifies `--notional` against the venue's own last close
+    #     and refuses when there is no usable price, so a machine without this feed cannot place
+    #     the canaries that row 7 is counting. Checked as env AND grant, like the live-trading
+    #     row: the env var alone selects the mock, whose synthesised price the check rejects.
+    #     Stated here because #201's lesson was that a precondition only a document knows about
+    #     is discovered by an operator standing at a terminal with real keys.
+    market_data_opted_in = (
+        os.environ.get(MARKET_DATA_ENV, "").strip().lower() == BINANCE_FUTURES
+    )
+    market_data_grant_error: str | None = None
+    try:
+        safety_gate.authorize(
+            (safety_gate.NETWORK_ACCESS,), provider_id=BINANCE_FUTURES, now=now, root=root
+        )
+    except MvpRuntimeError as exc:
+        market_data_grant_error = exc.reason_code
+    market_data_ready = market_data_opted_in and market_data_grant_error is None
+    checks.append(_check(
+        "market_data_visibility",
+        market_data_ready,
+        "live market data configured (the declared-notional check has a real price)"
+        if market_data_ready
+        else (f"grant: {market_data_grant_error or 'ok'}; "
+              f"{MARKET_DATA_ENV}={'set' if market_data_opted_in else 'unset'} "
+              f"- without it a canary is refused, so no canary evidence can be earned"),
     ))
 
     # 9. The order path itself.
