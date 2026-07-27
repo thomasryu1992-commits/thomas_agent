@@ -71,6 +71,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
                 if isinstance(row.get("derived_from"), (list, tuple)) else None
             ),
             accepting_orders=row.get("accepting_orders"),
+            volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
                 yes_bid_size=quote.get("yes_bid_size"), yes_ask_size=quote.get("yes_ask_size"),

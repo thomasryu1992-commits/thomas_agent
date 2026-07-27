@@ -211,6 +211,11 @@ class PredMarket:
     # Whether the venue says it will currently accept an order (Polymarket's
     # `enableOrderBook`/`acceptingOrders`). `None` is *did not say*, never *no*.
     accepting_orders: bool | None = None
+    # Traded volume as the venue reports it (Kalshi `volume_fp`, Gamma `volumeNum`, Binance
+    # `tradeVolume`). Not comparable ACROSS venues — different units, different histories —
+    # and never used as one. It ranks a venue's own markets against each other, which is how
+    # discovery finds the head of each listing instead of whatever the page happened to hold.
+    volume: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -224,6 +229,7 @@ class PredMarket:
             "fee_rate_bps": self.fee_rate_bps,
             "derived_from": list(self.derived_from) if self.derived_from is not None else None,
             "accepting_orders": self.accepting_orders,
+            "volume": self.volume,
             "quote": self.quote.as_dict(),
         }
 
@@ -520,6 +526,24 @@ class KalshiPublicCollector:
 
     Sizes arrive as fixed-point strings (``yes_bid_size_fp``, e.g. ``"10.00"``) and are read
     as contracts.
+
+    **Two endpoints, because they answer different questions** (measured 2026-07-27):
+
+    - Discovery reads ``/events?with_nested_markets=true``. The flat ``/markets`` index is
+      unusable for it — paginated eight pages deep it returned **8,000 markets, all 8,000 of
+      them ``KXMVE…`` parlays** and 26 with a two-sided quote. Six pages of ``/events``
+      returned 1,200 events holding **7,840 markets, zero parlays, 7,017 quoted**. This is
+      not a filtering problem that a better predicate solves; it is the wrong index.
+    - A watch scan still reads ``/markets?tickers=…``, which fetches exactly the confirmed
+      legs in one call. Re-reading known tickers through an event listing would mean paging
+      until they happened to appear.
+
+    The nested market also carries a **full question** — ``"Will Klaus Iohannis be the next
+    Secretary General of NATO?"`` — where the flat index offers only ``yes_sub_title``,
+    ``"Klaus Iohannis"``. That fragment is what the matcher had been scoring against
+    Polymarket's complete sentences, and it is the single biggest reason Kalshi legs did not
+    match. The event's ``category`` arrives with it too, so ``matching`` can finally compare
+    a field that was always ``None`` on this venue.
     """
 
     venue = KALSHI
@@ -531,6 +555,11 @@ class KalshiPublicCollector:
 
     BASE = "https://api.elections.kalshi.com/trade-api/v2"
     PAGE_LIMIT = 1000  # the venue's documented maximum for /markets
+    EVENT_PAGE_LIMIT = 200
+    # One page of events already holds well over a thousand markets, so this is a runaway
+    # guard rather than a budget: it bounds the call count if the cursor ever stops
+    # advancing, and a short page is never mistaken for the end of the listing.
+    MAX_EVENT_PAGES = 5
 
     def __init__(self, *, authorization: Authorization | None = None, min_close_time: str | None = None):
         self._authorization = authorization
@@ -547,31 +576,10 @@ class KalshiPublicCollector:
             now=timeutil.utc_now_iso(),
         )
         started = time.monotonic()
-        params: dict[str, Any] = {"limit": min(int(limit), self.PAGE_LIMIT), "status": "open"}
         if market_ids:
-            # The venue filters for us: `tickers` is a comma-separated allowlist, and this
-            # endpoint returns prices inline, so a targeted read is still ONE call — and a
-            # smaller payload.
-            params["tickers"] = ",".join(sorted(set(market_ids)))
-        elif self._min_close_time:
-            # Discovery only. Named legs above are re-read whatever their horizon — a group
-            # with an hour left still owes the report its closing observations, and dropping
-            # it here would end the series early and silently.
-            #
-            # Measured 2026-07-27, and worth knowing: this parameter also **reorders** the
-            # page. Without it the first hundred open markets were parlays, 100 out of 100;
-            # with it, none were. That is the venue's choice, not a guarantee we are given,
-            # so it stays an optimisation and `screening` remains the thing that decides.
-            # Neither page is "the right hundred" — reaching Kalshi's real depth needs
-            # pagination or a series filter, which this increment does not attempt.
-            horizon = _epoch_seconds(self._min_close_time)
-            if horizon is not None:
-                params["min_close_ts"] = horizon
-        payload = _get_json(
-            f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
-            timeout_seconds=timeout_seconds,
-        )
-        markets = parse_kalshi_markets(payload)[:limit]
+            markets = self._read_named(market_ids, limit=limit, timeout_seconds=timeout_seconds)
+        else:
+            markets = self._read_events(limit=limit, timeout_seconds=timeout_seconds)
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
@@ -581,6 +589,154 @@ class KalshiPublicCollector:
             latency_ms=int((time.monotonic() - started) * 1000),
         )
 
+    def _read_named(
+        self, market_ids: Sequence[str], *, limit: int, timeout_seconds: int
+    ) -> list[PredMarket]:
+        """The confirmed legs, in one call. ``tickers`` is a comma-separated allowlist and
+        this endpoint returns prices inline, so a targeted read stays a single request — and
+        no horizon is applied: a group with an hour left still owes the report its closing
+        observations."""
+        params: dict[str, Any] = {
+            "limit": min(int(limit), self.PAGE_LIMIT),
+            "status": "open",
+            "tickers": ",".join(sorted(set(market_ids))),
+        }
+        payload = _get_json(
+            f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
+            timeout_seconds=timeout_seconds,
+        )
+        return parse_kalshi_markets(payload)[:limit]
+
+    def _read_events(self, *, limit: int, timeout_seconds: int) -> list[PredMarket]:
+        """Discovery, through the event index: sweep several pages, then keep the busiest.
+
+        ``status=open`` and ``min_close_ts`` are both honoured here (checked against a
+        horizon far enough out to empty the page, because a filter everything passes proves
+        nothing). The horizon push is still only an optimisation — ``screening`` re-checks
+        every market that comes back.
+
+        **The sweep runs to its page budget even once ``limit`` markets are in hand**, which
+        looks wasteful and is the whole point: you cannot rank a corpus you did not read.
+        Kalshi honours no ordering parameter at all — ``order``, ``sort_by``, ``min_volume``
+        and ``category`` were each measured returning byte-identical pages on 2026-07-27 —
+        so the head of this venue's listing is reachable only by fetching a lot and sorting
+        locally. Taking the first hundred instead cost nothing and produced nothing: those
+        pages were 2045- and 2035-dated novelties while Polymarket's were 2028 primaries,
+        and 30,000 judged pairings yielded zero candidates. Sorted by volume, the top of the
+        same sweep is "Will Gavin Newsom be the Democratic Presidential nominee in 2028?" —
+        which is a market Polymarket also lists.
+
+        Volume is the venue's own lifetime figure and is used only to rank Kalshi against
+        Kalshi. ``volume_24h_fp`` is the obvious alternative and would favour what is being
+        traded right now rather than what has ever been big; it is a judgement call, and
+        this one is recorded rather than hidden.
+        """
+        params: dict[str, Any] = {
+            "limit": self.EVENT_PAGE_LIMIT,
+            "status": "open",
+            "with_nested_markets": "true",
+        }
+        horizon = _epoch_seconds(self._min_close_time) if self._min_close_time else None
+        if horizon is not None:
+            params["min_close_ts"] = horizon
+
+        markets: list[PredMarket] = []
+        cursor: str | None = None
+        for _page in range(self.MAX_EVENT_PAGES):
+            page_params = {**params, **({"cursor": cursor} if cursor else {})}
+            payload = _get_json(
+                f"{self.BASE}/events?{urllib.parse.urlencode(page_params)}",
+                timeout_seconds=timeout_seconds,
+            )
+            markets.extend(parse_kalshi_events(payload))
+            cursor = payload.get("cursor") if isinstance(payload, Mapping) else None
+            if not cursor:
+                break
+        return rank_by_volume(markets)[:limit]
+
+
+def rank_by_volume(markets: Sequence[PredMarket]) -> list[PredMarket]:
+    """A venue's markets, busiest first. Stable, and never mixes venues.
+
+    Discovery compares the *head* of each venue's listing, because a market that is heavily
+    traded on one venue is the kind of market the other venue also lists. The tails are
+    where two venues stop overlapping — Kalshi's 2045-dated novelties have no counterpart
+    anywhere, and pairing them against Polymarket's 2028 primaries produced 30,000 judged
+    pairings and zero candidates.
+
+    A market whose volume the venue did not report sorts last rather than first: unknown is
+    not "busy", and the alternative would let a venue's silence outrank its own numbers.
+    Ties keep the venue's order, so a page with no volumes anywhere is returned untouched.
+    """
+    return sorted(markets, key=lambda m: -(m.volume if m.volume is not None else -1.0))
+
+
+def parse_kalshi_events(payload: Any) -> list[PredMarket]:
+    """Kalshi's ``/events?with_nested_markets=true`` payload as normalized markets. Pure.
+
+    One event holds many markets — "Who will be the next Secretary General of NATO?" holds
+    one per candidate — and each of those is an ordinary binary YES/NO market. So an event
+    is flattened into its markets rather than becoming one; ``mutually_exclusive`` is not a
+    reason to skip anything, and treating it as one would drop the whole election category
+    on both venues.
+
+    Two fields come from the event and matter more than the plumbing suggests: its
+    ``category`` (the flat ``/markets`` index publishes none, so this comparison was dead on
+    Kalshi) and its ``event_ticker`` as ``group_id``.
+    """
+    if not isinstance(payload, Mapping):
+        raise ToolError("MALFORMED_RESULT", "kalshi events payload is not an object")
+    events = payload.get("events")
+    if not isinstance(events, list):
+        raise ToolError("MALFORMED_RESULT", "kalshi events payload carries no events list")
+
+    markets: list[PredMarket] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        category = event.get("category") if isinstance(event.get("category"), str) else None
+        event_ticker = event.get("event_ticker") if isinstance(event.get("event_ticker"), str) else None
+        for row in event.get("markets") or []:
+            if not isinstance(row, Mapping):
+                continue
+            market = _kalshi_market(row, category=category, group_id=event_ticker)
+            if market is not None:
+                markets.append(market)
+    return markets
+
+
+def _kalshi_market(
+    row: Mapping[str, Any], *, category: str | None, group_id: str | None
+) -> PredMarket | None:
+    """One Kalshi market row, from either endpoint. ``None`` when it has no identity.
+
+    The title preference is the point of this helper. A nested market publishes ``title`` —
+    *"Will Klaus Iohannis be the next Secretary General of NATO?"* — a complete question of
+    the same shape Polymarket asks. ``yes_sub_title`` is *"Klaus Iohannis"*, a fragment that
+    shares almost no vocabulary with the other venue's sentence and scored accordingly. The
+    fragment stays as a fallback rather than a first choice.
+    """
+    ticker = row.get("ticker")
+    if not isinstance(ticker, str) or not ticker:
+        return None
+    return PredMarket(
+        venue=KALSHI,
+        market_id=ticker,
+        group_id=group_id or (row.get("event_ticker") if isinstance(row.get("event_ticker"), str) else None),
+        title=str(row.get("title") or row.get("yes_sub_title") or row.get("subtitle") or ticker),
+        category=category,
+        close_time=row.get("close_time") if isinstance(row.get("close_time"), str) else None,
+        status=row.get("status") if isinstance(row.get("status"), str) else None,
+        derived_from=parse_kalshi_mve_legs(row),
+        volume=_size(row.get("volume_fp")),
+        quote=VenueQuote(
+            yes_bid=_probability(row.get("yes_bid_dollars")),
+            yes_ask=_probability(row.get("yes_ask_dollars")),
+            yes_bid_size=_size(row.get("yes_bid_size_fp")),
+            yes_ask_size=_size(row.get("yes_ask_size_fp")),
+        ),
+    )
+
 
 def parse_kalshi_markets(payload: Any) -> list[PredMarket]:
     """Kalshi's ``/markets`` payload as normalized markets. Pure — no network.
@@ -589,6 +745,11 @@ def parse_kalshi_markets(payload: Any) -> list[PredMarket]:
     recorded payloads with no socket and no grant. A row missing an identity (``ticker``) is
     skipped rather than carried as an anonymous market; a row missing prices is carried
     **unquoted**, because knowing the market exists is itself useful to pair matching.
+
+    Shares ``_kalshi_market`` with the event listing, so a market re-read as a confirmed leg
+    is the same object it was when it was proposed. It carries no ``category`` — that lives
+    on the event, and inventing one from this payload is exactly the "unknown as a value"
+    mistake the matcher is built to avoid.
     """
     if not isinstance(payload, Mapping):
         raise ToolError("MALFORMED_RESULT", "kalshi markets payload is not an object")
@@ -600,29 +761,9 @@ def parse_kalshi_markets(payload: Any) -> list[PredMarket]:
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        ticker = row.get("ticker")
-        if not isinstance(ticker, str) or not ticker:
-            continue
-        legs = parse_kalshi_mve_legs(row)
-        markets.append(PredMarket(
-            venue=KALSHI,
-            market_id=ticker,
-            group_id=row.get("event_ticker") if isinstance(row.get("event_ticker"), str) else None,
-            # A Kalshi market object carries no free-text question; the subtitle is what
-            # distinguishes markets inside one event. Pair matching (PM1's next increment)
-            # needs the event title too, which lives on /events — noted rather than faked.
-            title=str(row.get("yes_sub_title") or row.get("subtitle") or ticker),
-            category=None,
-            close_time=row.get("close_time") if isinstance(row.get("close_time"), str) else None,
-            status=row.get("status") if isinstance(row.get("status"), str) else None,
-            derived_from=legs,
-            quote=VenueQuote(
-                yes_bid=_probability(row.get("yes_bid_dollars")),
-                yes_ask=_probability(row.get("yes_ask_dollars")),
-                yes_bid_size=_size(row.get("yes_bid_size_fp")),
-                yes_ask_size=_size(row.get("yes_ask_size_fp")),
-            ),
-        ))
+        market = _kalshi_market(row, category=None, group_id=None)
+        if market is not None:
+            markets.append(market)
     return markets
 
 
@@ -702,11 +843,16 @@ class PolymarketPublicCollector:
         )
         started = time.monotonic()
         params = {"limit": int(limit), "active": "true", "closed": "false"}
-        if market_ids is None and self._min_close_time:
-            # Discovery only, as on Kalshi. It earns its keep here: Gamma serves markets with
-            # `active: true, closed: false` whose end date passed months ago (observed
-            # 2026-07-27), so without this the first page is partly already-expired markets.
-            params["end_date_min"] = self._min_close_time
+        if market_ids is None:
+            # Discovery only, as on Kalshi. Gamma, unlike Kalshi, honours an ordering
+            # parameter, so its head is one call away instead of a five-page sweep.
+            params["order"] = "volumeNum"
+            params["ascending"] = "false"
+            if self._min_close_time:
+                # It earns its keep here: Gamma serves markets with `active: true,
+                # closed: false` whose end date passed months ago (observed 2026-07-27), so
+                # without this the page is partly already-expired markets.
+                params["end_date_min"] = self._min_close_time
         payload = _get_json(
             f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(params)}",
             timeout_seconds=timeout_seconds,
@@ -801,6 +947,7 @@ def parse_gamma_markets(payload: Any) -> list[PredMarket]:
             close_time=row.get("endDate") if isinstance(row.get("endDate"), str) else None,
             status="active" if row.get("active") and not row.get("closed") else "inactive",
             accepting_orders=_gamma_accepting_orders(row),
+            volume=as_optional_float(row.get("volumeNum")),
         ))
     return markets
 
@@ -1039,6 +1186,11 @@ class BinancePredictionCollector:
             # at a time on markets that close before an operator could read the proposal.
             # The topic already carries `close_time`, so the skip costs nothing to decide.
             topics = [t for t in topics if _reaches_horizon(t.close_time, self._min_close_time)]
+        # Busiest first, and here it decides more than the order of a list: only the first
+        # `book_limit` topics get a detail and a book call, so this is what those scarce
+        # signed calls are spent on. Untouched when specific ids were named — that path
+        # returns above, before any of this.
+        topics = rank_by_volume(topics)
 
         markets: list[PredMarket] = []
         for index, topic in enumerate(topics):
@@ -1082,6 +1234,7 @@ class BinancePredictionCollector:
                 close_time=topic.close_time,
                 status=topic.status,
                 fee_rate_bps=topic.fee_rate_bps,
+                volume=topic.volume,
                 quote=parse_prediction_book(book) if book is not None else VenueQuote(),
             ))
 
@@ -1184,6 +1337,7 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
             # coarser one, and a topic that is not REGISTERED cannot be traded either way.
             status=row.get("status") if isinstance(row.get("status"), str) else None,
             fee_rate_bps=int(fee_bps) if isinstance(fee_bps, (int, float)) and not isinstance(fee_bps, bool) else None,
+            volume=as_optional_float(row.get("tradeVolume")),
         ))
     return topics
 
