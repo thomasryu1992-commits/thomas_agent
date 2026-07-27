@@ -4,18 +4,28 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-27**, adding section D (design-vs-implementation gaps found by reading the
-Goal document against the code). Previously **2026-07-26**, after the review round, the CLAUDE.md
-split, and the structural-review queue draining (`main` = `6ed1b0a`).
+Last updated: **2026-07-27** (second pass, `main` = `58bf3af`), after the predmarket wave
+(#262/#264/#265/#267/#269), the canary-notional fix (#268), and the role activations
+(#258/#272). Previously **2026-07-27** (section D) and **2026-07-26** (the review round and the
+CLAUDE.md split).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
+That pass is why section A lost two boxes: it was ticking observation records as done in one line
+and open in another, and the newer line was the stale one.
 
-> **The one thing to read first:** an order path **exists**, and since 2026-07-26 so does the
-> **executing leg** that opens, protects and closes a live position. `financial_transaction_execution_implemented`
+> **The one thing to read first:** an order path **exists**, and so does the **executing leg**
+> that opens, protects and closes a live position. `financial_transaction_execution_implemented`
 > is `true`. Live trading still cannot start, and the reasons are now entirely structural rather than
 > "the code is missing": **no autonomous entry point may import the order path** (a test enforces it,
 > and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
-> **0 of 3** clean canary orders have been placed, and every egress needs the operator's per-machine
+> the clean-canary evidence does not yet reach three, and every egress needs the operator's per-machine
 > `live_trading` grant, order key, confirmation phrase and registered budget.
+>
+> **The canary count is per-machine and is currently unknown rather than zero.** Two real canaries
+> went out on 2026-07-26; the daily counter did not record them, because the only door that can
+> place an order never incremented it (#246). The registry that feeds `clean_canary_order_count` is
+> a different store and may hold them, so the honest statement is: **re-read the board on the
+> machine that placed them** (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
+> trusting a number written here. On a fresh checkout it reads `0/3`.
 >
 > The single remaining build item between this repository and an **autonomous** live order is
 > **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
@@ -33,48 +43,54 @@ the rules and deliberately claims no status, so that status has as few owners as
 
 ## In-flight PRs
 
-**None** (verified 2026-07-26 07:05 UTC). The parallel structural review's two PRs both landed:
+**Three, all doc- or predmarket-scoped** (verified 2026-07-27, `main` = `58bf3af`):
 
-- **#201 — the canary confirmation phrase never reached the guard.** `resolve_live_order_limits`
-  dropped `canary_confirmation` on both branches, so **every** canary refused. It failed *closed*,
-  so nothing unsafe happened — but it broke the one live door that has to work before any autonomous
-  path can, and it was only discoverable by an operator standing at a terminal with real keys. Worth
-  remembering for the reason it hid: both sides of the seam were tested, the **join** was not.
-- **#203 — structural review follow-ups**: one cap source (both guards now *require* `limits`, the
-  LP5.1c treatment applied again), one number reader (`coerce.as_float` — the duplicated *rule*
-  mattered more than the duplicated code), design records that state where they stand plus a gate
-  keeping them honest, an end-to-end **seam test** for one live trade, and a test-session guard that
-  no longer blames a test for the live runtime's own writes.
+- **#239** — this file's own predmarket header contradicting its boxes. **Superseded by this pass**,
+  which fixes the same contradiction against a `main` that has moved well past the one #239 was
+  written on; close it rather than merging it.
+- **#271** — predmarket's `is_synthetic` flag had no consumer, so a scan degraded to the mock filed
+  its legs as `MARKET_NOT_LISTED` (the market is gone) instead of "we never looked", and a
+  mock-derived confirmed group produced *priced* observations out of `(venue, index)`.
+- **#274** — the readiness board grew a `market_data_visibility` row with #268 and the go-live
+  runbook never mentioned `MVP_MARKET_DATA`, so the board fails on a precondition the checklist
+  does not ask for.
 
-Everything below otherwise reflects merged `main` at `dd900ea`. The LP4/LP5 wave landed 2026-07-25/26:
-#184 (LP4 increment 2b + the governance flip), #183 (LP5.1), #186 (LP5.2), #187 (LP5.4), #193 (LP5.3's
-decision half), **#196 (LP5.3's executing leg)**, then the review round — **#200** (the P5 audit gap,
-the verdict fail-open, readiness drift, `r_basis`) and **#205** (the CLAUDE.md split) — plus #191/#192
-(risk-guard provenance scoping), #199/#202 (dashboard), #204 (operator channel), and #188/#194 (this
-file's previous refreshes).
+Two PRs were **closed unmerged**, and both are the same lesson:
 
-One PR was **closed unmerged**: **#175** — a second LP4 order adapter written in a worktree without
-re-checking `main`, which by then already carried `live_execution.py` (increment 1) with its reviewed
-design record. Two adapters must not coexist: "which code can send an order" is exactly the question
-this repo keeps unambiguous, so the one with the design record stayed. Its still-useful pieces are
-catalogued in the PR body; the branch is `worktree-crypto-lp4-adapter`.
+- **#175** — a second LP4 order adapter written in a worktree without re-checking `main`, which by
+  then already carried `live_execution.py` with its reviewed design record. Two adapters must not
+  coexist: "which code can send an order" is exactly the question this repo keeps unambiguous.
+- **#229** — the declared-notional check, written on a branch that fell **131 commits** behind while
+  **#268** implemented the same check independently and merged first. Its code was redundant on
+  arrival; only its documentation was still owed, and that is #274.
 
-> Check live state with `gh pr list` rather than trusting this line — parallel machines open and
-> merge PRs continuously.
+> **This section goes stale within hours.** Check `gh pr list` rather than trusting it — parallel
+> machines open and merge PRs continuously, and on 2026-07-27 that produced two independent fixes
+> for one defect (#229/#268) plus a review document whose P0 list was already merged. Before
+> starting anything below, confirm nobody else has taken it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket) — not started
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 built, not yet run
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
-**No code exists for this track yet** — every box below is open.
+**PM1's code is essentially complete** — three venue adapters, screening, the deterministic matcher
+with operator confirmation, the fee-adjusted detector, the observation store, both scheduler
+cadences (watch and discovery), the proposal record, and the exit report all live under
+`runtime/mvp_runtime/predmarket/`. **What is missing is the run**: nothing has been confirmed and
+observed for long enough to answer the three questions the phase exists for. PM2 and PM3 are
+untouched.
+
+Trust the boxes below over this paragraph — a prose summary of a moving track is how the previous
+version came to say "no code exists yet" above a list of shipped modules.
 Phasing: observe (no money) → paper (no external effect) → approval-gated live (per-order approval).
 
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
       Polygon/USDC wallet, and the **Korean regulatory judgment call** (grey area). Blocks PM3 only,
       not PM1/PM2.
-- [~] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed): **started
-      2026-07-26** — the venue adapters have landed; matching and the detector are open.
+- [~] **PM1 — observe-only pipeline** (no money; no account except Binance's key): **code complete
+      2026-07-27, unrun.** Every box below is ticked except the operator steps and two deliberate
+      deferrals. The remaining work is a confirmation session and a calendar, not a build.
   - [x] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
         `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics —
         done 2026-07-26 (`runtime/mvp_runtime/predmarket/market_data.py`). One normalized
@@ -98,9 +114,10 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         including near-misses, records which gate failed and by how much: that record is what
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
   - [x] Third venue **Binance prediction markets** (markets are Predict.fun's on BNB Chain) —
-        done 2026-07-26. Listed-but-unquoted: no order-book endpoint is published, and its
-        per-outcome `prices` are a derived figure this package already refuses to quote from.
-        Carries the venue's own `polymarketConditionIds` cross-reference, which the matcher
+        done 2026-07-26; **quoted** since the order-book routing below, and **proposable** since
+        #262, which found it had been quoting markets for a week that the matcher could never
+        propose. It also carries the venue's own `polymarketConditionIds` cross-reference, which
+        the matcher
         treats as evidence outranking the wording gate. **New operator precondition:** unlike
         Kalshi and Polymarket it is key-authenticated (`MVP_PREDICTFUN_API_KEY`, Discord
         ticket), so PM1's "no account needed" property does not extend to it; a missing key is
@@ -123,11 +140,30 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         times it could not price a group would claim it was observable when it was not. A
         venue outage and a delisted market are recorded as different reasons. The scan
         confirms nothing: it holds no writer for the group store.
-  - [ ] The 2–4 week run itself, then the exit report (frequency × net margin ×
-        **persistence**). Needs the schedule registered on the machine that will run it.
-  - [ ] `discovery` cadence — the scheduler kind accepts it and deliberately reports
-        `skipped_discovery_not_scheduled_yet` rather than silently running the watch scan
-        under another name; it lands with the matcher-on-a-schedule work.
+  - [x] **Market screening** — `predmarket/screening.py`. The listings were not broken, they
+        were full of markets this pipeline cannot use (parlays, sub-horizon expiries,
+        unquotable legs). Screened out **loudly**: every run prints how many each venue listed,
+        how many survived, and the reason counts for the rest, because "empty because
+        everything was a parlay" and "empty because nothing matched" are different findings.
+  - [x] `discovery` cadence — done 2026-07-27 (#267, root fix #269). It runs on a schedule
+        rather than on demand, because the question is not "what is pairable right now?" but
+        "what became pairable while nobody was looking?" — a pairing that appeared and resolved
+        between two hand-run `propose` commands leaves no trace it was ever missed. Each run
+        appends a `proposals.jsonl` record (`predmarket/proposals.py`) counting only what no
+        earlier run proposed, so an operator is not re-reading forty unchanged pairings every
+        six hours and learning to skip the list the new one arrives in.
+  - [x] **The exit report** — done 2026-07-27 (#265, `predmarket/report.py`, `pairs_cli
+        report`). Frequency × net margin × **persistence**, and it says plainly whether the
+        window it had is the exit artifact or a progress check. The load-bearing part is the
+        three ways a duration can lie: a single sighting is not "zero seconds", an episode must
+        not be stitched across an outage, and one still running has not ended. **The
+        denominator is readings, not scans** — dividing by attempts would let an outage read as
+        a quiet market.
+  - [ ] **Run it.** The 2–4 week observation window, on the machine that will host it: confirm
+        event groups (`pairs_cli confirm`, per event, each with its resolution-criteria note),
+        register the `pm_scan watch` and `discovery` schedules, then leave it alone and read
+        `pairs_cli report`. **This is the whole of what PM1 still owes** — calendar time and an
+        operator session, not code.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
@@ -141,9 +177,13 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         directions are judged and the better **net** one wins, since each leg's fee depends
         on its own price. Unpriceable legs and no-depth touches are recorded as
         non-readings, never as zeros.
-  - [ ] Observation records + `pm_scan` R6 scheduler template ⚠️ (cadence + per-scan market cap).
-  - [ ] **Exit artifact:** 2–4 week report — frequency × net margin × **persistence duration** per
-        strategy. Persistence decides whether PM3 (minutes of approval latency) can ever catch it.
+  - [x] **The synthetic-source guard** — the flag `MockPredMarketCollector` sets honestly had
+        **no consumer** anywhere in `predmarket/`, so the Safety-Flag gate defaulting to the
+        mock was silent. A watch scan then filed its legs as `MARKET_NOT_LISTED` — "the market
+        is gone", about a venue it never reached — and a group whose ids came from the mock was
+        *priced*, putting a number derived from `(venue, index)` into the store the report's
+        persistence figure is computed from. Both doors closed plus the report's incident tally
+        (#271). The rule is crypto's `guards.BLOCK_SYNTHETIC_DATA_FOR_TRADING`, one package over.
 - [ ] **PM2 — paper trading** (1–2 PRs): pessimistic fill model (taker + book depth + fees), virtual
       portfolio, **hold-to-resolution** (also measures cross-venue resolution mismatch).
   - [ ] ⚠️ Thomas sets **PM3 entry criteria as numbers** before PM2 ends.
@@ -151,9 +191,12 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
       the live-execution governance packet (section C) implemented. Per-order R9 approval +
       single-use consumption behind `kalshi_trade` / `polymarket_trade` grants. Third consumption
       scope decision required.
-- [ ] Resolve the **7 open decisions** in the roadmap's decision register (pm_scan template,
-      LLM-assisted matching on/off, PM3 numeric criteria, trading-budget record shape, third
-      consumption scope, Korean legal call, PM4 bounded autonomy).
+- [ ] Resolve the roadmap's decision register — **3 of 7 remain open** and none blocks PM1.
+      Decided 2026-07-26: #1 `pm_scan` template (cadence + market cap) and #2 LLM-assisted matching
+      (deterministic-only is the default). Still open: **#3 PM3 entry criteria as numbers** (must
+      precede PM2's end), **#4 trading-budget record shape** for prediction venues, and **#5 third
+      consumption scope** (per-order spend) — all three are PM2/PM3 gates. #6 the Korean regulatory
+      judgment is Thomas's, outside the repo; #7 PM4 bounded autonomy is not on the table.
 
 **Out of scope (each its own future decision):** PM4 bounded autonomy, market making, directional/news
 trading, leverage, any US-context Polymarket access.
@@ -322,14 +365,27 @@ scopes at different levels, so nothing was owed to it.
           states — this runtime's own paper record (6 closed trades at −0.39R,
           `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
           step, not the leg above: a leg with no caller places no orders.
-- [ ] **≥ 3 clean canary orders** before any autonomous run (currently **0**; 1 existed in the frozen
-      source system and did not migrate). **Unblocked 2026-07-26 (#201):** `resolve_live_order_limits` had
-      dropped `canary_confirmation`, so the canary guard compared an empty phrase and refused every
-      attempt — the one live door there is did not work. It failed *closed*, so nothing unsafe
-      happened, and it is fixed; this is now genuinely actionable. **Operator-only, real money** — `scripts/place_canary_order.py`
-      on Thomas's machine with his own keys and its own confirmation phrase
-      (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately distinct from the live-trading phrase so neither
-      authorizes the other's capability). Claude does not run it.
+- [ ] **≥ 3 clean canary orders** before any autonomous run. **The count is per-machine — ask the
+      board, not this file** (`python -m runtime.mvp_runtime.crypto.live_readiness`); a fresh
+      checkout reads `0/3`, and the one in the frozen source system did not migrate.
+      **Re-verification is owed, and here is why.** Two real canaries went out on 2026-07-26. Three
+      separate defects sat on that path at the time and were fixed afterwards, so evidence produced
+      before them cannot be read at face value:
+      **#201** — `resolve_live_order_limits` dropped `canary_confirmation`, so every canary refused
+      (fail-*closed*, nothing unsafe, but the one live door did not work);
+      **#228** — a filled canary was reported as a crash and its audit event never appended;
+      **#246** — the daily counter was incremented only by the autonomous leg nothing may import, so
+      the door that actually places orders never counted its own, and `max_daily_order_count`
+      refused nothing.
+      Since #268 the door also **verifies the declared notional** against the venue's price rather
+      than trusting the operator's arithmetic, which changes what a valid invocation looks like.
+      Any canary placed before these fixes should be re-run, not counted.
+      **Operator-only, real money** — `scripts/place_canary_order.py` on Thomas's machine with his
+      own keys and its own confirmation phrase (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately
+      distinct from the live-trading phrase so neither authorizes the other's capability). It now
+      also needs the **read-only market-data feed** (`MVP_MARKET_DATA=binance_futures` + a
+      `network_access` grant) — the board reports it as `market_data_visibility`, and without it a
+      canary refuses, so no evidence can be earned at all. Claude does not run it.
 - [x] The **symbol-starved router** finding — closed 2026-07-25 (PR #148). A crypto schedule with an
       empty request now fans out over every `(symbol, timeframe)` the pool routes on **plus** every
       context holding an open paper position (`cycle.run_pool_cycle`), and `route_entries` matches
@@ -391,6 +447,38 @@ Two lessons worth carrying, both about **seams rather than units**: #201's bug s
 sides of a join were tested and the join was not, and the P5 gap survived because a policy
 requirement had no test asserting any code satisfied it.
 
+### Canary-path findings — raised and closed 2026-07-27
+
+The first real canaries were placed on 2026-07-26, and placing them found four more defects on the
+same door. Every one is a seam, which is now the established shape of this repository's bugs:
+
+- [x] **The daily order cap counted nothing** (#246). `count_today` read a file only
+      `live_leg.execute_live_entry` wrote — the autonomous leg no entry point may import — so the
+      one door that can actually place an order never counted its own. Two real canaries went out
+      and `live_order_counter.json` did not exist. The counter now increments in a `finally`: what
+      spends daily budget is an order that **may** have reached the venue, so an ambiguous submit
+      still counts. Over-counting a submit that never left is the safe direction for a risk limit.
+- [x] **The daily-loss breaker measured a ledger nothing writes** (#247). Same shape, one number
+      over: the local outcome ledger is written only by that same unreachable leg, so on this
+      entry-only path the breaker read `0.0` forever and bounded nothing. It now reads the
+      **venue's** realized figure off the account snapshot the tool was already fetching — fees and
+      funding included, at no extra request.
+- [x] **A filled canary was reported as a crash, and its audit event never appended** (#228, #232).
+      The money had already moved; the record said otherwise.
+- [x] **The per-order cap was checking a number the operator typed** (#268). `--quantity` reaches
+      the venue, `--notional` is only what the caps are judged against, and nothing compared them —
+      so an under-declared notional walked a larger real position past the per-order **and**
+      exposure caps. Not hypothetical: the script's own documented example
+      (`--quantity 0.001 --notional 60`) was written at BTC 60,000 and was ~7% short at 64,512, so
+      *following the documentation produced the under-declaration*. Now verified against the venue's
+      last closed 1m price; a synthetic, stale or absent price refuses rather than waving it through.
+      **#229 fixed the same defect independently** on a branch 131 commits behind and was closed as
+      redundant — see the in-flight note above for why that is worth remembering.
+
+The pattern is now specific enough to design against: **a module that writes state the autonomous
+leg owns, read by a door the autonomous leg cannot reach, is a counter that counts nothing.** Both
+#246 and #247 are exactly that, and neither had a test because both halves worked.
+
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
@@ -400,10 +488,17 @@ requirement had no test asserting any code satisfied it.
 ## D. Architecture design-vs-implementation gaps
 
 Found 2026-07-27 by reading `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` (the Goal
-document) against the code, rather than by working a roadmap. These are things the **design**
-specifies that the build does not have. They are listed here because a gap nobody wrote down is
-indistinguishable from a decision — and three of the four below may well *be* decisions, in which
-case the right outcome is to record that in the design document, not to build them.
+document) against the code, rather than by working a roadmap — things the **design** specifies that
+the build did not have. Listed here because a gap nobody wrote down is indistinguishable from a
+decision.
+
+**Most of this section closed within a day of being opened**, and the shape of what closed is worth
+noting: §8.8 and §10.4 were real gaps and got built; §8.5 turned out to be one decision (activate
+the roles) plus the routing to make activation non-inert; and the §8.4 risk-classification entry was
+**written up wrong the first time** — the correction, not the fix, is the reusable part. What stays
+open below is either an explicit Thomas decision (`business.analysis`, `execution.live_trader`) or a
+state that is now *correct rather than missing* (the high-risk route, `complexity`), and each says
+which it is. Do not read an open box here as work waiting to be done.
 
 The Target layers (§4–§5: Common Capability Organization, Opportunity & Business Creation, Business
 Portfolio, Dynamic Strategic Board) are **not** listed here: §9 says do not build them now, so their
