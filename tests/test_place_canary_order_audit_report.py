@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
+from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore
 from scripts import place_canary_order as pco
 
@@ -92,6 +93,27 @@ def approved(monkeypatch):
                         lambda **kw: type("_R", (), {"append_canary_order": lambda self, r: None})())
     monkeypatch.setattr(pco.live_governance, "report_live_order",
                         lambda *a, **kw: ({"event_type": "live_order"}, "sha256:test"))
+    monkeypatch.setattr(pco, "select_live_order_counter", lambda **kw: _Counter())
+
+
+class _Counter:
+    """Stand-in for the durable daily counter. Class-level so a test can read the tally."""
+
+    submissions = 0
+    raises: Exception | None = None
+
+    def record_submission(self, *, day=None):
+        if _Counter.raises is not None:
+            raise _Counter.raises
+        _Counter.submissions += 1
+        return _Counter.submissions
+
+
+@pytest.fixture(autouse=True)
+def _reset_counter():
+    _Counter.submissions = 0
+    _Counter.raises = None
+    yield
 
 
 @pytest.fixture
@@ -170,3 +192,90 @@ def test_the_operator_is_told_the_order_adapter_was_authorized(approved, appende
     """
     assert pco.main([*ARGV, "--root", str(tmp_path)]) == EXIT_OK
     assert "SAFETY_GATE: live order adapter authorized (network_access)" in capsys.readouterr().err
+
+# --- the daily cap: an order that is placed must be counted ---------------------------
+
+def test_a_placed_canary_consumes_daily_budget(approved, appended):
+    """The gap this closes: the cap read a number nothing ever wrote.
+
+    `count_today` reads `live_order_counter.json`; the only code that incremented it lived in
+    `live_leg.execute_live_entry`, the autonomous leg no entry point may import. So the one
+    door that can actually place an order never counted its own orders — `count_today` returned
+    0 for a missing file, forever, and a registered `max_daily_order_count` refused nothing.
+    Two real canaries went out on 2026-07-26 and the counter file did not exist afterwards.
+    """
+    assert pco.main(ARGV) == EXIT_OK
+    assert _Counter.submissions == 1
+
+
+def test_an_ambiguous_submit_still_consumes_daily_budget(approved, monkeypatch, capsys):
+    """A submit that RAISED may still have reached the venue, so it must spend the cap.
+
+    This is `LiveOrderCounter`'s own rule — without it a flapping connection spends one day's
+    budget many times over. Over-counting a submit that never left is the safe direction for a
+    risk limit; under-counting one that did is not.
+    """
+    monkeypatch.setattr(pco.live_execution, "submit_and_reconcile",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            MvpRuntimeError("ORDER_TRANSPORT", "connection reset")))
+
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    assert _Counter.submissions == 1, "an ambiguous submit must still consume daily budget"
+
+
+def test_a_counter_failure_is_reported_and_fails_the_exit_code(approved, appended, capsys):
+    """An uncounted order leaves the cap reading low for every later run — a widened limit."""
+    _Counter.raises = MvpRuntimeError("LIVE_COUNTER_UNREADABLE", "counter is unreadable")
+
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    out = capsys.readouterr().out
+    assert "DAILY CAP" in out and "LIVE_COUNTER_UNREADABLE" in out
+    assert "the order IS placed" in out
+
+
+def test_a_counter_failure_never_becomes_a_traceback(approved, appended, capsys):
+    """Same lesson as the audit append: past the venue, nothing may crash the report."""
+    _Counter.raises = RuntimeError("something unforeseen")
+
+    assert pco.main(ARGV) == EXIT_BLOCKED
+    assert "RuntimeError" in capsys.readouterr().out
+
+
+def test_every_caller_of_the_venue_also_counts_the_order():
+    """Structural gate on the shape of the bug, not just this instance of it.
+
+    The defect was not a typo — it was a *door* that could reach the venue without touching
+    the daily counter, and nothing said that was wrong. Two call sites reach
+    ``submit_and_reconcile`` today; a third that forgets to count would silently widen the
+    daily cap exactly as this one did, and would pass every behavioural test above because
+    those only exercise the canary path.
+    """
+    from pathlib import Path as _Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    root = _Path(repo_root())
+    doors = [
+        root / "scripts" / "place_canary_order.py",
+        root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
+    ]
+    # Excluded by path PARTS, not by substring: `"/tests/" in str(path)` is false on Windows,
+    # where the separator is a backslash, so the first version of this gate reported the suite's
+    # own fixtures as new callers on one runner and passed on the other.
+    skipped_dirs = {".venv", ".git", "tests", "historical", "deferred", "generated"}
+    found = []
+    for path in root.rglob("*.py"):
+        if skipped_dirs & set(path.parts):
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        if "submit_and_reconcile(" in source and "def submit_and_reconcile" not in source:
+            found.append(path)
+    assert sorted(found) == sorted(doors), (
+        f"a new caller of submit_and_reconcile appeared: {sorted(set(found) - set(doors))}. "
+        "Add it here AND make it record a submission on the daily counter, or the registered "
+        "max_daily_order_count silently stops bounding anything."
+    )
+    for path in doors:
+        assert "record_submission()" in path.read_text(encoding="utf-8"), (
+            f"{path.name} can place a live order but never records it on the daily counter"
+        )
