@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import safety_gate, timeutil
+from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
@@ -297,6 +298,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Live-trading readiness board (read-only: no network, no writes, no orders)."
     )

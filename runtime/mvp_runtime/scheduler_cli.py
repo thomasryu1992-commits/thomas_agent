@@ -266,7 +266,7 @@ def main(
         programization = ProgramizationStore.default(repo_root)
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
-        gate_banners(provider=provider, search_tool=search_tool)
+        gate_banners(analysis_provider=provider, search_tool=search_tool)
         sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
         if alerter is None:
             alerter = build_alerter(repo_root=repo_root, now=now)

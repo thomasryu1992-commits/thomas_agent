@@ -1,18 +1,31 @@
 """LP4 order adapter — submit + reconcile one guard-approved live order.
 
-**Increment 2a (this module): the real transport.** The skeleton (inert ``DryRunOrderAdapter``
-default, Safety-Flag gate selection, ``submit_and_reconcile``, the ``reconcile_status``
-vocabulary) landed in increment 1; the real Binance **signed POST + reconcile GET** is now
-implemented, along with the conditional order types the LP5 protective bracket needs. Every
-venue semantic here was verified against the venue's own New Order / Query Order / error-code
-references (2026-07-25) rather than written from memory.
+**LP4 is complete.** The skeleton (inert ``DryRunOrderAdapter`` default, Safety-Flag gate
+selection, ``submit_and_reconcile``, the ``reconcile_status`` vocabulary) landed in increment 1;
+increment 2a added the real Binance **signed POST + reconcile GET** and the conditional order
+types the LP5 protective bracket needs. Every venue semantic here was verified against the
+venue's own New Order / Query Order / error-code references (2026-07-25) rather than written
+from memory.
 
-**Nothing autonomous can reach it.** ``live_readiness.ORDER_PATH_IMPLEMENTED`` and
-``financial_transaction_execution_implemented`` deliberately stay **OFF** in this increment —
-the readiness board therefore cannot report READY, so no autonomous path routes here. Flipping
-those two flags in lockstep (with the replay-bundle regeneration) is increment 2b, together with
-the deliberate single-canary CLI. Reaching the venue at all additionally requires the operator's
-``live_trading`` grant and the order key, neither of which this code can create.
+**This module can place a real order.** Increment 2b flipped
+``live_readiness.ORDER_PATH_IMPLEMENTED`` and ``financial_transaction_execution_implemented``
+to **true** in lockstep (2026-07-25, with the replay-bundle regeneration), so a READY readiness
+board now means a real order can be placed on that machine. Read the flags, not this sentence:
+``python -m runtime.mvp_runtime.crypto.live_readiness`` computes the answer for the machine
+you are on.
+
+What still stands between this code and an **autonomous** order is structural, not missing
+implementation:
+
+* **no autonomous entry point may import this module** — ``live_leg`` and this adapter are both
+  covered by ``test_no_autonomous_entry_point_reaches_the_live_order_path``, which fails loudly
+  if one does. Today the only caller is the deliberate ``scripts/place_canary_order.py``, one
+  canary at a time;
+* ``financial_executor_enabled`` is ``false``, and cycle routing (LP5.3's last piece) is
+  deliberately unbuilt — building it *is* the decision to relax that tripwire;
+* reaching the venue at all still requires the operator's per-machine ``live_trading`` grant,
+  the order key, the confirmation phrase and a registered budget — none of which this code can
+  create.
 
 Design: ``docs/runtime-contracts/LP4_ORDER_ADAPTER_DESIGN_V0.1.md``. LP4 is the narrow, and only,
 code that can send an order — it takes one **guard-approved** MARKET intent (LP3), submits it,

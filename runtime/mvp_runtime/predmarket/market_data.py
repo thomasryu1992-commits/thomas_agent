@@ -52,7 +52,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -220,7 +220,9 @@ class PredMarketCollector(Protocol):
     tool_id: str
     tool_version: str
 
-    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot: ...
+    def list_markets(
+        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+    ) -> PredMarketSnapshot: ...
 
 
 # --- the inert default ----------------------------------------------------------
@@ -250,7 +252,9 @@ class MockPredMarketCollector:
         self.venue = require_venue(venue)
         self.source = f"mock.{self.venue}"
 
-    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
+    def list_markets(
+        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+    ) -> PredMarketSnapshot:
         # A small deterministic offset per venue, so the same event is priced differently on
         # the two mocks — the cross-venue gap the detector is supposed to find.
         skew = 0.03 if self.venue == POLYMARKET else 0.0
@@ -272,6 +276,9 @@ class MockPredMarketCollector:
                     yes_ask_size=100.0,
                 ),
             ))
+        if market_ids is not None:
+            wanted = set(market_ids)
+            markets = [m for m in markets if m.market_id in wanted]
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
@@ -304,6 +311,7 @@ def collect_pred_markets(
     now: str,
     limit: int = DEFAULT_MARKET_LIMIT,
     timeout_seconds: int = 10,
+    market_ids: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Collect one venue's open markets. Returns ``(snapshot, tool_use_record)``.
 
@@ -316,7 +324,9 @@ def collect_pred_markets(
     venue = require_venue(venue)
     limit = _clamp(limit, DEFAULT_MARKET_LIMIT, MAX_MARKET_LIMIT)
     try:
-        result = collector.list_markets(limit=limit, timeout_seconds=timeout_seconds)
+        result = collector.list_markets(
+            limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids
+        )
     except (ToolError, TimeoutError) as exc:
         raise ToolBlocked("TOOL_ERROR", str(exc)) from exc
 
@@ -336,7 +346,8 @@ def collect_pred_markets(
         "created_at": now,
     }
     input_sha256 = integrity.sha256_record(
-        {"tool_id": collector.tool_id, "venue": venue, "limit": limit}
+        {"tool_id": collector.tool_id, "venue": venue, "limit": limit,
+         "market_ids": sorted(market_ids) if market_ids is not None else None}
     )
     record = {
         "tool_id": collector.tool_id,
@@ -479,7 +490,9 @@ class KalshiPublicCollector:
     def __init__(self, *, authorization: Authorization | None = None):
         self._authorization = authorization
 
-    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
+    def list_markets(
+        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+    ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
             self._authorization,
@@ -488,7 +501,12 @@ class KalshiPublicCollector:
             now=timeutil.utc_now_iso(),
         )
         started = time.monotonic()
-        params = {"limit": min(int(limit), self.PAGE_LIMIT), "status": "open"}
+        params: dict[str, Any] = {"limit": min(int(limit), self.PAGE_LIMIT), "status": "open"}
+        if market_ids:
+            # The venue filters for us: `tickers` is a comma-separated allowlist, and this
+            # endpoint returns prices inline, so a targeted read is still ONE call — and a
+            # smaller payload.
+            params["tickers"] = ",".join(sorted(set(market_ids)))
         payload = _get_json(
             f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
             timeout_seconds=timeout_seconds,
@@ -577,7 +595,9 @@ class PolymarketPublicCollector:
         self._authorization = authorization
         self._book_limit = _clamp(book_limit, DEFAULT_BOOK_LIMIT, MAX_BOOK_LIMIT)
 
-    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
+    def list_markets(
+        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+    ) -> PredMarketSnapshot:
         safety_gate.assert_authorization(
             self._authorization,
             required_flags=_NETWORK_FLAGS,
@@ -591,6 +611,13 @@ class PolymarketPublicCollector:
             timeout_seconds=timeout_seconds,
         )
         markets = parse_gamma_markets(payload)[:limit]
+        if market_ids is not None:
+            # A watch scan wants the confirmed legs, not the front of the listing. Filtering
+            # BEFORE the per-market book calls is the whole saving: one Gamma call plus one
+            # book call per wanted market, instead of `book_limit` books of whatever happened
+            # to be listed first.
+            wanted = set(market_ids)
+            markets = [m for m in markets if m.market_id in wanted]
 
         priced: list[PredMarket] = []
         for index, market in enumerate(markets):
@@ -811,7 +838,57 @@ class BinancePredictionCollector:
         except ValueError:
             raise ToolError("MALFORMED_RESULT", "prediction backend returned an unparseable response") from None
 
-    def list_markets(self, *, limit: int, timeout_seconds: int) -> PredMarketSnapshot:
+    def _quote_known(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
+    ) -> PredMarketSnapshot:
+        """Quote markets we already know the ids of — **one order-book call each**.
+
+        The discovery walk (list -> detail -> book) exists to *find* markets. Re-running it
+        every two minutes to re-read markets an operator already confirmed would spend
+        ``1 + 2N`` calls to learn nothing new, and each of these endpoints carries an IP
+        weight of 200. A confirmed leg carries ``marketId:tokenId``, which is exactly what the
+        book needs, so a watch scan costs one call per leg.
+
+        Identity fields (title, close time, category, fee rate) are not re-fetched: the group
+        that named this market is the authority on what it is, and the scan only needs the
+        price. The fee rate therefore arrives as ``None`` on this path and the leg is priced
+        at the pessimistic default — see the fee module.
+        """
+        started = time.monotonic()
+        markets: list[PredMarket] = []
+        for raw in market_ids:
+            split = split_binance_market_id(raw)
+            if split is None:
+                # Not a composite id: nothing to ask the venue. Recorded unquoted rather than
+                # guessed, which is what every other unreadable leg does.
+                markets.append(PredMarket(
+                    venue=BINANCE, market_id=str(raw), group_id=None, title="",
+                    close_time=None, status=None,
+                ))
+                continue
+            market_id, token_id = split
+            try:
+                book = self._signed_get(
+                    self.BOOK_PATH,
+                    {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
+                    timeout_seconds=timeout_seconds,
+                )
+            except ToolError:
+                book = None
+            markets.append(PredMarket(
+                venue=BINANCE, market_id=str(raw), group_id=None, title="",
+                close_time=None, status=None,
+                quote=parse_prediction_book(book) if book is not None else VenueQuote(),
+            ))
+        return PredMarketSnapshot(
+            venue=self.venue, markets=markets, source=self.source, is_synthetic=False,
+            collector_version=self.tool_version,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    def list_markets(
+        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+    ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
             self._authorization,
@@ -819,6 +896,8 @@ class BinancePredictionCollector:
             provider_id=self.provider_id,
             now=timeutil.utc_now_iso(),
         )
+        if market_ids is not None:
+            return self._quote_known(market_ids, timeout_seconds=timeout_seconds)
         started = time.monotonic()
         listing = self._signed_get(
             self.LIST_PATH,
@@ -856,9 +935,11 @@ class BinancePredictionCollector:
                 book = None
             markets.append(PredMarket(
                 venue=BINANCE,
-                # Keyed on the outcome token, like Polymarket: it is what the book and any
-                # later order key on.
-                market_id=token_id,
+                # `marketId:tokenId`, because the order book needs BOTH and only the token is
+                # not enough to ask for a quote. Composite so a confirmed leg can be re-read
+                # later in ONE call instead of walking list -> detail -> book again: a watch
+                # scan every two minutes cannot afford to rediscover what it already knows.
+                market_id=f"{market_id}:{token_id}",
                 # The cross-reference axis. Predict.fun's conditionId is the same shape as
                 # Polymarket's, so a group can be matched on it rather than on wording.
                 group_id=condition_id or topic.group_id,
@@ -878,6 +959,21 @@ class BinancePredictionCollector:
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
         )
+
+
+def split_binance_market_id(market_id: Any) -> tuple[int, str] | None:
+    """``"5567895:112233"`` as ``(marketId, tokenId)``, or ``None``.
+
+    The order book needs both. A leg confirmed before this format existed — or hand-edited —
+    yields ``None``, and the caller records an unquoted market rather than guessing an id.
+    """
+    if not isinstance(market_id, str) or ":" not in market_id:
+        return None
+    left, _, right = market_id.partition(":")
+    try:
+        return int(left), right.strip()
+    except ValueError:
+        return None
 
 
 def _ms_to_iso(value: Any) -> str | None:
@@ -1030,5 +1126,6 @@ __all__ = [
     "parse_prediction_topics",
     "parse_prediction_yes_outcome",
     "require_venue",
+    "split_binance_market_id",
     "select_pred_market_collector",
 ]

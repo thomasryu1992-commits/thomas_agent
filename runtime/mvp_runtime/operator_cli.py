@@ -120,10 +120,15 @@ def main(
     except MvpRuntimeError as exc:
         return report_block(exc)
 
-    gate_banners(channel=channel, provider=provider, search_tool=search_tool)
-    if getattr(validator_provider, "network_egress", False):
-        sys.stderr.write("SAFETY_GATE: validator provider authorized separately "
-                         f"(model: {getattr(validator_provider, 'model_id', 'unknown')})\n")
+    # The validator and front-desk providers used to be hand-written notices beside this call,
+    # because `gate_banners` took one named parameter per role and neither had one — the
+    # front desk's never said SAFETY_GATE at all, so a gated network-capable provider was
+    # announced as a feature rather than as an authorization. Both are ordinary capabilities
+    # now; the kwarg name is the label.
+    gate_banners(
+        operator_channel=channel, analysis_provider=provider, search_tool=search_tool,
+        validator_provider=validator_provider, frontdesk_provider=frontdesk_provider,
+    )
     if frontdesk_provider is not None:
         sys.stderr.write("FRONTDESK: conversational mode ON "
                          f"(model: {getattr(frontdesk_provider, 'model_id', 'unknown')}; "

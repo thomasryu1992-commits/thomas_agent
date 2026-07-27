@@ -190,6 +190,18 @@ def test_a_governed_audit_failure_still_blocks(approved, monkeypatch, capsys):
     assert "the order IS placed" in capsys.readouterr().out
 
 
+def test_the_operator_is_told_the_order_adapter_was_authorized(approved, appended, tmp_path, capsys):
+    """The one path that can move real money printed no SAFETY_GATE notice.
+
+    Every other gated capability announces itself — the network provider, the search tool, the
+    workspace writer, the operator channel. The live order adapter did not, because
+    `gate_banners` took one named parameter per role and nobody added a fifth. The stubbed
+    `_Adapter` here declares `network_egress = True`, i.e. the grant is open and this run can
+    reach the venue, which is exactly when the operator must be told.
+    """
+    assert pco.main([*ARGV, "--root", str(tmp_path)]) == EXIT_OK
+    assert "SAFETY_GATE: live order adapter authorized (network_access)" in capsys.readouterr().err
+
 # --- the daily cap: an order that is placed must be counted ---------------------------
 
 def test_a_placed_canary_consumes_daily_budget(approved, appended):
