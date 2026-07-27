@@ -23,6 +23,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
+from .cost import DEFAULT_TAKER_FEE_BPS
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
@@ -49,6 +50,42 @@ EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
 # Ranking them against newer ones is comparing a cheaper venue to the real one, so the basis
 # has to travel WITH each candidate rather than be assumed for the view.
 EDGE_COST_BASIS_UNRECORDED = "cost_model_unrecorded"
+
+
+def expectancy_at(record: Mapping[str, Any], *, taker_fee_bps: float) -> float | None:
+    """This candidate's expectancy re-derived at a different taker rate. Exact, or None.
+
+    Raising the taker default split the store: 224 candidates on this machine keep numbers
+    scored at 2.5 bps while the venue charges 5.0, and `backtest_evidence` is durable so
+    nothing re-scores them. Re-running the backtest is not available either — the snapshot
+    that produced the evidence is not stored, only its hash.
+
+    But the conversion needs neither. In `cost.apply_cost_model`,
+
+        fee_cost_r = (entry_fill + exit_fill) * taker_fee_bps / 10000 / risk
+
+    is **linear in the rate**, and the fills depend only on slippage. So changing the taker
+    rate alone scales the recorded fee cost and leaves everything else untouched:
+
+        total_net_r(new) = total_net_r(old) - total_fee_cost_r(old) * (new/old - 1)
+
+    Both terms are already in `cost_summary`. The result is exact, not an estimate — a test
+    pins it against a real backtest re-run at the new rate rather than asserting the algebra.
+
+    Returns None when the record predates `cost_summary`, or carries no closed trades, or
+    was scored at a rate of zero (nothing to scale). Never guesses.
+    """
+    evidence = record.get("backtest_evidence") or {}
+    summary = evidence.get("cost_summary") or {}
+    old_rate = (summary.get("cost_model") or {}).get("taker_fee_bps")
+    net, fee = summary.get("total_net_r"), summary.get("total_fee_cost_r")
+    closed = evidence.get("closed_count")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in (old_rate, net, fee, closed)):
+        return None
+    if not old_rate or not closed:
+        return None
+    return round((net - fee * (taker_fee_bps / old_rate - 1.0)) / closed, 8)
 
 
 def cost_basis_of(record: Mapping[str, Any]) -> str:
@@ -480,6 +517,16 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         # later cost-adjusted basis becomes a different value here, and any consumer that
         # compares two candidates can refuse to compare across bases.
         "cost_basis": cost_basis_of(record),
+        # The same expectancy at the rate the venue actually charges, so a candidate scored
+        # under the old default can be read against a new one instead of merely flagged as
+        # incomparable. None when it cannot be derived — never the stored number relabelled.
+        #
+        # Alongside `expectancy` rather than replacing it: the stored figure is what the
+        # durable evidence says, and overwriting it would make the record and the view
+        # disagree about what was measured.
+        "expectancy_at_current_costs": expectancy_at(
+            record, taker_fee_bps=DEFAULT_TAKER_FEE_BPS
+        ),
     }
 
 

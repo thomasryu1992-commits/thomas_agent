@@ -503,11 +503,26 @@ def _execute(
 
         mode = (schedule.request or "watch").strip().lower().split()[0] if schedule.request else "watch"
         if mode == "discovery":
-            # Discovery is candidate generation for the operator, not measurement: it lists
-            # markets and prices nothing, so it is deliberately NOT this scan. Until the
-            # matcher runs on a schedule it is a no-op that says so rather than silently
-            # doing the watch scan under a different name.
-            return "skipped_discovery_not_scheduled_yet"
+            # Candidate generation for the operator, and a different job from the watch scan
+            # — it reads the venues' listings and confirms nothing. It runs on a cadence
+            # because the question is not "what is pairable right now?" but "what became
+            # pairable while nobody was looking?": a pairing that appeared and resolved
+            # between two hand-run `propose` commands leaves no trace it was ever missed.
+            #
+            # The run is recorded, or it would be invisible — the same work, producing output
+            # nobody reads, at a cadence nobody can audit. `new` counts only what no earlier
+            # run proposed, because an operator re-reading forty unchanged pairings every six
+            # hours stops reading them, and the one new pairing arrives in a list they have
+            # learned to skip.
+            from .predmarket import proposals as pm_proposals
+            from .predmarket.pairs_cli import run_discovery
+
+            result = run_discovery(now=now, root=repo_root)
+            record = pm_proposals.build_proposal_record(result, now=now)
+            previous = pm_proposals.read_proposals(repo_root)
+            fresh = len(pm_proposals.new_candidates(record, previous))
+            pm_proposals.append_proposal(record, root=repo_root)
+            return pm_proposals.proposal_status_line(record, new_count=fresh)
         scan = pm_observations.run_watch_scan(now=now, root=repo_root)
         return pm_observations.scan_status_line(scan)
     if schedule.kind == KIND_REPORT:
