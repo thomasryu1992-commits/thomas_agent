@@ -43,6 +43,29 @@ CANDIDATES_FILENAME = "strategy_candidates.jsonl"
 # different property from whether costs were charged at all.
 EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
 
+# ...and at WHICH rates, because that is no longer one answer for the whole store. The taker
+# default moved from the ported 2.5 bps to the venue's measured 5.0, and `backtest_evidence`
+# is durable — candidates scored before the change keep the numbers they were scored with.
+# Ranking them against newer ones is comparing a cheaper venue to the real one, so the basis
+# has to travel WITH each candidate rather than be assumed for the view.
+EDGE_COST_BASIS_UNRECORDED = "cost_model_unrecorded"
+
+
+def cost_basis_of(record: Mapping[str, Any]) -> str:
+    """The cost model one candidate was actually scored under, from its own evidence.
+
+    `factory.backtest_spec` records it in `cost_summary.cost_model`, so this reads what the
+    scoring used rather than what the module currently defaults to. A record predating that
+    field reports UNRECORDED — not the current default, which would claim a candidate had
+    paid a rate it never faced.
+    """
+    summary = (record.get("backtest_evidence") or {}).get("cost_summary") or {}
+    model = summary.get("cost_model") or {}
+    taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
+    if not isinstance(taker, (int, float)) or not isinstance(slip, (int, float)):
+        return EDGE_COST_BASIS_UNRECORDED
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps+slip_{slip}bps"
+
 
 # --- candidate identity (single source) ----------------------------------------
 
@@ -456,7 +479,7 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         # A field rather than a printed sentence because it is a property OF the number: a
         # later cost-adjusted basis becomes a different value here, and any consumer that
         # compares two candidates can refuse to compare across bases.
-        "cost_basis": EDGE_COST_BASIS_NET,
+        "cost_basis": cost_basis_of(record),
     }
 
 

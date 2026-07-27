@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from runtime.mvp_runtime.crypto.pool import (
     EDGE_COST_BASIS_NET,
+    EDGE_COST_BASIS_UNRECORDED,
     candidate_quality,
 )
 
@@ -35,8 +36,30 @@ _RECORD = {
 }
 
 
-def test_the_quality_view_names_its_cost_basis():
-    assert candidate_quality(_RECORD)["cost_basis"] == EDGE_COST_BASIS_NET
+def test_the_quality_view_names_the_rates_the_candidate_was_scored_under():
+    """The rates, not just "costed" — the store holds candidates scored under two models."""
+    record = {**_RECORD, "backtest_evidence": {
+        **_RECORD["backtest_evidence"],
+        "cost_summary": {"cost_model": {"taker_fee_bps": 2.5, "slippage_bps": 3.0}},
+    }}
+    basis = candidate_quality(record)["cost_basis"]
+    assert basis.startswith(EDGE_COST_BASIS_NET)
+    assert "2.5" in basis and "3.0" in basis
+
+
+def test_a_candidate_without_a_recorded_cost_model_says_so():
+    """Reporting the current default would claim it paid a rate it never faced."""
+    assert candidate_quality(_RECORD)["cost_basis"] == EDGE_COST_BASIS_UNRECORDED
+
+
+def test_two_candidates_scored_under_different_models_do_not_share_a_basis():
+    """The property the mixed-store warning depends on."""
+    def at(taker):
+        return candidate_quality({**_RECORD, "backtest_evidence": {
+            **_RECORD["backtest_evidence"],
+            "cost_summary": {"cost_model": {"taker_fee_bps": taker, "slippage_bps": 3.0}},
+        }})["cost_basis"]
+    assert at(2.5) != at(5.0)
 
 
 def test_the_basis_is_a_field_not_a_printed_sentence():
@@ -59,7 +82,52 @@ def test_the_promotion_listing_states_the_basis_before_the_numbers(monkeypatch, 
 
     out = capsys.readouterr().out
     assert "NET of costs" in out
-    assert "HALF what this" in out, "the rate gap is the actionable half of the note"
+    assert "5.0" in out, "the current taker rate must be stated"
     note_at = out.index("NET of costs")
     row_at = out.index("cand_x")
     assert note_at < row_at, "the basis must be stated above the candidate rows"
+
+
+def test_a_mixed_basis_store_is_flagged_not_silently_ranked(monkeypatch, capsys):
+    """The consequence of moving the default: the store now holds both, and ranking is blind.
+
+    `backtest_evidence` is durable, so raising the taker default does not re-score anything —
+    it splits the store. `rank_candidates` orders by verdict tier and edge quality with no
+    notion that one row paid half the fee the other did, so the listing is the only place that
+    can say so.
+    """
+    from scripts import promote_strategy_candidates as prom
+
+    def at(cid, taker):
+        return {**_RECORD, "candidate_id": cid, "backtest_evidence": {
+            **_RECORD["backtest_evidence"],
+            "cost_summary": {"cost_model": {"taker_fee_bps": taker, "slippage_bps": 3.0}},
+        }}
+
+    monkeypatch.setattr(prom.pool_store, "read_candidates",
+                        lambda root: [at("cand_old", 2.5), at("cand_new", 5.0)])
+    prom.main(["--list"])
+
+    out = capsys.readouterr().out
+    assert "MIXED BASES" in out
+    assert "not scored alike" in out.lower()
+    assert "2.5" in out and "5.0" in out
+
+
+def test_a_single_basis_store_is_not_warned_about(monkeypatch, capsys):
+    """The warning has to stay rare enough to be read when it appears.
+
+    Via monkeypatch, not a bare attribute assignment: the first version of this test set
+    `pool_store.read_candidates` directly and never restored it, so every later test in the
+    run saw a two-row candidate store. Twenty-four failures, none of them in the code under
+    test.
+    """
+    from scripts import promote_strategy_candidates as prom
+
+    record = {**_RECORD, "backtest_evidence": {
+        **_RECORD["backtest_evidence"],
+        "cost_summary": {"cost_model": {"taker_fee_bps": 5.0, "slippage_bps": 3.0}},
+    }}
+    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [record])
+    prom.main(["--list"])
+    assert "MIXED BASES" not in capsys.readouterr().out
