@@ -45,20 +45,34 @@ roles:
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/ACTIVE/VALIDATION_ROLE.md
   definition_sha256: ee6e627e7d4a8e3c4fb80b65659681708f71e81a2c5626b42cee9c3b75df887f
+# Activated by explicit Thomas decision, 2026-07-27. Recorded here rather than only in a
+# commit message because this registry is the source of truth for role status, and the one
+# thing a later reader needs is WHY a candidate became routable.
+# No candidate_trial_report backed this: trial records are per-machine and gitignored, and
+# Thomas activated on his own authority instead of waiting for one. That is legitimate - he
+# is the sovereign authority - but it is the exception to the trial -> report -> approval ->
+# activation path, so it is written down rather than left to be inferred from a green gate.
 - role_id: research.general
+  version: 0.5.0
+  role_type: dynamic_specialist
+  status: active
+  routable: true
+  definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/RESEARCH_ROLE.md
+  definition_sha256: 3be9ab603480d6b345aad274b411bd59df3cb61205e9415e9996fc8beaa020c7
+# Activated by explicit Thomas decision, 2026-07-27. Recorded here rather than only in a
+# commit message because this registry is the source of truth for role status, and the one
+# thing a later reader needs is WHY a candidate became routable.
+# No candidate_trial_report backed this: trial records are per-machine and gitignored, and
+# Thomas activated on his own authority instead of waiting for one. That is legitimate - he
+# is the sovereign authority - but it is the exception to the trial -> report -> approval ->
+# activation path, so it is written down rather than left to be inferred from a green gate.
+- role_id: translation.general
   version: 0.4.0
   role_type: dynamic_specialist
-  status: candidate
-  routable: false
-  definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/RESEARCH_ROLE.md
-  definition_sha256: 208426050f5b56a1bbd0941f639e8c6e0096935b2fb4dbcbb54c7d7de9f1862a
-- role_id: translation.general
-  version: 0.3.0
-  role_type: dynamic_specialist
-  status: candidate
-  routable: false
+  status: active
+  routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/TRANSLATION_ROLE.md
-  definition_sha256: 820d59755abe5d7dae7b6387dd91bd2d4c19d69590177aca43a4883a24753c27
+  definition_sha256: 8cbe949c1d5f9110873542a380fc465dbdb6436dc21dec60957c28679e3f388d
 - role_id: content.general
   version: 0.3.0
   role_type: dynamic_specialist
