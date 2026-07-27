@@ -131,10 +131,23 @@ RUNTIME = REPO_ROOT / "runtime"
 # so its CLI is named here rather than silently skipped. It renders ASCII only.
 EXEMPT = {"runtime/read_only_kernel/cli.py"}
 
+def _has_main(path) -> bool:
+    return bool(re.search(r"^def main\(", path.read_text(encoding="utf-8"), re.M))
+
+
+# Scoped to `runtime/`, whose entry points are operator-facing CLIs. `scripts/` is left out
+# deliberately, and the reason is a constraint rather than a preference: two scripts there do
+# carry non-ASCII in string literals and lack the call
+# (`apply_thomas_core_release_candidate.py`, `self_test_core_release_flow.py`), but neither can
+# import this helper. The first is copied into a throwaway repo and loaded standalone by
+# `test_apply_core_idempotency.py` — that isolation is the property under test — and the second
+# runs with `scripts/` on sys.path, not the repo root. Adding the call to either means a third
+# and fourth copy of a six-line function. They also run as children of the Release Gate, which
+# already exports PYTHONUTF8=1 and PYTHONIOENCODING=utf-8, so the exposure is a manual Windows
+# invocation only. Measured, judged not worth the duplication, written down instead.
 ENTRY_POINTS = sorted(
     p for p in RUNTIME.rglob("*.py")
-    if re.search(r"^def main\(", p.read_text(encoding="utf-8"), re.M)
-    and p.relative_to(REPO_ROOT).as_posix() not in EXEMPT
+    if _has_main(p) and p.relative_to(REPO_ROOT).as_posix() not in EXEMPT
 )
 
 
