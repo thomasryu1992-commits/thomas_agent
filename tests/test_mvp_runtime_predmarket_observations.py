@@ -106,8 +106,13 @@ def test_a_scan_prices_every_pairing_in_every_confirmed_group(state, live_venues
 
 def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state, live_venues):
     """What the group generalisation bought: the third venue's pairings are enumerated, not
-    confirmed again. Predict.fun is unquoted and its fees unread, so those two pairings are
-    recorded as non-readings — which is the honest state, not a gap."""
+    confirmed again. One confirmation, three pairings, three rows.
+
+    It used to also assert the third venue came back unreadable, because its fee rate was
+    unknown on the watch path and an unknown cost is not a zero cost. That was true and is
+    now fixed — the venue has a fallback schedule — so the assertion that survives is the one
+    about the group, not the one about the gap.
+    """
     _group(
         state,
         {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
@@ -116,7 +121,9 @@ def test_a_three_leg_group_yields_three_observations_from_one_confirmation(state
     )
     scan = obs.run_watch_scan(now=NOW, root=state)
     assert scan["observation_count"] == 3
-    assert scan["readable_count"] < 3
+    assert scan["groups_observed"] == 1
+    assert {leg["venue"] for row in obs.read_observations(state) for leg in row["legs"]} == {
+        KALSHI, POLYMARKET, "binance"}
 
 
 def test_a_non_reading_is_still_a_row(state, live_venues):
