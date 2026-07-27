@@ -498,3 +498,77 @@ def test_the_watch_scan_can_still_price_everything_discovery_proposes():
         assert observable is usable
         if observable:
             assert md.split_binance_market_id(market.market_id) is not None
+
+
+# --- a confirmed leg must be re-readable, every scan ------------------------------
+
+def test_polymarket_asks_the_venue_for_the_named_legs_rather_than_filtering_a_page(monkeypatch):
+    """Found by the first confirmed group ever recorded. The named path used to fetch
+    Gamma's front page and filter client-side; that group's Polymarket leg was not in the
+    first 1,200 rows of the default order, so every watch scan recorded MARKET_NOT_LISTED —
+    a leg an operator had personally confirmed, permanently unobservable, reported as though
+    the venue had delisted it.
+
+    `clob_token_ids` is Gamma's server-side allowlist, the exact analogue of Kalshi's
+    `tickers`. Using it is not an optimisation.
+    """
+    calls: list[str] = []
+
+    def _capture(url, **kw):
+        calls.append(url)
+        if "/book?" in url:
+            return {"bids": [{"price": "0.40", "size": "10"}], "asks": [{"price": "0.44", "size": "10"}]}
+        return [{"clobTokenIds": '["deep-token"]', "question": "a market nobody pages to",
+                 "endDate": "2027-01-01T00:00:00Z"}]
+
+    monkeypatch.setattr(md, "_get_json", _capture)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    snapshot = md.PolymarketPublicCollector().list_markets(
+        limit=100, timeout_seconds=5, market_ids=["deep-token"])
+    listing = calls[0]
+    assert "clob_token_ids=deep-token" in listing
+    assert "order=volumeNum" not in listing, "the discovery ordering must not leak here"
+    assert [m.market_id for m in snapshot.markets] == ["deep-token"]
+    assert snapshot.markets[0].quote.quoted() is True
+
+
+def test_every_named_leg_gets_its_book_however_many_there_are(monkeypatch):
+    """The book budget bounds discovery, where the list is whatever the venue served. A named
+    leg was confirmed by an operator so that it would be measured; dropping it past an
+    arbitrary cut-off puts a hole in the report's denominator that reads as a quiet book."""
+    wanted = [f"tok{i}" for i in range(md.DEFAULT_BOOK_LIMIT + 8)]
+    books: list[str] = []
+
+    def _capture(url, **kw):
+        if "/book?" in url:
+            books.append(url)
+            return {"bids": [], "asks": []}
+        return [{"clobTokenIds": f'["{t}"]', "question": f"q{t}",
+                 "endDate": "2027-01-01T00:00:00Z"} for t in wanted]
+
+    monkeypatch.setattr(md, "_get_json", _capture)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    md.PolymarketPublicCollector().list_markets(
+        limit=200, timeout_seconds=5, market_ids=wanted)
+    assert len(books) == len(wanted)
+
+
+def test_discovery_still_respects_the_book_budget(monkeypatch):
+    """The other half: nothing above changed what an unbounded discovery read may spend."""
+    rows = [{"clobTokenIds": f'["t{i}"]', "question": f"q{i}",
+             "endDate": "2027-01-01T00:00:00Z"} for i in range(md.DEFAULT_BOOK_LIMIT + 10)]
+    books: list[str] = []
+
+    def _capture(url, **kw):
+        if "/book?" in url:
+            books.append(url)
+            return {"bids": [], "asks": []}
+        return rows
+
+    monkeypatch.setattr(md, "_get_json", _capture)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    md.PolymarketPublicCollector(pages=1).list_markets(limit=200, timeout_seconds=5)
+    assert len(books) == md.DEFAULT_BOOK_LIMIT
