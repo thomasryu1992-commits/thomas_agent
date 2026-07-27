@@ -10,8 +10,14 @@
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
 
 ``propose`` reads both venues (through the gate — the mock by default, so this runs on any
-machine with no grant), judges every cross-venue pairing deterministically, and prints the
-candidates with their score breakdown plus the near-misses. **It confirms nothing.**
+machine with no grant), **screens out the markets this pipeline cannot use**, judges every
+remaining cross-venue pairing deterministically, and prints the candidates with their score
+breakdown plus the near-misses. **It confirms nothing.**
+
+The screen is reported, not applied in silence: every run prints how many markets each venue
+listed, how many survived, and the reason counts for the rest (``screening.py``). A proposal
+list that came back empty because every market was a parlay is a different finding from one
+that came back empty because nothing matched, and only that line distinguishes them.
 
 The unit is an **event group**, not a pair: one confirmation covers however many venues quote
 the event, and ``add-leg`` extends it when a new venue appears. The operator's work therefore
@@ -32,7 +38,7 @@ from typing import Any
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs
+from . import matching, pairs, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
     KALSHI,
@@ -60,6 +66,12 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
             status=row.get("status"),
             category=row.get("category"),
             fee_rate_bps=row.get("fee_rate_bps"),
+            derived_from=(
+                tuple(str(x) for x in row["derived_from"])
+                if isinstance(row.get("derived_from"), (list, tuple)) else None
+            ),
+            accepting_orders=row.get("accepting_orders"),
+            volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
                 yes_bid_size=quote.get("yes_bid_size"), yes_ask_size=quote.get("yes_ask_size"),
@@ -68,27 +80,49 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
     return rebuilt
 
 
-def _read_venue(venue: str, *, limit: int, now: str) -> tuple[list[PredMarket], str | None]:
-    """One venue's markets, or an empty list plus a degrade reason. Never raises.
+def _read_venue(
+    venue: str, *, limit: int, now: str, min_horizon_hours: float
+) -> tuple[list[PredMarket], dict[str, Any], str | None]:
+    """One venue's *screenable* markets, its screen result, and any degrade reason.
 
-    A venue being unreadable is not a failed command: proposing from one venue alone yields
-    no candidates, which is the honest answer, and the reason is printed rather than hidden.
+    Never raises: a venue being unreadable is not a failed command. Proposing from one venue
+    alone yields no candidates, which is the honest answer, and the reason is printed rather
+    than hidden.
+
+    The horizon is pushed to the venue where it supports one and re-applied here regardless,
+    so the printed exclusion counts describe what actually came back rather than what we
+    asked for.
     """
-    collector = select_pred_market_collector(venue)
+    collector = select_pred_market_collector(
+        venue, min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours)
+    )
     try:
         snapshot, _record = collect_pred_markets(venue, collector=collector, now=now, limit=limit)
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
-        return [], exc.reason_code
-    return _markets_of(snapshot), None
+        return [], screening.screen_markets([], now=now), exc.reason_code
+    screened = screening.screen_markets(
+        _markets_of(snapshot), now=now, min_horizon_hours=min_horizon_hours
+    )
+    return list(screened["observable"]), screened, None
 
 
 def _cmd_propose(args: argparse.Namespace) -> int:
     now = pairs.now_iso()
-    kalshi, kalshi_error = _read_venue(KALSHI, limit=args.limit, now=now)
-    poly, poly_error = _read_venue(POLYMARKET, limit=args.limit, now=now)
+    horizon = float(args.min_horizon_hours)
+    kalshi, kalshi_screen, kalshi_error = _read_venue(
+        KALSHI, limit=args.limit, now=now, min_horizon_hours=horizon)
+    poly, poly_screen, poly_error = _read_venue(
+        POLYMARKET, limit=args.limit, now=now, min_horizon_hours=horizon)
 
     result = matching.generate_candidates(kalshi, poly)
+    # Carried into the result so `--json` reports it too: a run that judged nothing because
+    # every market was screened out is a different finding from a run that judged everything
+    # and matched nothing, and only the screen can tell them apart.
+    result["screening"] = {
+        KALSHI: {k: v for k, v in kalshi_screen.items() if k != "observable"},
+        POLYMARKET: {k: v for k, v in poly_screen.items() if k != "observable"},
+    }
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
     taken = pairs.grouped_market_keys(pairs.read_groups())
@@ -107,6 +141,8 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     for venue, error in ((KALSHI, kalshi_error), (POLYMARKET, poly_error)):
         if error:
             sys.stdout.write(f"DEGRADED {venue}: {error} (no candidates from this venue)\n")
+    for venue, screen in ((KALSHI, kalshi_screen), (POLYMARKET, poly_screen)):
+        sys.stdout.write(f"{venue:<11}: {screening.screening_status_line(screen)}\n")
     sys.stdout.write(matching.candidate_status_line(result) + "\n")
     for row in result["candidates"]:
         sys.stdout.write(
@@ -198,6 +234,12 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--json", action="store_true")
     propose.add_argument("--near-misses", action="store_true", default=True)
     propose.add_argument("--near-miss-limit", type=int, default=10)
+    propose.add_argument(
+        "--min-horizon-hours", type=float, default=screening.MIN_HORIZON_HOURS,
+        help=("how much life a market must have left to be proposed (default "
+              f"{screening.MIN_HORIZON_HOURS}h — long enough to survive your review). "
+              "Pass 0 to see everything the venues list."),
+    )
     propose.set_defaults(handler=_cmd_propose)
 
     confirm = sub.add_parser("confirm", help="record ONE operator-confirmed event group")

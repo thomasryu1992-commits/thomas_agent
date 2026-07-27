@@ -175,7 +175,8 @@ def main(
         writer = select_writer() if write_path is not None else None
     except MvpRuntimeError as exc:
         return report_block(exc)
-    gate_banners(provider=provider, search_tool=search_tool, writer=writer)
+    gate_banners(analysis_provider=provider, search_tool=search_tool,
+                 workspace_writer=writer)
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     # Working memory (local, per-machine) accumulates candidates and feeds them back as context.

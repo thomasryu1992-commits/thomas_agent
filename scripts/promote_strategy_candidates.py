@@ -34,6 +34,7 @@ control ledger either way.
 
 from __future__ import annotations
 
+import collections
 import argparse
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
+from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -221,6 +223,28 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}")
             return EXIT_BLOCKED
+        # Stated before the numbers, not after: this is the surface an operator reads to
+        # decide a promotion, and the promotion gate is that operator — there is no
+        # automated statistical threshold behind it.
+        #
+        # The bases are counted rather than assumed. The taker default moved from the ported
+        # 2.5 bps to the venue's measured 5.0, and `backtest_evidence` is durable, so this
+        # store holds candidates scored under both. Ranking them together compares a cheaper
+        # venue to the real one, and the ranking does not know that — only this line can.
+        bases = collections.Counter(
+            pool_store.candidate_quality(c)["cost_basis"] for c in candidates
+        )
+        print(f"NOTE: every R below is NET of costs, charged on both legs of every closed trade.")
+        print(f"      Current model: {cost_mod.DEFAULT_TAKER_FEE_BPS} bps taker + "
+              f"{cost_mod.DEFAULT_SLIPPAGE_BPS} bps slippage per fill (5.0 bps taker measured on")
+        print("      this account 2026-07-26: 0.1291 USDT over ~258 USDT of fills).")
+        if len(bases) > 1:
+            print("      MIXED BASES in this list — these rows were NOT scored alike:")
+            for basis, count in bases.most_common():
+                print(f"        {count:4d}  {basis}")
+            print("      A candidate scored at 2.5 bps paid half the fee one scored at 5.0 did.")
+            print("      Rank tiers are comparable within a basis, not across them.")
+        print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
         # believable edges surface first for the promotion decision.
