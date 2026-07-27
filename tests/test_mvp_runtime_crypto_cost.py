@@ -23,20 +23,27 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 _SOURCE_LONG = {"net_r": 1.97140015, "fee_cost_r": 0.01299985, "slippage_cost_r": 0.01560000}
 _SOURCE_SHORT = {"net_r": -1.02805008, "fee_cost_r": 0.01275007, "slippage_cost_r": 0.01530000}
 
+# The source's rates, passed EXPLICITLY. The module default is now the venue's measured
+# 5.0 bps taker rather than the ported 2.5, and these two tests are about the algebra
+# matching the source implementation — a property of the formula, not of the rate it is fed.
+# Pinning them to the default would have made a deliberate rate change look like a port
+# regression, and left the parity claim untestable at any other rate.
+_SOURCE_RATES = CostModel(taker_fee_bps=2.5, slippage_bps=3.0)
+
 
 def _close(a: float, b: float, tol: float = 1e-6) -> bool:
     return math.isclose(a, b, abs_tol=tol)
 
 
 def test_long_matches_source_settle_trade_reference():
-    result = apply_cost_model("LONG", 100.0, 108.0, 4.0)
+    result = apply_cost_model("LONG", 100.0, 108.0, 4.0, cost=_SOURCE_RATES)
     assert _close(result.net_r, _SOURCE_LONG["net_r"])
     assert _close(result.fee_cost_r, _SOURCE_LONG["fee_cost_r"])
     assert _close(result.slippage_cost_r, _SOURCE_LONG["slippage_cost_r"])
 
 
 def test_short_matches_source_settle_trade_reference():
-    result = apply_cost_model("SHORT", 100.0, 104.0, 4.0)
+    result = apply_cost_model("SHORT", 100.0, 104.0, 4.0, cost=_SOURCE_RATES)
     assert _close(result.net_r, _SOURCE_SHORT["net_r"], tol=1e-5)
     assert _close(result.fee_cost_r, _SOURCE_SHORT["fee_cost_r"])
     assert _close(result.slippage_cost_r, _SOURCE_SHORT["slippage_cost_r"])
@@ -58,7 +65,7 @@ def test_costs_are_always_nonnegative_never_free_money():
 def test_gross_r_matches_uncosted_distance_formula():
     # gross_R must equal exactly what settle_trade_plan already computes with no
     # cost model at all — the "intended price" R this port used before C12.
-    result = apply_cost_model("LONG", 100.0, 108.0, 4.0)
+    result = apply_cost_model("LONG", 100.0, 108.0, 4.0, cost=_SOURCE_RATES)
     assert result.gross_r == 2.0  # (108-100)/4
     result_short = apply_cost_model("SHORT", 100.0, 104.0, 4.0)
     assert result_short.gross_r == -1.0  # (100-104)/4

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import safety_gate, timeutil
+from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
@@ -51,6 +52,7 @@ from .live_pnl import (
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
+    LIVE_PNL_NO_SOURCE,
     live_risk_snapshot,
 )
 
@@ -146,14 +148,34 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # and fails closed on an unverifiable history, so this one value covers every case.
     risk = live_risk_snapshot(limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now)
     breached = bool(risk["daily_loss_limit_breached"])
-    checks.append(_check(
-        "daily_loss_breaker",
-        not breached,
-        f"realized today {risk['daily_realized_pnl_usdt']} USDT, limit {risk['daily_loss_limit_usdt']}"
-        if not breached else
-        f"BREACHED (realized {risk['daily_realized_pnl_usdt']}, limit {risk['daily_loss_limit_usdt']}"
-        + (f", history_error={risk['history_error']}" if risk["history_error"] else "") + ")",
-    ))
+    # A breaker with nothing to measure is not a passing check, however comfortable its number
+    # looks. The local outcome ledger is written only by `live_leg.execute_live_exit` — the
+    # autonomous leg nothing may import — and the canary path is entry-only, so on this board
+    # the figure below has no source at all. It read `realized today 0.0 USDT` and PASSED while
+    # the venue reported a real realized loss for the same day. Reporting that as ready is the
+    # failure `cycle.py` names: a breaker that cannot trip is not a breaker.
+    no_source = risk.get("history_error") == LIVE_PNL_NO_SOURCE
+    # BREACHED is reported ahead of NO DATA SOURCE, and the order matters: an unconfigured limit
+    # already reads as breached ("zero means not configured, never unlimited"), and that is the
+    # stronger statement of the two. Letting the newer message win would have downgraded it.
+    if breached:
+        detail = (
+            f"BREACHED (realized {risk['daily_realized_pnl_usdt']}, "
+            f"limit {risk['daily_loss_limit_usdt']}"
+            + (f", history_error={risk['history_error']}" if risk["history_error"] else "") + ")"
+        )
+    elif no_source:
+        detail = (
+            f"NO DATA SOURCE - the local outcome ledger has no closed trade for today, so the "
+            f"{risk['daily_loss_limit_usdt']} USDT limit currently bounds nothing. The venue "
+            "knows the figure; a caller that reads the account can pass it in."
+        )
+    else:
+        detail = (
+            f"realized today {risk['daily_realized_pnl_usdt']} USDT, "
+            f"limit {risk['daily_loss_limit_usdt']} (source={risk.get('pnl_source')})"
+        )
+    checks.append(_check("daily_loss_breaker", not breached and not no_source, detail))
 
     # 7. Canary evidence.
     promotion = live_promotion.promotion_status(
@@ -276,6 +298,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Live-trading readiness board (read-only: no network, no writes, no orders)."
     )

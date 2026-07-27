@@ -47,12 +47,19 @@ The candidate Constitution is intentionally excluded from the Active Source Fami
 
 ## MVP Runtime (live agent)
 
-The first live agent capability is built under [`runtime/mvp_runtime/`](../runtime/mvp_runtime/)
-(the read-only Kernel is reused as libraries; it is not extended). It runs one request
-end-to-end: intake → plan (classify/bind/permission/assign) → read-only search → specialist
-model call → output validation → hash-chained audit → final response. Nothing is executed;
-every record stays REVIEW_ONLY / EVIDENCE_ONLY, and network-capable capabilities are OFF
-until locally activated behind the Safety-Flag Gate.
+The live agent is [`runtime/mvp_runtime/`](../runtime/mvp_runtime/) (the read-only Kernel is
+reused as libraries; it is not extended). It runs one request end-to-end: intake → plan
+(classify/bind/permission/assign) → read-only search → specialist model call → output
+validation → hash-chained audit → final response.
+
+Every **effect** is gated, and each gate is per machine: a capability is inert until an
+integrity-checked activation record grants it, and deleting that record revokes it live. What
+this text must not be read as saying is "nothing happens" — that was true through R7 and has
+not been since: R8 creates files under `workspace/`, R10 spends an approval, and the crypto
+stack can place a real order. This page names entry points; **it does not own status.** For
+what is built see [`BUILD_HISTORY.md`](BUILD_HISTORY.md), for what is left
+[`REMAINING_WORK.md`](REMAINING_WORK.md), and for what *this* machine can do right now ask the
+computed board: `python -m runtime.mvp_runtime.crypto.live_readiness`.
 
 | Capability | Entry point / doc |
 |---|---|

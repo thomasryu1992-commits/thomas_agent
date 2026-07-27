@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import timeutil
+from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
@@ -370,6 +371,7 @@ def _days_until(expires_at: str, now: Any) -> int | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(description="Crypto pipeline status board (read-only).")
     parser.add_argument("--json", action="store_true", help="emit the full status as JSON")
     parser.add_argument("--cycles", type=int, default=12, help="how many recent cycle records to read")

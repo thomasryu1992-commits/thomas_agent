@@ -25,6 +25,16 @@ from runtime.mvp_runtime.predmarket import market_data as md
 NOW = "2026-07-26T12:00:00Z"
 
 
+def _authorized_for(provider_id):
+    from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
+
+    return Authorization(
+        flags=(NETWORK_ACCESS,), provider_id=provider_id,
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    )
+
+
 def _authorized():
     """A hand-built authorization, so the egress check passes and the NEXT refusal is the
     one under test."""
@@ -229,8 +239,10 @@ def test_the_unquoted_count_is_reported_separately():
     record has to make that visible rather than reporting a healthy market_count."""
 
     class _Unquoted(md.MockPredMarketCollector):
-        def list_markets(self, *, limit, timeout_seconds):
-            snap = super().list_markets(limit=limit, timeout_seconds=timeout_seconds)
+        def list_markets(self, *, limit, timeout_seconds, market_ids=None):
+            snap = super().list_markets(
+                limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids
+            )
             snap.markets = [
                 md.PredMarket(
                     venue=m.venue, market_id=m.market_id, group_id=m.group_id, title=m.title,
@@ -252,7 +264,7 @@ def test_a_collector_failure_fails_closed_for_the_caller_to_degrade():
     venue answered, and a scan with one venue readable is still a scan."""
 
     class _Broken(md.MockPredMarketCollector):
-        def list_markets(self, *, limit, timeout_seconds):
+        def list_markets(self, *, limit, timeout_seconds, market_ids=None):
             raise ToolError("TOOL_TRANSPORT", "venue unreachable")
 
     with pytest.raises(ToolBlocked) as exc:
@@ -496,7 +508,7 @@ def test_the_whole_three_call_walk_produces_a_quoted_market(monkeypatch):
         limit=5, timeout_seconds=1
     )
     market = snapshot.markets[0]
-    assert market.market_id == "112233"           # the YES token, not the topic id
+    assert market.market_id == "5567895:112233"   # marketId:tokenId — both, because the book needs both
     assert market.group_id == "0xabc123"          # the cross-reference axis
     assert market.fee_rate_bps == 200
     assert market.quote.quoted() is True
@@ -523,3 +535,112 @@ def test_a_failed_detail_or_book_leaves_the_market_unquoted_rather_than_dropped(
     )
     assert len(snapshot.markets) == 1
     assert snapshot.markets[0].quote.quoted() is False
+
+
+# --- the targeted read: what a watch scan actually costs -------------------------
+
+def test_a_targeted_binance_quote_is_one_call_not_a_rediscovery(monkeypatch):
+    """The saving this exists for. A confirmed leg carries `marketId:tokenId`, so re-reading
+    it every two minutes is ONE order-book call — not the list -> detail -> book walk that
+    found it, which would spend 1 + 2N calls to learn nothing new."""
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+    paths: list[str] = []
+
+    def _fake_get(self, path, params, *, timeout_seconds):
+        paths.append(path)
+        return _pm_book()
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _fake_get)
+    snapshot = md.BinancePredictionCollector(authorization=_authorized()).list_markets(
+        limit=100, timeout_seconds=1, market_ids=["5567895:112233"],
+    )
+    assert paths == [md.BinancePredictionCollector.BOOK_PATH]
+    assert snapshot.markets[0].quote.quoted() is True
+
+
+def test_a_leg_whose_id_cannot_be_split_is_unquoted_not_guessed(monkeypatch):
+    """An id from before the composite format, or hand-edited. There is nothing to ask the
+    venue for, so it is recorded unquoted — the same answer every other unreadable leg gets."""
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+    called: list[str] = []
+    monkeypatch.setattr(
+        md.BinancePredictionCollector, "_signed_get",
+        lambda self, path, params, *, timeout_seconds: called.append(path) or _pm_book(),
+    )
+    snapshot = md.BinancePredictionCollector(authorization=_authorized()).list_markets(
+        limit=100, timeout_seconds=1, market_ids=["112233"],
+    )
+    assert called == []          # nothing asked
+    assert snapshot.markets[0].quote.quoted() is False
+
+
+def test_kalshi_lets_the_venue_do_the_filtering(monkeypatch):
+    """Kalshi returns prices inline and accepts a `tickers` allowlist, so a targeted read is
+    still one call — and a smaller payload."""
+    seen: dict[str, str] = {}
+
+    def _fake(url, *, timeout_seconds, headers=None):
+        seen["url"] = url
+        return _kalshi_payload()
+
+    monkeypatch.setattr(md, "_get_json", _fake)
+    md.KalshiPublicCollector(authorization=_authorized_for(md.KALSHI_PROVIDER_ID)).list_markets(
+        limit=100, timeout_seconds=1, market_ids=["FED-26DEC-CUT", "OTHER"],
+    )
+    assert "tickers=FED-26DEC-CUT%2COTHER" in seen["url"]
+
+
+def test_polymarket_books_only_the_markets_asked_for(monkeypatch):
+    """One Gamma call for identity, then a book call per WANTED market — not per market that
+    happened to be listed first."""
+    booked: list[str] = []
+
+    def _fake(url, *, timeout_seconds, headers=None):
+        if "gamma" in url:
+            return [_gamma_row(), _gamma_row(clobTokenIds=["other-token", "no"])]
+        booked.append(url)
+        return _book()
+
+    monkeypatch.setattr(md, "_get_json", _fake)
+    snapshot = md.PolymarketPublicCollector(
+        authorization=_authorized_for(md.POLYMARKET_PROVIDER_ID)
+    ).list_markets(limit=100, timeout_seconds=1, market_ids=["other-token"])
+    assert len(booked) == 1 and "other-token" in booked[0]
+    assert [m.market_id for m in snapshot.markets] == ["other-token"]
+
+
+# --- identifying ourselves ------------------------------------------------------
+
+def test_every_read_identifies_this_client(monkeypatch):
+    """Polymarket sits behind Cloudflare, which refuses Python's default
+    `Python-urllib/3.x` signature with error 1010 — a 403 the transport layer reported as a
+    bare TOOL_TRANSPORT, indistinguishable from the venue being down. Found on the deployed
+    scheduler, where Polymarket was the only venue failing."""
+    seen: dict[str, dict] = {}
+
+    real = md.urllib.request.Request
+
+    def _capture(url, method="GET", headers=None, **kw):
+        seen["headers"] = dict(headers or {})
+        return real(url, method=method, headers=headers or {}, **kw)
+
+    monkeypatch.setattr(md.urllib.request, "Request", _capture)
+    monkeypatch.setattr(
+        md.urllib.request, "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(md.urllib.error.URLError("no network in a test")),
+    )
+    with pytest.raises(ToolError):
+        md._get_json("https://example.invalid/x", timeout_seconds=1)
+    assert seen["headers"].get("User-Agent") == md.USER_AGENT
+
+
+def test_the_user_agent_names_this_client_rather_than_imitating_a_browser():
+    """It says who we are; it does not pretend to be something else. A venue that blocks an
+    honestly identified client is declining to be read, and the answer to that is to stop
+    reading it — not to wear a costume."""
+    ua = md.USER_AGENT.lower()
+    assert ua.startswith("thomas-agent/")
+    for browserish in ("mozilla", "chrome", "safari", "gecko", "applewebkit", "edg/"):
+        assert browserish not in ua, f"user agent imitates a browser: {browserish}"

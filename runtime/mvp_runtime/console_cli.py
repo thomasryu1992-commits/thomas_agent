@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import control
-from .cli_common import EXIT_BLOCKED, EXIT_OK, report_block
+from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .store import LedgerStore
@@ -57,6 +57,7 @@ def main(
 ) -> int:
     """Apply one console command. Returns 0 on success, non-zero on a fail-closed block.
     Stores are injectable for tests; unset ones default to the local per-machine state."""
+    force_utf8_io()
     args = _parse_args(argv)
     control_store = control_store if control_store is not None else ControlStore.default()
     ledger = ledger if ledger is not None else LedgerStore.default()

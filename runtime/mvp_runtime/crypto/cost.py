@@ -27,8 +27,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Source defaults (backtesting/cost_model.py CostModel), unchanged.
-DEFAULT_TAKER_FEE_BPS = 2.5
+# The taker rate this venue actually charges, measured — not the source default.
+#
+# The port carried 2.5 bps from `backtesting/cost_model.py` unchanged, and that number is
+# half what Binance USD-M charges at standard tier. Measured on this account 2026-07-26:
+# 0.1291 USDT of commission over roughly 258 USDT of fills (two canary entries at ~64.5
+# USDT and their two closes) — 5.0 bps per fill, which is the published standard taker rate.
+#
+# Backtest evidence exists to predict live results, so it has to charge the live rate. The
+# cost of keeping the old value is stated in the same breath: every candidate scored under
+# 2.5 bps keeps the numbers it was scored with, because `backtest_evidence` is durable and
+# is never rewritten. That is why `cost_summary.cost_model` records the rates each candidate
+# was scored under — the store can hold two bases and say so, rather than silently mixing.
+#
+# A lower actual rate (VIP tier, BNB discount) only makes a real edge better than reported,
+# which is the safe direction for evidence that gates real money.
+DEFAULT_TAKER_FEE_BPS = 5.0
+
+# Unchanged from the source. Slippage is a market property rather than a published rate, and
+# nothing here has measured it — a canary is a single market order, not a sample.
 DEFAULT_SLIPPAGE_BPS = 3.0
 
 
