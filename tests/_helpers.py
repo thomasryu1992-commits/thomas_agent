@@ -16,7 +16,14 @@ from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 
-# Binding-dependent tests skip on a core-neutral checkout (CI); they run on any machine
-# with a local Core activation (see CLAUDE.md "Core activation").
+# Binding-dependent tests skip on a core-neutral checkout; they run on any machine with a
+# local Core activation (see CLAUDE.md "Core activation").
+#
+# Not on CI, despite what this comment used to say. Both workflows that run pytest
+# (mvp-runtime-tests, thomas-agent-runtime-validation) call
+# scripts/ci_activate_core_for_tests.py first, precisely so these run rather than skip —
+# that script's own docstring says so. The checkout this skips on is a *developer's*: run
+# the suite without a local activation and ~195 tests quietly vanish, which is worth
+# knowing before reading a green local run as full coverage.
 requires_local_core = pytest.mark.skipif(
     not LOCAL_POINTER.is_file(), reason="no local Core activation")
