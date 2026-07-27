@@ -21,11 +21,16 @@ from runtime.mvp_runtime.cli_common import gate_banners
 class _Impl:
     """A stand-in declaring exactly the capability attributes the real ones declare."""
 
-    def __init__(self, *, network_egress=False, filesystem_write=False, model_id=None):
+    def __init__(self, *, network_egress=False, filesystem_write=False, model_id=None,
+                 model_invocation=None):
         self.network_egress = network_egress
         self.filesystem_write = filesystem_write
         if model_id is not None:
             self.model_id = model_id
+        # Left unset by default, exactly as a real provider leaves it: carrying a model_id
+        # is enough to announce. Only a mock opts out.
+        if model_invocation is not None:
+            self.model_invocation = model_invocation
 
 
 def _banners(capsys, **kwargs) -> list[str]:
@@ -34,9 +39,10 @@ def _banners(capsys, **kwargs) -> list[str]:
 
 
 def test_an_inert_implementation_is_silent(capsys):
-    """Every mock declares both capabilities False; a default run must stay quiet, or the
-    notice becomes noise the operator learns to scroll past."""
-    assert _banners(capsys, provider=_Impl(model_id="mock-model")) == []
+    """A mock declares every capability False; a default run must stay quiet, or the notice
+    becomes noise the operator learns to scroll past. Note `model_invocation=False`: a mock
+    carries a `model_id` for record-keeping, and opting out is now how it stays silent."""
+    assert _banners(capsys, provider=_Impl(model_id="mock-model", model_invocation=False)) == []
 
 
 def test_a_capable_implementation_announces_itself_under_any_name(capsys):
@@ -58,10 +64,33 @@ def test_a_model_invoking_capability_names_its_model_and_both_flags(capsys):
     ]
 
 
-def test_model_invocation_is_not_claimed_for_an_inert_model_holder(capsys):
-    """`model_id` alone must not produce a notice: a MockProvider has one and reaches nothing.
-    The flag is only meaningful once something capable has already been established."""
-    assert _banners(capsys, analysis_provider=_Impl(model_id="mock-model")) == []
+def test_a_model_holder_that_reaches_no_model_says_so_to_stay_silent(capsys):
+    """A MockProvider has a `model_id` and reaches nothing, so it declares the opt-out."""
+    assert _banners(
+        capsys, analysis_provider=_Impl(model_id="mock-model", model_invocation=False)) == []
+
+
+def test_a_model_invoking_capability_announces_without_egress(capsys):
+    """The gap this ordering used to leave, now closed.
+
+    `model_invocation` was claimed only for something that *already* declared egress or disk
+    write — because a mock declares a `model_id` too. So an implementation invoking a real
+    model over no network announced nothing: a gated capability, silent, because nobody had
+    thought of its shape. That is the failure `gate_banners` exists to prevent, one level
+    down. No such provider exists today; this pins the behaviour before one does.
+    """
+    lines = _banners(capsys, analysis_provider=_Impl(model_id="llama-local"))
+    assert lines == ["SAFETY_GATE: analysis provider authorized (llama-local; model_invocation)"]
+
+
+def test_a_forgotten_declaration_is_noisy_rather_than_quiet(capsys):
+    """The direction the default was chosen for.
+
+    An implementation that holds a `model_id` and declares nothing else produces a spurious
+    notice, not a missing one. That is the whole point of defaulting to announce: getting it
+    wrong should waste the operator's attention, never spend a capability behind their back.
+    """
+    assert _banners(capsys, mystery=_Impl(model_id="unknown")) != []
 
 
 def test_a_disk_writing_capability_is_announced(capsys):
@@ -136,39 +165,3 @@ def test_an_entry_point_reconfigures_stdio_to_utf8(path):
         f"{path.relative_to(REPO_ROOT)} defines main() but never calls force_utf8_io(); "
         f"non-ASCII output will raise UnicodeEncodeError on a cp949 console"
     )
-
-
-# --- the banner's unstated precondition ---------------------------------------------
-
-def test_every_gated_provider_declares_network_egress():
-    """`gate_banners` announces `model_invocation` only for something already capable.
-
-    That ordering is deliberate — `MockProvider` declares a `model_id` too and must stay
-    silent — but it leaves a precondition nobody wrote down: a gated provider is assumed to
-    make a network call. An implementation that invokes a real model while declaring neither
-    `network_egress` nor `filesystem_write` prints *nothing*, which is the exact failure
-    `gate_banners` exists to prevent, one level down.
-
-    No such provider exists today, and this test is what keeps it that way: the catalogues
-    below are the only way a gated provider reaches a caller, so adding a local/in-process
-    model provider fails here and forces the banner logic to be extended before it ships,
-    rather than shipping a money-or-model capability that announces itself to no one.
-    """
-    from runtime.mvp_runtime import providers
-    from runtime.mvp_runtime.safety_gate import Authorization
-
-    auth = Authorization(
-        flags=("model_invocation", "network_access"), provider_id="test",
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    )
-    catalogue = {**providers._hosted_factories(), **providers._tier_factories()}
-    assert catalogue, "the provider catalogues are empty — this test would pass vacuously"
-
-    for provider_id, factory in sorted(catalogue.items()):
-        impl = factory(auth)
-        assert getattr(impl, "network_egress", False) is True, (
-            f"gated provider {provider_id} does not declare network_egress, so gate_banners "
-            f"would print no authorization notice for it; extend gate_banners to key on "
-            f"model invocation directly before adding a provider like this"
-        )

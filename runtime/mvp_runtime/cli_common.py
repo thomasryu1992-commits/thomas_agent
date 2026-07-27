@@ -54,25 +54,33 @@ def gate_banners(**implementations: Any) -> None:
     hand-writing their own notices beside the call. Pass any capability under any name and it
     announces itself; the name becomes the label, so callers say what the thing is.
 
-    An implementation declaring neither egress nor disk write is inert (every mock does) and
-    stays silent, so a default run is quiet. ``None`` is skipped, so an unselected optional
-    capability needs no guard at the call site.
+    **Silence is the thing that must be opted into.** ``model_invocation`` used to be claimed
+    only for something that *already* declared egress or disk write — because a mock declares a
+    ``model_id`` too and must stay quiet — which meant an implementation invoking a real model
+    while making no network call announced nothing at all. That is this function's own failure
+    mode one level down: a gated capability, silent, because nobody had thought of its shape.
+    So carrying a ``model_id`` is now enough to announce, and an implementation that holds one
+    without invoking a model says so with ``model_invocation = False``. A forgotten declaration
+    now produces a spurious notice rather than a missing one — noisy, but never quiet about a
+    real capability.
+
+    An implementation declaring no capability at all is inert and stays silent, so a default
+    run is quiet. ``None`` is skipped, so an unselected optional capability needs no guard at
+    the call site.
     """
     for name, impl in implementations.items():
         if impl is None:
             continue
         flags: list[str] = []
+        model_id = getattr(impl, "model_id", None)
+        if getattr(impl, "model_invocation", model_id is not None):
+            flags.append("model_invocation")
         if getattr(impl, "network_egress", False):
             flags.append("network_access")
         if getattr(impl, "filesystem_write", False):
             flags.append("filesystem_write")
         if not flags:
             continue
-        # Only once something capable is established: a mock provider declares a model_id too,
-        # and must stay silent.
-        model_id = getattr(impl, "model_id", None)
-        if model_id is not None:
-            flags.insert(0, "model_invocation")
         detail = f"{model_id}; " if model_id is not None else ""
         sys.stderr.write(
             f"SAFETY_GATE: {name.replace('_', ' ')} authorized ({detail}{', '.join(flags)})\n"
