@@ -24,6 +24,10 @@ from .paths import repo_root as _repo_root
 WORKING_MEMORY_REL = ".runtime_governance_state/working_memory"
 ENTRIES_FILE = "candidates.jsonl"
 VALIDATED_FILE = "validated.jsonl"      # R5: promoted (validated) memory — separate from candidates
+# The fourth rung (policy §12.6): proposed Core changes. Its own file for the same reason
+# VALIDATED has one — retention compacts only `candidates.jsonl`, so a rung that must never be
+# aged out simply is not in the file the prune rewrites.
+CORE_CANDIDATES_FILE = "core_candidates.jsonl"
 _CANDIDATES_LOCK = ".candidates.lock"   # serializes candidate appends vs. the prune rewrite
 
 
@@ -65,6 +69,16 @@ class WorkingMemoryStore:
     def read_validated(self) -> list[dict[str, Any]]:
         """Return every promoted (VALIDATED) memory entry. Fail-closed on a corrupt store."""
         return self._read(VALIDATED_FILE, "VALIDATED_MEMORY_UNREADABLE", "validated memory")
+
+    def append_core_candidates(self, entries: list[Mapping[str, Any]]) -> None:
+        """Append Core Candidate proposals and decision rows (policy §12.6). Append-only, so a
+        decision is a new row rather than an edit. Only the explicit operator door writes here —
+        `automatic_runtime_promotion_allowed` is false, so nothing in the run pipeline does."""
+        self._append(CORE_CANDIDATES_FILE, entries, "CORE_CANDIDATE_WRITE_FAILED", "core candidates")
+
+    def read_core_candidates(self) -> list[dict[str, Any]]:
+        """Return every Core Candidate row, proposals and decisions alike. Fail-closed."""
+        return self._read(CORE_CANDIDATES_FILE, "CORE_CANDIDATE_UNREADABLE", "core candidates")
 
     def prune_expired(self, now: str) -> list[dict[str, Any]]:
         """Delete expired candidates (policy §12.4 retention) and return the removed entries.
@@ -121,6 +135,56 @@ def find_candidate(store: WorkingMemoryStore, candidate_id: str) -> dict[str, An
     if latest is None or latest.get("status") != memory.CANDIDATE_STATUS:
         return None
     return latest
+
+
+def find_validated(store: WorkingMemoryStore, validated_memory_id: str) -> dict[str, Any] | None:
+    """The VALIDATED memory entry with this id, or None.
+
+    Latest-wins for the same reason :func:`find_candidate` is: the store is append-only, so the
+    last row for an id is its current state."""
+    latest: dict[str, Any] | None = None
+    for entry in store.read_validated():
+        if (isinstance(entry, dict)
+                and entry.get("validated_memory_id") == validated_memory_id
+                and entry.get("scope") == memory.VALIDATED_SCOPE
+                and entry.get("status") == memory.VALIDATED_STATUS):
+            latest = entry
+    return latest
+
+
+def find_core_candidate(store: WorkingMemoryStore, core_candidate_id: str) -> dict[str, Any] | None:
+    """The **live** (undecided) Core Candidate with this id, or None.
+
+    Latest-wins across every row for the id, whatever its status — the append-only decision row
+    is what retires a proposal, exactly as the PROMOTED marker retires a working-memory
+    candidate. A decided proposal resolves to nothing, so a second decision cannot be recorded
+    against it and ACCEPTED/REJECTED stay terminal."""
+    latest: dict[str, Any] | None = None
+    for entry in store.read_core_candidates():
+        if (isinstance(entry, dict)
+                and entry.get("core_candidate_id") == core_candidate_id
+                and entry.get("scope") == memory.CORE_CANDIDATE_SCOPE):
+            latest = entry
+    if latest is None or latest.get("status") != memory.CORE_CANDIDATE_STATUS:
+        return None
+    return latest
+
+
+def live_core_candidates(store: WorkingMemoryStore) -> list[dict[str, Any]]:
+    """Every Core Candidate still awaiting a decision, oldest first.
+
+    Resolved by the same latest-wins rule as :func:`find_core_candidate` rather than by
+    filtering rows on status: filtering would list a proposal *and* its decision row, and would
+    keep showing a decided proposal as open."""
+    latest: dict[str, dict[str, Any]] = {}
+    for entry in store.read_core_candidates():
+        if isinstance(entry, dict) and entry.get("scope") == memory.CORE_CANDIDATE_SCOPE:
+            candidate_id = entry.get("core_candidate_id")
+            if isinstance(candidate_id, str) and candidate_id:
+                latest[candidate_id] = entry
+    live = [e for e in latest.values() if e.get("status") == memory.CORE_CANDIDATE_STATUS]
+    live.sort(key=lambda e: (str(e.get("created_at", "")), str(e.get("core_candidate_id", ""))))
+    return live
 
 
 def mark_promoted(
