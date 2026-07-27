@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 
 # Binding-dependent tests skip on a core-neutral checkout; they run on any machine with a
-# local Core activation (see CLAUDE.md "Core activation").
+# local Core activation (see the `verify` skill, "Core activation (local, per-machine)").
 #
 # Not on CI, despite what this comment used to say. Both workflows that run pytest
 # (mvp-runtime-tests, thomas-agent-runtime-validation) call
