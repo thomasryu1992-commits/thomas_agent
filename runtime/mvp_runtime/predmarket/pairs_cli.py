@@ -109,7 +109,8 @@ def _read_venue(
         root=root,
     )
     try:
-        snapshot, _record = collect_pred_markets(venue, collector=collector, now=now, limit=limit)
+        snapshot, _record = collect_pred_markets(
+            venue, collector=collector, now=now, limit=limit, with_quotes=False)
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
         return [], screening.screen_markets([], now=now), exc.reason_code

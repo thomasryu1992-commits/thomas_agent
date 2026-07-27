@@ -242,6 +242,10 @@ class PredMarketSnapshot:
     is_synthetic: bool
     collector_version: str = PREDMARKET_TOOL_VERSION
     latency_ms: int = 0
+    # Whether order books were asked for at all. Without it, a discovery read's
+    # `quoted_count: 0` is indistinguishable from a venue with an empty book on every
+    # market — the same "absence read as a value" mistake this module exists to avoid.
+    quotes_requested: bool = True
 
 
 class PredMarketCollector(Protocol):
@@ -250,7 +254,12 @@ class PredMarketCollector(Protocol):
     tool_version: str
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot: ...
 
 
@@ -282,7 +291,12 @@ class MockPredMarketCollector:
         self.source = f"mock.{self.venue}"
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # A small deterministic offset per venue, so the same event is priced differently on
         # the two mocks — the cross-venue gap the detector is supposed to find.
@@ -308,12 +322,25 @@ class MockPredMarketCollector:
         if market_ids is not None:
             wanted = set(market_ids)
             markets = [m for m in markets if m.market_id in wanted]
+        if not with_quotes:
+            # The mock's prices cost nothing, but it honours the contract anyway: a caller
+            # that forgot to ask for quotes must behave the same here as against a venue.
+            markets = [
+                PredMarket(
+                    venue=m.venue, market_id=m.market_id, group_id=m.group_id, title=m.title,
+                    close_time=m.close_time, status=m.status, category=m.category,
+                    fee_rate_bps=m.fee_rate_bps, derived_from=m.derived_from,
+                    accepting_orders=m.accepting_orders, volume=m.volume, quote=VenueQuote(),
+                )
+                for m in markets
+            ]
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
             source=self.source,
             is_synthetic=True,
             collector_version=self.tool_version,
+            quotes_requested=with_quotes,
         )
 
 
@@ -341,6 +368,7 @@ def collect_pred_markets(
     limit: int = DEFAULT_MARKET_LIMIT,
     timeout_seconds: int = 10,
     market_ids: Sequence[str] | None = None,
+    with_quotes: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Collect one venue's open markets. Returns ``(snapshot, tool_use_record)``.
 
@@ -354,7 +382,8 @@ def collect_pred_markets(
     limit = _clamp(limit, DEFAULT_MARKET_LIMIT, MAX_MARKET_LIMIT)
     try:
         result = collector.list_markets(
-            limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids
+            limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids,
+            with_quotes=with_quotes,
         )
     except (ToolError, TimeoutError) as exc:
         raise ToolBlocked("TOOL_ERROR", str(exc)) from exc
@@ -370,13 +399,18 @@ def collect_pred_markets(
         # compare, and a scan where that number is most of the list is a degraded scan even
         # though every call succeeded.
         "quoted_count": len(quoted),
+        # Reported so `quoted_count: 0` can never be misread. A discovery read asks for no
+        # books at all, and "nobody is quoting these" is a different finding from "we did
+        # not ask" — the module's own rule about absences, applied to itself.
+        "quotes_requested": bool(getattr(result, "quotes_requested", True)),
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
         "created_at": now,
     }
     input_sha256 = integrity.sha256_record(
         {"tool_id": collector.tool_id, "venue": venue, "limit": limit,
-         "market_ids": sorted(market_ids) if market_ids is not None else None}
+         "market_ids": sorted(market_ids) if market_ids is not None else None,
+         "with_quotes": bool(with_quotes)}
     )
     record = {
         "tool_id": collector.tool_id,
@@ -387,6 +421,7 @@ def collect_pred_markets(
         "input_sha256": input_sha256,
         "market_count": len(markets),
         "quoted_count": len(quoted),
+        "quotes_requested": bool(getattr(result, "quotes_requested", True)),
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
         "output_sha256": integrity.sha256_record({"markets": markets}),
@@ -566,7 +601,12 @@ class KalshiPublicCollector:
         self._min_close_time = min_close_time
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
@@ -587,6 +627,11 @@ class KalshiPublicCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            # False on a discovery read even though these markets ARE quoted: `/events`
+            # returns prices inline, so Kalshi costs nothing extra for them and throwing
+            # away data already paid for would be worse. The flag records what was asked
+            # for, not what happened to arrive.
+            quotes_requested=with_quotes,
         )
 
     def _read_named(
@@ -833,7 +878,12 @@ class PolymarketPublicCollector:
         self._min_close_time = min_close_time
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         safety_gate.assert_authorization(
             self._authorization,
@@ -866,6 +916,17 @@ class PolymarketPublicCollector:
             wanted = set(market_ids)
             markets = [m for m in markets if m.market_id in wanted]
 
+        if not with_quotes:
+            # Discovery reads listings only. The matcher compares titles, close times,
+            # categories and cross-references — it never looks at a price — so a book call
+            # here buys a number nobody reads, one HTTP round trip at a time.
+            return PredMarketSnapshot(
+                venue=self.venue, markets=markets, source=self.source, is_synthetic=False,
+                collector_version=self.tool_version,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                quotes_requested=False,
+            )
+
         priced: list[PredMarket] = []
         for index, market in enumerate(markets):
             if index >= self._book_limit:
@@ -893,6 +954,7 @@ class PolymarketPublicCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            quotes_requested=with_quotes,
         )
 
 
@@ -1161,7 +1223,12 @@ class BinancePredictionCollector:
         )
 
     def list_markets(
-        self, *, limit: int, timeout_seconds: int, market_ids: Sequence[str] | None = None
+        self,
+        *,
+        limit: int,
+        timeout_seconds: int,
+        market_ids: Sequence[str] | None = None,
+        with_quotes: bool = True,
     ) -> PredMarketSnapshot:
         # Chokepoint: re-verify at the moment of egress (defense in depth).
         safety_gate.assert_authorization(
@@ -1211,14 +1278,19 @@ class BinancePredictionCollector:
                 markets.append(topic)
                 continue
             market_id, token_id, condition_id = outcome
-            try:
-                book = self._signed_get(
-                    self.BOOK_PATH,
-                    {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
-                    timeout_seconds=timeout_seconds,
-                )
-            except ToolError:
-                book = None
+            book = None
+            if with_quotes:
+                # `detail` above stays: it carries the conditionId that becomes `group_id`,
+                # and a venue-asserted cross-reference is the strongest matching evidence
+                # there is. Only the BOOK is price-only, so only the book is skipped.
+                try:
+                    book = self._signed_get(
+                        self.BOOK_PATH,
+                        {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
+                        timeout_seconds=timeout_seconds,
+                    )
+                except ToolError:
+                    book = None
             markets.append(PredMarket(
                 venue=BINANCE,
                 # `marketId:tokenId`, because the order book needs BOTH and only the token is
@@ -1245,6 +1317,7 @@ class BinancePredictionCollector:
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=int((time.monotonic() - started) * 1000),
+            quotes_requested=with_quotes,
         )
 
 
