@@ -377,12 +377,36 @@ def test_an_unbindable_network_provider_is_still_refused():
 # --- the second activation round (content / development) ---------------------
 
 def test_business_analysis_was_held_back():
-    """Deliberately still a candidate. Its capabilities overlap the MVP's core use case, which
-    `general.specialist` already serves with the §10.4 perspectives — so activating it is a
-    role-split question rather than a routing one, and is its own later decision."""
+    """Deliberately still a candidate, and the reasoning is a document rather than a memory:
+    `docs/runtime-contracts/BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md`. Its own contract gates
+    activation on repeated cases plus validated scoring rules, and §13 scores the split at two of
+    six — so `general.specialist` holds the MVP's core use case because it is the right role for
+    it, not as a stopgap."""
     entry = next(r for r in _registry()["roles"] if r["role_id"] == "business.analysis")
     assert (entry["status"], entry["routable"]) == ("candidate", False)
     assert "business" not in REQUEST_KIND_CAPABILITIES
+
+
+def test_the_split_decision_is_written_down_and_still_says_candidate():
+    """The record is the whole point of the decision; a routing change that activated the role
+    without updating it would leave the next reader with a confident, false explanation."""
+    record = (REPO / "docs/runtime-contracts/BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md")
+    text = record.read_text(encoding="utf-8")
+    assert "**Status:** PROPOSED" in text
+    for gate in ("business_analysis_tasks_repeat", "dedicated_scoring_or_evidence_rules_are_validated"):
+        assert gate in text, gate
+
+
+def test_the_contract_gates_the_record_quotes_are_the_contract_s_own():
+    """Quoted gates must match the live contract, or the record explains a rule that moved."""
+    import yaml
+
+    front = yaml.safe_load(
+        (REPO / "03_ROLE_CONTRACTS/ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md")
+        .read_text(encoding="utf-8").split("---", 2)[1])
+    assert set(front["activation_conditions"]) == {
+        "business_analysis_tasks_repeat", "dedicated_scoring_or_evidence_rules_are_validated",
+    }
 
 
 def test_no_kind_leans_on_a_capability_its_role_shares():
