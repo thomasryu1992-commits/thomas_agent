@@ -1,7 +1,15 @@
 """Place ONE deliberate live canary order (LP4 increment 2b) — an operator tool.
 
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60 --json
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price>
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price> --json
+
+``--notional`` must be **this order's real notional at the current price**, computed at the
+moment you run it. Nothing in this script checks it against ``--quantity``: the quantity is
+what reaches the venue, while the notional is only what the guard measures against the
+registered budget's caps, so an under-declared notional walks a larger real position past the
+per-order and exposure limits. A worked constant used to stand here — ``--quantity 0.001
+--notional 60`` — correct at BTC 60,000 and 7% short at 64,512, which is to say following the
+documentation produced the under-declaration. Any constant is wrong at tomorrow's price.
 
 A canary is one small **real** order, placed on purpose, to prove that signing, submission, and
 reconciliation actually work at the venue. Three clean canaries are what the autonomous path's
@@ -64,7 +72,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--quantity", type=float, required=True,
                         help="base-asset quantity (keep a canary small)")
     parser.add_argument("--notional", type=float, required=True,
-                        help="the order's notional in USDT (never back-filled from the cap)")
+                        help="this order's real notional in USDT at the current price "
+                             "(quantity x price; never back-filled from the cap). Nothing "
+                             "checks it against --quantity, and under-declaring walks a "
+                             "larger real position past the caps")
     parser.add_argument("--timeout-seconds", type=int, default=10)
     parser.add_argument("--json", action="store_true", help="emit the full result as JSON")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
