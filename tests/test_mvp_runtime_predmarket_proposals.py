@@ -170,3 +170,25 @@ def test_the_status_line_is_ascii_and_reports_the_cut(state):
     line.encode("ascii")
     assert "10 candidate(s)" in line and "6 not recorded" in line
     assert "2 new" in line and "degraded=binance" in line
+
+
+# --- the state root reaches the gate --------------------------------------------
+
+def test_discovery_resolves_grants_against_the_root_it_was_given(state, monkeypatch):
+    """`run_discovery(root=...)` promises a state root, and the Safety-Flag gate resolves
+    each venue's grant relative to it. Accepting the argument and not passing it on left the
+    gate falling back to repo-root detection — right in the deployed container by luck, and
+    silently wrong anywhere else. Caught by running the scheduled path for real."""
+    from runtime.mvp_runtime.predmarket import market_data as md
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    seen: list[object] = []
+    real = md.select_pred_market_collector
+
+    def _capture(venue, **kw):
+        seen.append(kw.get("root"))
+        return real(venue, **kw)
+
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", _capture)
+    pairs_cli.run_discovery(now=NOW, root=state, venues=["kalshi", "polymarket"])
+    assert seen == [state, state]
