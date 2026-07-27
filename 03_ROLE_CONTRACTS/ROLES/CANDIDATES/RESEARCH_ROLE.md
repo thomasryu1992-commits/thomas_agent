@@ -2,9 +2,9 @@
 schema_version: role_definition.v0.2
 role_id: research.general
 role_name: Research Role
-role_version: 0.4.0
-status: candidate
-routable: false
+role_version: 0.5.0
+status: active
+routable: true
 role_type: dynamic_specialist
 purpose: Collect and compare relevant evidence, assess source quality, and return
   traceable findings and research gaps.

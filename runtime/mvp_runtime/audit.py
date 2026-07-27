@@ -1186,3 +1186,109 @@ def build_live_order_audit(
         previous_hash=previous_hash, previous_audit_id=previous_audit_id,
         id_seed_extra={"client_order_id": client_order_id, "kind": "live_order"},
     )
+
+
+def build_unreported_live_order_audit(
+    recording_task: Mapping[str, Any],
+    canary_record: Mapping[str, Any],
+    *,
+    reason: str,
+    now: str,
+    previous_hash: str | None = None,
+    previous_audit_id: str | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Record, late, a real order that reached the venue and left nothing on the chain.
+
+    This is **not** :func:`build_live_order_audit` arriving behind schedule, and the difference
+    is the whole design. That builder emits ``post_action_report_and_audit`` for an order whose
+    P5 PermissionDecision it holds. Here the decision was prepared, the order filled, and the
+    process then died before the append — so the decision id, the trace id, and the bound task
+    are gone with the memory they lived in, and no honest reconstruction of them exists.
+
+    So this event does not claim to be that report. It is a **new** event about a **new** action:
+    the operator recording a known gap. Its task is the recording, created now, which is why the
+    lineage reads correctly rather than describing a task that post-dates the order it authorized.
+    A caller wanting the original report cannot have it; what it can have is an auditable
+    statement that the order happened, what the venue said, and why the report is missing.
+
+    **The gap itself is left in place.** ``append_audit_events`` re-anchors onto the current tip,
+    so this lands where it lands — after the fact, visibly — and the hole at the original moment
+    stays a hole. That is deliberate: ``AUDIT_RECOVERY_CONSOLE_V0.1`` is explicit that the ledger
+    is diagnosed and never repaired, because a damaged trail is evidence. Inserting into the past
+    is the one thing tamper-evidence exists to prevent, and this does not do it.
+
+    The evidence is the canary registry row — durable, self-hashed, and written **before** the
+    crash, which is why anything can be said about the order at all. ``OTHER``-typed with the
+    subtype in ``reason_codes``, matching :func:`build_live_order_audit` and the promotion and
+    R8-write precedents.
+
+    Returns ``(record, event_sha256)``; the caller appends it to the durable ledger.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    for field_name in ("identity", "context"):
+        if not isinstance(recording_task.get(field_name), Mapping):
+            raise AuditError(
+                "UNREPORTED_ORDER_TASK_INVALID",
+                "recording an unreported live order requires a Core-bound task for the recording",
+            )
+    canary_order_id = canary_record.get("canary_order_id")
+    if not (isinstance(canary_order_id, str) and canary_order_id):
+        raise AuditError(
+            "UNREPORTED_ORDER_EVIDENCE_MISSING",
+            "recording an unreported live order requires its canary registry record",
+        )
+    record_sha = canary_record.get("record_sha256")
+    if not (isinstance(record_sha, str) and record_sha):
+        # Without the row's own hash there is nothing tying this statement to durable evidence,
+        # and an unevidenced claim about real money is worse than the gap it would paper over.
+        raise AuditError(
+            "UNREPORTED_ORDER_EVIDENCE_UNHASHED",
+            "the canary registry record carries no record_sha256 to cite as evidence",
+        )
+    if not reason.strip():
+        raise AuditError(
+            "UNREPORTED_ORDER_REASON_MISSING",
+            "recording an unreported live order requires the reason its report is missing",
+        )
+
+    reconcile_status = str(canary_record.get("reconcile_status") or "UNKNOWN")
+    symbol = str(canary_record.get("symbol") or "")
+    client_order_id = str(canary_record.get("client_order_id") or "")
+    exchange_order_id = canary_record.get("exchange_order_id")
+    fingerprint = _fingerprint(dict(canary_record), "unreported_live_order")
+
+    return _make_event(
+        root=root, task=recording_task, now=now,
+        event_type="OTHER",
+        actor=_actor("thomas", "thomas"),
+        subject_type="TOOL_USE", subject_id=canary_order_id,
+        subject_ref=f"live_order:{client_order_id}" if client_order_id else f"canary:{canary_order_id}",
+        subject_fingerprint=fingerprint,
+        summary=(
+            f"Recording a live {symbol} order that reached the venue and was never audited: "
+            f"reconcile={reconcile_status}, exchange_order_id={exchange_order_id}, "
+            f"notional={canary_record.get('notional_usdt')} USDT, "
+            f"placed_at={canary_record.get('recorded_at_utc')}. "
+            f"Its original P5 report is unrecoverable ({reason.strip()}). "
+            "This event is the record of that gap, not the missing report."
+        ),
+        # RECORDED describes THIS action — the recording — which did succeed. The order's own
+        # outcome rides in `reason_codes` as RECONCILE_*, so a late record of an order the venue
+        # never confirmed cannot read as a clean one.
+        outcome="RECORDED",
+        reason_codes=[
+            "LIVE_ORDER_REPORT_RECOVERED",
+            "POST_ACTION_REPORT_LATE",
+            "ORIGINAL_AUDIT_EVENT_MISSING",
+            "ORIGINAL_PERMISSION_DECISION_UNRECOVERABLE",
+            "FINANCIAL_APPROVED_TRADING_USE",
+            f"RECONCILE_{reconcile_status}",
+        ],
+        related_record_refs=[f"canary_order:{canary_order_id}"],
+        evidence_refs=[f"canary_order_record:{record_sha}"],
+        payload_sha256=fingerprint,
+        sequence=1,
+        previous_hash=previous_hash, previous_audit_id=previous_audit_id,
+        id_seed_extra={"canary_order_id": canary_order_id, "kind": "unreported_live_order"},
+    )

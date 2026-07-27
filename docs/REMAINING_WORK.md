@@ -4,8 +4,9 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-26**, after the review round, the CLAUDE.md split, and the structural-review
-queue draining (`main` = `6ed1b0a`).
+Last updated: **2026-07-27**, adding section D (design-vs-implementation gaps found by reading the
+Goal document against the code). Previously **2026-07-26**, after the review round, the CLAUDE.md
+split, and the structural-review queue draining (`main` = `6ed1b0a`).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
 
 > **The one thing to read first:** an order path **exists**, and since 2026-07-26 so does the
@@ -72,12 +73,74 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
       Polygon/USDC wallet, and the **Korean regulatory judgment call** (grey area). Blocks PM3 only,
       not PM1/PM2.
-- [ ] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed):
-  - [ ] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
-        `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics.
-  - [ ] Event-pair matching — auto candidate generation + **operator confirmation per pair**
-        (the hardest real engineering here; a wrong pair fakes arbitrage forever).
-  - [ ] Fee-adjusted opportunity detector (Kalshi fee ≈ $0.07·P·(1−P)/contract; Polymarket gas+spread).
+- [~] **PM1 — observe-only pipeline** (2–3 PRs; no money, no account needed): **started
+      2026-07-26** — the venue adapters have landed; matching and the detector are open.
+  - [x] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
+        `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics —
+        done 2026-07-26 (`runtime/mvp_runtime/predmarket/market_data.py`). One normalized
+        shape (YES-side probability in `(0,1)`, sizes in contracts) so no venue's vocabulary
+        reaches the comparison. Field names verified against both API references on the day,
+        which is how we learned **Kalshi now serves decimal-dollar strings**
+        (`yes_bid_dollars`), not the integer cents an older API used — a parser written from
+        memory would have read nothing. Polymarket is quoted from the **CLOB book only**;
+        Gamma's `outcomePrices` are a derived figure, and a market whose book was not read
+        comes back *unquoted* rather than priced. **No bid is not a bid of zero**: every
+        price is `float | None`, and 0 / ≥1 / unparseable all read as "not quoted".
+  - [x] Event-pair matching — auto candidate generation + **operator confirmation per pair**
+        — done 2026-07-26 (`predmarket/matching.py`, `pairs.py`, `pairs_cli.py`).
+        Deterministic only: normalized token overlap + close-date proximity, with **numeric
+        tokens as their own gate** (token overlap alone scores "BTC above 100k" against
+        "Bitcoin above 90k" at 0.71 — boilerplate outvotes the one token that IS the
+        question). Unknown is never mismatch: a Kalshi market has no category, so a missing
+        one is excluded from the decision rather than counted against it. Confirmation
+        **requires a note comparing how both venues resolve the event** — the risk no text
+        comparison can see — and one market belongs to at most one pair. Every judgement,
+        including near-misses, records which gate failed and by how much: that record is what
+        makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
+  - [x] Third venue **Binance prediction markets** (markets are Predict.fun's on BNB Chain) —
+        done 2026-07-26. Listed-but-unquoted: no order-book endpoint is published, and its
+        per-outcome `prices` are a derived figure this package already refuses to quote from.
+        Carries the venue's own `polymarketConditionIds` cross-reference, which the matcher
+        treats as evidence outranking the wording gate. **New operator precondition:** unlike
+        Kalshi and Polymarket it is key-authenticated (`MVP_PREDICTFUN_API_KEY`, Discord
+        ticket), so PM1's "no account needed" property does not extend to it; a missing key is
+        reported as `PREDMARKET_API_KEY_MISSING`, never as an outage. Its fee schedule is
+        unread, so its legs report **no knowable cost** rather than a guessed one.
+  - [x] Order book + fee — resolved 2026-07-26 by routing through **Binance's**
+        Prediction Trading REST API instead of the venue directly (Thomas's call; funding is
+        why). Binance publishes a real `/order-book` and a per-topic `feeRateBps`, so this
+        venue is now **quoted**, not merely listed. All endpoints are signed. The fee
+        *formula* is still unpublished, so the bps rate is applied flat on notional (the
+        pessimistic reading) and every leg records `fee_model` saying so.
+  - [ ] Confirm the Binance prediction fee formula (flat vs `P x (1-P)`), then drop the
+        assumption. Until then costs are over-estimated, which skips observations rather than
+        inventing them.
+  - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
+        (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
+        the venues a confirmed group needs**, prices every pairing inside every group, and
+        appends self-hashed rows to `observations.jsonl`. **A non-reading is still a row** —
+        "how often" is a ratio whose denominator is the attempts, so a scan that dropped the
+        times it could not price a group would claim it was observable when it was not. A
+        venue outage and a delisted market are recorded as different reasons. The scan
+        confirms nothing: it holds no writer for the group store.
+  - [ ] The 2–4 week run itself, then the exit report (frequency × net margin ×
+        **persistence**). Needs the schedule registered on the machine that will run it.
+  - [ ] `discovery` cadence — the scheduler kind accepts it and deliberately reports
+        `skipped_discovery_not_scheduled_yet` rather than silently running the watch scan
+        under another name; it lands with the matcher-on-a-schedule work.
+  - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
+        needs the deterministic matcher above, or "missed" has no meaning).
+  - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
+        `opportunity.py`). Both fee models verified against the venues' own docs, which
+        **corrected the roadmap**: Polymarket charges a taker fee of the same
+        `rate·P·(1−P)` shape by category (crypto 0.07 … tech 0.04, geopolitical exempt), not
+        "gas + spread". Both peak at 50/50, so a mid-priced crypto pair costs ~3.5¢/contract
+        across the two legs and a 2¢ gross gap is a **loss** — pinned by the first test.
+        The edge reduces to `yes_bid_B − yes_ask_A` (holding YES on one venue and NO on the
+        other pays $1 either way), so only the YES side of both books is needed. Both
+        directions are judged and the better **net** one wins, since each leg's fee depends
+        on its own price. Unpriceable legs and no-depth touches are recorded as
+        non-readings, never as zeros.
   - [ ] Observation records + `pm_scan` R6 scheduler template ⚠️ (cadence + per-scan market cap).
   - [ ] **Exit artifact:** 2–4 week report — frequency × net margin × **persistence duration** per
         strategy. Persistence decides whether PM3 (minutes of approval latency) can ever catch it.
@@ -370,6 +433,99 @@ requirement had no test asserting any code satisfied it.
       `price`-side were each defensible, and **the join between an operator's declaration and the
       order it describes was nobody's invariant**. There is now a test at the door itself, not only
       on its halves.
+
+---
+
+## D. Architecture design-vs-implementation gaps
+
+Found 2026-07-27 by reading `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` (the Goal
+document) against the code, rather than by working a roadmap. These are things the **design**
+specifies that the build does not have. They are listed here because a gap nobody wrote down is
+indistinguishable from a decision — and three of the four below may well *be* decisions, in which
+case the right outcome is to record that in the design document, not to build them.
+
+The Target layers (§4–§5: Common Capability Organization, Opportunity & Business Creation, Business
+Portfolio, Dynamic Strategic Board) are **not** listed here: §9 says do not build them now, so their
+absence is compliance.
+
+- [x] **§8.8 Core Candidate — the memory ladder's fourth rung** — done 2026-07-27. The ladder is
+      Session → Working → Validated → Core Candidate → Thomas Core; three rungs existed. See
+      `BUILD_HISTORY.md` for the shape and why. Promotion to Core stays unbuilt on purpose.
+- [~] **§8.4 The Task Classifier routes one way of four.** `prime.py` hardcodes
+      `selected_route: "ROLE"` and `program_request_ids: []`; `task.v0.3` models `PROGRAM`/`HYBRID`
+      and no code path produces either. Partly closed 2026-07-27 — and the first reading of this
+      item was **wrong in a way worth recording**, because the correction is the useful part.
+  - [x] **Risk classification** — done 2026-07-27. It was first written up here as "the classifier
+        returns a constant GREEN, so no task can ever be high-risk". Policy §10 says otherwise:
+        risk classifies **the action**, and it lists "내부 분석" among its own GREEN examples. So
+        GREEN was *correct* for the specialist's action and was never a stub. What was actually
+        wrong was narrower and provable: §10 also says to evaluate every perspective and take the
+        **highest**, and a run plans more than the analysis — so a run that created a file was
+        still recorded as a plain read-only analysis, and the R8 write's own decision declared
+        `GREEN` while carrying `EXECUTE_AND_REPORT`. Both fixed, plus a floor invariant at the one
+        construction site (§10 read backwards) so no future action can be added below its
+        disposition. See `BUILD_HISTORY.md`.
+  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable — and that is now
+        a correct state, not a gap.** No action on the run path is priced ORANGE/RED, so no task
+        classifies there. The approval-bearing actions that *are* ORANGE (memory promotion,
+        candidate trial, program registration) reach Thomas through R9/R10 rather than through the
+        router. This box stays open only as the place to re-check the day a run-path action is
+        priced above YELLOW; there is nothing to build today.
+  - [ ] **The PROGRAM route** needs an *enabled* Program, which is a separate Thomas approval
+        (registry activation). Blocked, not unbuilt.
+  - [ ] `complexity` stays constant on purpose: nothing reads it, and deriving it from free
+        request text would be a guess — §10's rule for a judgement made on insufficient
+        information is to not lower the classification, so leaving it is the honest move until a
+        consumer exists.
+- [~] **§8.5 Routing to more than one Role.** `research.general` and `translation.general` were
+      **activated by explicit Thomas decision 2026-07-27** (status/routable flipped in both the
+      registry and the definitions, versions bumped, hashes refreshed; `execution.live_trader`
+      deliberately **not** included — it is P5 with `external_action_allowed: true` and its
+      activation is a live-trading decision). Activation alone routes nothing, so the same PR
+      added `--kind` → capabilities → Role, and made the selected Role run against **its own**
+      output contract. See `BUILD_HISTORY.md`.
+      Recorded honestly: no `candidate_trial_report` backed the activation — trial records are
+      per-machine and gitignored, and Thomas activated on his own authority rather than waiting
+      for one. Legitimate, and the exception to trial → report → approval → activation, so it is
+      written into the registry beside the flip.
+  - [x] **Role-aware hosted response schema** — done 2026-07-27. Both vendor dialects are now
+        derived per call with the Role's declared keys folded in, and providers expose
+        `bind_role_output_keys` (a copy, not a mutation). A hosted run of a non-analysis kind
+        works; a network provider that *cannot* bind is still refused by name, so the
+        fail-closed direction is preserved. See `BUILD_HISTORY.md`.
+  - [x] **Operator-channel kind markers** (`!번역` / `!조사` / `!분석`) — done 2026-07-27. Not
+        "purely additive" as first written: the queue is durable, so the kind had to survive it
+        (`task_registry_entry` **v0.2** adds `request_kind`; v0.1 rows read as `null`, which is
+        the routing they ran under). One marker parser handles both marker families in either
+        order, so the empty-request and hidden-command guards cannot cover one and miss the
+        other. See `BUILD_HISTORY.md`.
+  - [x] `content.general` + `development.general` **activated 2026-07-27** (explicit Thomas
+        decision, option (b) of three offered), with their request kinds and operator markers so
+        activation is not inert. See `BUILD_HISTORY.md`.
+  - [ ] **`business.analysis` — deliberately held back**, and not a build item. Its capabilities
+        (`opportunity_analysis` / `revenue_potential_assessment` / `downside_risk_assessment`)
+        overlap the MVP's core use case, which `general.specialist` already serves *with* the
+        §10.4 perspectives. Activating it therefore asks "which of these two analyses does a
+        business idea get, and why?" — a role-split question, not a routing one. Decide that
+        first; the activation is mechanical once it is decided.
+        Note the coupling it creates: it is now the **last non-live candidate**, so the trial
+        suite's coverage rests on it staying one. Activating it means giving those tests a
+        fixture role rather than a production one.
+  - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
+        P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
+- [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
+      MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
+      reach their own verdict before the integrated answer, declared in the role's output contract
+      and enforced by a validation check. The expensive form — perspectives as separate Agents —
+      stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
+      agent cannot hold the three. See `BUILD_HISTORY.md`.
+
+Also raised and closed 2026-07-27: `docs/ACTIVE_ARCHITECTURE.md` — the document `CLAUDE.md` names
+as the owner of current-implementation truth — still described the pre-R2 repository (baseline
+I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety State block listing
+implemented-and-gated capabilities as "remain disabled"). Same failure as #200's readiness-board
+prose, one document over. Fixed by splitting Safety State at the seam it was blurring: *does the
+code exist* vs *may this machine act*.
 
 ---
 

@@ -103,6 +103,95 @@ def describe(offenders: Iterable[Path], *, root: Path) -> str:
     return "\n".join(lines)
 
 
+def _default_owner_uid(path: Path) -> int:
+    return path.stat().st_uid
+
+
+def _default_euid() -> int:
+    """This process's effective uid, or a never-root sentinel where uids do not exist.
+
+    Windows has no ``geteuid``; answering -1 keeps the guard a no-op there through the
+    DEFAULT lookup, instead of a platform test inside the check itself — which would
+    have made the injected lookups unreachable on that platform, and the behaviour
+    untestable there for exactly the reason injection exists."""
+    return os.geteuid() if hasattr(os, "geteuid") else -1
+
+
+def foreign_state_owner(
+    root: Path | None = None,
+    *,
+    owner_uid: Callable[[Path], int] = _default_owner_uid,
+    euid: Callable[[], int] = _default_euid,
+) -> int | None:
+    """The uid owning the state directory, when this process is root and that uid is not.
+
+    The blind spot this closes. :func:`unwritable_paths` asks "can I write?", which is the
+    right question for the SERVICE and the wrong one for the operator: root can write
+    anything, so a host-side root run sails through every check, succeeds, prints a happy
+    summary — and leaves root-owned files behind that the uid-10001 service then cannot
+    write. The damage is real but lands on a different process, later, which is why it has
+    recurred: nothing the writer could observe was wrong.
+
+    Ownership is the right question *here* for the same reason writability was right there:
+    a file this process creates will be owned by this process, so the service's ability to
+    write it afterwards is decided by uid, not by what root can currently do. Returns None
+    when there is nothing to warn about (no state dir yet, not root, or already the owner).
+    ``euid``/``owner_uid`` are injectable exactly as ``writable`` is above — the suite
+    often runs AS root, where the failure cannot be reproduced with real uids at all.
+    """
+    base = (root if root is not None else _repo_root()) / STATE_DIR_REL
+    if not base.exists() or euid() != 0:
+        return None
+    owner = owner_uid(base)
+    return owner if owner != 0 else None
+
+
+def describe_foreign_owner(owner_uid: int, *, root: Path) -> str:
+    """The refusal message for a host-side root run. Names the service, not just the rule."""
+    base = root / STATE_DIR_REL
+    return "\n".join([
+        f"refusing to write governed state as root: {STATE_DIR_REL}/ belongs to uid "
+        f"{owner_uid}, which is the account the deployed services run as.",
+        "Anything this run creates would be root-owned, and that service could no longer "
+        "write it — a failure that surfaces later, in a different process, with no trace "
+        "back to this command.",
+        f"Run it where the state lives instead:  docker exec thomas-scheduler python {' '.join(_argv_hint())}",
+        f"Or, if this host-side run is deliberate, hand the files back afterwards:  "
+        f"chown -R {owner_uid}:{owner_uid} {base}",
+    ])
+
+
+def _argv_hint() -> list[str]:
+    """The current command, echoed back so the remedy is copy-pasteable rather than generic."""
+    import sys
+
+    argv = list(sys.argv)
+    if not argv:
+        return ["<script>"]
+    script = Path(argv[0]).name
+    return [f"scripts/{script}" if not argv[0].startswith("-") else argv[0], *argv[1:]]
+
+
+def assert_not_foreign_root_run(
+    root: Path | None = None,
+    *,
+    owner_uid: Callable[[Path], int] = _default_owner_uid,
+    euid: Callable[[], int] = _default_euid,
+) -> None:
+    """Refuse a host-side root run that would leave state the service cannot write.
+
+    The producer-side counterpart to :func:`assert_state_writable`: that one refuses to
+    START a service whose state is already broken, this one refuses to BREAK it. Same
+    posture — fail closed, print the exact remedy, and **never self-heal**: a script that
+    quietly chowned governed state would be granting itself the very thing this repo makes
+    explicit everywhere else.
+    """
+    base = root if root is not None else _repo_root()
+    owner = foreign_state_owner(base, owner_uid=owner_uid, euid=euid)
+    if owner is not None:
+        raise PersistenceError("STATE_FOREIGN_ROOT_RUN", describe_foreign_owner(owner, root=base))
+
+
 def assert_state_writable(
     root: Path | None = None,
     *,

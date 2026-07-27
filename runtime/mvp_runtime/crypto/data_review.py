@@ -130,6 +130,10 @@ class MockDataReviewProvider:
     model_id = "mock.data_gap_reviewer"
     model_version = "0.1.0"
     network_egress = False
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners now announces anything carrying a model_id: silence is the
+    # thing that must be opted into, so a real capability can never go unannounced.
+    model_invocation = False
 
     _ANSWER = {
         "summary": "one usable suggestion, one malformed",

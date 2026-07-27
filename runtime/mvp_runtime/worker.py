@@ -26,16 +26,25 @@ from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import schema_cache
+from .budgets import (
+    MAX_MEMORY_CONTENT_CHARS,
+    MAX_PERSPECTIVE_BASIS_CHARS,
+    MAX_SEARCH_SNIPPET_CHARS,
+    clip_for_prompt,
+    output_allowance,
+    response_was_truncated,
+)
 from .errors import ProviderError, WorkerBlocked
 from .memory import build_memory_candidates
 from .paths import repo_root as _repo_root
 
 WORKER_ID = "mvp.business_analysis.llm"
 WORKER_VERSION = "0.1.0"
-# v2 adds the explicit acceptance criteria (see ACCEPTANCE_CRITERIA below). The prompt
-# version is recorded on every invocation, so a changed prompt gets a new version — the
-# ledger must not claim two different prompts were the same one.
-PROMPT_VERSION = "mvp_business_analysis.v2"
+# v2 adds the explicit acceptance criteria (see ACCEPTANCE_CRITERIA below); v3 adds the
+# §10.4 perspective separation. The prompt version is recorded on every invocation, so a
+# changed prompt gets a new version — the ledger must not claim two different prompts were
+# the same one.
+PROMPT_VERSION = "mvp_business_analysis.v3"
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v0.2"
 
 # Business-idea evaluation priorities (Core MVP_RULE_005); the worker asks the model
@@ -59,6 +68,36 @@ EVALUATION_PRIORITIES = (
 # in providers.py: the independent validator and the orchestrator triage speak the same
 # analysis JSON but legitimately return empty facts/key_findings (they judge, they do not
 # analyze), so a shared criterion would ask them to invent content.
+
+# Organization Architecture §10.4 — the complex-strategy pattern: judge from separate
+# perspectives, then integrate. §10.4 permits the cheap form for early MVP ("one Agent may
+# separate these perspectives internally") and §13's separation criteria for making them
+# three Agents are not met, so this is prompt-level separation with a declared output shape.
+#
+# The failure it exists to prevent is specific: a single blended narrative in which a weak
+# revenue case is smoothed over by an enthusiastic research case, and the reader cannot see
+# that it happened. Forcing a per-perspective verdict makes the disagreement visible, and
+# makes the integration checkable — `validation` refuses an analysis that skips a perspective
+# and one that reports a NEGATIVE perspective while stating no risk at all.
+#
+# The three are §10.4's own list. Revenue and risk-adjusted value are also the top two of
+# EVALUATION_PRIORITIES (Core MVP_RULE_005) — that constant fixes the order to weigh them in,
+# this one fixes that each is answered on its own before they are weighed at all.
+PERSPECTIVES = ("research", "revenue", "risk")
+PERSPECTIVE_VERDICTS = ("POSITIVE", "MIXED", "NEGATIVE")
+
+PERSPECTIVE_INSTRUCTION = (
+    "Before the integrated answer, judge the idea from each of these perspectives "
+    "separately and report them in `perspectives` as objects "
+    "{perspective, verdict, basis}: "
+    f"{', '.join(PERSPECTIVES)}. `verdict` is exactly one of "
+    f"{', '.join(PERSPECTIVE_VERDICTS)}; `basis` states what that perspective is judging on. "
+    "Reach each verdict on that perspective's own merits - do not let a strong perspective "
+    "soften a weak one. Your summary and recommendation must then be consistent with them: "
+    "if any perspective is NEGATIVE, the risk must appear in `risks` rather than being "
+    "absorbed into an optimistic summary."
+)
+
 ACCEPTANCE_CRITERIA = (
     "Acceptance criteria - an answer failing any of these is rejected and never reaches "
     "the reader, so satisfy all three: (1) at least one entry in key_findings; (2) at "
@@ -103,6 +142,63 @@ class Provider(Protocol):
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult: ...
 
 
+class MockTrialProvider:
+    """Deterministic ROLE-SHAPED provider: no network, no real model. Returns the common
+    analysis shape plus a synthesized non-empty value for each of a Role's declared output
+    keys, so a Role whose contract is not the business analyst's runs end-to-end without a
+    hosted provider.
+
+    Originally the candidate-trial provider; §8.5 gave the normal routing path the same need
+    (a translation run must answer ``translated_text``, not ``key_findings``), so it lives here
+    beside :class:`MockProvider` rather than being copied. The wording still says "trial" in the
+    generated content because that content is what the trial reports assert on; the class is not
+    trial-specific."""
+
+    model_id = "mock.trial"
+    model_version = "0.1.0"
+    network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners announces anything carrying a model_id: silence is the thing
+    # that must be opted into, so a real capability can never go unannounced. Added on
+    # main (#260-era) while this branch was moving the class here — carried across the
+    # move rather than lost to it.
+    model_invocation = False
+
+    def __init__(self, role_output_spec: Mapping[str, str]):
+        self._role_output_spec = dict(role_output_spec)
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        analysis: dict[str, Any] = {
+            "summary": "Deterministic mock trial output for the assigned candidate role; "
+            "not a real model judgement.",
+            "key_findings": ["trial task addressed within the isolated, read-only trial scope"],
+            "facts": [
+                {"statement": "The trial ran with no tools, no memory, and no external action.",
+                 "evidence_refs": ["model:analysis"]},
+            ],
+            "inferences": ["The candidate role's output contract can be exercised end-to-end."],
+            "assumptions": ["The trial request text fully describes the trial task."],
+            "uncertainty": ["Mock output; the role's real quality was not exercised."],
+            "risks": [],
+            "recommendation": {"action": "Review the trial report before any promotion decision.",
+                               "reason": "A trial run is evidence, never an activation."},
+            "limitations": ["Deterministic mock trial; no real model judgement."],
+            "next_actions": [],
+            "evidence_quality": "mock_trial",
+            "unresolved_questions": [],
+        }
+        for key, kind in self._role_output_spec.items():
+            analysis[key] = (
+                f"Mock {key} content for the candidate-role trial."
+                if kind == "string" else [f"mock {key} entry"]
+            )
+        return ProviderResult(
+            analysis=analysis, model_id=self.model_id, model_version=self.model_version,
+            input_tokens=min(len(prompt) // 4, max_output_tokens), output_tokens=150,
+            latency_ms=0, finish_reason="stop",
+        )
+
+
 class MockProvider:
     """Deterministic provider: no network, no real model. Returns a fixed structured
     analysis shaped for the business-idea use case. For tests and pre-gate pipeline runs."""
@@ -110,6 +206,10 @@ class MockProvider:
     model_id = "mock.analysis"
     model_version = "0.1.0"
     network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners now announces anything carrying a model_id: silence is the
+    # thing that must be opted into, so a real capability can never go unannounced.
+    model_invocation = False
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         analysis = {
@@ -139,6 +239,17 @@ class MockProvider:
             "next_actions": ["Estimate CAC and payback with a small paid test."],
             "evidence_quality": "low_illustrative",
             "unresolved_questions": ["What is the realistic CAC and retention curve?"],
+            # §10.4. MIXED throughout on purpose: the mock must not look like a model that
+            # reached a confident verdict, and a mock that answered POSITIVE everywhere would
+            # make the NEGATIVE-without-stated-risk branch untested by the pipeline runs.
+            "perspectives": [
+                {"perspective": "research", "verdict": "MIXED",
+                 "basis": "Category demand is plausible but unverified in this run."},
+                {"perspective": "revenue", "verdict": "MIXED",
+                 "basis": "Recurring mechanics help lifetime value; CAC is unknown."},
+                {"perspective": "risk", "verdict": "MIXED",
+                 "basis": "Margins depend on logistics that were not analysed."},
+            ],
         }
         return ProviderResult(
             analysis=analysis,
@@ -157,7 +268,9 @@ def _search_context(search_hits: list[Mapping[str, Any]] | None) -> str:
         return ""
     lines = ["\nRead-only web search results (use as supporting evidence; cite by [S#]):"]
     for index, hit in enumerate(search_hits, start=1):
-        lines.append(f"[S{index}] {hit.get('title', '')} — {hit.get('url', '')}: {hit.get('snippet', '')}")
+        # The snippet is a web page's content — sized by the page, not by us.
+        snippet = clip_for_prompt(hit.get("snippet", ""), MAX_SEARCH_SNIPPET_CHARS)
+        lines.append(f"[S{index}] {hit.get('title', '')} — {hit.get('url', '')}: {snippet}")
     return "\n".join(lines) + "\n"
 
 
@@ -167,7 +280,8 @@ def _memory_context(memory_entries: list[Mapping[str, Any]] | None) -> str:
         return ""
     lines = ["\nRelevant prior working memory (candidates only — unverified, do not over-rely):"]
     for index, entry in enumerate(memory_entries, start=1):
-        lines.append(f"[M{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+        content = clip_for_prompt(entry.get("content", ""), MAX_MEMORY_CONTENT_CHARS)
+        lines.append(f"[M{index}] ({entry.get('candidate_type', 'memory')}) {content}")
     return "\n".join(lines) + "\n"
 
 
@@ -186,14 +300,15 @@ def _validated_context(validated_entries: list[Mapping[str, Any]] | None) -> str
     lines = ["\nValidated memory (operator-approved reusable knowledge; cite by [V#]):"]
     has_correction = False
     for index, entry in enumerate(validated_entries, start=1):
+        content = clip_for_prompt(entry.get("content", ""), MAX_MEMORY_CONTENT_CHARS)
         if entry.get("learning_source"):
             has_correction = True
             lines.append(
                 f"[V{index}] (operator-approved correction — apply to this similar request) "
-                f"{entry.get('content', '')}"
+                f"{content}"
             )
         else:
-            lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {entry.get('content', '')}")
+            lines.append(f"[V{index}] ({entry.get('candidate_type', 'memory')}) {content}")
     if has_correction:
         lines.append("Where a [V#] is marked a correction, prefer its guidance over your default approach.")
     return "\n".join(lines) + "\n"
@@ -211,6 +326,55 @@ def _revision_context(revision_requests: list[str] | None) -> str:
     for index, req in enumerate(revision_requests, start=1):
         lines.append(f"[R{index}] {req}")
     return "\n".join(lines) + "\n"
+
+
+def build_role_prompt(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    definition: Mapping[str, Any],
+    output_spec: Mapping[str, str],
+    search_hits: list[Mapping[str, Any]] | None = None,
+    memory_entries: list[Mapping[str, Any]] | None = None,
+    validated_entries: list[Mapping[str, Any]] | None = None,
+    revision_requests: list[str] | None = None,
+) -> str:
+    """The prompt for a routable Role that is NOT the business analyst (§8.5).
+
+    :func:`build_prompt` is the business-analysis prompt: it names EVALUATION_PRIORITIES,
+    the §10.4 perspectives and acceptance criteria that only make sense for judging an idea.
+    Sending it to a translator would ask for revenue potential on a paragraph of text — so a
+    Role that is not ``general.specialist`` gets its own purpose and its own declared output
+    contract instead, read from the Role Definition rather than restated here.
+
+    Distinct from ``trial.build_trial_prompt``, which additionally tells the model it has no
+    tools, no web access and no memory — true in an isolated trial and false here. A normal
+    routed run gets the same context blocks every specialist run gets, so the two prompts
+    must not be merged just because they look alike.
+    """
+    role_scope = assignment.get("role_scope", {})
+    scope = task.get("scope", {})
+    keys_desc = ", ".join(f"{key} ({kind})" for key, kind in output_spec.items())
+    capabilities = ", ".join(role_scope.get("assigned_capabilities", []))
+    quality = ", ".join(str(item) for item in definition.get("quality_criteria", []) if item)
+    quality_line = f"Quality criteria this role must satisfy: {quality}.\n" if quality else ""
+    rules = ", ".join(task.get("context", {}).get("active_core_rule_ids", []))
+    return (
+        f"Role: {definition.get('role_id')}@{definition.get('role_version')}\n"
+        f"Role purpose: {definition.get('purpose', '')}\n"
+        f"Assigned capabilities: {capabilities}\n"
+        f"{quality_line}"
+        f"Role objective: {role_scope.get('role_objective', '')}\n"
+        f"Task: {scope.get('primary_objective', '')}\n"
+        f"Request: {task.get('request', {}).get('raw_request', '')}\n"
+        f"Active Core rules in scope: {rules}\n"
+        f"{_validated_context(validated_entries)}"
+        f"{_memory_context(memory_entries)}"
+        f"{_search_context(search_hits)}"
+        f"{_revision_context(revision_requests)}"
+        f"In the SAME JSON object, additionally include these role-specific keys: {keys_desc}.\n"
+        "Separate facts (with evidence) from inferences, disclose assumptions and uncertainty, "
+        "and do not propose external actions.\n"
+    )
 
 
 def build_prompt(
@@ -233,6 +397,7 @@ def build_prompt(
         f"Expected outputs: {outputs}\n"
         f"Active Core rules in scope: {rules}\n"
         f"Evaluate the business idea in this priority order: {priorities}.\n"
+        f"{PERSPECTIVE_INSTRUCTION}\n"
         f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
@@ -339,6 +504,39 @@ def _normalize_recommendation(value: Any) -> dict[str, str] | None:
     return None
 
 
+def _perspectives(value: Any) -> list[dict[str, str]]:
+    """The §10.4 perspective block, normalized. Never repaired.
+
+    Keeps only well-formed entries — a known perspective, a known verdict, a non-empty basis —
+    and drops anything else rather than coercing it. A malformed or missing entry must reach
+    validation as *absent*, because "the model did not answer this perspective" and "the model
+    answered it badly" both mean the separation did not happen; normalizing a broken entry into
+    a plausible-looking one would hide exactly the case the check exists to catch. First entry
+    wins per perspective, so a repeated perspective cannot overwrite its own earlier verdict."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("perspective")
+        verdict = item.get("verdict")
+        basis = item.get("basis")
+        if name not in PERSPECTIVES or name in seen:
+            continue
+        if verdict not in PERSPECTIVE_VERDICTS:
+            continue
+        if not (isinstance(basis, str) and basis.strip()):
+            continue
+        seen.add(name)
+        out.append({"perspective": name, "verdict": verdict,
+                    "basis": clip_for_prompt(basis.strip(), MAX_PERSPECTIVE_BASIS_CHARS)})
+    # Deterministic order regardless of what the model emitted, so two runs with the same
+    # verdicts produce the same record.
+    return sorted(out, key=lambda entry: PERSPECTIVES.index(entry["perspective"]))
+
+
 def _role_specific_output(analysis: Mapping[str, Any], role_output_keys: Sequence[str] | None) -> dict[str, Any]:
     """The role's own output block. Default (None) keeps the business-analysis shape
     byte-identical; a trial passes the candidate role's declared output-contract keys, whose
@@ -350,6 +548,7 @@ def _role_specific_output(analysis: Mapping[str, Any], role_output_keys: Sequenc
             "key_findings": _str_list(analysis.get("key_findings")),
             "evidence_quality": analysis["evidence_quality"] if isinstance(analysis.get("evidence_quality"), str) else "",
             "unresolved_questions": _str_list(analysis.get("unresolved_questions")),
+            "perspectives": _perspectives(analysis.get("perspectives")),
         }
     output: dict[str, Any] = {"key_findings": _str_list(analysis.get("key_findings"))}
     for key in role_output_keys:
@@ -407,9 +606,26 @@ def run_analysis_worker(
         task, assignment, search_hits, memory_entries, validated_entries, revision_requests
     )
     try:
-        result = provider.generate(prompt, max_output_tokens=int(token_budget), timeout_seconds=int(timeout_seconds))
+        result = provider.generate(
+            prompt,
+            # NOT the whole token_budget: that figure caps input+output and is checked
+            # below, so handing all of it to the provider as an output allowance made an
+            # obedient answer breach by the size of the prompt (see budgets.py).
+            max_output_tokens=output_allowance(token_budget),
+            timeout_seconds=int(timeout_seconds),
+        )
     except (ProviderError, TimeoutError) as exc:
         raise WorkerBlocked("PROVIDER_ERROR", str(exc)) from exc
+
+    if response_was_truncated(result.finish_reason):
+        # Say what went wrong. A response cut off at the cap reaches _require_analysis as
+        # a malformed one and used to be reported as malformed — naming the symptom and
+        # sending the operator looking for a bad model instead of a small allowance.
+        raise WorkerBlocked(
+            "RESPONSE_TRUNCATED",
+            f"provider stopped at the output cap ({result.finish_reason}); the answer is "
+            "incomplete, not malformed",
+        )
 
     tokens_used = int(result.input_tokens) + int(result.output_tokens)
     if token_budget and tokens_used > int(token_budget):

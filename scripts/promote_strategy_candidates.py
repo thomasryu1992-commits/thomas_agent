@@ -34,6 +34,7 @@ control ledger either way.
 
 from __future__ import annotations
 
+import collections
 import argparse
 import sys
 from pathlib import Path
@@ -47,10 +48,12 @@ from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
+from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
@@ -220,6 +223,42 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}")
             return EXIT_BLOCKED
+        # Stated before the numbers, not after: this is the surface an operator reads to
+        # decide a promotion, and the promotion gate is that operator — there is no
+        # automated statistical threshold behind it.
+        #
+        # The bases are counted rather than assumed. The taker default moved from the ported
+        # 2.5 bps to the venue's measured 5.0, and `backtest_evidence` is durable, so this
+        # store holds candidates scored under both. Ranking them together compares a cheaper
+        # venue to the real one, and the ranking does not know that — only this line can.
+        bases = collections.Counter(
+            pool_store.candidate_quality(c)["cost_basis"] for c in candidates
+        )
+        print(f"NOTE: every R below is NET of costs, charged on both legs of every closed trade.")
+        print(f"      Current model: {cost_mod.DEFAULT_TAKER_FEE_BPS} bps taker + "
+              f"{cost_mod.DEFAULT_SLIPPAGE_BPS} bps slippage per fill (5.0 bps taker measured on")
+        print("      this account 2026-07-26: 0.1291 USDT over ~258 USDT of fills).")
+        if len(bases) > 1:
+            print("      MIXED BASES in this list — these rows were NOT scored alike:")
+            for basis, count in bases.most_common():
+                print(f"        {count:4d}  {basis}")
+            print("      A candidate scored at 2.5 bps paid half the fee one scored at 5.0 did.")
+            print("      Rank tiers are comparable within a basis, not across them.")
+        # The mixing is reported, but it is also fixable for the number that matters most:
+        # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
+        # is exactly derivable from what its evidence already records. `exp@` below is that
+        # figure. What it cannot repair is named rather than glossed: win-rate, reward:risk
+        # and the holdout verdict all need per-trade signs, and the store keeps aggregates.
+        flipped = [
+            c for c in candidates
+            if (pool_store.candidate_quality(c)["expectancy_at_current_costs"] or 0) <= 0
+            < (c.get("backtest_evidence") or {}).get("expectancy", 0)
+        ]
+        if flipped:
+            print(f"      {len(flipped)} candidate(s) show a POSITIVE stored expectancy that is "
+                  f"negative at {cost_mod.DEFAULT_TAKER_FEE_BPS} bps (marked FLIPS below).")
+            print("      win_rate and rr are NOT re-derivable — those still reflect the old rate.")
+        print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
         # believable edges surface first for the promotion decision.
@@ -228,19 +267,37 @@ def main(argv: list[str] | None = None) -> int:
             evidence = c.get("backtest_evidence") or {}
             q = pool_store.candidate_quality(c)
             rr = "inf" if q["all_wins"] else ("-" if q["reward_risk"] is None else f"{q['reward_risk']:.2f}")
+            at_now = q["expectancy_at_current_costs"]
+            stored_exp = evidence.get("expectancy")
+            if at_now is None:
+                exp_now = " exp@now=-"
+            elif isinstance(stored_exp, (int, float)) and stored_exp > 0 >= at_now:
+                exp_now = f" exp@now={at_now:+.4f} FLIPS"
+            else:
+                exp_now = f" exp@now={at_now:+.4f}"
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
                   f"verdict={q['verdict'] or '-':11} "
                   f"oos={q['holdout_status']:12} "
                   f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
-                  f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}")
+                  f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}"
+                  f"{exp_now}")
         return EXIT_OK
 
     if not args.strategy_ids:
         print("BLOCKED: --candidate-ids is required (or use --list)")
         return EXIT_USAGE
     selectors = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
+
+    # Past `--list`, every remaining branch writes: `--request` stores an approval and audits it,
+    # `--confirm` rewrites the active pool. Placed here rather than at the top of main so a
+    # read-only listing stays runnable from anywhere.
+    try:
+        assert_not_foreign_root_run()
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return EXIT_BLOCKED
 
     if args.request:
         prepared = run_request(selectors=selectors, keep_active=args.keep_active)

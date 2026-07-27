@@ -37,6 +37,57 @@ LEVEL_RANK: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5":
 REVIEW_ONLY = "REVIEW_ONLY"
 EVIDENCE_ONLY = "EVIDENCE_ONLY"
 
+# Risk levels, least to most severe. Policy §10 defines both the order and the disposition
+# each level defaults to, and says to take the HIGHEST across perspectives — so a total order
+# and a "stricter wins" reducer are what the policy actually asks code to have.
+RISK_ORDER: dict[str, int] = {"GREEN": 0, "YELLOW": 1, "ORANGE": 2, "RED": 3}
+
+# Policy §10's risk -> default disposition mapping, read backwards: the LEAST risk level that
+# can honestly carry a given disposition.
+#
+# Read backwards on purpose. Forwards ("this risk implies that disposition") would make risk a
+# second source of permission, which §10 explicitly forbids — "Risk does not independently
+# prove Authority sufficiency, grant Permission…". Backwards it grants nothing and only catches
+# a contradiction: a decision whose disposition says it changes internal state while its own
+# risk_level says it is a plain read. That contradiction is not hypothetical — it is how the
+# R8 workspace write shipped, GREEN and EXECUTE_AND_REPORT at once, until this floor was added.
+MINIMUM_RISK_FOR_DISPOSITION: dict[str, str] = {
+    "ALLOW": "GREEN",                 # 읽기 · 분석 · 임시 생성
+    "EXECUTE_AND_REPORT": "YELLOW",   # 복구 가능한 내부 영향 (내부 문서 생성 …)
+    "APPROVAL_REQUIRED": "ORANGE",    # 중요한 외부 영향
+    "BLOCK": "RED",                   # 허용 불가
+}
+
+
+def risk_rank(level: Any) -> int | None:
+    """The severity rank of a risk level, or None if it is not a known level."""
+    return RISK_ORDER.get(level) if isinstance(level, str) else None
+
+
+def stricter_risk(*levels: Any) -> str:
+    """The most severe of the given risk levels (policy §10: use the highest).
+
+    Fails closed: an unknown or missing level is not silently skipped, it resolves the whole
+    reduction to ORANGE — §10's own rule for classifying with insufficient information
+    ("판단에 필요한 정보가 부족하면 ORANGE로 분류한다"). Callers therefore cannot lower a
+    classification by passing something unrecognized.
+    """
+    if not levels:
+        return "GREEN"
+    if any(risk_rank(level) is None for level in levels):
+        return "ORANGE"
+    return max(levels, key=lambda level: RISK_ORDER[level])
+
+
+def risk_floor_for_disposition(disposition: Any) -> str:
+    """The least risk level a decision with this disposition may honestly declare.
+
+    An unknown disposition floors at RED rather than at GREEN: not recognizing what an action
+    does is never a reason to record it as harmless."""
+    if not isinstance(disposition, str):
+        return "RED"
+    return MINIMUM_RISK_FOR_DISPOSITION.get(disposition, "RED")
+
 
 def rank_of(level: Any) -> int | None:
     """Rank of a P0-P6 permission level, or None for anything else."""

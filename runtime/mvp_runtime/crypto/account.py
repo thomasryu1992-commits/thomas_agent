@@ -38,9 +38,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from .. import safety_gate, timeutil
+from ..cli_common import force_utf8_io
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
-from .coerce import as_float as _f
+from ..coerce import as_float as _f
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -444,14 +445,23 @@ def render_account_text(snapshot: AccountSnapshot | None) -> str:
     return "\n".join(lines)
 
 
-def read_account(*, timeout_seconds: int = 10) -> tuple[AccountSnapshot | None, dict[str, Any]]:
+def read_account(
+    *, timeout_seconds: int = 10, root: Any | None = None
+) -> tuple[AccountSnapshot | None, dict[str, Any]]:
     """Read the live account once, returning the snapshot and its evidence record.
 
     Degrades rather than raising: a transport failure, an unparseable body, or a missing
     credential yields ``(None, record)`` with ``ACCOUNT_DATA_DEGRADED`` in the record, so a
     caller that wants a status board still gets one.
+
+    ``root`` is the state root the grant is read from, threaded through to
+    ``select_account_feed``. It exists because a caller that redirects state — every
+    ``--root`` in ``scripts/`` — was silently not redirecting *this* read: the grant lookup
+    resolved from the running code's repo instead, so a run whose other state came from
+    ``--root`` refused with ``ACTIVATION_MISSING`` while a valid grant sat in the directory
+    it was told to use. ``None`` keeps the repo-local default, which is every normal run.
     """
-    feed = select_account_feed()
+    feed = select_account_feed(root=root)
     now = timeutil.utc_now_iso()
     try:
         snapshot = feed.account_snapshot(timeout_seconds=timeout_seconds)
@@ -465,6 +475,7 @@ def read_account(*, timeout_seconds: int = 10) -> tuple[AccountSnapshot | None, 
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Live exchange account board (read-only: balance, positions, P&L)."
     )

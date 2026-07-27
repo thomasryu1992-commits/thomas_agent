@@ -63,6 +63,8 @@ from .permission import (
 )
 from .pipeline import render_response
 from .planner import (
+    load_role_definition,
+    role_output_spec,
     VALIDATOR_REQUIRED_CAPABILITIES,
     VALIDATOR_REQUIRED_PERMISSION_LEVEL,
     load_resolved_roles,
@@ -74,7 +76,7 @@ from .safety_gate import APPROVAL_CONSUMPTION
 from .store import LedgerStore
 from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
-from .worker import Provider, ProviderResult, run_analysis_worker
+from .worker import MockTrialProvider, Provider, ProviderResult, run_analysis_worker
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
@@ -129,74 +131,13 @@ def select_trial_runner(*, now: str, root: Path) -> Any:
     )
 
 
-class MockTrialProvider:
-    """Deterministic trial provider: no network, no real model. Returns the common
-    analysis shape plus a synthesized non-empty value for each declared role output key,
-    so the whole trial pipeline runs and is testable before any hosted provider."""
-
-    model_id = "mock.trial"
-    model_version = "0.1.0"
-    network_egress = False  # deterministic, in-process; no outbound call
-
-    def __init__(self, role_output_spec: Mapping[str, str]):
-        self._role_output_spec = dict(role_output_spec)
-
-    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
-        analysis: dict[str, Any] = {
-            "summary": "Deterministic mock trial output for the assigned candidate role; "
-            "not a real model judgement.",
-            "key_findings": ["trial task addressed within the isolated, read-only trial scope"],
-            "facts": [
-                {"statement": "The trial ran with no tools, no memory, and no external action.",
-                 "evidence_refs": ["model:analysis"]},
-            ],
-            "inferences": ["The candidate role's output contract can be exercised end-to-end."],
-            "assumptions": ["The trial request text fully describes the trial task."],
-            "uncertainty": ["Mock output; the role's real quality was not exercised."],
-            "risks": [],
-            "recommendation": {"action": "Review the trial report before any promotion decision.",
-                               "reason": "A trial run is evidence, never an activation."},
-            "limitations": ["Deterministic mock trial; no real model judgement."],
-            "next_actions": [],
-            "evidence_quality": "mock_trial",
-            "unresolved_questions": [],
-        }
-        for key, kind in self._role_output_spec.items():
-            analysis[key] = (
-                f"Mock {key} content for the candidate-role trial."
-                if kind == "string" else [f"mock {key} entry"]
-            )
-        return ProviderResult(
-            analysis=analysis, model_id=self.model_id, model_version=self.model_version,
-            input_tokens=min(len(prompt) // 4, max_output_tokens), output_tokens=150,
-            latency_ms=0, finish_reason="stop",
-        )
 
 
-def _load_definition(root: Path, role: Mapping[str, Any]) -> dict[str, Any]:
-    """The hash-verified full Role Definition (the resolved registry view deliberately
-    carries only routing fields). One loader for the whole runtime — assignment.py uses
-    the same one — so the trial cannot read a definition the registry does not vouch for."""
-    try:
-        return registry_resolution.load_markdown_yaml_front_matter(
-            path=root / str(role["definition_path"]),
-            expected_hash=role.get("definition_sha256"),
-        )
-    except registry_resolution.RegistryResolutionError as exc:
-        raise PlannerBlocked("ROLE_DEFINITION_INVALID", str(exc)) from exc
-
-
-def role_output_spec(definition: Mapping[str, Any]) -> dict[str, str]:
-    """The role's declared ``role_specific_output`` contract: {field: type}. The single
-    source for the trial prompt, the worker's output mapping, and the validation
-    requirement — the Role Definition, not this module, owns what the role must return."""
-    contract = definition.get("output_contract", {}).get("role_specific_output", {})
-    if not isinstance(contract, Mapping) or not contract:
-        raise PlannerBlocked(
-            "NO_ROLE_OUTPUT_CONTRACT",
-            f"role {definition.get('role_id')} declares no role_specific_output contract",
-        )
-    return {str(k): str(v) for k, v in contract.items()}
+# Both moved to `planner` when §8.5 gave the NORMAL routing path the same need: the loader and
+# the output-contract reader are not trial concepts, and a second copy is how "one loader for
+# the whole runtime" stops being true. Re-exported here because `_load_definition` is this
+# module's established internal name and callers/tests use it.
+_load_definition = load_role_definition
 
 
 def build_trial_prompt(task: Mapping[str, Any], assignment: Mapping[str, Any],

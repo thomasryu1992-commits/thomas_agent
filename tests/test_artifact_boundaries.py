@@ -173,3 +173,62 @@ class ArtifactBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchitectureDocClaimTests(unittest.TestCase):
+    """A doc named as the implementation-truth owner must not invent configuration.
+
+    `docs/ACTIVE_ARCHITECTURE.md` carried a fenced `yaml` block of sixteen `*_enabled: false`
+    keys under "Safety State". Not one of them existed in any policy, schema, or module — it
+    was prose shaped like machine-checked configuration, and nothing distinguished it from the
+    real thing for a reader. It was wrong in substance too: `model_invocation_enabled: false`
+    sat there while model invocation was grantable per machine and routinely on.
+
+    The lane and token checks above never noticed, because they assert the doc's *structure*.
+    This asserts its *claims*: every flag-shaped assertion it makes must name a key that
+    actually exists somewhere. A doc is free to say a flag is off — it is not free to invent
+    the flag.
+    """
+
+    SEARCHED_SUFFIXES = (".py", ".yaml", ".yml", ".json")
+    SEARCHED_DIRS = ("runtime", "governance", "schemas", "scripts", "THOMAS_CORE",
+                     "03_ROLE_CONTRACTS", "05_REGISTRIES", "programs", "tools", "deferred")
+
+    @staticmethod
+    def declared_flags(text: str) -> set[str]:
+        """Boolean-valued keys asserted inside a fenced block — the shape that reads as config."""
+        import re
+
+        flags: set[str] = set()
+        for block in re.findall(r"```[a-zA-Z]*\n(.*?)\n```", text, re.S):
+            flags.update(re.findall(r"^\s*([a-z][a-z0-9_]{3,}):\s*(?:true|false)\s*$",
+                                    block, re.M))
+        return flags
+
+    def test_the_extractor_recognises_the_shape_it_is_meant_to_catch(self):
+        """Non-vacuity: the real doc declares none of these now, so without this the check
+        below would pass on an extractor that matched nothing at all."""
+        sample = "text\n\n```yaml\nmodel_invocation_enabled: false\nother_thing: true\n```\n"
+        self.assertEqual(
+            self.declared_flags(sample), {"model_invocation_enabled", "other_thing"}
+        )
+        self.assertEqual(self.declared_flags("`model_invocation_enabled: false` inline"), set())
+
+    def test_every_flag_the_architecture_doc_declares_actually_exists(self):
+        flags = self.declared_flags(
+            (ROOT / "docs/ACTIVE_ARCHITECTURE.md").read_text(encoding="utf-8")
+        )
+        corpus = []
+        for rel in self.SEARCHED_DIRS:
+            for path in (ROOT / rel).rglob("*"):
+                if path.suffix in self.SEARCHED_SUFFIXES and path.is_file():
+                    corpus.append(path.read_text(encoding="utf-8", errors="ignore"))
+        blob = "\n".join(corpus)
+        for flag in sorted(flags):
+            with self.subTest(flag=flag):
+                self.assertIn(
+                    flag, blob,
+                    f"docs/ACTIVE_ARCHITECTURE.md declares {flag!r} as configuration, but no "
+                    f"policy, schema, or module defines it. Name a real key, or state the "
+                    f"fact in prose that points at its owner.",
+                )

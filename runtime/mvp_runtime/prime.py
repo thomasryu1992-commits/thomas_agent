@@ -32,6 +32,7 @@ from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 from .permission import (
     MVP_TTL_MINUTES,
+    WORKSPACE_WRITE_RISK_LEVEL,
     build_permission_decision,
     build_search_permission_decision,
     build_triage_permission_decision,
@@ -41,6 +42,7 @@ from .permission import (
 from .validation import independent_validation_required
 from .planner import (
     VALIDATOR_REQUIRED_CAPABILITIES,
+    load_role_definition,
     VALIDATOR_REQUIRED_PERMISSION_LEVEL,
     classify_task,
     load_resolved_roles,
@@ -121,6 +123,7 @@ def plan_task(
     repo_root: Path | None = None,
     independent_validation: bool | str = False,
     controlled_write: bool = False,
+    request_kind: str | None = None,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
 
@@ -140,6 +143,13 @@ def plan_task(
     model; the pipeline runs the triage and decides from its verdict whether the planned
     reviewer actually runs.
 
+    ``request_kind`` (§8.5) selects which capabilities the work needs, and therefore which
+    active routable Role is assigned. ``None`` keeps the original analysis routing
+    (``general.specialist``); an unknown kind fails closed rather than defaulting to analysis.
+    The plan additionally carries ``role_definition`` — the hash-verified full Role Definition
+    of the selected Role — because the worker prompt, the output mapping and the validation
+    requirement all have to come from the Role that was actually chosen.
+
     ``controlled_write`` (R8, opt-in) additionally plans the workspace write as its own
     governed action, adding ``write_permission_decision`` — a WORKSPACE_REVERSIBLE_WRITE
     grant at P3 whose disposition is EXECUTE_AND_REPORT. Planning it does not perform it;
@@ -147,7 +157,14 @@ def plan_task(
     """
     root = repo_root if repo_root is not None else _repo_root()
 
-    decision = classify_task(task)
+    # Policy §10: the task's risk is the highest across the perspectives in play, so the
+    # classification has to know which optional actions this run will plan before it decides.
+    # Only the R8 write is above the base today; every other planned action is GREEN. This runs
+    # before the reviewer decision below on purpose — a derived risk can only ever be stricter,
+    # so folding it in first can add the independent reviewer and can never remove one.
+    planned_action_risks = [WORKSPACE_WRITE_RISK_LEVEL] if controlled_write else []
+    decision = classify_task(task, request_kind=request_kind,
+                             planned_action_risks=planned_action_risks)
     binding, bound = bind_task_to_core(task, repo_root=root, now=now)
 
     resolved = load_resolved_roles(root)
@@ -255,6 +272,7 @@ def plan_task(
 
     plan: dict[str, Any] = {
         "task": planned,
+        "role_definition": load_role_definition(root, role),
         "binding": binding,
         "permission_decision": permission_decision,
         "search_permission_decision": search_permission_decision,

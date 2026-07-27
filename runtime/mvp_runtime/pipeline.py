@@ -23,6 +23,7 @@ MockProvider), and no tool/program execution.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -32,7 +33,9 @@ from . import timeutil
 from .budgets import recorded_usage_budget
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
-from .errors import MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked
+from .errors import (
+    MvpRuntimeError, PersistenceError, ProgramizationBlocked, ToolBlocked, WorkerBlocked,
+)
 from .intake import build_task
 from .memory import (
     LEARNING_SOURCE_REVISION,
@@ -49,13 +52,75 @@ from .tools import MockSearchTool, SearchTool, degraded_search_record, run_searc
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
 from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
-from .worker import MockProvider, Provider, run_analysis_worker
+from .planner import DEFAULT_SPECIALIST_ROLE_ID, role_output_spec
+from .worker import (
+    MockProvider, MockTrialProvider, Provider, build_role_prompt, run_analysis_worker,
+)
 from .working_memory import WorkingMemoryStore
 from .workspace import DryRunWriter, WorkspaceWriter, run_write
 
 # R7.1: the selective-validation policy value for ``independent_validation`` — validate
 # only when the task's classification requires it (see independent_validation_required).
 AUTO_VALIDATION = "auto"
+
+
+# §8.5: the Role that was actually selected decides the prompt, the output mapping and the
+# validation requirement. `general.specialist` keeps the business-analysis path byte-identical
+# (its own contract is what `_role_specific_output(None)` already emits, perspectives included);
+# any other routable Role runs against ITS declared contract instead. Returned as the two
+# arguments the worker and the validator each need, so no call site re-derives them.
+def _role_output_spec(plan: Mapping[str, Any]) -> dict[str, str] | None:
+    """The selected Role's declared output contract, or None for the business analyst
+    (whose contract is what the worker already emits by default)."""
+    definition = plan.get("role_definition")
+    if not definition or definition.get("role_id") == DEFAULT_SPECIALIST_ROLE_ID:
+        return None
+    return role_output_spec(definition)
+
+
+def _role_execution(plan: Mapping[str, Any], **prompt_context) -> tuple[str | None, list[str] | None]:
+    """``(prompt_override, role_output_keys)`` for the selected Role — (None, None) for the
+    business analyst, whose prompt and output shape are the worker's defaults."""
+    spec = _role_output_spec(plan)
+    if spec is None:
+        return None, None
+    prompt = build_role_prompt(
+        plan["task"], plan["role_assignment"], plan["role_definition"], spec, **prompt_context)
+    return prompt, list(spec)
+
+
+def _provider_for_role(provider: Provider, spec: Mapping[str, str] | None) -> Provider:
+    """The provider that can actually answer the selected Role's output contract.
+
+    Two honest outcomes, no third:
+
+    * the deterministic path — swap the business-analysis ``MockProvider`` for a role-shaped
+      one built from the Role's own declared keys. That is the trial path's existing
+      ``MockTrialProvider``, reused rather than reinvented: "a mock that answers exactly this
+      role's contract" is the same idea both times.
+    * a **bindable** provider — ask it for the Role's keys as well. The hosted schemas are
+      closed over the analysis key set (OpenAI strict via ``additionalProperties: false``,
+      Google via the enforced ``required`` list), so a hosted model asked for
+      ``translated_text`` returns without it; ``bind_role_output_keys`` re-derives the schema
+      with the Role's keys folded in. Binding returns a COPY — the provider is selected once
+      per process and one run's Role must not change what the next run asks for.
+    * a network provider that cannot bind — **refuse**, by name. Left alone it would come back
+      missing the key and fail the run's own output check, reading like a model quality
+      problem when it is a schema problem.
+    """
+    if spec is None:
+        return provider
+    binder = getattr(provider, "bind_role_output_keys", None)
+    if binder is not None:
+        return binder(spec)
+    if getattr(provider, "network_egress", False):
+        raise WorkerBlocked(
+            "ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER",
+            f"{provider.model_id} cannot be bound to this Role's output contract "
+            f"({sorted(spec)}); a network provider that cannot ask for the Role's keys would "
+            "return without them and fail the run's own output check",
+        )
+    return MockTrialProvider(dict(spec))
 
 
 def render_response(
@@ -83,6 +148,19 @@ def render_response(
     if findings:
         lines.append("## Key findings")
         lines += [f"- {f}" for f in findings]
+        lines.append("")
+    # §10.4: the separated judgements are rendered, not merely recorded. Keeping them in the
+    # ledger alone would leave the reader with the same single blended narrative the
+    # separation exists to break up — the disagreement has to be visible where it is read,
+    # and it is placed BEFORE the recommendation so it is read as input to it rather than as
+    # a footnote to a conclusion already accepted.
+    perspectives = rso.get("perspectives", [])
+    if perspectives:
+        lines.append("## Perspectives")
+        lines += [
+            f"- **{p.get('perspective', '')}** ({p.get('verdict', '')}): {p.get('basis', '')}"
+            for p in perspectives
+        ]
         lines.append("")
     rec = agent_output.get("recommendation")
     if rec:
@@ -177,6 +255,452 @@ def _finalize_block(
     return result
 
 
+def _planned_allocation(
+    *, auto_policy: bool, independent_validation: bool | str, revise: bool
+) -> tuple[int, int]:
+    """``(planned_agents, planned_triage_calls)`` — the ceiling this run is planned under.
+
+    The allocation must cover every agent the plan MAY invoke, because the contract forbids an
+    assignment from exceeding its parent task's remaining budget: two assignments each granted
+    one model call under a task allocated exactly one is the
+    ``subtasks_and_new_assignments_cannot_increase_parent_remaining_budget`` breach, which the
+    runtime silently committed on every validated run until this arithmetic existed.
+
+    M3: an armed revision loop pre-allocates its retry here — a regenerated specialist call
+    plus a re-verify — so a revision can never spend past what the run was planned under
+    (over budget => no loop). A ceiling, not a claim: a run that passes first time simply
+    spends less than it allocated (the triage precedent).
+    """
+    base_agents = 2 if (auto_policy or independent_validation) else 1
+    return base_agents + (2 if revise else 0), (1 if auto_policy else 0)
+
+
+def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path: bool) -> None:
+    """Put the plan's governance records on the run's record set.
+
+    The conditional halves are the point: a validator assignment exists only when one was
+    planned, and the write grant is recorded only when a write was asked for — the ledger must
+    hold the decision an action was taken under, not merely the audit event reporting it.
+    """
+    records.update({
+        "task": plan["task"], "binding": plan["binding"],
+        "permission_decision": plan["permission_decision"],
+        "search_permission_decision": plan["search_permission_decision"],
+        "role_assignment": plan["role_assignment"],
+    })
+    if "validator_assignment" in plan:
+        records["validator_permission_decision"] = plan["validator_permission_decision"]
+        records["validator_assignment"] = plan["validator_assignment"]
+    if wrote_path:
+        records["write_permission_decision"] = plan["write_permission_decision"]
+
+
+def _settle_reviewer(
+    plan: Mapping[str, Any],
+    records: dict[str, Any],
+    *,
+    auto_policy: bool,
+    independent_validation: bool | str,
+    triage_provider: Provider,
+    now: str,
+) -> tuple[bool, dict[str, Any] | None, dict[str, Any] | None]:
+    """R7.2: decide whether the PLANNED reviewer actually runs.
+
+    Returns ``(validate_run, triage_result, triage_invocation)``. Two paths, and they write
+    different records, which is why this is worth a name of its own:
+
+    * the classification already decided — an important priority or ORANGE/RED risk means no
+      triage is owed, so none was planned and none is called;
+    * otherwise the orchestrator's own governed triage call judges the request, and its
+      permission decision, verdict and invocation all go on the record.
+
+    Without the auto policy there is nothing to settle: the caller's flag is the answer.
+    """
+    if not auto_policy:
+        return bool(independent_validation), None, None
+    triage_permdec = plan.get("triage_permission_decision")
+    if triage_permdec is None:
+        return True, None, None     # classification already required the review
+    records["triage_permission_decision"] = triage_permdec
+    triage_result, triage_invocation = run_triage(
+        plan["task"], provider=triage_provider, created_at=now,
+    )
+    records["triage_result"] = triage_result
+    if triage_invocation is not None:
+        records["triage_invocation"] = triage_invocation
+    return triage_result["verdict"] == VERDICT_HIGH, triage_result, triage_invocation
+
+
+def _select_specialist_provider(
+    provider: Provider,
+    records: dict[str, Any],
+    *,
+    tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None,
+    triage_result: Mapping[str, Any] | None,
+) -> Provider:
+    """M2: let the M1 difficulty pick the specialist's model tier, or keep the base provider.
+
+    Only when triage produced a difficulty AND a selector is wired — so the default and every
+    mock run are unchanged. A missing tier grant degrades to the base chain (TIER_DEGRADED),
+    recorded, never blocking. The tiered model serves the SPECIALIST only; the validator and
+    the triage keep their own provider.
+    """
+    if tiered_provider_selector is None or triage_result is None:
+        return provider
+    specialist_provider, tier_selection = tiered_provider_selector(triage_result["difficulty"])
+    records["model_tier_selection"] = tier_selection
+    return specialist_provider
+
+
+@dataclass(frozen=True)
+class _RevisionSpend:
+    """What the M3 revision loop's FIRST attempt cost, on top of the final one.
+
+    The usage block reads the FINAL ``invocation`` / ``validator_invocation``, so a revised run
+    has to add the attempt those replaced. Four loose ``rev_*`` locals carried that across 120
+    lines of ``run_task``; as one value the rule sits next to the arithmetic, and the eventual
+    revision-loop extraction has something to return.
+    """
+
+    agent_invocations: int = 0
+    model_calls: int = 0
+    tokens: int = 0
+    retries: int = 0
+
+    @classmethod
+    def from_first_attempt(
+        cls, invocation: Mapping[str, Any], validator_invocation: Mapping[str, Any] | None
+    ) -> "_RevisionSpend":
+        """The spend of the attempt a revision replaced.
+
+        Only the FIRST run's calls are extra: the regenerated specialist and its re-verify ARE
+        the final invocation pair the usage block already counts.
+        """
+        agents = 1 + (1 if validator_invocation is not None else 0)
+        return cls(
+            agent_invocations=agents,
+            model_calls=agents,
+            tokens=(int(invocation.get("tokens_used", 0))
+                    + int((validator_invocation or {}).get("tokens_used", 0))),
+            retries=(int(invocation.get("retry_count", 0))
+                     + int((validator_invocation or {}).get("retry_count", 0))),
+        )
+
+
+def _record_spend(
+    limits: Mapping[str, Any],
+    *,
+    invocation: Mapping[str, Any],
+    validator_invocation: Mapping[str, Any] | None,
+    triage_invocation: Mapping[str, Any] | None,
+    revision_spend: _RevisionSpend,
+    independently_validated: bool,
+    revised: bool,
+) -> dict[str, Any]:
+    """What the run actually spent, against the allocation it ran under.
+
+    The task and assignment records are allocations built BEFORE execution, so their zeroed
+    usage can never answer "what did this run spend?" — this record is what satisfies the
+    contract's ``usage_must_be_recorded_for_audit``.
+
+    Two counting rules live here rather than in the caller's locals:
+
+    * the R7.2 triage is Prime's model call, not an agent's, so it counts toward
+      ``model_calls`` and ``tokens_used`` but never toward ``agent_invocations``;
+    * a revision's first attempt is additive to the final spend (see :class:`_RevisionSpend`),
+      and ``revision_cycles`` surfaces the retry on its own rather than hiding it inside a
+      larger ``model_calls``.
+    """
+    agents = 2 if validator_invocation is not None else 1
+    return recorded_usage_budget(
+        limits,
+        agent_invocations=agents + revision_spend.agent_invocations,
+        model_calls=(agents + (1 if triage_invocation is not None else 0)
+                     + revision_spend.model_calls),
+        tokens_used=(
+            int(invocation.get("tokens_used", 0))
+            + int((validator_invocation or {}).get("tokens_used", 0))
+            + int((triage_invocation or {}).get("tokens_used", 0))
+            + revision_spend.tokens
+        ),
+        validation_cycles=2 if independently_validated else 1,
+        revision_cycles=1 if revised else 0,
+        # Every model call the run made, matching what tokens_used sums. It counted only the
+        # specialist and the reviewer, so a run whose triage retried a 503 — or whose
+        # pre-revision calls did — reported 0 and read as a clean first try.
+        retry_count=(
+            int(invocation.get("retry_count", 0))
+            + int((validator_invocation or {}).get("retry_count", 0))
+            + int((triage_invocation or {}).get("retry_count", 0))
+            + revision_spend.retries
+        ),
+    )
+
+
+# --- enrichment seams -----------------------------------------------------------------
+#
+# Three things a completed run does BESIDES producing its answer: capture what a revision
+# taught, persist that capture, and count the run toward a repetition pattern. They share one
+# rule, and it is the reason they are named here instead of sitting inline in `run_task`:
+#
+#     **enrichment never fails a delivered run.**
+#
+# Each catches its own typed failures and reports them on the result (`learning_error`,
+# `working_memory_error`, `programization_error`) rather than raising. That matters
+# structurally: all three run INSIDE `run_task`'s outer `except MvpRuntimeError`, which turns
+# any escape into a full BLOCK — so an un-caught enrichment failure would withhold an analysis
+# that was already produced and durably audited. Extracted as functions so the rule is stated
+# once and each seam's inputs are visible, rather than being three unlabelled stretches of a
+# 500-line function.
+
+
+def _mint_revision_correction(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    *,
+    raw_request: str,
+    revision_requests: list[str],
+    now: str,
+    working_memory: WorkingMemoryStore | None,
+    outcome: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """M5a: the correction a revision taught, as a working-memory CANDIDATE + its audit event.
+
+    Returns ``(candidate, event, error_code)`` — all None when there is nothing to learn: no
+    store wired, the revision did not recover to PASS, or the assignment does not permit
+    candidate creation. CANDIDATE-status only, so even Thomas's own correction is captured
+    rather than trusted; promotion stays his explicit step.
+    """
+    if working_memory is None or outcome != "PASS":
+        return None, None, None
+    ctype = candidate_type_for(assignment)
+    if ctype is None:
+        return None, None, None
+    identity = task.get("identity", {})
+    ctx = task.get("context", {})
+    goal = task.get("request", {}).get("normalized_goal") or raw_request
+    delta = "; ".join(dict.fromkeys(revision_requests))
+    content = (
+        f"교정 학습: «{goal[:200]}» 유형의 요청에서 첫 분석이 다음을 "
+        f"수정한 뒤에야 통과했습니다 — {delta}"
+    )
+    try:
+        correction = build_correction_candidate(
+            content, source=LEARNING_SOURCE_REVISION, now=now, candidate_type=ctype,
+            seed={"trace_id": identity.get("trace_id"), "task_id": identity.get("task_id")},
+            origin={
+                "task_id": identity.get("task_id"),
+                "task_revision": identity.get("task_revision"),
+                "trace_id": identity.get("trace_id"),
+                "core_context_binding_id": ctx.get("core_context_binding_id"),
+                "data_sensitivity": ctx.get("data_sensitivity"),
+            },
+            correction_ref=f"trace:{identity.get('trace_id')}",
+        )
+    except MvpRuntimeError as exc:
+        # A secret-bearing delta or a bad origin loses the capture, never the run.
+        return None, None, exc.reason_code
+    if correction is None:
+        return None, None, None
+    return correction, build_learning_event(
+        correction, source=LEARNING_SOURCE_REVISION, now=now,
+        trace_id=identity.get("trace_id"),
+    ), None
+
+
+def _persist_learning(
+    *,
+    working_memory: WorkingMemoryStore | None,
+    store: LedgerStore | None,
+    agent_output: Mapping[str, Any],
+    learning_candidates: list[dict[str, Any]],
+    learning_events: list[dict[str, Any]],
+) -> tuple[bool, str | None, str | None]:
+    """Accumulate this run's memory candidates and audit any minted correction.
+
+    Returns ``(stored, working_memory_error, learning_error)``. The audit is gated on the
+    append having SUCCEEDED: the event's own contract is that a candidate "was captured", so
+    emitting it after a failed append would put a tamper-evident claim on the ledger for a
+    candidate that is in no store — and ``/promote`` on that id would refuse CANDIDATE_GONE
+    while the audit said it existed.
+    """
+    if working_memory is None:
+        return False, None, None
+    try:
+        working_memory.append(
+            list(agent_output.get("memory_candidates", [])) + learning_candidates
+        )
+    except PersistenceError as exc:
+        # Nothing landed: the correction rides the same single append as the ordinary
+        # candidates, so a failure loses both.
+        return False, exc.reason_code, (exc.reason_code if learning_candidates else None)
+    if store is not None and learning_events:
+        try:
+            for event in learning_events:
+                store.append_memory_event(event)
+        except PersistenceError as exc:
+            return True, None, exc.reason_code
+    return True, None, None
+
+
+def _observe_repetition(
+    programization: ProgramizationStore | None,
+    *,
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    outcome: str,
+    working_memory: WorkingMemoryStore | None,
+    independently_validated: bool,
+    wrote: bool,
+    specialist_provider: Any,
+    now: str,
+    repo_root: Path | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, str | None]:
+    """Count one COMPLETED+PASS run toward its repetition pattern (Programization Policy).
+
+    Returns ``(observation, pattern, triggered, error_code)``. Threshold-many valid
+    independent repetitions raise a **review trigger only** — no Program is created or
+    activated here or anywhere.
+    """
+    if programization is None or outcome != "PASS":
+        return None, None, False, None
+    steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
+    if working_memory is not None:
+        steps_run.append("memory_retrieval")
+    steps_run += ["analysis_worker", "automatic_validation"]
+    if independently_validated:
+        steps_run.append("independent_validation")
+    if wrote:
+        steps_run.append("controlled_write")
+    try:
+        observation, pattern, triggered = observe_completed_run(
+            programization, task=task, assignment=assignment, steps=steps_run,
+            # A provider with no network egress is an in-process mock: a synthetic run,
+            # observed but never counted (policy §4). The specialist provider is what
+            # actually produced this run's output (tiered when M2 selected one).
+            synthetic=not bool(getattr(specialist_provider, "network_egress", False)),
+            now=now, repo_root=repo_root,
+        )
+    except (PersistenceError, ProgramizationBlocked) as exc:
+        return None, None, False, exc.reason_code
+    return observation, pattern, triggered, None
+
+
+@dataclass(frozen=True)
+class _RevisionAttempt:
+    """What the one governed regeneration replaced, and what it produced.
+
+    Eleven values that used to be assignments into ``run_task``'s scope. As one returned value
+    the caller's rebinding is a visible list rather than a block of statements buried mid-
+    function, and the M3 rule — a revision REPLACES the first attempt's output, validation and
+    review — is legible from the field names.
+    """
+
+    agent_output: dict[str, Any]
+    invocation: dict[str, Any]
+    validation: dict[str, Any]
+    independent_validation_result: dict[str, Any] | None
+    validator_invocation: dict[str, Any] | None
+    outcome: str
+    revision: dict[str, Any]
+    spend: _RevisionSpend
+    correction: dict[str, Any] | None
+    correction_event: dict[str, Any] | None
+    correction_error: str | None
+
+
+def _revise_once(
+    plan: Mapping[str, Any],
+    records: dict[str, Any],
+    *,
+    raw_request: str,
+    validation: Mapping[str, Any],
+    independent_validation_result: Mapping[str, Any] | None,
+    invocation: Mapping[str, Any],
+    validator_invocation: Mapping[str, Any] | None,
+    validate_run: bool,
+    specialist_provider: Provider,
+    validator_provider: Provider,
+    search_hits: list[dict[str, Any]],
+    memory_entries: list[dict[str, Any]],
+    validated_entries: list[dict[str, Any]],
+    working_memory: WorkingMemoryStore | None,
+    now: str,
+    repo_root: Path | None,
+) -> _RevisionAttempt:
+    """M3: spend the ONE pre-allocated regeneration a validation REVISE earns.
+
+    The required revisions — the automatic reasons plus the independent reviewer's — are fed
+    back to the specialist, the revised output is re-validated under the same rules, and the
+    stricter outcome stands. A hard cap of one: this is called from a single ``if``, never a
+    loop, so a revised output that still REVISEs is not revised again, it BLOCKs
+    (REVISION_EXHAUSTED). BLOCK is never revised at all (unusable, not fixable).
+
+    ``records`` is written **incrementally**, as each step completes, and that is deliberate
+    rather than a leaked parameter: if the re-verify raises, ``run_task``'s handler persists
+    whatever the revision had already produced, so a blocked run's trail still shows the
+    regenerated output and its validation. Returning everything at the end and letting the
+    caller record it would lose exactly that on the failure path.
+    """
+    revision_requests = list(validation["validation"]["result_reasons"])
+    if independent_validation_result is not None:
+        revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
+    first_invocation = invocation
+    spend = _RevisionSpend.from_first_attempt(invocation, validator_invocation)
+
+    role_prompt, role_output_keys = _role_execution(
+        plan, search_hits=search_hits, memory_entries=memory_entries,
+        validated_entries=validated_entries, revision_requests=revision_requests)
+    agent_output, invocation = run_analysis_worker(
+        plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
+        search_hits=search_hits, memory_entries=memory_entries,
+        validated_entries=validated_entries, repo_root=repo_root,
+        revision_requests=revision_requests,
+        prompt_override=role_prompt, role_output_keys=role_output_keys,
+    )
+    records["agent_output"] = agent_output
+    records["invocation"] = invocation
+
+    validation = validate_agent_output(
+        agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root,
+        required_role_output_keys=role_output_keys)
+    records["validation_result"] = validation
+
+    independent_validation_result = validator_invocation = None
+    if validate_run and validation["validation"]["result"] == "PASS":
+        independent_validation_result, validator_invocation = run_validation_worker(
+            plan["task"], plan["validator_assignment"], agent_output,
+            provider=validator_provider, created_at=now, repo_root=repo_root,
+        )
+        records["independent_validation_result"] = independent_validation_result
+        records["validator_invocation"] = validator_invocation
+
+    outcome = validation["validation"]["result"]
+    if independent_validation_result is not None:
+        outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
+    revision = {
+        "attempted": True, "exhausted": outcome != "PASS",
+        "requests": revision_requests, "first_invocation": first_invocation,
+    }
+    records["revision"] = revision
+
+    # M5a: a revision that recovered a REVISE to a PASS is a correction — captured for later
+    # similar requests. Enrichment: see the seam functions above.
+    correction, correction_event, correction_error = _mint_revision_correction(
+        plan["task"], plan["role_assignment"],
+        raw_request=raw_request, revision_requests=revision_requests, now=now,
+        working_memory=working_memory, outcome=outcome,
+    )
+    return _RevisionAttempt(
+        agent_output=agent_output, invocation=invocation, validation=validation,
+        independent_validation_result=independent_validation_result,
+        validator_invocation=validator_invocation, outcome=outcome,
+        revision=revision, spend=spend,
+        correction=correction, correction_event=correction_event,
+        correction_error=correction_error,
+    )
+
+
 def run_task(
     raw_request: str,
     *,
@@ -188,6 +712,7 @@ def run_task(
     repo_root: Path | None = None,
     store: LedgerStore | None = None,
     independent_validation: bool | str = False,
+    request_kind: str | None = None,
     validator_provider: Provider | None = None,
     tiered_provider_selector: Callable[[str], tuple[Provider, dict[str, Any]]] | None = None,
     revise: bool = False,
@@ -300,13 +825,16 @@ def run_task(
         # past the allocation the run was planned under (over budget => no loop). The
         # allocation is a ceiling, not a claim: a run that passes first time simply spends
         # less than it allocated (the triage precedent).
-        base_agents = 2 if (auto_policy or independent_validation) else 1
+        planned_agents, planned_triage_calls = _planned_allocation(
+            auto_policy=auto_policy, independent_validation=independent_validation, revise=revise,
+        )
         task = build_task(
             raw_request, now=now,
-            planned_agents=base_agents + (2 if revise else 0),
-            planned_triage_calls=1 if auto_policy else 0,
+            planned_agents=planned_agents, planned_triage_calls=planned_triage_calls,
             **intake_kwargs,
         )
+        # Set BEFORE planning can fail: `_finalize_block` reads it for the block record's
+        # trace_id, so a run that dies in `plan_task` still names which request it was.
         received_task = task
         records["received_task"] = task
 
@@ -314,50 +842,22 @@ def run_task(
             task, now=now, repo_root=repo_root,
             independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
+            request_kind=request_kind,
         )
-        records.update({
-            "task": plan["task"], "binding": plan["binding"],
-            "permission_decision": plan["permission_decision"],
-            "search_permission_decision": plan["search_permission_decision"],
-            "role_assignment": plan["role_assignment"],
-        })
-        if "validator_assignment" in plan:
-            records["validator_permission_decision"] = plan["validator_permission_decision"]
-            records["validator_assignment"] = plan["validator_assignment"]
-        if write_path is not None:
-            # Persist the grant that authorizes the write, not just the audit event that
-            # reports it: the ledger must hold the decision the action was taken under.
-            records["write_permission_decision"] = plan["write_permission_decision"]
+        _record_plan(plan, records, wrote_path=write_path is not None)
 
-        # R7.2: settle whether the planned reviewer RUNS. The classification decides
-        # first (an important priority or ORANGE/RED risk = no triage owed); otherwise
-        # the orchestrator's governed triage call judges the request itself.
-        triage_result = triage_invocation = None
-        if auto_policy:
-            triage_permdec = plan.get("triage_permission_decision")
-            if triage_permdec is None:
-                validate_run = True     # classification already required the review
-            else:
-                records["triage_permission_decision"] = triage_permdec
-                triage_result, triage_invocation = run_triage(
-                    plan["task"], provider=triage_provider, created_at=now,
-                )
-                records["triage_result"] = triage_result
-                if triage_invocation is not None:
-                    records["triage_invocation"] = triage_invocation
-                validate_run = triage_result["verdict"] == VERDICT_HIGH
-        else:
-            validate_run = bool(independent_validation)
-
-        # M2: the M1 difficulty (from triage) picks the specialist's OpenRouter model tier.
-        # Only when triage produced a difficulty AND a selector is wired; otherwise the base
-        # provider serves unchanged (the default and every mock run). A missing tier grant
-        # degrades to the base chain (TIER_DEGRADED) — recorded, never blocking. The tiered
-        # model serves the specialist ONLY; the validator/triage keep their own provider.
-        specialist_provider = provider
-        if tiered_provider_selector is not None and triage_result is not None:
-            specialist_provider, tier_selection = tiered_provider_selector(triage_result["difficulty"])
-            records["model_tier_selection"] = tier_selection
+        validate_run, triage_result, triage_invocation = _settle_reviewer(
+            plan, records, auto_policy=auto_policy,
+            independent_validation=independent_validation,
+            triage_provider=triage_provider, now=now,
+        )
+        specialist_provider = _select_specialist_provider(
+            provider, records,
+            tiered_provider_selector=tiered_provider_selector, triage_result=triage_result,
+        )
+        # §8.5: a Role that is not the business analyst needs a provider that can answer ITS
+        # declared contract. Refuses by name rather than producing a confusing REVISE.
+        specialist_provider = _provider_for_role(specialist_provider, _role_output_spec(plan))
 
         # R3: run the authorized read-only search (mock by default; gated real tool).
         # Its hits become source-attributed evidence; the use is recorded + audited.
@@ -389,15 +889,21 @@ def run_task(
         )
         records["validated_memory_retrieved"] = validated_entries
 
+        role_prompt, role_output_keys = _role_execution(
+            plan, search_hits=search_hits, memory_entries=memory_entries,
+            validated_entries=validated_entries)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
             validated_entries=validated_entries, repo_root=repo_root,
+            prompt_override=role_prompt, role_output_keys=role_output_keys,
         )
         records["agent_output"] = agent_output
         records["invocation"] = invocation
 
-        validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
+        validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"],
+                                           now=now, repo_root=repo_root,
+                                           required_role_output_keys=role_output_keys)
         records["validation_result"] = validation
 
         # R7 (opt-in): the independent validator reviews the output in a fresh context.
@@ -437,95 +943,33 @@ def run_task(
         # pre-allocated above; the worker still fails closed on an exhausted allocation, so
         # the loop cannot overspend even if this guard drifted.
         revision = None
-        rev_agent_invocations = rev_model_calls = rev_tokens = rev_retries = 0
+        revision_spend = _RevisionSpend()
         if revise and outcome == "REVISE":
-            revision_requests = list(validation["validation"]["result_reasons"])
-            if independent_validation_result is not None:
-                revision_requests += list(independent_validation_result["validation"].get("result_reasons") or [])
-            first_invocation = invocation
-            first_validator_invocation = validator_invocation
-            # Only the FIRST run's calls are extra here — the regenerated specialist and its
-            # re-verify are the FINAL invocation/validator_invocation the usage block counts.
-            rev_agent_invocations = 1 + (1 if first_validator_invocation is not None else 0)
-            rev_model_calls = rev_agent_invocations
-            rev_tokens = (int(first_invocation.get("tokens_used", 0))
-                          + int((first_validator_invocation or {}).get("tokens_used", 0)))
-            rev_retries = (int(first_invocation.get("retry_count", 0))
-                           + int((first_validator_invocation or {}).get("retry_count", 0)))
-
-            agent_output, invocation = run_analysis_worker(
-                plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
+            attempt = _revise_once(
+                plan, records,
+                raw_request=raw_request, validation=validation,
+                independent_validation_result=independent_validation_result,
+                invocation=invocation, validator_invocation=validator_invocation,
+                validate_run=validate_run,
+                specialist_provider=specialist_provider, validator_provider=validator_provider,
                 search_hits=search_hits, memory_entries=memory_entries,
-                validated_entries=validated_entries, repo_root=repo_root,
-                revision_requests=revision_requests,
+                validated_entries=validated_entries, working_memory=working_memory,
+                now=now, repo_root=repo_root,
             )
-            records["agent_output"] = agent_output
-            records["invocation"] = invocation
-
-            validation = validate_agent_output(
-                agent_output, plan["task"], plan["role_assignment"], now=now, repo_root=repo_root)
-            records["validation_result"] = validation
-
-            independent_validation_result = validator_invocation = None
-            if validate_run and validation["validation"]["result"] == "PASS":
-                independent_validation_result, validator_invocation = run_validation_worker(
-                    plan["task"], plan["validator_assignment"], agent_output,
-                    provider=validator_provider, created_at=now, repo_root=repo_root,
-                )
-                records["independent_validation_result"] = independent_validation_result
-                records["validator_invocation"] = validator_invocation
-
-            outcome = validation["validation"]["result"]
-            if independent_validation_result is not None:
-                outcome = stricter_result(outcome, independent_validation_result["validation"]["result"])
-            revision = {
-                "attempted": True, "exhausted": outcome != "PASS",
-                "requests": revision_requests, "first_invocation": first_invocation,
-            }
-            records["revision"] = revision
-
-            # M5a: a revision that recovered a REVISE to a PASS is a correction — mint it as
-            # a working-memory CANDIDATE so a later similar request starts closer to the
-            # accepted answer. ALLOW-tier and best-effort: only when the assignment permits
-            # candidate creation, and a failure here (secret-bearing delta, bad origin) is
-            # noted, never allowed to block an otherwise-delivered run. The candidate is
-            # appended + audited on the delivered path below.
-            if working_memory is not None and outcome == "PASS":
-                ctype = candidate_type_for(plan["role_assignment"])
-                if ctype is not None:
-                    identity = plan["task"].get("identity", {})
-                    ctx = plan["task"].get("context", {})
-                    goal = plan["task"].get("request", {}).get("normalized_goal") or raw_request
-                    delta = "; ".join(dict.fromkeys(revision_requests))
-                    content = (
-                        f"교정 학습: «{goal[:200]}» 유형의 요청에서 첫 분석이 다음을 "
-                        f"수정한 뒤에야 통과했습니다 — {delta}"
-                    )
-                    try:
-                        correction = build_correction_candidate(
-                            content, source=LEARNING_SOURCE_REVISION, now=now, candidate_type=ctype,
-                            seed={"trace_id": identity.get("trace_id"), "task_id": identity.get("task_id")},
-                            origin={
-                                "task_id": identity.get("task_id"),
-                                "task_revision": identity.get("task_revision"),
-                                "trace_id": identity.get("trace_id"),
-                                "core_context_binding_id": ctx.get("core_context_binding_id"),
-                                "data_sensitivity": ctx.get("data_sensitivity"),
-                            },
-                            correction_ref=f"trace:{identity.get('trace_id')}",
-                        )
-                    except MvpRuntimeError as exc:
-                        # Local catch: this block is inside the run's outer MvpRuntimeError
-                        # handler, which turns any escape into a full BLOCK — M5a must never
-                        # do that. Capture failing is enrichment lost, not a run withheld.
-                        correction = None
-                        result.setdefault("learning_error", exc.reason_code)
-                    if correction is not None:
-                        learning_candidates.append(correction)
-                        learning_events.append(build_learning_event(
-                            correction, source=LEARNING_SOURCE_REVISION, now=now,
-                            trace_id=identity.get("trace_id"),
-                        ))
+            # A revision REPLACES the first attempt's output, validation and review.
+            agent_output = attempt.agent_output
+            invocation = attempt.invocation
+            validation = attempt.validation
+            independent_validation_result = attempt.independent_validation_result
+            validator_invocation = attempt.validator_invocation
+            outcome = attempt.outcome
+            revision = attempt.revision
+            revision_spend = attempt.spend
+            if attempt.correction_error is not None:
+                result.setdefault("learning_error", attempt.correction_error)
+            if attempt.correction is not None:
+                learning_candidates.append(attempt.correction)
+                learning_events.append(attempt.correction_event)
 
         # R8 (opt-in): the controlled write — the runtime's first EXECUTE_AND_REPORT action.
         # Only a PASSING result is written: a rejected analysis must not leave an artifact
@@ -557,65 +1001,30 @@ def run_task(
         # a review trigger ONLY (audited below) — no Program is created or activated.
         # Best-effort like working-memory accumulation: the counter is enrichment, so a
         # failure is noted on the result, never blocks a delivered run.
-        programization_pattern = None
-        programization_triggered = False
-        if programization is not None and outcome == "PASS":
-            steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
-            if working_memory is not None:
-                steps_run.append("memory_retrieval")
-            steps_run += ["analysis_worker", "automatic_validation"]
-            if independent_validation_result is not None:
-                steps_run.append("independent_validation")
-            if write_use is not None:
-                steps_run.append("controlled_write")
-            try:
-                observation, programization_pattern, programization_triggered = observe_completed_run(
-                    programization, task=plan["task"], assignment=plan["role_assignment"],
-                    steps=steps_run,
-                    # A provider with no network egress is an in-process mock: a synthetic
-                    # run, observed but never counted (policy §4). The specialist provider is
-                    # what actually produced this run's output (tiered when M2 selected one).
-                    synthetic=not bool(getattr(specialist_provider, "network_egress", False)),
-                    now=now, repo_root=repo_root,
-                )
-                records["programization_observation"] = observation
-                records["programization_pattern"] = programization_pattern
-            except (PersistenceError, ProgramizationBlocked) as exc:
-                programization_pattern = None
-                result.setdefault("programization_error", exc.reason_code)
+        observation, programization_pattern, programization_triggered, obs_error = _observe_repetition(
+            programization,
+            task=plan["task"], assignment=plan["role_assignment"], outcome=outcome,
+            working_memory=working_memory,
+            independently_validated=independent_validation_result is not None,
+            wrote=write_use is not None,
+            specialist_provider=specialist_provider, now=now, repo_root=repo_root,
+        )
+        # Same shape as the try/except this replaced: on success the observation and its
+        # pattern are recorded, on failure only the reason code is.
+        if obs_error is not None:
+            result.setdefault("programization_error", obs_error)
+        elif observation is not None:
+            records["programization_observation"] = observation
+            records["programization_pattern"] = programization_pattern
 
-        # What the run actually spent, against the allocation it ran under. The task and
-        # assignment records are allocations built before execution, so their zeroed usage
-        # can never answer this — the contract's usage_must_be_recorded_for_audit invariant
-        # had no record satisfying it until this one.
-        # M3: the revision's FIRST-run calls (rev_*) are additive to the FINAL-run spend the
-        # formulas below read off invocation/validator_invocation — so a revised run reports
-        # every model call it made, and revision_cycles surfaces the retry on its own.
-        records["budget_usage"] = recorded_usage_budget(
+        records["budget_usage"] = _record_spend(
             plan["task"].get("execution_budget", {}).get("limits", {}),
-            agent_invocations=(2 if validator_invocation is not None else 1) + rev_agent_invocations,
-            # The R7.2 triage is Prime's model call, not an agent's — it counts toward
-            # model_calls/tokens but never toward agent_invocations.
-            model_calls=(2 if validator_invocation is not None else 1)
-                        + (1 if triage_invocation is not None else 0) + rev_model_calls,
-            tokens_used=(
-                int(invocation.get("tokens_used", 0))
-                + int((validator_invocation or {}).get("tokens_used", 0))
-                + int((triage_invocation or {}).get("tokens_used", 0))
-                + rev_tokens
-            ),
-            validation_cycles=2 if independent_validation_result is not None else 1,
-            revision_cycles=1 if revision is not None else 0,
-            # Every model call this run made, matching what tokens_used already sums. It
-            # counted only the specialist and the reviewer, so a run whose triage retried a
-            # 503 — or whose pre-revision calls did — reported retry_count 0 and read as a
-            # clean first try. Recording these is the whole reason the field exists.
-            retry_count=(
-                int(invocation.get("retry_count", 0))
-                + int((validator_invocation or {}).get("retry_count", 0))
-                + int((triage_invocation or {}).get("retry_count", 0))
-                + rev_retries
-            ),
+            invocation=invocation,
+            validator_invocation=validator_invocation,
+            triage_invocation=triage_invocation,
+            revision_spend=revision_spend,
+            independently_validated=independent_validation_result is not None,
+            revised=revision is not None,
         )
 
         records["audit_trail"] = build_pipeline_audit(
@@ -653,38 +1062,16 @@ def run_task(
         # working memory is enrichment, not the audit of record, so a write failure is noted
         # but does not withhold a delivered, durably-audited result. M5a's correction
         # candidate (if the revision loop minted one) rides the same append.
-        if working_memory is not None:
-            stored = True
-            try:
-                working_memory.append(
-                    list(agent_output.get("memory_candidates", [])) + learning_candidates
-                )
-            except PersistenceError as exc:
-                # Nothing landed: the correction rides the same single append as the ordinary
-                # candidates, so a failure loses both.
-                stored = False
-                result.setdefault("working_memory_error", exc.reason_code)
-                if learning_candidates:
-                    result.setdefault("learning_error", exc.reason_code)
-            # M5a: audit the minted correction on the memory-event stream (retention
-            # precedent — a working-memory maintenance action, not a run-audit record).
-            # Best-effort: a failed audit note never withholds the delivered, durably-audited
-            # result.
-            #
-            # Gated on the append having SUCCEEDED. The event's own contract is that a
-            # candidate "was captured", so writing it after a failed append put a
-            # tamper-evident claim on the ledger for a candidate that is in no store — and
-            # `/promote` on that id refuses CANDIDATE_GONE while the audit says it exists.
-            # `operator_feedback._capture_correction` already had this right (one try, event
-            # after append); these two lived in separate try blocks, so this door did not.
-            if stored and store is not None and learning_events:
-                try:
-                    for event in learning_events:
-                        store.append_memory_event(event)
-                except PersistenceError as exc:
-                    result.setdefault("learning_error", exc.reason_code)
-            if stored and learning_candidates:
-                result["learning_candidates"] = learning_candidates
+        stored, wm_error, learn_error = _persist_learning(
+            working_memory=working_memory, store=store, agent_output=agent_output,
+            learning_candidates=learning_candidates, learning_events=learning_events,
+        )
+        if wm_error is not None:
+            result.setdefault("working_memory_error", wm_error)
+        if learn_error is not None:
+            result.setdefault("learning_error", learn_error)
+        if stored and learning_candidates:
+            result["learning_candidates"] = learning_candidates
         result["status"] = "COMPLETED"
         result["delivered"] = True
         result["final_response"] = render_response(

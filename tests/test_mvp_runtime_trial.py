@@ -61,7 +61,7 @@ def _stores(tmp_path):
     return ApprovalStore(tmp_path / "approvals"), LedgerStore(tmp_path / "ledger"), ControlStore(tmp_path)
 
 
-def _approved(tmp_path, role_id="research.general", *, granted=True, trial_request=TRIAL_REQUEST):
+def _approved(tmp_path, role_id="business.analysis", *, granted=True, trial_request=TRIAL_REQUEST):
     """A decided trial approval in a fresh store. Returns (astore, ledger, control, approval_id)."""
     astore, ledger, control = _stores(tmp_path)
     prepared = request_trial(role_id, trial_request, now=NOW)
@@ -80,7 +80,7 @@ def _approved(tmp_path, role_id="research.general", *, granted=True, trial_reque
 
 def test_select_candidate_role_returns_the_candidate_entry():
     resolved = load_resolved_roles(REPO)
-    role = select_candidate_role(resolved, role_id="research.general")
+    role = select_candidate_role(resolved, role_id="business.analysis")
     assert role["status"] == "candidate" and role["routable"] is False
     assert role["permission_ceiling"] == "P3"
 
@@ -91,10 +91,12 @@ def test_select_candidate_role_refuses_unknown_and_active_and_wrong_version():
         select_candidate_role(resolved, role_id="no.such.role")
     assert unknown.value.reason_code == "UNKNOWN_ROLE"
     with pytest.raises(PlannerBlocked) as active:
-        select_candidate_role(resolved, role_id="general.specialist")
+        # research.general is ACTIVE since 2026-07-27; a trial of an activated role is the
+        # contradiction this branch exists to refuse, so it doubles as the activation's own guard.
+        select_candidate_role(resolved, role_id="research.general")
     assert active.value.reason_code == "ROLE_ALREADY_ACTIVE"
     with pytest.raises(PlannerBlocked) as version:
-        select_candidate_role(resolved, role_id="translation.general", version="9.9.9")
+        select_candidate_role(resolved, role_id="business.analysis", version="9.9.9")
     assert version.value.reason_code == "CANDIDATE_VERSION_MISMATCH"
 
 
@@ -103,14 +105,14 @@ def test_select_candidate_role_refuses_unknown_and_active_and_wrong_version():
 
 def test_build_trial_prompt_includes_the_role_quality_criteria():
     resolved = load_resolved_roles(REPO)
-    role = select_candidate_role(resolved, role_id="research.general")
+    role = select_candidate_role(resolved, role_id="business.analysis")
     definition = trial._load_definition(REPO, role)
     task = {"scope": {"primary_objective": "obj"}, "request": {"raw_request": TRIAL_REQUEST}}
-    assignment = {"role_scope": {"assigned_capabilities": ["evidence_collection"]}}
+    assignment = {"role_scope": {"assigned_capabilities": ["opportunity_analysis"]}}
     prompt = trial.build_trial_prompt(task, assignment, definition)
     assert "Quality criteria this role must satisfy: " in prompt
-    assert "provided_evidence_over_model_memory" in prompt
-    assert "confidence_level_stated_per_finding" in prompt
+    assert "downside_and_reversibility_assessed" in prompt
+    assert "active_core_alignment" in prompt
     # A definition without the field renders no dangling criteria line.
     bare = {k: v for k, v in definition.items() if k != "quality_criteria"}
     assert "Quality criteria" not in trial.build_trial_prompt(task, assignment, bare)
@@ -121,7 +123,7 @@ def test_build_trial_prompt_includes_the_role_quality_criteria():
 
 @requires_local_core
 def test_request_trial_binds_role_version_definition_and_task_text():
-    prepared = request_trial("research.general", TRIAL_REQUEST, now=NOW)
+    prepared = request_trial("business.analysis", TRIAL_REQUEST, now=NOW)
     permdec = prepared["permission_decision"]
     role = prepared["role"]
     payload = permdec["fingerprint_payload"]
@@ -139,7 +141,7 @@ def test_request_trial_binds_role_version_definition_and_task_text():
 
 @requires_local_core
 def test_trial_request_message_is_scope_aware():
-    prepared = request_trial("translation.general", TRIAL_REQUEST, now=NOW)
+    prepared = request_trial("business.analysis", TRIAL_REQUEST, now=NOW)
     message = approval.request_message(prepared["approval_request"], prepared["permission_decision"])
     assert "격리된 1회 시험 실행" in message
     assert "validated memory는 지속됩니다" not in message
@@ -237,7 +239,7 @@ def test_run_trial_refuses_when_the_approved_content_drifted(tmp_path):
     (a role edit after the ask) must refuse with CONTENT_CHANGED — before the spend."""
     astore, ledger, control = _stores(tmp_path)
     resolved = load_resolved_roles(REPO)
-    role = select_candidate_role(resolved, role_id="research.general")
+    role = select_candidate_role(resolved, role_id="business.analysis")
     stale_role = {**role, "definition_sha256": "0" * 64}
 
     from runtime.mvp_runtime.binding import bind_task_to_core
@@ -297,9 +299,14 @@ def test_run_trial_fails_closed_when_the_gate_is_off(tmp_path):
 
 
 @requires_local_core
+# One role, not two, since 2026-07-27: content.general was activated and a trial of an ACTIVE
+# role is the contradiction select_candidate_role refuses. business.analysis is now the only
+# non-live candidate left, so this suite's coverage rests on it staying one. Activating it
+# means giving these tests a fixture role instead of a production one — worth doing then, not
+# worth inventing a fake registry entry now.
 @pytest.mark.parametrize("role_id,expected_keys", [
-    ("research.general", {"sources", "source_quality", "conflicting_evidence", "research_gaps"}),
-    ("translation.general", {"translated_text", "terminology_notes", "ambiguity_notes"}),
+    ("business.analysis",
+     {"opportunity_summary", "options", "revenue_assessment", "downside_risks", "validation_plan"}),
 ])
 def test_run_trial_completes_one_isolated_reviewed_run(tmp_path, role_id, expected_keys):
     astore, ledger, control, approval_id = _approved(tmp_path, role_id)
@@ -401,5 +408,7 @@ def test_missing_role_output_keys_withhold_delivery(tmp_path):
                        provider=MockTrialProvider({}))
     assert result["status"] == "BLOCKED"
     assert result["block"]["reason_code"] == "VALIDATION_REVISE"
-    assert "sources" in result["block"]["message"]
+    # The default subject is business.analysis since research.general was activated; the point
+    # is that the ROLE's own declared key is named, whichever role it is.
+    assert "opportunity_summary" in result["block"]["message"]
     assert result["records"]["trial_report"]["final_result"] == "REVISE"

@@ -108,7 +108,7 @@ def test_prompt_version_tracks_the_prompt_text():
     precedent)."""
     from runtime.mvp_runtime.worker import PROMPT_VERSION
 
-    assert PROMPT_VERSION == "mvp_business_analysis.v2"
+    assert PROMPT_VERSION == "mvp_business_analysis.v3"
 
 
 # --- happy path + fail-closed needing a planned task (local Core) ------------
@@ -167,6 +167,73 @@ def test_token_budget_exceeded_blocks():
     with pytest.raises(WorkerBlocked) as exc:
         run_analysis_worker(task, assignment, provider=_HugeTokenProvider(), created_at=NOW)
     assert exc.value.reason_code == "TOKEN_BUDGET_EXCEEDED"
+
+
+@requires_local_core
+def test_an_obedient_provider_does_not_breach_its_own_allowance():
+    """`token_budget` caps input+output and is checked AFTER the call, so it cannot also be
+    the output allowance handed to the provider. It was both: a provider emitting exactly
+    what it had been granted breached by the size of the prompt, and the run was withheld
+    after the tokens were spent. A 200-token prompt was enough."""
+    from runtime.mvp_runtime.budgets import output_allowance
+
+    granted: list[int] = []
+
+    class _Obedient(MockProvider):
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            granted.append(max_output_tokens)
+            r = super().generate(prompt, max_output_tokens=max_output_tokens,
+                                 timeout_seconds=timeout_seconds)
+            r.input_tokens = 200
+            r.output_tokens = max_output_tokens      # used the whole allowance, as permitted
+            return r
+
+    task, assignment = _planned()
+    budget = assignment["execution_budget"]["limits"]["token_budget"]
+    output, _invocation = run_analysis_worker(task, assignment, provider=_Obedient(), created_at=NOW)
+    assert output["schema_version"].startswith("agent_output")
+    assert granted == [output_allowance(budget)]
+    assert granted[0] < budget, "the output allowance must leave room for the prompt"
+
+
+@requires_local_core
+def test_a_truncated_response_is_named_truncated_not_malformed():
+    """`finish_reason` was recorded on every invocation and read by nothing, so an answer cut
+    off at the output cap arrived as a malformed analysis and was reported as one — naming the
+    symptom and sending the operator after a bad model instead of a small allowance."""
+    class _Truncated(MockProvider):
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            r = super().generate(prompt, max_output_tokens=max_output_tokens,
+                                 timeout_seconds=timeout_seconds)
+            r.finish_reason = "length"        # OpenAI-compatible spelling
+            return r
+
+    task, assignment = _planned()
+    with pytest.raises(WorkerBlocked) as exc:
+        run_analysis_worker(task, assignment, provider=_Truncated(), created_at=NOW)
+    assert exc.value.reason_code == "RESPONSE_TRUNCATED"
+    assert "output cap" in exc.value.reason
+
+
+@requires_local_core
+def test_externally_sized_prompt_text_is_bounded():
+    """A search snippet is a web page's content and a memory entry is whatever was stored:
+    neither is sized by this runtime, and both are interpolated into a prompt whose input half
+    is a bounded reserve. Measured before the caps: 1,012 chars with no context, 21,489 with
+    five search hits and ten memory entries."""
+    from runtime.mvp_runtime.budgets import MAX_SEARCH_SNIPPET_CHARS
+    from runtime.mvp_runtime.worker import build_prompt
+
+    task, assignment = _planned()
+    hits = [{"title": "t", "url": "https://example.com/1", "snippet": "가" * 20_000}]
+    mem = [{"candidate_type": "reusable_knowledge", "content": "나" * 20_000}]
+    val = [{"candidate_type": "reusable_knowledge", "validated_memory_id": "v1",
+            "content": "다" * 20_000}]
+    prompt = build_prompt(task, assignment, hits, mem, val)
+    assert len(prompt) < 5_000, f"prompt grew to {len(prompt)} chars"
+    assert "가" * (MAX_SEARCH_SNIPPET_CHARS + 1) not in prompt
+    # ...and the truncation is stated, so the model cannot cite a clipped source as whole.
+    assert "chars omitted]" in prompt
 
 
 @requires_local_core

@@ -35,8 +35,9 @@ from runtime.mvp_runtime.crypto.account import (
     select_account_feed,
     snapshot_record,
 )
+from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
 
 NOW = "2026-07-23T12:00:00Z"
 _SECRET = "super-secret-value-never-logged"
@@ -265,6 +266,58 @@ def test_read_account_degrades_instead_of_raising(tmp_path, monkeypatch):
     assert record["degraded"] is True
     assert record["degraded_reason_code"] == ACCOUNT_DATA_DEGRADED
     assert record["error_reason_code"] == "NO_API_KEY"
+
+
+def test_read_account_reads_the_grant_from_the_root_it_was_given(tmp_path, monkeypatch):
+    """``--root`` has to redirect THIS read too, or it only half-redirects state.
+
+    The regression: ``read_account`` took no ``root`` and called ``select_account_feed()``
+    bare, so the grant lookup always resolved from the running code's repo. A caller that
+    redirected every other piece of state — the budget, the ledger, the canary registry, the
+    control state — got ``ACTIVATION_MISSING`` from this one line while a perfectly valid
+    grant sat in the directory it had been told to use.
+
+    Reaching NO_API_KEY is what proves the point: the gate opened, so the capable feed was
+    constructed, so the grant under ``tmp_path`` was found. Before the fix this raised
+    ``SafetyGateBlocked`` instead, because the grant was looked for somewhere else entirely.
+    """
+    evidence_rel = ".runtime_governance_state/account_gate_approval.md"
+    (tmp_path / ".runtime_governance_state").mkdir()
+    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
+    record = build_activation_record(
+        flags=[NETWORK_ACCESS],
+        provider_id=BINANCE_ACCOUNT,
+        activated_at="2026-07-01T00:00:00Z",
+        expires_at="2999-12-31T23:59:59Z",
+        evidence_ref=evidence_rel,
+        authority_level="P1",
+    )
+    path = safety_gate.activation_path(tmp_path, BINANCE_ACCOUNT)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setenv(ACCOUNT_FEED_ENV, BINANCE_ACCOUNT)
+    monkeypatch.delenv(ACCOUNT_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(ACCOUNT_API_SECRET_ENV, raising=False)
+
+    snapshot, evidence = read_account(timeout_seconds=1, root=tmp_path)
+    assert snapshot is None
+    assert evidence["error_reason_code"] == "NO_API_KEY"
+
+
+def test_read_account_without_a_root_still_uses_the_repo_default(tmp_path, monkeypatch):
+    """The new parameter must not change the shape of every existing call.
+
+    ``None`` is the repo-local default — the only value any current caller passes — so the
+    grant is looked for where it has always been looked for.
+    """
+    monkeypatch.setenv(ACCOUNT_FEED_ENV, BINANCE_ACCOUNT)
+    seen: list[object] = []
+    monkeypatch.setattr(account_mod, "select_account_feed",
+                        lambda **kw: seen.append(kw.get("root")) or NoAccountFeed())
+    snapshot, _ = read_account(timeout_seconds=1)
+    assert snapshot is None
+    assert seen == [None]
 
 
 def test_malformed_body_is_typed(monkeypatch):

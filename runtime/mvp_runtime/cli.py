@@ -30,6 +30,7 @@ from .cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, gate_b
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .pipeline import AUTO_VALIDATION, run_task
+from .planner import REQUEST_KIND_CAPABILITIES
 from .providers import select_provider, select_tiered_provider, select_validator_provider
 from .store import LedgerStore
 from .tools import select_search_tool
@@ -53,6 +54,24 @@ def _extract_write_path(argv: list[str]) -> tuple[str | None, list[str], str | N
     if path.startswith("-"):
         return None, argv, f"--write-output requires a PATH, got the flag {path!r}"
     return path, argv[:index] + argv[index + 2:], None
+
+
+def _extract_request_kind(argv: list[str]) -> tuple[str | None, list[str], str | None]:
+    """Pull ``--kind KIND`` out of argv. Returns ``(kind, rest, usage_error)``.
+
+    Unknown kinds are NOT rejected here — ``planner.capabilities_for_request_kind`` owns which
+    kinds exist, and duplicating that list in the CLI is how the two would come to disagree.
+    This only enforces the shape; an unroutable kind fails closed in planning, where the Role
+    Registry is what decides."""
+    if "--kind" not in argv:
+        return None, argv, None
+    index = argv.index("--kind")
+    if index + 1 >= len(argv):
+        return None, argv, f"--kind requires a value (one of {sorted(REQUEST_KIND_CAPABILITIES)})"
+    kind = argv[index + 1]
+    if kind.startswith("-"):
+        return None, argv, f"--kind requires a value, got the flag {kind!r}"
+    return kind, argv[:index] + argv[index + 2:], None
 
 
 def main(
@@ -89,6 +108,14 @@ def main(
     # incident is why re-introduction is opt-in and hard-capped).
     revise = "--revise" in argv
     argv = [a for a in argv if a != "--revise"]
+    # §8.5: which kind of work this is, and therefore which active Role does it. Explicit
+    # rather than inferred from the text — inferring "this looks like a translation" is a
+    # guess, and a wrong guess routes to a Role with a different output contract. Omitted =
+    # analysis, exactly the routing this CLI had before.
+    request_kind, argv, kind_error = _extract_request_kind(argv)
+    if kind_error is not None:
+        sys.stderr.write(f"BLOCKED USAGE: {kind_error}\n")
+        return EXIT_USAGE
     write_path, argv, usage_error = _extract_write_path(argv)
     if usage_error is not None:
         sys.stderr.write(f"BLOCKED USAGE: {usage_error}\n")
@@ -104,7 +131,8 @@ def main(
     if unknown:
         sys.stderr.write(
             f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
-            "(known options: --independent-validation[=auto], --important, --revise, --write-output PATH); "
+            "(known options: --independent-validation[=auto], --important, --revise, "
+            "--kind KIND, --write-output PATH); "
             "pipe the request on stdin if it must start with '-'\n"
         )
         return EXIT_USAGE
@@ -147,7 +175,8 @@ def main(
         writer = select_writer() if write_path is not None else None
     except MvpRuntimeError as exc:
         return report_block(exc)
-    gate_banners(provider=provider, search_tool=search_tool, writer=writer)
+    gate_banners(analysis_provider=provider, search_tool=search_tool,
+                 workspace_writer=writer)
 
     # Persist every run's records + hash-chained audit trail to the local append-only ledger.
     # Working memory (local, per-machine) accumulates candidates and feeds them back as context.
@@ -172,6 +201,7 @@ def main(
                       tiered_provider_selector=tiered_provider_selector,
                       revise=revise,
                       priority="HIGH" if important else "NORMAL",
+                      request_kind=request_kind,
                       repo_root=repo_root,
                       write_path=write_path, writer=writer)
     # One field answers "is this run's evidence durable?" for every failure shape. Checking
