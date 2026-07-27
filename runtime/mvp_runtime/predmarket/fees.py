@@ -40,7 +40,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 from ..coerce import as_optional_float
-from .market_data import KALSHI, POLYMARKET, require_venue
+from .market_data import BINANCE, KALSHI, POLYMARKET, require_venue
 
 FEES_VERSION = "predmarket_fees.v0.1"
 FEES_VERIFIED_ON = "2026-07-26"
@@ -78,6 +78,11 @@ POLYMARKET_FEE_FREE_CATEGORIES = frozenset({"geopolitics", "world", "world event
 # Polymarket publishes no rounding rule; we round up like Kalshi, because an observation that
 # rounds a cost down claims the trade was cheaper than it was.
 POLYMARKET_ROUNDING_UNIT = 0.0001
+
+# What Binance was observed publishing as `feeRateBps` — 200 bps on 199 of 200 topics on
+# 2026-07-27, the remaining topic stating none. Used only when the venue's own rate is not in
+# hand, which on a watch scan it never is. See the note beside its `_VENUE_FEES` row.
+BINANCE_OBSERVED_TAKER_RATE = 0.02
 
 
 def _round_up(amount: float, unit: float) -> float:
@@ -134,6 +139,30 @@ _VENUE_FEES: dict[str, dict[str, Any]] = {
         "rate_of": lambda category: polymarket_taker_rate(category),
         "rounding_unit": POLYMARKET_ROUNDING_UNIT,
     },
+    # A fallback, and only ever that: every path that can see the venue's own `feeRateBps`
+    # uses it instead (the stated rate is applied above, before this table is consulted).
+    #
+    # It exists because a watch scan CANNOT see it. A confirmed leg is `marketId:tokenId`,
+    # `market/detail` is keyed by `marketTopicId`, and the order-book response carries no fee
+    # at all — checked 2026-07-27. Without a fallback every observation of a Binance leg came
+    # back with `net_edge: None`: the pairing had real books on both sides, a computed gross
+    # edge, and was still filed as unreadable, forever. That is not caution, it is a venue
+    # this phase can never collect data on.
+    #
+    # The rate is what the venue was observed publishing: 200 bps on 199 of 200 topics, the
+    # remaining one stating none. An observation, not a published schedule — so it is applied
+    # with the already-pessimistic flat model and every record says `fee_schedule_verified:
+    # false`. A market charging more than 200 bps would be under-costed here; that is the one
+    # direction this module dislikes, and it is why the stated rate always wins when there is
+    # one, and why this number is written down rather than inferred at each call site.
+    BINANCE: {
+        "rate_of": lambda _category: BINANCE_OBSERVED_TAKER_RATE,
+        "rounding_unit": POLYMARKET_ROUNDING_UNIT,
+        # Both flags are read: `flat` picks the pessimistic formula, `verified` keeps the
+        # record honest about where the number came from.
+        "flat": True,
+        "verified": False,
+    },
 }
 
 
@@ -184,6 +213,13 @@ def taker_fee(
     rate = schedule["rate_of"](category)
     if rate <= 0.0:
         return 0.0
+    if schedule.get("flat"):
+        # An unverified schedule is applied flat, exactly as an unverified STATED rate is.
+        # Anything else lets the fallback come out cheaper than the number it stands in for:
+        # shaped costs `rate x P x (1-P)`, flat costs `rate x P`, and `(1-P) < 1` always. A
+        # fallback that under-charges the case it replaces is worse than no fallback, because
+        # it turns "we could not price this" into "this looks profitable".
+        return _round_up(rate * size * p, schedule["rounding_unit"])
     return _round_up(rate * size * p * (1.0 - p), schedule["rounding_unit"])
 
 
@@ -214,12 +250,22 @@ def round_trip_fee(
             "venue": venue,
             "price": as_optional_float(leg.get("price")),
             "fee_rate_bps": stated_bps,
-            "fee_model": FEE_MODEL_FLAT_ASSUMED if stated_bps is not None else FEE_MODEL_SHAPED,
+            "fee_model": (
+                FEE_MODEL_FLAT_ASSUMED
+                if stated_bps is not None or (schedule is not None and schedule.get("flat"))
+                else FEE_MODEL_SHAPED
+            ),
             # None, not 0.0: "we have not read this venue's fee schedule" is a different fact
             # from "this leg is free", and only the second one is ever good news.
             "taker_rate": schedule["rate_of"](category) if schedule is not None else None,
             # A stated rate is its own verification: the venue told us about this market.
-            "fee_schedule_verified": schedule is not None or stated_bps is not None,
+            # A schedule that marks itself unverified is NOT — it is a rate this repo observed
+            # the venue publishing, not one the venue documented, and a record that called it
+            # verified would launder the difference.
+            "fee_schedule_verified": bool(
+                stated_bps is not None
+                or (schedule is not None and schedule.get("verified", True))
+            ),
             "fee_usd": fee,
         })
         if fee is None or total is None:
