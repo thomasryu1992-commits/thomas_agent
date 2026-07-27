@@ -1028,8 +1028,21 @@ class PolymarketPublicCollector:
                 rank_by_volume(markets), limit=limit, rotation=self._rotation)
             markets = head + tail
         else:
+            # Ask the venue for THESE markets. `clob_token_ids` is Gamma's server-side
+            # allowlist — the exact analogue of Kalshi's `tickers` — and using it is not an
+            # optimisation, it is the difference between reading a confirmed leg and never
+            # reading it.
+            #
+            # The first version fetched Gamma's front page and filtered client-side. The
+            # very first confirmed group exposed what that meant: its Polymarket leg was not
+            # in the first 1,200 rows of the default order, so every watch scan recorded
+            # MARKET_NOT_LISTED — a leg an operator had personally confirmed, permanently
+            # unobservable, reported as though the venue had delisted it.
             payload = _get_json(
-                f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(params)}",
+                f"{self.GAMMA_BASE}/markets?"
+                + urllib.parse.urlencode(
+                    {**params, "clob_token_ids": sorted(set(market_ids))}, doseq=True
+                ),
                 timeout_seconds=timeout_seconds,
             )
             markets = parse_gamma_markets(payload)[:limit]
@@ -1055,7 +1068,12 @@ class PolymarketPublicCollector:
 
         priced: list[PredMarket] = []
         for index, market in enumerate(markets):
-            if index >= self._book_limit:
+            # The budget bounds DISCOVERY, where the list is whatever the venue served. A
+            # named leg was confirmed by an operator precisely so it would be measured, and
+            # dropping it past an arbitrary cut-off would put a hole in the report's
+            # denominator that looks like a quiet book. The count is bounded by how many
+            # groups a human has confirmed, which is the point of the confirmation step.
+            if market_ids is None and index >= self._book_limit:
                 priced.append(market)  # beyond the call budget: unquoted, not guessed
                 continue
             try:
