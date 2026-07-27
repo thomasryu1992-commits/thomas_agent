@@ -109,6 +109,17 @@ def read_observations(root: Path | None = None) -> list[dict[str, Any]]:
 
 # --- the scan -------------------------------------------------------------------
 
+def _as_tuple(value: Any) -> tuple[str, ...] | None:
+    """A JSON list back to the tuple ``PredMarket`` carries; ``None`` stays ``None``.
+
+    ``derived_from`` distinguishes "the venue did not say this is a combination" (``None``)
+    from "it did" (a non-empty tuple), and a round trip through JSON must not blur the two.
+    """
+    if value is None:
+        return None
+    return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else None
+
+
 def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
     """Rebuild typed markets from a collection snapshot, keyed ``venue:market_id``."""
     rebuilt: dict[str, PredMarket] = {}
@@ -123,6 +134,8 @@ def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
             status=row.get("status"),
             category=row.get("category"),
             fee_rate_bps=row.get("fee_rate_bps"),
+            derived_from=_as_tuple(row.get("derived_from")),
+            accepting_orders=row.get("accepting_orders"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
                 yes_bid_size=quote.get("yes_bid_size"), yes_ask_size=quote.get("yes_ask_size"),
