@@ -412,25 +412,41 @@ absence is compliance.
 - [x] **§8.8 Core Candidate — the memory ladder's fourth rung** — done 2026-07-27. The ladder is
       Session → Working → Validated → Core Candidate → Thomas Core; three rungs existed. See
       `BUILD_HISTORY.md` for the shape and why. Promotion to Core stays unbuilt on purpose.
-- [ ] **§8.4 The Task Classifier routes one way of four.** `planner.classify_task` returns
-      **constants** — it does not read the request: `risk_level` is always `GREEN`, `complexity`
-      always `NORMAL`, `required_capabilities` always `("research", "analysis")`. `prime.py`
-      hardcodes `selected_route: "ROLE"` and `program_request_ids: []`. `task.v0.3` models
-      `PROGRAM`/`HYBRID` and no code path produces either.
-      The consequence worth stating plainly: **no task can ever classify as high-risk**, so the
-      design's "High-risk Decision → Analysis + Thomas Approval" route is unreachable, and R7.1's
-      `ORANGE`/`RED` branch is dead code that only the operator's `--important` flag can stand in for.
-      Two separable pieces: (a) make classification actually derive risk/complexity/capabilities —
-      buildable now, and **fail-safe by construction if it may only ever raise** the review
-      requirement, never lower it; (b) the PROGRAM route needs an *enabled* Program, which is a
-      separate Thomas approval (registry activation), so it is blocked, not unbuilt.
+- [~] **§8.4 The Task Classifier routes one way of four.** `prime.py` hardcodes
+      `selected_route: "ROLE"` and `program_request_ids: []`; `task.v0.3` models `PROGRAM`/`HYBRID`
+      and no code path produces either. Partly closed 2026-07-27 — and the first reading of this
+      item was **wrong in a way worth recording**, because the correction is the useful part.
+  - [x] **Risk classification** — done 2026-07-27. It was first written up here as "the classifier
+        returns a constant GREEN, so no task can ever be high-risk". Policy §10 says otherwise:
+        risk classifies **the action**, and it lists "내부 분석" among its own GREEN examples. So
+        GREEN was *correct* for the specialist's action and was never a stub. What was actually
+        wrong was narrower and provable: §10 also says to evaluate every perspective and take the
+        **highest**, and a run plans more than the analysis — so a run that created a file was
+        still recorded as a plain read-only analysis, and the R8 write's own decision declared
+        `GREEN` while carrying `EXECUTE_AND_REPORT`. Both fixed, plus a floor invariant at the one
+        construction site (§10 read backwards) so no future action can be added below its
+        disposition. See `BUILD_HISTORY.md`.
+  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable — and that is now
+        a correct state, not a gap.** No action on the run path is priced ORANGE/RED, so no task
+        classifies there. The approval-bearing actions that *are* ORANGE (memory promotion,
+        candidate trial, program registration) reach Thomas through R9/R10 rather than through the
+        router. This box stays open only as the place to re-check the day a run-path action is
+        priced above YELLOW; there is nothing to build today.
+  - [ ] **The PROGRAM route** needs an *enabled* Program, which is a separate Thomas approval
+        (registry activation). Blocked, not unbuilt.
+  - [ ] `complexity` stays constant on purpose: nothing reads it, and deriving it from free
+        request text would be a guess — §10's rule for a judgement made on insufficient
+        information is to not lower the classification, so leaving it is the honest move until a
+        consumer exists.
 - [ ] **§8.5 The specialist does not apply role contracts dynamically.** Because
       `required_capabilities` is a constant, `select_role` always resolves to `general.specialist`.
       The five candidate roles (`research`/`translation`/`content`/`business.analysis`/
       `development.general`) are non-routable and reachable only through a one-shot `trial.py`
       approval-consumption run. Making any of them routable is the standing `ROLE_GOVERNANCE`
-      approval — **Thomas's decision, not a build item**. Depends on (a) above to be worth anything:
-      with constant capabilities, a second routable role would only produce `AMBIGUOUS_ROLE`.
+      approval — **Thomas's decision, not a build item**. `required_capabilities` is deliberately
+      still constant: with exactly one routable role, deriving it can only ever refuse a run that
+      works today (`NO_ROUTABLE_ROLE`), so it becomes useful on the day a second role is activated
+      and not before.
       (§8.5 also lists a *Planning* role the registry does not have, and the registry has a
       `development.general` the design does not list. One of the two documents is out of date.)
 - [ ] **§10.4 No multi-perspective team.** The design's complex-strategy pattern (Research /

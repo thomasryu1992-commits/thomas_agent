@@ -32,6 +32,7 @@ from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 from .permission import (
     MVP_TTL_MINUTES,
+    WORKSPACE_WRITE_RISK_LEVEL,
     build_permission_decision,
     build_search_permission_decision,
     build_triage_permission_decision,
@@ -147,7 +148,13 @@ def plan_task(
     """
     root = repo_root if repo_root is not None else _repo_root()
 
-    decision = classify_task(task)
+    # Policy §10: the task's risk is the highest across the perspectives in play, so the
+    # classification has to know which optional actions this run will plan before it decides.
+    # Only the R8 write is above the base today; every other planned action is GREEN. This runs
+    # before the reviewer decision below on purpose — a derived risk can only ever be stricter,
+    # so folding it in first can add the independent reviewer and can never remove one.
+    planned_action_risks = [WORKSPACE_WRITE_RISK_LEVEL] if controlled_write else []
+    decision = classify_task(task, planned_action_risks=planned_action_risks)
     binding, bound = bind_task_to_core(task, repo_root=root, now=now)
 
     resolved = load_resolved_roles(root)
