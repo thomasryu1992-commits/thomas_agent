@@ -351,11 +351,12 @@ def test_propose_refuses_to_build_candidates_out_of_the_mock(cli_root, capsys):
     degrades the venue exactly like an outage, and says which it was.
     """
     from runtime.mvp_runtime.predmarket import pairs_cli
-    from runtime.mvp_runtime.predmarket.market_data import SYNTHETIC_SOURCE
+    from runtime.mvp_runtime.predmarket.market_data import SYNTHETIC_SOURCE, VENUES
 
     assert pairs_cli.main(["propose", "--limit", "4"]) == 0  # no live_venues: the real default
     out = capsys.readouterr().out
-    assert out.count("DEGRADED") == 2
+    # Every venue, not a fixed count — a fourth one must inherit the refusal, not slip past it.
+    assert out.count("DEGRADED") == len(VENUES)
     assert SYNTHETIC_SOURCE in out
     assert "0 candidate(s)" in out
     assert pairs.read_groups(cli_root) == []

@@ -61,9 +61,14 @@ VENUE_UNREADABLE = "VENUE_UNREADABLE"
 MARKET_NOT_LISTED = "MARKET_NOT_LISTED"
 # The runtime never reached the venue: the Safety-Flag gate was closed and the mock answered
 # in its place. Only ``MARKET_NOT_LISTED`` says anything about the *market*; this one and
-# ``VENUE_UNREADABLE`` are facts about the scan. **A report must exclude these rows from both
-# sides of "how often"** — a scan that never looked is not an attempt that saw nothing, and
-# counting it as one understates the frequency it exists to measure.
+# ``VENUE_UNREADABLE`` are facts about the scan.
+#
+# How `report.py` must treat it, since the two halves differ: it is **not a reading**, so it
+# stays out of the `opportunity_rate` denominator (free — the row carries `net_edge: None`),
+# but it **does** stay in `observation_count`, which is what drives coverage down to
+# INSUFFICIENT_COVERAGE. That is the wanted behaviour: a run on the mock should read as a
+# report about the scanner, not as a market with no opportunities in it. It is tallied in
+# `incidents` so the operator can see *why* coverage collapsed.
 SOURCE_SYNTHETIC = "SOURCE_SYNTHETIC"
 
 
