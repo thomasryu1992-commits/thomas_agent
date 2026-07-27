@@ -460,8 +460,20 @@ absence is compliance.
         the routing they ran under). One marker parser handles both marker families in either
         order, so the empty-request and hidden-command guards cannot cover one and miss the
         other. See `BUILD_HISTORY.md`.
-  - [ ] The three still-candidate roles (`business.analysis`, `content.general`,
-        `development.general`) stay candidates — each activation is its own Thomas decision.
+  - [x] `content.general` + `development.general` **activated 2026-07-27** (explicit Thomas
+        decision, option (b) of three offered), with their request kinds and operator markers so
+        activation is not inert. See `BUILD_HISTORY.md`.
+  - [ ] **`business.analysis` — deliberately held back**, and not a build item. Its capabilities
+        (`opportunity_analysis` / `revenue_potential_assessment` / `downside_risk_assessment`)
+        overlap the MVP's core use case, which `general.specialist` already serves *with* the
+        §10.4 perspectives. Activating it therefore asks "which of these two analyses does a
+        business idea get, and why?" — a role-split question, not a routing one. Decide that
+        first; the activation is mechanical once it is decided.
+        Note the coupling it creates: it is now the **last non-live candidate**, so the trial
+        suite's coverage rests on it staying one. Activating it means giving those tests a
+        fixture role rather than a production one.
+  - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
+        P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
       MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
       reach their own verdict before the integrated answer, declared in the role's output contract

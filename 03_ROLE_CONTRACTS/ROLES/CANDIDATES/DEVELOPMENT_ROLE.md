@@ -2,9 +2,9 @@
 schema_version: role_definition.v0.2
 role_id: development.general
 role_name: Development Role
-role_version: 0.3.0
-status: candidate
-routable: false
+role_version: 0.4.0
+status: active
+routable: true
 role_type: dynamic_specialist
 purpose: Analyze technical tasks and produce code plans, review findings, or draft
   changes inside an explicitly assigned and isolated scope.

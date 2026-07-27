@@ -96,7 +96,7 @@ def test_select_candidate_role_refuses_unknown_and_active_and_wrong_version():
         select_candidate_role(resolved, role_id="research.general")
     assert active.value.reason_code == "ROLE_ALREADY_ACTIVE"
     with pytest.raises(PlannerBlocked) as version:
-        select_candidate_role(resolved, role_id="content.general", version="9.9.9")
+        select_candidate_role(resolved, role_id="business.analysis", version="9.9.9")
     assert version.value.reason_code == "CANDIDATE_VERSION_MISMATCH"
 
 
@@ -141,7 +141,7 @@ def test_request_trial_binds_role_version_definition_and_task_text():
 
 @requires_local_core
 def test_trial_request_message_is_scope_aware():
-    prepared = request_trial("content.general", TRIAL_REQUEST, now=NOW)
+    prepared = request_trial("business.analysis", TRIAL_REQUEST, now=NOW)
     message = approval.request_message(prepared["approval_request"], prepared["permission_decision"])
     assert "격리된 1회 시험 실행" in message
     assert "validated memory는 지속됩니다" not in message
@@ -299,11 +299,14 @@ def test_run_trial_fails_closed_when_the_gate_is_off(tmp_path):
 
 
 @requires_local_core
+# One role, not two, since 2026-07-27: content.general was activated and a trial of an ACTIVE
+# role is the contradiction select_candidate_role refuses. business.analysis is now the only
+# non-live candidate left, so this suite's coverage rests on it staying one. Activating it
+# means giving these tests a fixture role instead of a production one — worth doing then, not
+# worth inventing a fake registry entry now.
 @pytest.mark.parametrize("role_id,expected_keys", [
     ("business.analysis",
      {"opportunity_summary", "options", "revenue_assessment", "downside_risks", "validation_plan"}),
-    ("content.general",
-     {"content_draft", "target_audience", "channel_constraints", "publishing_risks"}),
 ])
 def test_run_trial_completes_one_isolated_reviewed_run(tmp_path, role_id, expected_keys):
     astore, ledger, control, approval_id = _approved(tmp_path, role_id)
