@@ -341,17 +341,24 @@ def test_polymarket_discovery_makes_one_call_instead_of_one_per_market(monkeypat
 
     monkeypatch.setattr(md, "_get_json", _capture)
     monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
-    collector = md.PolymarketPublicCollector()
+    collector = md.PolymarketPublicCollector(pages=1)
 
     quoted = collector.list_markets(limit=8, timeout_seconds=5)
-    assert len(calls) == 9                       # 1 gamma + 8 books
+    books = [c for c in calls if "/book?" in c]
+    assert len(books) == 8                       # one per market, for a price nobody reads
     assert quoted.quotes_requested is True
 
     calls.clear()
     listing = collector.list_markets(limit=8, timeout_seconds=5, with_quotes=False)
-    assert len(calls) == 1                       # gamma only
+    assert [c for c in calls if "/book?" in c] == []
     assert len(listing.markets) == 8
     assert listing.quotes_requested is False
+
+    # The remaining calls scale with PAGES, not with markets — that is the whole saving.
+    calls.clear()
+    md.PolymarketPublicCollector(pages=3).list_markets(
+        limit=8, timeout_seconds=5, with_quotes=False)
+    assert len(calls) == 3
 
 
 def test_binance_discovery_keeps_the_detail_call_and_drops_only_the_book(monkeypatch):

@@ -192,3 +192,27 @@ def test_discovery_resolves_grants_against_the_root_it_was_given(state, monkeypa
     monkeypatch.setattr(pairs_cli, "select_pred_market_collector", _capture)
     pairs_cli.run_discovery(now=NOW, root=state, venues=["kalshi", "polymarket"])
     assert seen == [state, state]
+
+
+# --- head, and a tail that has to earn its keep ---------------------------------
+
+def test_the_record_counts_how_many_candidates_came_from_the_tail():
+    """Rotation reads past each venue's busiest markets on the theory that overlap also
+    lives further down. Nobody knows whether it does — so the record counts it, and if the
+    number stays zero the mechanism goes on evidence rather than on opinion."""
+    result = _result([
+        {**_candidate("K1"), "discovery_slice": "head"},
+        {**_candidate("K2", "P2"), "discovery_slice": "tail"},
+        {**_candidate("K3", "P3"), "discovery_slice": "tail"},
+    ], rotation=7)
+    record = proposals.build_proposal_record(result, now=NOW)
+    assert record["candidates_from_tail"] == 2
+    assert record["rotation"] == 7
+    assert "2 from the rotating tail" in proposals.proposal_status_line(record)
+
+
+def test_a_run_that_found_nothing_past_the_head_says_zero_not_nothing():
+    record = proposals.build_proposal_record(
+        _result([{**_candidate("K1"), "discovery_slice": "head"}]), now=NOW)
+    assert record["candidates_from_tail"] == 0
+    assert "rotating tail" not in proposals.proposal_status_line(record)

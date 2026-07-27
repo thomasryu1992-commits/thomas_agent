@@ -267,3 +267,81 @@ def test_every_venue_reports_a_volume_from_its_own_field():
     binance = md.parse_prediction_topics(
         {"marketTopics": [{"marketTopicId": 1, "question": "q", "tradeVolume": "3771607.43"}]})[0]
     assert (kalshi.volume, poly.volume, binance.volume) == (1234.0, 874557.51, 3771607.43)
+
+
+# --- the head, and a tail that rotates ------------------------------------------
+
+def test_the_head_is_taken_every_run_and_the_tail_moves():
+    """The two goals that used to be a choice. "Always look at the busiest markets" is where
+    the cross-venue overlap lives; "cover the venue eventually" is what a capped slice loses.
+    Taking the head plus one rotating window is both."""
+    ranked = list(range(20))
+    windows = [md.select_head_and_tail(ranked, limit=6, rotation=r) for r in range(4)]
+    heads = {tuple(h) for h, _ in windows}
+    assert heads == {(0, 1, 2)}, "the head must not move between runs"
+    tails = [tuple(t) for _, t in windows]
+    assert tails == [(3, 4, 5), (6, 7, 8), (9, 10, 11), (12, 13, 14)]
+
+
+def test_the_window_wraps_and_covers_every_market_below_the_head():
+    """The claim rotation makes: over enough runs, nothing below the head is never looked
+    at. A window that failed to wrap would leave a permanent blind spot."""
+    ranked = list(range(20))
+    seen: set[int] = set()
+    for rotation in range(12):
+        head, tail = md.select_head_and_tail(ranked, limit=6, rotation=rotation)
+        seen.update(head + tail)
+    assert seen == set(ranked)
+
+
+def test_a_tail_shorter_than_its_slots_is_returned_whole():
+    """The honest degenerate case: there is nothing to rotate through, so rotation does
+    nothing rather than dropping markets to keep a window size."""
+    for rotation in (0, 1, 99):
+        head, tail = md.select_head_and_tail([1, 2, 3, 4], limit=10, rotation=rotation)
+        assert head + tail == [1, 2, 3, 4]
+
+
+def test_nothing_to_select_from_is_not_an_error():
+    assert md.select_head_and_tail([], limit=10) == ([], [])
+    assert md.select_head_and_tail([1, 2, 3], limit=0) == ([], [])
+
+
+def test_the_rotation_index_comes_from_the_clock_not_from_stored_state():
+    """A stored counter would be one more piece of per-machine state, and it would reset on
+    redeploy — leaving the window wherever a restart happened to drop it. From the clock,
+    consecutive runs see consecutive windows and two machines reading at the same hour
+    agree."""
+    period = md.ROTATION_PERIOD_SECONDS
+    first = md.rotation_index("2026-07-27T00:00:00Z", period_seconds=period)
+    later = md.rotation_index("2026-07-27T06:00:00Z", period_seconds=period)
+    assert later == first + 1
+    # Same window twice inside one period.
+    assert md.rotation_index("2026-07-27T05:59:00Z", period_seconds=period) == first
+
+
+def test_an_unreadable_clock_falls_back_to_the_first_window():
+    assert md.rotation_index("not a time") == 0
+
+
+def test_kalshi_rotates_over_the_corpus_it_already_swept(monkeypatch):
+    """This venue's sweep is already paid for — 5 calls reach ~6,500 markets — so rotating
+    here costs matcher CPU and not a single extra request."""
+    def page(cursor, volumes, tag):
+        return {"events": [{"event_ticker": f"E{tag}", "category": "C", "markets": [
+            {"ticker": f"{tag}-{i}", "title": f"q{tag}-{i}", "status": "active",
+             "close_time": "2026-08-15T00:00:00Z", "volume_fp": f"{v}"}
+            for i, v in enumerate(volumes)]}], "cursor": cursor}
+
+    pages = [page("c1", [100.0, 90.0, 80.0], "A"), page("", [70.0, 60.0, 50.0], "B")]
+    seen_ids = []
+    for rotation in (0, 1):
+        collector, _ = _collector(monkeypatch, list(pages))
+        collector._rotation = rotation
+        got = collector.list_markets(limit=4, timeout_seconds=5).markets
+        seen_ids.append([m.market_id for m in got])
+
+    # limit 4 -> 2 head slots, 2 tail slots over a 4-long tail: two windows.
+    assert seen_ids[0] == ["A-0", "A-1", "A-2", "B-0"]
+    assert seen_ids[1] == ["A-0", "A-1", "B-1", "B-2"]
+    assert seen_ids[0][:2] == seen_ids[1][:2]

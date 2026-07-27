@@ -48,7 +48,9 @@ from ..errors import MvpRuntimeError
 from . import matching, pairs, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
+    DISCOVERY_MARKET_LIMIT,
     VENUES,
+    rotation_index,
     collect_pred_markets,
     degraded_pred_market_record,
     PREDMARKET_DEGRADED,
@@ -87,8 +89,9 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
 
 
 def _read_venue(
-    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None
-) -> tuple[list[PredMarket], dict[str, Any], str | None]:
+    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None,
+    rotation: int = 0,
+) -> tuple[list[PredMarket], dict[str, Any], str | None, set[str]]:
     """One venue's *screenable* markets, its screen result, and any degrade reason.
 
     Never raises: a venue being unreadable is not a failed command. Proposing from one venue
@@ -107,26 +110,29 @@ def _read_venue(
         venue,
         min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours),
         root=root,
+        rotation=rotation,
     )
     try:
         snapshot, _record = collect_pred_markets(
             venue, collector=collector, now=now, limit=limit, with_quotes=False)
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
-        return [], screening.screen_markets([], now=now), exc.reason_code
+        return [], screening.screen_markets([], now=now), exc.reason_code, set()
     screened = screening.screen_markets(
         _markets_of(snapshot), now=now, min_horizon_hours=min_horizon_hours
     )
-    return list(screened["observable"]), screened, None
+    tail = {f"{venue}:{mid}" for mid in (snapshot.get("tail_market_ids") or [])}
+    return list(screened["observable"]), screened, None, tail
 
 
 def run_discovery(
     *,
     now: str,
-    limit: int = DEFAULT_MARKET_LIMIT,
+    limit: int = DISCOVERY_MARKET_LIMIT,
     min_horizon_hours: float | None = None,
     venues: Sequence[str] | None = None,
     root: Path | None = None,
+    rotation: int | None = None,
 ) -> dict[str, Any]:
     """Read every venue, screen, and judge every cross-venue pairing. Confirms nothing.
 
@@ -136,14 +142,20 @@ def run_discovery(
     """
     horizon = screening.MIN_HORIZON_HOURS if min_horizon_hours is None else float(min_horizon_hours)
     wanted = [v for v in (venues or VENUES) if v in VENUES]
+    # One rotation index for the whole run, derived from the clock. Every venue advances its
+    # window together, so a run is one coherent slice of the corpus rather than three
+    # unrelated ones drifting apart.
+    turn = rotation_index(now) if rotation is None else int(rotation)
 
     markets: dict[str, list[PredMarket]] = {}
     screens: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
+    tail_keys: set[str] = set()
     for venue in wanted:
-        observable, screen, error = _read_venue(
-            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root)
+        observable, screen, error, tail = _read_venue(
+            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root, rotation=turn)
         markets[venue], screens[venue] = observable, screen
+        tail_keys |= tail
         if error:
             errors[venue] = error
 
@@ -156,6 +168,16 @@ def run_discovery(
         for venue, screen in screens.items()
     }
     result["venue_errors"] = errors
+    result["rotation"] = turn
+    # Which slice each candidate came from, so "was reading past the head worth it?" is
+    # answered by the record rather than argued. `tail` means at least ONE leg would not
+    # have been read without rotation — which is exactly the pairing rotation paid for.
+    for candidate in result["candidates"] + result["near_misses"]:
+        from_tail = (
+            f"{candidate['left_venue']}:{candidate['left_market_id']}" in tail_keys
+            or f"{candidate['right_venue']}:{candidate['right_market_id']}" in tail_keys
+        )
+        candidate["discovery_slice"] = "tail" if from_tail else "head"
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
     taken = pairs.grouped_market_keys(pairs.read_groups(root))
@@ -286,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     propose = sub.add_parser("propose", help="judge cross-venue pairings; confirms nothing")
-    propose.add_argument("--limit", type=int, default=DEFAULT_MARKET_LIMIT)
+    propose.add_argument("--limit", type=int, default=DISCOVERY_MARKET_LIMIT)
     propose.add_argument(
         "--venue", action="append", choices=sorted(VENUES),
         help=("repeat to restrict which venues are read; default is all of them. Every "
