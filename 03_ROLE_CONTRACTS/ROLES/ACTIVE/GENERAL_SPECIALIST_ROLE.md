@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: general.specialist
 role_name: General Specialist Role
-role_version: 0.3.0
+role_version: 0.4.0
 status: active
 routable: true
 role_type: dynamic_specialist
@@ -77,6 +77,12 @@ output_contract:
     key_findings: array
     evidence_quality: string
     unresolved_questions: array
+    # Organization Architecture §10.4: a complex strategy task is judged from separate
+    # perspectives and then integrated. In early MVP one Agent separates them internally
+    # rather than becoming three Agents (§13's separation criteria are not met). Declaring
+    # them here is what makes the separation auditable instead of a prompt convention:
+    # each entry is {perspective, verdict, basis}, verdict in POSITIVE|MIXED|NEGATIVE.
+    perspectives: array
 validation_policy:
   default_mode: automatic
   independent_required_conditions:
