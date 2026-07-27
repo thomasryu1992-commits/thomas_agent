@@ -98,22 +98,27 @@ def _provider_for_role(provider: Provider, spec: Mapping[str, str] | None) -> Pr
       one built from the Role's own declared keys. That is the trial path's existing
       ``MockTrialProvider``, reused rather than reinvented: "a mock that answers exactly this
       role's contract" is the same idea both times.
-    * a network provider — **refuse**, by name. The hosted response schemas are strict
-      (``additionalProperties: false``) and name only the analysis keys, so a hosted model
-      *cannot* return ``translated_text``; the request would come back without it and the run
-      would fail its own output check, reading like a model quality problem when it is a
-      transport contract problem. Making the schema role-aware means threading the Role's keys
-      into provider construction, which happens before the plan exists — a real change, and the
-      remaining piece of §8.5. Until it lands, this refuses at the door instead of misleading.
+    * a **bindable** provider — ask it for the Role's keys as well. The hosted schemas are
+      closed over the analysis key set (OpenAI strict via ``additionalProperties: false``,
+      Google via the enforced ``required`` list), so a hosted model asked for
+      ``translated_text`` returns without it; ``bind_role_output_keys`` re-derives the schema
+      with the Role's keys folded in. Binding returns a COPY — the provider is selected once
+      per process and one run's Role must not change what the next run asks for.
+    * a network provider that cannot bind — **refuse**, by name. Left alone it would come back
+      missing the key and fail the run's own output check, reading like a model quality
+      problem when it is a schema problem.
     """
     if spec is None:
         return provider
+    binder = getattr(provider, "bind_role_output_keys", None)
+    if binder is not None:
+        return binder(spec)
     if getattr(provider, "network_egress", False):
         raise WorkerBlocked(
             "ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER",
-            f"the hosted analysis response schema names only the business-analysis keys, so "
-            f"{provider.model_id} cannot return {sorted(spec)}; run this request kind on the "
-            "deterministic provider until the response schema is role-aware",
+            f"{provider.model_id} cannot be bound to this Role's output contract "
+            f"({sorted(spec)}); a network provider that cannot ask for the Role's keys would "
+            "return without them and fail the run's own output check",
         )
     return MockTrialProvider(dict(spec))
 
