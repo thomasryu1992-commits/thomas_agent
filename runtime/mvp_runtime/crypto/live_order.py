@@ -42,6 +42,10 @@ from .live_pnl import (
     state_dir,
     utc_day,
 )
+# The clean-canary minimum belongs to the module that owns promotion evidence. This file
+# used to declare its own `= 3` beside it — two authorities for one safety threshold, with
+# nothing comparing them. No cycle: live_promotion does not import this module.
+from .live_promotion import DEFAULT_MIN_CLEAN_CANARY_ORDERS
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"
@@ -57,46 +61,29 @@ LIVE_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY"
 # wrong one authorizes nothing.
 CANARY_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER"
 
+# The only three the operator sets. Everything else a live order is bounded by comes from the
+# registered `live_trading_budget.v0.1` record — a phrase proving intent and a halt are operator
+# state, a cap is an auditable record. The `MVP_LIVE_MAX_*` / `_DAILY_LOSS_LIMIT_` /
+# `_ABSOLUTE_MAX_` / `_MIN_CLEAN_CANARY_ORDERS` vars this module used to read are deliberately
+# gone rather than merely unused: while `from_env()` still parsed them, `LiveOrderLimits.from_env()`
+# remained a constructible second source of caps, which is exactly the footgun #203 closed at the
+# call sites by making `limits` required. Not reading them is the structural version of that fix.
 CONFIRMATION_ENV = "MVP_LIVE_CONFIRMATION"
 CANARY_CONFIRMATION_ENV = "MVP_LIVE_CANARY_CONFIRMATION"
 MANUAL_KILL_SWITCH_ENV = "MVP_LIVE_MANUAL_KILL_SWITCH"
-MAX_ORDER_NOTIONAL_ENV = "MVP_LIVE_MAX_ORDER_NOTIONAL_USDT"
-ABSOLUTE_MAX_NOTIONAL_ENV = "MVP_LIVE_ABSOLUTE_MAX_NOTIONAL_USDT"
-MAX_DAILY_ORDER_COUNT_ENV = "MVP_LIVE_MAX_DAILY_ORDER_COUNT"
-MAX_OPEN_NOTIONAL_ENV = "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT"
-DAILY_LOSS_LIMIT_ENV = "MVP_LIVE_DAILY_LOSS_LIMIT_USDT"
-MIN_CLEAN_CANARY_ORDERS_ENV = "MVP_LIVE_MIN_CLEAN_CANARY_ORDERS"
+
+# How the operator is told to fix an unconfigured cap. There is exactly one way, and naming an
+# env var here instead sent them to a knob that has not authorized anything since step 6b —
+# fail-closed, but pointing at the wrong next action, which is how #201 hid.
+REGISTER_BUDGET_HINT = "register a budget with scripts/register_live_trading_budget.py"
 
 # The ceiling a configured cap can never exceed, whatever the operator types. Source value.
 DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
-DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3
 
 COUNTER_FILENAME = "live_order_counter.json"
 LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"
 
 _TRUTHY = frozenset({"1", "true", "yes", "y", "on", "enabled"})
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        # An unparseable limit is not a limit. Return 0.0, which every cap check treats
-        # as "not configured" and therefore blocks.
-        return 0.0
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return 0
 
 
 def _env_bool(name: str) -> bool:
@@ -119,17 +106,15 @@ class LiveOrderLimits:
 
     @classmethod
     def from_env(cls) -> "LiveOrderLimits":
+        """The operator-env half only: both confirmation phrases and the manual halt.
+
+        **Reads no cap.** The caps keep their blocking class defaults here, so an instance
+        built from env alone can authorize nothing — the numbers must come from
+        ``resolve_live_order_limits``, which reads the registered budget. This used to parse
+        ``MVP_LIVE_MAX_*`` and friends, which made this classmethod a second, unaudited source
+        of caps that any caller could reconstruct.
+        """
         return cls(
-            max_order_notional_usdt=_env_float(MAX_ORDER_NOTIONAL_ENV, 0.0),
-            absolute_max_notional_usdt=_env_float(
-                ABSOLUTE_MAX_NOTIONAL_ENV, DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT
-            ),
-            max_daily_order_count=_env_int(MAX_DAILY_ORDER_COUNT_ENV, 0),
-            max_open_notional_usdt=_env_float(MAX_OPEN_NOTIONAL_ENV, 0.0),
-            daily_loss_limit_usdt=_env_float(DAILY_LOSS_LIMIT_ENV, 0.0),
-            min_clean_canary_orders=_env_int(
-                MIN_CLEAN_CANARY_ORDERS_ENV, DEFAULT_MIN_CLEAN_CANARY_ORDERS
-            ),
             confirmation=os.environ.get(CONFIRMATION_ENV, "").strip(),
             canary_confirmation=os.environ.get(CANARY_CONFIRMATION_ENV, "").strip(),
             manual_kill_switch=_env_bool(MANUAL_KILL_SWITCH_ENV),
@@ -410,7 +395,7 @@ def evaluate_live_order_guard(
     # 5. Today's realized loss. An unconfigured limit arrives here already True.
     if daily_loss_breached:
         if cfg.daily_loss_limit_usdt <= 0:
-            blocks.append(f"daily loss limit is not configured ({DAILY_LOSS_LIMIT_ENV} must be > 0)")
+            blocks.append(f"daily loss limit is not configured; {REGISTER_BUDGET_HINT}")
         else:
             blocks.append(
                 f"daily realized-loss limit {cfg.daily_loss_limit_usdt} USDT reached - halted for today"
@@ -421,7 +406,10 @@ def evaluate_live_order_guard(
     #    keeps the gate (canary defaults to False).
     if not canary:
         if cfg.min_clean_canary_orders <= 0:
-            blocks.append("promotion minimum is not configured (would be promotion with no evidence)")
+            blocks.append(
+                f"promotion minimum is not configured (would be promotion with no "
+                f"evidence); {REGISTER_BUDGET_HINT}"
+            )
         elif clean_canary_orders < cfg.min_clean_canary_orders:
             blocks.append(
                 f"live promotion not ready - need >= {cfg.min_clean_canary_orders} clean canary "
@@ -434,7 +422,7 @@ def evaluate_live_order_guard(
     # 8. Per-order size.
     notional = _notional_of(intent)
     if cfg.max_order_notional_usdt <= 0:
-        blocks.append(f"per-order cap is not configured ({MAX_ORDER_NOTIONAL_ENV} must be > 0)")
+        blocks.append(f"per-order cap is not configured; {REGISTER_BUDGET_HINT}")
     elif cfg.max_order_notional_usdt > cfg.absolute_max_notional_usdt:
         blocks.append(
             f"configured cap {cfg.max_order_notional_usdt} exceeds the absolute ceiling "
@@ -449,7 +437,7 @@ def evaluate_live_order_guard(
 
     # 9. Orders per UTC day.
     if cfg.max_daily_order_count <= 0:
-        blocks.append(f"daily order cap is not configured ({MAX_DAILY_ORDER_COUNT_ENV} must be > 0)")
+        blocks.append(f"daily order cap is not configured; {REGISTER_BUDGET_HINT}")
     elif submitted_today >= cfg.max_daily_order_count:
         blocks.append(
             f"daily order cap reached ({submitted_today}/{cfg.max_daily_order_count})"
@@ -457,7 +445,7 @@ def evaluate_live_order_guard(
 
     # 10. Total open exposure, counting what this order would add.
     if cfg.max_open_notional_usdt <= 0:
-        blocks.append(f"open exposure cap is not configured ({MAX_OPEN_NOTIONAL_ENV} must be > 0)")
+        blocks.append(f"open exposure cap is not configured; {REGISTER_BUDGET_HINT}")
     elif current_open_notional_usdt + notional > cfg.max_open_notional_usdt:
         blocks.append(
             f"open exposure {current_open_notional_usdt} + {notional} exceeds the cap "

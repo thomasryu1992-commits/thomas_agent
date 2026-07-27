@@ -137,6 +137,10 @@ class MockTrialProvider:
     model_id = "mock.trial"
     model_version = "0.1.0"
     network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners now announces anything carrying a model_id: silence is the
+    # thing that must be opted into, so a real capability can never go unannounced.
+    model_invocation = False
 
     def __init__(self, role_output_spec: Mapping[str, str]):
         self._role_output_spec = dict(role_output_spec)
