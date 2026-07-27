@@ -239,9 +239,10 @@ def test_the_unquoted_count_is_reported_separately():
     record has to make that visible rather than reporting a healthy market_count."""
 
     class _Unquoted(md.MockPredMarketCollector):
-        def list_markets(self, *, limit, timeout_seconds, market_ids=None):
+        def list_markets(self, *, limit, timeout_seconds, market_ids=None, with_quotes=True):
             snap = super().list_markets(
-                limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids
+                limit=limit, timeout_seconds=timeout_seconds, market_ids=market_ids,
+                with_quotes=with_quotes,
             )
             snap.markets = [
                 md.PredMarket(
@@ -264,7 +265,7 @@ def test_a_collector_failure_fails_closed_for_the_caller_to_degrade():
     venue answered, and a scan with one venue readable is still a scan."""
 
     class _Broken(md.MockPredMarketCollector):
-        def list_markets(self, *, limit, timeout_seconds, market_ids=None):
+        def list_markets(self, *, limit, timeout_seconds, market_ids=None, with_quotes=True):
             raise ToolError("TOOL_TRANSPORT", "venue unreachable")
 
     with pytest.raises(ToolBlocked) as exc:
