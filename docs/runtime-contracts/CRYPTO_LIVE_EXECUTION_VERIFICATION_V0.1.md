@@ -39,6 +39,7 @@ until LP4/LP5 are deliberately written; this is not a disabled flag, it is an ab
 | Final guard's checks **accumulate** — no short-circuit / early return; the operator sees every reason | `live_order.py:272-342` (`evaluate_live_order_guard`) | ✅ |
 | A cap of `0` **blocks** ("not configured"); a cap above the 200 USDT absolute ceiling is **refused, not clamped** | `live_order.py:310-316` | ✅ |
 | A missing notional is a **repair**, never back-filled from the cap | `live_order.py:317-318`, and `build_live_order_intent` → `MISSING_ORDER_NOTIONAL` | ✅ |
+| A **declared** notional is verified against `quantity x` the venue's price rather than trusted — understating it refuses (`ORDER_NOTIONAL_UNDERSTATED`), and an absent / synthetic / stale price refuses too (`ORDER_NOTIONAL_PRICE_UNKNOWN`) | `live_order.check_declared_notional` + `market_data.read_reference_price`, wired at `scripts/place_canary_order.py` — the only door where quantity and notional are independent inputs (added 2026-07-26, #268) | ✅ |
 | `approved` is `True` only when there are **no blocks and no repairs** | `live_order.py:344-347` | ✅ |
 | `kill_blocks: external_execution` blocks a live **entry** (PAUSED/KILLED runtime) | `live_order.py:286` | ✅ |
 | Damaged canary evidence counts as **zero** clean orders (never the last good number); `min_orders ≤ 0` refused | `live_promotion.py` (`promotion_status`, `clean_canary_order_count`) | ✅ |
