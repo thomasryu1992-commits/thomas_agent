@@ -247,12 +247,17 @@ def test_every_caller_of_the_venue_also_counts_the_order():
         root / "scripts" / "place_canary_order.py",
         root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
     ]
-    found = [
-        path for path in root.rglob("*.py")
-        if "submit_and_reconcile(" in path.read_text(encoding="utf-8")
-        and "def submit_and_reconcile" not in path.read_text(encoding="utf-8")
-        and ".venv" not in str(path) and "/tests/" not in str(path)
-    ]
+    # Excluded by path PARTS, not by substring: `"/tests/" in str(path)` is false on Windows,
+    # where the separator is a backslash, so the first version of this gate reported the suite's
+    # own fixtures as new callers on one runner and passed on the other.
+    skipped_dirs = {".venv", ".git", "tests", "historical", "deferred", "generated"}
+    found = []
+    for path in root.rglob("*.py"):
+        if skipped_dirs & set(path.parts):
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        if "submit_and_reconcile(" in source and "def submit_and_reconcile" not in source:
+            found.append(path)
     assert sorted(found) == sorted(doors), (
         f"a new caller of submit_and_reconcile appeared: {sorted(set(found) - set(doors))}. "
         "Add it here AND make it record a submission on the daily counter, or the registered "
