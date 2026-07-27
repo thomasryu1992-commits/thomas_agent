@@ -29,14 +29,22 @@ import yaml
 from runtime import registry_resolution
 from runtime.registry_resolution import RegistryResolutionError
 
-from .authority import rank_of
+from .authority import rank_of, stricter_risk
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 
 # MVP classification: the only use case is internal, read-only business analysis.
 MVP_EXECUTION_MODE = "AGENT"          # judgment/interpretation, not a deterministic program
 MVP_COMPLEXITY = "NORMAL"
-MVP_RISK_LEVEL = "GREEN"              # internal analysis, no external/financial effect
+# The BASE risk of the specialist's own action — not the task's final risk.
+#
+# GREEN is correct here and is not a placeholder: policy §10 classifies the ACTION, and lists
+# "내부 분석" among its GREEN examples. What was wrong was treating it as the whole answer.
+# §10 also says to evaluate every perspective and take the HIGHEST, and a run plans more than
+# the analysis: R3 search, R7 validation, R7.2 triage (all GREEN) and the R8 controlled write
+# (YELLOW). So a run that wrote a file was recorded as a plain read-only analysis.
+# ``classify_task`` now folds in the risk of the other actions the run will actually plan.
+MVP_RISK_LEVEL = "GREEN"
 MVP_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"  # governance effect class (ALLOW disposition)
 MVP_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — internal read-only analysis (least privilege)
 MVP_REQUIRED_CAPABILITIES = ("research", "analysis")
@@ -51,12 +59,37 @@ VALIDATOR_REQUIRED_CAPABILITIES = (
 VALIDATOR_REQUIRED_PERMISSION_LEVEL = "P2"
 
 
-def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
+def classify_task(
+    task: Mapping[str, Any],
+    *,
+    planned_action_risks: Sequence[str] = (),
+) -> dict[str, Any]:
     """Classify a RECEIVED/UNCLASSIFIED task. Pure and fail-closed.
 
     Returns a decision dict (not a mutated task): ``classification``, ``authority``,
     and ``required_capabilities``. Raises ``PlannerBlocked`` if the task is not in the
     expected pre-classification state or is outside the read-only MVP scope.
+
+    ``planned_action_risks`` are the risk levels of the *other* governed actions this run
+    will plan besides the specialist's analysis (today: the R8 controlled write). Policy §10
+    says to take the highest across perspectives, so the task's ``risk_level`` is the
+    strictest of the base level and these — derived, never asserted.
+
+    The derivation is **monotone by construction**: :func:`~runtime.mvp_runtime.authority.
+    stricter_risk` can only return something at or above ``MVP_RISK_LEVEL``, and an
+    unrecognized level resolves the whole reduction to ORANGE rather than being skipped. So a
+    caller can raise the review requirement and cannot lower it — which is what makes it safe
+    to feed this into the R7.1 reviewer decision downstream.
+
+    Deliberately still constant, each for a reason rather than by omission:
+
+    * ``complexity`` — nothing reads it, and deriving it from free request text would be a
+      guess. §10's rule for a judgement made on insufficient information is to *not lower*
+      the classification, so the honest move is to leave it until something needs it.
+    * ``required_capabilities`` — deriving these is §8.5's work, not this one's. With exactly
+      one routable role, a derived capability set can only ever refuse a run that works today
+      (``NO_ROUTABLE_ROLE``); it becomes useful the day a second role is activated, which is a
+      separate Thomas decision.
     """
     if not isinstance(task, Mapping):
         raise PlannerBlocked("INVALID_TASK", "task must be a mapping")
@@ -76,17 +109,23 @@ def classify_task(task: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     priority = classification.get("priority", "NORMAL")
+    risk_level = stricter_risk(MVP_RISK_LEVEL, *planned_action_risks)
+    reasons = [
+        "internal_read_only_analysis",
+        "judgment_required_not_deterministic_program",
+    ]
+    if risk_level != MVP_RISK_LEVEL:
+        # Say what raised it. A classification that differs from the base without explaining
+        # why is the kind of record someone later "corrects" back to GREEN.
+        reasons.append(f"raised_to_{risk_level.lower()}_by_planned_action_risk")
     return {
         "classification": {
             "classification_status": "CLASSIFIED",
             "execution_mode": MVP_EXECUTION_MODE,
             "complexity": MVP_COMPLEXITY,
             "priority": priority,
-            "risk_level": MVP_RISK_LEVEL,
-            "classification_reasons": [
-                "internal_read_only_analysis",
-                "judgment_required_not_deterministic_program",
-            ],
+            "risk_level": risk_level,
+            "classification_reasons": reasons,
         },
         "authority": {
             "required_permission_level": MVP_REQUIRED_PERMISSION_LEVEL,

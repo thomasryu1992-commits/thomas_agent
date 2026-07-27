@@ -19,11 +19,16 @@ the constants it is built out of.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 import yaml
 
 from runtime.mvp_runtime import permission as P
-from runtime.mvp_runtime.authority import rank_of
+from runtime.mvp_runtime.authority import RISK_ORDER, rank_of, risk_floor_for_disposition
+from runtime.mvp_runtime.errors import PlannerBlocked
 from runtime.mvp_runtime.paths import repo_root
+from runtime.mvp_runtime.planner import MVP_PERMISSION_SCOPE, MVP_REQUIRED_PERMISSION_LEVEL
 
 POLICY = repo_root() / "governance" / "GOVERNANCE_POLICY.yaml"
 
@@ -146,3 +151,71 @@ def test_each_fixed_grant_builds_the_disposition_the_policy_prices():
         assert record["fingerprint_payload"]["action_type"] == row.action.action_type, key
         # Whatever the disposition, the record itself remains planning evidence.
         assert record["runtime_effect"]["mode"] == "REVIEW_ONLY", key
+
+
+# --- the risk floor (policy §10) ------------------------------------------------
+
+def test_every_action_spec_declares_at_least_the_risk_its_disposition_implies():
+    """The invariant that catches a decision contradicting itself.
+
+    Policy §10 maps each risk level to a default disposition. Read backwards it gives a floor:
+    an ALLOW action may be GREEN, but an EXECUTE_AND_REPORT one is at least YELLOW ("복구
+    가능한 내부 영향"), APPROVAL_REQUIRED at least ORANGE, BLOCK at least RED. Every action
+    spec sets `risk_level` by hand and nothing cross-checked them, which is how the R8
+    workspace write shipped GREEN while carrying EXECUTE_AND_REPORT.
+
+    This sweeps every spec the module defines, not just the `_FIXED_GRANTS` rows, so an action
+    added anywhere in the module is covered the day it exists.
+    """
+    dispositions = _dispositions()
+    scope_of = {row.action.action_type: row.scope for row in P._FIXED_GRANTS.values()}
+    scope_of[P._ANALYSIS_ACTION.action_type] = MVP_PERMISSION_SCOPE
+
+    checked = 0
+    for name, spec in vars(P).items():
+        if not (name.startswith("_") and isinstance(spec, P._ActionSpec)):
+            continue
+        scope = scope_of.get(spec.action_type)
+        if scope is None:              # an action built through a factory, covered below
+            continue
+        floor = risk_floor_for_disposition(dispositions[scope])
+        assert RISK_ORDER[spec.risk_level] >= RISK_ORDER[floor], (
+            f"{name} declares {spec.risk_level} but {scope} is priced "
+            f"{dispositions[scope]}, whose floor is {floor}"
+        )
+        checked += 1
+    assert checked >= 5, f"the introspection stopped finding action specs: {checked}"
+
+
+def test_the_workspace_write_is_yellow_not_green():
+    """Pinned on its own because it is the one that was wrong, and because the value is what
+    the task-level classification now derives from."""
+    assert P.WORKSPACE_WRITE_RISK_LEVEL == "YELLOW"
+    assert P._WRITE_ACTION.risk_level == "YELLOW"
+    record = P.build_write_permission_decision(BOUND, role_permission_ceiling="P3", now=NOW)
+    assert record["risk"]["risk_level"] == "YELLOW"
+    assert record["decision"]["permission_decision"] == P.EXECUTE_AND_REPORT
+
+
+def test_a_decision_below_its_floor_is_refused_at_the_construction_site():
+    """The floor has to bite at build time, not only in a spec review — otherwise a future
+    action added below its floor is caught by nothing."""
+    understated = replace(P._WRITE_ACTION, risk_level="GREEN")
+    with pytest.raises(PlannerBlocked) as exc:
+        P.build_permission_decision(
+            BOUND, permission_scope=P.WRITE_PERMISSION_SCOPE,
+            required_permission_level=P.WRITE_REQUIRED_PERMISSION_LEVEL,
+            role_permission_ceiling="P3", now=NOW, action=understated,
+        )
+    assert exc.value.reason_code == "RISK_BELOW_DISPOSITION_FLOOR"
+
+
+def test_an_unknown_risk_level_is_refused_rather_than_ranked_low():
+    with pytest.raises(PlannerBlocked) as exc:
+        P.build_permission_decision(
+            BOUND, permission_scope=MVP_PERMISSION_SCOPE,
+            required_permission_level=MVP_REQUIRED_PERMISSION_LEVEL,
+            role_permission_ceiling="P3", now=NOW,
+            action=replace(P._ANALYSIS_ACTION, risk_level="MAUVE"),
+        )
+    assert exc.value.reason_code == "RISK_BELOW_DISPOSITION_FLOOR"
