@@ -3,10 +3,18 @@
     python -m runtime.mvp_runtime.crypto.live_readiness
     python -m runtime.mvp_runtime.crypto.live_readiness --json
 
-Read-only and ungated: it opens no socket, writes nothing, and places nothing. It answers
-one question — *what is still standing between this machine and an autonomous live order* —
-by asking each gate directly rather than by reasoning about them from documentation, so an
-answer here cannot drift from what the code actually enforces.
+Read-only and ungated: it writes nothing, places nothing, and holds no authority of its own.
+It answers one question — *what is still standing between this machine and an autonomous live
+order* — by asking each gate directly rather than by reasoning about them from documentation,
+so an answer here cannot drift from what the code actually enforces.
+
+It opens **one** socket, and only when the operator has already configured an account feed:
+the daily-loss breaker measures against what the venue realized, because the local outcome
+ledger cannot supply that figure (its only writer is the autonomous leg nothing may import,
+and the canary path is entry-only). Without a configured feed the board makes no outbound
+call at all and the breaker row fails for want of a source — which is the honest answer, not
+a degraded one. The read is the same gated, read-only `account` module the dashboard uses;
+it cannot place, amend, or cancel anything.
 
 The final line is deliberately blunt. Since LP4 landed (2026-07-25) an order path **does** exist,
 so READY here no longer means "configured" — it means a real order could actually be placed on
@@ -38,7 +46,10 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from . import live_promotion
-from .account import ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT
+from .account import (
+    ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
+    read_account,
+)
 from .live_position import compute_open_notional_usdt
 from .live_order import (
     CONFIRMATION_ENV,
@@ -54,6 +65,7 @@ from .live_pnl import (
     REAL_LIVE_TRADING,
     LIVE_PNL_NO_SOURCE,
     live_risk_snapshot,
+    venue_daily_realized_net,
 )
 from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
 
@@ -144,10 +156,40 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         runtime_active, runtime_detail = False, f"control state unreadable ({exc.reason_code})"
     checks.append(_check("runtime_active", runtime_active, runtime_detail))
 
+    # Whether an account feed is configured at all. Computed here rather than at row 8 because
+    # row 6's loss breaker needs the same answer first: it is what decides whether this board
+    # reads the venue or stays offline.
+    account_configured = (
+        os.environ.get(ACCOUNT_FEED_ENV, "").strip().lower() == BINANCE_ACCOUNT
+        and bool(os.environ.get(ACCOUNT_API_KEY_ENV, "").strip())
+        and bool(os.environ.get(ACCOUNT_API_SECRET_ENV, "").strip())
+    )
+
     # 6. Today's realized loss.
     # The snapshot already folds in the unconfigured-limit rule (no limit reads as breached)
     # and fails closed on an unverifiable history, so this one value covers every case.
-    risk = live_risk_snapshot(limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now)
+    # The breaker needs a figure the local ledger structurally cannot supply (see below), so
+    # the board reads the account for it — but ONLY when the operator has already configured
+    # one. That keeps the surprise out: an unconfigured machine still opens no socket and the
+    # row still fails, exactly as before. A configured read that fails degrades the same way —
+    # to no figure, and therefore to a FAILING row. A loss breaker is the one place where
+    # "could not measure" must never soften into "nothing to report".
+    venue_realized = None
+    account_error = None
+    if account_configured:
+        try:
+            snapshot, _ = read_account(root=root)
+            venue_realized = (
+                venue_daily_realized_net(snapshot.realized_windows) if snapshot else None
+            )
+            if venue_realized is None:
+                account_error = "account read returned no realized figure"
+        except MvpRuntimeError as exc:      # degrade, never block — the R3 posture
+            account_error = exc.reason_code
+    risk = live_risk_snapshot(
+        limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
+        venue_realized_pnl_usdt=venue_realized,
+    )
     breached = bool(risk["daily_loss_limit_breached"])
     # A breaker with nothing to measure is not a passing check, however comfortable its number
     # looks. The local outcome ledger is written only by `live_leg.execute_live_exit` — the
@@ -190,12 +232,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     ))
 
     # 8. The account read (LP1) — not required to place an order, but going live without
-    #    being able to see the account is flying blind, so it is reported.
-    account_configured = (
-        os.environ.get(ACCOUNT_FEED_ENV, "").strip().lower() == BINANCE_ACCOUNT
-        and bool(os.environ.get(ACCOUNT_API_KEY_ENV, "").strip())
-        and bool(os.environ.get(ACCOUNT_API_SECRET_ENV, "").strip())
-    )
+    #    being able to see the account is flying blind, so it is reported. `account_configured`
+    #    is computed above, because row 6's breaker depends on the same feed.
     checks.append(_check(
         "account_visibility",
         account_configured,
