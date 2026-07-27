@@ -91,6 +91,8 @@ KIND_MARKERS = {
     "!번역": "translation", "!translate": "translation",
     "!조사": "research", "!research": "research",
     "!분석": "analysis", "!analysis": "analysis",
+    "!콘텐츠": "content", "!content": "content",
+    "!개발": "development", "!development": "development",
 }
 
 # Verbs that CHANGE STATE, across every command family — the ones that must carry a slash on a
