@@ -221,6 +221,16 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}")
             return EXIT_BLOCKED
+        # Stated before the numbers, not after: this is the surface an operator reads to
+        # decide a promotion, and the promotion gate is that operator — there is no
+        # automated statistical threshold behind it. Every figure below is cost-free, so a
+        # thin edge here can be a negative one live, and nothing else in this view says so.
+        bases = {pool_store.candidate_quality(c)["cost_basis"] for c in candidates}
+        if bases <= {pool_store.EDGE_COST_BASIS_EXCLUDED}:
+            print("NOTE: every R below EXCLUDES trading costs. Paper settlement models no fee,")
+            print("      slippage or funding, and the robustness scorer withholds its cost term")
+            print("      for the same reason. Read expectancy and reward:risk as upper bounds.")
+            print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
         # believable edges surface first for the promotion decision.
