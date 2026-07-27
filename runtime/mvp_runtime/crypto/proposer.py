@@ -135,6 +135,10 @@ class MockProposerProvider:
     model_id = "mock.strategy_proposer"
     model_version = "0.1.0"
     network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners now announces anything carrying a model_id: silence is the
+    # thing that must be opted into, so a real capability can never go unannounced.
+    model_invocation = False
 
     # Shaped like a real provider answer: the shared analysis envelope with the
     # proposals riding as an extra key (see build_proposal_prompt).

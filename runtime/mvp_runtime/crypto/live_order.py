@@ -42,6 +42,10 @@ from .live_pnl import (
     state_dir,
     utc_day,
 )
+# The clean-canary minimum belongs to the module that owns promotion evidence. This file
+# used to declare its own `= 3` beside it — two authorities for one safety threshold, with
+# nothing comparing them. No cycle: live_promotion does not import this module.
+from .live_promotion import DEFAULT_MIN_CLEAN_CANARY_ORDERS
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"
@@ -75,7 +79,6 @@ REGISTER_BUDGET_HINT = "register a budget with scripts/register_live_trading_bud
 
 # The ceiling a configured cap can never exceed, whatever the operator types. Source value.
 DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
-DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3
 
 COUNTER_FILENAME = "live_order_counter.json"
 LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"
