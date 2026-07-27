@@ -82,6 +82,16 @@ KIND_ROTATE = "ledger_rotate"
 # are: watch prices the confirmed groups often enough to measure how long an edge lasts,
 # discovery only lists markets so the matcher has candidates. Decision #1, 2026-07-26.
 KIND_PM_SCAN = "pm_scan"
+# The two modes, named once. The dispatch below tests for "discovery" and everything else
+# falls through to the watch scan, which is fine for the default and dangerous for a typo:
+# `--request discvery` used to register cleanly and then run the *watch* scan every six hours
+# while the operator believed discovery was running, with `proposals.jsonl` staying empty and
+# nothing anywhere saying why. `build_schedule` now refuses an unknown mode by name — the same
+# rule `capabilities_for_request_kind` applies to request kinds, for the same reason: the
+# wrong job done confidently is worse than a refusal that names the jobs that exist.
+PM_SCAN_WATCH = "watch"
+PM_SCAN_DISCOVERY = "discovery"
+PM_SCAN_MODES = frozenset({PM_SCAN_WATCH, PM_SCAN_DISCOVERY})
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN})
 
@@ -171,6 +181,18 @@ class Schedule:
         )
 
 
+def pm_scan_mode(request: str | None) -> str:
+    """The mode a ``pm_scan`` schedule's request names. One reader for validation and dispatch.
+
+    Separate functions would drift, and the drift is silent in the worst direction: the
+    dispatch's ``else`` is the watch scan, so anything validation let through that dispatch did
+    not recognise runs the other job under this one's name. An empty request is ``watch`` — the
+    original behaviour, kept so an existing schedule keeps meaning what it meant.
+    """
+    text = (request or "").strip().lower()
+    return text.split()[0] if text else PM_SCAN_WATCH
+
+
 def build_schedule(
     *, kind: str, request: str, interval_seconds: int, created_by: str, now: str,
     reason: str = "", enabled: bool = True,
@@ -183,6 +205,12 @@ def build_schedule(
     request = request.strip() if isinstance(request, str) else ""
     if kind == KIND_TASK and not request:
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
+    if kind == KIND_PM_SCAN and pm_scan_mode(request) not in PM_SCAN_MODES:
+        raise SchedulerBlocked(
+            "UNKNOWN_PM_SCAN_MODE",
+            f"pm_scan request must name a mode: {sorted(PM_SCAN_MODES)} (empty means "
+            f"{PM_SCAN_WATCH!r}); got {request!r}",
+        )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
     schedule_id = integrity.short_id(
@@ -501,8 +529,10 @@ def _execute(
         # operator does that, per event, after comparing resolution criteria.
         from .predmarket import observations as pm_observations
 
-        mode = (schedule.request or "watch").strip().lower().split()[0] if schedule.request else "watch"
-        if mode == "discovery":
+        # The same reader `build_schedule` validates with, so a mode it accepted cannot arrive
+        # here unrecognised and fall through to the other scan.
+        mode = pm_scan_mode(schedule.request)
+        if mode == PM_SCAN_DISCOVERY:
             # Candidate generation for the operator, and a different job from the watch scan
             # — it reads the venues' listings and confirms nothing. It runs on a cadence
             # because the question is not "what is pairable right now?" but "what became
