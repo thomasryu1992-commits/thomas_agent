@@ -198,6 +198,21 @@ def test_a_stale_pairing_is_reported_separately_from_an_outage():
     assert incidents[obs.VENUE_UNREADABLE] == 1
 
 
+def test_a_scan_that_ran_on_the_mock_explains_its_own_collapsed_coverage():
+    """The third incident kind. A run whose Safety-Flag gate was closed reads every group as
+    SOURCE_SYNTHETIC: no row is a reading, so coverage falls to zero and the verdict is
+    INSUFFICIENT_COVERAGE — which is right, and useless on its own. Without the tally the
+    operator sees coverage collapse with both other counts at zero and nothing saying why."""
+    rows = [_row(i, is_opportunity=False, net_edge=None, reasons=[obs.SOURCE_SYNTHETIC])
+            for i in range(0, 10, 2)]
+    built = report.build_pm1_report(rows, now=NOW)
+    assert built["verdict"] == report.INSUFFICIENT_COVERAGE
+    assert built["is_exit_artifact"] is False
+    assert built["incidents"][obs.SOURCE_SYNTHETIC] == 5
+    assert built["incidents"][obs.MARKET_NOT_LISTED] == 0
+    assert built["incidents"][obs.VENUE_UNREADABLE] == 0
+
+
 def test_pairings_are_measured_independently():
     rows = [_row(0, legs=(("kalshi", "K1"), ("polymarket", "P1"))),
             _row(2, legs=(("kalshi", "K1"), ("polymarket", "P1"))),

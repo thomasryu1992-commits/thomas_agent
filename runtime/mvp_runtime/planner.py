@@ -79,6 +79,12 @@ REQUEST_KIND_CAPABILITIES: dict[str, tuple[str, ...]] = {
     # not share, or the Registry cannot tell the two apart.
     "content": ("content_planning", "audience_adaptation"),     # content.general
     "development": ("technical_analysis", "implementation_planning"),  # development.general
+    # No "business" kind, and its absence is a decision rather than an omission:
+    # `business.analysis` stays a candidate because its own contract gates activation on
+    # repeated cases plus validated scoring rules, and §13 scores the split at two of six.
+    # Adding a kind here would route the MVP's core use case away from `general.specialist`,
+    # which is the role that legitimately holds it today. See
+    # docs/runtime-contracts/BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md before changing this.
 }
 _READ_ONLY_CONSTRAINT = "no_external_action"
 

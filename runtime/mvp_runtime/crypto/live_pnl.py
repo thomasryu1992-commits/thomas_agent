@@ -338,10 +338,48 @@ def daily_loss_limit_breached(
 
 
 PNL_SOURCE_VENUE = "venue"
+# The two windows the venue figure is taken from. Named here rather than spelled as literals
+# at each call site: which windows the breaker consults is a safety rule, not a lookup key.
+PNL_WINDOW_TODAY = "today"
+PNL_WINDOW_ROLLING_1D = "1d"
 PNL_SOURCE_LOCAL_LEDGER = "local_ledger"
 
 # The breaker read a ledger nothing writes on the only path that can place an order.
 LIVE_PNL_NO_SOURCE = "LIVE_PNL_NO_SOURCE"
+
+
+
+def venue_daily_realized_net(realized_windows: Mapping[str, Any] | None) -> float | None:
+    """The venue figure the daily-loss breaker measures against, or ``None`` if unreadable.
+
+    The **stricter** (most negative) of the UTC calendar day and the rolling 24 hours, and
+    the choice is not fussiness. Neither window dominates the other, because these are NET
+    sums: a wider window also picks up the wider window's profits, so the rolling figure can
+    be *less* negative than the calendar day. Yesterday 23:00 +50, today 01:00 -30 reads as
+    -30 on the calendar day and +20 on the rolling 24h — today's loss hidden behind
+    yesterday's profit, on the one measure that is supposed to stop the day.
+
+    Taking the stricter of the two means the limit cannot be escaped by which 24 hours it is
+    measured over, and needs no ruling about which window is "really" a day. It can only make
+    the breaker trip earlier, never later — the direction a money guard is allowed to be wrong
+    in. (The rest of the runtime means the calendar day when it says daily:
+    ``live_order.count_today`` counts the daily order cap on ``utc_day()``.)
+
+    A window that is missing or unparseable is skipped rather than read as zero; if neither
+    is readable the caller gets ``None`` and falls back to the local-ledger path, which has
+    its own no-source rule.
+    """
+    if not isinstance(realized_windows, Mapping):
+        return None
+    candidates: list[float] = []
+    for key in (PNL_WINDOW_TODAY, PNL_WINDOW_ROLLING_1D):
+        bucket = realized_windows.get(key)
+        if not isinstance(bucket, Mapping):
+            continue
+        net = bucket.get("net")
+        if isinstance(net, (int, float)) and not isinstance(net, bool):
+            candidates.append(float(net))
+    return min(candidates) if candidates else None
 
 
 def live_risk_snapshot(

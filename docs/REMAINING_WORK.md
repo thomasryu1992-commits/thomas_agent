@@ -17,8 +17,9 @@ and open in another, and the newer line was the stale one.
 > is `true`. Live trading still cannot start, and the reasons are now entirely structural rather than
 > "the code is missing": **no autonomous entry point may import the order path** (a test enforces it,
 > and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
-> the clean-canary evidence does not yet reach three, and every egress needs the operator's per-machine
-> `live_trading` grant, order key, confirmation phrase and registered budget.
+> the clean-canary evidence threshold is not met **on any machine this file can speak for** (the
+> count is per-machine state — ask the board, below), and every egress needs the operator's
+> per-machine `live_trading` grant, order key, confirmation phrase and registered budget.
 >
 > **The canary count is per-machine and is currently unknown rather than zero.** Two real canaries
 > went out on 2026-07-26; the daily counter did not record them, because the only door that can
@@ -43,17 +44,26 @@ the rules and deliberately claims no status, so that status has as few owners as
 
 ## In-flight PRs
 
-**Three, all doc- or predmarket-scoped** (verified 2026-07-27, `main` = `58bf3af`):
+**One** (verified 2026-07-27, on the `main` this pass merged into — two of the three named when
+it was written have already resolved, which is the section's own standing hazard):
 
-- **#239** — this file's own predmarket header contradicting its boxes. **Superseded by this pass**,
-  which fixes the same contradiction against a `main` that has moved well past the one #239 was
-  written on; close it rather than merging it.
 - **#271** — predmarket's `is_synthetic` flag had no consumer, so a scan degraded to the mock filed
   its legs as `MARKET_NOT_LISTED` (the market is gone) instead of "we never looked", and a
   mock-derived confirmed group produced *priced* observations out of `(venue, index)`.
-- **#274** — the readiness board grew a `market_data_visibility` row with #268 and the go-live
-  runbook never mentioned `MVP_MARKET_DATA`, so the board fails on a precondition the checklist
-  does not ask for.
+
+Resolved while this pass was open:
+
+- **#239** — this file's own predmarket header contradicting its boxes. **Closed as superseded by
+  this pass**, which fixes the same contradiction against a `main` that had moved well past the
+  one #239 was written on.
+- **#274** — **merged.** The readiness board grew a `market_data_visibility` row with #268 and the
+  go-live runbook never mentioned `MVP_MARKET_DATA`, so the board failed on a precondition the
+  checklist did not ask for. The runbook names it now.
+
+A hand-maintained list of open PRs cannot stay true in a repository whose `main` advances several
+times an hour — this section was accurate when written and wrong before it merged. Prefer
+`gh pr list` over trusting it; the next pass should consider deleting it rather than refreshing it
+again.
 
 Two PRs were **closed unmerged**, and both are the same lesson:
 
@@ -249,8 +259,10 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
 **What is left in this section is no longer governance, and no longer plumbing — it is one build
-decision and one operator action:** cycle routing (below), and three clean canary orders. Neither is
-blocked on a contract, a schema, or a gate.
+decision and one operator action:** cycle routing (below), and three clean canary orders on the
+machine that would run. Neither is blocked on a contract, a schema, or a gate — and clearing the
+canary row **enables nothing on its own**: it satisfies one precondition of a step (cycle routing)
+that is still deliberately unbuilt.
 
 The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
 the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
@@ -365,27 +377,40 @@ scopes at different levels, so nothing was owed to it.
           states — this runtime's own paper record (6 closed trades at −0.39R,
           `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
           step, not the leg above: a leg with no caller places no orders.
-- [ ] **≥ 3 clean canary orders** before any autonomous run. **The count is per-machine — ask the
-      board, not this file** (`python -m runtime.mvp_runtime.crypto.live_readiness`); a fresh
-      checkout reads `0/3`, and the one in the frozen source system did not migrate.
-      **Re-verification is owed, and here is why.** Two real canaries went out on 2026-07-26. Three
-      separate defects sat on that path at the time and were fixed afterwards, so evidence produced
-      before them cannot be read at face value:
-      **#201** — `resolve_live_order_limits` dropped `canary_confirmation`, so every canary refused
-      (fail-*closed*, nothing unsafe, but the one live door did not work);
+- [ ] **≥ 3 clean canary orders** before any autonomous run. **This file cannot tell you the count**
+      and no longer pretends to: the evidence store is
+      `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
+      Core pointer and the safety-flag grants — so a number written here is a claim about whichever
+      machine last edited it. It said "0" until 2026-07-27, when Thomas reported canaries placed on
+      his own machine; the fix is not a new number, it is to stop asserting one.
+      Ask the machine: `python -m runtime.mvp_runtime.crypto.live_readiness`, the `canary_evidence`
+      row. Two things that count differently from "how many did I place": only records with
+      `clean: true` count, and a registry that fails **any** verification — line not JSON, self-hash
+      mismatch, duplicate `canary_order_id` — counts as **zero** with a named reason rather than
+      being partially trusted (`clean_canary_order_count`). A canary placed while the grant was not
+      active also leaves no evidence at all: `DryRunCanaryRegistry` accepts and discards, because
+      unbacked evidence here would unlock autonomous trading.
+      (1 canary existed in the frozen source system and did not migrate.)
+      **Re-verification is owed for anything placed before 2026-07-27, and here is why.** Three
+      separate defects sat on this path and were fixed afterwards, so earlier evidence cannot be
+      read at face value:
+      **#201** — `resolve_live_order_limits` dropped `canary_confirmation`, so the guard compared an
+      empty phrase and refused every attempt (fail-*closed*, nothing unsafe, but the one live door
+      there is did not work);
       **#228** — a filled canary was reported as a crash and its audit event never appended;
       **#246** — the daily counter was incremented only by the autonomous leg nothing may import, so
       the door that actually places orders never counted its own, and `max_daily_order_count`
       refused nothing.
-      Since #268 the door also **verifies the declared notional** against the venue's price rather
-      than trusting the operator's arithmetic, which changes what a valid invocation looks like.
-      Any canary placed before these fixes should be re-run, not counted.
-      **Operator-only, real money** — `scripts/place_canary_order.py` on Thomas's machine with his
-      own keys and its own confirmation phrase (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately
-      distinct from the live-trading phrase so neither authorizes the other's capability). It now
-      also needs the **read-only market-data feed** (`MVP_MARKET_DATA=binance_futures` + a
-      `network_access` grant) — the board reports it as `market_data_visibility`, and without it a
-      canary refuses, so no evidence can be earned at all. Claude does not run it.
+      Since **#268** the door also **verifies the declared notional** against the venue's price
+      rather than trusting the operator's arithmetic, which changes what a valid invocation looks
+      like. Re-run rather than count anything placed before these landed.
+      **Operator-only, real money** — `scripts/place_canary_order.py`
+      on Thomas's machine with his own keys and its own confirmation phrase
+      (`MVP_LIVE_CANARY_CONFIRMATION`, deliberately distinct from the live-trading phrase so neither
+      authorizes the other's capability). It now also needs the **read-only market-data feed**
+      (`MVP_MARKET_DATA=binance_futures` + a `network_access` grant) — the board reports it as
+      `market_data_visibility`, and without it a canary refuses, so no evidence can be earned at
+      all (#274). Claude does not run it.
 - [x] The **symbol-starved router** finding — closed 2026-07-25 (PR #148). A crypto schedule with an
       empty request now fans out over every `(symbol, timeframe)` the pool routes on **plus** every
       context holding an open paper position (`cycle.run_pool_cycle`), and `route_entries` matches
@@ -527,8 +552,24 @@ absence is compliance.
         candidate trial, program registration) reach Thomas through R9/R10 rather than through the
         router. This box stays open only as the place to re-check the day a run-path action is
         priced above YELLOW; there is nothing to build today.
-  - [ ] **The PROGRAM route** needs an *enabled* Program, which is a separate Thomas approval
-        (registry activation). Blocked, not unbuilt.
+  - [ ] **The PROGRAM route — unbuilt, and *not* merely awaiting an approval.** An earlier
+        version of this line said "blocked, not unbuilt"; that was wrong, and the correction is
+        the useful part. Three things are missing, and the approval is the **last** of them:
+        (1) **an executor** — nothing in `runtime/mvp_runtime/` runs a Program at all; the
+        Executor is a *deferred* component (`deferred/executor/`, `program_execution_allowed:
+        false`), plus the router emitting `PROGRAM`/`HYBRID`, which nothing does;
+        (2) **an implementation** — both candidates (`schema.validator`, `document.parser`)
+        declare `implementation_available: false`, so their definitions say what they would do
+        and no code does it; (3) **activation** (`tool_or_program_activation:
+        APPROVAL_REQUIRED`), which on its own would change nothing.
+        Worth knowing that the *manufacturing* half is complete: programization runs observation
+        → pattern → review → candidate → shadow → ACCEPTED → program request → **registry
+        registration**, i.e. this repo can produce a Program candidate end-to-end and cannot run
+        one. Deliberate — `program_request.py` builds every request as fail-closed BLOCK evidence.
+        **Not recommended yet, for the same reason as `business.analysis`:** the MVP's only use
+        case is business-idea analysis, which is judgment work, so there is no rule-based task to
+        route. Building the executor now is §16's "for future possibilities". The signal to build
+        is the programization counter catching a genuinely deterministic repetition.
   - [ ] `complexity` stays constant on purpose: nothing reads it, and deriving it from free
         request text would be a guess — §10's rule for a judgement made on insufficient
         information is to not lower the classification, so leaving it is the honest move until a
@@ -558,15 +599,16 @@ absence is compliance.
   - [x] `content.general` + `development.general` **activated 2026-07-27** (explicit Thomas
         decision, option (b) of three offered), with their request kinds and operator markers so
         activation is not inert. See `BUILD_HISTORY.md`.
-  - [ ] **`business.analysis` — deliberately held back**, and not a build item. Its capabilities
-        (`opportunity_analysis` / `revenue_potential_assessment` / `downside_risk_assessment`)
-        overlap the MVP's core use case, which `general.specialist` already serves *with* the
-        §10.4 perspectives. Activating it therefore asks "which of these two analyses does a
-        business idea get, and why?" — a role-split question, not a routing one. Decide that
-        first; the activation is mechanical once it is decided.
-        Note the coupling it creates: it is now the **last non-live candidate**, so the trial
-        suite's coverage rests on it staying one. Activating it means giving those tests a
-        fixture role rather than a production one.
+  - [ ] **`business.analysis` — deprioritized 2026-07-27, not blocked.** Thomas: business
+        analysis does not need doing right now. Four options were put up (widen
+        `general.specialist`'s output contract and retire the candidate / run the Candidate Trial
+        / activate directly / leave it) and the answer was that none of them is worth the spend
+        yet. Reasoning, the §13 scoring (two of six), and a price list for activation are in
+        [`BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md).
+        **Read that before re-opening this** — the box stays here as an index entry, not as an
+        open question. What would make it a priority: a real request the runtime cannot serve
+        (options compared + a validation plan). Note the coupling it created: it is the last
+        non-live candidate, so the trial suite rests on it staying one.
   - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
         P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early

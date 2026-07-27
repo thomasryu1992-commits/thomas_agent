@@ -9,6 +9,15 @@
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
     python -m runtime.mvp_runtime.predmarket.pairs_cli report [--json]
+    python -m runtime.mvp_runtime.predmarket.pairs_cli sheet [--out sheet.md]
+
+``sheet`` is the one aimed squarely at the bottleneck. The pipeline proposes thirty-odd
+pairings every six hours and **none of them becomes data until a human decides two venues
+settle the same event the same way** — a judgement that needs the venues' own settlement
+text, which discovery already fetches and used to throw away. It prints the candidates with
+both texts side by side and a runnable ``confirm`` command per pairing. It compares nothing:
+two venues can publish near-identical wording and still settle differently on the same news,
+so the reading is made easy and the judgement is left where it belongs.
 
 ``report`` is the far end of the same workflow and lives here rather than behind a second
 entry point: propose -> confirm -> the scheduler observes -> read what it found. It answers
@@ -45,7 +54,7 @@ from typing import Any, Sequence
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs, report, screening
+from . import matching, pairs, proposals, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
     DISCOVERY_MARKET_LIMIT,
@@ -53,8 +62,10 @@ from .market_data import (
     rotation_index,
     collect_pred_markets,
     degraded_pred_market_record,
+    is_synthetic_snapshot,
     PREDMARKET_DEGRADED,
     PredMarket,
+    SYNTHETIC_SOURCE,
     VenueQuote,
     select_pred_market_collector,
 )
@@ -79,6 +90,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
                 if isinstance(row.get("derived_from"), (list, tuple)) else None
             ),
             accepting_orders=row.get("accepting_orders"),
+            resolution_rules=row.get("resolution_rules"),
             volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
@@ -118,6 +130,17 @@ def _read_venue(
     except MvpRuntimeError as exc:
         degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
         return [], screening.screen_markets([], now=now), exc.reason_code, set()
+    if is_synthetic_snapshot(snapshot):
+        # Degraded exactly like an unreadable venue, and this door matters more than the scan's:
+        # a confirmation is durable. The mocks deliberately carry the *same titles at different
+        # prices*, which is the shape the matcher is built to find — so a both-venues-on-mock
+        # propose run yields clean-looking candidates out of fabricated data, and confirming one
+        # would write mock ids into the group store, where every later scan re-reads them
+        # forever. A rehearsal must not be able to author a confirmed pair.
+        #
+        # No tail either: the rotation window is a slice of a corpus this run never read.
+        degraded_pred_market_record(collector, venue, SYNTHETIC_SOURCE, now=now)
+        return [], screening.screen_markets([], now=now), SYNTHETIC_SOURCE, set()
     screened = screening.screen_markets(
         _markets_of(snapshot), now=now, min_horizon_hours=min_horizon_hours
     )
@@ -133,6 +156,7 @@ def run_discovery(
     venues: Sequence[str] | None = None,
     root: Path | None = None,
     rotation: int | None = None,
+    with_rules: bool = False,
 ) -> dict[str, Any]:
     """Read every venue, screen, and judge every cross-venue pairing. Confirms nothing.
 
@@ -178,6 +202,17 @@ def run_discovery(
             or f"{candidate['right_venue']}:{candidate['right_market_id']}" in tail_keys
         )
         candidate["discovery_slice"] = "tail" if from_tail else "head"
+
+    if with_rules:
+        # Opt-in, and the scheduled scan does not ask. Settlement text is a kilobyte of prose
+        # per leg; carrying it into a store written four times a day would add megabytes a
+        # year to records nobody reads it from. The sheet asks; the cadence does not.
+        rules = {f"{m.venue}:{m.market_id}": m.resolution_rules
+                 for venue_markets in markets.values() for m in venue_markets}
+        for candidate in result["candidates"]:
+            for side in ("left", "right"):
+                key = f"{candidate[f'{side}_venue']}:{candidate[f'{side}_market_id']}"
+                candidate[f"{side}_resolution_rules"] = rules.get(key)
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
     taken = pairs.grouped_market_keys(pairs.read_groups(root))
@@ -300,6 +335,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_sheet(args: argparse.Namespace) -> int:
+    now = pairs.now_iso()
+    result = run_discovery(now=now, limit=args.limit, with_rules=True)
+    sheet = proposals.render_confirmation_sheet(result, now=now)
+    if args.out:
+        Path(args.out).write_text(sheet, encoding="utf-8")
+        sys.stdout.write(f"wrote {len(result['candidates'])} candidate(s) to {args.out}\n")
+        return EXIT_OK
+    sys.stdout.write(sheet)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predmarket-pairs",
@@ -364,6 +411,12 @@ def build_parser() -> argparse.ArgumentParser:
               "seeing an edge at 09:00 and again at 11:00 is not evidence it was there at 10:00."),
     )
     reporting.set_defaults(handler=_cmd_report)
+
+    sheet = sub.add_parser(
+        "sheet", help="candidates with both venues' settlement text, ready to confirm")
+    sheet.add_argument("--limit", type=int, default=DISCOVERY_MARKET_LIMIT)
+    sheet.add_argument("--out", help="write the markdown here instead of stdout")
+    sheet.set_defaults(handler=_cmd_sheet)
     return parser
 
 

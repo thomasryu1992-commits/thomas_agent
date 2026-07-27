@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import json
 import os
+from datetime import datetime, timezone
 import sys
 import time
 import urllib.error
@@ -79,6 +80,17 @@ QUOTE_ASSET = "USDT"
 # Realized-P&L windows reported by a snapshot, in days. The longest one bounds the single
 # income query; the shorter ones are bucketed from the same rows (one call, three windows).
 PNL_WINDOW_DAYS: tuple[int, ...] = (1, 7, 30)
+
+# The UTC calendar day, bucketed from the same rows as the rolling windows above.
+#
+# It exists because the rolling `1d` window is NOT the same statistic as "today", and the
+# difference is not academic for a *daily loss limit*: a net sum over a wider window can be
+# LESS negative, because it also picks up the wider window's profits. Yesterday 23:00 +50,
+# today 01:00 -30 reads as -30 on the calendar day and +20 on the rolling 24h — today's loss
+# hidden behind yesterday's profit. The rest of this runtime means the calendar day when it
+# says "daily" (`live_order.count_today` counts the daily order cap on `utc_day()`), so the
+# loss limit in the same registered budget must be able to speak the same way.
+PNL_WINDOW_TODAY = "today"
 
 # Income types that move real money. Realized P&L alone overstates the result — commission
 # and funding are what the venue actually took — so the net figure carries all three.
@@ -308,6 +320,13 @@ def bucket_income(rows: Any, *, now_ms: int) -> dict[str, dict[str, float]]:
         f"{days}d": {"realized": 0.0, "commission": 0.0, "funding": 0.0, "net": 0.0}
         for days in PNL_WINDOW_DAYS
     }
+    windows[PNL_WINDOW_TODAY] = {"realized": 0.0, "commission": 0.0, "funding": 0.0, "net": 0.0}
+    # Start of the UTC calendar day containing ``now_ms``. Derived from the same clock the
+    # rolling windows use, so the two cannot disagree about when "now" is.
+    day_start_ms = (
+        datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000.0
+    )
     if not isinstance(rows, list):
         return windows
     for row in rows:
@@ -331,6 +350,10 @@ def bucket_income(rows: Any, *, now_ms: int) -> dict[str, dict[str, float]]:
                 bucket = windows[f"{days}d"]
                 bucket[key] = round(bucket[key] + amount, 8)
                 bucket["net"] = round(bucket["net"] + amount, 8)
+        if stamp >= day_start_ms:
+            bucket = windows[PNL_WINDOW_TODAY]
+            bucket[key] = round(bucket[key] + amount, 8)
+            bucket["net"] = round(bucket["net"] + amount, 8)
     return windows
 
 

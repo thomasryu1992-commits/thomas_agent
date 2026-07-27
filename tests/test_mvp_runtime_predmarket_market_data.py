@@ -411,7 +411,10 @@ def test_the_detail_yields_the_yes_token_and_the_cross_reference():
     """`market_id` becomes the YES outcome token — what the book and any later order key on —
     and `conditionId` is the cross-reference axis, the same shape Polymarket uses."""
     found = md.parse_prediction_yes_outcome(_detail_row())
-    assert found == (5567895, "112233", "0xabc123")
+    assert found[:3] == (5567895, "112233", "0xabc123")
+    # The settlement text belongs to the market that was selected here, not to whichever
+    # market a second pass over the same payload would have picked.
+    assert len(found) == 4
 
 
 def test_a_market_that_is_not_open_is_not_priced():
