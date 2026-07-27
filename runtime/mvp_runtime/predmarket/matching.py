@@ -75,6 +75,10 @@ CLOSE_TIME_UNKNOWN = "CLOSE_TIME_UNKNOWN"
 CATEGORY_CONFLICT = "CATEGORY_CONFLICT"
 NUMERIC_MISMATCH = "NUMERIC_MISMATCH"
 SHARED_BOILERPLATE_ONLY = "SHARED_BOILERPLATE_ONLY"
+# Two markets asking the OPPOSITE question. The most dangerous pairing there is: opposite
+# outcomes price at roughly p and 1-p, so the apparent gross edge is enormous and permanent,
+# and it would arrive at the top of the report looking like the best find in it.
+OPPOSING_TERMS = "OPPOSING_TERMS"
 
 # A token appearing in more than this fraction of the scan's titles carries no information
 # about which event a market is: it is the template, not the question.
@@ -108,13 +112,20 @@ VENUE_ASSERTED = "VENUE_ASSERTED_CROSS_REFERENCE"
 # Adding SHARED_BOILERPLATE_ONLY here is also what drained the near-miss flood at its
 # source: the 3,405 rows were overwhelmingly two different people inside one template, which
 # is an answer rather than a doubt.
-_HARD_REFUSALS = frozenset({NUMERIC_MISMATCH, CATEGORY_CONFLICT, SHARED_BOILERPLATE_ONLY})
+_HARD_REFUSALS = frozenset({NUMERIC_MISMATCH, CATEGORY_CONFLICT, SHARED_BOILERPLATE_ONLY,
+                            OPPOSING_TERMS})
 
 # Words that carry no distinguishing information between two phrasings of one event.
+#
+# `up`, `down`, `over` and `under` were here and had to come out. They are not noise, they
+# ARE the question: with them dropped, "Over 2.5 runs scored" and "Under 2.5 runs scored"
+# normalize to the same tokens and score **1.0** — a perfect match between opposite outcomes.
+# So did "Bitcoin Up on July 27?" against "Bitcoin Down on July 27?", and Binance lists those
+# by the dozen. Measured 2026-07-27.
 _STOPWORDS = frozenset({
     "a", "an", "the", "will", "be", "is", "are", "was", "were", "do", "does", "did",
     "in", "on", "at", "by", "for", "of", "to", "and", "or", "than", "then", "this",
-    "that", "it", "its", "as", "with", "from", "up", "down", "over", "under", "next",
+    "that", "it", "its", "as", "with", "from", "next",
 })
 
 # Venue phrasings of the same thing. Deliberately tiny and hand-maintained: this map is
@@ -134,6 +145,38 @@ _SYNONYMS: dict[str, str] = {
     "cpi": "inflation",
     "%": "percent",
 }
+
+# Opposing vocabularies. A pairing where one title uses a word from one side and the other
+# uses a word from the other — and neither shares it — is asking the OPPOSITE question.
+#
+# Same shape as `_NUMERIC_MISMATCH`: the titles agree on everything that is boilerplate and
+# differ in the one word that IS the question. Found live 2026-07-27 in a shipped sheet, at
+# the TOP of it, where it looked like the strongest find:
+#
+#     Will the Fed decrease interest rates by 50+ bps after the July 2026 meeting?   0.818
+#     Will the Fed increase interest rates by 50+ bps after the July 2026 meeting?
+#
+#     Will the Democratic Party control the Senate after the 2026 Midterms?          0.778
+#     Will the Republican Party control the Senate after the 2026 Midterms?
+#
+# Hand-maintained and deliberately small, like `_SYNONYMS`: each entry earns its place from a
+# diagnosed miss rather than from imagination. Grouped rather than paired so that `increase`
+# against `cut` is caught as readily as `increase` against `decrease`.
+_MOVES_UP = frozenset({
+    "increase", "increases", "hike", "hikes", "up", "above", "higher", "rise", "rises",
+    "gain", "gains", "over", "more", "exceed", "exceeds",
+})
+_MOVES_DOWN = frozenset({
+    "decrease", "decreases", "cut", "cuts", "down", "below", "lower", "fall", "falls",
+    "drop", "drops", "under", "less",
+})
+_PARTY_D = frozenset({"democrat", "democratic"})
+_PARTY_R = frozenset({"republican"})
+
+_OPPOSING: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (_MOVES_UP, _MOVES_DOWN),
+    (_PARTY_D, _PARTY_R),
+)
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 
@@ -235,6 +278,26 @@ def distinctive_tokens(
     frequency table means it appeared nowhere else, which is the strongest form of rare.
     """
     return tuple(sorted(t for t in tokens if commonness.get(t, 0.0) < max_share))
+
+
+def opposing_terms(left_tokens: Iterable[str], right_tokens: Iterable[str]) -> bool:
+    """Are these two titles asking opposite questions? Pure.
+
+    Only fires on words **neither side shares**. A market titled "Bitcoin Up or Down on July
+    27?" carries both directions, and paired with another of the same shape both sides carry
+    both — nothing is unshared, so nothing is opposed. That is the correct reading: the two
+    are quoting the same up-or-down question, not two halves of one.
+
+    It is deliberately blind to *degree*. "Will the Fed cut rates?" against "Will the Fed
+    raise rates?" is refused; "Will the Fed cut by 25bps?" against "Will the Fed cut by
+    50bps?" is left to the numeric gate, which is the one that can see it.
+    """
+    left, right = set(left_tokens), set(right_tokens)
+    left_only, right_only = left - right, right - left
+    for first, second in _OPPOSING:
+        if (left_only & first and right_only & second) or (left_only & second and right_only & first):
+            return True
+    return False
 
 
 def _category_agreement(left: PredMarket, right: PredMarket) -> bool | None:
@@ -416,6 +479,11 @@ def judge_pair(
     if numeric is False:
         refusals.append(NUMERIC_MISMATCH)
 
+    if opposing_terms(left_tokens, right_tokens):
+        # Before the wording gate has any say: a high similarity is exactly what this failure
+        # looks like, so a score can never rescue it.
+        refusals.append(OPPOSING_TERMS)
+
     shared = left_tokens & right_tokens
     # Empty when no corpus was supplied — *unmeasured*, not "none were distinctive". With
     # nothing to compare against, listing every shared token here would record a finding
@@ -549,6 +617,7 @@ __all__ = [
     "BOILERPLATE_SHARE",
     "CATEGORY_CONFLICT",
     "NUMERIC_MISMATCH",
+    "OPPOSING_TERMS",
     "CLOSE_TIME_UNKNOWN",
     "CLOSE_TOO_FAR_APART",
     "DEFAULT_NEAR_MISS_LIMIT",
@@ -567,6 +636,7 @@ __all__ = [
     "judge_pair",
     "normalize_tokens",
     "numeric_tokens",
+    "opposing_terms",
     "title_similarity",
     "token_commonness",
     "venue_cross_reference",
