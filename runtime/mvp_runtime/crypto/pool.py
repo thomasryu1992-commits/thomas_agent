@@ -30,11 +30,18 @@ from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
 
-# The basis of every R in a candidate's quality view. Only one value exists today because
-# only one is true today: paper settlement charges nothing. Naming it makes the absence
-# reviewable, and gives a cost-adjusted basis somewhere to land without silently changing
-# what the old numbers meant.
-EDGE_COST_BASIS_EXCLUDED = "costs_excluded"
+# The basis of every R in a candidate's quality view.
+#
+# These figures come from `backtest_evidence`, and the factory backtest charges costs:
+# `factory.backtest_spec` runs every closed trade through `cost.apply_cost_model` and states
+# that `result_R` — and therefore `expectancy` and `champion_score` — is the NET R after fees
+# and slippage, with `gross_R` alongside. The holdout aggregates are built the same way.
+#
+# The previous value here said the opposite. It came from reading `robustness.py`'s "the cost
+# model was not ported" as a statement about R; it is a statement about the scorer's
+# cost-ROBUSTNESS term — whether the edge is stable ACROSS cost assumptions — which is a
+# different property from whether costs were charged at all.
+EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -449,7 +456,7 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         # A field rather than a printed sentence because it is a property OF the number: a
         # later cost-adjusted basis becomes a different value here, and any consumer that
         # compares two candidates can refuse to compare across bases.
-        "cost_basis": EDGE_COST_BASIS_EXCLUDED,
+        "cost_basis": EDGE_COST_BASIS_NET,
     }
 
 

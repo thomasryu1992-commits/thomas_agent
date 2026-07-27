@@ -47,6 +47,7 @@ from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
+from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -226,10 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         # automated statistical threshold behind it. Every figure below is cost-free, so a
         # thin edge here can be a negative one live, and nothing else in this view says so.
         bases = {pool_store.candidate_quality(c)["cost_basis"] for c in candidates}
-        if bases <= {pool_store.EDGE_COST_BASIS_EXCLUDED}:
-            print("NOTE: every R below EXCLUDES trading costs. Paper settlement models no fee,")
-            print("      slippage or funding, and the robustness scorer withholds its cost term")
-            print("      for the same reason. Read expectancy and reward:risk as upper bounds.")
+        if bases <= {pool_store.EDGE_COST_BASIS_NET}:
+            print(f"NOTE: every R below is NET of costs — {cost_mod.DEFAULT_TAKER_FEE_BPS} bps taker "
+                  f"+ {cost_mod.DEFAULT_SLIPPAGE_BPS} bps slippage per fill,")
+            print("      charged by the factory backtest on both legs of every closed trade.")
+            print("      That taker rate is the ported source default, and it is HALF what this")
+            print("      account was charged on 2026-07-26 (0.1291 USDT over ~258 USDT of fills,")
+            print("      i.e. 5.0 bps/fill — Binance USD-M standard). Read the edge as measured")
+            print("      against a cheaper venue than the one the orders actually reach.")
             print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
