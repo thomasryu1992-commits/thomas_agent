@@ -4,7 +4,7 @@
 The MVP keeps every governed safety flag OFF — ``model_invocation``, ``network_access``,
 ``filesystem_write`` (R8), and ``approval_consumption`` (R10); the capable implementation
 is only reachable once a local, integrity-checked activation record exists (see
-``runtime/mvp_runtime/safety_gate.py`` and CLAUDE.md "Safety flags are gated"). This
+``runtime/mvp_runtime/safety_gate.py`` and CLAUDE.md "Safety flags are OFF"). This
 script is the turnkey way an operator writes that record: it records an operator-decision
 evidence file, appends the activation to the durable ledger (the activation itself is
 audited, not just its later uses), mints the tamper-evident activation record via
