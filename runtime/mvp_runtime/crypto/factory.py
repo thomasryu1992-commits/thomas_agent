@@ -673,7 +673,7 @@ def _holdout_evidence(
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
     that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, _fees, _slip = _replay(spec, rows, candles, cost=cost, offset=offset)
+    outcomes, fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
     total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
     closed = len(outcomes)
     return {
@@ -682,6 +682,14 @@ def _holdout_evidence(
         "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
         "total_R": total_r,
         "expectancy": round(total_r / closed, 8) if closed else 0.0,
+        # The cost breakdown the main evidence has carried all along, and this block did not.
+        # Without it a holdout cannot be re-derived at another taker rate the way the main
+        # figures can, so a rate change leaves `holdout_status` — which gates ROBUST — stuck
+        # on whatever rate happened to be current when the candidate was minted. The replay
+        # already computes these; only the return dropped them.
+        "fee_cost_r": round(fees, 8),
+        "slippage_cost_r": round(slippage, 8),
+        "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
     }
 
 
