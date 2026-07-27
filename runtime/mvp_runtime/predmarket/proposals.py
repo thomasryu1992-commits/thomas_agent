@@ -96,6 +96,14 @@ def build_proposal_record(
         "candidates_truncated": len(candidates) - len(kept),
         "near_miss_total": result.get("near_miss_total"),
         "boilerplate_only_count": result.get("boilerplate_only_count"),
+        # The open question, made countable. Rotation reads past each venue's busiest
+        # markets on the theory that overlap also lives further down; nobody knows whether
+        # it does. `candidates_from_tail` is the answer accumulating one run at a time — and
+        # if it stays zero, rotation goes on evidence rather than on opinion.
+        "rotation": result.get("rotation"),
+        "candidates_from_tail": sum(
+            1 for c in (result.get("candidates") or []) if c.get("discovery_slice") == "tail"
+        ),
         # Why a venue contributed nothing: screened out, or unreadable. Kept apart, because
         # "the venue had no usable markets" and "the venue did not answer" would otherwise
         # both look like a quiet day.
@@ -164,13 +172,15 @@ def proposal_status_line(record: Mapping[str, Any], *, new_count: int | None = N
     counts = record.get("market_counts") or {}
     venues = ", ".join(f"{v}={n}" for v, n in sorted(counts.items())) or "-"
     errors = record.get("venue_errors") or {}
-    tail = f" degraded={','.join(sorted(errors))}" if errors else ""
+    degraded = f" degraded={','.join(sorted(errors))}" if errors else ""
     fresh = "" if new_count is None else f", {new_count} new"
     truncated = record.get("candidates_truncated") or 0
     cut = f" ({truncated} not recorded)" if truncated else ""
+    tail_count = record.get("candidates_from_tail") or 0
+    from_tail = f", {tail_count} from the rotating tail" if tail_count else ""
     return (
-        f"pm_scan discovery: {record.get('candidate_count')} candidate(s){cut}{fresh} "
-        f"from {record.get('judged_count')} judged pairings [{venues}]{tail}"
+        f"pm_scan discovery: {record.get('candidate_count')} candidate(s){cut}{fresh}{from_tail} "
+        f"from {record.get('judged_count')} judged pairings [{venues}]{degraded}"
     )
 
 
