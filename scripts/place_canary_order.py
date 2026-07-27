@@ -35,6 +35,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_ENV,
     build_live_order_intent,
     count_today,
+    select_live_order_counter,
     enrich_order_identity,
     evaluate_live_order_guard,
     render_guard_text,
@@ -153,10 +154,30 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         # 6. Send exactly one order, then learn the truth from the venue.
-        result = live_execution.submit_and_reconcile(
-            intent, adapter=adapter, guard_verdict=verdict, now=now,
-            timeout_seconds=args.timeout_seconds,
-        )
+        #
+        #    The daily counter is incremented HERE, by this tool. It used to be incremented
+        #    only by `live_leg.execute_live_entry` — the autonomous leg, which no entry point
+        #    may import — so the one door that can actually place an order never counted its
+        #    own orders. `count_today` reads a file nothing wrote, returns 0 for a missing
+        #    file, and the registered `max_daily_order_count` therefore refused nothing: two
+        #    real canaries went out on 2026-07-26 and `live_order_counter.json` did not exist.
+        counter = select_live_order_counter(now=now, root=root)
+        counter_error = None
+        try:
+            result = live_execution.submit_and_reconcile(
+                intent, adapter=adapter, guard_verdict=verdict, now=now,
+                timeout_seconds=args.timeout_seconds,
+            )
+        finally:
+            # In `finally`, and deliberately: what consumes daily budget is an order that MAY
+            # have reached the venue, not one confirmed to have done so. A submit that raised
+            # is precisely the ambiguous case — the flapping connection LiveOrderCounter's own
+            # rule is about — and skipping it there would let one cap be spent many times.
+            # Over-counting a submit that never left is the safe direction for a risk limit.
+            try:
+                counter.record_submission()
+            except Exception as exc:  # noqa: BLE001 — past the venue; report, never raise
+                counter_error = getattr(exc, "reason_code", type(exc).__name__)
 
         # 7. Record it. `clean` is derived by the record from the reconcile facts — this tool
         #    cannot assert that its own canary was clean.
@@ -209,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {"guard": verdict, "result": result, "canary_record": record,
                "registry_error": registry_error, "audit_error": audit_error,
+               "counter_error": counter_error,
                "permission_decision_id": governance["permission_decision"]["permission_decision_id"]}
     if args.json:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=1, default=str) + "\n")
@@ -229,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if audit_error:
             sys.stdout.write(f"  AUDIT     : NOT recorded ({audit_error}) — the order IS placed\n")
+        if counter_error:
+            sys.stdout.write(
+                f"  DAILY CAP : NOT counted ({counter_error}) — the order IS placed, so the "
+                "daily cap now under-reports until this is repaired\n"
+            )
         sys.stdout.write(
             "\nClose this canary position on the venue yourself — a canary only opens.\n"
         )
@@ -236,7 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     # `audit_error` counts too: `post_action_report_and_audit` is what `p5_policy_gate` requires
     # of FINANCIAL_APPROVED_TRADING_USE, so an order the durable chain never recorded has left a
     # governance obligation unmet — exiting 0 would report that as a clean canary.
-    if registry_error or audit_error or not record["clean"]:
+    # `counter_error` likewise: an uncounted order leaves the daily cap reading low for every
+    # later run, which is a risk limit quietly widened rather than a bookkeeping nicety.
+    if registry_error or audit_error or counter_error or not record["clean"]:
         return EXIT_BLOCKED
     return EXIT_OK
 
