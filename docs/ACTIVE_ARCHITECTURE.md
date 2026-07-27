@@ -1,8 +1,9 @@
 # Thomas Agent Active Architecture
 
-**Status:** Architecture Slimming sequence completed through PR #11; Post-Slimming Consistency Hardening through Fix #4
-**Baseline:** I0.5.5
-**Runtime-authoritative execution: Disabled**
+**Status:** Architecture Slimming sequence completed through PR #11; Post-Slimming Consistency Hardening through Fix #4. The live **MVP Runtime** (`runtime/mvp_runtime/`) has since been built on top of that baseline — R2–R10 plus the crypto (C-series), LLM-orchestration (M-series) and prediction-market (PM-series) increments.
+**Structural baseline:** I0.5.5 — the read-only kernel and the contract/schema set. Unchanged; the MVP Runtime reuses it as libraries rather than extending it.
+**Runtime-authoritative execution: Disabled** — the deferred Runtime-authoritative entry (`runtime/read_only_entry/`, `runtime/protected_governance_state/`) stays off. This does **not** mean nothing executes: the MVP Runtime executes, and it holds no standing runtime effect. See Safety State.
+**Delivery history and open work:** what was built and why → `docs/BUILD_HISTORY.md`; what is left → `docs/REMAINING_WORK.md`. This document owns structure and ownership, not milestone status.
 **Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints
 
 ## Architecture on One Screen
@@ -18,7 +19,8 @@ Governance Policy
   ↓
 Thomas Prime
   ↓
-Thin Read-only Runtime Kernel
+MVP Runtime  (runtime/mvp_runtime/ — the live executor; reuses the
+Thin Read-only Runtime Kernel modules as libraries, never extends them)
   ↓
 Router
   ↓
@@ -42,17 +44,35 @@ System Constitution
 
 The active lane above is the only current authority and dependency chain. `governance/SYSTEM_CONSTITUTION.md` is not an active predecessor, policy source, or Runtime dependency. Its presence does not modify precedence, grant authority, or activate any capability.
 
-Current execution path:
+Current execution path — the MVP Runtime, as implemented:
 
 ```text
-Task
-  → Core Context Binding
-  → Governance / Permission Decision
-  → Prime Planning and Routing
-  → Deterministic Read-only Work
-  → Validation
-  → Result and Audit Evidence
+Entry (intake CLI · operator/Telegram channel · scheduler · conversational front desk)
+  → Task (intake.py)
+  → Core Context Binding                       (binding.py — no run without an active approved Core)
+  → Prime planning                             (prime.py: classify → select Role → PermissionDecision(s)
+                                                → role_assignment; every record schema-validated)
+  → [optional] importance triage                (triage.py — one budgeted gated model call)
+  → [optional] read-only search                 (tools.py — INTERNAL_READ ALLOW; failure DEGRADES)
+  → memory retrieval                            (memory.py — VALIDATED [V#] + CANDIDATE [M#] context)
+  → specialist work                             (worker.py — the model call, behind the Safety-Flag Gate)
+  → Validation                                  (validation.py automatic checks
+                                                + [optional] validator.py independent reviewer,
+                                                  stricter-wins; [optional] one bounded revision)
+  → [optional] controlled write                 (workspace.py — EXECUTE_AND_REPORT, gated, create-only)
+  → Memory Candidate + hash-chained Audit + durable ledger   (memory.py · audit.py · store.py)
 ```
+
+Every optional step above is a separately governed action with its own PermissionDecision; none of
+them widens the one the specialist runs under. Approval-bearing actions (memory promotion, candidate
+Role trial, Program registration) leave this path and go through `approval.py` → operator decision →
+`consumption.py`, single-use.
+
+Current reach of the Router, stated so it is not inferred: `task.v0.3` models
+`UNASSIGNED / PROGRAM / ROLE / HYBRID`, and the runtime emits only **ROLE** — no Program is enabled,
+so no PROGRAM or HYBRID route is produced. The design direction that owns the wider route table is
+`docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` §8.4; what remains to build is
+`docs/REMAINING_WORK.md`'s to say, not this document's.
 
 The architecture is fail-closed when authority, lineage, source ownership, freshness, integrity, or policy interpretation is missing or ambiguous.
 
@@ -70,7 +90,9 @@ The architecture is fail-closed when authority, lineage, source ownership, fresh
 | Role status and routability | `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` |
 | Program status and enablement | `05_REGISTRIES/PROGRAM_REGISTRY.yaml` |
 | Tool status and enablement | `05_REGISTRIES/TOOL_REGISTRY.yaml` |
-| Active Runtime implementation | `runtime/read_only_kernel/` |
+| Active Runtime implementation — the live executor | `runtime/mvp_runtime/` |
+| Deterministic read-only replay kernel — reused as libraries, never modified | `runtime/read_only_kernel/` |
+| Per-machine capability grants (which gated capability this machine may use) | `runtime/mvp_runtime/safety_gate.py` + `.runtime_governance_state/safety_flag_activations/*.json` (local, gitignored) |
 | Registry/Definition resolution | `runtime/registry_resolution.py` |
 | Deferred design | `deferred/DEFERRED_ARCHITECTURE.yaml` |
 | Generated classification | `generated/GENERATED_ARTIFACT_INDEX.yaml` |
@@ -102,13 +124,42 @@ kernel facade
 
 `orchestrator.py` owns call order and data flow only. Governance owns policy. Definitions own capability behavior. Registries own status and location metadata only.
 
+The kernel is **read-only and frozen**: it replays recorded bundles and is not modified. The MVP
+Runtime imports its modules (`integrity`, `schema_validation`, `audit`, …) as libraries and keeps the
+same discipline — `pipeline.py` owns call order, Governance owns policy, Definitions own behavior.
+
+## MVP Runtime
+
+The live executor. Same authority chain, one process, no kernel modification.
+
+```text
+Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
+Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
+Governance surface   permission.py · authority.py · safety_gate.py · budgets.py
+Work                 worker.py · providers.py · tools.py
+Assurance            validation.py · validator.py · audit.py · store.py
+Memory               memory.py · working_memory.py · retention.py
+Governed asks        approval.py · approval_store.py · consumption.py · trial.py
+Programization       programization.py · program_request.py · registration.py
+Domain packages      crypto/ (C-series, incl. the gated live-order path)
+                     predmarket/ (PM-series, observe-only)
+```
+
+Domain packages are applications of the same chokepoints, not parallel runtimes: they build the same
+PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audit chain.
+
 ## Repository Boundaries
 
 ```text
 Active
   governance/GOVERNANCE_POLICY.yaml  THOMAS_CORE/  roles/registries
-  programs/  tools/  runtime/read_only_kernel/
+  programs/  tools/  runtime/mvp_runtime/  runtime/read_only_kernel/
   active contracts/schemas  tests  scripts
+
+Local per-machine state (gitignored, never committed, does not travel via git)
+  .runtime_governance_state/
+  Core activation pointer, safety-flag grants, control state,
+  ledger, schedules, registered budgets
 
 Candidate Reference
   governance/SYSTEM_CONSTITUTION.md
@@ -179,26 +230,74 @@ Nightly schedule, manual dispatch, or release tag
 
 ## Safety State
 
-The following remain disabled:
+Read this section as **two separate facts**, because conflating them is how this document previously
+described shipped modules as absent:
+
+1. **"Does the code exist?"** — owned by `docs/BUILD_HISTORY.md` and by the code itself.
+2. **"May this machine act?"** — owned by the Governance Policy plus the per-machine grant. A good
+   test result never answers question 2, and question 1 never answers it either.
+
+### The policy grants no standing runtime effect
+
+`governance/GOVERNANCE_POLICY.yaml` → `runtime_effect` is the authority, and every field in it is
+false:
 
 ```yaml
-runtime_authoritative_entry_enabled: false
-model_invocation_enabled: false
-tool_execution_enabled: false
-program_execution_enabled: false
-network_access_enabled: false
-filesystem_write_enabled: false
-approval_consumption_enabled: false
-executor_handoff_enabled: false
-scheduler_dispatch_enabled: false
-control_channel_dispatch_enabled: false
-runtime_mutation_enabled: false
-permission_expansion_enabled: false
-authority_expansion_enabled: false
-external_action_enabled: false
-financial_action_enabled: false
-core_activation_enabled: false
+runtime_effect:
+  mode: REVIEW_ONLY
+  grants_runtime_execution: false
+  grants_tool_or_program_enablement: false
+  grants_external_execution: false
+  grants_financial_execution: false
+  grants_permission_expansion: false
+  executor_handoff_allowed: false
+  external_execution_allowed: false
+  financial_execution_allowed: false
+  runtime_mutation_allowed: false
+  tool_enablement_allowed: false
+  program_enablement_allowed: false
+  permission_expansion_allowed: false
+  approval_consumption_allowed: false
+  core_activation_allowed: false
 ```
+
+Two `*_implemented` flags in the same policy say the **code** exists, and deliberately grant nothing:
+`approval_lifetime.approval_consumption_implemented: true` (R10) and
+`financial.financial_transaction_execution_implemented: true` (LP4, 2026-07-25) — while
+`financial.financial_executor_enabled` stays `false`.
+
+### Implemented, and OFF until this machine is granted it
+
+These capabilities are built. Each is refused unless a local, integrity-checked, TTL-capped,
+Thomas-minted activation record enables that flag for that provider — an environment variable alone
+fails closed, and deleting the record is a live revocation.
+
+```yaml
+model_invocation:      implemented; per-provider grant  (safety_gate.MODEL_INVOCATION)
+network_access:        implemented; per-provider grant  (safety_gate.NETWORK_ACCESS)
+filesystem_write:      implemented; per-provider grant  (safety_gate.FILESYSTEM_WRITE, R8 — create-only under workspace/)
+approval_consumption:  implemented; per-provider grant  (safety_gate.APPROVAL_CONSUMPTION, R10 — single-use, scoped)
+```
+
+The same gate governs each data/venue provider on its own record (search backends, market data,
+prediction-market venues, `live_trading`), so authorizing one never widens another.
+
+### Structurally off — no code path, or no caller
+
+```yaml
+runtime_authoritative_entry: "deferred component; not the live path"
+executor_handoff: "deferred component; the runtime acts directly (R8/R10 precedent)"
+tool_execution: "no registered Tool is enabled; budget pins max_tool_calls to 0"
+program_execution: "no registered Program is enabled; budget pins max_program_calls to 0; unregistered or disabled resource execution stays BLOCK"
+runtime_mutation: false
+permission_expansion: false
+authority_expansion: false
+core_activation_as_effect: "false — activation is an out-of-band operator step, per machine"
+autonomous_financial_action: "the order path exists; no autonomous entry point may import it, enforced by test rather than by convention"
+```
+
+For whether **this** machine can place a live order, ask the computed board rather than this
+document — `python -m runtime.mvp_runtime.crypto.live_readiness`. Prose drifts; the board is derived.
 
 Policy authority, validation evidence, generated evidence, historical evidence, and Runtime execution authority are separate. None can silently grant another.
 
