@@ -180,7 +180,7 @@ def holdout_status(holdout: Mapping[str, Any] | None) -> str:
     return HOLDOUT_CONFIRMED if _f(holdout.get("total_R")) > 0 else HOLDOUT_CONTRADICTED
 
 
-def _verdict(score: float, trades_per_parameter: float, holdout_state: str) -> str:
+def classify_verdict(score: float, trades_per_parameter: float, holdout_state: str) -> str:
     # The veto is not a tiebreak: below the critical ratio every other component is
     # computed on the same too-small sample — a high score there IS the overfitting.
     if trades_per_parameter < CRITICAL_TRADES_PER_PARAMETER:
@@ -232,7 +232,7 @@ def score_robustness(
         "weights": dict(WEIGHTS),
         "robustness_score": round(score, 6),
         "holdout_status": holdout_state,
-        "verdict": _verdict(score, trades_per_parameter, holdout_state),
+        "verdict": classify_verdict(score, trades_per_parameter, holdout_state),
         "warnings": _warnings(trades_per_parameter, walk_forward, regime_breakdown,
                               components, holdout_state),
         "healthy_trades_per_parameter": HEALTHY_TRADES_PER_PARAMETER,

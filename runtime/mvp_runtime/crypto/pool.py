@@ -24,11 +24,47 @@ from runtime.read_only_kernel import integrity
 from ..errors import ToolError
 from ..filelock import locked
 from .paper import OCCUPYING_STATUSES, state_dir
-from .robustness import verdict_rank
+from .robustness import classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
+
+# The basis of every R in a candidate's quality view.
+#
+# These figures come from `backtest_evidence`, and the factory backtest charges costs:
+# `factory.backtest_spec` runs every closed trade through `cost.apply_cost_model` and states
+# that `result_R` — and therefore `expectancy` and `champion_score` — is the NET R after fees
+# and slippage, with `gross_R` alongside. The holdout aggregates are built the same way.
+#
+# The previous value here said the opposite. It came from reading `robustness.py`'s "the cost
+# model was not ported" as a statement about R; it is a statement about the scorer's
+# cost-ROBUSTNESS term — whether the edge is stable ACROSS cost assumptions — which is a
+# different property from whether costs were charged at all.
+EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
+
+# ...and at WHICH rates, because that is no longer one answer for the whole store. The taker
+# default moved from the ported 2.5 bps to the venue's measured 5.0, and `backtest_evidence`
+# is durable — candidates scored before the change keep the numbers they were scored with.
+# Ranking them against newer ones is comparing a cheaper venue to the real one, so the basis
+# has to travel WITH each candidate rather than be assumed for the view.
+EDGE_COST_BASIS_UNRECORDED = "cost_model_unrecorded"
+
+
+def cost_basis_of(record: Mapping[str, Any]) -> str:
+    """The cost model one candidate was actually scored under, from its own evidence.
+
+    `factory.backtest_spec` records it in `cost_summary.cost_model`, so this reads what the
+    scoring used rather than what the module currently defaults to. A record predating that
+    field reports UNRECORDED — not the current default, which would claim a candidate had
+    paid a rate it never faced.
+    """
+    summary = (record.get("backtest_evidence") or {}).get("cost_summary") or {}
+    model = summary.get("cost_model") or {}
+    taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
+    if not isinstance(taker, (int, float)) or not isinstance(slip, (int, float)):
+        return EDGE_COST_BASIS_UNRECORDED
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps+slip_{slip}bps"
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -378,6 +414,27 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     # it: with ROBUST now gated on it, "PROVISIONAL because unconfirmed" and
     # "PROVISIONAL because it failed forward" are very different things to promote.
     holdout_state = str(robustness.get("holdout_status") or "UNCONFIRMED")
+    # The verdict is RECOMPUTED from the stored components, never read back as a label.
+    #
+    # It used to be read: `robustness.get("verdict")`. Verdicts are written once, at mint
+    # time, under whatever rule was current then — and the rule changed when ROBUST became
+    # gated on out-of-sample survival. Candidates minted before that kept a stored ROBUST
+    # while their holdout read UNCONFIRMED, a pair the rule can no longer produce. Measured
+    # on this machine: 12 of 269 candidates, and because `rank_candidates` orders by verdict
+    # tier FIRST, all 12 sorted above the 13 PROVISIONAL+CONFIRMED lineages that had actually
+    # survived unseen bars. The shortlist was inverted on exactly the property the holdout
+    # rule was added to enforce.
+    #
+    # `classify_verdict` is the one authority for the rule, so a later change to it cannot
+    # leave stale labels behind again. A record missing the components keeps its stored
+    # verdict — recomputing from absent inputs would invent a rating, not correct one.
+    stored_verdict = robustness.get("verdict")
+    score = robustness.get("robustness_score")
+    tpp = robustness.get("trades_per_parameter")
+    if isinstance(score, (int, float)) and isinstance(tpp, (int, float)):
+        verdict = classify_verdict(float(score), float(tpp), holdout_state)
+    else:
+        verdict = stored_verdict
     closed = int(_as_float(evidence.get("closed_count")))
     win_count = int(_as_float(evidence.get("win_count")))
     win_rate = round(win_count / closed, 8) if closed else 0.0
@@ -400,8 +457,8 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     rr_sort = _ALL_WINS_RR_SORT if all_wins else (reward_risk or 0.0)
     return {
         "candidate_id": candidate_id(record),
-        "verdict": robustness.get("verdict"),
-        "verdict_rank": verdict_rank(robustness.get("verdict")),
+        "verdict": verdict,
+        "verdict_rank": verdict_rank(verdict),
         "holdout_status": holdout_state,
         "robustness_score": round(_as_float(record.get("champion_score")), 8),
         "win_rate": win_rate,
@@ -411,6 +468,18 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         "expectancy": round(_as_float(evidence.get("expectancy")), 8),
         "closed_count": closed,
         "edge_quality": win_rate * rr_sort,
+        # What every R above does NOT include. Paper settlement models no fee, slippage or
+        # funding by design ("Accounting is R-based only... paper sizing added nothing but
+        # noise"), and the robustness scorer withholds its cost term for the same reason
+        # ("the cost model was not ported, so cost_robustness inputs are withheld"). Both
+        # are honest about it in their own docstrings; the promotion surface — the one an
+        # operator actually reads before putting real money behind a lineage — said nothing,
+        # so a cost-free expectancy arrived looking like a net one.
+        #
+        # A field rather than a printed sentence because it is a property OF the number: a
+        # later cost-adjusted basis becomes a different value here, and any consumer that
+        # compares two candidates can refuse to compare across bases.
+        "cost_basis": cost_basis_of(record),
     }
 
 

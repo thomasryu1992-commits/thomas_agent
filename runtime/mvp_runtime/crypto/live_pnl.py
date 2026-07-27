@@ -337,17 +337,43 @@ def daily_loss_limit_breached(
     return daily_realized_pnl(rows, day=day) <= -abs(limit)
 
 
+PNL_SOURCE_VENUE = "venue"
+PNL_SOURCE_LOCAL_LEDGER = "local_ledger"
+
+# The breaker read a ledger nothing writes on the only path that can place an order.
+LIVE_PNL_NO_SOURCE = "LIVE_PNL_NO_SOURCE"
+
+
 def live_risk_snapshot(
     *,
     limit_usdt: float | None,
     day: str | None = None,
     root: Path | None = None,
     now: str | None = None,
+    venue_realized_pnl_usdt: float | None = None,
 ) -> dict[str, Any]:
     """Today's live risk state, for the guard, the dashboard, and the operator.
 
     Reads fail-closed: if the history cannot be verified the snapshot reports the breaker as
     tripped and names the reason, rather than reporting a comfortable zero.
+
+    ``venue_realized_pnl_usdt``, when given, is the authority for the day and the local ledger
+    is not consulted for the figure. It exists because the local ledger was not merely stale —
+    it was **empty by construction**. The only writer is ``live_leg.execute_live_exit``, the
+    autonomous leg no entry point may import; the canary path is entry-only and its positions
+    are closed by the operator on the venue, so no closed outcome could ever reach the ledger.
+    The breaker therefore reported ``0.0, not breached`` with total confidence while the venue
+    reported a real realized loss for the same day. ``cycle.py`` states the rule this broke:
+    *a breaker that cannot trip is not a breaker.*
+
+    The venue figure covers the whole account rather than only this runtime's trades, and that
+    is the safe direction for a loss limit: it can make the breaker trip earlier, never later.
+    It is also the truer number — it is what the venue actually took, fees and funding included.
+
+    ``pnl_source`` names where the figure came from, so a caller can tell "0.0 because nothing
+    was lost" from "0.0 because nothing was recorded". ``LIVE_PNL_NO_SOURCE`` marks the second
+    case explicitly — the distinction ``clean_canary_order_count`` already makes by returning
+    its error alongside its count.
     """
     stamp = now or timeutil.utc_now_iso()
     target = day or utc_day(stamp)
@@ -364,8 +390,30 @@ def live_risk_snapshot(
             "daily_loss_limit_breached": True,
             "closed_trade_count": None,
             "history_error": exc.reason_code,
+            "pnl_source": PNL_SOURCE_LOCAL_LEDGER,
         }
     todays = [r for r in outcomes if str(r.get("closed_at_utc") or "")[:10] == target]
+
+    if venue_realized_pnl_usdt is not None:
+        realized = float(venue_realized_pnl_usdt)
+        # An unconfigured limit counts as breached here exactly as it does in
+        # `daily_loss_limit_breached`: None, 0 and any negative value halt entries rather than
+        # permitting unlimited ones. Writing this as `configured and realized <= -limit` reads
+        # naturally and is backwards — it hands an unconfigured limit a clean bill of health,
+        # which is the one answer this module exists to never give.
+        breached = True if not configured else realized <= -float(limit_usdt)  # type: ignore[arg-type]
+        return {
+            "created_at": stamp,
+            "day_utc": target,
+            "daily_realized_pnl_usdt": realized,
+            "daily_loss_limit_usdt": float(limit_usdt) if configured else 0.0,
+            "daily_loss_limit_configured": configured,
+            "daily_loss_limit_breached": bool(breached),
+            "closed_trade_count": len(todays),
+            "history_error": None,
+            "pnl_source": PNL_SOURCE_VENUE,
+        }
+
     return {
         "created_at": stamp,
         "day_utc": target,
@@ -376,7 +424,11 @@ def live_risk_snapshot(
             limit_usdt, outcomes=todays, day=target
         ),
         "closed_trade_count": len(todays),
-        "history_error": None,
+        # Not an error — a fresh machine has no closed trades either. It is a statement about
+        # what the figure above is worth, so a board can stop rendering an empty ledger as
+        # "clear" and an operator can see that the limit is currently bounding nothing.
+        "history_error": LIVE_PNL_NO_SOURCE if not todays else None,
+        "pnl_source": PNL_SOURCE_LOCAL_LEDGER,
     }
 
 

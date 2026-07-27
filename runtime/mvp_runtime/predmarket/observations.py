@@ -109,6 +109,17 @@ def read_observations(root: Path | None = None) -> list[dict[str, Any]]:
 
 # --- the scan -------------------------------------------------------------------
 
+def _as_tuple(value: Any) -> tuple[str, ...] | None:
+    """A JSON list back to the tuple ``PredMarket`` carries; ``None`` stays ``None``.
+
+    ``derived_from`` distinguishes "the venue did not say this is a combination" (``None``)
+    from "it did" (a non-empty tuple), and a round trip through JSON must not blur the two.
+    """
+    if value is None:
+        return None
+    return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else None
+
+
 def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
     """Rebuild typed markets from a collection snapshot, keyed ``venue:market_id``."""
     rebuilt: dict[str, PredMarket] = {}
@@ -123,6 +134,9 @@ def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
             status=row.get("status"),
             category=row.get("category"),
             fee_rate_bps=row.get("fee_rate_bps"),
+            derived_from=_as_tuple(row.get("derived_from")),
+            accepting_orders=row.get("accepting_orders"),
+            volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),
                 yes_bid_size=quote.get("yes_bid_size"), yes_ask_size=quote.get("yes_ask_size"),
@@ -153,7 +167,16 @@ def run_watch_scan(
     is what the CLI's dry run and the tests use.
     """
     groups = pairs.read_groups(root)
-    needed = sorted({leg["venue"] for g in groups for leg in g.get("legs") or []})
+    # Exactly the markets the confirmed groups name, per venue. A watch scan is measurement:
+    # it re-reads what an operator already confirmed, so asking a venue for its front page
+    # would spend calls to learn nothing — and these endpoints are weight-limited, shared with
+    # whatever else uses the same key. Kalshi filters server-side, Polymarket books only these,
+    # Binance skips discovery entirely (its ids carry marketId:tokenId for exactly this).
+    wanted: dict[str, list[str]] = {}
+    for group in groups:
+        for leg in group.get("legs") or []:
+            wanted.setdefault(leg["venue"], []).append(leg["market_id"])
+    needed = sorted(wanted)
 
     markets: dict[str, PredMarket] = {}
     venue_errors: dict[str, str] = {}
@@ -161,7 +184,8 @@ def run_watch_scan(
         collector = select_pred_market_collector(venue, now=now, root=root)
         try:
             snapshot, _record = collect_pred_markets(
-                venue, collector=collector, now=now, limit=limit
+                venue, collector=collector, now=now, limit=limit,
+                market_ids=sorted(set(wanted[venue])),
             )
         except ToolError as exc:
             # Recorded, never silent — the crypto MARKET_DATA_DEGRADED posture.

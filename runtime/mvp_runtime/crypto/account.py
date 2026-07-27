@@ -38,6 +38,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from .. import safety_gate, timeutil
+from ..cli_common import force_utf8_io
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
@@ -474,6 +475,7 @@ def read_account(
 
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Live exchange account board (read-only: balance, positions, P&L)."
     )

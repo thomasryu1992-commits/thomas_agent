@@ -148,6 +148,10 @@ class MockProvider:
     model_id = "mock.analysis"
     model_version = "0.1.0"
     network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners now announces anything carrying a model_id: silence is the
+    # thing that must be opted into, so a real capability can never go unannounced.
+    model_invocation = False
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         analysis = {

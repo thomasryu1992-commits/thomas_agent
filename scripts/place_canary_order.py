@@ -26,7 +26,13 @@ import sys
 from pathlib import Path
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
+from runtime.mvp_runtime.cli_common import (
+    EXIT_BLOCKED,
+    EXIT_OK,
+    EXIT_USAGE,
+    force_utf8_io,
+    gate_banners,
+)
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.audit import AuditError
 from runtime.mvp_runtime.crypto import live_execution, live_governance, live_promotion
@@ -89,7 +95,6 @@ def main(argv: list[str] | None = None) -> int:
         # 2. The live facts the guard judges. Each is read, never assumed.
         control_state = ControlStore(root).load() if root is not None else ControlStore.default().load()
         runtime_active = control_state.execution_allowed
-        risk = live_risk_snapshot(limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now)
         clean_count, canary_error = live_promotion.clean_canary_order_count(root)
         submitted_today = count_today(root)
 
@@ -109,11 +114,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_BLOCKED
 
+        # 3b. The daily-loss breaker, measured against what the VENUE realized today.
+        #     Deliberately after the account read rather than beside the other guard inputs:
+        #     the local outcome ledger is written only by the autonomous leg nothing may import,
+        #     and this path is entry-only, so reading it here yields 0.0 forever and the limit
+        #     bounds nothing. The snapshot above already carries the venue's own realized figure
+        #     — fees and funding included — at no extra request, so the breaker gets a real
+        #     number from a read this tool was making anyway.
+        venue_realized = (snapshot.realized_windows.get("1d") or {}).get("net")
+        risk = live_risk_snapshot(
+            limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
+            venue_realized_pnl_usdt=venue_realized,
+        )
+
         # 4. The gate. Selecting the adapter is what proves the grant: an inert dry-run adapter
         #    means no grant is active, so nothing can be sent — and the guard is told so rather
         #    than being handed an optimistic assumption.
         adapter = live_execution.select_order_adapter(now=now, root=root)
         grant_open = bool(getattr(adapter, "network_egress", False))
+        # Say so, on the one path that can move real money. Every other gated capability in
+        # the repo prints its authorization notice; this one did not, because `gate_banners`
+        # took a named parameter per role and no one added a fifth. The operator running this
+        # deserves the same line the search tool gets.
+        gate_banners(live_order_adapter=adapter)
 
         # 5. The intent, then the guard in CANARY mode: every check except the promotion gate,
         #    authorized by the canary phrase.
