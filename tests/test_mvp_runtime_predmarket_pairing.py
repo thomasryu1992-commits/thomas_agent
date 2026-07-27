@@ -501,3 +501,95 @@ def test_an_empty_or_missing_mapping_judges_nothing_rather_than_failing():
     for arg in ({}, None, {KALSHI: [], POLYMARKET: None}):
         result = matching.generate_candidates(arg)
         assert result["judged_count"] == 0 and result["candidates"] == []
+
+
+# --- sharing only the template -------------------------------------------------
+
+def _nominee(venue, person, market_id, phrasing="be the Democratic Presidential nominee in 2028"):
+    return _market(venue, market_id, f"Will {person} {phrasing}?")
+
+
+def _field(n=14):
+    """A ballot's worth of one template, which is what makes the template a template."""
+    people = ["Gavin Newsom", "Kamala Harris", "Bernie Sanders", "Pete Buttigieg",
+              "Andy Beshear", "Cory Booker", "Ro Khanna", "Rahm Emanuel", "Tim Walz",
+              "Josh Shapiro", "Wes Moore", "Chris Murphy", "Mark Kelly", "Jon Ossoff"][:n]
+    return ([_nominee(KALSHI, p, f"K{i}") for i, p in enumerate(people)],
+            [_nominee(POLYMARKET, p, f"P{i}", "win the 2028 Democratic presidential nomination")
+             for i, p in enumerate(people)])
+
+
+def test_two_different_people_in_one_template_are_not_a_pair():
+    """THE case, found live inside a shipped candidate list:
+
+        Will Gavin Newsom win the 2028 Democratic presidential nomination?   (binance)
+        Will MrBeast     win the 2028 Democratic presidential nomination?    (polymarket)
+
+    Jaccard 0.625, past the 0.60 gate, sharing nothing but the template. Two markets that
+    agree only on what everything agrees on are not nearly the same question — they are one
+    sentence with the subject swapped, and the subject IS the question.
+    """
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+
+    for row in result["candidates"]:
+        assert row["left_title"].split()[1:3] == row["right_title"].split()[1:3], (
+            f"paired two different people: {row['left_title']} / {row['right_title']}"
+        )
+    assert result["boilerplate_only_count"] > 0
+
+
+def test_the_same_person_on_both_venues_still_pairs():
+    """The gate must not cost the true positives it sits next to. 'newsom' is rare in the
+    corpus even though every other word in the sentence is not."""
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+    paired = {row["left_title"] for row in result["candidates"]}
+    assert any("Gavin Newsom" in title for title in paired)
+
+    row = next(r for r in result["candidates"] if "Gavin Newsom" in r["left_title"])
+    # The evidence the pairing rests on, recorded: the rare words, not the template.
+    assert set(row["distinctive_shared_tokens"]) == {"gavin", "newsom"}
+    assert "presidential" in row["shared_tokens"]
+
+
+def test_a_boilerplate_only_refusal_is_an_answer_not_a_near_miss():
+    """It joins NUMERIC_MISMATCH as a hard refusal, which is also what drained the near-miss
+    flood at its source: those rows were overwhelmingly this exact shape."""
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+    for row in result["near_misses"]:
+        assert matching.SHARED_BOILERPLATE_ONLY not in row["refusals"]
+
+
+def test_a_short_scan_does_not_call_the_whole_language_boilerplate():
+    """A share is not evidence on its own. With three markets, every word one of them uses
+    appears in 33% of the corpus — a purely proportional rule refuses everything, which is
+    how this was caught. A word is template only once the template has visibly repeated."""
+    question = "Will the Fed cut rates in December?"
+    result = matching.generate_candidates({
+        KALSHI: [_market(KALSHI, "K1", question)],
+        POLYMARKET: [_market(POLYMARKET, "P1", question)],
+    })
+    assert len(result["candidates"]) == 1
+    assert result["boilerplate_only_count"] == 0
+
+
+def test_the_commonness_table_reports_rare_words_as_rare():
+    titles = [f"Will {p} be the Democratic Presidential nominee in 2028?" for p in
+              ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L")]
+    commonness = matching.token_commonness(titles)
+    assert commonness["presidential"] == pytest.approx(1.0)
+    assert commonness["democratic"] == pytest.approx(1.0)
+    # Seen once each, well under MIN_BOILERPLATE_TITLES, so reported as rare not as 1/12.
+    assert commonness.get("a", 0.0) == 0.0
+    assert matching.distinctive_tokens(["presidential", "newsom"], commonness) == ("newsom",)
+
+
+def test_omitting_the_corpus_keeps_the_old_purely_pairwise_behaviour():
+    """`judge_pair` without `commonness` is still a pure function of its two arguments —
+    which is what every direct caller and every other test relies on."""
+    judged = matching.judge_pair(_nominee(KALSHI, "Gavin Newsom", "K1"),
+                                 _nominee(POLYMARKET, "MrBeast", "P1"))
+    assert matching.SHARED_BOILERPLATE_ONLY not in judged.refusals
+    assert judged.distinctive_shared_tokens == ()

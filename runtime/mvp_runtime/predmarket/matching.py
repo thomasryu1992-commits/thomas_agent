@@ -10,8 +10,16 @@ So the design is deliberately timid:
 
 1. **Deterministic candidate generation only.** Normalized token overlap, close-date
    proximity, and (where both venues offer it) category. No model call, no learned
-   threshold — the same two payloads always produce the same verdict, and the reasoning is
-   readable in the record.
+   threshold, and the reasoning is readable in the record.
+
+   Determinism here means *the same batch always produces the same verdicts*, which is
+   weaker than it once was and deliberately so. One gate — ``SHARED_BOILERPLATE_ONLY`` —
+   needs to know how common a word is among the markets currently listed, so a pair's
+   verdict depends on the scan it was judged in. That was bought, not conceded: without it
+   the matcher put *"Will Gavin Newsom win the 2028 Democratic presidential nomination?"*
+   and *"Will MrBeast win the 2028 Democratic presidential nomination?"* in a shipped
+   candidate list. The dependency is recorded — every row carries the distinctive tokens it
+   rested on and the threshold — so any verdict is reproducible from what was written down.
 2. **A candidate is a proposal, never a pair.** Confirmation is an operator action
    (``pairs.py``). Nothing in this module writes anything.
 2b. **No venue is named in the vocabulary.** The two sides of a judgement are ``left`` and
@@ -66,6 +74,27 @@ CLOSE_TOO_FAR_APART = "CLOSE_TOO_FAR_APART"
 CLOSE_TIME_UNKNOWN = "CLOSE_TIME_UNKNOWN"
 CATEGORY_CONFLICT = "CATEGORY_CONFLICT"
 NUMERIC_MISMATCH = "NUMERIC_MISMATCH"
+SHARED_BOILERPLATE_ONLY = "SHARED_BOILERPLATE_ONLY"
+
+# A token appearing in more than this fraction of the scan's titles carries no information
+# about which event a market is: it is the template, not the question.
+#
+# Measured over 390 live titles on 2026-07-27, and the corpus is unusually clean about it —
+# 539 of 641 distinct tokens appear in under 1% of titles, while just 13 appear in over 10%.
+# The band between is nearly empty, so the threshold sits in a gap rather than on a slope:
+# `presidential` 39%, `win` 37%, `2028` 34%, `democratic` 25% against `ocasio` 1.0%,
+# `alexandria` 1.0%, `cortez` 1.0%.
+BOILERPLATE_SHARE = 0.10
+# ...and it must have been *seen* that often. A share alone is meaningless on a short scan:
+# with three markets, every word one of them uses appears in 33% of the corpus and a purely
+# proportional rule calls the whole language boilerplate. Caught by the three-venue test,
+# which reads three markets and had every candidate refused.
+#
+# So a word is only template once the template has visibly repeated. Below that, there is no
+# evidence either way and the gate does not fire — the same rule this module already follows
+# for a missing category: a feature that cannot be compared is excluded from the decision,
+# never counted against the pair.
+MIN_BOILERPLATE_TITLES = 10
 
 # The one piece of evidence that does not come from a heuristic: a venue naming the other
 # venue's market as the one it mirrors (Predict.fun carries `polymarketConditionIds`). It is
@@ -73,9 +102,13 @@ NUMERIC_MISMATCH = "NUMERIC_MISMATCH"
 VENUE_ASSERTED = "VENUE_ASSERTED_CROSS_REFERENCE"
 
 # Refusals that are *evidence*, not threshold guesses. A near miss is meant to say "our
-# rules may have been wrong"; these two say "these are different questions", so a pair
-# refused by one of them is not worth a reviewer's second look.
-_HARD_REFUSALS = frozenset({NUMERIC_MISMATCH, CATEGORY_CONFLICT})
+# rules may have been wrong"; these say "these are different questions", so a pair refused
+# by one of them is not worth a reviewer's second look.
+#
+# Adding SHARED_BOILERPLATE_ONLY here is also what drained the near-miss flood at its
+# source: the 3,405 rows were overwhelmingly two different people inside one template, which
+# is an answer rather than a doubt.
+_HARD_REFUSALS = frozenset({NUMERIC_MISMATCH, CATEGORY_CONFLICT, SHARED_BOILERPLATE_ONLY})
 
 # Words that carry no distinguishing information between two phrasings of one event.
 _STOPWORDS = frozenset({
@@ -168,6 +201,42 @@ def _numeric_agreement(left: Any, right: Any) -> bool | None:
     return a == b
 
 
+def token_commonness(titles: Iterable[Any]) -> dict[str, float]:
+    """Each token mapped to the fraction of titles it appears in. Pure.
+
+    The corpus is the scan's own markets, which is the only honest reference: "common" is a
+    property of what these venues are currently listing, not of English.
+
+    A token seen in fewer than ``MIN_BOILERPLATE_TITLES`` titles is reported as ``0.0``
+    however large its share — on a short scan a share is not evidence, and a word cannot be
+    called a template before the template has repeated. Callers therefore need no corpus-size
+    check of their own.
+    """
+    seen: list[frozenset[str]] = [frozenset(normalize_tokens(t)) for t in titles]
+    total = len(seen)
+    if not total:
+        return {}
+    counts: dict[str, int] = {}
+    for tokens in seen:
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+    return {
+        token: (count / total if count >= MIN_BOILERPLATE_TITLES else 0.0)
+        for token, count in counts.items()
+    }
+
+
+def distinctive_tokens(
+    tokens: Iterable[str], commonness: Mapping[str, float], *, max_share: float = BOILERPLATE_SHARE
+) -> tuple[str, ...]:
+    """The tokens that actually distinguish this market from the rest of the scan.
+
+    A token the corpus does not mention is distinctive by default: absence from the
+    frequency table means it appeared nowhere else, which is the strongest form of rare.
+    """
+    return tuple(sorted(t for t in tokens if commonness.get(t, 0.0) < max_share))
+
+
 def _category_agreement(left: PredMarket, right: PredMarket) -> bool | None:
     """``True``/``False`` when both sides state a category, ``None`` when either does not.
 
@@ -220,6 +289,11 @@ class MatchCandidate:
     right_title: str
     title_similarity: float
     shared_tokens: tuple[str, ...]
+    # The subset of the above that the rest of the scan does NOT also say — the evidence the
+    # pairing rests on. Empty means one of two things, and the refusals tell them apart:
+    # with SHARED_BOILERPLATE_ONLY present, the two markets agreed on nothing but the
+    # template; without it, no corpus was supplied and the question was never asked.
+    distinctive_shared_tokens: tuple[str, ...]
     unshared_tokens: tuple[str, ...]
     close_delta_hours: float | None
     category_agreement: bool | None
@@ -264,6 +338,7 @@ class MatchCandidate:
             # failed and by how much, without re-running anything.
             "title_similarity": self.title_similarity,
             "shared_tokens": list(self.shared_tokens),
+            "distinctive_shared_tokens": list(self.distinctive_shared_tokens),
             "unshared_tokens": list(self.unshared_tokens),
             "close_delta_hours": self.close_delta_hours,
             "category_agreement": self.category_agreement,
@@ -275,11 +350,17 @@ class MatchCandidate:
             "thresholds": {
                 "min_title_similarity": MIN_TITLE_SIMILARITY,
                 "max_close_delta_hours": MAX_CLOSE_DELTA_HOURS,
+                "boilerplate_share": BOILERPLATE_SHARE,
             },
         }
 
 
-def judge_pair(first: PredMarket, second: PredMarket) -> MatchCandidate:
+def judge_pair(
+    first: PredMarket,
+    second: PredMarket,
+    *,
+    commonness: Mapping[str, float] | None = None,
+) -> MatchCandidate:
     """Judge one cross-venue pairing. Pure: no I/O, no model call, no state.
 
     Both gates must pass. Category is recorded and, when both sides state one and they
@@ -289,6 +370,27 @@ def judge_pair(first: PredMarket, second: PredMarket) -> MatchCandidate:
     The arguments are ordered canonically before anything is recorded, so judging (A, B) and
     (B, A) produces the identical record. Every comparison here is symmetric, so this costs
     nothing and buys a stable id for a pairing that three venues can each name differently.
+
+    ``commonness`` is how often each token appears across the scan's own titles, and it is
+    the one input here that is not a property of the pair alone. It buys the gate that
+    caught this, live, inside a shipped candidate list:
+
+        Will Gavin Newsom win the 2028 Democratic presidential nomination?   (binance)
+        Will MrBeast     win the 2028 Democratic presidential nomination?    (polymarket)
+
+    Jaccard 0.625, comfortably past the 0.60 threshold, sharing nothing but the template —
+    `presidential` 39%, `win` 37%, `2028` 34%, `democratic` 25%. Two markets that share only
+    what everything shares are not nearly the same question; they are the same sentence with
+    the subject swapped, and the subject is the question. Exactly the structure
+    ``NUMERIC_MISMATCH`` already exists for, which is why this refusal is hard too.
+
+    **The cost, stated:** a verdict now depends on the batch, not only on the pair. That
+    weakens "the same two payloads always produce the same verdict" to "the same batch
+    does". It is recorded rather than hidden — every row carries its
+    ``distinctive_shared_tokens`` and the threshold — and the alternative was shipping a
+    matcher that manufactures a durable, entirely fake edge between Gavin Newsom and
+    MrBeast. Omitting ``commonness`` skips the gate and keeps the old purely-pairwise
+    behaviour.
     """
     left, right = sorted((first, second), key=lambda m: (str(m.venue), str(m.market_id)))
     left_tokens, right_tokens = set(normalize_tokens(left.title)), set(normalize_tokens(right.title))
@@ -314,6 +416,18 @@ def judge_pair(first: PredMarket, second: PredMarket) -> MatchCandidate:
     if numeric is False:
         refusals.append(NUMERIC_MISMATCH)
 
+    shared = left_tokens & right_tokens
+    # Empty when no corpus was supplied — *unmeasured*, not "none were distinctive". With
+    # nothing to compare against, listing every shared token here would record a finding
+    # that was never made, and a later reader would take the row as evidence the pairing
+    # rested on rare words.
+    distinctive = distinctive_tokens(shared, commonness) if commonness else ()
+    # Only when there IS something shared. Sharing nothing at all is not "sharing only
+    # boilerplate" — that pair is already refused on wording, and reporting both would name
+    # a gate that had no evidence to work with.
+    if commonness and shared and not distinctive:
+        refusals.append(SHARED_BOILERPLATE_ONLY)
+
     return MatchCandidate(
         left_venue=str(left.venue),
         right_venue=str(right.venue),
@@ -322,7 +436,8 @@ def judge_pair(first: PredMarket, second: PredMarket) -> MatchCandidate:
         left_title=left.title,
         right_title=right.title,
         title_similarity=similarity,
-        shared_tokens=tuple(sorted(left_tokens & right_tokens)),
+        shared_tokens=tuple(sorted(shared)),
+        distinctive_shared_tokens=distinctive,
         unshared_tokens=tuple(sorted(left_tokens ^ right_tokens)),
         close_delta_hours=delta,
         category_agreement=category,
@@ -368,16 +483,23 @@ def generate_candidates(
         for venue, markets in (markets_by_venue or {}).items()
     }
     venues = sorted(by_venue)
+    # The corpus is every market in this scan, across all venues. Built once and passed
+    # down, so "common" means "common in what these venues are listing right now" — and so
+    # the same batch always produces the same verdicts.
+    commonness = token_commonness(m.title for venue in venues for m in by_venue[venue])
 
     candidates: list[MatchCandidate] = []
     near_misses: list[MatchCandidate] = []
     judged_count = 0
+    boilerplate_only = 0
     for index, left_venue in enumerate(venues):
         for right_venue in venues[index + 1:]:
             for left in by_venue[left_venue]:
                 for right in by_venue[right_venue]:
                     judged_count += 1
-                    judged = judge_pair(left, right)
+                    judged = judge_pair(left, right, commonness=commonness)
+                    if SHARED_BOILERPLATE_ONLY in judged.refusals:
+                        boilerplate_only += 1
                     if judged.is_candidate:
                         candidates.append(judged)
                     elif keep_near_misses and judged.near_miss():
@@ -400,6 +522,11 @@ def generate_candidates(
         # all the near misses there were".
         "near_miss_total": near_miss_total,
         "near_miss_truncated": near_miss_total - len(kept),
+        # How many pairings agreed on nothing but the template. Reported because it is the
+        # size of the trap: before this gate existed, most of these were near misses and at
+        # least one was a candidate.
+        "boilerplate_only_count": boilerplate_only,
+        "boilerplate_share": BOILERPLATE_SHARE,
         # Stated so a reader never mistakes a proposal for a decision.
         "confirms_nothing": True,
     }
@@ -419,6 +546,7 @@ def candidate_status_line(result: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "BOILERPLATE_SHARE",
     "CATEGORY_CONFLICT",
     "NUMERIC_MISMATCH",
     "CLOSE_TIME_UNKNOWN",
@@ -428,15 +556,18 @@ __all__ = [
     "MAX_CLOSE_DELTA_HOURS",
     "MIN_TITLE_SIMILARITY",
     "NEAR_MISS_TITLE_SIMILARITY",
+    "SHARED_BOILERPLATE_ONLY",
     "TITLE_TOO_DIFFERENT",
     "VENUE_ASSERTED",
     "MatchCandidate",
     "candidate_status_line",
     "close_delta_hours",
+    "distinctive_tokens",
     "generate_candidates",
     "judge_pair",
     "normalize_tokens",
     "numeric_tokens",
     "title_similarity",
+    "token_commonness",
     "venue_cross_reference",
 ]
