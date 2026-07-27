@@ -24,7 +24,7 @@ from runtime.read_only_kernel import integrity
 from ..errors import ToolError
 from ..filelock import locked
 from .paper import OCCUPYING_STATUSES, state_dir
-from .robustness import verdict_rank
+from .robustness import classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
@@ -378,6 +378,27 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     # it: with ROBUST now gated on it, "PROVISIONAL because unconfirmed" and
     # "PROVISIONAL because it failed forward" are very different things to promote.
     holdout_state = str(robustness.get("holdout_status") or "UNCONFIRMED")
+    # The verdict is RECOMPUTED from the stored components, never read back as a label.
+    #
+    # It used to be read: `robustness.get("verdict")`. Verdicts are written once, at mint
+    # time, under whatever rule was current then — and the rule changed when ROBUST became
+    # gated on out-of-sample survival. Candidates minted before that kept a stored ROBUST
+    # while their holdout read UNCONFIRMED, a pair the rule can no longer produce. Measured
+    # on this machine: 12 of 269 candidates, and because `rank_candidates` orders by verdict
+    # tier FIRST, all 12 sorted above the 13 PROVISIONAL+CONFIRMED lineages that had actually
+    # survived unseen bars. The shortlist was inverted on exactly the property the holdout
+    # rule was added to enforce.
+    #
+    # `classify_verdict` is the one authority for the rule, so a later change to it cannot
+    # leave stale labels behind again. A record missing the components keeps its stored
+    # verdict — recomputing from absent inputs would invent a rating, not correct one.
+    stored_verdict = robustness.get("verdict")
+    score = robustness.get("robustness_score")
+    tpp = robustness.get("trades_per_parameter")
+    if isinstance(score, (int, float)) and isinstance(tpp, (int, float)):
+        verdict = classify_verdict(float(score), float(tpp), holdout_state)
+    else:
+        verdict = stored_verdict
     closed = int(_as_float(evidence.get("closed_count")))
     win_count = int(_as_float(evidence.get("win_count")))
     win_rate = round(win_count / closed, 8) if closed else 0.0
@@ -400,8 +421,8 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     rr_sort = _ALL_WINS_RR_SORT if all_wins else (reward_risk or 0.0)
     return {
         "candidate_id": candidate_id(record),
-        "verdict": robustness.get("verdict"),
-        "verdict_rank": verdict_rank(robustness.get("verdict")),
+        "verdict": verdict,
+        "verdict_rank": verdict_rank(verdict),
         "holdout_status": holdout_state,
         "robustness_score": round(_as_float(record.get("champion_score")), 8),
         "win_rate": win_rate,
