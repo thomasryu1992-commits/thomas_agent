@@ -1,4 +1,4 @@
-"""The operator's door to event pairing — propose, confirm, list, retire.
+"""The operator's door to PM1 — propose, confirm, list, retire, and read the result.
 
     python -m runtime.mvp_runtime.predmarket.pairs_cli propose
     python -m runtime.mvp_runtime.predmarket.pairs_cli confirm \\
@@ -8,6 +8,12 @@
         --criteria "this venue resolves on the same release, one day later"
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
+    python -m runtime.mvp_runtime.predmarket.pairs_cli report [--json]
+
+``report`` is the far end of the same workflow and lives here rather than behind a second
+entry point: propose -> confirm -> the scheduler observes -> read what it found. It answers
+the three questions PM1 exists for — how often, how large, and **how long** — and says
+plainly whether the window it had is the exit artifact or a progress check.
 
 ``propose`` reads both venues (through the gate — the mock by default, so this runs on any
 machine with no grant), **screens out the markets this pipeline cannot use**, judges every
@@ -38,7 +44,7 @@ from typing import Any
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs, screening
+from . import matching, pairs, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
     VENUES,
@@ -233,6 +239,15 @@ def _cmd_retire(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    built = report.build_pm1_report(now=pairs.now_iso(), max_gap_seconds=args.max_gap_seconds)
+    if args.json:
+        sys.stdout.write(json.dumps(built, ensure_ascii=False, indent=1) + "\n")
+        return EXIT_OK
+    sys.stdout.write(report.render_pm1_report_text(built) + "\n")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predmarket-pairs",
@@ -287,6 +302,16 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--reason", required=True)
     retire.add_argument("--by", default="thomas")
     retire.set_defaults(handler=_cmd_retire)
+
+    reporting = sub.add_parser("report", help="what the observations said: how often, how large, how long")
+    reporting.add_argument("--json", action="store_true")
+    reporting.add_argument(
+        "--max-gap-seconds", type=float, default=report.DEFAULT_MAX_GAP_SECONDS,
+        help=("how long a hole between two readings still counts as one episode (default "
+              f"{report.DEFAULT_MAX_GAP_SECONDS}s). Beyond it the episode is cut and marked: "
+              "seeing an edge at 09:00 and again at 11:00 is not evidence it was there at 10:00."),
+    )
+    reporting.set_defaults(handler=_cmd_report)
     return parser
 
 
