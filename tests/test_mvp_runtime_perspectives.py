@@ -243,3 +243,40 @@ def test_the_verdict_vocabulary_is_shared_not_duplicated():
     "what is checked" cannot drift into two."""
     assert validation.PERSPECTIVES is PERSPECTIVES
     assert set(PERSPECTIVE_VERDICTS) == {"POSITIVE", "MIXED", "NEGATIVE"}
+
+
+# --- the reader actually sees them ------------------------------------------
+
+def test_the_rendered_response_shows_the_separated_judgements():
+    """Recording them in the ledger is not enough: a reader who only sees the summary and the
+    recommendation gets the same blended narrative the separation exists to break up."""
+    from runtime.mvp_runtime.pipeline import render_response
+
+    output = {
+        "goal": "Evaluate the idea.", "summary": "A summary.",
+        "recommendation": {"action": "Validate first.", "reason": "CAC dominates."},
+        "role_specific_output": {
+            "key_findings": ["A finding."],
+            "perspectives": [
+                _entry("research", "POSITIVE", "Demand looks real."),
+                _entry("revenue", "NEGATIVE", "Unit economics do not close."),
+                _entry("risk", "MIXED", "Logistics unmodelled."),
+            ],
+        },
+    }
+    rendered = render_response(output)
+
+    assert "## Perspectives" in rendered
+    assert "**revenue** (NEGATIVE): Unit economics do not close." in rendered
+    # Read as input to the recommendation, not as a footnote to a conclusion already given.
+    assert rendered.index("## Perspectives") < rendered.index("## Recommendation")
+
+
+def test_an_output_without_perspectives_renders_no_empty_section():
+    """A candidate-role trial output has no perspectives block; it must not grow an empty
+    heading."""
+    from runtime.mvp_runtime.pipeline import render_response
+
+    rendered = render_response({"goal": "g", "summary": "s",
+                                "role_specific_output": {"key_findings": ["f"]}})
+    assert "## Perspectives" not in rendered
