@@ -38,7 +38,14 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 from . import schema_cache
 from . import timeutil
-from .authority import authority_invariant_holds, permission_decision_runtime_effect, rank_of
+from .authority import (
+    RISK_ORDER,
+    authority_invariant_holds,
+    permission_decision_runtime_effect,
+    rank_of,
+    risk_floor_for_disposition,
+    risk_rank,
+)
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 from .tools import SEARCH_TOOL_ID
@@ -263,12 +270,21 @@ _TRIAGE_ACTION = _ActionSpec(
 )
 
 
+# Policy §10 lists "내부 문서 생성" as its YELLOW example — 복구 가능한 내부 영향 →
+# EXECUTE_AND_REPORT — which is precisely what the R8 workspace write is. It shipped GREEN,
+# i.e. declaring itself a plain read while carrying the runtime's only EXECUTE_AND_REPORT
+# disposition on the run path. Nothing keyed off the discrepancy (the review threshold is
+# ORANGE/RED), so it changed no behavior; it made the record wrong, and the risk field is
+# load-bearing elsewhere. Exported because Prime folds it into the task-level classification.
+WORKSPACE_WRITE_RISK_LEVEL = "YELLOW"
+
 _WRITE_ACTION = _ActionSpec(
     action_type="workspace.file.create",
     target_suffix="workspace_write",
     tool_id=WRITE_TOOL_ID,
     data_scope=("task.request", "workspace.internal"),
     normalized_parameters={"write_mode": "create_only", "workspace_root": WORKSPACE_REL, "visibility": "internal"},
+    risk_level=WORKSPACE_WRITE_RISK_LEVEL,
     risk_reason="Create-only write into the approved internal workspace; no external, financial, or runtime effect.",
     authority_reason="Creating a new internal artifact within the assigned Task scope and authority ceiling.",
     decision_reason=(
@@ -496,6 +512,22 @@ def build_permission_decision(
         raise PlannerBlocked(
             "NOT_ALLOWED",
             f"scope {permission_scope} is BLOCK; a BLOCK decision is only buildable as resource-refusal evidence",
+        )
+
+    # Policy §10, read backwards: a decision may not declare less risk than its own disposition
+    # implies. Every action spec sets `risk_level` by hand, and the field is load-bearing —
+    # ORANGE/RED is what mandates an independent reviewer — so eleven hand-set constants that
+    # nothing cross-checks is a drift waiting to happen, and had already happened once (the R8
+    # write: GREEN and EXECUTE_AND_REPORT at the same time). Checked at the one construction
+    # site every decision passes through, so a future action cannot be added below its floor.
+    # This grants nothing: the disposition still comes only from the canonical policy.
+    risk_floor = risk_floor_for_disposition(disposition)
+    declared_rank = risk_rank(action.risk_level)     # None (unknown level) fails the check below
+    if declared_rank is None or declared_rank < RISK_ORDER[risk_floor]:
+        raise PlannerBlocked(
+            "RISK_BELOW_DISPOSITION_FLOOR",
+            f"action {action.action_type} declares risk_level {action.risk_level!r}, but a "
+            f"{disposition} action is at least {risk_floor} (policy §10)",
         )
 
     created = _parse_ts(now)
