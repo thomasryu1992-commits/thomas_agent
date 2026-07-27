@@ -40,7 +40,6 @@ from .market_data import (
 )
 
 
-
 def main(argv: list[str] | None = None) -> int:
     force_utf8_io()
     parser = argparse.ArgumentParser(
