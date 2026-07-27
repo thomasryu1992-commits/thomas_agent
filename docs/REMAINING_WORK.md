@@ -438,17 +438,28 @@ absence is compliance.
         request text would be a guess — §10's rule for a judgement made on insufficient
         information is to not lower the classification, so leaving it is the honest move until a
         consumer exists.
-- [ ] **§8.5 The specialist does not apply role contracts dynamically.** Because
-      `required_capabilities` is a constant, `select_role` always resolves to `general.specialist`.
-      The five candidate roles (`research`/`translation`/`content`/`business.analysis`/
-      `development.general`) are non-routable and reachable only through a one-shot `trial.py`
-      approval-consumption run. Making any of them routable is the standing `ROLE_GOVERNANCE`
-      approval — **Thomas's decision, not a build item**. `required_capabilities` is deliberately
-      still constant: with exactly one routable role, deriving it can only ever refuse a run that
-      works today (`NO_ROUTABLE_ROLE`), so it becomes useful on the day a second role is activated
-      and not before.
-      (§8.5 also lists a *Planning* role the registry does not have, and the registry has a
-      `development.general` the design does not list. One of the two documents is out of date.)
+- [~] **§8.5 Routing to more than one Role.** `research.general` and `translation.general` were
+      **activated by explicit Thomas decision 2026-07-27** (status/routable flipped in both the
+      registry and the definitions, versions bumped, hashes refreshed; `execution.live_trader`
+      deliberately **not** included — it is P5 with `external_action_allowed: true` and its
+      activation is a live-trading decision). Activation alone routes nothing, so the same PR
+      added `--kind` → capabilities → Role, and made the selected Role run against **its own**
+      output contract. See `BUILD_HISTORY.md`.
+      Recorded honestly: no `candidate_trial_report` backed the activation — trial records are
+      per-machine and gitignored, and Thomas activated on his own authority rather than waiting
+      for one. Legitimate, and the exception to trial → report → approval → activation, so it is
+      written into the registry beside the flip.
+  - [ ] **Role-aware hosted response schema.** The vendor analysis schemas are strict
+        (`additionalProperties: false`) and name only the business-analysis keys, so a hosted
+        model *cannot* return `translated_text`. A non-analysis kind therefore runs on the
+        deterministic provider only; a network provider is **refused by name**
+        (`ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER`) rather than producing a REVISE that
+        reads like a model quality problem. Fixing it means threading the Role's keys into
+        provider construction, which currently happens before the plan exists.
+  - [ ] **Operator-channel kind markers** (`!번역` / `!조사`, the `!중요` precedent). The CLI has
+        `--kind`; the chat door does not yet. Purely additive.
+  - [ ] The three still-candidate roles (`business.analysis`, `content.general`,
+        `development.general`) stay candidates — each activation is its own Thomas decision.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
       MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
       reach their own verdict before the integrated answer, declared in the role's output contract
