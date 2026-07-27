@@ -87,7 +87,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
 
 
 def _read_venue(
-    venue: str, *, limit: int, now: str, min_horizon_hours: float
+    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None
 ) -> tuple[list[PredMarket], dict[str, Any], str | None]:
     """One venue's *screenable* markets, its screen result, and any degrade reason.
 
@@ -99,8 +99,14 @@ def _read_venue(
     so the printed exclusion counts describe what actually came back rather than what we
     asked for.
     """
+    # `root` reaches the Safety-Flag gate, which resolves each venue's grant relative to
+    # it. Accepting the argument and not passing it on left the gate falling back to
+    # repo-root detection — correct in the deployed container by luck, and untestable
+    # against any other state dir.
     collector = select_pred_market_collector(
-        venue, min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours)
+        venue,
+        min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours),
+        root=root,
     )
     try:
         snapshot, _record = collect_pred_markets(venue, collector=collector, now=now, limit=limit)
@@ -135,7 +141,7 @@ def run_discovery(
     errors: dict[str, str] = {}
     for venue in wanted:
         observable, screen, error = _read_venue(
-            venue, limit=limit, now=now, min_horizon_hours=horizon)
+            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root)
         markets[venue], screens[venue] = observable, screen
         if error:
             errors[venue] = error
