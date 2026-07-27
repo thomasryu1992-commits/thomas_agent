@@ -202,22 +202,28 @@ def test_an_unreadable_now_sends_no_server_side_filter():
 def test_kalshi_asks_the_venue_to_filter_but_never_for_named_legs(monkeypatch):
     """The optimisation must not become a correctness boundary in the wrong direction: a
     confirmed leg is re-read whatever its horizon, so ``min_close_ts`` is sent for discovery
-    and never alongside ``tickers``."""
+    and never alongside ``tickers``.
+
+    It also pins which endpoint each mode uses — discovery through ``/events``, a named
+    re-read through ``/markets`` — because that split is what makes Kalshi usable at all.
+    """
     seen: list[str] = []
 
     def _capture(url, **kw):
         seen.append(url)
-        return {"markets": []}
+        return {"events": []} if "/events?" in url else {"markets": []}
 
     monkeypatch.setattr(md, "_get_json", _capture)
     monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
     collector = md.KalshiPublicCollector(min_close_time="2026-07-27T12:00:00Z")
 
     collector.list_markets(limit=10, timeout_seconds=5)
-    assert "min_close_ts=" in seen[-1]
+    assert "/events?" in seen[-1] and "min_close_ts=" in seen[-1]
+    assert "with_nested_markets=true" in seen[-1]
 
     collector.list_markets(limit=10, timeout_seconds=5, market_ids=["KXBTCD-1"])
-    assert "min_close_ts=" not in seen[-1] and "tickers=" in seen[-1]
+    assert "/markets?" in seen[-1] and "tickers=" in seen[-1]
+    assert "min_close_ts=" not in seen[-1]
 
 
 def test_polymarket_asks_gamma_to_filter_but_never_for_named_legs(monkeypatch):
