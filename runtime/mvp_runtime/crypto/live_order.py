@@ -42,6 +42,10 @@ from .live_pnl import (
     state_dir,
     utc_day,
 )
+# The clean-canary minimum belongs to the module that owns promotion evidence. This file
+# used to declare its own `= 3` beside it — two authorities for one safety threshold, with
+# nothing comparing them. No cycle: live_promotion does not import this module.
+from .live_promotion import DEFAULT_MIN_CLEAN_CANARY_ORDERS
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"
@@ -75,14 +79,6 @@ REGISTER_BUDGET_HINT = "register a budget with scripts/register_live_trading_bud
 
 # The ceiling a configured cap can never exceed, whatever the operator types. Source value.
 DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
-
-# How many clean canaries the autonomous path owes, re-exported from the module that owns the
-# concept. This file used to declare its own `= 3` beside `live_promotion`'s, so a safety
-# threshold had two authorities and nothing compared them: `promotion_status` could have
-# required four while `LiveOrderLimits` defaulted to three, and the suite would have stayed
-# green — its one assertion checked `live_promotion`'s copy against the literal 3, under the
-# name `test_default_minimum_matches_the_source`.
-from .live_promotion import DEFAULT_MIN_CLEAN_CANARY_ORDERS  # noqa: E402
 
 COUNTER_FILENAME = "live_order_counter.json"
 LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"

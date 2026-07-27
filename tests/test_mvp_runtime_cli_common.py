@@ -126,8 +126,49 @@ def test_an_entry_point_reconfigures_stdio_to_utf8(path):
     today: which strings are ASCII is not a property anyone maintains, and a single Korean
     message added later would reintroduce the bug silently. `force_utf8_io` is a no-op where
     stdio is already UTF-8, so there is no cost to calling it everywhere.
+
+    Checked as a *call*, not as a name. `"force_utf8_io" in source` was the first version and
+    it was too weak in the same way the clean-canary test was: it matches the import line, so
+    a module that imported the helper and never called it would have passed.
     """
-    assert "force_utf8_io" in path.read_text(encoding="utf-8"), (
+    source = path.read_text(encoding="utf-8")
+    assert re.search(r"^\s+force_utf8_io\(\)", source, re.M), (
         f"{path.relative_to(REPO_ROOT)} defines main() but never calls force_utf8_io(); "
         f"non-ASCII output will raise UnicodeEncodeError on a cp949 console"
     )
+
+
+# --- the banner's unstated precondition ---------------------------------------------
+
+def test_every_gated_provider_declares_network_egress():
+    """`gate_banners` announces `model_invocation` only for something already capable.
+
+    That ordering is deliberate — `MockProvider` declares a `model_id` too and must stay
+    silent — but it leaves a precondition nobody wrote down: a gated provider is assumed to
+    make a network call. An implementation that invokes a real model while declaring neither
+    `network_egress` nor `filesystem_write` prints *nothing*, which is the exact failure
+    `gate_banners` exists to prevent, one level down.
+
+    No such provider exists today, and this test is what keeps it that way: the catalogues
+    below are the only way a gated provider reaches a caller, so adding a local/in-process
+    model provider fails here and forces the banner logic to be extended before it ships,
+    rather than shipping a money-or-model capability that announces itself to no one.
+    """
+    from runtime.mvp_runtime import providers
+    from runtime.mvp_runtime.safety_gate import Authorization
+
+    auth = Authorization(
+        flags=("model_invocation", "network_access"), provider_id="test",
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    )
+    catalogue = {**providers._hosted_factories(), **providers._tier_factories()}
+    assert catalogue, "the provider catalogues are empty — this test would pass vacuously"
+
+    for provider_id, factory in sorted(catalogue.items()):
+        impl = factory(auth)
+        assert getattr(impl, "network_egress", False) is True, (
+            f"gated provider {provider_id} does not declare network_egress, so gate_banners "
+            f"would print no authorization notice for it; extend gate_banners to key on "
+            f"model invocation directly before adding a provider like this"
+        )

@@ -38,10 +38,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from .. import safety_gate, timeutil
+from ..cli_common import force_utf8_io
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
-from ..cli_common import force_utf8_io
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"

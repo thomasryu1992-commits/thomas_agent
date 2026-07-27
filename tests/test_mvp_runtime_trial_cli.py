@@ -20,8 +20,18 @@ import pytest
 from runtime.mvp_runtime import trial, trial_cli
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
 from runtime.mvp_runtime.errors import ApprovalBlocked
+from runtime.mvp_runtime.providers import HOSTED_PROVIDER_ENV, VALIDATOR_PROVIDER_ENV
 
 APPROVAL_ID = "approval_abc123"
+
+
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    """`_run` selects its providers from the ambient environment before running the
+    trial. Unset the opt-ins so a granted developer machine does not construct real
+    hosted providers — and print their SAFETY_GATE banners — while running the suite."""
+    monkeypatch.delenv(HOSTED_PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(VALIDATOR_PROVIDER_ENV, raising=False)
 
 
 def _result(status="COMPLETED", *, persist_error=None, block=None, report=True):

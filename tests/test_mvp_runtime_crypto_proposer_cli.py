@@ -19,8 +19,23 @@ import pytest
 
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
 from runtime.mvp_runtime.crypto import proposer, proposer_cli
+from runtime.mvp_runtime.crypto.market_data import MARKET_DATA_ENV
 from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.providers import VALIDATOR_PROVIDER_ENV
 from runtime.mvp_runtime.store import LedgerStore
+
+
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    """Unset the two opt-in env vars, so selection returns the deterministic mocks.
+
+    Not belt-and-braces: this CLI selects its market-data collector and validator provider
+    from the ambient environment. On a machine that has opted in *and* holds the matching
+    grants — a developer's, not CI's — these tests would otherwise open a real socket to
+    Binance and spend a real model call, as a side effect of running the suite.
+    """
+    monkeypatch.delenv(MARKET_DATA_ENV, raising=False)
+    monkeypatch.delenv(VALIDATOR_PROVIDER_ENV, raising=False)
 
 
 @pytest.fixture

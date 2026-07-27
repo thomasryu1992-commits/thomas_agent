@@ -26,11 +26,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import timeutil
+from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import account, counterfactual, digest, feedback, paper, pool
-from ..cli_common import force_utf8_io
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
