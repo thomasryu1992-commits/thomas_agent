@@ -73,13 +73,19 @@ roles:
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/TRANSLATION_ROLE.md
   definition_sha256: 8cbe949c1d5f9110873542a380fc465dbdb6436dc21dec60957c28679e3f388d
+# Activated by explicit Thomas decision, 2026-07-27, in the same round as research.general and
+# translation.general. `business.analysis` was deliberately held back in that decision: its
+# capabilities (opportunity_analysis / revenue_potential_assessment / downside_risk_assessment)
+# overlap the MVP's core use case, which general.specialist already serves with the 10.4
+# perspectives - so activating it is a role-split question, not a routing one, and is its own
+# later decision. No candidate_trial_report backs this either; see the note above.
 - role_id: content.general
-  version: 0.3.0
+  version: 0.4.0
   role_type: dynamic_specialist
-  status: candidate
-  routable: false
+  status: active
+  routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/CONTENT_ROLE.md
-  definition_sha256: 3387d708fe0909921bc860d05ccfd511a1e8a811ddebf93fdd04e73dce06ba23
+  definition_sha256: 13e58c21e6e8ee19c546b9bbabd36d1e1493b9955e9575b6e0ec282baf17b3fd
 - role_id: business.analysis
   version: 0.3.0
   role_type: dynamic_specialist
@@ -87,13 +93,19 @@ roles:
   routable: false
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/BUSINESS_ANALYSIS_ROLE.md
   definition_sha256: c841d4513f14867419ff89276ae651b8a51b7f082a98478431d019037ffaf4cc
+# Activated by explicit Thomas decision, 2026-07-27, in the same round as research.general and
+# translation.general. `business.analysis` was deliberately held back in that decision: its
+# capabilities (opportunity_analysis / revenue_potential_assessment / downside_risk_assessment)
+# overlap the MVP's core use case, which general.specialist already serves with the 10.4
+# perspectives - so activating it is a role-split question, not a routing one, and is its own
+# later decision. No candidate_trial_report backs this either; see the note above.
 - role_id: development.general
-  version: 0.3.0
+  version: 0.4.0
   role_type: dynamic_specialist
-  status: candidate
-  routable: false
+  status: active
+  routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
-  definition_sha256: 56f1201387638ae78bc10714b3c7471277abb50776c343b9ef2985eb5c596ae2
+  definition_sha256: ade8a410ae91a38aac7cc94eb3643cfc94759e290bd244ef22ed656a834f18d7
 - role_id: execution.live_trader
   version: 0.1.0
   role_type: dynamic_specialist

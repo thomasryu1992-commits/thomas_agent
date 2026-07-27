@@ -73,6 +73,12 @@ REQUEST_KIND_CAPABILITIES: dict[str, tuple[str, ...]] = {
     REQUEST_KIND_ANALYSIS: MVP_REQUIRED_CAPABILITIES,          # general.specialist
     "research": ("evidence_collection", "source_comparison"),  # research.general
     "translation": ("translation", "ambiguity_disclosure"),    # translation.general
+    # content.general shares `drafting` with general.specialist, so a content kind asking for
+    # `drafting` alone would be AMBIGUOUS_ROLE. Both of these are content-only, which is the
+    # general rule for this table: every set must name at least one capability its Role does
+    # not share, or the Registry cannot tell the two apart.
+    "content": ("content_planning", "audience_adaptation"),     # content.general
+    "development": ("technical_analysis", "implementation_planning"),  # development.general
 }
 _READ_ONLY_CONSTRAINT = "no_external_action"
 

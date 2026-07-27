@@ -31,7 +31,8 @@ from runtime.mvp_runtime.planner import (
 
 REPO = Path(repo_root())
 NOW = "2026-07-27T09:00:00Z"
-ACTIVATED = ("research.general", "translation.general")
+ACTIVATED = ("research.general", "translation.general",
+             "content.general", "development.general")
 
 
 def _task(**overrides):
@@ -83,6 +84,8 @@ def test_every_request_kind_resolves_to_exactly_one_role():
         REQUEST_KIND_ANALYSIS: DEFAULT_SPECIALIST_ROLE_ID,
         "research": "research.general",
         "translation": "translation.general",
+        "content": "content.general",
+        "development": "development.general",
     }
 
 
@@ -369,3 +372,32 @@ def test_an_unbindable_network_provider_is_still_refused():
     with pytest.raises(WorkerBlocked) as exc:
         pipeline._provider_for_role(_NetworkProvider(), _spec())
     assert exc.value.reason_code == "ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER"
+
+
+# --- the second activation round (content / development) ---------------------
+
+def test_business_analysis_was_held_back():
+    """Deliberately still a candidate. Its capabilities overlap the MVP's core use case, which
+    `general.specialist` already serves with the §10.4 perspectives — so activating it is a
+    role-split question rather than a routing one, and is its own later decision."""
+    entry = next(r for r in _registry()["roles"] if r["role_id"] == "business.analysis")
+    assert (entry["status"], entry["routable"]) == ("candidate", False)
+    assert "business" not in REQUEST_KIND_CAPABILITIES
+
+
+def test_no_kind_leans_on_a_capability_its_role_shares():
+    """The rule that keeps `select_role` able to tell Roles apart, checked against the live
+    registry rather than trusted: `content.general` shares `drafting` with `general.specialist`,
+    so a content kind asking for `drafting` alone would be AMBIGUOUS_ROLE. Every set must name
+    at least one capability its Role does not share with any other routable Role."""
+    resolved = load_resolved_roles(REPO)
+    routable = {r["role_id"]: set(r["capabilities"]) for r in resolved["roles"] if r["routable"]}
+    for kind, capabilities in REQUEST_KIND_CAPABILITIES.items():
+        owners = [rid for rid, caps in routable.items() if set(capabilities) <= caps]
+        assert len(owners) == 1, f"{kind} is covered by {owners}"
+
+
+def test_drafting_really_is_shared_so_the_rule_above_is_not_hypothetical():
+    resolved = load_resolved_roles(REPO)
+    caps = {r["role_id"]: set(r["capabilities"]) for r in resolved["roles"]}
+    assert "drafting" in caps["general.specialist"] & caps["content.general"]
