@@ -515,9 +515,12 @@ def test_near_misses_are_capped_and_say_how_many_were_cut():
     """Once the venues began quoting the same subjects, shared boilerplate put thousands of
     unrelated pairings above the floor. Truncating is fine; truncating silently would make
     the list read as complete."""
+    # Same party on both sides on purpose: "Democratic" against "Republican" is now an
+    # OPPOSING_TERMS refusal, which is a hard one and therefore never a near miss. The near
+    # misses this cap exists for are unrelated people inside one template.
     left = [_at(KALSHI, f"Will candidate {i} win the 2028 Democratic nomination?", f"K{i}",
                 close="2026-12-31T23:59:00Z") for i in range(12)]
-    right = [_at(POLYMARKET, f"Will person {i} win the 2028 Republican nomination?", f"P{i}",
+    right = [_at(POLYMARKET, f"Will person {i} win the 2028 Democratic nomination?", f"P{i}",
                  close="2027-06-01T00:00:00Z") for i in range(12)]
     result = matching.generate_candidates({KALSHI: left, POLYMARKET: right}, near_miss_limit=5)
     assert result["near_miss_total"] > 5
@@ -630,3 +633,86 @@ def test_omitting_the_corpus_keeps_the_old_purely_pairwise_behaviour():
                                  _nominee(POLYMARKET, "MrBeast", "P1"))
     assert matching.SHARED_BOILERPLATE_ONLY not in judged.refusals
     assert judged.distinctive_shared_tokens == ()
+
+
+# --- the opposite question --------------------------------------------------------
+
+def _pair(a, b):
+    return matching.judge_pair(_market(KALSHI, "K1", a), _market(POLYMARKET, "P1", b))
+
+
+def test_the_opposite_question_is_refused_however_high_it_scores():
+    """The most dangerous pairing there is, and both of these were at the TOP of a shipped
+    confirmation sheet, where they looked like the strongest finds in it.
+
+    Opposite outcomes price at roughly p and 1-p, so the apparent gross edge is enormous and
+    permanent — "manufactures arbitrage forever" in its textbook form.
+    """
+    for left, right in (
+        ("Will the Fed decrease interest rates by 50+ bps after the July 2026 meeting?",
+         "Will the Fed increase interest rates by 50+ bps after the July 2026 meeting?"),
+        ("Will the Democratic Party control the Senate after the 2026 Midterm elections?",
+         "Will the Republican Party control the Senate after the 2026 Midterm elections?"),
+        ("Fed rate hike in 2026?", "Fed rate cut in 2026?"),
+    ):
+        judged = _pair(left, right)
+        assert judged.is_candidate is False, left
+        assert matching.OPPOSING_TERMS in judged.refusals
+        # A hard refusal: this is an answer, not a threshold that nearly worked.
+        assert judged.near_miss() is False
+
+
+def test_direction_words_are_the_question_and_are_no_longer_stopwords():
+    """The worse half. `up`, `down`, `over` and `under` were stopwords, so these normalized
+    to the SAME tokens and scored a perfect 1.0 — the matcher could not see the difference at
+    all. Binance lists up-or-down markets by the dozen."""
+    for word in ("up", "down", "over", "under"):
+        assert word not in matching._STOPWORDS  # noqa: SLF001 - the whole point
+
+    for left, right in (
+        ("Over 2.5 runs scored in the 1st inning?", "Under 2.5 runs scored in the 1st inning?"),
+        ("Bitcoin Up on July 27?", "Bitcoin Down on July 27?"),
+    ):
+        judged = _pair(left, right)
+        assert judged.title_similarity < 1.0, "the direction must survive normalization"
+        assert judged.is_candidate is False
+        assert matching.OPPOSING_TERMS in judged.refusals
+
+
+def test_a_market_carrying_both_directions_is_not_opposed_to_itself():
+    """"Bitcoin Up or Down on July 27?" names both. Two venues quoting that same up-or-down
+    question are asking one question, not two halves of one — and the gate only looks at
+    words neither side shares, so it correctly stays quiet."""
+    judged = _pair("Bitcoin Up or Down on July 27?", "Bitcoin Up or Down on July 27?")
+    assert judged.is_candidate is True
+    assert matching.OPPOSING_TERMS not in judged.refusals
+
+
+def test_agreeing_on_a_direction_is_not_opposing():
+    """Both sides saying "above" is agreement. A gate that fired on the mere presence of a
+    direction word would refuse every threshold market on both venues."""
+    judged = _pair("Will BTC close above 100k on Dec 31?", "Will Bitcoin close above 100k on Dec 31?")
+    assert judged.is_candidate is True and judged.refusals == ()
+
+    # Different words, same direction: "below" and "under" do not oppose each other.
+    assert matching.opposing_terms(
+        matching.normalize_tokens("Will inflation fall below 3%?"),
+        matching.normalize_tokens("Will inflation come in under 3%?"),
+    ) is False
+
+
+def test_degree_is_left_to_the_gate_that_can_see_it():
+    """"Cut by 25bps" against "cut by 50bps" is not an opposing pair — it is the same
+    direction at different sizes, which is exactly what the numeric gate is for. Claiming it
+    here would put two refusals on one row and point a later fix at the wrong rule."""
+    judged = _pair("Will the Fed cut rates by 25 bps in December?",
+                   "Will the Fed cut rates by 50 bps in December?")
+    assert matching.OPPOSING_TERMS not in judged.refusals
+    assert matching.NUMERIC_MISMATCH in judged.refusals
+
+
+def test_the_gate_is_symmetric():
+    """Judging (A, B) and (B, A) must not disagree about whether they oppose each other."""
+    up = "Will the Fed increase rates in December?"
+    down = "Will the Fed decrease rates in December?"
+    assert _pair(up, down).refusals == _pair(down, up).refusals
