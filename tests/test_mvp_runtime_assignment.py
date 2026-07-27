@@ -65,7 +65,7 @@ def test_assignment_is_schema_valid_and_role_bound():
     _, role, pd, a = _pipeline()
     assert a["schema_version"] == "role_assignment.v0.2"
     assert a["role_id"] == "general.specialist"
-    assert a["role_version"] == "0.3.0"
+    assert a["role_version"] == "0.4.0"
     assert a["assignment_status"] == "ASSIGNED"
     assert a["escalation_target"] == "thomas_prime"
 

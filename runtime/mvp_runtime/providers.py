@@ -35,7 +35,9 @@ _RESPONSE_INSTRUCTION = (
     "{statement: string, evidence_refs: array of strings}), inferences (array of strings), "
     "assumptions (array of strings), uncertainty (array of strings), risks (array of strings), "
     "recommendation (object {action: string, reason: string} or null), limitations (array of strings), "
-    "next_actions (array of strings), evidence_quality (string), unresolved_questions (array of strings)."
+    "next_actions (array of strings), evidence_quality (string), unresolved_questions (array of strings), "
+    "perspectives (array of objects {perspective: string, verdict: string, basis: string}; "
+    "return [] unless the prompt asked you to judge from separate perspectives)."
 )
 
 
@@ -49,6 +51,20 @@ _RESPONSE_INSTRUCTION = (
 # facts/key_findings (they judge an answer, they do not produce one), so requiring a
 # non-empty array here would ask them to invent content. The schema guarantees the KEYS
 # exist; non-emptiness is the specialist prompt's job (``worker.ACCEPTANCE_CRITERIA``).
+#
+# ``perspectives`` (§10.4) joins on exactly those terms — a required KEY that the validator
+# and triage return empty, because only the specialist prompt asks for the separation and
+# only the specialist's role contract declares the field. It has to be here rather than in
+# the specialist prompt alone: the OpenAI dialect below is strict
+# (``additionalProperties: false``), so a key the schema does not name is not merely
+# unrequested, it is *rejected* — the specialist would be asked for a field the transport
+# then refused, and every hosted run would fail its own perspective check.
+#
+# ``verdict`` is a plain string here rather than an enum: the two vendor dialects differ on
+# enum support and an unsupported keyword fails the whole request, which would degrade every
+# run instead of one field. The allowed values are stated in the specialist prompt, and
+# ``worker._perspectives`` drops anything else — fail-closed, and the cost of a wrong verdict
+# is one REVISE rather than an outage.
 #
 # ``recommendation`` stays nullable per the documented contract ("or null"). The validator
 # and triage carry their verdict in ``recommendation.action`` and their prompts say so
@@ -81,15 +97,24 @@ _ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
         "next_actions": _STRING_ARRAY,
         "evidence_quality": {"type": "string"},
         "unresolved_questions": _STRING_ARRAY,
+        "perspectives": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"perspective": {"type": "string"}, "verdict": {"type": "string"},
+                               "basis": {"type": "string"}},
+                "required": ["perspective", "verdict", "basis"],
+            },
+        },
     },
     "required": [
         "summary", "key_findings", "facts", "inferences", "assumptions", "uncertainty",
         "risks", "recommendation", "limitations", "next_actions", "evidence_quality",
-        "unresolved_questions",
+        "unresolved_questions", "perspectives",
     ],
 }
 
-# The SAME 12-key shape as above, in the OpenAI/OpenRouter ``json_schema`` (strict) dialect.
+# The SAME 13-key shape as above, in the OpenAI/OpenRouter ``json_schema`` (strict) dialect.
 # Kept as a separate constant rather than shared with _ANALYSIS_RESPONSE_SCHEMA because the
 # two vendor dialects genuinely differ and mixing them fails closed on both sides: OpenAI
 # strict mode requires ``additionalProperties: false`` on every object and expresses a
@@ -126,11 +151,21 @@ _ANALYSIS_JSON_SCHEMA: dict[str, Any] = {
         "next_actions": _STRING_ARRAY,
         "evidence_quality": {"type": "string"},
         "unresolved_questions": _STRING_ARRAY,
+        "perspectives": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"perspective": {"type": "string"}, "verdict": {"type": "string"},
+                               "basis": {"type": "string"}},
+                "required": ["perspective", "verdict", "basis"],
+            },
+        },
     },
     "required": [
         "summary", "key_findings", "facts", "inferences", "assumptions", "uncertainty",
         "risks", "recommendation", "limitations", "next_actions", "evidence_quality",
-        "unresolved_questions",
+        "unresolved_questions", "perspectives",
     ],
 }
 

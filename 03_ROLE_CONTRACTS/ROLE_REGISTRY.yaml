@@ -32,12 +32,12 @@ non_dynamic_roles:
   definition_sha256: 55ab4f56ccb277d4943c1e68f265020fe2c39aebedce019f0dd13a780d6656db
 roles:
 - role_id: general.specialist
-  version: 0.3.0
+  version: 0.4.0
   role_type: dynamic_specialist
   status: active
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/ACTIVE/GENERAL_SPECIALIST_ROLE.md
-  definition_sha256: 772cdefebe343e4f3a7b5d8f4f026fb7a4442517d72bd6c976e4688507ae7405
+  definition_sha256: 68e0d1838c0d0ca3312103e1262a8da347ecc5e71907e28ecc82670a31e57fc0
 - role_id: validation.independent
   version: 0.3.0
   role_type: independent_validator

@@ -449,12 +449,12 @@ absence is compliance.
       and not before.
       (§8.5 also lists a *Planning* role the registry does not have, and the registry has a
       `development.general` the design does not list. One of the two documents is out of date.)
-- [ ] **§10.4 No multi-perspective team.** The design's complex-strategy pattern (Research /
-      Revenue / Risk perspectives → integrated decision) has no expression in the runtime — there is
-      no perspective concept at all. §10.4 explicitly permits the cheap form for early MVP: *"one
-      Agent may separate these perspectives internally"*, i.e. prompt-level in `worker.build_prompt`,
-      no new agents and no §16 guardrail problem. The expensive form (perspectives as separate
-      agents) is gated on §13's 3-of-6 separation criteria and is not owed yet.
+- [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
+      MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
+      reach their own verdict before the integrated answer, declared in the role's output contract
+      and enforced by a validation check. The expensive form — perspectives as separate Agents —
+      stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
+      agent cannot hold the three. See `BUILD_HISTORY.md`.
 
 Also raised and closed 2026-07-27: `docs/ACTIVE_ARCHITECTURE.md` — the document `CLAUDE.md` names
 as the owner of current-implementation truth — still described the pre-R2 repository (baseline
