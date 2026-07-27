@@ -23,6 +23,7 @@ import pytest
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.predmarket import matching, pairs
 from runtime.mvp_runtime.predmarket.market_data import BINANCE, KALSHI, POLYMARKET, PredMarket
+from tests._helpers import LiveLikePredMarketCollector
 
 NOW = "2026-07-26T12:00:00Z"
 
@@ -315,13 +316,49 @@ def cli_root(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_propose_confirms_nothing(cli_root, capsys):
+@pytest.fixture
+def live_venues(monkeypatch):
+    """Propose against data claiming to have come from the venues, not from the mock."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    monkeypatch.setattr(
+        pairs_cli, "select_pred_market_collector",
+        lambda venue, **kw: LiveLikePredMarketCollector(venue),
+    )
+
+
+def test_propose_confirms_nothing(cli_root, capsys, live_venues):
     from runtime.mvp_runtime.predmarket import pairs_cli
 
     assert pairs_cli.main(["propose", "--limit", "4"]) == 0
     out = capsys.readouterr().out
+    # Candidates were actually generated — without `live_venues` this test passes on "0
+    # candidate(s)" and stops covering the matcher at all.
+    assert "0 candidate(s)" not in out
     assert "candidate(s)" in out
     assert "Confirmation is yours" in out
+    assert pairs.read_groups(cli_root) == []
+
+
+def test_propose_refuses_to_build_candidates_out_of_the_mock(cli_root, capsys):
+    """The durable door, and the reason this matters more here than in the scan.
+
+    A confirmation is written to the group store and re-read by every later scan. The two
+    venues' mocks deliberately carry the *same titles at different prices* — the exact shape
+    the matcher is built to find — so a both-venues-on-mock propose run yields clean-looking
+    candidates out of ``(venue, index)``. Confirming one writes mock ids into the store
+    permanently. A rehearsal must not be able to author a confirmed pair, so a synthetic read
+    degrades the venue exactly like an outage, and says which it was.
+    """
+    from runtime.mvp_runtime.predmarket import pairs_cli
+    from runtime.mvp_runtime.predmarket.market_data import SYNTHETIC_SOURCE, VENUES
+
+    assert pairs_cli.main(["propose", "--limit", "4"]) == 0  # no live_venues: the real default
+    out = capsys.readouterr().out
+    # Every venue, not a fixed count — a fourth one must inherit the refusal, not slip past it.
+    assert out.count("DEGRADED") == len(VENUES)
+    assert SYNTHETIC_SOURCE in out
+    assert "0 candidate(s)" in out
     assert pairs.read_groups(cli_root) == []
 
 
