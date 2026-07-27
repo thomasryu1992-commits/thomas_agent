@@ -311,6 +311,68 @@ def resolve_live_order_limits(
     return limits, status
 
 
+ORDER_NOTIONAL_UNDERSTATED = "ORDER_NOTIONAL_UNDERSTATED"
+ORDER_NOTIONAL_PRICE_UNKNOWN = "ORDER_NOTIONAL_PRICE_UNKNOWN"
+
+# How far below `quantity x price` a declaration may sit before it is refused. Not zero: the
+# operator reads a price a moment before the order goes out, and a tick of drift between the
+# two is normal. One percent is small enough that it cannot hide a meaningful over-size.
+NOTIONAL_TOLERANCE_FRACTION = 0.01
+
+
+def check_declared_notional(
+    *,
+    quantity: float,
+    declared_notional_usdt: float,
+    reference_price: float | None,
+) -> dict[str, Any]:
+    """Verify a hand-declared notional against the quantity that will actually be sent.
+
+    The two are independent operator inputs at the canary door: `--quantity` is what reaches
+    the venue, while `--notional` is only what `evaluate_live_order_guard` measures against
+    the registered budget's caps. Nothing compared them, so an under-declared notional walked
+    a *larger* real position through the per-order and exposure limits — the caps did their
+    arithmetic on a number the operator had to get right by hand.
+
+    Over-declaring passes. It only makes every cap stricter, and refusing it would turn a
+    conservative operator into a blocked one.
+
+    A missing price is a refusal, not a pass. "Nothing to check" must never read as
+    "approved", least of all on the runs where market data is broken — that is exactly when a
+    price that reads low is what lets a bigger position past a cap.
+    """
+    if reference_price is None or not (reference_price > 0):
+        return {
+            "ok": False,
+            "reason_code": ORDER_NOTIONAL_PRICE_UNKNOWN,
+            "implied_notional_usdt": None,
+            "message": (
+                "no usable reference price, so the declared notional cannot be checked "
+                "against the quantity; refusing rather than trusting the declaration"
+            ),
+        }
+
+    implied = float(quantity) * float(reference_price)
+    floor = implied * (1.0 - NOTIONAL_TOLERANCE_FRACTION)
+    if float(declared_notional_usdt) < floor:
+        return {
+            "ok": False,
+            "reason_code": ORDER_NOTIONAL_UNDERSTATED,
+            "implied_notional_usdt": implied,
+            "message": (
+                f"declared notional {float(declared_notional_usdt):.2f} USDT is below "
+                f"{quantity} x {reference_price:.2f} = {implied:.2f} USDT; the caps would be "
+                f"measuring a smaller order than the one being sent. Declare {implied:.2f}"
+            ),
+        }
+    return {
+        "ok": True,
+        "reason_code": None,
+        "implied_notional_usdt": implied,
+        "message": f"declared notional covers {implied:.2f} USDT at {reference_price:.2f}",
+    }
+
+
 def evaluate_live_order_guard(
     intent: Mapping[str, Any],
     *,

@@ -387,8 +387,8 @@ def test_openrouter_difficulty_tiers_inherit_schema_enforcement():
     )
 
     for cls in (OpenRouterLightProvider, OpenRouterStandardProvider, OpenRouterHeavyProvider):
-        assert cls._RESPONSE_FORMAT == OpenRouterProvider._RESPONSE_FORMAT
-        assert cls._RESPONSE_FORMAT["type"] == "json_schema"
+        assert cls._response_format is OpenRouterProvider._response_format
+        assert cls(authorization=None)._response_format()["type"] == "json_schema"
 
 
 def test_groq_body_keeps_plain_json_object_mode(monkeypatch):
@@ -587,7 +587,7 @@ def test_the_two_openai_compatible_adapters_share_one_implementation():
     vendor values and inherit everything else. Asserted so the next OpenAI-compatible backend
     is added as a few constants rather than a third copy of the gate/secret/retry logic.
 
-    The one deliberate asymmetry: OpenRouter also overrides ``_RESPONSE_FORMAT`` to enforce
+    The one deliberate asymmetry: OpenRouter also overrides ``_response_format`` to enforce
     the analysis schema server-side, while Groq keeps the inherited json_object default. That
     single extra attribute is a decision (see OpenRouterProvider's docstring), asserted here
     so it reads as intentional rather than as creeping per-vendor logic."""
@@ -609,7 +609,7 @@ def test_the_two_openai_compatible_adapters_share_one_implementation():
     # Groq restates only the four vendor values — including no response-format override.
     assert own_attrs(GroqProvider) == vendor_values
     # OpenRouter restates the four vendor values plus its one schema-enforcement decision.
-    assert own_attrs(OpenRouterProvider) == vendor_values | {"_RESPONSE_FORMAT"}
+    assert own_attrs(OpenRouterProvider) == vendor_values | {"_response_format"}
     assert GroqProvider.model_id != OpenRouterProvider.model_id
     assert _OpenAICompatibleProvider.network_egress is True
 

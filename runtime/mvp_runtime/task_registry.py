@@ -61,9 +61,13 @@ from . import jsonl, schema_cache, timeutil
 from .errors import PersistenceError, TaskRegistryBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
+from .planner import REQUEST_KIND_CAPABILITIES
 
 REGISTRY_REL = ".runtime_governance_state/task_registry.jsonl"
-SCHEMA_VERSION = "task_registry_entry.v0.1"
+# v0.2 adds `request_kind` (architecture 8.5). Additive: v0.1 rows already on disk carry no
+# such key, and `from_record` reads a missing one as None — which IS the analysis routing they
+# were queued with, so old rows keep meaning exactly what they meant.
+SCHEMA_VERSION = "task_registry_entry.v0.2"
 
 # Lifecycle. Terminal statuses are final — the registry is a record of what happened, so a
 # terminal entry is never re-opened (a re-run is a new submission with its own entry).
@@ -120,6 +124,9 @@ class RegistryEntry:
     flags: dict[str, bool]
     status: str
     submitted_at: str
+    # 8.5 routing kind. A string beside the booleans, not inside them: flags answer yes/no
+    # about a run option, this names which capability set the request needs. None = analysis.
+    request_kind: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     task_id: str | None = None
@@ -135,6 +142,7 @@ class RegistryEntry:
             "origin": self.origin,
             "requester_id": self.requester_id,
             "flags": {name: bool(self.flags.get(name, False)) for name in _FLAG_NAMES},
+            "request_kind": self.request_kind,
             "status": self.status,
             "submitted_at": self.submitted_at,
             "started_at": self.started_at,
@@ -162,6 +170,7 @@ class RegistryEntry:
                 origin=str(r["origin"]),
                 requester_id=str(r["requester_id"]),
                 flags={name: bool(flags.get(name, False)) for name in _FLAG_NAMES},
+                request_kind=_opt_str(r.get("request_kind")),
                 status=status,
                 submitted_at=str(r["submitted_at"]),
                 started_at=_opt_str(r.get("started_at")),
@@ -218,6 +227,7 @@ def build_entry(
     requester_id: str,
     now: str,
     flags: Mapping[str, bool] | None = None,
+    request_kind: str | None = None,
     status: str = QUEUED,
 ) -> RegistryEntry:
     """Validate inputs and build a new entry with a deterministic id. Fail-closed.
@@ -241,6 +251,19 @@ def build_entry(
     if unknown:
         # A silently-dropped flag would make history explain a run by options it never had.
         raise TaskRegistryBlocked("UNKNOWN_FLAG", f"unknown submission flags: {unknown}")
+    # Refuse an unroutable kind at SUBMISSION, not at drain time. The queue is durable and
+    # unattended: a bad kind accepted here surfaces minutes later as a blocked run with
+    # nobody watching, when the operator who typed it is long gone from the channel.
+    # Blank is ABSENT, not unroutable: whitespace is a caller passing nothing, and refusing it
+    # would turn a harmless empty argument into a submission failure.
+    kind = request_kind.strip() if isinstance(request_kind, str) else None
+    kind = kind or None
+    if kind is not None and kind not in REQUEST_KIND_CAPABILITIES:
+        raise TaskRegistryBlocked(
+            "UNKNOWN_REQUEST_KIND",
+            f"request kind {kind!r} is not routable; known kinds: "
+            f"{sorted(REQUEST_KIND_CAPABILITIES)}",
+        )
     entry_id = integrity.short_id(
         "treg",
         {"request": text, "origin": origin, "requester_id": requester_id.strip(), "submitted_at": now},
@@ -250,6 +273,7 @@ def build_entry(
         request_text=text,
         origin=origin,
         requester_id=requester_id.strip(),
+        request_kind=kind or None,
         flags={name: bool(supplied.get(name, False)) for name in _FLAG_NAMES},
         status=status,
         submitted_at=now,
@@ -474,6 +498,7 @@ def enqueue(
     requester_id: str,
     now: str,
     flags: Mapping[str, bool] | None = None,
+    request_kind: str | None = None,
 ) -> tuple[RegistryEntry, int]:
     """Queue a request for later execution. Returns ``(entry, queue_position)``.
 
@@ -496,7 +521,7 @@ def enqueue(
         )
     entry = build_entry(
         request_text=request_text, origin=origin, requester_id=requester_id,
-        now=now, flags=flags, status=QUEUED,
+        now=now, flags=flags, request_kind=request_kind, status=QUEUED,
     )
     store.submit(entry)
     return entry, depth + 1
@@ -510,6 +535,7 @@ def record_submission(
     requester_id: str,
     now: str,
     flags: Mapping[str, bool] | None = None,
+    request_kind: str | None = None,
 ) -> RegistryEntry | None:
     """Open a RUNNING entry for a request that is about to be executed inline.
 
@@ -524,7 +550,7 @@ def record_submission(
     try:
         entry = build_entry(
             request_text=request_text, origin=origin, requester_id=requester_id,
-            now=now, flags=flags, status=RUNNING,
+            now=now, flags=flags, request_kind=request_kind, status=RUNNING,
         )
         return store.submit(entry)
     except (TaskRegistryBlocked, PersistenceError):

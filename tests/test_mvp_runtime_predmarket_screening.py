@@ -313,3 +313,188 @@ def test_the_new_venue_facts_survive_the_snapshot_round_trip():
 
     plain = _market(market_id="Y").as_dict()
     assert pairs_cli._markets_of({"markets": [plain]})[0].derived_from is None
+
+
+# --- discovery pays for nothing it does not read --------------------------------
+
+def test_the_matcher_never_looks_at_a_price():
+    """The premise the whole change rests on. `judge_pair` compares titles, close times,
+    categories and cross-references; if it ever started reading a quote, discovery would be
+    silently judging on data it no longer fetches."""
+    import inspect
+
+    from runtime.mvp_runtime.predmarket import matching
+
+    source = inspect.getsource(matching)
+    for priced in ("quote", "yes_bid", "yes_ask", "mid("):
+        assert priced not in source, f"the matcher now reads {priced!r}; discovery must fetch books again"
+
+
+def test_polymarket_discovery_makes_one_call_instead_of_one_per_market(monkeypatch):
+    """A book call per market, for a number nobody reads, one HTTP round trip at a time."""
+    calls: list[str] = []
+
+    def _capture(url, **kw):
+        calls.append(url)
+        return [{"clobTokenIds": f'["tok{i}"]', "question": f"q{i}",
+                 "endDate": "2026-12-31T00:00:00Z"} for i in range(8)] if "gamma" in url else {}
+
+    monkeypatch.setattr(md, "_get_json", _capture)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+    collector = md.PolymarketPublicCollector(pages=1)
+
+    quoted = collector.list_markets(limit=8, timeout_seconds=5)
+    books = [c for c in calls if "/book?" in c]
+    assert len(books) == 8                       # one per market, for a price nobody reads
+    assert quoted.quotes_requested is True
+
+    calls.clear()
+    listing = collector.list_markets(limit=8, timeout_seconds=5, with_quotes=False)
+    assert [c for c in calls if "/book?" in c] == []
+    assert len(listing.markets) == 8
+    assert listing.quotes_requested is False
+
+    # The remaining calls scale with PAGES, not with markets — that is the whole saving.
+    calls.clear()
+    md.PolymarketPublicCollector(pages=3).list_markets(
+        limit=8, timeout_seconds=5, with_quotes=False)
+    assert len(calls) == 3
+
+
+def test_binance_discovery_keeps_the_detail_call_and_drops_only_the_book(monkeypatch):
+    """`detail` carries the conditionId that becomes `group_id`, and a venue-asserted
+    cross-reference is the strongest matching evidence there is. Dropping it to save a call
+    would cost the one signal that cannot be fooled by two events worded alike."""
+    paths: list[str] = []
+
+    def _signed(self, path, params, *, timeout_seconds):
+        paths.append(path)
+        if path == self.LIST_PATH:
+            return {"marketTopics": [{"marketTopicId": 7, "question": "q",
+                                      "endDate": 1798779600000}]}
+        if path == self.DETAIL_PATH:
+            return {"markets": [{"marketId": 5, "tradingStatus": "OPEN",
+                                 "conditionId": "0xabc",
+                                 "outcomes": [{"name": "Yes", "tokenId": "99"}]}]}
+        return {"bids": [], "asks": []}
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _signed)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+    collector = md.BinancePredictionCollector()
+
+    listing = collector.list_markets(limit=5, timeout_seconds=5, with_quotes=False)
+    assert md.BinancePredictionCollector.DETAIL_PATH in paths
+    assert md.BinancePredictionCollector.BOOK_PATH not in paths
+    # The cross-reference survived the saving — that is the point of keeping `detail`.
+    assert listing.markets[0].group_id == "0xabc"
+    assert listing.markets[0].market_id == "5:99"
+
+    paths.clear()
+    collector.list_markets(limit=5, timeout_seconds=5)
+    assert md.BinancePredictionCollector.BOOK_PATH in paths
+
+
+def test_a_listing_read_says_it_did_not_ask_for_quotes():
+    """`quoted_count: 0` from a discovery read must not be readable as "nobody is quoting
+    these". That is the module's own rule about absences, applied to itself."""
+    collector = md.MockPredMarketCollector(KALSHI)
+    snapshot, record = md.collect_pred_markets(
+        KALSHI, collector=collector, now=NOW, with_quotes=False)
+    assert snapshot["market_count"] > 0
+    assert snapshot["quoted_count"] == 0
+    assert snapshot["quotes_requested"] is False and record["quotes_requested"] is False
+
+    quoted, _ = md.collect_pred_markets(KALSHI, collector=collector, now=NOW)
+    assert quoted["quoted_count"] > 0 and quoted["quotes_requested"] is True
+
+
+def test_a_listing_read_and_a_quoted_read_are_different_inputs():
+    """The input hash binds the record to what was asked for. Two reads that differ only in
+    whether books were fetched must not share a hash, or a cached record could answer the
+    wrong question."""
+    collector = md.MockPredMarketCollector(KALSHI)
+    _, listing = md.collect_pred_markets(KALSHI, collector=collector, now=NOW, with_quotes=False)
+    _, quoted = md.collect_pred_markets(KALSHI, collector=collector, now=NOW)
+    assert listing["input_sha256"] != quoted["input_sha256"]
+
+
+def test_discovery_asks_for_no_books(monkeypatch):
+    """End to end: the operator's `propose` and the scheduled discovery scan share one body,
+    and that body must not be fetching prices."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    asked: list[bool] = []
+    real = md.collect_pred_markets
+
+    def _capture(venue, **kw):
+        asked.append(kw.get("with_quotes", True))
+        return real(venue, **kw)
+
+    monkeypatch.setattr(pairs_cli, "collect_pred_markets", _capture)
+    pairs_cli.run_discovery(now=NOW, venues=[KALSHI, POLYMARKET])
+    assert asked == [False, False]
+
+
+def test_every_venue_records_what_was_asked_for_not_what_arrived():
+    """The flag exists so `quoted_count: 0` cannot be misread, and it only works if every
+    collector sets it. Measuring against the live venues caught Binance reporting
+    `quotes_requested: True` beside `quoted_count: 0` — exactly the misreading the field was
+    added to prevent.
+
+    Kalshi is the interesting one: `/events` returns prices inline, so a discovery read gets
+    them for nothing and keeps them. The flag records what was ASKED for, and a record
+    showing `quotes_requested: False` beside a real quoted count is the honest description
+    of that — throwing away data already paid for would be the alternative.
+    """
+    for venue in (KALSHI, POLYMARKET, BINANCE):
+        collector = md.MockPredMarketCollector(venue)
+        listing = collector.list_markets(limit=4, timeout_seconds=5, with_quotes=False)
+        quoted = collector.list_markets(limit=4, timeout_seconds=5)
+        assert listing.quotes_requested is False, venue
+        assert quoted.quotes_requested is True, venue
+
+
+# --- an id we cannot use again --------------------------------------------------
+
+def test_a_binance_topic_id_is_not_a_candidate():
+    """Found live 2026-07-27: 72 of 92 Binance markets carried a topic id rather than the
+    `marketId:tokenId` its order book needs, because `market/detail` runs only for the first
+    `book_limit` topics. All 72 passed screening.
+
+    A candidate's id is a promise — every scan after confirmation re-reads its legs by it.
+    Proposing one we cannot ask about again spends the scarcest resource in the pipeline (a
+    human comparing resolution rules) and then records a permanent non-reading.
+    """
+    topic_only = _market(BINANCE, market_id="4445372", title="Bitcoin Up or Down on July 27?")
+    verdict = screening.screen_market(topic_only, now=NOW)
+    assert verdict.observable is False
+    assert screening.MARKET_ID_NOT_RE_READABLE in verdict.reasons
+
+    resolved = _market(BINANCE, market_id="6797387:949728")
+    assert screening.screen_market(resolved, now=NOW).observable is True
+
+
+def test_the_other_venues_ids_are_re_readable_as_they_stand():
+    """Kalshi tickers and Polymarket CLOB token ids are what their endpoints already take;
+    only Binance needs a composite. A gate that refused them would empty the pipeline."""
+    assert screening.screen_market(
+        _market(KALSHI, market_id="KXPRESNOMD-28-AOC"), now=NOW).observable is True
+    assert screening.screen_market(
+        _market(POLYMARKET, market_id="10706498543549433311339"), now=NOW).observable is True
+
+
+def test_an_empty_market_id_is_refused_on_every_venue():
+    for venue in (KALSHI, POLYMARKET, BINANCE):
+        verdict = screening.screen_market(_market(venue, market_id="  "), now=NOW)
+        assert screening.MARKET_ID_NOT_RE_READABLE in verdict.reasons, venue
+
+
+def test_the_watch_scan_can_still_price_everything_discovery_proposes():
+    """The property the gate exists to guarantee, stated as a round trip: anything that
+    survives screening carries an id the watch scan's own splitter accepts."""
+    for market_id, usable in (("6797387:949728", True), ("4445372", False), ("5:abc", True)):
+        market = _market(BINANCE, market_id=market_id)
+        observable = screening.screen_market(market, now=NOW).observable
+        assert observable is usable
+        if observable:
+            assert md.split_binance_market_id(market.market_id) is not None

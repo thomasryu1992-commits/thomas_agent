@@ -1,7 +1,20 @@
 """Place ONE deliberate live canary order (LP4 increment 2b) — an operator tool.
 
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60
-    python -m scripts.place_canary_order --symbol BTCUSDT --quantity 0.001 --notional 60 --json
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price>
+    python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price> --json
+
+``--notional`` must be **this order's real notional at the current price**. It is verified
+against ``--quantity x`` the venue's own last close before anything measures it, and an
+under-declaration is refused with the number to use instead — because ``--quantity`` is what
+reaches the venue while ``--notional`` is only what the guard compares to the registered
+budget's caps, so a low declaration would walk a larger real position past the per-order and
+exposure limits. A worked constant used to stand here (``--quantity 0.001 --notional 60``):
+correct at BTC 60,000, 7% short at 64,512, so following the documentation produced exactly
+that under-declaration. Any constant is wrong at tomorrow's price.
+
+**The read-only market-data feed is therefore a canary precondition.** Without a usable price
+this command refuses rather than skipping the check — on the runs where market data is broken,
+"nothing to check" must not read as "approved".
 
 A canary is one small **real** order, placed on purpose, to prove that signing, submission, and
 reconciliation actually work at the venue. Three clean canaries are what the autonomous path's
@@ -40,6 +53,7 @@ from runtime.mvp_runtime.crypto.account import read_account
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_ENV,
     build_live_order_intent,
+    check_declared_notional,
     count_today,
     select_live_order_counter,
     enrich_order_identity,
@@ -48,6 +62,10 @@ from runtime.mvp_runtime.crypto.live_order import (
     resolve_live_order_limits,
 )
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot
+from runtime.mvp_runtime.crypto.market_data import (
+    read_reference_price,
+    select_market_data_collector,
+)
 from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
 from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run
@@ -64,7 +82,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--quantity", type=float, required=True,
                         help="base-asset quantity (keep a canary small)")
     parser.add_argument("--notional", type=float, required=True,
-                        help="the order's notional in USDT (never back-filled from the cap)")
+                        help="this order's real notional in USDT at the current price "
+                             "(quantity x price; never back-filled from the cap). Verified "
+                             "against the venue's last close; under-declaring is refused, "
+                             "over-declaring passes since it only tightens every cap")
     parser.add_argument("--timeout-seconds", type=int, default=10)
     parser.add_argument("--json", action="store_true", help="emit the full result as JSON")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
@@ -98,6 +119,31 @@ def main(argv: list[str] | None = None) -> int:
         clean_count, canary_error = live_promotion.clean_canary_order_count(root)
         submitted_today = count_today(root)
 
+        # 2b. Verify the declaration before anything measures it. `--quantity` is what reaches
+        #     the venue; `--notional` is only what the guard compares to the registered budget's
+        #     caps, and until now nothing related the two — so an under-declared notional walked
+        #     a larger real position through the per-order and exposure limits. This is the only
+        #     place the two numbers are independent: the autonomous path derives both from one
+        #     `size_live_order` call, so they agree by construction, and the guard's other
+        #     callers have no price to give it. If a second independent-declaration caller ever
+        #     appears, this belongs in the shared guard instead.
+        reference_price, price_error = read_reference_price(
+            args.symbol,
+            collector=select_market_data_collector(now=now, root=root),
+            now=now,
+            timeout_seconds=args.timeout_seconds,
+        )
+        notional_check = check_declared_notional(
+            quantity=args.quantity,
+            declared_notional_usdt=args.notional,
+            reference_price=reference_price,
+        )
+        if not notional_check["ok"]:
+            detail = f" (price read: {price_error})" if price_error else ""
+            sys.stderr.write(
+                f"BLOCKED {notional_check['reason_code']}: {notional_check['message']}{detail}\n"
+            )
+
         # 3. Open exposure from the VENUE, via LP5's fail-closed supplier (an unreadable account
         #    reports at-cap, never 0.0 — the guard's one fail-open path). A canary additionally
         #    refuses outright, because "configure the account feed" is the actionable answer for a
@@ -112,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
                 "is unknown and the exposure cap cannot be honored. Configure the read-only "
                 f"account feed first (account_use={account_use.get('degraded_reason_code')}).\n"
             )
+            return EXIT_BLOCKED
+
+        # Both refusals are printed before either returns, so an operator who has to fix the
+        # declaration *and* the account feed sees both in one run rather than one per attempt.
+        if not notional_check["ok"]:
             return EXIT_BLOCKED
 
         # 3b. The daily-loss breaker, measured against what the VENUE realized today.
