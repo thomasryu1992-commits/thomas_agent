@@ -16,6 +16,7 @@ import urllib.parse
 import pytest
 
 from runtime.mvp_runtime import safety_gate
+from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
     FACTORY_DEPTH_DAYS,
@@ -413,3 +414,92 @@ def test_binance_page_budget_bounds_one_collection(monkeypatch):
     )
     assert len(venue.calls) == 3
     assert len(result.candles) <= 30
+
+
+# === the reference price the declaration is checked against ==========================
+
+class _Snapshot:
+    """Stands in for a collector: returns whatever candles the test hands it."""
+
+    def __init__(self, candles, *, synthetic=False, raises=None):
+        self._candles, self._synthetic, self._raises = candles, synthetic, raises
+        self.tool_id, self.tool_version = "test.collector", "0.1.0"
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        if self._raises is not None:
+            raise self._raises
+        return market_data.MarketSnapshot(
+            symbol=symbol, timeframe=timeframe, candles=self._candles,
+            source="test", is_synthetic=self._synthetic,
+        )
+
+
+def _candle(close, close_time):
+    return market_data.Candle(
+        open_time=close_time, open=close, high=close, low=close, close=close,
+        volume=1.0, close_time=close_time,
+    )
+
+
+NOW_PRICE = "2026-07-27T12:00:00Z"
+
+
+class TestReferencePrice:
+    """Every uncertain answer is a refusal.
+
+    This price bounds a live order, and one that reads LOW is exactly what lets a bigger
+    position past a cap — so "I am not sure" and "here is a number" must never be confused.
+    """
+
+    def test_a_fresh_real_close_is_returned(self):
+        price, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([_candle(64_512.0, "2026-07-27T11:59:00Z")]),
+            now=NOW_PRICE)
+        assert (price, error) == (64_512.0, None)
+
+    def test_a_synthetic_price_is_refused(self):
+        """`MockMarketDataCollector` synthesises a hash-derived walk: a plausible-looking
+        number with no relationship to the venue, which is worse than no number at all."""
+        _, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([_candle(50_000.0, "2026-07-27T11:59:00Z")],
+                                           synthetic=True), now=NOW_PRICE)
+        assert error == market_data.PRICE_SYNTHETIC
+
+    def test_no_candles_is_refused(self):
+        _, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([]), now=NOW_PRICE)
+        assert error == market_data.PRICE_ABSENT
+
+    def test_a_stale_close_is_refused(self):
+        """A price from before whatever moved the market since is not this order's price."""
+        _, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([_candle(64_512.0, "2026-07-27T11:00:00Z")]),
+            now=NOW_PRICE)
+        assert error == market_data.PRICE_STALE
+
+    def test_a_close_inside_the_freshness_window_is_kept(self):
+        price, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([_candle(64_512.0, "2026-07-27T11:56:00Z")]),
+            now=NOW_PRICE)
+        assert (price, error) == (64_512.0, None)
+
+    @pytest.mark.parametrize("close", [0.0, -5.0])
+    def test_a_non_positive_close_is_refused(self, close):
+        _, error = market_data.read_reference_price(
+            "BTCUSDT", collector=_Snapshot([_candle(close, "2026-07-27T11:59:00Z")]),
+            now=NOW_PRICE)
+        assert error == market_data.PRICE_UNREADABLE
+
+    def test_a_collector_failure_is_refused_not_raised(self):
+        """The caller reports this beside its other refusals, so it returns rather than raises."""
+        _, error = market_data.read_reference_price(
+            "BTCUSDT",
+            collector=_Snapshot([], raises=ToolError("FEED_DOWN", "connection reset")),
+            now=NOW_PRICE)
+        assert error == market_data.PRICE_UNREADABLE
+
+    def test_the_real_mock_collector_is_refused_end_to_end(self):
+        """Not a hand-built stub: the collector a default machine actually selects."""
+        _, error = market_data.read_reference_price(
+            "BTCUSDT", collector=market_data.MockMarketDataCollector(), now=NOW_PRICE)
+        assert error == market_data.PRICE_SYNTHETIC

@@ -40,7 +40,7 @@ from typing import Any, Protocol
 from runtime.read_only_kernel import integrity
 
 from .. import safety_gate, timeutil
-from ..errors import ToolBlocked, ToolError
+from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 
 MARKET_DATA_TOOL_ID = "crypto.market_data.readonly"
@@ -778,3 +778,73 @@ def select_liquidation_feed(*, now: str | None = None, root: Path | None = None)
         now=now,
         root=root,
     )
+
+
+# --- reference price: one candle, for verifying a hand-declared notional ----------------
+
+REFERENCE_PRICE_MAX_AGE_SECONDS = 300
+
+PRICE_SYNTHETIC = "REFERENCE_PRICE_SYNTHETIC"
+PRICE_ABSENT = "REFERENCE_PRICE_ABSENT"
+PRICE_STALE = "REFERENCE_PRICE_STALE"
+PRICE_UNREADABLE = "REFERENCE_PRICE_UNREADABLE"
+
+
+def read_reference_price(
+    symbol: str,
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    timeframe: str = "1m",
+    timeout_seconds: int = 10,
+) -> tuple[float | None, str | None]:
+    """The venue's most recent close for ``symbol``, or ``(None, reason_code)``.
+
+    Goes through :func:`collect_market_data` on the gated collector rather than opening its
+    own connection — same tool identity, same evidence record, no new tool id to authorize.
+
+    **Every uncertain answer is a refusal**, because this exists to bound a live order and a
+    price that reads LOW is precisely what lets a bigger position past a cap:
+
+    - synthetic — ``MockMarketDataCollector`` synthesises a hash-derived walk. It is a
+      plausible-looking number with no relationship to the venue, which is worse than none.
+    - absent — a snapshot with no candles.
+    - stale — the last close is older than five minutes, so the price predates whatever moved
+      the market since.
+    - unreadable — a malformed close, or the collector failing closed.
+
+    Returns the reason code rather than raising: the caller reports it beside its other
+    refusals so an operator who must fix several things sees them in one run.
+    """
+    try:
+        snapshot, _ = collect_market_data(
+            symbol, timeframe, collector=collector, now=now, limit=1,
+            timeout_seconds=timeout_seconds,
+        )
+    except MvpRuntimeError:
+        return None, PRICE_UNREADABLE
+
+    if snapshot.get("is_synthetic"):
+        return None, PRICE_SYNTHETIC
+
+    candles = snapshot.get("candles") or []
+    if not candles:
+        return None, PRICE_ABSENT
+
+    last = candles[-1]
+    try:
+        close = float(last["close"])
+        closed_at = timeutil.parse_iso(str(last["close_time"]))
+    except (KeyError, TypeError, ValueError):
+        return None, PRICE_UNREADABLE
+    if not (close > 0):
+        return None, PRICE_UNREADABLE
+
+    try:
+        age = (timeutil.parse_iso(now) - closed_at).total_seconds()
+    except (TypeError, ValueError):
+        return None, PRICE_UNREADABLE
+    if age > REFERENCE_PRICE_MAX_AGE_SECONDS:
+        return None, PRICE_STALE
+
+    return close, None

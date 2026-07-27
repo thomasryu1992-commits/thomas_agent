@@ -16,6 +16,8 @@ import pytest
 from runtime.mvp_runtime.crypto import live_pnl
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
+    ORDER_NOTIONAL_PRICE_UNKNOWN,
+    ORDER_NOTIONAL_UNDERSTATED,
     DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT,
     DEFAULT_MIN_CLEAN_CANARY_ORDERS,
     LIVE_CONFIRMATION_PHRASE,
@@ -25,6 +27,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     LiveOrderCounter,
     LiveOrderLimits,
     build_live_order_intent,
+    check_declared_notional,
     count_today,
     enrich_order_identity,
     evaluate_live_close_guard,
@@ -754,3 +757,54 @@ def test_an_unconfigured_cap_names_the_registered_budget_not_an_env_var():
     minimum = [b for b in promotion["blocks"] if "promotion minimum is not configured" in b]
     assert len(minimum) == 1, promotion["blocks"]
     assert "scripts/register_live_trading_budget.py" in minimum[0]
+
+
+# === the declared notional, and the price it is checked against =====================
+
+class TestDeclaredNotional:
+    """`check_declared_notional` — pure, so every branch is cheap to state exactly.
+
+    It exists because `--quantity` (what reaches the venue) and `--notional` (what the caps
+    measure) were independent operator inputs with nothing comparing them.
+    """
+
+    def test_a_matching_declaration_passes(self):
+        result = check_declared_notional(
+            quantity=0.001, declared_notional_usdt=64.51, reference_price=64_512.0)
+        assert result["ok"] is True
+        assert result["implied_notional_usdt"] == pytest.approx(64.512)
+
+    def test_an_under_declaration_is_refused_and_names_the_right_number(self):
+        result = check_declared_notional(
+            quantity=0.001, declared_notional_usdt=60.0, reference_price=64_512.0)
+        assert result["ok"] is False
+        assert result["reason_code"] == ORDER_NOTIONAL_UNDERSTATED
+        # An operator who is told "wrong" and not "use this" guesses again.
+        assert "64.51" in result["message"]
+
+    def test_over_declaring_passes(self):
+        """It only makes every cap stricter; refusing it would block a careful operator."""
+        result = check_declared_notional(
+            quantity=0.001, declared_notional_usdt=500.0, reference_price=64_512.0)
+        assert result["ok"] is True
+
+    def test_a_tick_of_drift_is_tolerated(self):
+        """The operator reads a price a moment before sending; exact equality is not realistic."""
+        implied = 0.001 * 64_512.0
+        assert check_declared_notional(
+            quantity=0.001, declared_notional_usdt=implied * 0.995,
+            reference_price=64_512.0)["ok"] is True
+
+    def test_drift_beyond_the_tolerance_is_not(self):
+        implied = 0.001 * 64_512.0
+        assert check_declared_notional(
+            quantity=0.001, declared_notional_usdt=implied * 0.98,
+            reference_price=64_512.0)["ok"] is False
+
+    @pytest.mark.parametrize("price", [None, 0.0, -1.0])
+    def test_no_usable_price_is_a_refusal(self, price):
+        """"Nothing to check" must never read as "approved"."""
+        result = check_declared_notional(
+            quantity=0.001, declared_notional_usdt=60.0, reference_price=price)
+        assert result["ok"] is False
+        assert result["reason_code"] == ORDER_NOTIONAL_PRICE_UNKNOWN
