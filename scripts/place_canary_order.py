@@ -26,7 +26,13 @@ import sys
 from pathlib import Path
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
+from runtime.mvp_runtime.cli_common import (
+    EXIT_BLOCKED,
+    EXIT_OK,
+    EXIT_USAGE,
+    force_utf8_io,
+    gate_banners,
+)
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.audit import AuditError
 from runtime.mvp_runtime.crypto import live_execution, live_governance, live_promotion
@@ -114,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
         #    than being handed an optimistic assumption.
         adapter = live_execution.select_order_adapter(now=now, root=root)
         grant_open = bool(getattr(adapter, "network_egress", False))
+        # Say so, on the one path that can move real money. Every other gated capability in
+        # the repo prints its authorization notice; this one did not, because `gate_banners`
+        # took a named parameter per role and no one added a fifth. The operator running this
+        # deserves the same line the search tool gets.
+        gate_banners(live_order_adapter=adapter)
 
         # 5. The intent, then the guard in CANARY mode: every check except the promotion gate,
         #    authorized by the canary phrase.

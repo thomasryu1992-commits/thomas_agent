@@ -16,6 +16,8 @@ import pytest
 from runtime.mvp_runtime.crypto import live_pnl
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
+    DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT,
+    DEFAULT_MIN_CLEAN_CANARY_ORDERS,
     LIVE_CONFIRMATION_PHRASE,
     STATUS_BLOCKED,
     STATUS_READY,
@@ -686,3 +688,69 @@ def test_neither_guard_has_an_env_cap_fallback():
         evaluate_live_order_guard(_intent(), **facts)
     with pytest.raises(TypeError):
         evaluate_live_close_guard(_intent(reduce_only=True), gate_open=True)
+
+
+def test_from_env_cannot_produce_a_cap(monkeypatch):
+    """The other half of the same rule, one level down.
+
+    Making `limits` required closed the *call sites*, but `LiveOrderLimits.from_env()` kept
+    parsing `MVP_LIVE_MAX_*`, so any caller could still reconstruct an env-derived cap set and
+    hand it in — the second source was one method call away. `from_env` now reads only the
+    operator-env fields, and every cap it returns is the blocking default however the
+    environment is set.
+    """
+    for name, value in (
+        ("MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "150"),
+        ("MVP_LIVE_ABSOLUTE_MAX_NOTIONAL_USDT", "9999"),
+        ("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "99"),
+        ("MVP_LIVE_MAX_OPEN_NOTIONAL_USDT", "9999"),
+        ("MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "500"),
+        ("MVP_LIVE_MIN_CLEAN_CANARY_ORDERS", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("MVP_LIVE_CONFIRMATION", LIVE_CONFIRMATION_PHRASE)
+
+    limits = LiveOrderLimits.from_env()
+
+    assert limits.max_order_notional_usdt == 0.0
+    assert limits.max_daily_order_count == 0
+    assert limits.max_open_notional_usdt == 0.0
+    assert limits.daily_loss_limit_usdt == 0.0
+    # Not zero, but the *source* default — the env's 9999 / 1 must not reach either. A raised
+    # ceiling and a lowered promotion minimum are the two that widen authority quietly.
+    assert limits.absolute_max_notional_usdt == DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT
+    assert limits.min_clean_canary_orders == DEFAULT_MIN_CLEAN_CANARY_ORDERS
+    # What it IS for still works.
+    assert limits.confirmation_present() is True
+
+
+def test_an_unconfigured_cap_names_the_registered_budget_not_an_env_var():
+    """The refusal has to name the action that fixes it.
+
+    Every "not configured" branch here is reachable only when no valid budget backs the caps
+    (a registered budget's caps must all be > 0), so these fire alongside the budget block —
+    and each one used to add `MVP_LIVE_MAX_ORDER_NOTIONAL_USDT must be > 0`, sending an
+    operator holding real keys to a variable that has authorized nothing since step 6b. Same
+    shape as #201: fail-closed, wrong next step.
+    """
+    verdict = evaluate_live_order_guard(
+        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=True,
+        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        budget_registered=False, limits=LiveOrderLimits(),
+    )
+    unconfigured = [b for b in verdict["blocks"] if "not configured" in b]
+    assert len(unconfigured) == 4, unconfigured    # loss, per-order, daily count, exposure
+    for block in unconfigured:
+        assert "scripts/register_live_trading_budget.py" in block, block
+        assert "MVP_LIVE_" not in block, block
+
+    # The fifth one needs its own setup: `min_clean_canary_orders` defaults to 3, so the
+    # blocking-defaults instance above takes the "not ready yet" branch, not "not configured".
+    promotion = evaluate_live_order_guard(
+        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
+        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        budget_registered=False, limits=LiveOrderLimits(min_clean_canary_orders=0),
+    )
+    minimum = [b for b in promotion["blocks"] if "promotion minimum is not configured" in b]
+    assert len(minimum) == 1, promotion["blocks"]
+    assert "scripts/register_live_trading_budget.py" in minimum[0]
