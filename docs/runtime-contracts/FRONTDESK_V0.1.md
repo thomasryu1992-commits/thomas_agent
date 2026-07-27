@@ -15,8 +15,8 @@ into exactly one governed action. It holds the conversation; it never holds auth
 ```
 plain text → (kill-switch gate, marker parse — both BEFORE any model call)
            → front-desk model call (gated provider, 1 call, FRONTDESK_TOKEN_ALLOWANCE)
-           → closed frontdesk_turn.v0.1 extracted from the shared analysis JSON
-           → validate → dispatch one of seven turns → reply
+           → closed frontdesk_turn.v0.3 extracted from the shared analysis JSON
+           → validate → dispatch one of ten turns → reply
 ```
 
 | turn | runtime action |
@@ -31,8 +31,39 @@ plain text → (kill-switch gate, marker parse — both BEFORE any model call)
 coordination state can be stale or invented, and the listing cannot. The conversational
 door does not get its own account of the truth — it *is* `/tasks`.
 
-**Deterministic intent never waits on a model.** `/verbs` and `!중요`-marked requests
+**Deterministic intent never waits on a model.** `/verbs` and `!중요`/`!번역`-marked requests
 bypass the front desk entirely; only unmarked plain text is a conversation turn.
+
+## v0.3 — `request_kind`, or: the conversation could reach one Role
+
+The marker parse above runs *before* the front desk and the front desk runs only for an
+**unmarked** message. So until v0.3 a conversational `SUBMIT_TASK` queued with no kind and
+routed to the analysis Role — of the six activated Roles, five were reachable only by typing
+`!번역`/`!조사`/`!콘텐츠`/`!개발`, which is the path that skips the conversation. "Talk to it
+like a chat" and "use the Roles that were built" were the same sentence and could not both be
+true.
+
+`SUBMIT_TASK.payload.request_kind` closes that, and it is a routing **signal**, not a routing
+**decision**: it names capabilities, the Role Registry alone maps those to a Role, and Prime
+still owns classification, permission level, validation requirement and selection. There is
+still no payload field that can name a Role, a tool, a provider or a permission — asserted
+directly (`test_no_turn_can_name_a_role_or_reach_one_directly`).
+
+Three lists must agree — the prompt's, the schema enum, and `planner.REQUEST_KIND_CAPABILITIES`
+— or a submission dies at validation or at the queue's far end, where the operator would see
+only a downgrade. They are built from one dict and pinned by a test.
+
+The honest cost, stated: `REQUEST_KIND_CAPABILITIES`'s own comment says a kind should come
+from an explicit marker because *inferring* one is a guess, and a wrong guess routes work to a
+Role with a different output contract. That reasoning still holds; the risk is now taken
+**visibly** rather than avoided:
+
+- the prompt binds the choice to Thomas's **words** (the `important` discipline), and
+  anything unclear is `null` → analysis;
+- the queue receipt **names the kind it read**, and arrives *before* the pipeline runs — so a
+  misread costs a `/cancel`, not a wrong-shaped answer twenty seconds later;
+- an unroutable kind is **refused, never defaulted** — the front desk asks
+  `capabilities_for_request_kind` rather than keeping a second, more lenient copy of that rule.
 
 ## Reuse (what this deliberately did NOT build)
 

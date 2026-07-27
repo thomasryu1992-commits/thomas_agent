@@ -62,7 +62,7 @@ class TurnProvider:
 
 
 def _turn(kind, payload, reply="알겠습니다."):
-    return {"schema_version": "frontdesk_turn.v0.2", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.3", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
@@ -95,6 +95,99 @@ def test_submit_turn_enqueues_verbatim(tmp_path):
     # The narration AND the deterministic ack both reach the operator.
     assert "세차 구독 사업성 분석으로 접수할게요." in outcome["reply"]
     assert "접수했습니다" in outcome["reply"]
+
+
+def test_submit_turn_carries_the_request_kind_to_the_queue(tmp_path):
+    """v0.3: the whole point. Before it, every conversational submission queued with no kind
+    and ran as an analysis, so five of the six activated Roles were reachable only by typing
+    a `!marker` — which bypasses the front desk entirely, i.e. they were not reachable by
+    conversation at all."""
+    registry = TaskRegistryStore(tmp_path)
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK",
+        {"request_text": "이 문서 영어로 번역해줘", "important": False,
+         "independent_validation": False, "request_kind": "translation"},
+    ))
+
+    outcome = _run("이 문서 영어로 번역해줘", provider, tmp_path, registry=registry)
+
+    assert outcome["action"] == "FRONTDESK_TASK_QUEUED"
+    assert outcome["request_kind"] == "translation"
+    assert registry.latest()[0].request_kind == "translation"
+
+
+def test_the_receipt_names_the_kind_it_read(tmp_path):
+    """Reading the kind from conversation is a guess the marker path never had to make, so
+    the guess is shown: the receipt arrives BEFORE the pipeline runs, which turns a misread
+    into a `/cancel` rather than a confident answer of the wrong shape."""
+    registry = TaskRegistryStore(tmp_path)
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK",
+        {"request_text": "리액트 상태관리 어떻게 짤지 봐줘", "important": False,
+         "independent_validation": False, "request_kind": "development"},
+    ))
+
+    outcome = _run("리액트 상태관리 어떻게 짤지 봐줘", provider, tmp_path, registry=registry)
+
+    assert "종류: development" in outcome["reply"]
+
+
+def test_absent_kind_keeps_the_pre_v0_3_routing(tmp_path):
+    """Null is the analysis kind — exactly where every conversational submission went
+    before, so a model that omits the field changes nothing."""
+    registry = TaskRegistryStore(tmp_path)
+    for payload in (
+        {"request_text": "세차 구독 사업 분석해줘", "important": False,
+         "independent_validation": False},
+        {"request_text": "세차 구독 사업 분석해줘", "important": False,
+         "independent_validation": False, "request_kind": None},
+    ):
+        outcome = _run("세차 구독 사업 분석해줘", TurnProvider(_turn("SUBMIT_TASK", payload)),
+                       tmp_path, registry=registry)
+        assert outcome["action"] == "FRONTDESK_TASK_QUEUED"
+        assert outcome["request_kind"] is None
+        assert registry.latest()[0].request_kind is None
+        assert "종류:" not in outcome["reply"]
+
+
+def test_an_unroutable_kind_is_refused_never_defaulted_to_analysis(tmp_path, monkeypatch):
+    """Only reachable if the schema's enum and the router's table drift apart — and then the
+    refusal must be the router's, not a lenient second opinion. Silently analyzing a request
+    someone asked to have translated is the wrong answer delivered confidently; and queueing
+    a kind the router will refuse only moves the failure minutes downstream."""
+    from runtime.mvp_runtime import planner
+
+    monkeypatch.delitem(planner.REQUEST_KIND_CAPABILITIES, "translation")
+    registry = TaskRegistryStore(tmp_path)
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK",
+        {"request_text": "이 문서 번역해줘", "important": False,
+         "independent_validation": False, "request_kind": "translation"},
+    ))
+
+    outcome = _run("이 문서 번역해줘", provider, tmp_path, registry=registry)
+
+    assert outcome["action"] == "UNKNOWN_REQUEST_KIND"
+    assert registry.latest() == []          # nothing queued
+
+
+def test_the_prompt_offers_exactly_the_kinds_the_router_can_resolve():
+    """Three lists have to agree — the prompt's, the schema's enum, and the router's table.
+    A kind in the prompt that is missing from either of the others is a submission that dies
+    at validation or at the queue's far end, and the operator would only see a downgrade."""
+    from runtime.mvp_runtime import planner
+
+    schema = json.loads((ROOT / "schemas" / "frontdesk_turn.v0.3.schema.json").read_text(
+        encoding="utf-8"))
+    submit = next(b for b in schema["allOf"]
+                  if b["if"]["properties"]["turn_kind"]["const"] == "SUBMIT_TASK")
+    enum = set(submit["then"]["properties"]["payload"]["properties"]["request_kind"]["enum"])
+
+    assert set(frontdesk.REQUEST_KIND_GLOSSES) == set(planner.REQUEST_KIND_CAPABILITIES)
+    assert enum == set(planner.REQUEST_KIND_CAPABILITIES) | {None}
+    header = frontdesk._prompt_header()
+    for kind in planner.REQUEST_KIND_CAPABILITIES:
+        assert f"- {kind}:" in header
 
 
 def test_query_turns_answer_with_the_console_rendering_not_narration(tmp_path):
@@ -514,6 +607,36 @@ def test_frontdesk_submission_is_drained_like_any_queued_task(tmp_path, monkeypa
     texts = [t for _c, t in channel.sent]
     assert any("접수했습니다" in t for t in texts)
     assert any("분석 결과" in t for t in texts)
+
+
+def test_the_conversational_kind_reaches_the_pipeline_across_the_whole_seam(tmp_path, monkeypatch):
+    """The JOIN, not the stages. Each half of this was already covered — the front desk writes
+    a kind onto the entry, and the drain passes `entry.request_kind` to the pipeline — and a
+    field renamed or dropped between them would leave both green while every conversational
+    request silently ran as an analysis again. That is the failure mode this repository has
+    already paid for once (#201), so the seam gets its own test."""
+    monkeypatch.setattr("runtime.mvp_runtime.operator_feedback.record_delivery",
+                        lambda *a, **k: None)
+    seen: dict = {}
+
+    def _capture(*_args, **kwargs):
+        seen["request_kind"] = kwargs.get("request_kind")
+        return {"status": "COMPLETED", "final_response": "번역 결과",
+                "records": {"received_task": {"identity": {"trace_id": "trace_f2",
+                                                           "task_id": "task_f2"}}}}
+
+    monkeypatch.setattr("runtime.mvp_runtime.operator.run_task", _capture)
+    registry = TaskRegistryStore(tmp_path)
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "이 문서 영어로 번역해줘", "important": False,
+                        "independent_validation": False, "request_kind": "translation"}))
+    channel = MockOperatorChannel(inbound=[_msg("이 문서 영어로 번역해줘")])
+
+    run_operator_once(channel, REG, registry=registry, frontdesk_provider=provider,
+                      repo_root=ROOT)
+
+    assert seen["request_kind"] == "translation"
+    assert registry.latest()[0].status == task_registry.DELIVERED
 
 
 # --- v0.2 runtime queries ----------------------------------------------------
