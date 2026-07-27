@@ -197,4 +197,79 @@ __all__ = [
     "proposal_status_line",
     "proposals_path",
     "read_proposals",
+    "render_confirmation_sheet",
 ]
+
+
+# --- the operator's reading material --------------------------------------------
+
+def render_confirmation_sheet(result: Mapping[str, Any], *, now: str) -> str:
+    """Candidates with both venues' settlement text side by side, and a runnable command.
+
+    The bottleneck this exists for: the pipeline proposes thirty-odd pairings every six
+    hours and **not one of them becomes data until a human decides two venues settle the
+    same event the same way**. That decision needs the venues' own words, which arrive in
+    payloads discovery already fetches and used to discard.
+
+    What it deliberately does NOT do is compare them. Two venues can publish near-identical
+    text and still settle differently on the same news — that is the risk the whole strategy
+    turns on, and a similarity score over settlement prose would read as an answer while
+    being exactly as blind as the title matcher. This puts the two texts next to each other;
+    the judgement stays where it belongs.
+
+    Markdown because the texts are paragraphs, and a console line wraps them into mush.
+    """
+    candidates = list(result.get("candidates") or [])
+    counts = result.get("market_counts") or {}
+    lines = [
+        f"# PM1 confirmation sheet — {now}",
+        "",
+        f"{len(candidates)} candidate(s) from {result.get('judged_count')} judged pairings "
+        f"({', '.join(f'{v}={n}' for v, n in sorted(counts.items())) or '-'}).",
+        "",
+        "**Nothing here is a group.** Each needs the one judgement no algorithm can make:",
+        "*do these two venues resolve this event the same way?* The settlement text below is",
+        "each venue's own, placed side by side — it is help with the reading, not a verdict.",
+        "",
+    ]
+    errors = result.get("venue_errors") or {}
+    if errors:
+        lines += [f"> Degraded this run: {', '.join(f'{v} ({c})' for v, c in sorted(errors.items()))}",
+                  "> — no candidates from those venues, which is not the same as none existing.", ""]
+
+    for index, candidate in enumerate(candidates, 1):
+        slice_note = " · from the rotating tail" if candidate.get("discovery_slice") == "tail" else ""
+        lines += [
+            f"## {index}. similarity {candidate.get('title_similarity')} · "
+            f"close delta {candidate.get('close_delta_hours')}h{slice_note}",
+            "",
+        ]
+        for side in ("left", "right"):
+            venue = candidate.get(f"{side}_venue")
+            market_id = candidate.get(f"{side}_market_id")
+            rules = candidate.get(f"{side}_resolution_rules")
+            lines += [
+                f"**{venue}** `{market_id}`  ",
+                f"> {candidate.get(f'{side}_title')}",
+                "",
+                f"*Resolves:* {rules or '(this venue published no settlement text)'}",
+                "",
+            ]
+        shared = ", ".join(candidate.get("distinctive_shared_tokens") or []) or "-"
+        lines += [
+            f"*Matched on:* {shared}",
+            "",
+            "```bash",
+            "docker exec thomas-scheduler python -m runtime.mvp_runtime.predmarket.pairs_cli confirm \\",
+            f"  --leg {candidate.get('left_venue')}:{candidate.get('left_market_id')} \\",
+            f"  --leg {candidate.get('right_venue')}:{candidate.get('right_market_id')} \\",
+            '  --criteria "REPLACE: how both venues settle this, and where they could differ"',
+            "```",
+            "",
+            "---",
+            "",
+        ]
+    if not candidates:
+        lines += ["No candidates this run. The screen counts above say whether that is a quiet",
+                  "market or a read that saw nothing usable.", ""]
+    return "\n".join(lines)
