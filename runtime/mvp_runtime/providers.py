@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import safety_gate, timeutil
 from .errors import ProviderError
@@ -168,6 +168,52 @@ _ANALYSIS_JSON_SCHEMA: dict[str, Any] = {
         "unresolved_questions", "perspectives",
     ],
 }
+
+
+# §8.5: a Role that is not the business analyst declares its OWN output keys, and both
+# dialects above are CLOSED over the analysis key set — OpenAI strict via
+# ``additionalProperties: false``, Google via the ``required`` list the vendor enforces. So a
+# hosted model asked for ``translated_text`` returns without it and the run fails its own
+# output check, which reads like a model quality problem when it is a schema problem. These
+# re-derive the schema with the Role's keys folded in.
+#
+# Deliberately a *derivation*, not a mutation: the module constants stay the analysis shape
+# and every existing caller keeps it byte-for-byte. A role-bound provider builds its own copy
+# per call, so two Roles running concurrently cannot share one mutated schema.
+#
+# The Role's keys are typed from its own contract (``string`` -> string, anything else ->
+# array of strings), matching what ``worker._role_specific_output`` reads back. An unknown
+# declared type becomes an array rather than being dropped: the Role asked for the field, and
+# omitting it here would put us back to the vendor rejecting it.
+def _role_key_schema(kind: str) -> dict[str, Any]:
+    return {"type": "string"} if kind == "string" else _STRING_ARRAY
+
+
+def analysis_response_schema(role_output_spec: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Google ``responseSchema`` for this run — the analysis shape, plus a Role's own keys."""
+    if not role_output_spec:
+        return _ANALYSIS_RESPONSE_SCHEMA
+    schema = json.loads(json.dumps(_ANALYSIS_RESPONSE_SCHEMA))
+    for key, kind in role_output_spec.items():
+        schema["properties"][key] = _role_key_schema(kind)
+        if key not in schema["required"]:
+            schema["required"].append(key)
+    return schema
+
+
+def analysis_json_schema(role_output_spec: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """OpenAI/OpenRouter strict ``json_schema`` for this run. Same derivation; separate
+    dialect, because ``additionalProperties: false`` is exactly what makes the fold-in
+    necessary here rather than optional."""
+    if not role_output_spec:
+        return _ANALYSIS_JSON_SCHEMA
+    schema = json.loads(json.dumps(_ANALYSIS_JSON_SCHEMA))
+    for key, kind in role_output_spec.items():
+        schema["properties"][key] = _role_key_schema(kind)
+        if key not in schema["required"]:
+            schema["required"].append(key)
+    return schema
+
 
 HOSTED_PROVIDER_ENV = "MVP_HOSTED_PROVIDER"
 VALIDATOR_PROVIDER_ENV = "MVP_VALIDATOR_PROVIDER"
@@ -501,6 +547,21 @@ class GoogleAIStudioProvider:
         # Egress authorization from the Safety-Flag Gate. Without it, generate() refuses
         # to open a socket — so a directly-constructed provider cannot bypass the gate.
         self._authorization = authorization
+        # §8.5: set only by bind_role_output_keys; None means the analysis shape.
+        self._role_output_spec: dict[str, str] | None = None
+
+
+    def bind_role_output_keys(self, role_output_spec: Mapping[str, str]) -> "GoogleAIStudioProvider":
+        """A copy of this provider that also asks for a Role's declared output keys (§8.5).
+
+        A copy rather than a mutation: the provider is selected once per process and a run
+        binding a Role must not change what the next run asks for. Carries the same
+        ``Authorization`` object, so binding grants nothing and cannot outlive the grant —
+        the egress check still runs against it at call time."""
+        bound = GoogleAIStudioProvider(model=self._model, api_key_env=self._api_key_env,
+                                       authorization=self._authorization)
+        bound._role_output_spec = dict(role_output_spec)
+        return bound
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
@@ -525,7 +586,7 @@ class GoogleAIStudioProvider:
                 # json_object mode — json_schema support is model-dependent there, and a
                 # rejected body would fail the call outright (PROVIDER_TRANSPORT, not
                 # retryable), which is a worse trade than the format instruction it has.
-                "responseSchema": _ANALYSIS_RESPONSE_SCHEMA,
+                "responseSchema": analysis_response_schema(self._role_output_spec),
             },
         }).encode("utf-8")
         request = urllib.request.Request(
@@ -594,6 +655,26 @@ class _OpenAICompatibleProvider:
     # body fails the call outright (PROVIDER_TRANSPORT, not retryable).
     _RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
+
+    def bind_role_output_keys(self, role_output_spec: Mapping[str, str]) -> "_OpenAICompatibleProvider":
+        """A copy of this provider that also asks for a Role's declared output keys (§8.5).
+
+        A copy rather than a mutation: the provider is selected once per process and a run
+        binding a Role must not change what the next run asks for. Carries the same
+        ``Authorization`` object, so binding grants nothing and cannot outlive the grant —
+        the egress check still runs against it at call time."""
+        bound = type(self)(model=self._model, api_key_env=self._api_key_env,
+                           authorization=self._authorization)
+        bound._role_output_spec = dict(role_output_spec)
+        return bound
+
+    def _response_format(self) -> dict[str, Any]:
+        """This call's response_format. The base ``json_object`` constrains no keys, so a
+        Role's keys need nothing folded in — the prompt already asks for them and the vendor
+        does not reject what it does not enforce. A subclass that ENFORCES a schema must
+        override, or binding a Role would silently produce a body rejecting its own keys."""
+        return self._RESPONSE_FORMAT
+
     def __init__(
         self,
         *,
@@ -608,6 +689,8 @@ class _OpenAICompatibleProvider:
         # Egress authorization from the Safety-Flag Gate. Without it, generate() refuses
         # to open a socket — so a directly-constructed provider cannot bypass the gate.
         self._authorization = authorization
+        # §8.5: set only by bind_role_output_keys; None means the analysis shape.
+        self._role_output_spec: dict[str, str] | None = None
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
@@ -625,7 +708,7 @@ class _OpenAICompatibleProvider:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt + _RESPONSE_INSTRUCTION}],
             "max_tokens": int(max_output_tokens),
-            "response_format": self._RESPONSE_FORMAT,
+            "response_format": self._response_format(),
         }).encode("utf-8")
         request = urllib.request.Request(
             self._ENDPOINT,
@@ -693,10 +776,18 @@ class OpenRouterProvider(_OpenAICompatibleProvider):
     _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL
     _API_KEY_ENV = "OPENROUTER_API_KEY"
-    _RESPONSE_FORMAT = {
-        "type": "json_schema",
-        "json_schema": {"name": "analysis", "strict": True, "schema": _ANALYSIS_JSON_SCHEMA},
-    }
+    def _response_format(self) -> dict[str, Any]:
+        """Overridden because this gateway ENFORCES the schema: a bound Role's keys have to
+        reach the body, or strict mode rejects the very fields the prompt asked for.
+
+        A method rather than the `_RESPONSE_FORMAT` constant this used to be — the schema is
+        now derived per call from whatever Role is bound, so a constant could only ever hold
+        the unbound case and would sit there looking authoritative while nothing read it."""
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "analysis", "strict": True,
+                            "schema": analysis_json_schema(self._role_output_spec)},
+        }
 
 
 class OpenRouterLightProvider(OpenRouterProvider):
@@ -746,6 +837,24 @@ class FailoverProvider:
         # Named for banners/diagnostics; the serving member's id lands in each result.
         self.model_id = "+".join(getattr(p, "model_id", "?") for p in self._providers)
         self.model_version = self.model_id
+
+    def bind_role_output_keys(self, role_output_spec: Mapping[str, str]) -> "FailoverProvider":
+        """Bind EVERY member. Binding only the first would work until the first 503, and then
+        quietly serve a failover answer shaped for a different Role — the kind of bug that
+        only appears during an outage. A member that cannot bind fails the whole chain closed
+        rather than being skipped: a chain that silently shrinks is what the locked provider
+        decision already forbids."""
+        bound = []
+        for provider in self._providers:
+            binder = getattr(provider, "bind_role_output_keys", None)
+            if binder is None:
+                raise ProviderError(
+                    "ROLE_BINDING_UNSUPPORTED",
+                    f"provider {getattr(provider, 'model_id', '?')} cannot be bound to a Role's "
+                    "output contract; the chain refuses rather than answering for one member",
+                )
+            bound.append(binder(role_output_spec))
+        return FailoverProvider(bound)
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         last: ProviderError | None = None
