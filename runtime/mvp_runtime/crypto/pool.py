@@ -30,6 +30,12 @@ from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
 
+# The basis of every R in a candidate's quality view. Only one value exists today because
+# only one is true today: paper settlement charges nothing. Naming it makes the absence
+# reviewable, and gives a cost-adjusted basis somewhere to land without silently changing
+# what the old numbers meant.
+EDGE_COST_BASIS_EXCLUDED = "costs_excluded"
+
 
 # --- candidate identity (single source) ----------------------------------------
 
@@ -432,6 +438,18 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         "expectancy": round(_as_float(evidence.get("expectancy")), 8),
         "closed_count": closed,
         "edge_quality": win_rate * rr_sort,
+        # What every R above does NOT include. Paper settlement models no fee, slippage or
+        # funding by design ("Accounting is R-based only... paper sizing added nothing but
+        # noise"), and the robustness scorer withholds its cost term for the same reason
+        # ("the cost model was not ported, so cost_robustness inputs are withheld"). Both
+        # are honest about it in their own docstrings; the promotion surface — the one an
+        # operator actually reads before putting real money behind a lineage — said nothing,
+        # so a cost-free expectancy arrived looking like a net one.
+        #
+        # A field rather than a printed sentence because it is a property OF the number: a
+        # later cost-adjusted basis becomes a different value here, and any consumer that
+        # compares two candidates can refuse to compare across bases.
+        "cost_basis": EDGE_COST_BASIS_EXCLUDED,
     }
 
 
