@@ -163,6 +163,7 @@ def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
             fee_rate_bps=row.get("fee_rate_bps"),
             derived_from=_as_tuple(row.get("derived_from")),
             accepting_orders=row.get("accepting_orders"),
+            resolution_rules=row.get("resolution_rules"),
             volume=row.get("volume"),
             quote=VenueQuote(
                 yes_bid=quote.get("yes_bid"), yes_ask=quote.get("yes_ask"),

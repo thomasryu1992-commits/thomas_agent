@@ -233,3 +233,89 @@ def test_a_run_that_found_nothing_past_the_head_says_zero_not_nothing():
         _result([{**_candidate("K1"), "discovery_slice": "head"}]), now=NOW)
     assert record["candidates_from_tail"] == 0
     assert "rotating tail" not in proposals.proposal_status_line(record)
+
+
+# --- the operator's reading material --------------------------------------------
+
+def _with_rules(**over):
+    candidate = {
+        **_candidate("KXPRESNOMD-28-AOC", "1070649854"),
+        "close_delta_hours": 15.0,
+        "distinctive_shared_tokens": ["alexandria", "cortez", "ocasio"],
+        "left_title": "Will Alexandria Ocasio-Cortez be the Democratic Presidential nominee in 2028?",
+        "right_title": "Will Alexandria Ocasio-Cortez win the 2028 Democratic presidential nomination?",
+        "left_resolution_rules": "If Alexandria Ocasio-Cortez wins and accepts the nomination...",
+        "right_resolution_rules": "This market will resolve to Yes if the named individual wins...",
+    }
+    candidate.update(over)
+    return _result([candidate])
+
+
+def test_the_sheet_puts_both_venues_settlement_text_side_by_side():
+    """The bottleneck this exists for. Thirty-odd pairings arrive every six hours and none
+    becomes data until a human decides two venues settle the same event the same way — a
+    judgement that needs the venues' own words, which discovery already fetches."""
+    sheet = proposals.render_confirmation_sheet(_with_rules(), now=NOW)
+    assert "If Alexandria Ocasio-Cortez wins and accepts the nomination" in sheet
+    assert "This market will resolve to Yes if the named individual wins" in sheet
+    assert "**kalshi** `KXPRESNOMD-28-AOC`" in sheet
+
+
+def test_the_sheet_carries_a_runnable_confirm_command_per_candidate():
+    sheet = proposals.render_confirmation_sheet(_with_rules(), now=NOW)
+    assert "--leg kalshi:KXPRESNOMD-28-AOC" in sheet
+    assert "--leg polymarket:1070649854" in sheet
+    assert "REPLACE:" in sheet, "the criteria must not come pre-filled"
+
+
+def test_the_sheet_compares_nothing():
+    """Two venues can publish near-identical wording and still settle differently on the same
+    news. A similarity score over settlement prose would read as an answer while being
+    exactly as blind as the title matcher, so the sheet offers none."""
+    sheet = proposals.render_confirmation_sheet(_with_rules(), now=NOW)
+    assert "Nothing here is a group" in sheet
+    assert "help with the reading, not a verdict" in sheet
+    for verdict in ("rules match", "same rules", "identical", "safe to confirm", "verified"):
+        assert verdict not in sheet.lower()
+
+
+def test_a_venue_with_no_settlement_text_says_so_rather_than_showing_a_blank():
+    """A blank beside a paragraph reads as "nothing to check here", which is the opposite of
+    what an unpublished rule means."""
+    sheet = proposals.render_confirmation_sheet(
+        _with_rules(left_resolution_rules=None), now=NOW)
+    assert "(this venue published no settlement text)" in sheet
+
+
+def test_a_tail_candidate_is_marked_as_one():
+    sheet = proposals.render_confirmation_sheet(
+        _with_rules(discovery_slice="tail"), now=NOW)
+    assert "from the rotating tail" in sheet
+
+
+def test_a_degraded_venue_is_named_on_the_sheet():
+    """"No candidates from binance" and "binance did not answer" are different findings, and
+    an operator reading a short sheet deserves to know which one they are looking at."""
+    sheet = proposals.render_confirmation_sheet(
+        _result([], venue_errors={"binance": "TOOL_TRANSPORT"}), now=NOW)
+    assert "binance (TOOL_TRANSPORT)" in sheet
+    assert "not the same as none existing" in sheet
+
+
+def test_an_empty_sheet_does_not_read_as_a_quiet_market():
+    sheet = proposals.render_confirmation_sheet(_result([]), now=NOW)
+    assert "No candidates this run" in sheet
+    assert "quiet" in sheet
+
+
+def test_settlement_text_is_opt_in_so_the_cadence_does_not_store_it(monkeypatch):
+    """A kilobyte of prose per leg, four times a day, in a store nobody reads it from. The
+    sheet asks for it; the scheduled discovery scan does not."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    plain = pairs_cli.run_discovery(now=NOW, venues=["kalshi", "polymarket"])
+    assert all("left_resolution_rules" not in c for c in plain["candidates"])
+
+    with_rules = pairs_cli.run_discovery(
+        now=NOW, venues=["kalshi", "polymarket"], with_rules=True)
+    assert all("left_resolution_rules" in c for c in with_rules["candidates"])
