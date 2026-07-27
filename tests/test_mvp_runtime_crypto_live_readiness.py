@@ -49,6 +49,7 @@ _LIVE_ENVS = (
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
     "MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "MVP_LIVE_MIN_CLEAN_CANARY_ORDERS",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
+    "MVP_MARKET_DATA",
 )
 
 
@@ -259,7 +260,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
-        "order_path_implemented", "autonomous_routing_wired",
+        "market_data_visibility", "order_path_implemented", "autonomous_routing_wired",
     }
 
 
@@ -397,3 +398,30 @@ def test_the_board_prose_makes_no_build_claims(tmp_path, clean_env):
         live_readiness.build_readiness(root=tmp_path, now=NOW)
     )
     assert "unbuilt" not in text.lower()
+
+
+def test_market_data_is_reported_as_a_canary_precondition(tmp_path, clean_env):
+    """Since the declared-notional check landed, no market data means no canary.
+
+    `place_canary_order` verifies `--notional` against the venue's last close and refuses when
+    there is no usable price — so a machine without this feed cannot place the canaries that
+    the `canary_evidence` row is counting. A precondition only a docstring knows about is one
+    the operator discovers at a terminal holding real keys (#201's lesson), so it is a row.
+    """
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
+    assert row["ok"] is False
+    assert "canary" in row["detail"], "say what the operator loses without it"
+
+
+def test_market_data_env_alone_does_not_pass_the_row(tmp_path, clean_env, monkeypatch):
+    """The env var alone selects the MOCK, whose synthesised price the check rejects.
+
+    Reporting green here would tell an operator the canary can run when it cannot — the same
+    env-var-is-not-a-grant confusion the safety gate exists to prevent.
+    """
+    monkeypatch.setenv("MVP_MARKET_DATA", "binance_futures")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
+    assert row["ok"] is False
+    assert "grant" in row["detail"]
