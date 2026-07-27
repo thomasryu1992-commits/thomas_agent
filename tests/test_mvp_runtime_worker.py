@@ -108,7 +108,7 @@ def test_prompt_version_tracks_the_prompt_text():
     precedent)."""
     from runtime.mvp_runtime.worker import PROMPT_VERSION
 
-    assert PROMPT_VERSION == "mvp_business_analysis.v2"
+    assert PROMPT_VERSION == "mvp_business_analysis.v3"
 
 
 # --- happy path + fail-closed needing a planned task (local Core) ------------

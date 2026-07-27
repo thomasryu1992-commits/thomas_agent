@@ -28,6 +28,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from . import schema_cache
 from .budgets import (
     MAX_MEMORY_CONTENT_CHARS,
+    MAX_PERSPECTIVE_BASIS_CHARS,
     MAX_SEARCH_SNIPPET_CHARS,
     clip_for_prompt,
     output_allowance,
@@ -39,10 +40,11 @@ from .paths import repo_root as _repo_root
 
 WORKER_ID = "mvp.business_analysis.llm"
 WORKER_VERSION = "0.1.0"
-# v2 adds the explicit acceptance criteria (see ACCEPTANCE_CRITERIA below). The prompt
-# version is recorded on every invocation, so a changed prompt gets a new version — the
-# ledger must not claim two different prompts were the same one.
-PROMPT_VERSION = "mvp_business_analysis.v2"
+# v2 adds the explicit acceptance criteria (see ACCEPTANCE_CRITERIA below); v3 adds the
+# §10.4 perspective separation. The prompt version is recorded on every invocation, so a
+# changed prompt gets a new version — the ledger must not claim two different prompts were
+# the same one.
+PROMPT_VERSION = "mvp_business_analysis.v3"
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v0.2"
 
 # Business-idea evaluation priorities (Core MVP_RULE_005); the worker asks the model
@@ -66,6 +68,35 @@ EVALUATION_PRIORITIES = (
 # in providers.py: the independent validator and the orchestrator triage speak the same
 # analysis JSON but legitimately return empty facts/key_findings (they judge, they do not
 # analyze), so a shared criterion would ask them to invent content.
+# Organization Architecture §10.4 — the complex-strategy pattern: judge from separate
+# perspectives, then integrate. §10.4 permits the cheap form for early MVP ("one Agent may
+# separate these perspectives internally") and §13's separation criteria for making them
+# three Agents are not met, so this is prompt-level separation with a declared output shape.
+#
+# The failure it exists to prevent is specific: a single blended narrative in which a weak
+# revenue case is smoothed over by an enthusiastic research case, and the reader cannot see
+# that it happened. Forcing a per-perspective verdict makes the disagreement visible, and
+# makes the integration checkable — `validation` refuses an analysis that skips a perspective
+# and one that reports a NEGATIVE perspective while stating no risk at all.
+#
+# The three are §10.4's own list. Revenue and risk-adjusted value are also the top two of
+# EVALUATION_PRIORITIES (Core MVP_RULE_005) — that constant fixes the order to weigh them in,
+# this one fixes that each is answered on its own before they are weighed at all.
+PERSPECTIVES = ("research", "revenue", "risk")
+PERSPECTIVE_VERDICTS = ("POSITIVE", "MIXED", "NEGATIVE")
+
+PERSPECTIVE_INSTRUCTION = (
+    "Before the integrated answer, judge the idea from each of these perspectives "
+    "separately and report them in `perspectives` as objects "
+    "{perspective, verdict, basis}: "
+    f"{', '.join(PERSPECTIVES)}. `verdict` is exactly one of "
+    f"{', '.join(PERSPECTIVE_VERDICTS)}; `basis` states what that perspective is judging on. "
+    "Reach each verdict on that perspective's own merits - do not let a strong perspective "
+    "soften a weak one. Your summary and recommendation must then be consistent with them: "
+    "if any perspective is NEGATIVE, the risk must appear in `risks` rather than being "
+    "absorbed into an optimistic summary."
+)
+
 ACCEPTANCE_CRITERIA = (
     "Acceptance criteria - an answer failing any of these is rejected and never reaches "
     "the reader, so satisfy all three: (1) at least one entry in key_findings; (2) at "
@@ -150,6 +181,17 @@ class MockProvider:
             "next_actions": ["Estimate CAC and payback with a small paid test."],
             "evidence_quality": "low_illustrative",
             "unresolved_questions": ["What is the realistic CAC and retention curve?"],
+            # §10.4. MIXED throughout on purpose: the mock must not look like a model that
+            # reached a confident verdict, and a mock that answered POSITIVE everywhere would
+            # make the NEGATIVE-without-stated-risk branch untested by the pipeline runs.
+            "perspectives": [
+                {"perspective": "research", "verdict": "MIXED",
+                 "basis": "Category demand is plausible but unverified in this run."},
+                {"perspective": "revenue", "verdict": "MIXED",
+                 "basis": "Recurring mechanics help lifetime value; CAC is unknown."},
+                {"perspective": "risk", "verdict": "MIXED",
+                 "basis": "Margins depend on logistics that were not analysed."},
+            ],
         }
         return ProviderResult(
             analysis=analysis,
@@ -248,6 +290,7 @@ def build_prompt(
         f"Expected outputs: {outputs}\n"
         f"Active Core rules in scope: {rules}\n"
         f"Evaluate the business idea in this priority order: {priorities}.\n"
+        f"{PERSPECTIVE_INSTRUCTION}\n"
         f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
@@ -354,6 +397,39 @@ def _normalize_recommendation(value: Any) -> dict[str, str] | None:
     return None
 
 
+def _perspectives(value: Any) -> list[dict[str, str]]:
+    """The §10.4 perspective block, normalized. Never repaired.
+
+    Keeps only well-formed entries — a known perspective, a known verdict, a non-empty basis —
+    and drops anything else rather than coercing it. A malformed or missing entry must reach
+    validation as *absent*, because "the model did not answer this perspective" and "the model
+    answered it badly" both mean the separation did not happen; normalizing a broken entry into
+    a plausible-looking one would hide exactly the case the check exists to catch. First entry
+    wins per perspective, so a repeated perspective cannot overwrite its own earlier verdict."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("perspective")
+        verdict = item.get("verdict")
+        basis = item.get("basis")
+        if name not in PERSPECTIVES or name in seen:
+            continue
+        if verdict not in PERSPECTIVE_VERDICTS:
+            continue
+        if not (isinstance(basis, str) and basis.strip()):
+            continue
+        seen.add(name)
+        out.append({"perspective": name, "verdict": verdict,
+                    "basis": clip_for_prompt(basis.strip(), MAX_PERSPECTIVE_BASIS_CHARS)})
+    # Deterministic order regardless of what the model emitted, so two runs with the same
+    # verdicts produce the same record.
+    return sorted(out, key=lambda entry: PERSPECTIVES.index(entry["perspective"]))
+
+
 def _role_specific_output(analysis: Mapping[str, Any], role_output_keys: Sequence[str] | None) -> dict[str, Any]:
     """The role's own output block. Default (None) keeps the business-analysis shape
     byte-identical; a trial passes the candidate role's declared output-contract keys, whose
@@ -365,6 +441,7 @@ def _role_specific_output(analysis: Mapping[str, Any], role_output_keys: Sequenc
             "key_findings": _str_list(analysis.get("key_findings")),
             "evidence_quality": analysis["evidence_quality"] if isinstance(analysis.get("evidence_quality"), str) else "",
             "unresolved_questions": _str_list(analysis.get("unresolved_questions")),
+            "perspectives": _perspectives(analysis.get("perspectives")),
         }
     output: dict[str, Any] = {"key_findings": _str_list(analysis.get("key_findings"))}
     for key in role_output_keys:

@@ -81,7 +81,7 @@ class ArchitectureSlimmingTests(unittest.TestCase):
             by_id["general.specialist"]["role_version"]
             if "role_version" in by_id["general.specialist"]
             else by_id["general.specialist"]["version"],
-            "0.3.0",
+            "0.4.0",
         )
 
     def test_role_resolution_blocks_hash_mismatch(self):

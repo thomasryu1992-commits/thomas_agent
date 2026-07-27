@@ -89,6 +89,11 @@ def response_was_truncated(finish_reason: Any) -> bool:
 MAX_SEARCH_SNIPPET_CHARS = 700
 MAX_MEMORY_CONTENT_CHARS = 500
 MAX_SESSION_ENTRY_CHARS = 600
+# §10.4 perspective basis. This one bounds an OUTPUT field rather than prompt input, but it
+# belongs here for the same reason the others do: it is a model-supplied string that gets
+# persisted, and a model that answers a three-line question with three pages should not be
+# able to grow the ledger without limit.
+MAX_PERSPECTIVE_BASIS_CHARS = 500
 
 
 def clip_for_prompt(text: Any, limit: int) -> str:

@@ -85,6 +85,19 @@ def render_response(
         lines.append("## Key findings")
         lines += [f"- {f}" for f in findings]
         lines.append("")
+    # §10.4: the separated judgements are rendered, not merely recorded. Keeping them in the
+    # ledger alone would leave the reader with the same single blended narrative the
+    # separation exists to break up — the disagreement has to be visible where it is read,
+    # and it is placed BEFORE the recommendation so it is read as input to it rather than as
+    # a footnote to a conclusion already accepted.
+    perspectives = rso.get("perspectives", [])
+    if perspectives:
+        lines.append("## Perspectives")
+        lines += [
+            f"- **{p.get('perspective', '')}** ({p.get('verdict', '')}): {p.get('basis', '')}"
+            for p in perspectives
+        ]
+        lines.append("")
     rec = agent_output.get("recommendation")
     if rec:
         lines += ["## Recommendation", f"{rec['action']} — {rec['reason']}", ""]

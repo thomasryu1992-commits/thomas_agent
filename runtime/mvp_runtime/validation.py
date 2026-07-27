@@ -33,6 +33,10 @@ from . import schema_cache
 from .authority import validation_result_permission_boundary, validation_result_runtime_effect
 from .errors import MvpRuntimeError
 from .paths import repo_root as _repo_root
+# The §10.4 perspective vocabulary lives with the prompt that asks for it and the normalizer
+# that shapes it; this module only judges what came back. One list, so "what was asked for"
+# and "what is checked" cannot drift into two.
+from .worker import PERSPECTIVES
 
 VALIDATION_RESULT_SCHEMA_VERSION = "validation_result.v0.1"
 VALIDATOR_ACTOR_ID = "mvp.output_validator.automatic"
@@ -191,6 +195,44 @@ def validate_agent_output(
         "evidence_grounding", "PASS" if grounded else "REVISE", [ref],
         "Facts are grounded in evidence." if grounded else "Insufficient evidence/grounding for the findings.",
     ))
+
+    # 4b) Perspective separation (Organization Architecture §10.4) — default path only.
+    #
+    # Scoped to `required_role_output_keys is None`, i.e. the general.specialist business
+    # analysis whose role contract declares `perspectives`. A candidate-role trial passes its
+    # own declared keys and is excluded by construction — the role contract drives the check,
+    # so a role that does not promise perspectives is never judged on them.
+    #
+    # Both conditions are compliance, not analytical skill — the same nature as the checks
+    # above: a missing perspective is an unanswered question, and a NEGATIVE perspective
+    # beside an empty `risks` is the blend §10.4 separates perspectives to prevent. Neither
+    # reads the prose, so neither can be argued with.
+    if required_role_output_keys is None:
+        reported = {
+            entry.get("perspective"): entry.get("verdict")
+            for entry in (rso.get("perspectives") or [])
+            if isinstance(entry, Mapping)
+        }
+        missing_perspectives = [name for name in PERSPECTIVES if name not in reported]
+        negative = sorted(name for name, verdict in reported.items() if verdict == "NEGATIVE")
+        unstated_negative = bool(negative) and not agent_output.get("risks")
+        if missing_perspectives:
+            perspectives_note = (
+                "Missing perspective judgement: " + ", ".join(missing_perspectives)
+                + " (§10.4: each perspective is judged on its own before they are integrated)."
+            )
+        elif unstated_negative:
+            perspectives_note = (
+                f"Perspective(s) {', '.join(negative)} are NEGATIVE but no risk is stated; "
+                "a negative perspective must not be absorbed into the summary."
+            )
+        else:
+            perspectives_note = "Each perspective is judged separately and consistently with the stated risks."
+        checks.append(_check(
+            "perspective_separation",
+            "REVISE" if (missing_perspectives or unstated_negative) else "PASS",
+            [ref], perspectives_note,
+        ))
 
     # 5) Calibration — uncertainty or assumptions disclosed (not over-confident).
     calibrated = bool(agent_output.get("uncertainty")) or bool(agent_output.get("assumptions"))
