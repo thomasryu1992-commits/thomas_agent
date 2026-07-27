@@ -266,10 +266,16 @@ def test_the_scan_kind_is_registered_and_watch_is_the_default():
     assert scheduler.KIND_PM_SCAN == "pm_scan"
 
 
-def test_discovery_says_it_is_not_scheduled_rather_than_doing_the_watch_scan(state, monkeypatch):
-    """Discovery is candidate generation for the operator, not measurement. Running the watch
-    scan under that name would look like coverage that never happened."""
+def test_discovery_never_runs_the_watch_scan_under_a_different_name(state, monkeypatch):
+    """Discovery is candidate generation for the operator; the watch scan is measurement.
+    Running the second under the first's name would put readings in the report that were
+    never taken — coverage that never happened.
+
+    It now does real work rather than reporting itself unscheduled, but the boundary is the
+    same one, and it is what this test is for.
+    """
     from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.predmarket import proposals
     from runtime.mvp_runtime.scheduler import Schedule
 
     calls: list[str] = []
@@ -284,8 +290,13 @@ def test_discovery_says_it_is_not_scheduled_rather_than_doing_the_watch_scan(sta
         schedule, now=NOW, ledger=None, working_memory=None, programization=None,
         provider=None, search_tool=None, repo_root=state, executor=lambda **kw: {},
     )
-    assert result == "skipped_discovery_not_scheduled_yet"
+    assert result.startswith("pm_scan discovery:")
     assert calls == []
+    # No observation was recorded, and no group was confirmed.
+    assert obs.read_observations(state) == []
+    assert pairs.read_groups(state) == []
+    # The run itself is recorded, or a scheduled discovery would be invisible.
+    assert len(proposals.read_proposals(state)) == 1
 
 
 def test_a_watch_schedule_actually_runs_the_scan(state, monkeypatch, live_venues):

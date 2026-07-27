@@ -68,6 +68,7 @@ EVALUATION_PRIORITIES = (
 # in providers.py: the independent validator and the orchestrator triage speak the same
 # analysis JSON but legitimately return empty facts/key_findings (they judge, they do not
 # analyze), so a shared criterion would ask them to invent content.
+
 # Organization Architecture §10.4 — the complex-strategy pattern: judge from separate
 # perspectives, then integrate. §10.4 permits the cheap form for early MVP ("one Agent may
 # separate these perspectives internally") and §13's separation criteria for making them
@@ -139,6 +140,63 @@ class ProviderResult:
 
 class Provider(Protocol):
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult: ...
+
+
+class MockTrialProvider:
+    """Deterministic ROLE-SHAPED provider: no network, no real model. Returns the common
+    analysis shape plus a synthesized non-empty value for each of a Role's declared output
+    keys, so a Role whose contract is not the business analyst's runs end-to-end without a
+    hosted provider.
+
+    Originally the candidate-trial provider; §8.5 gave the normal routing path the same need
+    (a translation run must answer ``translated_text``, not ``key_findings``), so it lives here
+    beside :class:`MockProvider` rather than being copied. The wording still says "trial" in the
+    generated content because that content is what the trial reports assert on; the class is not
+    trial-specific."""
+
+    model_id = "mock.trial"
+    model_version = "0.1.0"
+    network_egress = False  # deterministic, in-process; no outbound call
+    # Holds a model_id for record-keeping but reaches no model. Declared explicitly
+    # because gate_banners announces anything carrying a model_id: silence is the thing
+    # that must be opted into, so a real capability can never go unannounced. Added on
+    # main (#260-era) while this branch was moving the class here — carried across the
+    # move rather than lost to it.
+    model_invocation = False
+
+    def __init__(self, role_output_spec: Mapping[str, str]):
+        self._role_output_spec = dict(role_output_spec)
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
+        analysis: dict[str, Any] = {
+            "summary": "Deterministic mock trial output for the assigned candidate role; "
+            "not a real model judgement.",
+            "key_findings": ["trial task addressed within the isolated, read-only trial scope"],
+            "facts": [
+                {"statement": "The trial ran with no tools, no memory, and no external action.",
+                 "evidence_refs": ["model:analysis"]},
+            ],
+            "inferences": ["The candidate role's output contract can be exercised end-to-end."],
+            "assumptions": ["The trial request text fully describes the trial task."],
+            "uncertainty": ["Mock output; the role's real quality was not exercised."],
+            "risks": [],
+            "recommendation": {"action": "Review the trial report before any promotion decision.",
+                               "reason": "A trial run is evidence, never an activation."},
+            "limitations": ["Deterministic mock trial; no real model judgement."],
+            "next_actions": [],
+            "evidence_quality": "mock_trial",
+            "unresolved_questions": [],
+        }
+        for key, kind in self._role_output_spec.items():
+            analysis[key] = (
+                f"Mock {key} content for the candidate-role trial."
+                if kind == "string" else [f"mock {key} entry"]
+            )
+        return ProviderResult(
+            analysis=analysis, model_id=self.model_id, model_version=self.model_version,
+            input_tokens=min(len(prompt) // 4, max_output_tokens), output_tokens=150,
+            latency_ms=0, finish_reason="stop",
+        )
 
 
 class MockProvider:
@@ -268,6 +326,55 @@ def _revision_context(revision_requests: list[str] | None) -> str:
     for index, req in enumerate(revision_requests, start=1):
         lines.append(f"[R{index}] {req}")
     return "\n".join(lines) + "\n"
+
+
+def build_role_prompt(
+    task: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    definition: Mapping[str, Any],
+    output_spec: Mapping[str, str],
+    search_hits: list[Mapping[str, Any]] | None = None,
+    memory_entries: list[Mapping[str, Any]] | None = None,
+    validated_entries: list[Mapping[str, Any]] | None = None,
+    revision_requests: list[str] | None = None,
+) -> str:
+    """The prompt for a routable Role that is NOT the business analyst (§8.5).
+
+    :func:`build_prompt` is the business-analysis prompt: it names EVALUATION_PRIORITIES,
+    the §10.4 perspectives and acceptance criteria that only make sense for judging an idea.
+    Sending it to a translator would ask for revenue potential on a paragraph of text — so a
+    Role that is not ``general.specialist`` gets its own purpose and its own declared output
+    contract instead, read from the Role Definition rather than restated here.
+
+    Distinct from ``trial.build_trial_prompt``, which additionally tells the model it has no
+    tools, no web access and no memory — true in an isolated trial and false here. A normal
+    routed run gets the same context blocks every specialist run gets, so the two prompts
+    must not be merged just because they look alike.
+    """
+    role_scope = assignment.get("role_scope", {})
+    scope = task.get("scope", {})
+    keys_desc = ", ".join(f"{key} ({kind})" for key, kind in output_spec.items())
+    capabilities = ", ".join(role_scope.get("assigned_capabilities", []))
+    quality = ", ".join(str(item) for item in definition.get("quality_criteria", []) if item)
+    quality_line = f"Quality criteria this role must satisfy: {quality}.\n" if quality else ""
+    rules = ", ".join(task.get("context", {}).get("active_core_rule_ids", []))
+    return (
+        f"Role: {definition.get('role_id')}@{definition.get('role_version')}\n"
+        f"Role purpose: {definition.get('purpose', '')}\n"
+        f"Assigned capabilities: {capabilities}\n"
+        f"{quality_line}"
+        f"Role objective: {role_scope.get('role_objective', '')}\n"
+        f"Task: {scope.get('primary_objective', '')}\n"
+        f"Request: {task.get('request', {}).get('raw_request', '')}\n"
+        f"Active Core rules in scope: {rules}\n"
+        f"{_validated_context(validated_entries)}"
+        f"{_memory_context(memory_entries)}"
+        f"{_search_context(search_hits)}"
+        f"{_revision_context(revision_requests)}"
+        f"In the SAME JSON object, additionally include these role-specific keys: {keys_desc}.\n"
+        "Separate facts (with evidence) from inferences, disclose assumptions and uncertainty, "
+        "and do not propose external actions.\n"
+    )
 
 
 def build_prompt(

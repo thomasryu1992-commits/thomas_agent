@@ -1,4 +1,4 @@
-"""The operator's door to event pairing — propose, confirm, list, retire.
+"""The operator's door to PM1 — propose, confirm, list, retire, and read the result.
 
     python -m runtime.mvp_runtime.predmarket.pairs_cli propose
     python -m runtime.mvp_runtime.predmarket.pairs_cli confirm \\
@@ -8,6 +8,12 @@
         --criteria "this venue resolves on the same release, one day later"
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
+    python -m runtime.mvp_runtime.predmarket.pairs_cli report [--json]
+
+``report`` is the far end of the same workflow and lives here rather than behind a second
+entry point: propose -> confirm -> the scheduler observes -> read what it found. It answers
+the three questions PM1 exists for — how often, how large, and **how long** — and says
+plainly whether the window it had is the exit artifact or a progress check.
 
 ``propose`` reads both venues (through the gate — the mock by default, so this runs on any
 machine with no grant), **screens out the markets this pipeline cannot use**, judges every
@@ -34,15 +40,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs, screening
+from . import matching, pairs, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
-    KALSHI,
-    POLYMARKET,
+    VENUES,
     collect_pred_markets,
     degraded_pred_market_record,
     is_synthetic_snapshot,
@@ -83,7 +89,7 @@ def _markets_of(snapshot: dict[str, Any]) -> list[PredMarket]:
 
 
 def _read_venue(
-    venue: str, *, limit: int, now: str, min_horizon_hours: float
+    venue: str, *, limit: int, now: str, min_horizon_hours: float, root: Path | None = None
 ) -> tuple[list[PredMarket], dict[str, Any], str | None]:
     """One venue's *screenable* markets, its screen result, and any degrade reason.
 
@@ -95,8 +101,14 @@ def _read_venue(
     so the printed exclusion counts describe what actually came back rather than what we
     asked for.
     """
+    # `root` reaches the Safety-Flag gate, which resolves each venue's grant relative to
+    # it. Accepting the argument and not passing it on left the gate falling back to
+    # repo-root detection — correct in the deployed container by luck, and untestable
+    # against any other state dir.
     collector = select_pred_market_collector(
-        venue, min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours)
+        venue,
+        min_close_time=screening.min_close_iso(now=now, min_horizon_hours=min_horizon_hours),
+        root=root,
     )
     try:
         snapshot, _record = collect_pred_markets(venue, collector=collector, now=now, limit=limit)
@@ -118,60 +130,94 @@ def _read_venue(
     return list(screened["observable"]), screened, None
 
 
-def _cmd_propose(args: argparse.Namespace) -> int:
-    now = pairs.now_iso()
-    horizon = float(args.min_horizon_hours)
-    kalshi, kalshi_screen, kalshi_error = _read_venue(
-        KALSHI, limit=args.limit, now=now, min_horizon_hours=horizon)
-    poly, poly_screen, poly_error = _read_venue(
-        POLYMARKET, limit=args.limit, now=now, min_horizon_hours=horizon)
+def run_discovery(
+    *,
+    now: str,
+    limit: int = DEFAULT_MARKET_LIMIT,
+    min_horizon_hours: float | None = None,
+    venues: Sequence[str] | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Read every venue, screen, and judge every cross-venue pairing. Confirms nothing.
 
-    result = matching.generate_candidates(kalshi, poly)
-    # Carried into the result so `--json` reports it too: a run that judged nothing because
-    # every market was screened out is a different finding from a run that judged everything
-    # and matched nothing, and only the screen can tell them apart.
+    The whole of ``propose`` except the printing, so the scheduled discovery scan and the
+    operator's command cannot drift into proposing different things. Returns the matcher's
+    result with the screen, the venue errors, and the already-grouped markets removed.
+    """
+    horizon = screening.MIN_HORIZON_HOURS if min_horizon_hours is None else float(min_horizon_hours)
+    wanted = [v for v in (venues or VENUES) if v in VENUES]
+
+    markets: dict[str, list[PredMarket]] = {}
+    screens: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for venue in wanted:
+        observable, screen, error = _read_venue(
+            venue, limit=limit, now=now, min_horizon_hours=horizon, root=root)
+        markets[venue], screens[venue] = observable, screen
+        if error:
+            errors[venue] = error
+
+    result = matching.generate_candidates(markets)
+    # Carried into the result so `--json` and the stored record report it too: a run that
+    # judged nothing because every market was screened out is a different finding from one
+    # that judged everything and matched nothing, and only the screen tells them apart.
     result["screening"] = {
-        KALSHI: {k: v for k, v in kalshi_screen.items() if k != "observable"},
-        POLYMARKET: {k: v for k, v in poly_screen.items() if k != "observable"},
+        venue: {k: v for k, v in screen.items() if k != "observable"}
+        for venue, screen in screens.items()
     }
+    result["venue_errors"] = errors
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
-    taken = pairs.grouped_market_keys(pairs.read_groups())
+    taken = pairs.grouped_market_keys(pairs.read_groups(root))
     result["candidates"] = [
         c for c in result["candidates"]
-        if f"{KALSHI}:{c['kalshi_market_id']}" not in taken
-        and f"{POLYMARKET}:{c['polymarket_market_id']}" not in taken
+        if f"{c['left_venue']}:{c['left_market_id']}" not in taken
+        and f"{c['right_venue']}:{c['right_market_id']}" not in taken
     ]
+    return result
+
+
+def _cmd_propose(args: argparse.Namespace) -> int:
+    now = pairs.now_iso()
+    venues = [v for v in (args.venue or VENUES) if v in VENUES]
+    result = run_discovery(
+        now=now, limit=args.limit, min_horizon_hours=args.min_horizon_hours, venues=venues)
+    screens = result["screening"]
+    errors = result["venue_errors"]
 
     if args.json:
-        sys.stdout.write(json.dumps(
-            {**result, "kalshi_error": kalshi_error, "polymarket_error": poly_error},
-            ensure_ascii=False, indent=1) + "\n")
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=1) + "\n")
         return EXIT_OK
 
-    for venue, error in ((KALSHI, kalshi_error), (POLYMARKET, poly_error)):
-        if error:
-            sys.stdout.write(f"DEGRADED {venue}: {error} (no candidates from this venue)\n")
-    for venue, screen in ((KALSHI, kalshi_screen), (POLYMARKET, poly_screen)):
-        sys.stdout.write(f"{venue:<11}: {screening.screening_status_line(screen)}\n")
+    for venue in venues:
+        if venue in errors:
+            sys.stdout.write(f"DEGRADED {venue}: {errors[venue]} (no candidates from this venue)\n")
+        sys.stdout.write(f"{venue:<11}: {screening.screening_status_line(screens[venue])}\n")
     sys.stdout.write(matching.candidate_status_line(result) + "\n")
     for row in result["candidates"]:
         sys.stdout.write(
             f"\nCANDIDATE similarity={row['title_similarity']} "
             f"close_delta_h={row['close_delta_hours']}\n"
-            f"  kalshi     : {row['kalshi_market_id']}  {row['kalshi_title']}\n"
-            f"  polymarket : {row['polymarket_market_id']}  {row['polymarket_title']}\n"
+            f"  {row['left_venue']:<10} : {row['left_market_id']}  {row['left_title']}\n"
+            f"  {row['right_venue']:<10} : {row['right_market_id']}  {row['right_title']}\n"
             f"  shared     : {', '.join(row['shared_tokens']) or '-'}\n"
-            f"  confirm    : pairs_cli confirm --leg {KALSHI}:{row['kalshi_market_id']} "
-            f"--leg {POLYMARKET}:{row['polymarket_market_id']} --criteria \"...\"\n"
+            f"  confirm    : pairs_cli confirm "
+            f"--leg {row['left_venue']}:{row['left_market_id']} "
+            f"--leg {row['right_venue']}:{row['right_market_id']} --criteria \"...\"\n"
         )
     if args.near_misses and result["near_misses"]:
         sys.stdout.write("\n-- near misses (why the rules refused; the input for fixing them) --\n")
         for row in result["near_misses"][: args.near_miss_limit]:
             sys.stdout.write(
                 f"  {row['title_similarity']:>6} {','.join(row['refusals'])}\n"
-                f"    {row['kalshi_title']}\n    {row['polymarket_title']}\n"
+                f"    {row['left_venue']}: {row['left_title']}\n"
+                f"    {row['right_venue']}: {row['right_title']}\n"
                 f"    unshared: {', '.join(row['unshared_tokens']) or '-'}\n"
+            )
+        if result["near_miss_truncated"]:
+            sys.stdout.write(
+                f"  ... {result['near_miss_truncated']} more near-miss(es) not carried "
+                f"(of {result['near_miss_total']} total)\n"
             )
     sys.stdout.write("\nNothing above is a group. Confirmation is yours, per event.\n")
     return EXIT_OK
@@ -233,6 +279,15 @@ def _cmd_retire(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    built = report.build_pm1_report(now=pairs.now_iso(), max_gap_seconds=args.max_gap_seconds)
+    if args.json:
+        sys.stdout.write(json.dumps(built, ensure_ascii=False, indent=1) + "\n")
+        return EXIT_OK
+    sys.stdout.write(report.render_pm1_report_text(built) + "\n")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predmarket-pairs",
@@ -242,6 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     propose = sub.add_parser("propose", help="judge cross-venue pairings; confirms nothing")
     propose.add_argument("--limit", type=int, default=DEFAULT_MARKET_LIMIT)
+    propose.add_argument(
+        "--venue", action="append", choices=sorted(VENUES),
+        help=("repeat to restrict which venues are read; default is all of them. Every "
+              "cross-venue pairing among those read is judged."),
+    )
     propose.add_argument("--json", action="store_true")
     propose.add_argument("--near-misses", action="store_true", default=True)
     propose.add_argument("--near-miss-limit", type=int, default=10)
@@ -282,6 +342,16 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--reason", required=True)
     retire.add_argument("--by", default="thomas")
     retire.set_defaults(handler=_cmd_retire)
+
+    reporting = sub.add_parser("report", help="what the observations said: how often, how large, how long")
+    reporting.add_argument("--json", action="store_true")
+    reporting.add_argument(
+        "--max-gap-seconds", type=float, default=report.DEFAULT_MAX_GAP_SECONDS,
+        help=("how long a hole between two readings still counts as one episode (default "
+              f"{report.DEFAULT_MAX_GAP_SECONDS}s). Beyond it the episode is cut and marked: "
+              "seeing an edge at 09:00 and again at 11:00 is not evidence it was there at 10:00."),
+    )
+    reporting.set_defaults(handler=_cmd_report)
     return parser
 
 

@@ -121,10 +121,10 @@ def test_a_near_miss_records_which_gate_failed_and_by_how_much():
 def test_unrelated_questions_are_dropped_not_kept_as_near_misses():
     """Everything below the near-miss floor is simply a different question; keeping those
     would drown the record that is supposed to be read."""
-    result = matching.generate_candidates(
-        [_kalshi("Will the Fed cut rates in December?")],
-        [_poly("Will it rain in Seoul tomorrow?")],
-    )
+    result = matching.generate_candidates({
+        KALSHI: [_kalshi("Will the Fed cut rates in December?")],
+        POLYMARKET: [_poly("Will it rain in Seoul tomorrow?")],
+    })
     assert result["candidates"] == [] and result["near_misses"] == []
     assert result["judged_count"] == 1
 
@@ -132,7 +132,7 @@ def test_unrelated_questions_are_dropped_not_kept_as_near_misses():
 def test_generation_judges_every_pairing_and_ranks_the_best_first():
     kalshi = [_kalshi(market_id="K1"), _kalshi("Will BTC close above 100k?", market_id="K2")]
     poly = [_poly(market_id="P1"), _poly("Will Bitcoin close above 100k?", market_id="P2")]
-    result = matching.generate_candidates(kalshi, poly)
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
     assert result["judged_count"] == 4
     assert result["confirms_nothing"] is True
     scores = [c["title_similarity"] for c in result["candidates"]]
@@ -463,3 +463,169 @@ def test_a_group_may_hold_the_third_venue(tmp_path):
     stored = pairs.confirm_group(group, root=tmp_path)
     assert stored["venues"] == [BINANCE, KALSHI, POLYMARKET]
     assert len(pairs.pairings_of(stored)) == 3
+
+
+# --- no venue is named in the vocabulary ----------------------------------------
+
+def _at(venue, title, market_id, close="2026-12-31T23:59:00Z", category=None):
+    return PredMarket(venue=venue, market_id=market_id, group_id=None, title=title,
+                      close_time=close, status="active", category=category)
+
+
+def test_a_third_venue_can_be_proposed_at_all():
+    """The reason the signature changed. Binance had been reading and quoting markets for a
+    week and could not appear in a single proposal — ``generate_candidates`` took two
+    positional lists named after the other two venues, so there was nowhere to put it."""
+    question = "Will the Fed cut rates in December?"
+    result = matching.generate_candidates({
+        KALSHI: [_at(KALSHI, question, "K1")],
+        POLYMARKET: [_at(POLYMARKET, question, "P1")],
+        BINANCE: [_at(BINANCE, question, "B1")],
+    })
+    # Three venues quoting one event is three cross-venue pairings, not one.
+    assert result["judged_count"] == 3
+    assert result["venues"] == sorted([KALSHI, POLYMARKET, BINANCE])
+    pairs_found = {tuple(sorted((c["left_venue"], c["right_venue"])))
+                   for c in result["candidates"]}
+    assert pairs_found == {(BINANCE, KALSHI), (BINANCE, POLYMARKET), (KALSHI, POLYMARKET)}
+
+
+def test_two_markets_on_the_same_venue_are_never_paired():
+    """A venue's book does not disagree with itself, so a same-venue pairing is not an
+    arbitrage — it is a category error that would show up as a permanent free lunch."""
+    result = matching.generate_candidates({
+        KALSHI: [_at(KALSHI, "Will the Fed cut rates in December?", "K1"),
+                 _at(KALSHI, "Will the Fed cut rates in December?", "K2")],
+    })
+    assert result["judged_count"] == 0 and result["candidates"] == []
+
+
+def test_the_same_unordered_pairing_always_yields_the_same_record():
+    """Judging (A, B) and (B, A) must not produce two different rows for one pairing. Every
+    comparison is symmetric, so the legs are ordered canonically before anything is
+    recorded."""
+    k = _at(KALSHI, "Will the Fed cut rates in December?", "K1")
+    p = _at(POLYMARKET, "Will the Fed cut rates in December?", "P1")
+    assert matching.judge_pair(k, p).as_dict() == matching.judge_pair(p, k).as_dict()
+    assert matching.judge_pair(p, k).legs() == ((KALSHI, "K1"), (POLYMARKET, "P1"))
+
+
+def test_near_misses_are_capped_and_say_how_many_were_cut():
+    """Once the venues began quoting the same subjects, shared boilerplate put thousands of
+    unrelated pairings above the floor. Truncating is fine; truncating silently would make
+    the list read as complete."""
+    left = [_at(KALSHI, f"Will candidate {i} win the 2028 Democratic nomination?", f"K{i}",
+                close="2026-12-31T23:59:00Z") for i in range(12)]
+    right = [_at(POLYMARKET, f"Will person {i} win the 2028 Republican nomination?", f"P{i}",
+                 close="2027-06-01T00:00:00Z") for i in range(12)]
+    result = matching.generate_candidates({KALSHI: left, POLYMARKET: right}, near_miss_limit=5)
+    assert result["near_miss_total"] > 5
+    assert len(result["near_misses"]) == 5
+    assert result["near_miss_truncated"] == result["near_miss_total"] - 5
+
+
+def test_the_status_line_names_every_venue_read_and_is_ascii():
+    result = matching.generate_candidates({
+        KALSHI: [_at(KALSHI, "q", "K1")], POLYMARKET: [_at(POLYMARKET, "q", "P1")],
+    })
+    line = matching.candidate_status_line(result)
+    line.encode("ascii")
+    assert "kalshi=1" in line and "polymarket=1" in line
+
+
+def test_an_empty_or_missing_mapping_judges_nothing_rather_than_failing():
+    for arg in ({}, None, {KALSHI: [], POLYMARKET: None}):
+        result = matching.generate_candidates(arg)
+        assert result["judged_count"] == 0 and result["candidates"] == []
+
+
+# --- sharing only the template -------------------------------------------------
+
+def _nominee(venue, person, market_id, phrasing="be the Democratic Presidential nominee in 2028"):
+    return _market(venue, market_id, f"Will {person} {phrasing}?")
+
+
+def _field(n=14):
+    """A ballot's worth of one template, which is what makes the template a template."""
+    people = ["Gavin Newsom", "Kamala Harris", "Bernie Sanders", "Pete Buttigieg",
+              "Andy Beshear", "Cory Booker", "Ro Khanna", "Rahm Emanuel", "Tim Walz",
+              "Josh Shapiro", "Wes Moore", "Chris Murphy", "Mark Kelly", "Jon Ossoff"][:n]
+    return ([_nominee(KALSHI, p, f"K{i}") for i, p in enumerate(people)],
+            [_nominee(POLYMARKET, p, f"P{i}", "win the 2028 Democratic presidential nomination")
+             for i, p in enumerate(people)])
+
+
+def test_two_different_people_in_one_template_are_not_a_pair():
+    """THE case, found live inside a shipped candidate list:
+
+        Will Gavin Newsom win the 2028 Democratic presidential nomination?   (binance)
+        Will MrBeast     win the 2028 Democratic presidential nomination?    (polymarket)
+
+    Jaccard 0.625, past the 0.60 gate, sharing nothing but the template. Two markets that
+    agree only on what everything agrees on are not nearly the same question — they are one
+    sentence with the subject swapped, and the subject IS the question.
+    """
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+
+    for row in result["candidates"]:
+        assert row["left_title"].split()[1:3] == row["right_title"].split()[1:3], (
+            f"paired two different people: {row['left_title']} / {row['right_title']}"
+        )
+    assert result["boilerplate_only_count"] > 0
+
+
+def test_the_same_person_on_both_venues_still_pairs():
+    """The gate must not cost the true positives it sits next to. 'newsom' is rare in the
+    corpus even though every other word in the sentence is not."""
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+    paired = {row["left_title"] for row in result["candidates"]}
+    assert any("Gavin Newsom" in title for title in paired)
+
+    row = next(r for r in result["candidates"] if "Gavin Newsom" in r["left_title"])
+    # The evidence the pairing rests on, recorded: the rare words, not the template.
+    assert set(row["distinctive_shared_tokens"]) == {"gavin", "newsom"}
+    assert "presidential" in row["shared_tokens"]
+
+
+def test_a_boilerplate_only_refusal_is_an_answer_not_a_near_miss():
+    """It joins NUMERIC_MISMATCH as a hard refusal, which is also what drained the near-miss
+    flood at its source: those rows were overwhelmingly this exact shape."""
+    kalshi, poly = _field()
+    result = matching.generate_candidates({KALSHI: kalshi, POLYMARKET: poly})
+    for row in result["near_misses"]:
+        assert matching.SHARED_BOILERPLATE_ONLY not in row["refusals"]
+
+
+def test_a_short_scan_does_not_call_the_whole_language_boilerplate():
+    """A share is not evidence on its own. With three markets, every word one of them uses
+    appears in 33% of the corpus — a purely proportional rule refuses everything, which is
+    how this was caught. A word is template only once the template has visibly repeated."""
+    question = "Will the Fed cut rates in December?"
+    result = matching.generate_candidates({
+        KALSHI: [_market(KALSHI, "K1", question)],
+        POLYMARKET: [_market(POLYMARKET, "P1", question)],
+    })
+    assert len(result["candidates"]) == 1
+    assert result["boilerplate_only_count"] == 0
+
+
+def test_the_commonness_table_reports_rare_words_as_rare():
+    titles = [f"Will {p} be the Democratic Presidential nominee in 2028?" for p in
+              ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L")]
+    commonness = matching.token_commonness(titles)
+    assert commonness["presidential"] == pytest.approx(1.0)
+    assert commonness["democratic"] == pytest.approx(1.0)
+    # Seen once each, well under MIN_BOILERPLATE_TITLES, so reported as rare not as 1/12.
+    assert commonness.get("a", 0.0) == 0.0
+    assert matching.distinctive_tokens(["presidential", "newsom"], commonness) == ("newsom",)
+
+
+def test_omitting_the_corpus_keeps_the_old_purely_pairwise_behaviour():
+    """`judge_pair` without `commonness` is still a pure function of its two arguments —
+    which is what every direct caller and every other test relies on."""
+    judged = matching.judge_pair(_nominee(KALSHI, "Gavin Newsom", "K1"),
+                                 _nominee(POLYMARKET, "MrBeast", "P1"))
+    assert matching.SHARED_BOILERPLATE_ONLY not in judged.refusals
+    assert judged.distinctive_shared_tokens == ()
