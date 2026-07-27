@@ -432,8 +432,24 @@ absence is compliance.
         candidate trial, program registration) reach Thomas through R9/R10 rather than through the
         router. This box stays open only as the place to re-check the day a run-path action is
         priced above YELLOW; there is nothing to build today.
-  - [ ] **The PROGRAM route** needs an *enabled* Program, which is a separate Thomas approval
-        (registry activation). Blocked, not unbuilt.
+  - [ ] **The PROGRAM route — unbuilt, and *not* merely awaiting an approval.** An earlier
+        version of this line said "blocked, not unbuilt"; that was wrong, and the correction is
+        the useful part. Three things are missing, and the approval is the **last** of them:
+        (1) **an executor** — nothing in `runtime/mvp_runtime/` runs a Program at all; the
+        Executor is a *deferred* component (`deferred/executor/`, `program_execution_allowed:
+        false`), plus the router emitting `PROGRAM`/`HYBRID`, which nothing does;
+        (2) **an implementation** — both candidates (`schema.validator`, `document.parser`)
+        declare `implementation_available: false`, so their definitions say what they would do
+        and no code does it; (3) **activation** (`tool_or_program_activation:
+        APPROVAL_REQUIRED`), which on its own would change nothing.
+        Worth knowing that the *manufacturing* half is complete: programization runs observation
+        → pattern → review → candidate → shadow → ACCEPTED → program request → **registry
+        registration**, i.e. this repo can produce a Program candidate end-to-end and cannot run
+        one. Deliberate — `program_request.py` builds every request as fail-closed BLOCK evidence.
+        **Not recommended yet, for the same reason as `business.analysis`:** the MVP's only use
+        case is business-idea analysis, which is judgment work, so there is no rule-based task to
+        route. Building the executor now is §16's "for future possibilities". The signal to build
+        is the programization counter catching a genuinely deterministic repetition.
   - [ ] `complexity` stays constant on purpose: nothing reads it, and deriving it from free
         request text would be a guess — §10's rule for a judgement made on insufficient
         information is to not lower the classification, so leaving it is the honest move until a
@@ -463,15 +479,16 @@ absence is compliance.
   - [x] `content.general` + `development.general` **activated 2026-07-27** (explicit Thomas
         decision, option (b) of three offered), with their request kinds and operator markers so
         activation is not inert. See `BUILD_HISTORY.md`.
-  - [ ] **`business.analysis` — deliberately held back**, and not a build item. Its capabilities
-        (`opportunity_analysis` / `revenue_potential_assessment` / `downside_risk_assessment`)
-        overlap the MVP's core use case, which `general.specialist` already serves *with* the
-        §10.4 perspectives. Activating it therefore asks "which of these two analyses does a
-        business idea get, and why?" — a role-split question, not a routing one. Decide that
-        first; the activation is mechanical once it is decided.
-        Note the coupling it creates: it is now the **last non-live candidate**, so the trial
-        suite's coverage rests on it staying one. Activating it means giving those tests a
-        fixture role rather than a production one.
+  - [ ] **`business.analysis` — deprioritized 2026-07-27, not blocked.** Thomas: business
+        analysis does not need doing right now. Four options were put up (widen
+        `general.specialist`'s output contract and retire the candidate / run the Candidate Trial
+        / activate directly / leave it) and the answer was that none of them is worth the spend
+        yet. Reasoning, the §13 scoring (two of six), and a price list for activation are in
+        [`BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/BUSINESS_ANALYSIS_ROLE_SPLIT_DESIGN_V0.1.md).
+        **Read that before re-opening this** — the box stays here as an index entry, not as an
+        open question. What would make it a priority: a real request the runtime cannot serve
+        (options compared + a validation plan). Note the coupling it created: it is the last
+        non-live candidate, so the trial suite rests on it staying one.
   - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
         P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
