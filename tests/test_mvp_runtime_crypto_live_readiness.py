@@ -425,3 +425,95 @@ def test_market_data_env_alone_does_not_pass_the_row(tmp_path, clean_env, monkey
     row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
     assert row["ok"] is False
     assert "grant" in row["detail"]
+
+
+# === the daily-loss breaker has a source ==========================================
+
+def test_the_two_windows_are_different_statistics(monkeypatch):
+    """Not a labelling nit. These are NET sums, so a wider window also picks up the wider
+    window's profits — the rolling figure can be LESS negative than the calendar day, which
+    is today's loss hidden behind yesterday's profit on the one measure meant to stop the day."""
+    from datetime import datetime, timezone
+
+    from runtime.mvp_runtime.crypto.account import bucket_income
+
+    now_ms = int(datetime(2026, 7, 27, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    rows = [
+        {"incomeType": "REALIZED_PNL", "asset": "USDT", "income": "50",
+         "time": now_ms - 2 * 3600 * 1000},        # yesterday 23:00
+        {"incomeType": "REALIZED_PNL", "asset": "USDT", "income": "-30",
+         "time": now_ms - 30 * 60 * 1000},         # today 00:30
+    ]
+    windows = bucket_income(rows, now_ms=now_ms)
+
+    assert windows["1d"]["net"] == 20.0        # rolling: looks like a profit
+    assert windows["today"]["net"] == -30.0    # calendar day: the actual loss
+
+
+def test_the_breaker_takes_the_stricter_window():
+    """So the limit cannot be escaped by which 24 hours it is measured over."""
+    from runtime.mvp_runtime.crypto.live_pnl import venue_daily_realized_net
+
+    assert venue_daily_realized_net({"today": {"net": -30.0}, "1d": {"net": 20.0}}) == -30.0
+    assert venue_daily_realized_net({"today": {"net": 5.0}, "1d": {"net": -12.0}}) == -12.0
+
+
+def test_an_unreadable_window_is_skipped_not_read_as_zero():
+    """Zero is a claim about money. A missing or malformed bucket must not make one."""
+    from runtime.mvp_runtime.crypto.live_pnl import venue_daily_realized_net
+
+    assert venue_daily_realized_net({"today": {"net": "x"}, "1d": {"net": -4.0}}) == -4.0
+    assert venue_daily_realized_net({"today": {"net": True}}) is None   # bool is not a figure
+    for empty in ({}, None, {"today": "nope"}, {"1d": {}}):
+        assert venue_daily_realized_net(empty) is None
+
+
+def test_the_venue_figure_is_the_authority_when_given():
+    """The local ledger is empty by construction on the canary path, so a venue figure must
+    win outright rather than being averaged or cross-checked against a structural zero."""
+    from runtime.mvp_runtime.crypto.live_pnl import PNL_SOURCE_VENUE, live_risk_snapshot
+
+    snap = live_risk_snapshot(limit_usdt=20.0, root=Path("/nonexistent"), now=NOW,
+                              venue_realized_pnl_usdt=-25.0)
+    assert snap["pnl_source"] == PNL_SOURCE_VENUE
+    assert snap["daily_loss_limit_breached"] is True
+    assert snap["history_error"] is None       # a real figure is not a missing one
+
+
+def test_an_unconfigured_board_opens_no_socket_and_still_fails_the_row(tmp_path, monkeypatch):
+    """The property that keeps the board usable as a diagnostic: no feed configured means no
+    outbound call, and the breaker row fails for want of a source rather than passing."""
+    from runtime.mvp_runtime.crypto import account, live_readiness
+
+    for var in (account.ACCOUNT_FEED_ENV, account.ACCOUNT_API_KEY_ENV,
+                account.ACCOUNT_API_SECRET_ENV):
+        monkeypatch.delenv(var, raising=False)
+
+    def _explode(**kwargs):                      # pragma: no cover - must not be reached
+        raise AssertionError("the board read the account without a configured feed")
+
+    monkeypatch.setattr(live_readiness, "read_account", _explode)
+    board = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False
+
+
+def test_a_failing_account_read_leaves_the_row_failing(tmp_path, monkeypatch):
+    """Degrade, never block — but a loss breaker is the one place where "could not measure"
+    must not soften into "nothing to report"."""
+    from runtime.mvp_runtime.crypto import account, live_readiness
+    from runtime.mvp_runtime.errors import ToolError
+
+    monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
+    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setattr(
+        live_readiness, "read_account",
+        lambda **kw: (_ for _ in ()).throw(ToolError("ACCOUNT_DATA_DEGRADED", "down")),
+    )
+
+    board = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False
