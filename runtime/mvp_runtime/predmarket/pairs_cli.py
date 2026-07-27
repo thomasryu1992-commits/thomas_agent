@@ -279,12 +279,51 @@ def _parse_leg(spec: str) -> dict[str, str]:
     return {"venue": venue.strip().lower(), "market_id": market_id.strip()}
 
 
+def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = None) -> dict[str, float]:
+    """``{"venue:market_id": bps}`` for every market a venue states a fee rate for.
+
+    Read from the **listing** endpoint, which is the only one that carries it. The watch scan
+    re-reads a confirmed leg by id — one order-book call, and that response is a price and
+    nothing else — so if the rate is not captured here it is never available again, and the
+    leg's cost stays unknowable for the life of the group.
+
+    Best-effort on purpose. A venue that will not answer must not make a confirmation
+    impossible: the operator has done the judgement this command exists for, and refusing it
+    over a transient read would push them to retry until it worked, which teaches the wrong
+    reflex about a step whose whole value is deliberation. A leg with no captured rate simply
+    behaves as it did before this existed.
+    """
+    rates: dict[str, float] = {}
+    for venue in dict.fromkeys(venues):
+        try:
+            collector = select_pred_market_collector(venue, now=now, root=root)
+            snapshot, _ = collect_pred_markets(
+                venue, collector=collector, now=now,
+                limit=DISCOVERY_MARKET_LIMIT, with_quotes=False,
+            )
+        except MvpRuntimeError:
+            continue
+        for row in snapshot.get("markets") or []:
+            bps = row.get("fee_rate_bps")
+            if isinstance(bps, (int, float)) and not isinstance(bps, bool):
+                rates[f"{row.get('venue')}:{row.get('market_id')}"] = float(bps)
+    return rates
+
+
 def _cmd_confirm(args: argparse.Namespace) -> int:
+    now = pairs.now_iso()
+    legs = [_parse_leg(spec) for spec in args.leg]
+    rates = _stated_fee_rates([leg["venue"] for leg in legs], now=now)
+    for leg in legs:
+        bps = rates.get(f"{leg['venue']}:{leg['market_id']}")
+        if bps is not None:
+            leg["fee_rate_bps"] = bps
+            leg["fee_rate_read_at"] = now
     record = pairs.build_event_group(
-        legs=[_parse_leg(spec) for spec in args.leg],
+        legs=legs,
         criteria_note=args.criteria,
         confirmed_by=args.by,
-        now=pairs.now_iso(),
+        now=now,
     )
     stored = pairs.confirm_group(record)
     sys.stdout.write(pairs.group_status_line(stored) + "\n")
