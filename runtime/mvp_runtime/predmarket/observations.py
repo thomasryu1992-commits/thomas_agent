@@ -36,10 +36,12 @@ from ..jsonl import append_lines, read_objects
 from . import opportunity, pairs
 from .market_data import (
     PREDMARKET_DEGRADED,
+    SYNTHETIC_SOURCE,
     PredMarket,
     VenueQuote,
     collect_pred_markets,
     degraded_pred_market_record,
+    is_synthetic_snapshot,
     select_pred_market_collector,
 )
 
@@ -57,6 +59,12 @@ OBSERVATIONS_LOCKED = "PREDMARKET_OBSERVATIONS_LOCKED"
 # separates them: a venue outage is not an unconfirmed setup, and neither is a quiet book.
 VENUE_UNREADABLE = "VENUE_UNREADABLE"
 MARKET_NOT_LISTED = "MARKET_NOT_LISTED"
+# The runtime never reached the venue: the Safety-Flag gate was closed and the mock answered
+# in its place. Only ``MARKET_NOT_LISTED`` says anything about the *market*; this one and
+# ``VENUE_UNREADABLE`` are facts about the scan. **A report must exclude these rows from both
+# sides of "how often"** — a scan that never looked is not an attempt that saw nothing, and
+# counting it as one understates the frequency it exists to measure.
+SOURCE_SYNTHETIC = "SOURCE_SYNTHETIC"
 
 
 def observations_path(root: Path | None = None) -> Path:
@@ -118,6 +126,20 @@ def _as_tuple(value: Any) -> tuple[str, ...] | None:
     if value is None:
         return None
     return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else None
+
+
+def _missing_leg_reason(key: str, venue_errors: Mapping[str, str]) -> str:
+    """Why this leg has no market. Three different findings, not three shades of one.
+
+    ``MARKET_NOT_LISTED`` is the only one that says anything about the market itself — the
+    venue answered and this id was not in the answer (resolved, delisted, or the group is
+    stale). It is therefore the only one that may be inferred from silence, and inferring it
+    from a venue the scan never reached is exactly the bug this function exists to prevent.
+    """
+    code = venue_errors.get(key.split(":", 1)[0])
+    if code is None:
+        return MARKET_NOT_LISTED
+    return SOURCE_SYNTHETIC if code == SYNTHETIC_SOURCE else VENUE_UNREADABLE
 
 
 def _markets_by_key(snapshot: Mapping[str, Any]) -> dict[str, PredMarket]:
@@ -192,6 +214,15 @@ def run_watch_scan(
             degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
             venue_errors[venue] = exc.reason_code
             continue
+        if is_synthetic_snapshot(snapshot):
+            # The gate was closed and the mock answered. It answers *successfully*, so without
+            # this branch the scan would merge zero matching markets (the mock knows only its
+            # own ids) and every leg would be filed as MARKET_NOT_LISTED — the runtime would
+            # be recording that the operator's confirmed markets had been delisted, about a
+            # venue it never reached. Degraded like an outage, with its own reason.
+            degraded_pred_market_record(collector, venue, SYNTHETIC_SOURCE, now=now)
+            venue_errors[venue] = SYNTHETIC_SOURCE
+            continue
         markets.update(_markets_by_key(snapshot))
 
     observations: list[dict[str, Any]] = []
@@ -201,14 +232,12 @@ def run_watch_scan(
             right_key = f"{right_leg['venue']}:{right_leg['market_id']}"
             left, right = markets.get(left_key), markets.get(right_key)
             if left is None or right is None:
-                # A missing leg has two possible causes and they are different findings:
-                # the venue did not answer at all, or it answered and no longer lists this
-                # market (resolved, delisted, or the group is stale).
+                # A missing leg has three possible causes and they are different findings:
+                # the venue did not answer, the runtime never reached it (the gate was closed
+                # and the mock answered), or it answered and no longer lists this market
+                # (resolved, delisted, or the group is stale).
                 missing = [k for k, m in ((left_key, left), (right_key, right)) if m is None]
-                reasons = [
-                    VENUE_UNREADABLE if key.split(":", 1)[0] in venue_errors else MARKET_NOT_LISTED
-                    for key in missing
-                ]
+                reasons = [_missing_leg_reason(key, venue_errors) for key in missing]
                 observations.append({
                     "observation_version": OBSERVATION_RECORD_VERSION,
                     "event_id": group.get("event_id"),
@@ -276,6 +305,7 @@ __all__ = [
     "OBSERVATIONS_WRITE_FAILED",
     "OBSERVATION_RECORD_VERSION",
     "SCAN_RECORD_VERSION",
+    "SOURCE_SYNTHETIC",
     "VENUE_UNREADABLE",
     "append_observations",
     "now_iso",

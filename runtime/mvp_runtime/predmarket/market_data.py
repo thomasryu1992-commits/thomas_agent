@@ -109,6 +109,12 @@ PREDMARKET_DEGRADED = "PREDMARKET_DATA_DEGRADED"
 # down" are different facts about a scan, and a report that conflated them would show an
 # outage where there was an unfinished setup step.
 API_KEY_MISSING = "PREDMARKET_API_KEY_MISSING"
+# The third fact, and the quiet one: nothing real was read. The gate DEFAULTS to the mock, so
+# a missing selector, a typo, or a revoked grant all land here — and unlike an outage the mock
+# *succeeds*, which is what makes this the dangerous case rather than the loud one. Its own
+# code because a report must be able to tell "we never looked" from both "we looked and the
+# market was gone" and "the venue was down".
+SYNTHETIC_SOURCE = "PREDMARKET_SYNTHETIC_SOURCE"
 
 # Bounds. A scan asks for markets, not for the whole venue: the per-scan cap is a scheduler
 # decision (roadmap decision #1, still open), and these are the hard ceilings under it.
@@ -424,6 +430,23 @@ def degraded_pred_market_record(
         "degraded_reason_code": reason_code,
         "created_at": now,
     }
+
+
+def is_synthetic_snapshot(snapshot: Mapping[str, Any]) -> bool:
+    """True when this collection came from the mock collector rather than the venue.
+
+    The one authority for the rule every caller of :func:`collect_pred_markets` owes:
+    **a synthetic snapshot is a venue that did not answer.** It is not a cheap reading to be
+    used with a caveat — the mock's markets are a pure function of ``(venue, index)``, and the
+    two venues' mocks are deliberately priced to show a cross-venue gap, so anything derived
+    from them is a rehearsal wearing an observation's shape.
+
+    Asked *here* rather than raised inside :func:`collect_pred_markets` for the reason stated
+    there: the caller decides to degrade, because only the caller knows whether the other venue
+    answered. This is the crypto ``guards.BLOCK_SYNTHETIC_DATA_FOR_TRADING`` rule one package
+    over — the flag was already set honestly by the mock and, until now, read by nobody here.
+    """
+    return bool(snapshot.get("is_synthetic"))
 
 
 # --- the gate -------------------------------------------------------------------
@@ -1426,6 +1449,7 @@ __all__ = [
     "PREDMARKET_DEGRADED",
     "PREDMARKET_TOOL_ID",
     "PREDMARKET_TOOL_VERSION",
+    "SYNTHETIC_SOURCE",
     "VENUES",
     "KalshiPublicCollector",
     "MockPredMarketCollector",
@@ -1437,6 +1461,7 @@ __all__ = [
     "VenueQuote",
     "collect_pred_markets",
     "degraded_pred_market_record",
+    "is_synthetic_snapshot",
     "parse_clob_book",
     "parse_gamma_markets",
     "parse_kalshi_markets",
