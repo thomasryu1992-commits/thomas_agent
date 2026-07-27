@@ -40,7 +40,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
@@ -112,25 +113,37 @@ def _read_venue(
     return list(screened["observable"]), screened, None
 
 
-def _cmd_propose(args: argparse.Namespace) -> int:
-    now = pairs.now_iso()
-    horizon = float(args.min_horizon_hours)
-    venues = [v for v in (args.venue or VENUES) if v in VENUES]
+def run_discovery(
+    *,
+    now: str,
+    limit: int = DEFAULT_MARKET_LIMIT,
+    min_horizon_hours: float | None = None,
+    venues: Sequence[str] | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Read every venue, screen, and judge every cross-venue pairing. Confirms nothing.
+
+    The whole of ``propose`` except the printing, so the scheduled discovery scan and the
+    operator's command cannot drift into proposing different things. Returns the matcher's
+    result with the screen, the venue errors, and the already-grouped markets removed.
+    """
+    horizon = screening.MIN_HORIZON_HOURS if min_horizon_hours is None else float(min_horizon_hours)
+    wanted = [v for v in (venues or VENUES) if v in VENUES]
 
     markets: dict[str, list[PredMarket]] = {}
     screens: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    for venue in venues:
+    for venue in wanted:
         observable, screen, error = _read_venue(
-            venue, limit=args.limit, now=now, min_horizon_hours=horizon)
+            venue, limit=limit, now=now, min_horizon_hours=horizon)
         markets[venue], screens[venue] = observable, screen
         if error:
             errors[venue] = error
 
     result = matching.generate_candidates(markets)
-    # Carried into the result so `--json` reports it too: a run that judged nothing because
-    # every market was screened out is a different finding from a run that judged everything
-    # and matched nothing, and only the screen can tell them apart.
+    # Carried into the result so `--json` and the stored record report it too: a run that
+    # judged nothing because every market was screened out is a different finding from one
+    # that judged everything and matched nothing, and only the screen tells them apart.
     result["screening"] = {
         venue: {k: v for k, v in screen.items() if k != "observable"}
         for venue, screen in screens.items()
@@ -138,12 +151,22 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     result["venue_errors"] = errors
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
-    taken = pairs.grouped_market_keys(pairs.read_groups())
+    taken = pairs.grouped_market_keys(pairs.read_groups(root))
     result["candidates"] = [
         c for c in result["candidates"]
         if f"{c['left_venue']}:{c['left_market_id']}" not in taken
         and f"{c['right_venue']}:{c['right_market_id']}" not in taken
     ]
+    return result
+
+
+def _cmd_propose(args: argparse.Namespace) -> int:
+    now = pairs.now_iso()
+    venues = [v for v in (args.venue or VENUES) if v in VENUES]
+    result = run_discovery(
+        now=now, limit=args.limit, min_horizon_hours=args.min_horizon_hours, venues=venues)
+    screens = result["screening"]
+    errors = result["venue_errors"]
 
     if args.json:
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=1) + "\n")
