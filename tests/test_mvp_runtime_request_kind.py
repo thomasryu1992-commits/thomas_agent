@@ -246,3 +246,126 @@ def test_the_hosted_schemas_really_do_name_only_the_analysis_keys():
 
     assert _ANALYSIS_JSON_SCHEMA["additionalProperties"] is False
     assert "translated_text" not in _ANALYSIS_JSON_SCHEMA["properties"]
+
+
+# --- the hosted schema is role-aware (§8.5, second increment) ----------------
+
+TRANSLATION_KEYS = {"translated_text", "terminology_notes", "ambiguity_notes"}
+
+
+def _spec():
+    return role_output_spec(_definition("translation.general"))
+
+
+def test_the_unbound_schemas_are_untouched():
+    """The module constants stay the analysis shape, so every existing caller — the validator,
+    the triage, an ordinary analysis run — keeps the body it had."""
+    from runtime.mvp_runtime.providers import (
+        _ANALYSIS_JSON_SCHEMA, _ANALYSIS_RESPONSE_SCHEMA,
+        analysis_json_schema, analysis_response_schema,
+    )
+
+    assert analysis_json_schema() is _ANALYSIS_JSON_SCHEMA
+    assert analysis_response_schema() is _ANALYSIS_RESPONSE_SCHEMA
+    assert analysis_json_schema({}) is _ANALYSIS_JSON_SCHEMA
+
+
+def test_a_bound_schema_asks_for_the_roles_keys_in_both_dialects():
+    from runtime.mvp_runtime.providers import analysis_json_schema, analysis_response_schema
+
+    for schema in (analysis_json_schema(_spec()), analysis_response_schema(_spec())):
+        assert TRANSLATION_KEYS.issubset(schema["properties"])
+        assert TRANSLATION_KEYS.issubset(schema["required"])
+        # The analysis keys are still there — a Role adds, it does not replace.
+        assert {"summary", "facts", "perspectives"}.issubset(schema["required"])
+
+
+def test_deriving_a_schema_does_not_mutate_the_shared_one():
+    """A mutation would leak one Role's keys into every later run, including the validator's."""
+    from runtime.mvp_runtime.providers import _ANALYSIS_JSON_SCHEMA, analysis_json_schema
+
+    before = len(_ANALYSIS_JSON_SCHEMA["required"])
+    analysis_json_schema(_spec())
+    analysis_json_schema(_spec())
+    assert len(_ANALYSIS_JSON_SCHEMA["required"]) == before
+    assert not TRANSLATION_KEYS & set(_ANALYSIS_JSON_SCHEMA["properties"])
+
+
+def test_binding_returns_a_copy_and_carries_the_authorization():
+    """A copy, because the provider is selected once per process: a run binding a Role must not
+    change what the next run asks for. Same Authorization object, so binding grants nothing and
+    the egress check still runs against the real grant."""
+    from runtime.mvp_runtime.providers import GoogleAIStudioProvider
+
+    base = GoogleAIStudioProvider(authorization=None)
+    bound = base.bind_role_output_keys(_spec())
+
+    assert bound is not base
+    assert base._role_output_spec is None
+    assert set(bound._role_output_spec) == TRANSLATION_KEYS
+    assert bound._authorization is base._authorization
+    assert bound.model_id == base.model_id
+
+
+def test_the_openrouter_body_carries_the_bound_keys():
+    """OpenRouter is the strict one — `additionalProperties: false` is exactly what made the
+    fold-in necessary rather than optional."""
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    bound = OpenRouterProvider(authorization=None).bind_role_output_keys(_spec())
+    schema = bound._response_format()["json_schema"]["schema"]
+
+    assert schema["additionalProperties"] is False
+    assert TRANSLATION_KEYS.issubset(schema["required"])
+
+
+def test_groq_needs_no_fold_in_and_says_why():
+    """Groq constrains no keys (`json_object`), so a bound Role changes nothing about its body —
+    the prompt already asks, and the vendor does not reject what it does not enforce."""
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    bound = GroqProvider(authorization=None).bind_role_output_keys(_spec())
+    assert bound._response_format() == {"type": "json_object"}
+
+
+def test_a_failover_chain_binds_every_member():
+    """Binding only the first would work until the first 503, then quietly serve an answer
+    shaped for a different Role — a bug that only appears during an outage."""
+    from runtime.mvp_runtime.providers import FailoverProvider, GoogleAIStudioProvider, GroqProvider
+
+    chain = FailoverProvider([GoogleAIStudioProvider(authorization=None),
+                              GroqProvider(authorization=None)])
+    bound = chain.bind_role_output_keys(_spec())
+
+    assert bound is not chain
+    assert all(set(p._role_output_spec) == TRANSLATION_KEYS for p in bound._providers)
+    assert bound.model_id == chain.model_id
+
+
+def test_a_chain_with_an_unbindable_member_fails_closed():
+    """The locked provider decision already forbids a chain that silently shrinks; the same
+    rule applies to one that silently serves an unbound member."""
+    from runtime.mvp_runtime.errors import ProviderError
+    from runtime.mvp_runtime.providers import FailoverProvider, GroqProvider
+
+    chain = FailoverProvider([GroqProvider(authorization=None), _NetworkProvider()])
+    with pytest.raises(ProviderError) as exc:
+        chain.bind_role_output_keys(_spec())
+    assert exc.value.reason_code == "ROLE_BINDING_UNSUPPORTED"
+
+
+def test_the_pipeline_now_binds_a_hosted_provider_instead_of_refusing():
+    """The refusal above was the honest placeholder; this is the fix it named."""
+    from runtime.mvp_runtime.providers import GoogleAIStudioProvider
+
+    chosen = pipeline._provider_for_role(GoogleAIStudioProvider(authorization=None), _spec())
+    assert set(chosen._role_output_spec) == TRANSLATION_KEYS
+
+
+def test_an_unbindable_network_provider_is_still_refused():
+    """Fail-closed is preserved for anything that cannot ask for the Role's keys."""
+    from runtime.mvp_runtime.errors import WorkerBlocked
+
+    with pytest.raises(WorkerBlocked) as exc:
+        pipeline._provider_for_role(_NetworkProvider(), _spec())
+    assert exc.value.reason_code == "ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER"

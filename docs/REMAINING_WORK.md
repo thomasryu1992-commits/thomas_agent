@@ -449,15 +449,17 @@ absence is compliance.
       per-machine and gitignored, and Thomas activated on his own authority rather than waiting
       for one. Legitimate, and the exception to trial → report → approval → activation, so it is
       written into the registry beside the flip.
-  - [ ] **Role-aware hosted response schema.** The vendor analysis schemas are strict
-        (`additionalProperties: false`) and name only the business-analysis keys, so a hosted
-        model *cannot* return `translated_text`. A non-analysis kind therefore runs on the
-        deterministic provider only; a network provider is **refused by name**
-        (`ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER`) rather than producing a REVISE that
-        reads like a model quality problem. Fixing it means threading the Role's keys into
-        provider construction, which currently happens before the plan exists.
-  - [ ] **Operator-channel kind markers** (`!번역` / `!조사`, the `!중요` precedent). The CLI has
-        `--kind`; the chat door does not yet. Purely additive.
+  - [x] **Role-aware hosted response schema** — done 2026-07-27. Both vendor dialects are now
+        derived per call with the Role's declared keys folded in, and providers expose
+        `bind_role_output_keys` (a copy, not a mutation). A hosted run of a non-analysis kind
+        works; a network provider that *cannot* bind is still refused by name, so the
+        fail-closed direction is preserved. See `BUILD_HISTORY.md`.
+  - [x] **Operator-channel kind markers** (`!번역` / `!조사` / `!분석`) — done 2026-07-27. Not
+        "purely additive" as first written: the queue is durable, so the kind had to survive it
+        (`task_registry_entry` **v0.2** adds `request_kind`; v0.1 rows read as `null`, which is
+        the routing they ran under). One marker parser handles both marker families in either
+        order, so the empty-request and hidden-command guards cannot cover one and miss the
+        other. See `BUILD_HISTORY.md`.
   - [ ] The three still-candidate roles (`business.analysis`, `content.general`,
         `development.general`) stay candidates — each activation is its own Thomas decision.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
