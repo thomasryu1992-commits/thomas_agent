@@ -24,6 +24,7 @@ refused rather than averaged in.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -201,9 +202,15 @@ def run_watch_scan(
     # whatever else uses the same key. Kalshi filters server-side, Polymarket books only these,
     # Binance skips discovery entirely (its ids carry marketId:tokenId for exactly this).
     wanted: dict[str, list[str]] = {}
+    confirmed_fee_bps: dict[str, float] = {}
     for group in groups:
         for leg in group.get("legs") or []:
             wanted.setdefault(leg["venue"], []).append(leg["market_id"])
+            # The rate the venue stated when this group was confirmed. Only reachable from
+            # here: the by-id re-read below returns a price and nothing else.
+            bps = leg.get("fee_rate_bps")
+            if isinstance(bps, (int, float)) and not isinstance(bps, bool):
+                confirmed_fee_bps[f"{leg['venue']}:{leg['market_id']}"] = float(bps)
     needed = sorted(wanted)
 
     markets: dict[str, PredMarket] = {}
@@ -230,6 +237,14 @@ def run_watch_scan(
             venue_errors[venue] = SYNTHETIC_SOURCE
             continue
         markets.update(_markets_by_key(snapshot))
+
+    # Fill only what the live read could not carry. A rate the venue stated *now* always wins
+    # over one captured at confirmation — `live_sizing`'s rule that venue parameters are an
+    # input and never a memory holds wherever the read can honour it, and this fallback exists
+    # solely for the by-id path that returns a price and nothing else.
+    for key, market in markets.items():
+        if market.fee_rate_bps is None and key in confirmed_fee_bps:
+            markets[key] = replace(market, fee_rate_bps=confirmed_fee_bps[key])
 
     observations: list[dict[str, Any]] = []
     for group in groups:

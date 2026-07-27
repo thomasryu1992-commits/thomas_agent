@@ -113,11 +113,30 @@ def normalize_legs(legs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "(same-venue pairings are intra-venue arbitrage, out of scope)",
             )
         seen_venues.add(venue)
-        cleaned.append({
+        entry = {
             "venue": venue,
             "market_id": market_id.strip(),
             "title": str(leg.get("title") or ""),
-        })
+        }
+        # The venue's own stated fee rate, as read at confirmation time.
+        #
+        # It is here because the watch scan structurally cannot fetch it. That scan re-reads a
+        # confirmed leg by id — one order-book call, which is the whole reason a two-minute
+        # cadence is affordable — and that endpoint returns a price and nothing else. Binance
+        # states its fee per topic on the *listing* endpoint, so a confirmed Binance leg arrived
+        # with no rate, its cost came back unknowable, and `net_edge` was `None` on every
+        # observation. The group accumulated denominator and could never produce a reading.
+        #
+        # Deliberately a **fallback, never an override**: `live_sizing` states the rule this
+        # bends — *venue filters are an input, never a memory* — and a rate captured weeks ago
+        # is exactly the memory that rule warns about. So a live rate always wins, and this is
+        # consulted only where the live read carries none. Kalshi and Polymarket are unaffected
+        # either way: their fees come from a verified schedule, not from the market row.
+        fee_bps = leg.get("fee_rate_bps")
+        if isinstance(fee_bps, (int, float)) and not isinstance(fee_bps, bool) and fee_bps >= 0:
+            entry["fee_rate_bps"] = float(fee_bps)
+            entry["fee_rate_read_at"] = str(leg.get("fee_rate_read_at") or "")
+        cleaned.append(entry)
     if len(cleaned) < MIN_LEGS:
         raise ToolError(TOO_FEW_LEGS, f"a group needs at least {MIN_LEGS} legs, got {len(cleaned)}")
     return sorted(cleaned, key=lambda leg: (leg["venue"], leg["market_id"]))

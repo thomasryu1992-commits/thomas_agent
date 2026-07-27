@@ -163,6 +163,121 @@ def test_a_venue_outage_is_distinguished_from_a_delisted_market(state, monkeypat
     assert obs.VENUE_UNREADABLE in row["reasons"]
 
 
+# === the fee rate a confirmed leg would otherwise lose ==============================
+
+def _leg(venue, market_id, **extra):
+    return {"venue": venue, "market_id": market_id, **extra}
+
+
+def test_a_confirmed_leg_keeps_the_fee_rate_the_by_id_reread_cannot_carry(state, monkeypatch):
+    """The defect: a confirmed group could accumulate denominator and never produce a reading.
+
+    The watch scan re-reads a leg by id — one order-book call, which is what makes a two-minute
+    cadence affordable — and that response is a price and nothing else. Binance states its fee
+    per topic on the *listing* endpoint, so a confirmed Binance leg arrived with
+    `fee_rate_bps=None`, its cost came back unknowable, and `net_edge` was `None` on every
+    observation. Measured on the one confirmed group: both legs quoted, `gross_edge=-0.011`,
+    `net_edge=null`, `readable 0/1` — forever.
+    """
+    from runtime.mvp_runtime.predmarket import market_data as md
+
+    record = pairs.build_event_group(
+        legs=[_leg(KALSHI, "K-FEE", fee_rate_bps=200, fee_rate_read_at=NOW),
+              _leg(POLYMARKET, "P-FEE", fee_rate_bps=150, fee_rate_read_at=NOW)],
+        criteria_note="both settle on the same official statement for this event",
+        confirmed_by="thomas", now=NOW,
+    )
+    pairs.confirm_group(record, root=state)
+    assert [leg.get("fee_rate_bps") for leg in pairs.read_groups(state)[0]["legs"]] == [200.0, 150.0]
+
+    seen: dict[str, float | None] = {}
+
+    def _capture(left, right, **kw):
+        seen[left.venue] = left.fee_rate_bps
+        seen[right.venue] = right.fee_rate_bps
+        return {"net_edge": None, "is_opportunity": False}
+
+    # The by-id re-read the scan actually makes: a price, and no rate.
+    def _priced_but_rateless(venue, **kw):
+        markets = [md.PredMarket(venue=venue, market_id=mid, group_id=None, title="",
+                                 close_time=None, status=None, fee_rate_bps=None)
+                   for mid in kw.get("market_ids") or []]
+        return ({"markets": [m.as_dict() for m in markets], "is_synthetic": False}, {})
+
+    monkeypatch.setattr(obs, "collect_pred_markets", _priced_but_rateless)
+    monkeypatch.setattr(obs.opportunity, "evaluate_pairing", _capture)
+    obs.run_watch_scan(now=NOW, root=state)
+
+    assert seen == {KALSHI: 200.0, POLYMARKET: 150.0}
+
+
+def test_a_rate_the_venue_states_now_beats_the_one_captured_at_confirmation(state, monkeypatch):
+    """`live_sizing` states the rule this bends — *venue filters are an input, never a memory* —
+    and a rate captured weeks ago is exactly the memory it warns about. So the stored value is a
+    fallback for the read that structurally cannot carry one, never an override of a read that
+    can."""
+    from runtime.mvp_runtime.predmarket import market_data as md
+
+    pairs.confirm_group(pairs.build_event_group(
+        legs=[_leg(KALSHI, "K-FEE", fee_rate_bps=200, fee_rate_read_at=NOW),
+              _leg(POLYMARKET, "P-FEE", fee_rate_bps=150, fee_rate_read_at=NOW)],
+        criteria_note="both settle on the same official statement for this event",
+        confirmed_by="thomas", now=NOW,
+    ), root=state)
+
+    seen: dict[str, float | None] = {}
+
+    def _capture(left, right, **kw):
+        seen[left.venue] = left.fee_rate_bps
+        seen[right.venue] = right.fee_rate_bps
+        return {"net_edge": None, "is_opportunity": False}
+
+    def _venue_states_a_new_rate(venue, **kw):
+        markets = [md.PredMarket(venue=venue, market_id=mid, group_id=None, title="",
+                                 close_time=None, status=None, fee_rate_bps=999)
+                   for mid in kw.get("market_ids") or []]
+        return ({"markets": [m.as_dict() for m in markets], "is_synthetic": False}, {})
+
+    monkeypatch.setattr(obs, "collect_pred_markets", _venue_states_a_new_rate)
+    monkeypatch.setattr(obs.opportunity, "evaluate_pairing", _capture)
+    obs.run_watch_scan(now=NOW, root=state)
+
+    assert seen == {KALSHI: 999.0, POLYMARKET: 999.0}      # the live rate, not 200/150
+
+
+def test_a_leg_confirmed_before_this_existed_is_not_broken_by_it(state, monkeypatch):
+    """Every group already in the store predates the field. They must keep working exactly as
+    they did — unreadable where the venue states no rate, which is the state this fixes going
+    forward rather than retroactively."""
+    from runtime.mvp_runtime.predmarket import market_data as md
+
+    pairs.confirm_group(pairs.build_event_group(
+        legs=[_leg(KALSHI, "K-OLD"), _leg(POLYMARKET, "P-OLD")],
+        criteria_note="both settle on the same official statement for this event",
+        confirmed_by="thomas", now=NOW,
+    ), root=state)
+    stored = pairs.read_groups(state)[0]["legs"]
+    assert all("fee_rate_bps" not in leg for leg in stored)
+
+    seen: dict[str, float | None] = {}
+
+    def _capture(left, right, **kw):
+        seen[left.venue] = left.fee_rate_bps
+        return {"net_edge": None, "is_opportunity": False}
+
+    def _rateless(venue, **kw):
+        markets = [md.PredMarket(venue=venue, market_id=mid, group_id=None, title="",
+                                 close_time=None, status=None, fee_rate_bps=None)
+                   for mid in kw.get("market_ids") or []]
+        return ({"markets": [m.as_dict() for m in markets], "is_synthetic": False}, {})
+
+    monkeypatch.setattr(obs, "collect_pred_markets", _rateless)
+    monkeypatch.setattr(obs.opportunity, "evaluate_pairing", _capture)
+    obs.run_watch_scan(now=NOW, root=state)
+
+    assert seen == {KALSHI: None}      # unchanged, not crashed
+
+
 def test_a_mock_answer_never_becomes_a_priced_observation(state):
     """The worse of the two pre-fix failures — note no ``live_venues``, so this runs on the
     gate's real default, which is the mock.
