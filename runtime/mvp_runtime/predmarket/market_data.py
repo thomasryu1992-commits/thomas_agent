@@ -92,6 +92,17 @@ BINANCE_API_SECRET_ENV = "BINANCE_PREDICTION_API_SECRET"
 
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
+# Every outbound read identifies this client by name and purpose. Not decoration: Polymarket
+# sits behind Cloudflare, which refuses Python's default `Python-urllib/3.x` signature with
+# **error 1010** ("access denied based on your browser's signature") — a 403 our transport
+# layer reported as a bare TOOL_TRANSPORT, indistinguishable from the venue being down. Found
+# 2026-07-27 on the deployed scheduler, where Polymarket was the only venue failing.
+#
+# This says who we are; it does not pretend to be a browser. If a venue blocks an honestly
+# identified client, that is the venue declining to be read, and the answer is to stop reading
+# it — not to wear a costume.
+USER_AGENT = "thomas-agent/0.1 (prediction-market observation; +read-only)"
+
 # A read that failed is recorded, never silent — the crypto MARKET_DATA_DEGRADED posture.
 PREDMARKET_DEGRADED = "PREDMARKET_DATA_DEGRADED"
 # Deliberately NOT the same code as a degrade. "Nobody configured a key" and "the venue is
@@ -450,7 +461,13 @@ def _get_json(url: str, *, timeout_seconds: int, headers: Mapping[str, str] | No
     reaches a message, log or record (the R3 posture; here it also keeps venue query
     parameters out of the audit trail)."""
     request = urllib.request.Request(
-        url, method="GET", headers={"Accept": "application/json", **(dict(headers or {}))}
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            **(dict(headers or {})),
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
@@ -825,7 +842,11 @@ class BinancePredictionCollector:
         request = urllib.request.Request(
             f"{self._base_url}{path}?{encoded}&signature={signature}",
             method="GET",
-            headers={"Accept": "application/json", "X-MBX-APIKEY": api_key},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+                "X-MBX-APIKEY": api_key,
+            },
         )
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
@@ -1090,6 +1111,7 @@ def parse_prediction_book(payload: Any) -> VenueQuote:
 
 __all__ = [
     "API_KEY_MISSING",
+    "USER_AGENT",
     "DEFAULT_BOOK_LIMIT",
     "DEFAULT_MARKET_LIMIT",
     "KALSHI",
