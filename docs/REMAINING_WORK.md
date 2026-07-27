@@ -4,8 +4,9 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-26**, after the review round, the CLAUDE.md split, and the structural-review
-queue draining (`main` = `6ed1b0a`).
+Last updated: **2026-07-27**, adding section D (design-vs-implementation gaps found by reading the
+Goal document against the code). Previously **2026-07-26**, after the review round, the CLAUDE.md
+split, and the structural-review queue draining (`main` = `6ed1b0a`).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
 
 > **The one thing to read first:** an order path **exists**, and since 2026-07-26 so does the
@@ -393,6 +394,58 @@ requirement had no test asserting any code satisfied it.
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
+
+---
+
+## D. Architecture design-vs-implementation gaps
+
+Found 2026-07-27 by reading `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` (the Goal
+document) against the code, rather than by working a roadmap. These are things the **design**
+specifies that the build does not have. They are listed here because a gap nobody wrote down is
+indistinguishable from a decision — and three of the four below may well *be* decisions, in which
+case the right outcome is to record that in the design document, not to build them.
+
+The Target layers (§4–§5: Common Capability Organization, Opportunity & Business Creation, Business
+Portfolio, Dynamic Strategic Board) are **not** listed here: §9 says do not build them now, so their
+absence is compliance.
+
+- [x] **§8.8 Core Candidate — the memory ladder's fourth rung** — done 2026-07-27. The ladder is
+      Session → Working → Validated → Core Candidate → Thomas Core; three rungs existed. See
+      `BUILD_HISTORY.md` for the shape and why. Promotion to Core stays unbuilt on purpose.
+- [ ] **§8.4 The Task Classifier routes one way of four.** `planner.classify_task` returns
+      **constants** — it does not read the request: `risk_level` is always `GREEN`, `complexity`
+      always `NORMAL`, `required_capabilities` always `("research", "analysis")`. `prime.py`
+      hardcodes `selected_route: "ROLE"` and `program_request_ids: []`. `task.v0.3` models
+      `PROGRAM`/`HYBRID` and no code path produces either.
+      The consequence worth stating plainly: **no task can ever classify as high-risk**, so the
+      design's "High-risk Decision → Analysis + Thomas Approval" route is unreachable, and R7.1's
+      `ORANGE`/`RED` branch is dead code that only the operator's `--important` flag can stand in for.
+      Two separable pieces: (a) make classification actually derive risk/complexity/capabilities —
+      buildable now, and **fail-safe by construction if it may only ever raise** the review
+      requirement, never lower it; (b) the PROGRAM route needs an *enabled* Program, which is a
+      separate Thomas approval (registry activation), so it is blocked, not unbuilt.
+- [ ] **§8.5 The specialist does not apply role contracts dynamically.** Because
+      `required_capabilities` is a constant, `select_role` always resolves to `general.specialist`.
+      The five candidate roles (`research`/`translation`/`content`/`business.analysis`/
+      `development.general`) are non-routable and reachable only through a one-shot `trial.py`
+      approval-consumption run. Making any of them routable is the standing `ROLE_GOVERNANCE`
+      approval — **Thomas's decision, not a build item**. Depends on (a) above to be worth anything:
+      with constant capabilities, a second routable role would only produce `AMBIGUOUS_ROLE`.
+      (§8.5 also lists a *Planning* role the registry does not have, and the registry has a
+      `development.general` the design does not list. One of the two documents is out of date.)
+- [ ] **§10.4 No multi-perspective team.** The design's complex-strategy pattern (Research /
+      Revenue / Risk perspectives → integrated decision) has no expression in the runtime — there is
+      no perspective concept at all. §10.4 explicitly permits the cheap form for early MVP: *"one
+      Agent may separate these perspectives internally"*, i.e. prompt-level in `worker.build_prompt`,
+      no new agents and no §16 guardrail problem. The expensive form (perspectives as separate
+      agents) is gated on §13's 3-of-6 separation criteria and is not owed yet.
+
+Also raised and closed 2026-07-27: `docs/ACTIVE_ARCHITECTURE.md` — the document `CLAUDE.md` names
+as the owner of current-implementation truth — still described the pre-R2 repository (baseline
+I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety State block listing
+implemented-and-gated capabilities as "remain disabled"). Same failure as #200's readiness-board
+prose, one document over. Fixed by splitting Safety State at the seam it was blurring: *does the
+code exist* vs *may this machine act*.
 
 ---
 

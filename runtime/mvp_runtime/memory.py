@@ -328,6 +328,219 @@ def retrieve_validated_memory(
     return selected[-limit:] if limit > 0 else []
 
 
+# --------------------------------------------------------------------------------------
+# Core Candidate — the fourth rung of the memory ladder (policy §12.2/§12.6, architecture §8.8)
+# --------------------------------------------------------------------------------------
+# The ladder is Session -> Working -> Validated -> Core Candidate -> Thomas Core. The first
+# three rungs existed; this one did not, so `Validated Memory -> Thomas Core` had no modelled
+# step between "useful knowledge" and "Thomas's identity". That missing rung is the whole point
+# of §12.6: a proposed Core change must be *visible as a proposal* before anyone argues about it.
+#
+# Naming, because two different things in this repo are called a candidate for the Core:
+#   - a **Core Release Candidate** is a whole versioned Core document in the release lifecycle
+#     (`THOMAS_CORE/releases/`, approve -> activate scripts). Not this.
+#   - a **Core Candidate** (here) is a memory-level *proposal* that some Core rule might need to
+#     change. It is a sentence with provenance, not a document.
+# The scope string says `core_change_candidate` so the two can never be confused in a store.
+#
+# What it may do: record the proposal, carry its lineage, and be accepted or rejected by the
+# operator. What it may never do: touch Thomas Core. Governance pins that from two directions —
+# `memory_learning.protected_identity_or_policy_change: APPROVAL_REQUIRED` and
+# `runtime_effect.core_activation_allowed: false` — so ACCEPTED here means "Thomas agrees this is
+# worth carrying into a Core release", and the release lifecycle remains the only thing that can
+# actually change a Core file. Accordingly every record carries `applied_to_core: False` and
+# `promotion_effect: "NONE"`, and `decide_core_candidate` refuses to emit a decision that claims
+# otherwise.
+#
+# Creation is operator-authored by construction (`proposed_by` + `rationale` are required, and
+# the source must be an already-promoted VALIDATED entry). `automatic_runtime_promotion_allowed`
+# is false, so no pipeline stage may mint one — a test pins the run-path modules against this
+# module's Core-Candidate surface, the same tripwire the live order path uses.
+CORE_CANDIDATE_STATUS = "CORE_CANDIDATE"
+CORE_CANDIDATE_SCOPE = "core_change_candidate"
+CORE_CANDIDATE_ACCEPTED = "ACCEPTED"
+CORE_CANDIDATE_REJECTED = "REJECTED"
+CORE_CANDIDATE_DECISIONS = (CORE_CANDIDATE_ACCEPTED, CORE_CANDIDATE_REJECTED)
+# The four kinds policy §12.6 names, and nothing else: an open-ended type field would let this
+# rung quietly become a second working memory.
+CORE_CANDIDATE_TYPES = (
+    "new_disposition",            # 새로운 성향
+    "value_priority_change",      # 새로운 가치 우선순위
+    "long_term_goal_change",      # 장기 목표 변경 가능성
+    "risk_preference_change",     # 위험 선호 변화
+)
+MAX_CORE_CANDIDATE_CHARS = 2000
+CORE_CANDIDATE_EVENT_TYPE = "core_change_candidate_event.v0"
+CORE_CANDIDATE_PROPOSE_ACTION = "propose_core_candidate"
+CORE_CANDIDATE_DECIDE_ACTION = "decide_core_candidate"
+
+
+def build_core_candidate(
+    validated_entry: Mapping[str, Any],
+    *,
+    candidate_type: str,
+    rationale: str,
+    proposed_by: str,
+    now: str,
+) -> dict[str, Any]:
+    """Propose one Core Candidate from a VALIDATED memory entry. Operator action only.
+
+    The source must be a genuine promoted VALIDATED entry — the rung directly below. That is
+    the rule that keeps this from becoming a shortcut: a raw model finding cannot become a
+    proposed change to Thomas's values without first surviving the M5b promotion someone had
+    to say yes to. Fails closed (``MemoryBlocked``) on anything else, on an unknown
+    ``candidate_type``, on a missing operator identity or rationale, and on a secret-bearing
+    record. Carries the source entry's task lineage forward when it has one, so a proposal can
+    always be traced back to the run that first suggested it.
+
+    The returned record grants nothing and says so in fields, not only in prose.
+    """
+    if not isinstance(validated_entry, Mapping):
+        raise MemoryBlocked("NOT_VALIDATED_MEMORY", "a Core Candidate must come from a VALIDATED entry")
+    if (validated_entry.get("status") != VALIDATED_STATUS
+            or validated_entry.get("scope") != VALIDATED_SCOPE):
+        raise MemoryBlocked(
+            "NOT_VALIDATED_MEMORY",
+            "only a promoted VALIDATED memory entry may be proposed as a Core Candidate",
+        )
+    validated_id = validated_entry.get("validated_memory_id")
+    content = validated_entry.get("content")
+    if not (isinstance(validated_id, str) and validated_id):
+        raise MemoryBlocked("INVALID_VALIDATED_MEMORY", "source entry is missing a validated_memory_id")
+    if not (isinstance(content, str) and content.strip()):
+        raise MemoryBlocked("INVALID_VALIDATED_MEMORY", "source entry is missing content")
+    if candidate_type not in CORE_CANDIDATE_TYPES:
+        raise MemoryBlocked(
+            "UNKNOWN_CORE_CANDIDATE_TYPE",
+            f"candidate_type must be one of {list(CORE_CANDIDATE_TYPES)}, got {candidate_type!r}",
+        )
+    if not (isinstance(proposed_by, str) and proposed_by.strip()):
+        raise MemoryBlocked("MISSING_OPERATOR", "a Core Candidate requires an operator identity (proposed_by)")
+    if not (isinstance(rationale, str) and rationale.strip()):
+        raise MemoryBlocked(
+            "MISSING_RATIONALE",
+            "a Core Candidate requires a rationale — why this knowledge implies a Core change",
+        )
+
+    candidate = {
+        "core_candidate_id": integrity.short_id(
+            "corecand",
+            {"validated_memory_id": validated_id, "candidate_type": candidate_type,
+             "proposed_by": proposed_by.strip(), "created_at": now},
+        ),
+        "source_validated_memory_id": validated_id,
+        "candidate_type": candidate_type,
+        "scope": CORE_CANDIDATE_SCOPE,
+        "status": CORE_CANDIDATE_STATUS,
+        "content": content.strip()[:MAX_CORE_CANDIDATE_CHARS],
+        "rationale": rationale.strip()[:MAX_CORE_CANDIDATE_CHARS],
+        "proposed_by": proposed_by.strip(),
+        "evidence_refs": [f"validated_memory:{validated_id}"],
+        # Stated as data, not prose, so a reader of the store never has to infer it.
+        "applied_to_core": False,
+        "promotable": False,
+        "promotion_effect": "NONE",
+        "permission_expansion": False,
+        "created_at": now,
+    }
+    # Lineage: the VALIDATED entry carries the originating task's provenance when the candidate
+    # it was promoted from had one. Absent lineage is allowed here (older entries predate R5.4)
+    # and is simply not fabricated.
+    source_origin = validated_entry.get("source_origin")
+    if isinstance(source_origin, Mapping):
+        candidate["source_origin"] = dict(source_origin)
+    try:
+        integrity.scan_for_secret_bearing_keys(candidate)
+    except IntegrityError as exc:
+        raise MemoryBlocked("SECRET_IN_CORE_CANDIDATE", str(exc)) from exc
+    return candidate
+
+
+def decide_core_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    decision: str,
+    decided_by: str,
+    reason: str,
+    now: str,
+) -> dict[str, Any]:
+    """Accept or reject a Core Candidate. Forward-only, terminal, operator action only.
+
+    The store is append-only, so a decision is a new row whose status is no longer
+    ``CORE_CANDIDATE`` — the :func:`~runtime.mvp_runtime.working_memory.find_core_candidate`
+    lookup stops returning it, which is what makes the decision terminal (the PROMOTED-marker
+    precedent). Fails closed on a non-live candidate, an unknown decision, or a missing
+    operator identity/reason.
+
+    ACCEPTED is a **review milestone, not an effect**: it records that Thomas wants this carried
+    into a future Core release. It writes no Core file, and the returned record still says
+    ``applied_to_core: False`` / ``promotion_effect: "NONE"`` — asserted here rather than
+    assumed, so an accepted proposal can never read as an applied one.
+    """
+    if not isinstance(candidate, Mapping) or candidate.get("scope") != CORE_CANDIDATE_SCOPE:
+        raise MemoryBlocked("NOT_A_CORE_CANDIDATE", "decision input must be a Core Candidate record")
+    if candidate.get("status") != CORE_CANDIDATE_STATUS:
+        raise MemoryBlocked(
+            "CORE_CANDIDATE_ALREADY_DECIDED",
+            f"candidate is {candidate.get('status')!r}; a decision is forward-only and terminal",
+        )
+    candidate_id = candidate.get("core_candidate_id")
+    if not (isinstance(candidate_id, str) and candidate_id):
+        raise MemoryBlocked("INVALID_CORE_CANDIDATE", "candidate is missing a core_candidate_id")
+    if decision not in CORE_CANDIDATE_DECISIONS:
+        raise MemoryBlocked(
+            "UNKNOWN_CORE_CANDIDATE_DECISION",
+            f"decision must be one of {list(CORE_CANDIDATE_DECISIONS)}, got {decision!r}",
+        )
+    if not (isinstance(decided_by, str) and decided_by.strip()):
+        raise MemoryBlocked("MISSING_OPERATOR", "a Core Candidate decision requires an operator identity")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise MemoryBlocked("MISSING_REASON", "a Core Candidate decision requires an operator reason")
+
+    decided = {
+        **dict(candidate),
+        "status": decision,
+        "decided_by": decided_by.strip(),
+        "decision_reason": reason.strip()[:MAX_CORE_CANDIDATE_CHARS],
+        "decided_at": now,
+        # Re-stated on the decision row itself. An ACCEPTED row is the one a later reader is
+        # most likely to mistake for "this is in the Core now".
+        "applied_to_core": False,
+        "promotion_effect": "NONE",
+        "permission_expansion": False,
+    }
+    try:
+        integrity.scan_for_secret_bearing_keys(decided)
+    except IntegrityError as exc:
+        raise MemoryBlocked("SECRET_IN_CORE_CANDIDATE", str(exc)) from exc
+    return decided
+
+
+def build_core_candidate_event(
+    candidate: Mapping[str, Any],
+    *,
+    action: str,
+    now: str,
+    operator_id: str | None = None,
+) -> dict[str, Any]:
+    """A tamper-evident memory event for a Core Candidate proposal or decision.
+
+    The retention/learning-event precedent: an operator memory action off the run path is
+    audited standalone on the memory-event stream, not on a task-bound audit chain. No new
+    ledger stream and no new event type — this rung changes nothing, so it earns no heavier
+    machinery than the rung that deletes data.
+    """
+    return stamped_event(
+        CORE_CANDIDATE_EVENT_TYPE, action=action,
+        core_candidate_id=str(candidate.get("core_candidate_id", "")),
+        source_validated_memory_id=str(candidate.get("source_validated_memory_id", "")),
+        candidate_type=str(candidate.get("candidate_type", "")),
+        status=str(candidate.get("status", "")),
+        applied_to_core=False, promotion_effect="NONE",
+        operator_id=operator_id, created_at=now,
+    )
+
+
 MEMORY_EVENT_TYPE = "working_memory_retention_event.v0"
 
 
