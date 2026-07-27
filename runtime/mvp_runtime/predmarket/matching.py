@@ -14,6 +14,10 @@ So the design is deliberately timid:
    readable in the record.
 2. **A candidate is a proposal, never a pair.** Confirmation is an operator action
    (``pairs.py``). Nothing in this module writes anything.
+2b. **No venue is named in the vocabulary.** The two sides of a judgement are ``left`` and
+   ``right``. The first version named them ``kalshi`` and ``polymarket``, which read as a
+   harmless label until a third venue had been reading and quoting markets for a week and
+   still could not appear in a single proposal — there was nowhere to put it.
 3. **Every judgement carries its breakdown**, including the near-misses. That is what makes
    the gap fixable: when the scheduled LLM pass (a later increment) proposes a pair this
    matcher missed, the question "why did the rules miss it?" has to be answerable from the
@@ -48,6 +52,13 @@ MAX_CLOSE_DELTA_HOURS = 48.0
 # A near miss is a failure worth keeping: it is the raw material for improving the rules.
 # Anything below this is simply a different question and would drown the record.
 NEAR_MISS_TITLE_SIMILARITY = 0.35
+# How many of them a result carries. The floor above stopped bounding the list once the
+# venues began quoting the same subjects: 196 Kalshi markets against 100 Polymarket ones
+# produced 3,136 near misses, nearly all of them two different people sharing the phrase
+# "2028 democratic presidential nomination". The cap is reported rather than silent — see
+# `near_miss_truncated` — because a truncated diagnostic that did not say so would read as
+# a complete one. This bounds the list; it does not decide what counts as a near miss.
+DEFAULT_NEAR_MISS_LIMIT = 200
 
 # Why a pair was refused — each names the gate, so a later fix has somewhere to aim.
 TITLE_TOO_DIFFERENT = "TITLE_TOO_DIFFERENT"
@@ -191,12 +202,22 @@ def venue_cross_reference(left: PredMarket, right: PredMarket) -> bool:
 
 @dataclass(frozen=True)
 class MatchCandidate:
-    """One judged (Kalshi, Polymarket) pairing, with the reasoning that produced it."""
+    """One judged cross-venue pairing, with the reasoning that produced it.
 
-    kalshi_market_id: str
-    polymarket_market_id: str
-    kalshi_title: str
-    polymarket_title: str
+    The two sides are ``left``/``right``, not ``kalshi``/``polymarket``. Naming them after
+    two specific venues was not just a label: a third venue had been reading and quoting
+    markets for a week and could not appear in a single proposal, because there was no field
+    to put it in. Every judgement below is symmetric, so which side is which carries no
+    meaning — ``judge_pair`` orders them canonically so one unordered pair always yields one
+    record.
+    """
+
+    left_venue: str
+    right_venue: str
+    left_market_id: str
+    right_market_id: str
+    left_title: str
+    right_title: str
     title_similarity: float
     shared_tokens: tuple[str, ...]
     unshared_tokens: tuple[str, ...]
@@ -225,13 +246,20 @@ class MatchCandidate:
             return True
         return self.title_similarity >= NEAR_MISS_TITLE_SIMILARITY
 
+    def legs(self) -> tuple[tuple[str, str], tuple[str, str]]:
+        """The pairing as ``((venue, market_id), (venue, market_id))`` — what a caller needs
+        to build a confirm command or to check the pair against the ones already grouped."""
+        return ((self.left_venue, self.left_market_id), (self.right_venue, self.right_market_id))
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "matching_version": MATCHING_VERSION,
-            "kalshi_market_id": self.kalshi_market_id,
-            "polymarket_market_id": self.polymarket_market_id,
-            "kalshi_title": self.kalshi_title,
-            "polymarket_title": self.polymarket_title,
+            "left_venue": self.left_venue,
+            "right_venue": self.right_venue,
+            "left_market_id": self.left_market_id,
+            "right_market_id": self.right_market_id,
+            "left_title": self.left_title,
+            "right_title": self.right_title,
             # The breakdown is the point: a later reviewer must be able to see which gate
             # failed and by how much, without re-running anything.
             "title_similarity": self.title_similarity,
@@ -251,19 +279,24 @@ class MatchCandidate:
         }
 
 
-def judge_pair(kalshi: PredMarket, polymarket: PredMarket) -> MatchCandidate:
-    """Judge one pairing. Pure: no I/O, no model call, no state.
+def judge_pair(first: PredMarket, second: PredMarket) -> MatchCandidate:
+    """Judge one cross-venue pairing. Pure: no I/O, no model call, no state.
 
     Both gates must pass. Category is recorded and, when both sides state one and they
     disagree, refuses — a disagreement between two stated categories is real evidence,
     unlike a missing one.
+
+    The arguments are ordered canonically before anything is recorded, so judging (A, B) and
+    (B, A) produces the identical record. Every comparison here is symmetric, so this costs
+    nothing and buys a stable id for a pairing that three venues can each name differently.
     """
-    left_tokens, right_tokens = set(normalize_tokens(kalshi.title)), set(normalize_tokens(polymarket.title))
-    similarity = title_similarity(kalshi.title, polymarket.title)
-    delta = close_delta_hours(kalshi.close_time, polymarket.close_time)
-    category = _category_agreement(kalshi, polymarket)
-    numeric = _numeric_agreement(kalshi.title, polymarket.title)
-    asserted = venue_cross_reference(kalshi, polymarket)
+    left, right = sorted((first, second), key=lambda m: (str(m.venue), str(m.market_id)))
+    left_tokens, right_tokens = set(normalize_tokens(left.title)), set(normalize_tokens(right.title))
+    similarity = title_similarity(left.title, right.title)
+    delta = close_delta_hours(left.close_time, right.close_time)
+    category = _category_agreement(left, right)
+    numeric = _numeric_agreement(left.title, right.title)
+    asserted = venue_cross_reference(left, right)
 
     refusals: list[str] = []
     # A venue-asserted cross-reference outranks the wording gate — the venue knows which
@@ -282,10 +315,12 @@ def judge_pair(kalshi: PredMarket, polymarket: PredMarket) -> MatchCandidate:
         refusals.append(NUMERIC_MISMATCH)
 
     return MatchCandidate(
-        kalshi_market_id=kalshi.market_id,
-        polymarket_market_id=polymarket.market_id,
-        kalshi_title=kalshi.title,
-        polymarket_title=polymarket.title,
+        left_venue=str(left.venue),
+        right_venue=str(right.venue),
+        left_market_id=str(left.market_id),
+        right_market_id=str(right.market_id),
+        left_title=left.title,
+        right_title=right.title,
         title_similarity=similarity,
         shared_tokens=tuple(sorted(left_tokens & right_tokens)),
         unshared_tokens=tuple(sorted(left_tokens ^ right_tokens)),
@@ -299,47 +334,72 @@ def judge_pair(kalshi: PredMarket, polymarket: PredMarket) -> MatchCandidate:
 
 
 def generate_candidates(
-    kalshi_markets: Iterable[PredMarket],
-    polymarket_markets: Iterable[PredMarket],
+    markets_by_venue: Mapping[str, Iterable[PredMarket]],
     *,
     keep_near_misses: bool = True,
+    near_miss_limit: int = DEFAULT_NEAR_MISS_LIMIT,
 ) -> dict[str, Any]:
-    """Judge every cross-venue pairing and return candidates plus diagnosable near-misses.
+    """Judge every cross-venue pairing across **all** venues given, and return candidates
+    plus diagnosable near-misses.
 
-    Every combination is judged, which is O(n·m) — bounded in practice by the scan's own
-    market cap, and cheap because each judgement is set arithmetic on a handful of tokens.
+    Takes a mapping rather than two positional lists, which is the whole point of this
+    signature: with two parameters named after two venues, a third venue that was already
+    reading and quoting markets could not be proposed at all. Venue pairs are enumerated
+    from whatever is passed, so adding a fourth is a dictionary key.
 
-    Near-misses are kept (above ``NEAR_MISS_TITLE_SIMILARITY``) because they are the input
-    to improving the rules: when a later pass proposes a pair these rules missed, its
-    near-miss row already says which gate failed and by how much. Everything below the floor
-    is simply a different question and is dropped rather than drowning the record.
+    Only *cross*-venue pairings are judged. Two markets on the same venue are not an
+    arbitrage — they are that venue's own book disagreeing with itself, which it does not.
 
-    **Nothing here confirms anything.** The operator does that, per pair, in ``pairs.py``.
+    Every combination is judged, which is O(sum of n·m over venue pairs) — cheap, because
+    each judgement is set arithmetic on a handful of tokens.
+
+    Near-misses are kept because they are the input to improving the rules: when a later
+    pass proposes a pair these rules missed, its near-miss row already says which gate
+    failed and by how much. They are also **capped and the truncation reported** —
+    ``near_miss_total`` and ``near_miss_truncated`` say what was cut. Once the venues
+    started quoting the same subjects, the shared boilerplate ("2028 democratic presidential
+    nomination") put thousands of unrelated pairings above the floor, and a diagnostic list
+    nobody can read diagnoses nothing.
+
+    **Nothing here confirms anything.** The operator does that, per event, in ``pairs.py``.
     """
-    left = [m for m in kalshi_markets if isinstance(m, PredMarket)]
-    right = [m for m in polymarket_markets if isinstance(m, PredMarket)]
+    by_venue: dict[str, list[PredMarket]] = {
+        str(venue): [m for m in (markets or []) if isinstance(m, PredMarket)]
+        for venue, markets in (markets_by_venue or {}).items()
+    }
+    venues = sorted(by_venue)
 
     candidates: list[MatchCandidate] = []
     near_misses: list[MatchCandidate] = []
-    for k in left:
-        for p in right:
-            judged = judge_pair(k, p)
-            if judged.is_candidate:
-                candidates.append(judged)
-            elif keep_near_misses and judged.near_miss():
-                near_misses.append(judged)
+    judged_count = 0
+    for index, left_venue in enumerate(venues):
+        for right_venue in venues[index + 1:]:
+            for left in by_venue[left_venue]:
+                for right in by_venue[right_venue]:
+                    judged_count += 1
+                    judged = judge_pair(left, right)
+                    if judged.is_candidate:
+                        candidates.append(judged)
+                    elif keep_near_misses and judged.near_miss():
+                        near_misses.append(judged)
 
     # Best first, so an operator reviewing a long list sees the strongest proposals first.
-    candidates.sort(key=lambda c: (-c.title_similarity, c.kalshi_market_id, c.polymarket_market_id))
-    near_misses.sort(key=lambda c: (-c.title_similarity, c.kalshi_market_id, c.polymarket_market_id))
+    candidates.sort(key=lambda c: (-c.title_similarity, c.legs()))
+    near_misses.sort(key=lambda c: (-c.title_similarity, c.legs()))
+    near_miss_total = len(near_misses)
+    kept = near_misses if near_miss_limit is None else near_misses[:max(0, int(near_miss_limit))]
 
     return {
         "matching_version": MATCHING_VERSION,
-        "kalshi_market_count": len(left),
-        "polymarket_market_count": len(right),
-        "judged_count": len(left) * len(right),
+        "market_counts": {venue: len(by_venue[venue]) for venue in venues},
+        "venues": venues,
+        "judged_count": judged_count,
         "candidates": [c.as_dict() for c in candidates],
-        "near_misses": [c.as_dict() for c in near_misses],
+        "near_misses": [c.as_dict() for c in kept],
+        # No silent caps: a truncated diagnostic that did not say so would read as "these are
+        # all the near misses there were".
+        "near_miss_total": near_miss_total,
+        "near_miss_truncated": near_miss_total - len(kept),
         # Stated so a reader never mistakes a proposal for a decision.
         "confirms_nothing": True,
     }
@@ -347,10 +407,14 @@ def generate_candidates(
 
 def candidate_status_line(result: Mapping[str, Any]) -> str:
     """One ASCII line for the console (Windows consoles are cp949)."""
+    counts = result.get("market_counts") or {}
+    shown = len(result.get("near_misses") or [])
+    total = result.get("near_miss_total", shown)
+    near = f"{total} near-miss(es)" + (f", {shown} shown" if total != shown else "")
+    venues = ", ".join(f"{venue}={count}" for venue, count in sorted(counts.items())) or "-"
     return (
-        f"predmarket match: {len(result.get('candidates') or [])} candidate(s), "
-        f"{len(result.get('near_misses') or [])} near-miss(es) "
-        f"from {result.get('judged_count')} judged pairings"
+        f"predmarket match: {len(result.get('candidates') or [])} candidate(s), {near} "
+        f"from {result.get('judged_count')} judged pairings [{venues}]"
     )
 
 
@@ -359,6 +423,7 @@ __all__ = [
     "NUMERIC_MISMATCH",
     "CLOSE_TIME_UNKNOWN",
     "CLOSE_TOO_FAR_APART",
+    "DEFAULT_NEAR_MISS_LIMIT",
     "MATCHING_VERSION",
     "MAX_CLOSE_DELTA_HOURS",
     "MIN_TITLE_SIMILARITY",
