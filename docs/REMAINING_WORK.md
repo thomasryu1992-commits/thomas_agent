@@ -432,8 +432,24 @@ absence is compliance.
         candidate trial, program registration) reach Thomas through R9/R10 rather than through the
         router. This box stays open only as the place to re-check the day a run-path action is
         priced above YELLOW; there is nothing to build today.
-  - [ ] **The PROGRAM route** needs an *enabled* Program, which is a separate Thomas approval
-        (registry activation). Blocked, not unbuilt.
+  - [ ] **The PROGRAM route — unbuilt, and *not* merely awaiting an approval.** An earlier
+        version of this line said "blocked, not unbuilt"; that was wrong, and the correction is
+        the useful part. Three things are missing, and the approval is the **last** of them:
+        (1) **an executor** — nothing in `runtime/mvp_runtime/` runs a Program at all; the
+        Executor is a *deferred* component (`deferred/executor/`, `program_execution_allowed:
+        false`), plus the router emitting `PROGRAM`/`HYBRID`, which nothing does;
+        (2) **an implementation** — both candidates (`schema.validator`, `document.parser`)
+        declare `implementation_available: false`, so their definitions say what they would do
+        and no code does it; (3) **activation** (`tool_or_program_activation:
+        APPROVAL_REQUIRED`), which on its own would change nothing.
+        Worth knowing that the *manufacturing* half is complete: programization runs observation
+        → pattern → review → candidate → shadow → ACCEPTED → program request → **registry
+        registration**, i.e. this repo can produce a Program candidate end-to-end and cannot run
+        one. Deliberate — `program_request.py` builds every request as fail-closed BLOCK evidence.
+        **Not recommended yet, for the same reason as `business.analysis`:** the MVP's only use
+        case is business-idea analysis, which is judgment work, so there is no rule-based task to
+        route. Building the executor now is §16's "for future possibilities". The signal to build
+        is the programization counter catching a genuinely deterministic repetition.
   - [ ] `complexity` stays constant on purpose: nothing reads it, and deriving it from free
         request text would be a guess — §10's rule for a judgement made on insufficient
         information is to not lower the classification, so leaving it is the honest move until a
