@@ -438,17 +438,42 @@ absence is compliance.
         request text would be a guess — §10's rule for a judgement made on insufficient
         information is to not lower the classification, so leaving it is the honest move until a
         consumer exists.
-- [ ] **§8.5 The specialist does not apply role contracts dynamically.** Because
-      `required_capabilities` is a constant, `select_role` always resolves to `general.specialist`.
-      The five candidate roles (`research`/`translation`/`content`/`business.analysis`/
-      `development.general`) are non-routable and reachable only through a one-shot `trial.py`
-      approval-consumption run. Making any of them routable is the standing `ROLE_GOVERNANCE`
-      approval — **Thomas's decision, not a build item**. `required_capabilities` is deliberately
-      still constant: with exactly one routable role, deriving it can only ever refuse a run that
-      works today (`NO_ROUTABLE_ROLE`), so it becomes useful on the day a second role is activated
-      and not before.
-      (§8.5 also lists a *Planning* role the registry does not have, and the registry has a
-      `development.general` the design does not list. One of the two documents is out of date.)
+- [~] **§8.5 Routing to more than one Role.** `research.general` and `translation.general` were
+      **activated by explicit Thomas decision 2026-07-27** (status/routable flipped in both the
+      registry and the definitions, versions bumped, hashes refreshed; `execution.live_trader`
+      deliberately **not** included — it is P5 with `external_action_allowed: true` and its
+      activation is a live-trading decision). Activation alone routes nothing, so the same PR
+      added `--kind` → capabilities → Role, and made the selected Role run against **its own**
+      output contract. See `BUILD_HISTORY.md`.
+      Recorded honestly: no `candidate_trial_report` backed the activation — trial records are
+      per-machine and gitignored, and Thomas activated on his own authority rather than waiting
+      for one. Legitimate, and the exception to trial → report → approval → activation, so it is
+      written into the registry beside the flip.
+  - [x] **Role-aware hosted response schema** — done 2026-07-27. Both vendor dialects are now
+        derived per call with the Role's declared keys folded in, and providers expose
+        `bind_role_output_keys` (a copy, not a mutation). A hosted run of a non-analysis kind
+        works; a network provider that *cannot* bind is still refused by name, so the
+        fail-closed direction is preserved. See `BUILD_HISTORY.md`.
+  - [x] **Operator-channel kind markers** (`!번역` / `!조사` / `!분석`) — done 2026-07-27. Not
+        "purely additive" as first written: the queue is durable, so the kind had to survive it
+        (`task_registry_entry` **v0.2** adds `request_kind`; v0.1 rows read as `null`, which is
+        the routing they ran under). One marker parser handles both marker families in either
+        order, so the empty-request and hidden-command guards cannot cover one and miss the
+        other. See `BUILD_HISTORY.md`.
+  - [x] `content.general` + `development.general` **activated 2026-07-27** (explicit Thomas
+        decision, option (b) of three offered), with their request kinds and operator markers so
+        activation is not inert. See `BUILD_HISTORY.md`.
+  - [ ] **`business.analysis` — deliberately held back**, and not a build item. Its capabilities
+        (`opportunity_analysis` / `revenue_potential_assessment` / `downside_risk_assessment`)
+        overlap the MVP's core use case, which `general.specialist` already serves *with* the
+        §10.4 perspectives. Activating it therefore asks "which of these two analyses does a
+        business idea get, and why?" — a role-split question, not a routing one. Decide that
+        first; the activation is mechanical once it is decided.
+        Note the coupling it creates: it is now the **last non-live candidate**, so the trial
+        suite's coverage rests on it staying one. Activating it means giving those tests a
+        fixture role rather than a production one.
+  - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
+        P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
       MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
       reach their own verdict before the integrated answer, declared in the role's output contract

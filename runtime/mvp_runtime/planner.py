@@ -48,6 +48,38 @@ MVP_RISK_LEVEL = "GREEN"
 MVP_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"  # governance effect class (ALLOW disposition)
 MVP_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — internal read-only analysis (least privilege)
 MVP_REQUIRED_CAPABILITIES = ("research", "analysis")
+
+# Architecture §8.5 — routing to more than one specialist Role.
+#
+# A request kind names the CAPABILITIES the work needs; it never names a Role. That layering is
+# the point: the Role Registry stays the only thing that decides which Role covers a capability
+# set, so activating, renaming or retiring a Role changes routing without touching this table.
+#
+# Derived from an explicit marker rather than inferred from the request text. Inferring "this
+# looks like a translation" is a guess, and a wrong guess silently routes work to a Role with a
+# different output contract and different quality criteria — the reader would get a confident
+# answer of the wrong shape. The `!중요` / `--important` precedent already established that an
+# explicit operator marker is how this runtime takes a routing signal from a person.
+#
+# Each set must be covered by exactly one active routable Role or `select_role` fails closed
+# (NO_ROUTABLE_ROLE / AMBIGUOUS_ROLE); `test_every_request_kind_resolves_to_exactly_one_role`
+# pins that against the live registry, so activating a Role whose capabilities overlap an
+# existing kind fails in CI rather than at run time.
+REQUEST_KIND_ANALYSIS = "analysis"
+# The Role the analysis kind resolves to. Named once so the pipeline can ask "is this the
+# business analyst?" without re-deriving it from a capability set.
+DEFAULT_SPECIALIST_ROLE_ID = "general.specialist"
+REQUEST_KIND_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    REQUEST_KIND_ANALYSIS: MVP_REQUIRED_CAPABILITIES,          # general.specialist
+    "research": ("evidence_collection", "source_comparison"),  # research.general
+    "translation": ("translation", "ambiguity_disclosure"),    # translation.general
+    # content.general shares `drafting` with general.specialist, so a content kind asking for
+    # `drafting` alone would be AMBIGUOUS_ROLE. Both of these are content-only, which is the
+    # general rule for this table: every set must name at least one capability its Role does
+    # not share, or the Registry cannot tell the two apart.
+    "content": ("content_planning", "audience_adaptation"),     # content.general
+    "development": ("technical_analysis", "implementation_planning"),  # development.general
+}
 _READ_ONLY_CONSTRAINT = "no_external_action"
 
 # R7: capabilities that select the independent validator role (validation.independent).
@@ -59,9 +91,56 @@ VALIDATOR_REQUIRED_CAPABILITIES = (
 VALIDATOR_REQUIRED_PERMISSION_LEVEL = "P2"
 
 
+def load_role_definition(root: Path, role: Mapping[str, Any]) -> dict[str, Any]:
+    """The hash-verified full Role Definition (the resolved registry view deliberately
+    carries only routing fields). One loader for the whole runtime — assignment.py, the
+    candidate trial and the normal routing path all use this one — so no caller can read a
+    definition the registry does not vouch for."""
+    try:
+        return registry_resolution.load_markdown_yaml_front_matter(
+            path=root / str(role["definition_path"]),
+            expected_hash=role.get("definition_sha256"),
+        )
+    except registry_resolution.RegistryResolutionError as exc:
+        raise PlannerBlocked("ROLE_DEFINITION_INVALID", str(exc)) from exc
+
+
+def role_output_spec(definition: Mapping[str, Any]) -> dict[str, str]:
+    """The role's declared ``role_specific_output`` contract: {field: type}. The single
+    source for the role's prompt, the worker's output mapping, and the validation
+    requirement — the Role Definition, not any calling module, owns what the role returns."""
+    contract = definition.get("output_contract", {}).get("role_specific_output", {})
+    if not isinstance(contract, Mapping) or not contract:
+        raise PlannerBlocked(
+            "NO_ROLE_OUTPUT_CONTRACT",
+            f"role {definition.get('role_id')} declares no role_specific_output contract",
+        )
+    return {str(k): str(v) for k, v in contract.items()}
+
+
+def capabilities_for_request_kind(request_kind: str | None) -> tuple[str, tuple[str, ...]]:
+    """``(kind, required_capabilities)`` for a request kind. Fails closed on an unknown one.
+
+    ``None`` resolves to the analysis kind — the runtime's original behavior, so a caller that
+    passes nothing routes exactly where it did before §8.5. An *unknown* kind is refused rather
+    than defaulted: silently analyzing a request someone asked to have translated is the wrong
+    answer delivered confidently, which is worse than a refusal naming the kinds that exist."""
+    if request_kind is None:
+        return REQUEST_KIND_ANALYSIS, REQUEST_KIND_CAPABILITIES[REQUEST_KIND_ANALYSIS]
+    capabilities = REQUEST_KIND_CAPABILITIES.get(request_kind)
+    if capabilities is None:
+        raise PlannerBlocked(
+            "UNKNOWN_REQUEST_KIND",
+            f"request kind {request_kind!r} is not routable; known kinds: "
+            f"{sorted(REQUEST_KIND_CAPABILITIES)}",
+        )
+    return request_kind, capabilities
+
+
 def classify_task(
     task: Mapping[str, Any],
     *,
+    request_kind: str | None = None,
     planned_action_risks: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Classify a RECEIVED/UNCLASSIFIED task. Pure and fail-closed.
@@ -86,10 +165,13 @@ def classify_task(
     * ``complexity`` — nothing reads it, and deriving it from free request text would be a
       guess. §10's rule for a judgement made on insufficient information is to *not lower*
       the classification, so the honest move is to leave it until something needs it.
-    * ``required_capabilities`` — deriving these is §8.5's work, not this one's. With exactly
-      one routable role, a derived capability set can only ever refuse a run that works today
-      (``NO_ROUTABLE_ROLE``); it becomes useful the day a second role is activated, which is a
-      separate Thomas decision.
+    ``request_kind`` (§8.5) selects the capabilities the work needs — never a Role; the Role
+    Registry decides which Role covers them. ``None`` keeps the original analysis routing.
+
+    ``complexity`` is deliberately still constant: nothing reads it, and deriving it from free
+    request text would be a guess. §10's rule for a judgement made on insufficient information
+    is to *not lower* the classification, so the honest move is to leave it until a consumer
+    exists.
     """
     if not isinstance(task, Mapping):
         raise PlannerBlocked("INVALID_TASK", "task must be a mapping")
@@ -108,12 +190,15 @@ def classify_task(
             "OUT_OF_MVP_SCOPE", f"task scope must carry the '{_READ_ONLY_CONSTRAINT}' constraint"
         )
 
+    kind, required_capabilities = capabilities_for_request_kind(request_kind)
     priority = classification.get("priority", "NORMAL")
     risk_level = stricter_risk(MVP_RISK_LEVEL, *planned_action_risks)
     reasons = [
         "internal_read_only_analysis",
         "judgment_required_not_deterministic_program",
     ]
+    if kind != REQUEST_KIND_ANALYSIS:
+        reasons.append(f"request_kind_{kind}")
     if risk_level != MVP_RISK_LEVEL:
         # Say what raised it. A classification that differs from the base without explaining
         # why is the kind of record someone later "corrects" back to GREEN.
@@ -131,7 +216,8 @@ def classify_task(
             "required_permission_level": MVP_REQUIRED_PERMISSION_LEVEL,
             "authority_reason": "Internal read-only analysis within the assigned Task scope.",
         },
-        "required_capabilities": list(MVP_REQUIRED_CAPABILITIES),
+        "required_capabilities": list(required_capabilities),
+        "request_kind": kind,
         "permission_scope": MVP_PERMISSION_SCOPE,
     }
 

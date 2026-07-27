@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_registry_entry.v0.2.schema.json",
+  "title": "Task Registry Entry v0.2 — coordination state for one submitted request",
+  "description": "One row of the local task-coordination ledger. Holds only the COORDINATION state of a request (what was asked, where it came from, what stage of its life it is in, where its result lives). The task itself remains the authority of task.v0.3 and the run's records in the durable ledger; this entry references them by task_id/trace_id and never restates their content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "registry_entry_id",
+    "request_text",
+    "origin",
+    "requester_id",
+    "flags",
+    "status",
+    "submitted_at",
+    "started_at",
+    "finished_at",
+    "task_id",
+    "trace_id",
+    "result_ref",
+    "last_reason_code",
+    "request_kind"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "task_registry_entry.v0.2"
+    },
+    "registry_entry_id": {
+      "type": "string",
+      "pattern": "^treg_[0-9a-f]{20}$"
+    },
+    "request_text": {
+      "description": "The operator's request verbatim. Never a paraphrase — the pipeline receives exactly this text.",
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "description": "Which door submitted this request. FRONTDESK is reserved for the conversational front desk (not yet implemented); entries never carry it until that role is active.",
+      "enum": [
+        "TELEGRAM",
+        "CLI",
+        "SCHEDULER",
+        "FRONTDESK"
+      ]
+    },
+    "requester_id": {
+      "description": "Identifier of the submitting operator/process. An identifier, never a secret.",
+      "type": "string",
+      "minLength": 1
+    },
+    "flags": {
+      "description": "The run options this request was submitted with, as booleans. Recorded so history explains why two runs of the same text behaved differently.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "important",
+        "independent_validation",
+        "revise",
+        "write_output"
+      ],
+      "properties": {
+        "important": {
+          "type": "boolean"
+        },
+        "independent_validation": {
+          "type": "boolean"
+        },
+        "revise": {
+          "type": "boolean"
+        },
+        "write_output": {
+          "type": "boolean"
+        }
+      }
+    },
+    "status": {
+      "description": "Forward-only lifecycle. QUEUED -> RUNNING -> one terminal of DELIVERED/FAILED/BLOCKED; QUEUED -> CANCELLED is the only other legal edge. A terminal status is final.",
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "DELIVERED",
+        "FAILED",
+        "BLOCKED",
+        "CANCELLED"
+      ]
+    },
+    "submitted_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "started_at": {
+      "description": "When the run began. Null until the entry reaches RUNNING.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "finished_at": {
+      "description": "When the entry reached a terminal status. Null until then.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "task_id": {
+      "description": "The task.v0.3 identity this entry coordinates. Null until intake produced one (a run blocked before intake never gets one).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^task_[A-Za-z0-9._-]+$"
+    },
+    "trace_id": {
+      "description": "The run's trace. Null until the run produced one. This is the join key to the durable ledger — the registry stores no run content of its own.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^trace_[A-Za-z0-9._-]+$"
+    },
+    "result_ref": {
+      "description": "Where the deliverable of a terminal entry lives (e.g. 'ledger:trace_...' or a workspace path). Null when there is nothing to point at.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "last_reason_code": {
+      "description": "The typed reason for a FAILED/BLOCKED/CANCELLED terminal. Null for QUEUED/RUNNING/DELIVERED.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "request_kind": {
+      "description": "The routing kind this request was submitted with (architecture 8.5), or null for the default analysis routing. A STRING beside the boolean flags rather than inside them: flags answer yes/no about one run option, this names which capability set - and therefore which Role - the request needs. Recorded because the queue is durable: a request queued as a translation must still be a translation when the drain picks it up minutes later, and a kind that survived only in the operator's message would silently become an analysis.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    }
+  }
+}
