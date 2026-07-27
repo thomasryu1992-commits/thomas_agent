@@ -609,3 +609,38 @@ def test_polymarket_books_only_the_markets_asked_for(monkeypatch):
     ).list_markets(limit=100, timeout_seconds=1, market_ids=["other-token"])
     assert len(booked) == 1 and "other-token" in booked[0]
     assert [m.market_id for m in snapshot.markets] == ["other-token"]
+
+
+# --- identifying ourselves ------------------------------------------------------
+
+def test_every_read_identifies_this_client(monkeypatch):
+    """Polymarket sits behind Cloudflare, which refuses Python's default
+    `Python-urllib/3.x` signature with error 1010 — a 403 the transport layer reported as a
+    bare TOOL_TRANSPORT, indistinguishable from the venue being down. Found on the deployed
+    scheduler, where Polymarket was the only venue failing."""
+    seen: dict[str, dict] = {}
+
+    real = md.urllib.request.Request
+
+    def _capture(url, method="GET", headers=None, **kw):
+        seen["headers"] = dict(headers or {})
+        return real(url, method=method, headers=headers or {}, **kw)
+
+    monkeypatch.setattr(md.urllib.request, "Request", _capture)
+    monkeypatch.setattr(
+        md.urllib.request, "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(md.urllib.error.URLError("no network in a test")),
+    )
+    with pytest.raises(ToolError):
+        md._get_json("https://example.invalid/x", timeout_seconds=1)
+    assert seen["headers"].get("User-Agent") == md.USER_AGENT
+
+
+def test_the_user_agent_names_this_client_rather_than_imitating_a_browser():
+    """It says who we are; it does not pretend to be something else. A venue that blocks an
+    honestly identified client is declining to be read, and the answer to that is to stop
+    reading it — not to wear a costume."""
+    ua = md.USER_AGENT.lower()
+    assert ua.startswith("thomas-agent/")
+    for browserish in ("mozilla", "chrome", "safari", "gecko", "applewebkit", "edg/"):
+        assert browserish not in ua, f"user agent imitates a browser: {browserish}"
