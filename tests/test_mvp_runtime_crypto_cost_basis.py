@@ -1,21 +1,23 @@
-"""The promotion evidence names what its R does not include.
+"""The promotion evidence names the cost basis it was measured on.
 
-Paper settlement models no fee, slippage or funding by design, and the robustness scorer
-withholds its cost term for the same reason — both say so in their own docstrings. The
-promotion surface said nothing, so a cost-free expectancy arrived looking like a net one in
-the one place where the number decides whether real money goes behind a strategy.
+The first version of this file asserted the opposite and was wrong: it claimed the listing's
+R excluded costs. It does not. `factory.backtest_spec` runs every closed trade through
+`cost.apply_cost_model` and states that `result_R` — and therefore `expectancy` and
+`champion_score` — is the NET R after fees and slippage. The error came from reading
+`robustness.py`'s "the cost model was not ported" as a statement about R; it is a statement
+about the scorer's cost-ROBUSTNESS term, which measures whether an edge survives ACROSS cost
+assumptions rather than whether costs were charged.
 
-That matters more here than in most repositories because the promotion gate is a person:
-there is no automated statistical threshold, only Thomas's approval bound to a content hash.
-This runtime's own paper record averages +0.092R per trade, which is inside the range a round
-trip costs — so "upper bound" is not a pedantic caveat on these numbers, it is the difference
-between a positive edge and a negative one.
+What is actually worth telling the operator is the rate. The ported default charges 2.5 bps
+taker; this account was charged 0.1291 USDT over roughly 258 USDT of fills on 2026-07-26 —
+5.0 bps, Binance USD-M standard. The evidence is measured against a venue half as expensive
+as the one the orders reach, and the promotion gate is a person reading these numbers.
 """
 
 from __future__ import annotations
 
 from runtime.mvp_runtime.crypto.pool import (
-    EDGE_COST_BASIS_EXCLUDED,
+    EDGE_COST_BASIS_NET,
     candidate_quality,
 )
 
@@ -34,7 +36,7 @@ _RECORD = {
 
 
 def test_the_quality_view_names_its_cost_basis():
-    assert candidate_quality(_RECORD)["cost_basis"] == EDGE_COST_BASIS_EXCLUDED
+    assert candidate_quality(_RECORD)["cost_basis"] == EDGE_COST_BASIS_NET
 
 
 def test_the_basis_is_a_field_not_a_printed_sentence():
@@ -56,8 +58,8 @@ def test_the_promotion_listing_states_the_basis_before_the_numbers(monkeypatch, 
     prom.main(["--list"])
 
     out = capsys.readouterr().out
-    assert "EXCLUDES trading costs" in out
-    assert "upper bounds" in out
-    note_at = out.index("EXCLUDES trading costs")
+    assert "NET of costs" in out
+    assert "HALF what this" in out, "the rate gap is the actionable half of the note"
+    note_at = out.index("NET of costs")
     row_at = out.index("cand_x")
     assert note_at < row_at, "the basis must be stated above the candidate rows"
