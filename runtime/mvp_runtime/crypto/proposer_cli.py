@@ -27,6 +27,7 @@ import json
 import sys
 
 from .. import timeutil
+from ..cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io
 from ..errors import MvpRuntimeError
 from ..providers import select_validator_provider
 from ..store import LedgerStore
@@ -38,11 +39,9 @@ from .market_data import (
     select_market_data_collector,
 )
 
-EXIT_OK = 0
-EXIT_ERROR = 1
-
 
 def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
     parser = argparse.ArgumentParser(
         description="Propose new strategy families with a model; judge them deterministically.",
     )
@@ -68,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except MvpRuntimeError as exc:
         sys.stderr.write(f"market data unavailable: {exc}\n")
-        return EXIT_ERROR
+        return EXIT_BLOCKED
 
     # The validator provider (typically groq) or the deterministic mock. Reused, not
     # granted anew: a proposal is an INTERNAL_ANALYSIS-tier read, the same tier the R7.2

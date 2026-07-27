@@ -10,6 +10,7 @@ path exists.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -149,8 +150,38 @@ def test_threshold_met_is_ready(tmp_path):
 
 
 def test_default_minimum_matches_the_source(tmp_path):
+    """The source value, and the single authority that carries it.
+
+    The name used to be a promise this test did not keep: it compared `live_promotion`'s
+    constant against the literal 3 and stopped there, while `live_order` declared its own
+    `DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3` for `LiveOrderLimits` to default to. Two authorities
+    for one safety threshold, and nothing comparing them — editing either alone left the suite
+    green with the guard and the promotion board requiring different numbers of canaries.
+
+    `live_order` now re-exports this one, and what pins that is the **source** check below,
+    not a comparison of values. Comparing the two constants cannot work: they would only
+    differ if someone edited one, and an `is` check is worse than useless here — CPython
+    caches small integers, so `live_order.DEFAULT_... is DEFAULT_...` is True for two
+    independent `= 3` declarations. That check was written first and passed against a
+    deliberately reintroduced duplicate. Counting declarations is the thing that holds.
+    """
+    import re
+
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderLimits
+
     assert DEFAULT_MIN_CLEAN_CANARY_ORDERS == 3
     assert promotion_status(root=tmp_path)["required"] == 3
+    assert LiveOrderLimits().min_clean_canary_orders == DEFAULT_MIN_CLEAN_CANARY_ORDERS
+
+    crypto_dir = Path(live_readiness.__file__).parent
+    declaring = sorted(
+        path.name for path in crypto_dir.glob("*.py")
+        if re.search(r"^DEFAULT_MIN_CLEAN_CANARY_ORDERS\s*=", path.read_text(encoding="utf-8"), re.M)
+    )
+    assert declaring == ["live_promotion.py"], (
+        f"{len(declaring)} modules declare the clean-canary minimum: {declaring}. It is a "
+        f"safety threshold and must have one authority; import it rather than restating it."
+    )
 
 
 def test_tampered_history_blocks_even_with_enough_records(tmp_path):
