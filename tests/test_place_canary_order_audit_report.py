@@ -55,6 +55,12 @@ class _Adapter:
     network_egress = True
 
 
+class _AccountSnapshot:
+    """Only the fields this tool reads off the venue snapshot."""
+
+    realized_windows = {"1d": {"net": 0.0, "pnl": 0.0, "fee": 0.0, "funding": 0.0}}
+
+
 _RESULT = {
     "reconcile_status": "RECONCILED",
     "symbol": "BTCUSDT",
@@ -78,7 +84,10 @@ def approved(monkeypatch):
                         lambda **kw: {"daily_loss_limit_breached": False})
     monkeypatch.setattr(pco.live_promotion, "clean_canary_order_count", lambda root: (0, None))
     monkeypatch.setattr(pco, "count_today", lambda root: 0)
-    monkeypatch.setattr(pco, "read_account", lambda **kw: (object(), {}))
+    # A bare object() was enough until the breaker started reading the venue's realized figure
+    # off this snapshot. The stub now carries the field the real AccountSnapshot does, so the
+    # test exercises the same shape the tool actually receives.
+    monkeypatch.setattr(pco, "read_account", lambda **kw: (_AccountSnapshot(), {}))
     monkeypatch.setattr(pco, "compute_open_notional_usdt", lambda snapshot, at_cap: 0.0)
     monkeypatch.setattr(pco.live_execution, "select_order_adapter", lambda **kw: _Adapter())
     monkeypatch.setattr(pco, "build_live_order_intent", lambda *a, **kw: {"symbol": "BTCUSDT"})
