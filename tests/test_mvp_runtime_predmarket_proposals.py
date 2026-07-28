@@ -194,6 +194,64 @@ def test_discovery_resolves_grants_against_the_root_it_was_given(state, monkeypa
     assert seen == [state, state]
 
 
+# --- a candidate outlives the listing that proposed it --------------------------
+
+def test_a_run_records_the_fee_rates_it_read():
+    record = proposals.build_proposal_record(
+        _result(fee_rate_bps={"binance:B1": 200, "polymarket:P1": 0}), now=NOW)
+    assert record["fee_rate_bps"] == {"binance:B1": 200.0, "polymarket:P1": 0.0}
+    assert record["generated_at_utc"] == NOW      # how old the rate is, on the same row
+
+
+def test_a_recorded_rate_keeps_a_candidate_confirmable_after_rotation(state, monkeypatch):
+    """The window an operator cannot see, and loses.
+
+    Binance states its fee only on the listing and shows 40 markets at a time, so a candidate
+    proposed at 08:05 can be unconfirmable by lunchtime — the rate is gone and `confirm` has
+    nothing to capture, which makes the group permanently unreadable. Measured 2026-07-27: **11
+    of 17** Binance candidates aged out inside eighteen hours, six of them exact title matches.
+    """
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    proposals.append_proposal(
+        proposals.build_proposal_record(_result(fee_rate_bps={"binance:GONE": 200}), now=NOW),
+        root=state)
+    # The venue no longer lists it — the live read comes back with nothing for this id.
+    monkeypatch.setattr(pairs_cli, "collect_pred_markets",
+                        lambda venue, **kw: ({"markets": []}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+
+    rates = pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state)
+    assert rates["binance:GONE"] == 200.0
+
+
+def test_a_rate_the_venue_states_now_overwrites_the_recorded_one(state, monkeypatch):
+    """Recorded rates are a fallback for what rotation carried away, never a substitute for a
+    read that succeeded. Both are real reads; they differ only in age."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    proposals.append_proposal(
+        proposals.build_proposal_record(_result(fee_rate_bps={"binance:B1": 200}), now=NOW),
+        root=state)
+    monkeypatch.setattr(
+        pairs_cli, "collect_pred_markets",
+        lambda venue, **kw: ({"markets": [{"venue": "binance", "market_id": "B1",
+                                           "fee_rate_bps": 350}]}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+
+    rates = pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state)
+    assert rates["binance:B1"] == 350.0        # live, not the recorded 200
+
+
+def test_no_proposals_yet_is_not_an_error(state, monkeypatch):
+    """A first confirmation happens before any discovery run has written anything."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    monkeypatch.setattr(pairs_cli, "collect_pred_markets", lambda venue, **kw: ({"markets": []}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+    assert pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state) == {}
+
+
 def test_scheduled_discovery_inherits_the_refusal_to_read_the_mock(state):
     """The third door, and the one that got the guard for free.
 

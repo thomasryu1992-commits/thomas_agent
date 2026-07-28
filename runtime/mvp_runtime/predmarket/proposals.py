@@ -96,6 +96,12 @@ def build_proposal_record(
         "candidates_truncated": len(candidates) - len(kept),
         "near_miss_total": result.get("near_miss_total"),
         "boilerplate_only_count": result.get("boilerplate_only_count"),
+        # Rates read during this run, so a candidate stays confirmable after the listing that
+        # proposed it has rotated away. Only Binance needs it — Kalshi and Polymarket price
+        # from a verified schedule — but the map is kept whole rather than venue-filtered,
+        # because a schedule that stops being verified should not silently become a gap.
+        # `generated_at_utc` above is how old any of it is.
+        "fee_rate_bps": {str(k): float(v) for k, v in (result.get("fee_rate_bps") or {}).items()},
         # The open question, made countable. Rotation reads past each venue's busiest
         # markets on the theory that overlap also lives further down; nobody knows whether
         # it does. `candidates_from_tail` is the answer accumulating one run at a time — and
