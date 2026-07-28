@@ -239,7 +239,18 @@ ENTRY_POINTS = {
     "runtime/mvp_runtime/scheduler.py": frozenset(),
     "runtime/mvp_runtime/pipeline.py": frozenset(),
     "runtime/mvp_runtime/operator.py": frozenset(),
+    # Added on main while this branch was open, and carried across deliberately: the domain
+    # console reads the crypto stack from a chat verb. It is reached only through
+    # `operator.py`, which is already here — but this scan is per-FILE, so the import that
+    # matters would sit in the console and never show up in the operator. A chat verb is the
+    # surface where "just one more argument" is most tempting, and it is one token away.
+    "runtime/mvp_runtime/domain_console.py": frozenset(),
 }
+
+# The same list under the name `main` gave it, because `tests/test_mvp_runtime_domain_console.py`
+# imports it to assert the console is covered. Derived rather than restated: two hand-kept
+# copies is precisely the drift the comment on that assertion warns about.
+AUTONOMOUS_ENTRY_POINTS = list(ENTRY_POINTS)
 
 CHOKEPOINT = "runtime/mvp_runtime/crypto/live_route.py"
 

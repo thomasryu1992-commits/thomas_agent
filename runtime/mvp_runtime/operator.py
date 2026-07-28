@@ -40,8 +40,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import (
-    approval, control, frontdesk, memory_console, operator_feedback, registry_console,
-    safety_gate, task_registry, timeutil,
+    approval, control, domain_console, frontdesk, memory_console, operator_feedback,
+    registry_console, safety_gate, task_registry, timeutil,
 )
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .budgets import clip_for_prompt
@@ -154,6 +154,15 @@ CHANNEL_VERB_AUTHORITY: dict[str, str] = {
     # operator_feedback.py — E1. Recording Thomas's verdict on a delivered run; the operator
     # identity IS the authority, and the record is an append-only internal note.
     "feedback": "policy:permission_model INTERNAL_WRITE of operator feedback (ALLOW)",
+    # domain_console.py — the crypto/prediction read verbs. Two authorities are named because
+    # two questions are being answered: INTERNAL_READ is what permits reading the domain state
+    # at all, and `kill_allows: read_only_status` is what lets these answer while the runtime
+    # is halted — which is exactly when a board is most worth reading. Nothing here mutates,
+    # holds a store, or can reach the order path (asserted by an import test), so there is no
+    # third authority to name: the money path's permission is P5 FINANCIAL_APPROVED_TRADING_USE
+    # and no verb on this channel is anywhere near it.
+    "crypto": "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows read_only_status",
+    "pred": "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows read_only_status",
 }
 
 
@@ -465,6 +474,20 @@ def handle_operator_message(
             return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
         return OperatorReply(text=outcome["reply"], accepted=True, status="REGISTRY", reason_code=outcome["action"])
 
+    # Domain console: /crypto and /pred. Read-only in every mode (kill_allows covers
+    # read-only status), no ledger event, and no store to wire — each subcommand reads the
+    # same local state the host CLI reads and renders it with that module's own renderer.
+    domain_command = domain_console.parse_domain_command(text)
+    if domain_command is not None:
+        try:
+            outcome = domain_console.apply_domain_command(
+                domain_command, operator_id=registration.operator_id,
+                now=now, repo_root=repo_root,
+            )
+        except (OperatorBlocked, PersistenceError) as exc:
+            return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
+        return OperatorReply(text=outcome["reply"], accepted=True, status="DOMAIN", reason_code=outcome["action"])
+
     if text.startswith("/"):
         # A leading-slash message that matched no console/approval verb is refused, never
         # run as a task: a typo'd ``/killl`` (or an emergency verb reaching a deployment
@@ -474,7 +497,8 @@ def handle_operator_message(
             text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
                   "/feedback <good|bad|한줄평> /memory /promote <id> <사유> "
-                  "/tasks /history [n] /result <id> /cancel <id>"),
+                  "/tasks /history [n] /result <id> /cancel <id> "
+                  f"{domain_console.usage('crypto')} {domain_console.usage('pred')}"),
             accepted=False, status="REFUSED", reason_code="UNKNOWN_COMMAND",
         )
 

@@ -513,8 +513,13 @@ def test_every_channel_verb_names_the_authority_that_permits_it():
     and nothing would have noticed a fifth. `operator.CHANNEL_VERB_AUTHORITY` is the inventory
     of the whole door; this asserts it both ways, so a new family fails until its author writes
     down what permits it. (Extending `emergency_controls_allowed` instead would be wrong — that
-    grant is for emergency controls, not for ordinary reads like /tasks.)"""
-    from runtime.mvp_runtime import approval, memory_console, operator, operator_feedback, registry_console
+    grant is for emergency controls, not for ordinary reads like /tasks.)
+
+    The fifth family did arrive — the domain console (`/crypto`, `/pred`) — and this gate is
+    what made it write down its authority before it could answer anything."""
+    from runtime.mvp_runtime import (
+        approval, domain_console, memory_console, operator, operator_feedback, registry_console,
+    )
 
     reachable = (
         set(control.COMMANDS)
@@ -522,6 +527,7 @@ def test_every_channel_verb_names_the_authority_that_permits_it():
         | {memory_console.LIST_COMMAND, memory_console.PROMOTE_COMMAND}
         | set(registry_console.COMMANDS)
         | {operator_feedback.COMMAND}
+        | set(domain_console.COMMANDS)
     )
     inventory = set(operator.CHANNEL_VERB_AUTHORITY)
     assert reachable - inventory == set(), (
