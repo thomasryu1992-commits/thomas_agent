@@ -183,6 +183,27 @@ def test_an_unquoted_side_produces_a_recorded_non_reading_not_a_zero():
     assert record["observation_id"]
 
 
+def test_a_half_open_book_keeps_its_arithmetic_but_loses_the_claim():
+    """A venue quoting one side still lets ONE direction be computed — buy where there is an
+    ask, sell where there is a bid — so the numbers are real and stay on the row. The claim
+    does not: a half-open book is where the thin side lives, and **"how often" is the number
+    PM1 exists to produce**, so overstating it is the direction that misleads PM2 and PM3.
+
+    Observed live 2026-07-28: a Binance leg quoting `ask=0.10 size=100` against a Polymarket
+    bid sized 54,972. That one was a loss so nothing was miscounted — with the signs reversed
+    it would have counted as an opportunity off a book with a hundred contracts on the touch.
+    """
+    record = opportunity.evaluate_pairing(
+        # No ask on Kalshi, so only "buy Polymarket, sell Kalshi" is computable — and it wins.
+        _market(KALSHI, bid=0.90, ask=None, bid_size=100.0),
+        _market(POLYMARKET, bid=0.50, ask=0.52, category="crypto"),
+        now=NOW,
+    )
+    assert opportunity.NOT_QUOTED in record["reasons"]
+    assert record["net_edge"] is not None and record["net_edge"] > 0    # arithmetic kept
+    assert record["is_opportunity"] is False                            # claim withdrawn
+
+
 def test_depth_is_recorded_and_the_smaller_side_binds():
     """A 500-contract bid is no help against a 3-contract ask. PM2 models the fill; PM1 has
     to hand it an honest number."""
