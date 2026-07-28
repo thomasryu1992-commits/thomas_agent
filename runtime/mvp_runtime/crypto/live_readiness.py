@@ -77,13 +77,17 @@ from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
 # Kept in lockstep with the policy's `financial_transaction_execution_implemented`.
 ORDER_PATH_IMPLEMENTED = True
 
-# Whether any AUTONOMOUS entry point can reach the order path. The executing leg
-# (`crypto/live_leg.py`) exists and can place an order with an injected adapter, but no
-# scheduled or operator-triggered run imports it — `live_leg` is in the surface list that
-# `test_no_autonomous_entry_point_reaches_the_live_order_path` enforces, so this constant and the
-# real import graph are pinned to agree. Flipping it is the cycle-routing decision, and it must
-# move in the same commit that relaxes that test.
-AUTONOMOUS_ROUTING_WIRED = False
+# Whether any AUTONOMOUS entry point can reach the order path. TRUE since LP5.3 step 3
+# (cycle routing): `crypto/cycle.py` runs a live leg through `crypto/live_route.py`, so a
+# scheduled crypto fire on a machine holding the `live_trading` grant can open and close real
+# positions. Pinned to the real import graph by
+# `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`, so this constant and
+# the code cannot disagree.
+#
+# It is still deliberately NOT part of `ready`. Wired is not permitted: every door below it —
+# the grant, the confirmation phrase, the registered budget, the canary evidence, both kill
+# switches, the loss breaker — is unchanged, and each has its own row above.
+AUTONOMOUS_ROUTING_WIRED = True
 
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -176,6 +180,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # "could not measure" must never soften into "nothing to report".
     venue_realized = None
     account_error = None
+    snapshot = None
     if account_configured:
         try:
             snapshot, _ = read_account(root=root)
@@ -310,13 +315,15 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         daily_loss_breached=breached,
         clean_canary_orders=promotion["clean_count"],
         submitted_today=submitted_today,
-        # LP5.1: this board performs no venue read, so the open exposure is genuinely
-        # UNKNOWN here — and unknown exposure is reported at the cap, never as zero. The
-        # literal 0.0 that used to sit here asserted "the account is flat" on no evidence,
-        # which is the fail-open the guard's required argument now prevents. LP5.3 supplies
-        # the real figure from the account snapshot; until then this row honestly blocks.
+        # LP5.3: the board now reads the account for the loss breaker, so the same snapshot
+        # answers the exposure question — and the honest block-at-cap can finally lift on a
+        # machine that can see its own account. `compute_open_notional_usdt` still fails
+        # closed: `snapshot is None` (no feed configured, or the read degraded) reports AT
+        # the cap, never zero. What changed is that a configured, readable account now
+        # reports what it actually holds rather than the worst case, so a dry-run BLOCK here
+        # means real exposure, not merely an unconfigured board.
         current_open_notional_usdt=compute_open_notional_usdt(
-            None, at_cap=limits.max_open_notional_usdt
+            snapshot, at_cap=limits.max_open_notional_usdt
         ),
         budget_registered=bool(budget.get("valid")),
         limits=limits,
@@ -355,7 +362,14 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         # READY is no longer an abstract "configured" — say what it now means.
         lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")
         if status.get("autonomous_routing_wired"):
-            lines.append("NOTE  : autonomous routing is WIRED - a scheduled run can place orders")
+            # The loudest line the board has, and it earns it: this is the one state in which
+            # nobody is standing at a terminal when the order goes out. It says how to stop it
+            # too — an operator reading a board they do not like should not have to go and find
+            # the runbook first.
+            lines.append("NOTE  : autonomous routing is WIRED - a scheduled crypto run on this")
+            lines.append("        machine opens and closes REAL positions once every FAIL clears")
+            lines.append("NOTE  : to stop new entries immediately, delete the live_trading grant")
+            lines.append("        file; open positions can still close")
         else:
             lines.append("NOTE  : autonomous routing is NOT wired - the only door is")
             lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")

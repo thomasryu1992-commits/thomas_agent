@@ -79,6 +79,10 @@ SHARED_BOILERPLATE_ONLY = "SHARED_BOILERPLATE_ONLY"
 # outcomes price at roughly p and 1-p, so the apparent gross edge is enormous and permanent,
 # and it would arrive at the top of the report looking like the best find in it.
 OPPOSING_TERMS = "OPPOSING_TERMS"
+# One template, two different subjects. The pairing agrees on the scaffolding and differs in
+# the words that name what the question is ABOUT — and those words are rarer than anything
+# non-numeric it shares, which is what makes them the subject rather than a rephrasing.
+SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
 
 # A token appearing in more than this fraction of the scan's titles carries no information
 # about which event a market is: it is the template, not the question.
@@ -113,7 +117,7 @@ VENUE_ASSERTED = "VENUE_ASSERTED_CROSS_REFERENCE"
 # source: the 3,405 rows were overwhelmingly two different people inside one template, which
 # is an answer rather than a doubt.
 _HARD_REFUSALS = frozenset({NUMERIC_MISMATCH, CATEGORY_CONFLICT, SHARED_BOILERPLATE_ONLY,
-                            OPPOSING_TERMS})
+                            OPPOSING_TERMS, SUBJECT_MISMATCH})
 
 # Words that carry no distinguishing information between two phrasings of one event.
 #
@@ -170,6 +174,15 @@ _MOVES_DOWN = frozenset({
     "decrease", "decreases", "cut", "cuts", "down", "below", "lower", "fall", "falls",
     "drop", "drops", "under", "less",
 })
+# A generational suffix is not part of a name, it is a different person. Handled explicitly
+# rather than left to the rarity comparison, which decided this case by ONE document:
+# `donald` appears in 8 titles and `jr` in 7, because most Trump markets say "Trump" without
+# "Donald". A verdict that flips when one market is listed is not a verdict.
+#
+#     Will Donald Trump     win the 2028 US Presidential Election?
+#     Will Donald Trump Jr. win the 2028 US Presidential Election?
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
 _PARTY_D = frozenset({"democrat", "democratic"})
 _PARTY_R = frozenset({"republican"})
 
@@ -221,9 +234,14 @@ def close_delta_hours(left: Any, right: Any) -> float | None:
     return round(abs((first - second).total_seconds()) / 3600.0, 4)
 
 
+def _has_digit(token: str) -> bool:
+    """Does this token carry a digit? The module's one test for "this is a number"."""
+    return any(ch.isdigit() for ch in token)
+
+
 def numeric_tokens(title: Any) -> frozenset[str]:
     """The digits in a title: thresholds, strike levels, dates, percentages."""
-    return frozenset(t for t in normalize_tokens(title) if any(ch.isdigit() for ch in t))
+    return frozenset(t for t in normalize_tokens(title) if _has_digit(t))
 
 
 def _numeric_agreement(left: Any, right: Any) -> bool | None:
@@ -267,6 +285,80 @@ def token_commonness(titles: Iterable[Any]) -> dict[str, float]:
         token: (count / total if count >= MIN_BOILERPLATE_TITLES else 0.0)
         for token, count in counts.items()
     }
+
+
+def token_document_counts(titles: Iterable[Any]) -> dict[str, int]:
+    """How many titles each token appears in. Raw counts, not shares.
+
+    Separate from ``token_commonness`` because the two gates need different things from the
+    same corpus. Boilerplate is a *proportion* question — "does everything say this?" — and
+    is floored, so a word seen under ``MIN_BOILERPLATE_TITLES`` times reports 0.0 rather than
+    a share computed from nothing. Subject mismatch is a *comparison* — "is what differs
+    rarer than what matches?" — and that floor destroys exactly the signal it needs: in the
+    live case ``standx`` (1 title) and ``200m`` (2 titles) both floor to 0.0 and become
+    indistinguishable.
+    """
+    counts: dict[str, int] = {}
+    for title in titles:
+        for token in frozenset(normalize_tokens(title)):
+            counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def subject_mismatch(
+    left_tokens: Iterable[str], right_tokens: Iterable[str], counts: Mapping[str, int]
+) -> bool:
+    """Do these two titles share a template and differ in what the question is about? Pure.
+
+    Found live 2026-07-28, sitting at position 2 of a sheet handed to the operator:
+
+        StandX  FDV above $200M one day after launch?     (binance)
+        Puffpaw FDV above $200M one day after launch?     (polymarket)
+        matched on: 200m, above, after, day, fdv, launch, one
+
+    Not one company. The evidence is right there in what it matched on — no name in it. The
+    boilerplate gate does not fire because these words are genuinely rare across the corpus
+    (``fdv`` 21 of 632 titles); they are the template of a *market family*, not of the whole
+    venue. That gate asks whether the shared words are common. This one asks the other half:
+    whether the words that DIFFER are the subject.
+
+    The test is comparative, so it needs no threshold: if the rarest differing token is rarer
+    than the rarest non-numeric token the two share, then what separates them is more
+    specific than anything that joins them — which is what "different subject" means.
+
+    **Numbers are excluded from the shared side**, and that is what makes it robust rather
+    than lucky. A strike or a year is not a subject: ``200m`` appears in exactly the two
+    titles above, so counting it as shared evidence left the verdict resting on a
+    one-document margin (``standx`` 1 vs ``200m`` 2). Ignoring it, the same case clears by
+    18x (``one`` 18 vs ``standx`` 1) — and disagreeing numbers are already ``NUMERIC_MISMATCH``,
+    which is where that evidence belongs.
+
+    Degrades permissive by construction: with nothing shared, nothing differing, or no
+    non-numeric shared token, there is nothing to compare and it stays quiet.
+    """
+    left, right = set(left_tokens), set(right_tokens)
+    # One side carries a generational suffix and the other does not: the same name, a
+    # different person. Decided before the rarity comparison because that comparison had it
+    # by a single document, and because this is knowledge rather than a measurement.
+    if bool(left & _NAME_SUFFIXES) != bool(right & _NAME_SUFFIXES):
+        return True
+    # Tested directly rather than by re-joining the tokens and re-normalizing them. The
+    # round trip was both wasteful and wrong: it re-derived "numeric" from a rebuilt string,
+    # and any token merely CONTAINING a digit came back as one — a test fixture named
+    # `Sanders0` was silently classified as a number and dropped from the evidence.
+    shared = {t for t in left & right if not _has_digit(t)}
+    differing = {t for t in left ^ right if not _has_digit(t)}
+    if not shared or not differing:
+        return False
+    # A MARGIN, not merely an inequality. A bare `<` decided the Trump/Trump-Jr. pairing by
+    # one document (`donald` 8, `jr` 7) and fired on a two-title corpus where every count is
+    # 1 or 2 and the comparison means nothing. Requiring the differing token to be at least
+    # twice as rare makes the verdict survive one market being listed or delisted, and makes
+    # a corpus too small to distinguish anything stay quiet — the same posture as
+    # MIN_BOILERPLATE_TITLES next door.
+    rarest_differing = min(counts.get(t, 0) for t in differing)
+    rarest_shared = min(counts.get(t, 0) for t in shared)
+    return rarest_differing * 2 < rarest_shared
 
 
 def distinctive_tokens(
@@ -423,6 +515,7 @@ def judge_pair(
     second: PredMarket,
     *,
     commonness: Mapping[str, float] | None = None,
+    counts: Mapping[str, int] | None = None,
 ) -> MatchCandidate:
     """Judge one cross-venue pairing. Pure: no I/O, no model call, no state.
 
@@ -478,6 +571,11 @@ def judge_pair(
         refusals.append(CATEGORY_CONFLICT)
     if numeric is False:
         refusals.append(NUMERIC_MISMATCH)
+
+    if counts and subject_mismatch(left_tokens, right_tokens, counts):
+        # Before the wording gate, like the opposing-terms one: this failure LOOKS like a
+        # good score, because everything except the subject matches.
+        refusals.append(SUBJECT_MISMATCH)
 
     if opposing_terms(left_tokens, right_tokens):
         # Before the wording gate has any say: a high similarity is exactly what this failure
@@ -554,20 +652,28 @@ def generate_candidates(
     # The corpus is every market in this scan, across all venues. Built once and passed
     # down, so "common" means "common in what these venues are listing right now" — and so
     # the same batch always produces the same verdicts.
-    commonness = token_commonness(m.title for venue in venues for m in by_venue[venue])
+    titles = [m.title for venue in venues for m in by_venue[venue]]
+    commonness = token_commonness(titles)
+    # Raw counts as well as shares: the two gates ask different questions of the same corpus
+    # and one of them is destroyed by the other's flooring. Built from one pass, so they
+    # cannot describe different corpora.
+    counts = token_document_counts(titles)
 
     candidates: list[MatchCandidate] = []
     near_misses: list[MatchCandidate] = []
     judged_count = 0
     boilerplate_only = 0
+    subject_mismatches = 0
     for index, left_venue in enumerate(venues):
         for right_venue in venues[index + 1:]:
             for left in by_venue[left_venue]:
                 for right in by_venue[right_venue]:
                     judged_count += 1
-                    judged = judge_pair(left, right, commonness=commonness)
+                    judged = judge_pair(left, right, commonness=commonness, counts=counts)
                     if SHARED_BOILERPLATE_ONLY in judged.refusals:
                         boilerplate_only += 1
+                    if SUBJECT_MISMATCH in judged.refusals:
+                        subject_mismatches += 1
                     if judged.is_candidate:
                         candidates.append(judged)
                     elif keep_near_misses and judged.near_miss():
@@ -594,6 +700,10 @@ def generate_candidates(
         # size of the trap: before this gate existed, most of these were near misses and at
         # least one was a candidate.
         "boilerplate_only_count": boilerplate_only,
+        # One template, different subjects. Counted beside the boilerplate refusals because
+        # they are the same failure seen from the other side, and a reader comparing the two
+        # can tell which half of it a corpus is producing.
+        "subject_mismatch_count": subject_mismatches,
         "boilerplate_share": BOILERPLATE_SHARE,
         # Stated so a reader never mistakes a proposal for a decision.
         "confirms_nothing": True,
@@ -626,6 +736,7 @@ __all__ = [
     "MIN_TITLE_SIMILARITY",
     "NEAR_MISS_TITLE_SIMILARITY",
     "SHARED_BOILERPLATE_ONLY",
+    "SUBJECT_MISMATCH",
     "TITLE_TOO_DIFFERENT",
     "VENUE_ASSERTED",
     "MatchCandidate",
@@ -638,6 +749,8 @@ __all__ = [
     "numeric_tokens",
     "opposing_terms",
     "title_similarity",
+    "subject_mismatch",
     "token_commonness",
+    "token_document_counts",
     "venue_cross_reference",
 ]

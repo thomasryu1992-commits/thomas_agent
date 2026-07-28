@@ -1031,6 +1031,12 @@ def run_paper_update(
         "settled": None, "opened": None, "route_status": None,
         "settle_refused": None, "settle_recovered": None, "open_refused": None,
         "open_skipped": None,
+        # The routing result itself, not just its status. Routing is evaluated once per cycle
+        # and read by three consumers — this step, the counterfactual shadow, and (LP5.3) the
+        # live leg — and three evaluations of the same strategies against the same feature row
+        # is three chances to disagree about what the pool said. Deliberately NOT copied into
+        # the cycle record: it carries live `StrategySpec` objects, and the record is JSON.
+        "route": None,
     }
 
     def _event(operation: str, detail: dict[str, Any]) -> dict[str, Any]:
@@ -1177,6 +1183,7 @@ def run_paper_update(
     #    counted before either wrote would both see room that only one of them had.
     route = route_entries(pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
     summary["route_status"] = route["status"]
+    summary["route"] = route
     if position is None and not attribution_blocked and bool(verdict.get("allow_new_position")):
         # Freshness gate (optional). Evaluate a NEW entry at most once per closed candle
         # per context, so one 15-min fan-out schedule does not re-enter a 4h/1d strategy

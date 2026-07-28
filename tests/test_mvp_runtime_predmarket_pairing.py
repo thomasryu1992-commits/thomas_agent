@@ -515,13 +515,22 @@ def test_near_misses_are_capped_and_say_how_many_were_cut():
     """Once the venues began quoting the same subjects, shared boilerplate put thousands of
     unrelated pairings above the floor. Truncating is fine; truncating silently would make
     the list read as complete."""
-    # Same party on both sides on purpose: "Democratic" against "Republican" is now an
-    # OPPOSING_TERMS refusal, which is a hard one and therefore never a near miss. The near
-    # misses this cap exists for are unrelated people inside one template.
-    left = [_at(KALSHI, f"Will candidate {i} win the 2028 Democratic nomination?", f"K{i}",
-                close="2026-12-31T23:59:00Z") for i in range(12)]
-    right = [_at(POLYMARKET, f"Will person {i} win the 2028 Democratic nomination?", f"P{i}",
-                 close="2027-06-01T00:00:00Z") for i in range(12)]
+    # The fixture has to survive the hard gates to reach the near-miss list at all, and two
+    # of them now bite here. "Democratic" against "Republican" is OPPOSING_TERMS; two
+    # different people in one template is SUBJECT_MISMATCH. Both are answers, not doubts.
+    #
+    # So: the SAME person on both sides, phrased differently, with close dates six months
+    # apart. That is a genuine near miss — everything about the subject agrees and the
+    # pairing is refused on a gate a reviewer might want to revisit.
+    # Digit-free names on purpose: a token carrying a digit reads as a number to this
+    # module, and `Sanders0` would be dropped from the very evidence the fixture is built to
+    # supply. (That is how the round-trip bug in `subject_mismatch` was found.)
+    people = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot",
+              "Golf", "Hotel", "India", "Juliett", "Kilo", "Lima"]
+    left = [_at(KALSHI, f"Will {who} win the 2028 Democratic nomination?", f"K{i}",
+                close="2026-12-31T23:59:00Z") for i, who in enumerate(people)]
+    right = [_at(POLYMARKET, f"Will {who} be the 2028 Democratic nominee?", f"P{i}",
+                 close="2027-06-01T00:00:00Z") for i, who in enumerate(people)]
     result = matching.generate_candidates({KALSHI: left, POLYMARKET: right}, near_miss_limit=5)
     assert result["near_miss_total"] > 5
     assert len(result["near_misses"]) == 5
@@ -716,3 +725,175 @@ def test_the_gate_is_symmetric():
     up = "Will the Fed increase rates in December?"
     down = "Will the Fed decrease rates in December?"
     assert _pair(up, down).refusals == _pair(down, up).refusals
+
+
+# --- one template, two different subjects -----------------------------------------
+
+def _corpus(*titles):
+    return matching.token_document_counts(titles)
+
+
+def test_two_different_companies_in_one_template_are_not_a_pair():
+    """Found live 2026-07-28 at position 2 of a sheet handed to the operator:
+
+        StandX  FDV above $200M one day after launch?     (binance)
+        Puffpaw FDV above $200M one day after launch?     (polymarket)
+        matched on: 200m, above, after, day, fdv, launch, one
+
+    Not one company. The evidence is right there in what it matched on — no name in it. The
+    boilerplate gate stays quiet because these words ARE rare corpus-wide (`fdv` 21 of 632);
+    they are the template of a market family, not of the venue.
+    """
+    family = [f"{who} FDV above ${cap}M one day after launch?"
+              for who in ("Puffpaw", "GRVT", "Pacifica", "Discord", "ANSEM")
+              for cap in (50, 100, 200)] + ["StandX FDV above $200M one day after launch?"]
+    counts = _corpus(*family)
+
+    judged = matching.judge_pair(
+        _market(BINANCE, "B1", "StandX FDV above $200M one day after launch?"),
+        _market(POLYMARKET, "P1", "Puffpaw FDV above $200M one day after launch?"),
+        counts=counts,
+    )
+    assert judged.is_candidate is False
+    assert matching.SUBJECT_MISMATCH in judged.refusals
+    # An answer, not a doubt — so it never reaches the near-miss list.
+    assert judged.near_miss() is False
+
+
+def test_the_same_subject_phrased_differently_still_pairs():
+    """The property the gate must not cost. Here the rare tokens are SHARED (the name) and
+    the differing ones are template words — the exact inverse of the case above."""
+    corpus = [f"Will {who} {verb} the 2028 Democratic {noun}?"
+              for who in ("Newsom", "Harris", "Booker", "Khanna", "Beshear")
+              for verb, noun in (("win", "nomination"), ("be", "nominee"))]
+    counts = _corpus(*corpus)
+
+    judged = matching.judge_pair(
+        _market(KALSHI, "K1", "Will Newsom be the 2028 Democratic nominee?"),
+        _market(POLYMARKET, "P1", "Will Newsom win the 2028 Democratic nomination?"),
+        counts=counts,
+    )
+    assert matching.SUBJECT_MISMATCH not in judged.refusals
+
+
+def test_a_shared_number_is_not_a_shared_subject():
+    """What makes the gate robust rather than lucky. `200m` appears in exactly the two
+    StandX/Puffpaw titles, so counting it as shared evidence left the verdict resting on a
+    ONE-document margin (`standx` 1 vs `200m` 2). Ignoring numbers, the same case clears by
+    18x — and disagreeing numbers are already NUMERIC_MISMATCH, which is where that evidence
+    belongs."""
+    counts = _corpus(
+        "StandX FDV above $200M one day after launch?",
+        "Puffpaw FDV above $200M one day after launch?",
+        *[f"{w} FDV above $50M one day after launch?" for w in ("A", "B", "C", "D")],
+    )
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("StandX FDV above $200M one day after launch?"),
+        matching.normalize_tokens("Puffpaw FDV above $200M one day after launch?"),
+        counts,
+    ) is True
+
+
+def test_a_token_that_merely_contains_a_digit_is_treated_as_a_number():
+    """The module has one test for "this is a number" and it is `has a digit`. Stated so the
+    cost is visible: a subject like `Web3` is read as numeric and stops counting as shared
+    evidence. Found by a fixture named `Sanders0` silently losing its own name."""
+    assert matching._has_digit("2028") and matching._has_digit("web3")   # noqa: SLF001
+    assert not matching._has_digit("newsom")
+
+
+def test_the_gate_stays_quiet_when_there_is_nothing_to_compare():
+    """Degrades permissive by construction: identical titles share everything and differ in
+    nothing, and a pair with no non-numeric shared token has no evidence to weigh."""
+    counts = _corpus("Will Newsom win?", "Will Newsom win?")
+    same = matching.normalize_tokens("Will Newsom win?")
+    assert matching.subject_mismatch(same, same, counts) is False
+    assert matching.subject_mismatch(same, (), counts) is False
+    assert matching.subject_mismatch((), (), {}) is False
+
+
+def test_omitting_the_corpus_leaves_the_gate_off():
+    """`judge_pair` without `counts` stays a pure function of its two arguments, which every
+    direct caller and most of this file relies on."""
+    judged = matching.judge_pair(
+        _market(BINANCE, "B1", "StandX FDV above $200M one day after launch?"),
+        _market(POLYMARKET, "P1", "Puffpaw FDV above $200M one day after launch?"),
+    )
+    assert matching.SUBJECT_MISMATCH not in judged.refusals
+
+
+def test_the_result_counts_how_many_pairings_were_one_template_two_subjects():
+    result = matching.generate_candidates({
+        BINANCE: [_market(BINANCE, "B1", "StandX FDV above $200M one day after launch?")],
+        POLYMARKET: [_market(POLYMARKET, f"P{i}", f"{w} FDV above ${c}M one day after launch?")
+                     for i, (w, c) in enumerate(
+                         [("Puffpaw", 200), ("GRVT", 200), ("Pacifica", 50)])],
+    })
+    assert result["subject_mismatch_count"] >= 1
+    assert result["candidates"] == []
+
+
+def test_a_generational_suffix_makes_it_a_different_person():
+    """Live on 2026-07-28, in a sheet about to be handed over:
+
+        Will Donald Trump     win the 2028 US Presidential Election?
+        Will Donald Trump Jr. win the 2028 US Presidential Election?
+
+    The rarity comparison did decide this correctly — by ONE document. `donald` appears in 8
+    titles and `jr` in 7, because most Trump markets say "Trump" without "Donald", so the
+    verdict flipped between runs. A conclusion that changes when one market is listed is not
+    a conclusion, and a suffix is knowledge rather than a measurement.
+    """
+    counts = _corpus(
+        "Will Donald Trump win the 2028 US Presidential Election?",
+        "Will Donald Trump Jr. win the 2028 US Presidential Election?",
+        *[f"Will Trump {w} in 2028?" for w in ("resign", "run", "endorse")],
+    )
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Donald Trump win the 2028 US Presidential Election?"),
+        matching.normalize_tokens("Will Donald Trump Jr. win the 2028 US Presidential Election?"),
+        counts,
+    ) is True
+
+
+def test_a_suffix_on_both_sides_is_agreement_not_a_difference():
+    """Two venues both asking about Trump Jr. are asking about Trump Jr."""
+    counts = _corpus("Will Donald Trump Jr. win the 2028 US Presidential Election?")
+    same = matching.normalize_tokens("Will Donald Trump Jr. win the 2028 US Presidential Election?")
+    assert matching.subject_mismatch(same, same, counts) is False
+
+
+def test_the_suffix_rule_does_not_fire_on_names_that_merely_look_like_one():
+    """`ii` and `iv` are on the list; ordinary words are not, and the rule only fires when one
+    side has a suffix the other lacks."""
+    counts = _corpus("Will Newsom win?", "Will Newsom be nominated?")
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Newsom win?"),
+        matching.normalize_tokens("Will Newsom be nominated?"),
+        counts,
+    ) is False
+
+
+def test_the_rarity_rule_needs_a_margin_not_just_an_inequality():
+    """A bare `<` decided Trump against Trump Jr. by ONE document and fired on a two-title
+    corpus where every count is 1 or 2. Requiring the differing token to be at least twice as
+    rare makes the verdict survive a single market being listed, and keeps a corpus too small
+    to distinguish anything quiet."""
+    tiny = _corpus("Will Newsom win?", "Will Newsom be nominated?")
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Newsom win?"),
+        matching.normalize_tokens("Will Newsom be nominated?"),
+        tiny,
+    ) is False
+
+    # And the live cases still separate, with room to spare.
+    standx = _corpus(
+        "StandX FDV above $200M one day after launch?",
+        "Puffpaw FDV above $200M one day after launch?",
+        *[f"{w} FDV above $50M one day after launch?" for w in ("A", "B", "C", "D")],
+    )
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("StandX FDV above $200M one day after launch?"),
+        matching.normalize_tokens("Puffpaw FDV above $200M one day after launch?"),
+        standx,
+    ) is True

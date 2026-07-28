@@ -27,7 +27,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "03_ROLE_CONTRACTS" / "ROLE_REGISTRY.yaml"
 DEFINITION_PATH = ROOT / "03_ROLE_CONTRACTS" / "CONVERSATION_FRONTDESK_ROLE.md"
-SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.3.schema.json"
+SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.4.schema.json"
 
 
 def _registry_entry() -> dict:
@@ -144,7 +144,7 @@ def _validate(record: dict) -> None:
 
 
 def _turn(kind: str, payload: dict, reply: str = "네, 확인했습니다.") -> dict:
-    return {"schema_version": "frontdesk_turn.v0.3", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.4", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
@@ -189,7 +189,7 @@ def test_each_turn_kind_validates(kind, payload):
     (_turn("CANCEL_TASK", {}), "a cancel must name its target"),
     (_turn("CHAT_REPLY", {"entry_id": "treg_x"}), "chat carries no arguments"),
     (_turn("CHAT_REPLY", {}, reply="") , "the operator always sees something"),
-    ({"schema_version": "frontdesk_turn.v0.3", "turn_kind": "CHAT_REPLY",
+    ({"schema_version": "frontdesk_turn.v0.4", "turn_kind": "CHAT_REPLY",
       "payload": {}}, "reply_text is required"),
     ({**_turn("CHAT_REPLY", {}), "side_effect": "write"}, "no fields beyond the four"),
 ])
@@ -203,7 +203,7 @@ def test_the_contract_names_the_downgrade_rule():
     """An invalid turn becomes CHAT_REPLY (uncertain => submits nothing). The runtime will
     implement it in F2; the contract carries it now so F2 cannot 'forget'."""
     output = _front_matter()["output_contract"]
-    assert output["base_contract"] == "frontdesk_turn.v0.3"
+    assert output["base_contract"] == "frontdesk_turn.v0.4"
     assert output["invalid_turn_downgrade"] == "CHAT_REPLY"
 
 
@@ -237,7 +237,7 @@ def test_the_widening_stayed_an_enumeration():
 def test_the_contract_names_the_new_capability():
     data = _front_matter()
     assert "runtime_state_lookup" in data["capabilities"]
-    assert data["output_contract"]["base_contract"] == "frontdesk_turn.v0.3"
+    assert data["output_contract"]["base_contract"] == "frontdesk_turn.v0.4"
     # The prohibitions are untouched by the widening.
     unsupported = set(data["unsupported_capabilities"])
     assert {"task_execution", "workspace_write", "memory_promotion", "external_action"} <= unsupported
@@ -265,3 +265,52 @@ def test_no_turn_can_name_a_role_or_reach_one_directly():
     blob = json.dumps(schema)
     for forbidden in ('"role_id"', '"role"', '"provider"', '"tool_id"', '"permission"'):
         assert forbidden not in blob, forbidden
+
+
+# --- v0.4: the clarification segments ----------------------------------------
+
+@pytest.mark.parametrize("payload", [
+    {"request_text": "분석해줘", "important": False, "independent_validation": False,
+     "clarification_texts": ["7일"]},
+    {"request_text": "분석해줘", "important": False, "independent_validation": False,
+     "clarification_texts": ["7일", "그리고 요약도"]},
+    {"request_text": "분석해줘", "important": False, "independent_validation": False,
+     "clarification_texts": None},
+])
+def test_clarification_segments_validate(payload):
+    _validate(_turn("SUBMIT_TASK", payload))
+
+
+@pytest.mark.parametrize("payload, why", [
+    ({"request_text": "x", "important": False, "independent_validation": False,
+      "clarification_texts": ["a", "b", "c", "d"]},
+     "a bounded list: an unbounded one turns the whole session into one request"),
+    ({"request_text": "x", "important": False, "independent_validation": False,
+      "clarification_texts": [""]},
+     "an empty segment carries nothing and cannot be verbatim-checked"),
+    ({"request_text": "x", "important": False, "independent_validation": False,
+      "clarification_texts": "7일"},
+     "a bare string is not the list shape the runtime iterates"),
+    ({"request_text": "x", "important": False, "independent_validation": False,
+      "clarification_texts": [{"text": "7일"}]},
+     "no structure inside a segment — a segment is his words, nothing else"),
+])
+def test_malformed_clarification_segments_are_rejected(payload, why):
+    with pytest.raises(RuntimeSchemaError):
+        _validate(_turn("SUBMIT_TASK", payload))
+
+
+def test_the_composition_field_still_cannot_name_anything():
+    """v0.4 widens WHICH of his words are submitted, never whose. The payload gains a list of
+    operator utterances and no new way to name a tool, file, provider, Role or permission."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    blob = json.dumps(schema)
+    for forbidden in ('"role_id"', '"role"', '"provider"', '"tool_id"', '"permission"', '"path"'):
+        assert forbidden not in blob, forbidden
+
+
+def test_the_contract_documents_the_resume():
+    """A capability the contract does not mention is one nobody reviewed."""
+    body = DEFINITION_PATH.read_text(encoding="utf-8")
+    assert "clarification_texts" in body
+    assert _front_matter()["output_contract"]["base_contract"] == "frontdesk_turn.v0.4"

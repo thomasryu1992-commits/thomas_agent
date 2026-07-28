@@ -208,44 +208,120 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
-def test_no_autonomous_entry_point_reaches_the_live_order_path():
-    """Increment 2b flipped the flags, so what keeps an order from happening autonomously is
-    structural, not a missing implementation.
+# --- the chokepoint ---------------------------------------------------------------------
+#
+# LP5.3 step 3 replaced `test_no_autonomous_entry_point_reaches_the_live_order_path`.
+#
+# That test pinned "no scheduled or operator-triggered run can reach the order path at all",
+# and it was the right invariant for as long as the cycle had no live leg. Cycle routing is
+# the deliberate decision to stop asserting it, and this is the reviewable half of that
+# decision.
+#
+# What replaces it is NARROWER AND STILL LOAD-BEARING: the path from an autonomous entry point
+# to a live order goes through exactly one module. That keeps "which code can start a live
+# order" a question with a single answer — the property the old test was really protecting —
+# while allowing the one caller the design record sequenced. It also fails loudly on the two
+# ways this could rot: a second module growing an order path, and an entry point reaching
+# around the chokepoint.
+#
+# The gate itself is tested where it belongs (`test_mvp_runtime_crypto_live_route.py`): with
+# no `live_trading` grant the routing reads nothing and sends nothing.
 
-    The property under test is about the **autonomous entry points** — the crypto cycle, the
-    scheduler, the pipeline, and the operator loop. LP5's own modules (``live_position``) may of
-    course reach the adapter; that is what they are for. What must stay true is that no scheduled
-    or operator-triggered run routes there, so the only door remains the deliberate canary script.
-    Wiring the cycle to live is a separate, explicit decision — and this test is what makes that
-    wiring impossible to do by accident."""
+# The modules that can reach a venue with an order. ``live_pnl`` is deliberately absent: the
+# cycle reads live OUTCOMES so the risk guard can see live losses, and reading a result is not
+# reaching the order path.
+LIVE_ORDER_MODULES = frozenset({"live_execution", "live_position", "live_leg"})
+
+# The autonomous entry points, and what each may import from the live stack. Only the cycle may
+# reach it, and only through the chokepoint.
+ENTRY_POINTS = {
+    "runtime/mvp_runtime/crypto/cycle.py": frozenset({"live_route", "live_pnl"}),
+    "runtime/mvp_runtime/scheduler.py": frozenset(),
+    "runtime/mvp_runtime/pipeline.py": frozenset(),
+    "runtime/mvp_runtime/operator.py": frozenset(),
+    # Added on main while this branch was open, and carried across deliberately: the domain
+    # console reads the crypto stack from a chat verb. It is reached only through
+    # `operator.py`, which is already here — but this scan is per-FILE, so the import that
+    # matters would sit in the console and never show up in the operator. A chat verb is the
+    # surface where "just one more argument" is most tempting, and it is one token away.
+    "runtime/mvp_runtime/domain_console.py": frozenset(),
+}
+
+# The same list under the name `main` gave it, because `tests/test_mvp_runtime_domain_console.py`
+# imports it to assert the console is covered. Derived rather than restated: two hand-kept
+# copies is precisely the drift the comment on that assertion warns about.
+AUTONOMOUS_ENTRY_POINTS = list(ENTRY_POINTS)
+
+CHOKEPOINT = "runtime/mvp_runtime/crypto/live_route.py"
+
+
+def _imported_modules(path) -> set[str]:
+    """Every module this file imports, by last path component.
+
+    Deliberately the import graph rather than a substring search over the source. The first
+    version of this check was textual and failed on its own subject's *comments* — a file that
+    documents why it must not reach the order path would have been reported as reaching it,
+    which trains the next author to delete the explanation rather than keep the property.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = (node.module or "").rsplit(".", 1)[-1]
+            if base:
+                modules.add(base)
+            # ``from . import live_leg`` names the module in the alias list, not the module field.
+            modules.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+    return modules
+
+
+def test_the_cycle_reaches_the_live_order_path_through_exactly_one_module():
+    """No autonomous entry point imports the order path directly; the cycle reaches it only
+    via ``live_route``, and the other entry points not at all."""
     from pathlib import Path
 
     from runtime.mvp_runtime.paths import repo_root
 
-    entry_points = [
-        "runtime/mvp_runtime/crypto/cycle.py",
-        "runtime/mvp_runtime/scheduler.py",
-        "runtime/mvp_runtime/pipeline.py",
-        "runtime/mvp_runtime/operator.py",
-    ]
-    # LP5.3: ``live_leg`` joins the surface. The executing leg now EXISTS, so an autonomous
-    # entry point importing it is exactly the wiring this test exists to make deliberate.
-    # ``live_pnl`` is deliberately absent: the cycle reads live OUTCOMES so the risk guard can
-    # see live losses, and reading a result is not reaching the order path.
-    live_order_surface = ("live_execution", "live_position", "live_leg",
-                          "select_order_adapter", "submit_and_reconcile")
     offenders = []
-    for rel in entry_points:
+    for rel, allowed in ENTRY_POINTS.items():
         path = Path(repo_root()) / rel
         if not path.is_file():
             continue
-        text = path.read_text(encoding="utf-8")
-        hits = [needle for needle in live_order_surface if needle in text]
-        if hits:
-            offenders.append(f"{rel}: {hits}")
+        imported = _imported_modules(path)
+        direct = sorted(imported & LIVE_ORDER_MODULES)
+        if direct:
+            offenders.append(f"{rel} imports the order path directly: {direct}")
+        if "live_route" in imported and "live_route" not in allowed:
+            offenders.append(f"{rel} may not reach the live stack at all")
     assert offenders == [], (
-        "an autonomous entry point now reaches the live order path — that is a deliberate "
-        f"go-live decision, not a refactor: {offenders}"
+        "the live order path must be reachable from exactly one module. Adding a second "
+        f"caller is the same size of decision as adding the first: {offenders}"
+    )
+
+
+def test_the_chokepoint_is_the_only_runtime_module_that_imports_the_executing_leg():
+    """The other half: ``live_route`` is a chokepoint only while nothing else runs the leg.
+
+    Scoped to ``runtime/`` — ``scripts/place_canary_order.py`` is the deliberate operator door
+    and reaches ``live_execution`` on purpose, one canary at a time."""
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    root = Path(repo_root())
+    importers = sorted(
+        str(path.relative_to(root)).replace("\\", "/")
+        for path in (root / "runtime").rglob("*.py")
+        if path.name not in {"live_leg.py", "live_route.py"}
+        and "live_leg" in _imported_modules(path)
+    )
+    assert importers == [], (
+        f"{importers} import the executing leg directly, bypassing the chokepoint that makes "
+        "'which code can start a live order' answerable"
     )
 
 
@@ -476,23 +552,27 @@ def test_the_readiness_board_constant_agrees_with_the_import_graph():
     """B1: the readiness board exists so an answer cannot drift from what the code enforces, and
     its prose still claimed "LP5 is unbuilt" for a day after LP5 shipped. Status now lives in a
     computed row backed by this constant — and the constant is pinned to the same import graph
-    the tripwire above checks, so the two cannot disagree."""
+    the chokepoint test above checks, so the two cannot disagree.
+
+    The chain is followed rather than asserted: an entry point reaches the chokepoint, and the
+    chokepoint reaches the executing leg. Checking only the first link would report WIRED for a
+    ``live_route`` that had been gutted; checking only the second would report WIRED for a
+    chokepoint nothing calls."""
     from pathlib import Path
 
     from runtime.mvp_runtime.crypto.live_readiness import AUTONOMOUS_ROUTING_WIRED
     from runtime.mvp_runtime.paths import repo_root
 
-    entry_points = [
-        "runtime/mvp_runtime/crypto/cycle.py",
-        "runtime/mvp_runtime/scheduler.py",
-        "runtime/mvp_runtime/pipeline.py",
-        "runtime/mvp_runtime/operator.py",
-    ]
-    wired = any(
-        "live_leg" in (Path(repo_root()) / rel).read_text(encoding="utf-8")
-        for rel in entry_points
-        if (Path(repo_root()) / rel).is_file()
+    root = Path(repo_root())
+    reaches_chokepoint = any(
+        "live_route" in _imported_modules(root / rel)
+        for rel in ENTRY_POINTS
+        if (root / rel).is_file()
     )
+    chokepoint = root / CHOKEPOINT
+    chokepoint_sends = chokepoint.is_file() and "live_leg" in _imported_modules(chokepoint)
+    wired = reaches_chokepoint and chokepoint_sends
+
     assert AUTONOMOUS_ROUTING_WIRED == wired, (
         "live_readiness.AUTONOMOUS_ROUTING_WIRED disagrees with the real import graph; "
         "the board would report a build state that is not true"
