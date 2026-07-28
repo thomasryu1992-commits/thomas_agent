@@ -96,6 +96,12 @@ def build_proposal_record(
         "candidates_truncated": len(candidates) - len(kept),
         "near_miss_total": result.get("near_miss_total"),
         "boilerplate_only_count": result.get("boilerplate_only_count"),
+        # Rates read during this run, so a candidate stays confirmable after the listing that
+        # proposed it has rotated away. Only Binance needs it — Kalshi and Polymarket price
+        # from a verified schedule — but the map is kept whole rather than venue-filtered,
+        # because a schedule that stops being verified should not silently become a gap.
+        # `generated_at_utc` above is how old any of it is.
+        "fee_rate_bps": {str(k): float(v) for k, v in (result.get("fee_rate_bps") or {}).items()},
         # The open question, made countable. Rotation reads past each venue's busiest
         # markets on the theory that overlap also lives further down; nobody knows whether
         # it does. `candidates_from_tail` is the answer accumulating one run at a time — and
@@ -272,4 +278,32 @@ def render_confirmation_sheet(result: Mapping[str, Any], *, now: str) -> str:
     if not candidates:
         lines += ["No candidates this run. The screen counts above say whether that is a quiet",
                   "market or a read that saw nothing usable.", ""]
+
+    # Last, and out of the way. These were proposed once, judged by a person, and retired —
+    # so they are not proposals any more. They are still shown, because a retirement reason
+    # can be about a moment rather than about the pairing, and because carrying the reason is
+    # what stops the operator re-deriving a conclusion they already reached and wrote down.
+    retired = list(result.get("previously_retired") or [])
+    if retired:
+        lines += [
+            "---",
+            "",
+            f"## Previously retired ({len(retired)})",
+            "",
+            "Proposed again by the matcher, which does not know these were rejected. Kept out",
+            "of the list above and shown here with the reason you gave, so the judgement is",
+            "not re-derived. Confirming one again is a decision to overrule that reason.",
+            "",
+        ]
+        for candidate in retired:
+            detail = candidate.get("previously_retired") or {}
+            lines += [
+                f"- **{candidate.get('left_venue')}** `{candidate.get('left_market_id')}`  ",
+                f"  **{candidate.get('right_venue')}** `{candidate.get('right_market_id')}`  ",
+                f"  > {candidate.get('left_title')}",
+                f"  > {candidate.get('right_title')}",
+                f"  *Retired {detail.get('retired_at_utc')} by {detail.get('retired_by')}:* "
+                f"{detail.get('retired_reason') or '(no reason recorded)'}",
+                "",
+            ]
     return "\n".join(lines)

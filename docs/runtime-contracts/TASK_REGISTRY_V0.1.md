@@ -165,10 +165,43 @@ of a delivered analysis that could drift from the audited one.
 When the ledger cannot rebuild it (pruned, another machine, a malformed row), the answer is
 `RESULT_UNAVAILABLE` — an honest refusal, never a half-rendered analysis.
 
+## The live status line
+
+Between the queue receipt and the deliverable there used to be nothing. On a validated run
+that is two model calls of silence, in which a working runtime and a wedged one look exactly
+alike from the channel.
+
+The drain now sends **one** short line when a run actually starts — a different fact from
+"queued", which is why it is its own message — and then **edits that message in place** as
+each stage begins:
+
+```
+[treg_6d30347] 이 사업 아이디어를 분석해줘: 구독형 세차
+상태: 분석 중
+```
+
+- **One message, however long the run.** Six stages as six notifications would be worse than
+  the silence. Editing is wired to this line only: an analysis Thomas has already read must
+  not change under him, for the same reason the ledger is append-only.
+- **Stages that ran, not stages that were planned.** The pipeline reports from inside each
+  branch, so a run that skipped the independent review never claims one.
+- **One vocabulary.** The stage names are the pipeline's own step names (`pipeline.STEP_*`),
+  the same strings the programization observer records — a rename moves both consumers.
+- **Nothing durable, nothing audited.** The line is a `CONTROL_CHANNEL_RESPONSE` (ALLOW) on
+  the already-verified channel — the ack precedent — and the durable account of the run stays
+  the registry entry plus its ledger trail. Nothing was added to `task_registry_entry` for it:
+  a message id that does not survive a restart does not belong in a durable record.
+- **Every failure direction is "the run wins."** A line that cannot be sent, cannot be
+  edited, or comes back with no message id to edit costs the display and nothing else; the
+  first failed edit switches the line off for that run rather than retrying five more times
+  into a channel that just refused.
+
 ## Honesty rules this implementation follows
 
 - **No fake progress.** The pipeline is a sequence of stages, not a measurable fraction, so
-  `/tasks` reports **elapsed time**, which the registry actually knows. No percentage.
+  `/tasks` reports **elapsed time**, which the registry actually knows, and the status line
+  reports the **stage name**. No percentage anywhere — a run has no denominator (a model call
+  takes as long as it takes), and a bar that reaches 80% and sits there is a lie told slowly.
 - **Recording is best-effort; reporting is not.** A registry failure on the run path
   degrades to "unrecorded" and never costs Thomas the analysis (the working-memory and
   programization seam precedent). But asked what is running, an unreadable registry
@@ -185,7 +218,7 @@ When the ledger cannot rebuild it (pruned, another machine, a malformed row), th
 | `TELEGRAM` | yes | every request the operator channel runs |
 | `SCHEDULER` | yes | `analysis_task` fires only |
 | `CLI` | not yet | the one-shot intake CLI is unwired |
-| `FRONTDESK` | reserved | for the proposal's Part ①, which does not exist |
+| `FRONTDESK` | yes | conversational submissions (F2), with the kind the front desk read |
 
 The scheduler's maintenance and crypto kinds are not task-shaped and keep their own
 scheduler events. Stated here rather than left to be discovered: `/history` is complete for
