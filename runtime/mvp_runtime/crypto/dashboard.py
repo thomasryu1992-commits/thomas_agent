@@ -133,8 +133,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     try:
         cf_records = counterfactual.read_counterfactual_outcomes(root)
         cf_summary = counterfactual.summarize_counterfactuals(cf_records)
+        cf_verdicts = {
+            reason: sample_verdict(values)
+            for reason, values in counterfactual.r_values_by_reason(cf_records).items()
+        }
     except MvpRuntimeError as exc:
-        cf_records, cf_summary = [], {}
+        cf_records, cf_summary, cf_verdicts = [], {}, {}
         warnings.append(f"counterfactual store unreadable ({exc.reason_code})")
 
     # Every book, not just one: positions are keyed per (venue, symbol, timeframe),
@@ -195,6 +199,8 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "monthly_trend": (outcome_digest or {}).get("monthly_trend"),
         } if outcome_digest else None,
         "counterfactual_by_reason": cf_summary,
+        # Per gate: can its blocked trades tell the sign of what they would have returned?
+        "counterfactual_verdicts": cf_verdicts,
         "counterfactual_closed": sum(1 for r in cf_records if r.get("outcome_closed") is True),
         "grants": _grants(root),
         "warnings": warnings,
@@ -219,6 +225,9 @@ MIN_MEANINGFUL_SAMPLE = 30
 #
 # So the board now computes the interval. `MIN_MEANINGFUL_SAMPLE` stays as a floor — below it
 # even the interval is unstable — but it is no longer what promotes the verdict.
+# Below this the spread cannot be estimated, so no interval is produced at all. A verdict
+# from two observations is arithmetic, not evidence — see `sample_verdict`.
+MIN_INTERVAL_SAMPLE = 5
 CONFIDENCE_Z = 1.96          # two-sided 95%
 POWER_Z = 0.84               # 80% power, the usual pairing
 
@@ -231,12 +240,20 @@ def sample_verdict(r_values: list[float]) -> dict[str, Any]:
     ("weeks" vs "years"), not a promise — a smaller true edge needs quadratically more.
     """
     n = len(r_values)
-    if n < 2:
+    if n < MIN_INTERVAL_SAMPLE:
+        # Not "no edge" — no estimate. Below a handful of observations the spread cannot be
+        # estimated at all, and an interval computed anyway is arithmetic rather than
+        # evidence. This floor was added after the gate section rated
+        # MAX_CONSECUTIVE_LOSS_GATE_BLOCKED as costing money off TWO blocked trades that
+        # happened to return the same number: a zero-width interval, read as certainty.
         return {"count": n, "mean_r": None, "stdev_r": None, "stderr_r": None,
                 "ci_low": None, "ci_high": None, "distinguishable_from_zero": False,
                 "trades_needed": None}
     mean = statistics.fmean(r_values)
-    stdev = statistics.pstdev(r_values)
+    # Sample standard deviation (n-1), not population: these observations are a sample of what
+    # the strategy or gate would do, never the whole of it, and pstdev understates the spread
+    # of exactly that inference.
+    stdev = statistics.stdev(r_values)
     stderr = stdev / math.sqrt(n)
     low, high = mean - CONFIDENCE_Z * stderr, mean + CONFIDENCE_Z * stderr
     needed = None
@@ -250,13 +267,19 @@ def sample_verdict(r_values: list[float]) -> dict[str, Any]:
         "ci_low": round(low, 4),
         "ci_high": round(high, 4),
         # The whole point: zero outside the interval, not merely a row count reached.
-        "distinguishable_from_zero": bool(low > 0 or high < 0),
+        # `stdev > 0` guards the degenerate case — identical observations produce a
+        # zero-width interval that excludes zero by construction, which is absence of
+        # observed variation rather than evidence of none.
+        "distinguishable_from_zero": bool(stdev > 0 and (low > 0 or high < 0)),
         "trades_needed": needed,
     }
 # The second: a gate whose BLOCKED trades would have been profitable is costing money. The
 # numbers for that were always printed; the subtraction was left to the reader.
 _GATE_COSTING = "손해"
 _GATE_EARNING = "이익"
+# Neither, and saying so: the blocked trades cannot tell the sign of what they would have
+# returned. A gate here is not "fine" — it is unmeasured, which is a different instruction.
+_GATE_UNDECIDED = "판단 불가"
 # Grants are nine lines of noise until one is near expiry, and then they are the only
 # lines that matter.
 GRANT_EXPIRY_WARNING_DAYS = 7
@@ -289,6 +312,7 @@ def _gate_rows(status: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
     means it blocked losers — it is earning. Sorting by that sign is the whole point:
     the operator's question is "which gate should I change", and the answer was
     previously spread across five lines of missed/avoided arithmetic."""
+    verdicts = status.get("counterfactual_verdicts") or {}
     rows: list[tuple[str, str, dict[str, Any]]] = []
     for reason, bucket in (status.get("counterfactual_by_reason") or {}).items():
         expectancy = bucket.get("expectancy_R")
@@ -296,8 +320,25 @@ def _gate_rows(status: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
             costing = float(expectancy) > 0
         except (TypeError, ValueError):
             continue        # an unusable number is not a verdict; leave it out of the ranking
+        # The sign of a mean is not a verdict about a gate any more than it was about the
+        # headline. `MAX_CONSECUTIVE_LOSS_GATE_BLOCKED` read "+2.00R × 2건 · 손해" — two
+        # blocked trades, an interval many times wider than the estimate, and a label that
+        # tells an operator to go change a risk gate. Same test as the performance headline,
+        # applied to the same kind of claim.
+        # Two different absences, and only one of them is a pass. A reason MISSING from the
+        # map was never measured (an older status document, a caller that did not compute
+        # it) and keeps the mean-sign reading it always had. A reason PRESENT but without an
+        # interval was measured and found unmeasurable — too few observations to estimate a
+        # spread — which is a finding, not a gap. Reading the second as the first is what
+        # left a 2-trade gate rated "costing money".
+        if reason in verdicts and not verdicts[reason].get("distinguishable_from_zero"):
+            rows.append((_GATE_UNDECIDED, reason, bucket))
+            continue
         rows.append((_GATE_COSTING if costing else _GATE_EARNING, reason, bucket))
-    rows.sort(key=lambda row: (row[0] != _GATE_COSTING, -abs(float(row[2].get("expectancy_R") or 0))))
+    # Costing first (it is the only one that asks for an action), then earning, then the ones
+    # that cannot say — those are sorted last because acting on them is the mistake.
+    order = {_GATE_COSTING: 0, _GATE_EARNING: 1, _GATE_UNDECIDED: 2}
+    rows.sort(key=lambda row: (order[row[0]], -abs(float(row[2].get("expectancy_R") or 0))))
     return rows
 
 
@@ -421,13 +462,24 @@ def render_status_text(status: dict[str, Any]) -> str:
     rows = _gate_rows(status)
     if rows:
         lines.append(f"게이트 {status.get('counterfactual_closed')} 섀도우 — 막은 거래의 기대값 기준")
+        verdicts = status.get("counterfactual_verdicts") or {}
         for verdict, reason, bucket in rows:
-            mark = "🔴" if verdict == _GATE_COSTING else "🟢"
-            lines.append(
+            mark = {_GATE_COSTING: "🔴", _GATE_EARNING: "🟢"}.get(verdict, "⚪")
+            line = (
                 f"  {mark} {reason[:44]:<44} {_r(bucket.get('expectancy_R'))}R × "
                 f"{bucket.get('closed_count')}건 · {bucket.get('missed_opportunity')} 놓침 / "
                 f"{bucket.get('avoided_loss')} 회피"
             )
+            # The interval, only where it changes the reading: a row whose sign is unknown
+            # must carry the reason it is unknown, or ⚪ is just a third colour.
+            sv = verdicts.get(reason) or {}
+            if verdict == _GATE_UNDECIDED:
+                line += (
+                    f"  [95% {_r(sv['ci_low'])}~{_r(sv['ci_high'])}]"
+                    if sv.get("ci_low") is not None else
+                    f"  [{sv.get('count', 0)}건 — 폭 추정 불가]"
+                )
+            lines.append(line)
         lines.append("")
 
     # --- grants ------------------------------------------------------------------
