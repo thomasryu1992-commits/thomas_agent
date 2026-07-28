@@ -4,13 +4,11 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-27** (second pass, `main` = `58bf3af`), after the predmarket wave
-(#262/#264/#265/#267/#269), the canary-notional fix (#268), and the role activations
-(#258/#272). Previously **2026-07-27** (section D) and **2026-07-26** (the review round and the
-CLAUDE.md split).
+Last updated: **2026-07-28** (`main` = `c823e2f`), after the canary path ran end to end for the
+first time and the defect wave that followed it (#227/#228/#231/#232/#233/#246), the evidence
+corrections (#247/#249/#251/#254/#257/#260) and the board's sample verdicts (#292/#304).
+Previously **2026-07-27** (predmarket wave, second pass) and **2026-07-26** (the review round).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
-That pass is why section A lost two boxes: it was ticking observation records as done in one line
-and open in another, and the newer line was the stale one.
 
 > **The one thing to read first:** an order path **exists**, and so does the **executing leg**
 > that opens, protects and closes a live position. `financial_transaction_execution_implemented`
@@ -21,16 +19,24 @@ and open in another, and the newer line was the stale one.
 > count is per-machine state — ask the board, below), and every egress needs the operator's
 > per-machine `live_trading` grant, order key, confirmation phrase and registered budget.
 >
-> **The canary count is per-machine and is currently unknown rather than zero.** Two real canaries
-> went out on 2026-07-26; the daily counter did not record them, because the only door that can
-> place an order never incremented it (#246). The registry that feeds `clean_canary_order_count` is
-> a different store and may hold them, so the honest statement is: **re-read the board on the
-> machine that placed them** (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
-> trusting a number written here. On a fresh checkout it reads `0/3`.
+> **The canary count is per-machine.** On the machine that placed them the board now reads
+> **4/4** (2026-07-28); on a fresh checkout it reads `0/3`. Ask the machine
+> (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than trusting a number here —
+> that has not changed and will not.
+>
+> **One of those four is worth knowing about before it is counted as evidence.** The canary of
+> 2026-07-26T11:03Z filled at the venue and its audit event was built and never appended: step 8
+> called `LedgerStore(None)` and the process died between "the order is at the venue" and "here
+> is what the venue said" (#228). Its gap was recorded late and forward on the chain, marked
+> `LIVE_ORDER_REPORT_RECOVERED`, because `AUDIT_RECOVERY_CONSOLE_V0.1` is explicit that a trail
+> is diagnosed and never repaired (#232). Under the code that now exists that run would have
+> exited BLOCKED. Whether it should still count toward the threshold is an operator decision,
+> not a number this file can settle.
 >
 > The single remaining build item between this repository and an **autonomous** live order is
-> **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
-> is the decision to relax the tripwire test.
+> **cycle routing** — giving the executing leg a caller. **#302 is open and implements it**, so
+> this sentence is the one most likely to be false by the time you read it; check `gh pr list`.
+> Until it merges the tripwire test still holds, and building it *is* the decision to relax it.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -44,40 +50,24 @@ the rules and deliberately claims no status, so that status has as few owners as
 
 ## In-flight PRs
 
-**One** (verified 2026-07-27, on the `main` this pass merged into — two of the three named when
-it was written have already resolved, which is the section's own standing hazard):
+```
+gh pr list
+```
 
-- **#271** — predmarket's `is_synthetic` flag had no consumer, so a scan degraded to the mock filed
-  its legs as `MARKET_NOT_LISTED` (the market is gone) instead of "we never looked", and a
-  mock-derived confirmed group produced *priced* observations out of `(venue, index)`.
+**The list that used to live here is deleted, on its own recommendation.** Two passes running it
+reached the same conclusion in writing — "this section was accurate when written and wrong before
+it merged", "the next pass should consider deleting it rather than refreshing it again" — and then
+refreshed it anyway. `main` advances several times an hour from parallel machines; a hand-written
+snapshot of open PRs is stale before the PR carrying it is reviewed.
 
-Resolved while this pass was open:
+What the section was actually for is worth keeping, and it is one line: **before starting anything
+below, run `gh pr list` and confirm nobody else has taken it.** That has cost real work twice —
+#229 duplicated a check #268 had already merged after falling 131 commits behind, and #175 wrote a
+second order adapter beside the one already on `main`, which is the exact ambiguity ("which code
+can send an order") this repo spends most of its rules preventing.
 
-- **#239** — this file's own predmarket header contradicting its boxes. **Closed as superseded by
-  this pass**, which fixes the same contradiction against a `main` that had moved well past the
-  one #239 was written on.
-- **#274** — **merged.** The readiness board grew a `market_data_visibility` row with #268 and the
-  go-live runbook never mentioned `MVP_MARKET_DATA`, so the board failed on a precondition the
-  checklist did not ask for. The runbook names it now.
-
-A hand-maintained list of open PRs cannot stay true in a repository whose `main` advances several
-times an hour — this section was accurate when written and wrong before it merged. Prefer
-`gh pr list` over trusting it; the next pass should consider deleting it rather than refreshing it
-again.
-
-Two PRs were **closed unmerged**, and both are the same lesson:
-
-- **#175** — a second LP4 order adapter written in a worktree without re-checking `main`, which by
-  then already carried `live_execution.py` with its reviewed design record. Two adapters must not
-  coexist: "which code can send an order" is exactly the question this repo keeps unambiguous.
-- **#229** — the declared-notional check, written on a branch that fell **131 commits** behind while
-  **#268** implemented the same check independently and merged first. Its code was redundant on
-  arrival; only its documentation was still owed, and that is #274.
-
-> **This section goes stale within hours.** Check `gh pr list` rather than trusting it — parallel
-> machines open and merge PRs continuously, and on 2026-07-27 that produced two independent fixes
-> for one defect (#229/#268) plus a review document whose P0 list was already merged. Before
-> starting anything below, confirm nobody else has taken it.
+The lesson generalises past PRs: **this whole file is a claim about a `main` that has since
+moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
@@ -296,6 +286,27 @@ machine that would run. Neither is blocked on a contract, a schema, or a gate �
 canary row **enables nothing on its own**: it satisfies one precondition of a step (cycle routing)
 that is still deliberately unbuilt.
 
+**The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
+end to end for the first time turned up six defects that had been sitting in code nobody had
+executed — the documented opt-in value the gate never matched (#227), a crash between the venue
+and the audit chain (#228), `--root` honoured everywhere but the account read (#231), the state
+guard covering one CLI of seven (#233), and a `max_daily_order_count` that refused nothing
+because the only door able to place an order never counted its own (#246). None were regressions.
+Code that has never run is not working code; it is untested code, and this is what that looks
+like when it is finally run.
+
+**The evidence the routing decision would rest on moved too, and in the less comfortable
+direction.** The promotion listing showed a stale top tier — twelve lineages rated `ROBUST` under
+a rule that predated the out-of-sample gate, ranked above thirteen that had actually survived
+unseen bars (#249). The backtest charged 2.5 bps taker where this account is charged 5.0, measured
+(#257); re-deriving the 224 affected candidates at the real rate flips **thirteen from positive
+expectancy to negative** (#260). And the board's own verdict on this runtime's record is now
+`판단 불가` rather than a number: 60 closed trades at +0.08R, 95% interval `[−0.32, +0.48]`
+(#292/#304).
+
+So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
+sooner would automate a strategy set whose sign nobody can currently state.
+
 The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
 the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
 which was the one requirement in that gate with no implementation. Binding also means **no live order
@@ -406,15 +417,27 @@ scopes at different levels, so nothing was owed to it.
           `live_leg`) fails loudly if an autonomous entry point imports it — **doing this is the
           decision to relax that tripwire.** It also owes the readiness board the *real* open
           exposure, so the honest block-at-cap can lift. The preconditions the design record
-          states — this runtime's own paper record (6 closed trades at −0.39R,
-          `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
-          step, not the leg above: a leg with no caller places no orders.
-- [ ] **≥ 3 clean canary orders** before any autonomous run. **This file cannot tell you the count**
-      and no longer pretends to: the evidence store is
+          states — this runtime's own paper record, ≥ 3 clean canaries, and the operator grants —
+          bind **this** step, not the leg above: a leg with no caller places no orders.
+          **The paper precondition is the one that has not moved.** It read "6 closed trades at
+          −0.39R, `INSUFFICIENT_SAMPLE`"; on 2026-07-28 it is 60 closed trades at **+0.08R**, and
+          the sign is still unknown — 95% interval `[−0.32, +0.48]`, about 0.4 standard errors
+          from zero, with roughly **3,100 trades** needed to separate the effect as observed
+          (#292). More data moved the number and not the verdict. At ~18 closed trades a day that
+          is months for the observed effect, or about a month if the true edge is the ~+0.2R the
+          backtests claim — and the distance between those two figures is the reason to keep
+          collecting rather than to route.
+- [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
+      board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
+      evidence store is
       `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
       Core pointer and the safety-flag grants — so a number written here is a claim about whichever
-      machine last edited it. It said "0" until 2026-07-27, when Thomas reported canaries placed on
-      his own machine; the fix is not a new number, it is to stop asserting one.
+      machine last edited it. It said "0" until 2026-07-27; the fix was not a new number, it was to
+      stop asserting one, and that still holds for any machine but the one that ran them.
+      **On that machine the four are 2026-07-26T11:03Z and 14:05Z, then 2026-07-27T08:02Z and
+      09:00Z** — and the split matters, because the first two were placed while #228 and #246 were
+      still live and the second two after they merged. The 11:03Z order is the one whose audit
+      event was lost; see the header. The 14:05Z order is the first that completed every step.
       Ask the machine: `python -m runtime.mvp_runtime.crypto.live_readiness`, the `canary_evidence`
       row. Two things that count differently from "how many did I place": only records with
       `clean: true` count, and a registry that fails **any** verification — line not JSON, self-hash
@@ -423,7 +446,7 @@ scopes at different levels, so nothing was owed to it.
       active also leaves no evidence at all: `DryRunCanaryRegistry` accepts and discards, because
       unbacked evidence here would unlock autonomous trading.
       (1 canary existed in the frozen source system and did not migrate.)
-      **Re-verification is owed for anything placed before 2026-07-27, and here is why.** Three
+      **Re-verification is owed for the two placed on 2026-07-26, and here is why.** Three
       separate defects sat on this path and were fixed afterwards, so earlier evidence cannot be
       read at face value:
       **#201** — `resolve_live_order_limits` dropped `canary_confirmation`, so the guard compared an
