@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import pool
+from runtime.mvp_runtime.crypto import cost, pool
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.promotion import (
     promotion_content_sha256,
@@ -32,6 +32,10 @@ from tests._helpers import requires_local_core
 
 NOW = timeutil.utc_now_iso()
 
+# Sentinel: `cost_summary=None` means "seed a candidate with no recorded cost model", which is
+# a case under test, so it cannot double as "caller said nothing".
+_MISSING = object()
+
 
 def _spec_dict(**overrides):
     base = {
@@ -47,10 +51,30 @@ def _spec_dict(**overrides):
     return base
 
 
-def _seed_candidates(tmp_path, *specs, generation_id="GEN-001"):
+def _current_cost_summary():
+    """Evidence scored under the cost model in force, because the promotion door now checks.
+
+    These fixtures carry no cost model at all, which reads as `cost_model_unrecorded` — and an
+    unrecorded basis cannot say whether its numbers are inflated, so `assert_promotable_cost_basis`
+    refuses it. That refusal is correct and is tested directly below; here it is noise, because
+    what these cases exercise is approval verification and display-id collision. Stamping the
+    current model keeps each test about its own subject."""
+    return {"total_net_r": 10.0, "total_fee_cost_r": 1.0, "total_maker_fee_cost_r": 0.2,
+            "total_slippage_cost_r": 0.5, "cost_model": {
+                "taker_fee_bps": cost.DEFAULT_TAKER_FEE_BPS,
+                "maker_fee_bps": cost.DEFAULT_MAKER_FEE_BPS,
+                "slippage_bps": cost.DEFAULT_SLIPPAGE_BPS,
+            }}
+
+
+def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MISSING):
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
+        evidence = {"closed_count": 20, "expectancy": 0.5}
+        summary = _current_cost_summary() if cost_summary is _MISSING else cost_summary
+        if summary is not None:
+            evidence["cost_summary"] = summary
         records.append({
             "strategy_id": spec.strategy_id,
             "strategy_rule_hash": spec.strategy_rule_hash,
@@ -58,6 +82,7 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001"):
             "status": "BACKTESTED",
             "champion_score": 0.5,
             "strategy_spec": spec.to_dict(),
+            "backtest_evidence": evidence,
             "evidence_input_sha256": "sha256:test",
             "provenance": "mvp_factory",
         })
@@ -218,6 +243,74 @@ def test_promotion_with_escape_is_audited_as_such(tmp_path):
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
     assert entry["strategy_id"] == "S1"
     assert entry["candidate_id"] == pool.candidate_id(seeded[0])  # lineage rides into the pool
+
+
+# --- the cost-basis gate ------------------------------------------------------
+#
+# The candidate store holds evidence scored under models the venue no longer charges: on the
+# live machine 224 of 359 rows paid 2.5 bps taker where it charges 5.0, and 45 recorded no
+# model at all. `backtest_evidence` is durable and the store is append-only, so those numbers
+# can never be repaired in place — the promotion door is the only place the mismatch can be
+# caught before evidence turns into real money.
+
+def _stale_summary(**model):
+    return {"total_net_r": 10.0, "total_fee_cost_r": 1.0, "total_maker_fee_cost_r": 0.0,
+            "total_slippage_cost_r": 0.5, "cost_model": model}
+
+
+def test_promotion_refuses_evidence_scored_more_cheaply_than_the_venue_charges(tmp_path):
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
+
+
+def test_promotion_refuses_evidence_with_no_recorded_cost_model(tmp_path):
+    """Worse than stale: it cannot even say which way its numbers err."""
+    _seed_candidates(tmp_path, _spec_dict(), cost_summary=None)
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
+
+
+def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
+    """An escape that leaves no trace is an escape nobody can audit. The flag AND the basis
+    each promoted candidate stood on both ride onto the ledger summary, because a pool entry
+    outlives the argv that installed it."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            allow_stale_cost_basis=True)
+    assert summary["stale_cost_basis_escape"] is True
+    assert summary["cost_bases"] == ["net_of_fees_and_slippage:taker_2.5bps+slip_3.0bps"]
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+def test_a_promotion_on_current_evidence_records_the_escape_as_unused(tmp_path):
+    _seed_candidates(tmp_path, _spec_dict())
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert summary["stale_cost_basis_escape"] is False
+    assert summary["cost_bases"] == [pool.current_cost_basis()]
+
+
+def test_the_ask_refuses_stale_evidence_too(tmp_path):
+    """Checked at the ASK, not only the install. An approval Thomas answers for a promotion
+    the next step was always going to refuse spends his attention on nothing.
+
+    No `requires_local_core`, deliberately: the refusal lands in `_resolve_candidates`, before
+    `build_task`/`bind_task_to_core` ever reach for a Core. A test gated on one would have been
+    skipped on exactly the machines where the gate is cheapest to break."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
+    with pytest.raises(ApprovalBlocked) as exc:
+        request_promotion(["S1"], keep_active=False, now=NOW, candidates_root=tmp_path)
+    assert exc.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
 
 
 def test_promotion_derives_unique_display_id_on_collision(tmp_path):

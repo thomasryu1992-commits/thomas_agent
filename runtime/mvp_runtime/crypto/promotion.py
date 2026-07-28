@@ -47,7 +47,9 @@ def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], k
     })
 
 
-def _resolve_candidates(selectors: list[str], root: Path | None) -> list[dict[str, Any]]:
+def _resolve_candidates(
+    selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
+) -> list[dict[str, Any]]:
     """Selector resolution via the store's single authority, as approval refusals."""
     try:
         resolved = pool_store.resolve_candidates(selectors, root)
@@ -56,6 +58,14 @@ def _resolve_candidates(selectors: list[str], root: Path | None) -> list[dict[st
     for c in resolved:
         if not (isinstance(c.get("strategy_rule_hash"), str) and c["strategy_rule_hash"]):
             raise ApprovalBlocked("CANDIDATE_UNHASHED", f"candidate {c['candidate_id']} has no rule hash")
+    # Checked at the ASK, not only at the install. The execution door refuses stale-basis
+    # evidence too, and an ask that cannot execute is worse than no ask: it spends Thomas's
+    # answer on a promotion the next step was always going to block.
+    if not allow_stale_cost_basis:
+        try:
+            pool_store.assert_promotable_cost_basis(resolved)
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     return resolved
 
 
@@ -67,6 +77,7 @@ def request_promotion(
     ttl_minutes: int | None = None,
     repo_root: Path | None = None,
     candidates_root: Path | None = None,
+    allow_stale_cost_basis: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
@@ -80,7 +91,10 @@ def request_promotion(
     root = repo_root if repo_root is not None else _repo_root()
     # Candidates may live under a different root only in tests (the trial-test split:
     # real Core for binding, tmp state for stores); production passes one root.
-    candidates = _resolve_candidates(selectors, candidates_root if candidates_root is not None else root)
+    candidates = _resolve_candidates(
+        selectors, candidates_root if candidates_root is not None else root,
+        allow_stale_cost_basis=allow_stale_cost_basis,
+    )
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
     content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
