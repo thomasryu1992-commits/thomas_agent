@@ -831,3 +831,69 @@ def test_the_result_counts_how_many_pairings_were_one_template_two_subjects():
     })
     assert result["subject_mismatch_count"] >= 1
     assert result["candidates"] == []
+
+
+def test_a_generational_suffix_makes_it_a_different_person():
+    """Live on 2026-07-28, in a sheet about to be handed over:
+
+        Will Donald Trump     win the 2028 US Presidential Election?
+        Will Donald Trump Jr. win the 2028 US Presidential Election?
+
+    The rarity comparison did decide this correctly — by ONE document. `donald` appears in 8
+    titles and `jr` in 7, because most Trump markets say "Trump" without "Donald", so the
+    verdict flipped between runs. A conclusion that changes when one market is listed is not
+    a conclusion, and a suffix is knowledge rather than a measurement.
+    """
+    counts = _corpus(
+        "Will Donald Trump win the 2028 US Presidential Election?",
+        "Will Donald Trump Jr. win the 2028 US Presidential Election?",
+        *[f"Will Trump {w} in 2028?" for w in ("resign", "run", "endorse")],
+    )
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Donald Trump win the 2028 US Presidential Election?"),
+        matching.normalize_tokens("Will Donald Trump Jr. win the 2028 US Presidential Election?"),
+        counts,
+    ) is True
+
+
+def test_a_suffix_on_both_sides_is_agreement_not_a_difference():
+    """Two venues both asking about Trump Jr. are asking about Trump Jr."""
+    counts = _corpus("Will Donald Trump Jr. win the 2028 US Presidential Election?")
+    same = matching.normalize_tokens("Will Donald Trump Jr. win the 2028 US Presidential Election?")
+    assert matching.subject_mismatch(same, same, counts) is False
+
+
+def test_the_suffix_rule_does_not_fire_on_names_that_merely_look_like_one():
+    """`ii` and `iv` are on the list; ordinary words are not, and the rule only fires when one
+    side has a suffix the other lacks."""
+    counts = _corpus("Will Newsom win?", "Will Newsom be nominated?")
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Newsom win?"),
+        matching.normalize_tokens("Will Newsom be nominated?"),
+        counts,
+    ) is False
+
+
+def test_the_rarity_rule_needs_a_margin_not_just_an_inequality():
+    """A bare `<` decided Trump against Trump Jr. by ONE document and fired on a two-title
+    corpus where every count is 1 or 2. Requiring the differing token to be at least twice as
+    rare makes the verdict survive a single market being listed, and keeps a corpus too small
+    to distinguish anything quiet."""
+    tiny = _corpus("Will Newsom win?", "Will Newsom be nominated?")
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("Will Newsom win?"),
+        matching.normalize_tokens("Will Newsom be nominated?"),
+        tiny,
+    ) is False
+
+    # And the live cases still separate, with room to spare.
+    standx = _corpus(
+        "StandX FDV above $200M one day after launch?",
+        "Puffpaw FDV above $200M one day after launch?",
+        *[f"{w} FDV above $50M one day after launch?" for w in ("A", "B", "C", "D")],
+    )
+    assert matching.subject_mismatch(
+        matching.normalize_tokens("StandX FDV above $200M one day after launch?"),
+        matching.normalize_tokens("Puffpaw FDV above $200M one day after launch?"),
+        standx,
+    ) is True
