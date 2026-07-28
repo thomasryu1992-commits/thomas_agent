@@ -28,9 +28,12 @@ and open in another, and the newer line was the stale one.
 > machine that placed them** (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
 > trusting a number written here. On a fresh checkout it reads `0/3`.
 >
-> The single remaining build item between this repository and an **autonomous** live order is
-> **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
-> is the decision to relax the tripwire test.
+> **Cycle routing landed 2026-07-28** (`crypto/live_route.py`): the executing leg now has one
+> autonomous caller, and `AUTONOMOUS_ROUTING_WIRED` is `True`. That was the last *build* item.
+> What stands between here and an autonomous live order is now entirely operator state — the
+> per-machine `live_trading` grant, the confirmation phrase, the registered budget, the canary
+> evidence — each of which the readiness board reports as its own computed row. **Wired is not
+> permitted**, and the board deliberately does not fold the routing row into `ready`.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -366,17 +369,36 @@ scopes at different levels, so nothing was owed to it.
           venue on its own and every branch is tested with zero network. Also extended the risk
           guard to see live outcomes — they live in their own store, so the paper provenance split
           never saw them and the breaker would have ignored every live loss.
-    - [ ] **The cycle routing** ⚠️ **the last piece, and its own explicit decision.** Design
-          record: `docs/runtime-contracts/LP5_3_LIVE_LEG_DESIGN_V0.1.md`. This is the line that
-          gives the executing leg an autonomous caller; today the only door is the deliberate
-          `scripts/place_canary_order.py`, one canary at a time, and
-          `test_no_autonomous_entry_point_reaches_the_live_order_path` (which now also covers
-          `live_leg`) fails loudly if an autonomous entry point imports it — **doing this is the
-          decision to relax that tripwire.** It also owes the readiness board the *real* open
-          exposure, so the honest block-at-cap can lift. The preconditions the design record
-          states — this runtime's own paper record (6 closed trades at −0.39R,
-          `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
-          step, not the leg above: a leg with no caller places no orders.
+    - [x] **The cycle routing** — **done 2026-07-28** (`crypto/live_route.py`). The executing leg
+          has a caller, and exactly one: `cycle.py` reaches the live stack only through that
+          module, pinned by
+          `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`, which
+          *replaced* the old blanket tripwire rather than deleting it — the property being kept
+          is that "which code can start a live order" has a single answer.
+          `AUTONOMOUS_ROUTING_WIRED` is now `True` and is deliberately still **not** part of
+          `ready`: wired is not permitted, and every door below it is unchanged. The gate comes
+          first — with no `live_trading` grant the leg returns DISABLED having read no account
+          and opened no socket, so a machine that has not been through the operator checklist
+          behaves exactly as before. Live entries use the **same** `build_entry_plan` as paper
+          and the same C4 verdict, so a live entry can never be permitted where a paper one was
+          not.
+    - [ ] **Live does not enforce the strategy's time exit, and the backtest evidence assumed it.**
+          Found reviewing the routing PR; recorded rather than fixed because fixing it changes
+          LP5.1's record shape, which is its own increment.
+          `build_entry_plan` puts `max_holding_bars` in the plan, and its own comment says why:
+          *"a strategy promoted on max_holding_bars=12 must not hold 48."* The **paper** leg
+          enforces it. The **live** leg does not — `live_route` states plainly that there is no
+          time-based exit, because a live position record carries no holding count and no
+          timeframe, so a max-hold rule there would be inventing state rather than reading it.
+          Consequence, stated so it is not rediscovered from a divergent R curve: a live trade
+          ends only at its stop or its target, where a paper trade of the same strategy may also
+          end on time. **The promotion evidence was built with the time exit in force, so it does
+          not fully transfer to live**, and the direction is unfavourable — a time exit usually
+          cuts losers, so live holds them longer. Do not compare live R against backtest
+          expectancy without pricing this in (`r_basis` already keeps the two populations
+          separately labelled).
+          The fix is a live position record that carries entry bar/timeframe — LP5.1's shape, not
+          routing's.
 - [ ] **≥ 3 clean canary orders** before any autonomous run. **This file cannot tell you the count**
       and no longer pretends to: the evidence store is
       `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
