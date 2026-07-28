@@ -204,6 +204,35 @@ def test_a_half_open_book_keeps_its_arithmetic_but_loses_the_claim():
     assert record["is_opportunity"] is False                            # claim withdrawn
 
 
+def test_an_edge_with_no_depth_at_the_touch_is_not_an_opportunity_either():
+    """The limit case of the thin book above: not a smaller opportunity, no opportunity.
+
+    `NO_SIZE` already described itself as *an edge nobody could take any of* and still let the
+    claim through. Counting it would put a sighting nobody could act on into the frequency
+    PM3's approval latency is judged against — the same overstatement, at size zero.
+    """
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.58, ask=0.59, bid_size=None),
+        _market(POLYMARKET, bid=0.50, ask=0.52, bid_size=None, category="crypto"),
+        now=NOW,
+    )
+    assert opportunity.NO_SIZE in record["reasons"]
+    assert opportunity.IMPLAUSIBLE_EDGE not in record["reasons"]   # NO_SIZE is doing the work
+    assert record["net_edge"] is not None and record["net_edge"] > 0    # arithmetic kept
+    assert record["is_opportunity"] is False                            # claim withdrawn
+
+
+def test_a_two_sided_book_with_depth_still_counts():
+    """The guard must not swallow the thing PM1 is looking for — a real edge on real depth."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.58, ask=0.59),
+        _market(POLYMARKET, bid=0.50, ask=0.52, category="crypto"),
+        now=NOW,
+    )
+    assert record["reasons"] == []
+    assert record["net_edge"] > 0 and record["is_opportunity"] is True
+
+
 def test_depth_is_recorded_and_the_smaller_side_binds():
     """A 500-contract bid is no help against a 3-contract ask. PM2 models the fill; PM1 has
     to hand it an honest number."""

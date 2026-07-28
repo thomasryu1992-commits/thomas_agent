@@ -221,8 +221,16 @@ def evaluate_pairing(
         # nothing was miscounted; with the signs reversed it would have been counted as an
         # opportunity, and **"how often" is the number PM1 exists to produce.** Overstating the
         # frequency is the direction that later misleads PM2 and PM3.
+        #
+        # `NO_SIZE` joined the same day, for the reason its own line already gave: *an edge
+        # nobody could take any of*. Zero depth at the touch is the limit case of the thin book
+        # above — not a smaller opportunity, no opportunity — and counting it would put a
+        # sighting nobody could act on into the frequency PM3's approval latency is judged
+        # against. All three refusals now say the same thing in the same way: the row keeps its
+        # numbers, and only the claim is withdrawn.
         "is_opportunity": bool(
-            best and best["is_opportunity"] and not implausible and NOT_QUOTED not in reasons
+            best and best["is_opportunity"] and not implausible
+            and NOT_QUOTED not in reasons and NO_SIZE not in reasons
         ),
         "reasons": reasons,
         "observed_at_utc": now,
