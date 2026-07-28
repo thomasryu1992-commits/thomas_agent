@@ -294,3 +294,54 @@ def test_an_unpriceable_binance_leg_is_still_unpriceable():
 
     assert fees.taker_fee(BINANCE, price=None, contracts=100) is None
     assert fees.taker_fee(BINANCE, price=0.0, contracts=100) is None
+
+
+# --- an edge that refutes its own premise ----------------------------------------
+
+def _wide(bid, ask, other_bid, other_ask):
+    from runtime.mvp_runtime.predmarket.market_data import BINANCE
+
+    return opportunity.evaluate_pairing(
+        _market(BINANCE, bid=bid, ask=ask),
+        _market(POLYMARKET, bid=other_bid, ask=other_ask, category="crypto"),
+        now=NOW,
+    )
+
+
+def test_a_seventy_cent_edge_is_not_an_opportunity():
+    """Live on 2026-07-28, twice, both at the top of the report and both looking like the
+    best thing in it:
+
+        Binance quoted a July-FOMC market at 0.73 against Polymarket's 0.0015, on $2.56M of
+        Polymarket liquidity. Two venues quoting ONE question do not sit a quarter apart.
+
+    So the arithmetic is kept and the claim is withdrawn: the row still carries its gross
+    edge, its net edge and its fees, because a pairing that produces this is evidence about
+    the pairing — deleting it would delete the evidence.
+    """
+    record = _wide(0.716, 0.73, 0.001, 0.002)
+    assert record["net_edge"] > 0.5
+    assert record["is_opportunity"] is False
+    assert opportunity.IMPLAUSIBLE_EDGE in record["reasons"]
+    assert record["gross_edge"] is not None and record["best"] is not None
+
+
+def test_an_implausibly_NEGATIVE_edge_is_flagged_too():
+    """The Olise shape: 0.82 on one venue against 0.003 on the other. Sign does not change
+    what a 80-cent disagreement means about the pairing."""
+    record = _wide(0.819, 0.821, 0.002, 0.003)
+    assert opportunity.IMPLAUSIBLE_EDGE in record["reasons"]
+    assert record["is_opportunity"] is False
+
+
+def test_an_edge_at_the_scale_this_phase_operates_at_is_untouched():
+    """Fees alone are ~2.5 cents per contract, so real findings live in cents. The threshold
+    sits in the empty band between 0.035 and 0.699 — nothing observed lives there."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45),
+        _market(POLYMARKET, bid=0.55, ask=0.57, category="crypto"),
+        now=NOW,
+    )
+    assert record["is_opportunity"] is True
+    assert opportunity.IMPLAUSIBLE_EDGE not in record["reasons"]
+    assert abs(record["net_edge"]) < opportunity.MAX_PLAUSIBLE_NET_EDGE
