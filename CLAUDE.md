@@ -51,15 +51,19 @@ approval turns it on.
 
 ## Commands
 
-CI is **Python 3.12**; match it locally. `PY` = `.venv/bin/python` (*nix) or
-`.venv/Scripts/python` (Windows — create with the `py` launcher, and set `PYTHONUTF8=1`
-for Korean I/O). Run from the repo root so the `runtime`/`tests` namespace packages resolve.
+Development and deployment are on one **Linux Docker host**. Run from the repo root so the
+`runtime`/`tests` namespace packages resolve.
 
 ```
-$PY -m pytest tests/ -q
-$PY scripts/run_repository_release_gate.py --full --check-only   # what CI runs = real acceptance
-$PY -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python scripts/run_repository_release_gate.py --full --check-only   # what CI runs = real acceptance
+docker exec thomas-scheduler python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
+
+CI is **Python 3.12**; the host venv is 3.14 and only the container has 3.12, so a green local
+`pytest` is a fast signal, not CI parity — the release gate is the real acceptance check. The
+CLI writes the ledger, so it goes through the container for the reason in the root-run rule
+above; `pytest` cannot, because the image carries no `tests/` and no pytest.
 
 Intake flags: `--independent-validation[=auto]`, `--important` (priority HIGH; under `auto`
 adds the independent reviewer), `--revise` (one governed regeneration on a validation REVISE,
