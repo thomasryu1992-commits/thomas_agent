@@ -73,22 +73,27 @@ deferred runtime-promotion-readiness gate stays green everywhere.
 
 ```bash
 git checkout -b tmp/core-activation      # the script makes an ephemeral commit
-.venv/bin/python scripts/ci_activate_core_for_tests.py
+.venv/bin/python scripts/ci_activate_core_for_tests.py --allow-foreign-root-run
 git reset HEAD~1                         # keep the gitignored state, drop the commit
 chown -R 10001:10001 .runtime_governance_state
 ```
 
-That last line is not optional here, and this is the one place the rule above is inverted.
-`ci_activate_core_for_tests.py` writes to **both** `THOMAS_CORE/approvals/` +
-`activations/` (root-owned on the host, mounted **read-only** into the containers) and
-`.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` (uid 10001, rw). So neither side can run
-it alone: in the container the `THOMAS_CORE` writes hit a read-only mount, and on the host the
-pointer comes out root-owned.
+This is the one place the rule above is inverted, and the flag is why.
+`ci_activate_core_for_tests.py` writes to **both** `THOMAS_CORE/approvals/` + `activations/`
+(root-owned on the host, mounted **read-only** into the containers) and
+`.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` (uid 10001, rw). Neither side can run it
+alone: in the container the `THOMAS_CORE` writes hit a read-only mount and there is no git
+history to commit into, and on the host the pointer comes out root-owned.
 
-It is also the one writer that does **not** call `assert_not_foreign_root_run`, so nothing
-stops the root run or reminds you afterwards. Hence the explicit chown — the same fix the
-guard prints for every other script, applied by hand because here it has no door to print it
-at.
+So it is the one state writer whose refusal cannot say "re-run it under `docker exec`" — which
+is why it refuses **locally** instead of through `assert_not_foreign_root_run`, and why the
+deliberate case needs `--allow-foreign-root-run` rather than just working. Without the flag it
+BLOCKs before writing anything.
+
+The `chown` is not optional and the script will not pretend otherwise: an escaped run that
+leaves a root-owned pointer prints `INCOMPLETE` and **exits non-zero**, because
+`state_guard.assert_state_writable` would refuse to start either service against it. It does
+not chown for you — nothing in this repo quietly widens its own access to governed state.
 
 ### The operator path (not the shortcut)
 
