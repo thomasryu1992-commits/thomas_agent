@@ -81,14 +81,35 @@ RECV_WINDOW_MS = 5000
 # Order types LP4 can express. MARKET is the entry/close; the two conditional types are the
 # LP5 protective bracket. Verified against the venue's New Order contract (2026-07-25):
 # a conditional type carries a ``stopPrice``, and ``workingType`` selects the trigger price.
+#
+# LIMIT joined them on 2026-07-28, for the take-profit leg only. A ``TAKE_PROFIT_MARKET``
+# triggers into a market order and therefore always pays the TAKER rate plus adverse
+# slippage, while a target is by construction a price the market has to come TO — the one
+# exit that can rest as a maker. See ``cost.DEFAULT_MAKER_FEE_BPS`` for what that is worth
+# and ``live_leg`` for the shape change it forces (a target leg can no longer be Close-All).
 ORDER_TYPE_MARKET = "MARKET"
+ORDER_TYPE_LIMIT = "LIMIT"
 ORDER_TYPE_STOP_MARKET = "STOP_MARKET"
 ORDER_TYPE_TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
 CONDITIONAL_ORDER_TYPES = frozenset({ORDER_TYPE_STOP_MARKET, ORDER_TYPE_TAKE_PROFIT_MARKET})
-SUPPORTED_ORDER_TYPES = frozenset({ORDER_TYPE_MARKET}) | CONDITIONAL_ORDER_TYPES
+SUPPORTED_ORDER_TYPES = frozenset({ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT}) | CONDITIONAL_ORDER_TYPES
+# Types that REST at the venue rather than executing on submission. A conditional order waits
+# for its trigger; a LIMIT waits for the market to reach its price. Neither reconciles as
+# FILLED at placement time, which is what ``place_bracket_leg`` and the dry-run echo both
+# depend on.
+RESTING_ORDER_TYPES = frozenset({ORDER_TYPE_LIMIT}) | CONDITIONAL_ORDER_TYPES
 WORKING_TYPE_MARK_PRICE = "MARK_PRICE"
 WORKING_TYPE_CONTRACT_PRICE = "CONTRACT_PRICE"
 WORKING_TYPES = frozenset({WORKING_TYPE_MARK_PRICE, WORKING_TYPE_CONTRACT_PRICE})
+
+# ``timeInForce``, mandatory on a LIMIT at this venue. GTC is what the take-profit leg uses:
+# it rests as a maker while the target is away from the market, and if the market is already
+# through the target it crosses and pays taker — which is exactly what the
+# ``TAKE_PROFIT_MARKET`` it replaces would have done, so this branch is never WORSE than the
+# order it replaces. GTX (post-only) would guarantee the maker rate but adds a rejection
+# branch on a target that is already through, so it is deliberately not the default.
+TIME_IN_FORCE_GTC = "GTC"
+TIMES_IN_FORCE = frozenset({TIME_IN_FORCE_GTC, "IOC", "FOK", "GTX"})
 
 # The venue's own charset rule for newClientOrderId, verified from its New Order contract:
 # ``^[\.A-Z\:/a-z0-9_-]{1,36}$``. ``make_client_order_id`` already complies; validating here
@@ -120,17 +141,23 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
     ``reduceOnly`` is set **from the intent** — the structural boundary the close guard relies
     on: a "close" that dropped this flag could open a position, so LP4 carries it faithfully.
 
-    Supported types (``order_type_exchange``): ``MARKET`` for an entry or a close, plus
-    ``STOP_MARKET`` / ``TAKE_PROFIT_MARKET`` for the LP5 protective bracket. A conditional type
-    **requires** a positive ``stop_price``: the venue lists ``stopPrice`` as optional across all
-    types, but a conditional order without one is meaningless, so it is required here rather than
-    sent empty and rejected at the venue.
+    Supported types (``order_type_exchange``): ``MARKET`` for an entry or a close, ``STOP_MARKET``
+    / ``TAKE_PROFIT_MARKET`` for a conditional bracket leg, and ``LIMIT`` for the resting
+    take-profit leg. A conditional type **requires** a positive ``stop_price``: the venue lists
+    ``stopPrice`` as optional across all types, but a conditional order without one is
+    meaningless, so it is required here rather than sent empty and rejected at the venue. A
+    ``LIMIT`` likewise requires a positive ``price`` and an explicit ``time_in_force`` — the
+    venue makes both mandatory, and defaulting a time-in-force would be this module choosing how
+    long real money rests at a price.
 
-    Two venue constraints are enforced rather than discovered at run time (both verified against
+    Three venue constraints are enforced rather than discovered at run time (verified against
     the New Order contract, 2026-07-25):
 
     - ``closePosition=true`` is **mutually exclusive with both ``quantity`` and ``reduceOnly``**,
       and is only valid on a conditional type. So a close-all bracket leg sends neither.
+    - ``closePosition`` is documented for ``STOP_MARKET``/``TAKE_PROFIT_MARKET`` **only**, so a
+      ``LIMIT`` take-profit leg cannot be Close-All and must carry an explicit quantity. That is
+      not a detail: it is why ``live_leg`` sizes the target leg from the actual entry fill.
     - ``newClientOrderId`` must match the venue's charset (``CLIENT_ORDER_ID_PATTERN``).
     """
     symbol = intent.get("symbol")
@@ -180,12 +207,30 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
                 )
             request["workingType"] = working_type
     elif close_position:
-        # closePosition is a Close-All conditional-order behaviour; on a MARKET order it is not
-        # a thing the venue accepts, so refuse rather than send something that would be rejected.
+        # closePosition is a Close-All conditional-order behaviour; on a MARKET or LIMIT order it
+        # is not a thing the venue accepts, so refuse rather than send something that would be
+        # rejected. A LIMIT take-profit leg therefore carries a real quantity, which is the whole
+        # reason ``live_leg`` has to know the filled size before it can build one.
         raise ToolError(
             MALFORMED_INTENT,
             f"close_position is only valid on {sorted(CONDITIONAL_ORDER_TYPES)}, not {order_type}",
         )
+
+    if order_type == ORDER_TYPE_LIMIT:
+        price = intent.get("price")
+        if not (isinstance(price, (int, float)) and price > 0):
+            raise ToolError(
+                MALFORMED_INTENT,
+                "LIMIT needs a positive price (a resting order without one is meaningless)",
+            )
+        request["price"] = float(price)
+        time_in_force = intent.get("time_in_force")
+        if time_in_force not in TIMES_IN_FORCE:
+            raise ToolError(
+                MALFORMED_INTENT,
+                f"time_in_force must be one of {sorted(TIMES_IN_FORCE)}, got {time_in_force!r}",
+            )
+        request["timeInForce"] = time_in_force
 
     if close_position:
         # Mutually exclusive with quantity AND reduceOnly — send neither.
@@ -284,14 +329,14 @@ class DryRunOrderAdapter:
             return None
         # A closePosition bracket leg carries neither quantity nor reduceOnly (they are mutually
         # exclusive with it at the venue), so the synthetic echo mirrors that shape too.
-        # A CONDITIONAL order rests as NEW until its trigger price is reached — it does not fill
-        # on submission. Echoing FILLED for one would let a dry run "confirm" a protective order
-        # in a state the venue would never report, which is exactly the confidence a dry run
-        # must not manufacture.
+        # A RESTING order rests as NEW — a conditional one until its trigger price is reached, a
+        # LIMIT until the market reaches its price. Neither fills on submission. Echoing FILLED
+        # for one would let a dry run "confirm" a protective order in a state the venue would
+        # never report, which is exactly the confidence a dry run must not manufacture.
         return {
             "symbol": req["symbol"],
             "side": req["side"],
-            "status": "NEW" if req["type"] in CONDITIONAL_ORDER_TYPES else "FILLED",
+            "status": "NEW" if req["type"] in RESTING_ORDER_TYPES else "FILLED",
             "executedQty": req.get("quantity", 0.0),
             "reduceOnly": req.get("reduceOnly", False),
             "closePosition": req.get("closePosition") == "true",

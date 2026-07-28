@@ -189,17 +189,39 @@ the container on exit; the named scratch volume is disposable (`docker volume rm
 thomas-smoke-state`). Never point a `docker run` at the real state bind or the real service
 names — that is the collision this section exists to prevent.
 
-## Live trading env — a shell session, **never** the compose `.env`
+## Live trading env — forwarded to the scheduler (changed 2026-07-27)
 
-Note what `docker-compose.yml` passes through today: `MVP_MARKET_DATA` and `MVP_PAPER_TRADING`,
-and nothing else crypto-related. **No live-trading or account variable reaches either container**,
-and that is deliberate rather than an omission. A live order is supposed to happen when a human
-types the command, so the credentials live in that human's terminal for the length of that
-session — not in a long-running service's environment, where they would arm the container
-permanently and outlive the intent that set them.
+**This section reversed on 2026-07-27 (Thomas decision).** The live-trading and account
+variables are now forwarded from the compose `.env` to the **scheduler** service, so the
+readiness board and the account read answer there without an operator exporting them per
+session — in particular `daily_loss_breaker`, which needs the venue's realized figure because
+the local outcome ledger cannot supply one.
 
-So do **not** add anything below to `docker-compose.yml` or to the compose `.env`. Export it in
-the shell you are about to run the canary from, and close that shell afterwards.
+The argument that used to sit here is kept, because it did not become wrong — it became a cost
+that was accepted: a live order is supposed to happen when a human types the command, and
+credentials in a long-running service outlive the intent that set them and return on every
+restart (`restart: unless-stopped`), readable by anything that can inspect the container. It is
+also **one Binance key** — the order credentials are derived from the account ones below — so
+`account.py` being read-only *by construction* is a property of this code, not of a key that
+carries futures-trading permission at the venue. A genuinely read-only venue key is what would
+make the account read separable from the trading capability.
+
+**The operator service still receives none of it**, and that half did not reverse: the operator
+loop reads no market or account data, so a key that can trade buys it nothing.
+
+What this does **not** change, and what still stands between the scheduler and an autonomous
+order: no autonomous entry point may import the order path
+(`test_no_autonomous_entry_point_reaches_the_live_order_path`), the per-machine `live_trading`
+grant, the registered budget, and the confirmation phrase for the capability being exercised.
+Env alone opens nothing.
+
+So the variables below belong in the compose `.env` (the scheduler reads them from there), and
+you can still export them in a shell for a one-off run against the host checkout.
+
+**Both halves are enforced** (2026-07-27): `tests/test_deployment_env_passthrough.py` fails if
+the **scheduler** stops receiving any of the eight, if the **operator** starts receiving any of
+them, or if either service declares `env_file:` — which would forward the whole file and slip
+past a per-variable check.
 
 ```bash
 # --- live trading (canary session) ------------------------------------------
@@ -259,9 +281,9 @@ python -m runtime.mvp_runtime.crypto.live_readiness   # every gate, computed
 exempt from, and the canary is what earns it. Everything else must be PASS. The full operator
 sequence is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gates 2 and 3.
 
-**When the session is done:** `unset` the variables or close the shell, and delete the
-`live_trading` grant file if you are not placing another canary soon — deleting it is a live
-revocation, checked at every egress.
+**When you are done trading:** the per-machine `live_trading` grant is now the switch that
+matters, since the env no longer expires with a shell. Delete the grant file if you are not
+placing another canary soon — deleting it is a live revocation, checked at every egress.
 
 ## Emergency controls on a running service
 

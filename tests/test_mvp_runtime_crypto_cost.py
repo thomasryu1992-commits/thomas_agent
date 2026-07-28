@@ -146,3 +146,55 @@ def test_live_paper_kernel_is_unaffected_by_the_cost_model():
         position, {"high": 109.0, "low": 99.0, "close": 108.5}, 108.5, 48, False
     )
     assert reason == "take_profit" and exit_price == 108.0 and result_r == 2.0  # uncosted, exact
+
+
+# --- the maker take-profit exit (2026-07-28) -------------------------------------
+
+def test_a_target_exit_pays_the_maker_rate_and_no_slippage():
+    """`live_leg` rests the target as a maker LIMIT, so it fills AT the target price. Charging
+    it taker plus adverse slippage would describe an order the venue is no longer sent."""
+    args = ("LONG", 100.0, 108.0, 4.0)
+    cost = CostModel(taker_fee_bps=5.0, slippage_bps=3.0, maker_fee_bps=2.0)
+    maker = apply_cost_model(*args, cost=cost, close_reason="take_profit")
+    taker = apply_cost_model(*args, cost=cost, close_reason="stop_loss")
+
+    # The exit leg carries no adverse slippage, so only the entry's remains.
+    entry_only_slippage = apply_cost_model(
+        *args, cost=CostModel(taker_fee_bps=5.0, slippage_bps=3.0, maker_fee_bps=2.0),
+        close_reason="take_profit",
+    ).slippage_cost_r
+    assert maker.slippage_cost_r == entry_only_slippage
+    assert maker.slippage_cost_r < taker.slippage_cost_r
+    assert maker.fee_cost_r < taker.fee_cost_r
+    assert maker.net_r > taker.net_r
+    # Same gross either way: the cost model never moves the intended-price result.
+    assert maker.gross_r == taker.gross_r
+
+
+def test_only_a_target_exit_is_charged_as_a_maker():
+    """A stop and a time exit both leave at market. Only the target rests."""
+    args = ("LONG", 100.0, 108.0, 4.0)
+    for reason in ("stop_loss", "time_exit", "manual_exit", None):
+        assert apply_cost_model(*args, close_reason=reason).maker_fee_cost_r == 0.0
+    assert apply_cost_model(*args, close_reason="take_profit").maker_fee_cost_r > 0.0
+
+
+def test_an_unknown_close_reason_is_charged_the_pessimistic_way():
+    """A cost model that got cheaper when told nothing would be the wrong way round."""
+    args = ("LONG", 100.0, 108.0, 4.0)
+    assert apply_cost_model(*args, close_reason="something_new") == apply_cost_model(
+        *args, close_reason="stop_loss"
+    )
+
+
+def test_the_maker_share_is_a_share_of_the_total_fee_not_an_extra():
+    """`expectancy_at` subtracts this from `fee_cost_r` to isolate the taker portion, so it has
+    to be contained in it — an additive figure would corrupt every rescale."""
+    breakdown = apply_cost_model("LONG", 100.0, 108.0, 4.0, close_reason="take_profit")
+    assert 0.0 < breakdown.maker_fee_cost_r < breakdown.fee_cost_r
+
+
+def test_net_is_still_gross_minus_fees_and_slippage_on_a_maker_exit():
+    """The decomposition invariant the whole module rests on, re-checked on the new branch."""
+    b = apply_cost_model("SHORT", 100.0, 92.0, 4.0, close_reason="take_profit")
+    assert math.isclose(b.net_r, b.gross_r - b.fee_cost_r - b.slippage_cost_r, abs_tol=1e-8)

@@ -216,10 +216,14 @@ def _htf_trend_short_entry(p: dict) -> list[dict]:
 def _htf_pullback_long_entry(p: dict) -> list[dict]:
     # The reason the families exist: buy weakness only while the timeframe ABOVE is
     # still trending up. Same dip, opposite meaning, depending on the higher regime.
+    #
+    # No separate htf_adx floor: ``classify_market_regime`` only returns TREND_UP when
+    # adx is already at or above its trend threshold, so the two conditions overlapped —
+    # the extra one bought little selectivity and cost a free parameter, which the
+    # robustness score divides its trade count by.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
         {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
-        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
@@ -227,18 +231,25 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
         {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
-        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
 def _oi_squeeze_long_entry(p: dict) -> list[dict]:
-    # Position building into a quiet market: open interest climbing while price has not
-    # yet moved is crowding, and the release tends to travel. The RANGE gate is what
-    # makes it a squeeze setup rather than plain trend-following.
+    # Position building ahead of a move: open interest climbing while the market has not
+    # yet confirmed a trend in this direction is crowding, and the release tends to
+    # travel. The regime gate is what makes it a squeeze rather than plain trend-following.
+    #
+    # It asks "not yet trending up" rather than "== RANGE" because RANGE was an
+    # arbitrarily narrow spelling of that premise: the classifier also emits
+    # LOW_VOLATILITY, HIGH_VOLATILITY and UNCLEAR, none of which is a confirmed up-trend
+    # either. Measured on live frames, requiring exactly RANGE fired the full condition on
+    # 0.43% of ETHUSDT 1h bars (10-15 trades over a 500-day replay) — below the sample the
+    # robustness scorer needs to judge anything, so the family was structurally unable to
+    # earn a verdict, whatever its edge. The same premise as `!= TREND_UP` fires on 4.88%.
     return [
         {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
         {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
-        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "market_regime", "comparison": "!=", "value": "TREND_UP"},
         {"feature": "close", "comparison": ">", "value_from": "ma20"},
     ]
 
@@ -247,7 +258,7 @@ def _oi_squeeze_short_entry(p: dict) -> list[dict]:
     return [
         {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
         {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
-        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "market_regime", "comparison": "!=", "value": "TREND_DOWN"},
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
     ]
 
@@ -378,8 +389,8 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
     StrategyTemplate("htf_pullback_long", "long", "1h",
-                     {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
-                     {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+                     {"rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
+                     {"rsi_max": 38.0, **_EXIT_BASE}, _htf_pullback_long_entry),
     StrategyTemplate("oi_squeeze_long", "long", "1h",
                      {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_long_entry),
@@ -393,8 +404,8 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
                      {"oi_change_min": 0.03, "rsi_min": 70.0, **_EXIT_BASE}, _oi_unwind_short_entry),
     StrategyTemplate("htf_pullback_short", "short", "1h",
-                     {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
-                     {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
+                     {"rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
+                     {"rsi_min": 62.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
 
 # Families whose entry rules read the open-interest columns — mintable only where the
@@ -614,6 +625,7 @@ def _replay(
     position: dict[str, Any] | None = None
     entry_regime: str | None = None
     total_fee_cost_r = 0.0
+    total_maker_fee_cost_r = 0.0
     total_slippage_cost_r = 0.0
 
     for i, row in enumerate(rows):
@@ -625,15 +637,17 @@ def _replay(
             if reason is not None:
                 breakdown = apply_cost_model(
                     position["direction"], position["entry_price"], float(exit_price),
-                    position["risk"], cost=cost,
+                    position["risk"], cost=cost, close_reason=reason,
                 )
                 total_fee_cost_r += breakdown.fee_cost_r
+                total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
                 outcomes.append({
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
                     "gross_R": breakdown.gross_r,
                     "fee_cost_R": breakdown.fee_cost_r,
+                    "maker_fee_cost_R": breakdown.maker_fee_cost_r,
                     "slippage_cost_R": breakdown.slippage_cost_r,
                     "close_reason": reason,
                     "created_at_utc": candle.get("close_time"),
@@ -661,7 +675,7 @@ def _replay(
                 "holding_candles": 0,
             }
             entry_regime = row.get("market_regime")
-    return outcomes, total_fee_cost_r, total_slippage_cost_r
+    return outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r
 
 
 def _holdout_evidence(
@@ -673,7 +687,7 @@ def _holdout_evidence(
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
     that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
+    outcomes, fees, maker_fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
     total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
     closed = len(outcomes)
     return {
@@ -688,8 +702,16 @@ def _holdout_evidence(
         # on whatever rate happened to be current when the candidate was minted. The replay
         # already computes these; only the return dropped them.
         "fee_cost_r": round(fees, 8),
+        # The maker share of `fee_cost_r`, without which the re-derivation above is wrong rather
+        # than merely unavailable: `expectancy_at` scales the taker rate, and scaling a maker fee
+        # by it would report a rate this candidate never faced on that leg.
+        "maker_fee_cost_r": round(maker_fees, 8),
         "slippage_cost_r": round(slippage, 8),
-        "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
+        "cost_model": {
+            "taker_fee_bps": cost.taker_fee_bps,
+            "maker_fee_bps": cost.maker_fee_bps,
+            "slippage_bps": cost.slippage_bps,
+        },
     }
 
 
@@ -716,7 +738,9 @@ def backtest_spec(
     # re-warming — the split is about what the SCORE may see, not about the data itself.
     split = holdout_split_index(len(all_rows))
     rows, candles = all_rows[:split], all_candles[:split]
-    outcomes, total_fee_cost_r, total_slippage_cost_r = _replay(spec, rows, candles, cost=cost)
+    outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r = _replay(
+        spec, rows, candles, cost=cost
+    )
     holdout = _holdout_evidence(spec, all_rows[split:], all_candles[split:], cost=cost, offset=split)
 
     summary = summarize_outcomes(outcomes)
@@ -777,8 +801,18 @@ def backtest_spec(
         "cost_summary": {
             "total_net_r": total_net_r,
             "total_fee_cost_r": round(total_fee_cost_r, 8),
+            # The maker share of the line above. `pool.expectancy_at` re-derives an old
+            # candidate's expectancy at a different TAKER rate, and that algebra is linear in the
+            # taker portion only — so the portion has to be recorded, not inferred. A record
+            # without this field predates the maker exit and is all-taker by construction, which
+            # is exactly how `expectancy_at` reads a missing value.
+            "total_maker_fee_cost_r": round(total_maker_fee_cost_r, 8),
             "total_slippage_cost_r": round(total_slippage_cost_r, 8),
-            "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
+            "cost_model": {
+                "taker_fee_bps": cost.taker_fee_bps,
+                "maker_fee_bps": cost.maker_fee_bps,
+                "slippage_bps": cost.slippage_bps,
+            },
         },
         "regime_breakdown": regime_breakdown,
         "walk_forward": walk_forward,

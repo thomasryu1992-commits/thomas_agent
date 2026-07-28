@@ -4,12 +4,19 @@ Ports the fee/slippage decomposition from ``crypto_AI_System/backtesting/
 cost_model.py``, in **R-space only**: this port's accounting is deliberately
 R-based, no quantity or notional fields anywhere (see ``paper.py``: "paper sizing
 added nothing but noise"). A taker always fills at an adverse price (buys higher,
-sells lower) and pays a fee on both legs; because ``risk_amount = qty *
+sells lower) and pays a fee; because ``risk_amount = qty *
 risk_per_unit``, quantity cancels out of every R-denominated ratio algebraically —
 verified numerically against the source's qty-based ``settle_trade`` (matches to
 floating-point precision for both LONG and SHORT). The reduced form is a pure
 function of ``(entry_price, exit_price, risk_per_unit, direction)`` with no qty
 tracked anywhere, so nothing about the deliberate R-only design changes.
+
+**The two legs are no longer charged the same way** (2026-07-28). The entry is a MARKET order
+and pays taker plus adverse slippage on every path. The exit depends on how it left: a target
+now rests as a maker LIMIT (``live_leg``), so it fills AT the target and pays the maker rate,
+while a stop, a time exit and a manual exit all still leave at market. ``apply_cost_model``
+therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
+so ``pool.expectancy_at`` can still rescale the taker portion exactly.
 
 **Scope, matching the source exactly**: cost application is confined to backtest/
 factory scoring. The source's live paper kernel (``paper_position_kernel.py`` / this
@@ -48,11 +55,32 @@ DEFAULT_TAKER_FEE_BPS = 5.0
 # nothing here has measured it — a canary is a single market order, not a sample.
 DEFAULT_SLIPPAGE_BPS = 3.0
 
+# The maker rate, for the one leg that can earn it: the take-profit exit.
+#
+# From 2026-07-28 `live_leg` places the target as a resting `reduceOnly` LIMIT instead of a
+# `TAKE_PROFIT_MARKET`, because a target is by construction a price the market has to come TO.
+# A resting order at that price is a maker fill; the conditional it replaced triggered into a
+# market order and paid taker plus adverse slippage to reach a price it had already reached.
+#
+# 2.0 bps is Binance USD-M's PUBLISHED standard maker rate. Unlike the taker figure above it is
+# **not measured on this account** — no maker fill has been placed yet, so there is nothing to
+# measure. Stated rather than silently assumed, because the direction of the error matters: if
+# the real maker rate is higher, this model reports an edge slightly better than reality, which
+# is the UNSAFE direction. The first live maker fill should replace this with a measurement.
+DEFAULT_MAKER_FEE_BPS = 2.0
+
+# The one close reason that exits as a maker. A stop and a time exit both leave at market, and a
+# manual exit is a market order by definition; only the target rests. Keeping this as a named
+# set rather than an `== "take_profit"` check means a new close reason has to make an explicit
+# decision about which side of the fee it lands on.
+MAKER_EXIT_REASONS = frozenset({"take_profit"})
+
 
 @dataclass(frozen=True)
 class CostModel:
     taker_fee_bps: float = DEFAULT_TAKER_FEE_BPS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
+    maker_fee_bps: float = DEFAULT_MAKER_FEE_BPS
 
     def fill_price(self, mid: float, direction: str, action: str) -> float:
         """Adverse-slippage fill: a taker buys above and sells below the mid.
@@ -68,12 +96,17 @@ class CostModel:
 class CostBreakdown:
     gross_r: float       # on intended (mid) prices, no costs — what settle_trade_plan already returns
     net_r: float         # after fees + slippage — the honest simulated outcome
-    fee_cost_r: float
+    fee_cost_r: float    # taker + maker together, the figure that comes off net_r
     slippage_cost_r: float
+    # The maker share of `fee_cost_r`, carried separately because `pool.expectancy_at` re-derives
+    # an old candidate's expectancy at a different TAKER rate, and that rescale is only linear in
+    # the taker portion. Zero on a taker exit, which is what every pre-2026-07-28 record is.
+    maker_fee_cost_r: float = 0.0
 
 
 def apply_cost_model(
-    direction: str, entry_price: float, exit_price: float, risk: float, *, cost: CostModel | None = None,
+    direction: str, entry_price: float, exit_price: float, risk: float, *,
+    cost: CostModel | None = None, close_reason: str | None = None,
 ) -> CostBreakdown:
     """Decompose a gross (intended-price) R multiple into net R after costs.
 
@@ -82,18 +115,36 @@ def apply_cost_model(
     algebraically cancels). ``risk <= 0`` is the source's own division guard and
     returns all zeros rather than raising — defensive; a built entry plan never has
     a non-positive risk (``build_entry_plan`` already refuses those).
+
+    ``close_reason`` selects how the EXIT leg is charged, and only the exit leg — the entry is a
+    MARKET order on every path, so it always pays taker plus adverse slippage:
+
+    - a maker exit (``MAKER_EXIT_REASONS``, i.e. the target) fills **at the target price** and
+      pays the maker rate. No adverse slippage: a resting limit order does not cross the spread,
+      and `settle_trade_plan` already returns the target price itself as the exit — so this is
+      the branch where the model and the venue finally agree.
+    - anything else leaves at market: taker rate plus adverse slippage, unchanged.
+
+    ``close_reason=None`` charges the taker branch. That keeps every existing caller's numbers
+    identical and makes the pessimistic case the default — a cost model that got optimistic
+    when it was told nothing would be the wrong way round.
     """
     cost = cost or CostModel()
     if risk <= 0:
-        return CostBreakdown(0.0, 0.0, 0.0, 0.0)
+        return CostBreakdown(0.0, 0.0, 0.0, 0.0, 0.0)
     sign = 1.0 if direction == "LONG" else -1.0
     gross_r = sign * (exit_price - entry_price) / risk
+    maker_exit = close_reason in MAKER_EXIT_REASONS
 
     entry_fill = cost.fill_price(entry_price, direction, "entry")
-    exit_fill = cost.fill_price(exit_price, direction, "exit")
+    exit_fill = exit_price if maker_exit else cost.fill_price(exit_price, direction, "exit")
     on_fill_r = sign * (exit_fill - entry_fill) / risk
     slippage_cost_r = gross_r - on_fill_r
-    fee_cost_r = (entry_fill + exit_fill) * cost.taker_fee_bps / 10000.0 / risk
+    exit_rate = cost.maker_fee_bps if maker_exit else cost.taker_fee_bps
+    maker_fee_cost_r = (exit_fill * exit_rate / 10000.0 / risk) if maker_exit else 0.0
+    fee_cost_r = (
+        entry_fill * cost.taker_fee_bps + exit_fill * exit_rate
+    ) / 10000.0 / risk
     net_r = on_fill_r - fee_cost_r
 
     return CostBreakdown(
@@ -101,4 +152,5 @@ def apply_cost_model(
         net_r=round(net_r, 8),
         fee_cost_r=round(fee_cost_r, 8),
         slippage_cost_r=round(slippage_cost_r, 8),
+        maker_fee_cost_r=round(maker_fee_cost_r, 8),
     )

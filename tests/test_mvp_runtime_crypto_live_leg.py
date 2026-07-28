@@ -111,7 +111,9 @@ class FakeAdapter:
             "symbol": symbol, "side": "BUY" if kind == "ENTRY" else "SELL",
             "status": status,
             "executedQty": fill.get("executedQty", default_qty),
-            "reduceOnly": kind == "CLOSE",
+            # The target leg is a sized reduceOnly LIMIT, so it echoes the flag too — only the
+            # closePosition stop carries neither quantity nor reduceOnly.
+            "reduceOnly": kind in {"CLOSE", "TP"},
             "avgPrice": fill.get("avgPrice", 60000.0 if kind == "ENTRY" else 61000.0),
             "cumQuote": fill.get("cumQuote", 60.0 if kind == "ENTRY" else 61.0),
             "orderId": f"oid-{kind}",
@@ -205,7 +207,7 @@ def test_a_ready_decision_opens_a_bracketed_position():
     assert result["reason_codes"] == []
     assert len(store.saved) == 1
     # Entry + both bracket legs, in that order.
-    assert [r["type"] for r in adapter.submitted] == ["MARKET", "STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    assert [r["type"] for r in adapter.submitted] == ["MARKET", "STOP_MARKET", "LIMIT"]
 
 
 def test_the_position_is_booked_from_the_ACTUAL_fill_not_the_intent():
@@ -345,9 +347,10 @@ def test_a_bracket_failure_closes_the_position_immediately(failure):
     assert ll.NAKED_POSITION_CLOSED in result["reason_codes"]
     # Nothing was booked: the position does not exist any more.
     assert store.saved == []
-    # And the close was a reduceOnly MARKET.
-    close = [r for r in adapter.submitted if r.get("reduceOnly")]
-    assert len(close) == 1 and close[0]["type"] == "MARKET"
+    # And the close was a reduceOnly MARKET. Matched on the type too: now that the target leg is
+    # a sized reduceOnly LIMIT, the reduceOnly flag alone no longer identifies the close.
+    close = [r for r in adapter.submitted if r.get("reduceOnly") and r["type"] == "MARKET"]
+    assert len(close) == 1
 
 
 def test_the_naked_close_withdraws_whichever_leg_did_place():
@@ -378,37 +381,64 @@ def test_a_refusing_close_guard_leaves_the_position_naked_and_says_so():
 
 # --- the bracket legs themselves -------------------------------------------------
 
-def test_both_legs_are_closePosition_never_sized():
+def test_the_stop_is_closePosition_never_sized():
     """closePosition protects whatever is actually open, so a partial fill cannot leave a
-    sliver unprotected — and the venue forbids quantity/reduceOnly alongside it."""
+    sliver unprotected — and the venue forbids quantity/reduceOnly alongside it. This is the leg
+    that defines the risk, so it keeps the Close-All shape."""
     adapter = FakeAdapter()
     _entry(adapter=adapter)
-    for request in adapter.submitted[1:]:
-        assert request["closePosition"] == "true"
-        assert "quantity" not in request and "reduceOnly" not in request
+    sl = adapter.submitted[1]
+    assert sl["closePosition"] == "true"
+    assert "quantity" not in sl and "reduceOnly" not in sl
 
 
-def test_both_legs_trigger_on_the_mark_price_at_the_planned_prices():
+def test_the_target_is_a_sized_reduce_only_limit_at_the_planned_price():
+    """The target rests as a maker instead of triggering into a market order. closePosition is
+    unavailable on a LIMIT at this venue, so this leg carries a real quantity — and it must be
+    the ACTUAL filled size, or it would rest asking to reduce more than the position holds."""
+    adapter = FakeAdapter(fills={"ENTRY": {"executedQty": 0.001, "avgPrice": 60000.0}})
+    _entry(adapter=adapter)
+    tp = adapter.submitted[2]
+    assert tp["type"] == "LIMIT"
+    assert tp["price"] == BRACKET["take_profit"]
+    assert tp["timeInForce"] == "GTC"
+    assert tp["reduceOnly"] is True
+    assert tp["quantity"] == 0.001
+    assert "closePosition" not in tp
+    # No trigger and no workingType: it is not a conditional order, it is resting in the book.
+    assert "stopPrice" not in tp and "workingType" not in tp
+
+
+def test_the_stop_triggers_on_the_mark_price_at_the_planned_price():
     adapter = FakeAdapter()
     _entry(adapter=adapter)
-    sl, tp = adapter.submitted[1], adapter.submitted[2]
+    sl = adapter.submitted[1]
     assert sl["stopPrice"] == BRACKET["stop_loss"] and sl["workingType"] == "MARK_PRICE"
-    assert tp["stopPrice"] == BRACKET["take_profit"] and tp["workingType"] == "MARK_PRICE"
+
+
+def test_the_target_leg_is_sized_from_the_actual_fill_not_the_intent():
+    """The partial-fill case the sized leg has to get right. The intent asked for 0.001; if the
+    venue filled less, a target sized from the intent would try to reduce quantity that is not
+    there."""
+    adapter = FakeAdapter()
+    _entry(adapter=adapter)
+    entry_qty = adapter.submitted[0]["quantity"]
+    assert adapter.submitted[2]["quantity"] == entry_qty
 
 
 def test_a_resting_leg_is_placed_a_filled_one_is_not():
     """A protective order that already executed is not protection — it is a closed position."""
-    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", stop_price=59000.0,
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
     assert ll.place_bracket_leg(intent, adapter=FakeAdapter())["placed"] is True
     assert ll.place_bracket_leg(intent, adapter=FakeAdapter(statuses={"SL": "FILLED"}))["placed"] is False
 
 
 def test_the_two_legs_get_distinct_idempotency_keys():
-    sl = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", stop_price=59000.0,
+    sl = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                  working_type="MARK_PRICE", position_seed="seed")
-    tp = ll.build_bracket_intent(symbol="BTCUSDT", leg="TP", side="SELL", stop_price=62000.0,
-                                 working_type="MARK_PRICE", position_seed="seed")
+    tp = ll.build_bracket_intent(symbol="BTCUSDT", leg="TP", side="SELL", price=62000.0,
+                                 working_type="MARK_PRICE", position_seed="seed", quantity=0.001)
     assert sl["client_order_id"] != tp["client_order_id"]
     assert sl["idempotency_key"] != tp["idempotency_key"]
 
@@ -416,7 +446,7 @@ def test_the_two_legs_get_distinct_idempotency_keys():
 def test_a_leg_confirmed_resting_clears_a_duplicate_id_rejection():
     """The submit may be rejected as a duplicate while the original is already resting; the
     venue read is the truth."""
-    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", stop_price=59000.0,
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
     result = ll.place_bracket_leg(intent, adapter=FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}))
     assert result["placed"] is True and result["error"] is None
@@ -609,7 +639,7 @@ def test_the_dry_run_adapter_books_nothing_because_it_has_no_real_fill():
 def test_the_dry_run_adapter_rests_a_conditional_leg_rather_than_filling_it():
     """A protective order rests as NEW at the venue; a dry run that echoed FILLED would
     'confirm' a bracket in a state the venue never reports."""
-    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", stop_price=59000.0,
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
     result = ll.place_bracket_leg(intent, adapter=DryRunOrderAdapter())
     assert result["placed"] is True and result["status"] == "NEW"

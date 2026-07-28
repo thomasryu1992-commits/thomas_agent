@@ -19,8 +19,10 @@ real exchange account through the separately-gated ``binance_futures_account`` f
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import sys
+import statistics
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -131,8 +133,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     try:
         cf_records = counterfactual.read_counterfactual_outcomes(root)
         cf_summary = counterfactual.summarize_counterfactuals(cf_records)
+        cf_verdicts = {
+            reason: sample_verdict(values)
+            for reason, values in counterfactual.r_values_by_reason(cf_records).items()
+        }
     except MvpRuntimeError as exc:
-        cf_records, cf_summary = [], {}
+        cf_records, cf_summary, cf_verdicts = [], {}, {}
         warnings.append(f"counterfactual store unreadable ({exc.reason_code})")
 
     # Every book, not just one: positions are keyed per (venue, symbol, timeframe),
@@ -174,6 +180,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "expectancy": (report.get("summary") or {}).get("expectancy") if report else None,
             "max_drawdown": (report.get("summary") or {}).get("max_drawdown") if report else None,
             "recommendation": report.get("recommendation") if report else None,
+            # Computed here from the R values rather than added to the performance report:
+            # that report is a versioned, persisted record, and this is a reading of it.
+            "sample_verdict": sample_verdict([
+                float(o["result_R"]) for o in own_outcomes
+                if isinstance(o.get("result_R"), (int, float))
+            ]),
         },
         # Imported crypto_AI_System history, reported separately and never merged above: it is
         # the predecessor's record, useful as context, not as evidence about this runtime.
@@ -187,6 +199,8 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "monthly_trend": (outcome_digest or {}).get("monthly_trend"),
         } if outcome_digest else None,
         "counterfactual_by_reason": cf_summary,
+        # Per gate: can its blocked trades tell the sign of what they would have returned?
+        "counterfactual_verdicts": cf_verdicts,
         "counterfactual_closed": sum(1 for r in cf_records if r.get("outcome_closed") is True),
         "grants": _grants(root),
         "warnings": warnings,
@@ -201,10 +215,71 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
 # 11 closed trades is noise, and the board already knows to say INSUFFICIENT_SAMPLE about
 # its trends while saying nothing about the headline it prints two lines above them.
 MIN_MEANINGFUL_SAMPLE = 30
+
+# ...but a count is the wrong test, and this board graduated on it. At 30 closed trades the
+# headline stopped saying "표본 부족" and started saying "검토 가능", while the number it was
+# qualifying — +0.08R over 60 trades, with an R standard deviation of 1.56 — sat 0.4 standard
+# errors from zero. A fixed count answers "are there enough rows?"; the question a reader has
+# is "can I tell the sign?", and those diverge exactly when the variance is large relative to
+# the edge, which is always true of trade returns.
+#
+# So the board now computes the interval. `MIN_MEANINGFUL_SAMPLE` stays as a floor — below it
+# even the interval is unstable — but it is no longer what promotes the verdict.
+# Below this the spread cannot be estimated, so no interval is produced at all. A verdict
+# from two observations is arithmetic, not evidence — see `sample_verdict`.
+MIN_INTERVAL_SAMPLE = 5
+CONFIDENCE_Z = 1.96          # two-sided 95%
+POWER_Z = 0.84               # 80% power, the usual pairing
+
+
+def sample_verdict(r_values: list[float]) -> dict[str, Any]:
+    """Can this sample tell the sign of its own edge, and if not, how far off is it?
+
+    Pure. `trades_needed` is for the OBSERVED effect: if the true edge is what has been seen
+    so far, this is roughly the sample at which it would separate from zero. It is a scale
+    ("weeks" vs "years"), not a promise — a smaller true edge needs quadratically more.
+    """
+    n = len(r_values)
+    if n < MIN_INTERVAL_SAMPLE:
+        # Not "no edge" — no estimate. Below a handful of observations the spread cannot be
+        # estimated at all, and an interval computed anyway is arithmetic rather than
+        # evidence. This floor was added after the gate section rated
+        # MAX_CONSECUTIVE_LOSS_GATE_BLOCKED as costing money off TWO blocked trades that
+        # happened to return the same number: a zero-width interval, read as certainty.
+        return {"count": n, "mean_r": None, "stdev_r": None, "stderr_r": None,
+                "ci_low": None, "ci_high": None, "distinguishable_from_zero": False,
+                "trades_needed": None}
+    mean = statistics.fmean(r_values)
+    # Sample standard deviation (n-1), not population: these observations are a sample of what
+    # the strategy or gate would do, never the whole of it, and pstdev understates the spread
+    # of exactly that inference.
+    stdev = statistics.stdev(r_values)
+    stderr = stdev / math.sqrt(n)
+    low, high = mean - CONFIDENCE_Z * stderr, mean + CONFIDENCE_Z * stderr
+    needed = None
+    if mean and stdev:
+        needed = int(round(((CONFIDENCE_Z + POWER_Z) * stdev / abs(mean)) ** 2))
+    return {
+        "count": n,
+        "mean_r": round(mean, 4),
+        "stdev_r": round(stdev, 4),
+        "stderr_r": round(stderr, 4),
+        "ci_low": round(low, 4),
+        "ci_high": round(high, 4),
+        # The whole point: zero outside the interval, not merely a row count reached.
+        # `stdev > 0` guards the degenerate case — identical observations produce a
+        # zero-width interval that excludes zero by construction, which is absence of
+        # observed variation rather than evidence of none.
+        "distinguishable_from_zero": bool(stdev > 0 and (low > 0 or high < 0)),
+        "trades_needed": needed,
+    }
 # The second: a gate whose BLOCKED trades would have been profitable is costing money. The
 # numbers for that were always printed; the subtraction was left to the reader.
 _GATE_COSTING = "손해"
 _GATE_EARNING = "이익"
+# Neither, and saying so: the blocked trades cannot tell the sign of what they would have
+# returned. A gate here is not "fine" — it is unmeasured, which is a different instruction.
+_GATE_UNDECIDED = "판단 불가"
 # Grants are nine lines of noise until one is near expiry, and then they are the only
 # lines that matter.
 GRANT_EXPIRY_WARNING_DAYS = 7
@@ -237,6 +312,7 @@ def _gate_rows(status: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
     means it blocked losers — it is earning. Sorting by that sign is the whole point:
     the operator's question is "which gate should I change", and the answer was
     previously spread across five lines of missed/avoided arithmetic."""
+    verdicts = status.get("counterfactual_verdicts") or {}
     rows: list[tuple[str, str, dict[str, Any]]] = []
     for reason, bucket in (status.get("counterfactual_by_reason") or {}).items():
         expectancy = bucket.get("expectancy_R")
@@ -244,8 +320,25 @@ def _gate_rows(status: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
             costing = float(expectancy) > 0
         except (TypeError, ValueError):
             continue        # an unusable number is not a verdict; leave it out of the ranking
+        # The sign of a mean is not a verdict about a gate any more than it was about the
+        # headline. `MAX_CONSECUTIVE_LOSS_GATE_BLOCKED` read "+2.00R × 2건 · 손해" — two
+        # blocked trades, an interval many times wider than the estimate, and a label that
+        # tells an operator to go change a risk gate. Same test as the performance headline,
+        # applied to the same kind of claim.
+        # Two different absences, and only one of them is a pass. A reason MISSING from the
+        # map was never measured (an older status document, a caller that did not compute
+        # it) and keeps the mean-sign reading it always had. A reason PRESENT but without an
+        # interval was measured and found unmeasurable — too few observations to estimate a
+        # spread — which is a finding, not a gap. Reading the second as the first is what
+        # left a 2-trade gate rated "costing money".
+        if reason in verdicts and not verdicts[reason].get("distinguishable_from_zero"):
+            rows.append((_GATE_UNDECIDED, reason, bucket))
+            continue
         rows.append((_GATE_COSTING if costing else _GATE_EARNING, reason, bucket))
-    rows.sort(key=lambda row: (row[0] != _GATE_COSTING, -abs(float(row[2].get("expectancy_R") or 0))))
+    # Costing first (it is the only one that asks for an action), then earning, then the ones
+    # that cannot say — those are sorted last because acting on them is the mistake.
+    order = {_GATE_COSTING: 0, _GATE_EARNING: 1, _GATE_UNDECIDED: 2}
+    rows.sort(key=lambda row: (order[row[0]], -abs(float(row[2].get("expectancy_R") or 0))))
     return rows
 
 
@@ -259,17 +352,35 @@ def _headline(status: dict[str, Any]) -> list[str]:
     if not closed:
         lines.append("판단: 자체 페이퍼 성과 없음 — 라이브 판단 근거 없음")
     else:
+        verdict_stats = perf.get("sample_verdict") or {}
         thin = closed < MIN_MEANINGFUL_SAMPLE
         try:
             losing = float(expectancy) < 0
         except (TypeError, ValueError):
             losing = False
+        # The interval decides, not the row count. "검토 가능" used to appear the moment the
+        # 30th trade closed, on a figure sitting 0.4 standard errors from zero — a verdict
+        # about how much data there is, printed where a verdict about what it shows belongs.
+        # Absence of the interval is not evidence of indistinguishability. A caller that did
+        # not compute it (a hand-built status, an older document) gets the count-based verdict
+        # it always got, rather than a "판단 불가" asserted from a missing field.
+        measured = verdict_stats.get("ci_low") is not None
         if thin:
             verdict = f"표본 부족 ({closed}건 < {MIN_MEANINGFUL_SAMPLE}건) — 확대 근거 없음"
+        elif measured and not verdict_stats.get("distinguishable_from_zero"):
+            need = verdict_stats.get("trades_needed")
+            more = f", 관측 효과 검출에 ~{need:,}건" if need and need > closed else ""
+            verdict = (
+                f"판단 불가 — {_r(expectancy)}R × {closed}건, 95% 구간 "
+                f"[{_r(verdict_stats.get('ci_low'))}, {_r(verdict_stats.get('ci_high'))}]이 "
+                f"0을 포함{more}"
+            )
         elif losing:
-            verdict = f"자체 성과 손실 중 ({_r(expectancy)}R) — 확대 근거 없음"
+            verdict = (f"자체 성과 손실 중 ({_r(expectancy)}R"
+                       + (", 0과 구별됨" if measured else "") + ") — 확대 근거 없음")
         else:
-            verdict = f"자체 성과 {_r(expectancy)}R × {closed}건 — 검토 가능"
+            verdict = (f"자체 성과 {_r(expectancy)}R × {closed}건"
+                       + (", 0과 구별됨" if measured else "") + " — 검토 가능")
         lines.append(f"판단: {verdict}")
 
     costing = [row for row in _gate_rows(status) if row[0] == _GATE_COSTING]
@@ -320,6 +431,20 @@ def render_status_text(status: dict[str, Any]) -> str:
     if closed and closed < MIN_MEANINGFUL_SAMPLE:
         # Attached to the number it qualifies, not stranded in a trends section below.
         lines.append(f"       ⚠ {closed}건은 판단 불가 표본 ({MIN_MEANINGFUL_SAMPLE}건 이상 필요)")
+    sv = perf.get("sample_verdict") or {}
+    if sv.get("stderr_r") is not None:
+        # The dispersion, once, next to the mean it qualifies. Without it "+0.08R" reads as a
+        # result; with it, as one draw from something 20x wider.
+        lines.append(
+            f"       표준편차 {_r(sv.get('stdev_r'), signed=False)}R · 표준오차 "
+            f"{_r(sv.get('stderr_r'), signed=False)}R · 95% 구간 "
+            f"[{_r(sv.get('ci_low'))}, {_r(sv.get('ci_high'))}]"
+        )
+        if not sv.get("distinguishable_from_zero") and sv.get("trades_needed"):
+            lines.append(
+                f"       0과 구별되려면 관측 효과 기준 약 {sv['trades_needed']:,}건 "
+                f"(현재 {closed}건)"
+            )
     digest_block = status.get("digest") or {}
     trends = [f"{label.split('_')[0]} {((digest_block.get(label) or {}).get('verdict'))}"
               for label in ("weekly_trend", "monthly_trend") if digest_block.get(label)]
@@ -337,13 +462,24 @@ def render_status_text(status: dict[str, Any]) -> str:
     rows = _gate_rows(status)
     if rows:
         lines.append(f"게이트 {status.get('counterfactual_closed')} 섀도우 — 막은 거래의 기대값 기준")
+        verdicts = status.get("counterfactual_verdicts") or {}
         for verdict, reason, bucket in rows:
-            mark = "🔴" if verdict == _GATE_COSTING else "🟢"
-            lines.append(
+            mark = {_GATE_COSTING: "🔴", _GATE_EARNING: "🟢"}.get(verdict, "⚪")
+            line = (
                 f"  {mark} {reason[:44]:<44} {_r(bucket.get('expectancy_R'))}R × "
                 f"{bucket.get('closed_count')}건 · {bucket.get('missed_opportunity')} 놓침 / "
                 f"{bucket.get('avoided_loss')} 회피"
             )
+            # The interval, only where it changes the reading: a row whose sign is unknown
+            # must carry the reason it is unknown, or ⚪ is just a third colour.
+            sv = verdicts.get(reason) or {}
+            if verdict == _GATE_UNDECIDED:
+                line += (
+                    f"  [95% {_r(sv['ci_low'])}~{_r(sv['ci_high'])}]"
+                    if sv.get("ci_low") is not None else
+                    f"  [{sv.get('count', 0)}건 — 폭 추정 불가]"
+                )
+            lines.append(line)
         lines.append("")
 
     # --- grants ------------------------------------------------------------------

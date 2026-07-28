@@ -193,6 +193,23 @@ def run_discovery(
     }
     result["venue_errors"] = errors
     result["rotation"] = turn
+    # The fee rates this run actually read, keyed `venue:market_id`.
+    #
+    # Carried because a candidate outlives the listing that proposed it. Binance states its
+    # fee only on the listing and shows 40 markets at a time, so a candidate found at 08:05 can
+    # be unconfirmable by lunchtime: the rate is gone and `confirm` has nothing to capture. That
+    # is not hypothetical — 11 of 17 Binance candidates aged out of confirmability inside
+    # eighteen hours, six of them exact title matches.
+    #
+    # This is the same read #287 makes at confirmation, taken one step earlier in the pipeline,
+    # with `generated_at_utc` on the record saying when. It stays a **fallback**: `confirm`
+    # prefers a rate the venue states now, and only reaches for a recorded one when the live
+    # listing no longer carries it.
+    result["fee_rate_bps"] = {
+        f"{venue}:{m.market_id}": float(m.fee_rate_bps)
+        for venue, rows in markets.items() for m in rows
+        if isinstance(m.fee_rate_bps, (int, float)) and not isinstance(m.fee_rate_bps, bool)
+    }
     # Which slice each candidate came from, so "was reading past the head worth it?" is
     # answered by the record rather than argued. `tail` means at least ONE leg would not
     # have been read without rotation — which is exactly the pairing rotation paid for.
@@ -215,12 +232,35 @@ def run_discovery(
                 candidate[f"{side}_resolution_rules"] = rules.get(key)
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
-    taken = pairs.grouped_market_keys(pairs.read_groups(root))
+    all_groups = pairs.read_groups(root, include_retired=True)
+    taken = pairs.grouped_market_keys(
+        [g for g in all_groups if g.get("status") != pairs.RETIRED])
     result["candidates"] = [
         c for c in result["candidates"]
         if f"{c['left_venue']}:{c['left_market_id']}" not in taken
         and f"{c['right_venue']}:{c['right_market_id']}" not in taken
     ]
+
+    # A pairing an operator already looked at and rejected is not a new proposal. It is not
+    # dropped either — a retirement reason can be about a moment ("the venue was down")
+    # rather than about the pairing, so the row survives with the reason attached and the
+    # operator can act on it again knowingly. What must not happen is what did: two retired
+    # pairings returning to the TOP of the sheet, because a pair retired for quoting 0.73
+    # against 0.0015 still scores 1.0 on wording.
+    retired = pairs.retired_pairing_reasons(all_groups)
+    still_open, previously_retired = [], []
+    for candidate in result["candidates"]:
+        key = frozenset({
+            f"{candidate['left_venue']}:{candidate['left_market_id']}",
+            f"{candidate['right_venue']}:{candidate['right_market_id']}",
+        })
+        detail = retired.get(key)
+        if detail is None:
+            still_open.append(candidate)
+        else:
+            previously_retired.append({**candidate, "previously_retired": detail})
+    result["candidates"] = still_open
+    result["previously_retired"] = previously_retired
     return result
 
 
@@ -280,7 +320,12 @@ def _parse_leg(spec: str) -> dict[str, str]:
 
 
 def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = None) -> dict[str, float]:
-    """``{"venue:market_id": bps}`` for every market a venue states a fee rate for.
+    """``{"venue:market_id": bps}`` for every market a fee rate is known for, live first.
+
+    Two sources, in that precedence: what a discovery run recorded, then what the venue states
+    **now** — so a live read always wins and the recorded one only fills what rotation has
+    carried away. Both are real reads; they differ only in age, which `generated_at_utc` on the
+    proposal record states.
 
     Read from the **listing** endpoint, which is the only one that carries it. The watch scan
     re-reads a confirmed leg by id — one order-book call, and that response is a price and
@@ -293,7 +338,18 @@ def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = No
     reflex about a step whose whole value is deliberation. A leg with no captured rate simply
     behaves as it did before this existed.
     """
+    # Rates a discovery run recorded, oldest first, so a live read below overwrites them.
+    # This is the half that keeps a candidate confirmable after the listing rotated past it —
+    # without it the operator races a window they cannot see, and loses: 11 of 17 Binance
+    # candidates aged out inside eighteen hours, six of them exact title matches.
     rates: dict[str, float] = {}
+    try:
+        for row in proposals.read_proposals(root):
+            for key, bps in (row.get("fee_rate_bps") or {}).items():
+                if isinstance(bps, (int, float)) and not isinstance(bps, bool):
+                    rates[str(key)] = float(bps)
+    except MvpRuntimeError:
+        pass                                   # no proposals yet, or unreadable: live read only
     for venue in dict.fromkeys(venues):
         try:
             collector = select_pred_market_collector(venue, now=now, root=root)
@@ -381,6 +437,20 @@ def _cmd_sheet(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(sheet, encoding="utf-8")
         sys.stdout.write(f"wrote {len(result['candidates'])} candidate(s) to {args.out}\n")
+        # The count alone is not a finding. "wrote 0" reads as a quiet market, and the run
+        # that produced it here had simply failed to reach Polymarket eight seconds after a
+        # restart — the sheet said so, on its own first page, and the console did not. A
+        # module built so that an empty result can never be mistaken for an empty market
+        # should not hide that behind a file path.
+        for venue, screen in sorted((result.get("screening") or {}).items()):
+            sys.stdout.write(f"  {venue:<11}: {screening.screening_status_line(screen)}\n")
+        for venue, code in sorted((result.get("venue_errors") or {}).items()):
+            sys.stdout.write(f"  DEGRADED {venue}: {code} (no candidates from this venue)\n")
+        retired = result.get("previously_retired") or []
+        if retired:
+            sys.stdout.write(
+                f"  {len(retired)} previously-retired pairing(s) held back, listed at the end "
+                f"with your reason\n")
         return EXIT_OK
     sys.stdout.write(sheet)
     return EXIT_OK

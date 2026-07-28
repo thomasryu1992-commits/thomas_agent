@@ -121,6 +121,16 @@ currently asserts `order_type_exchange == "MARKET"`; that assertion widens to an
 supported types. The venue's exact conditional-order semantics are a **must-verify-at-implementation**
 item (see `LP5_POSITION_KERNEL_DESIGN_V0.1.md`), not something to implement from memory.
 
+**Scope note added 2026-07-28 (maker take-profit).** The allowlist gained `LIMIT`, for the
+take-profit leg only. A `TAKE_PROFIT_MARKET` triggers into a market order and therefore always
+pays taker plus adverse slippage to reach a price the market had to come to anyway; a resting
+`LIMIT` at the same price earns the maker rate instead. `build_order_request` requires a
+positive `price` and an explicit `time_in_force` on a LIMIT — the venue makes both mandatory,
+and defaulting a time-in-force would be the adapter deciding how long real money rests at a
+price. **The entry stays MARKET**, and the stop stays `STOP_MARKET`: a limit entry would fill
+only when price comes back to it, which selects against the momentum strategies in the pool,
+and a limit stop cannot fill in a gap. Only the target leg can rest without a risk trade.
+
 ## Reconcile — the real-money safety core
 
 A submit is confirmed by a **read**, never assumed from the POST response:

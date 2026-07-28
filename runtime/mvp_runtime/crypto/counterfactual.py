@@ -331,6 +331,28 @@ def run_counterfactual_update(
     }
 
 
+def r_values_by_reason(records: list[Mapping[str, Any]]) -> dict[str, list[float]]:
+    """The individual R values behind each block reason's bucket.
+
+    Same grouping as :func:`summarize_counterfactuals` and deliberately beside it: a record
+    carries a LIST of reasons and lands in every one of their buckets, so a second
+    implementation of that rule elsewhere would drift and the two views would disagree about
+    which trades a gate blocked.
+
+    Exists because the summary reports a mean and a count, and a mean is not a verdict. A
+    gate rated "costing money" off two blocked trades is a rounding of noise, and the board
+    cannot tell that from an aggregate.
+    """
+    by_reason: dict[str, list[float]] = {}
+    for record in records:
+        if record.get("outcome_closed") is not True:
+            continue
+        result_r = float(record.get("result_R") or 0.0)
+        for reason in record.get("block_reasons") or ["unattributed"]:
+            by_reason.setdefault(str(reason), []).append(result_r)
+    return by_reason
+
+
 def summarize_counterfactuals(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Per-block-reason calibration: what each refusing guard cost or saved."""
     by_reason: dict[str, dict[str, Any]] = {}

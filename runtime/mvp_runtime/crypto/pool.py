@@ -60,17 +60,24 @@ def expectancy_at(record: Mapping[str, Any], *, taker_fee_bps: float) -> float |
     nothing re-scores them. Re-running the backtest is not available either — the snapshot
     that produced the evidence is not stored, only its hash.
 
-    But the conversion needs neither. In `cost.apply_cost_model`,
+    But the conversion needs neither. In `cost.apply_cost_model` the taker term
 
-        fee_cost_r = (entry_fill + exit_fill) * taker_fee_bps / 10000 / risk
+        taker_fee_cost_r = (taker-charged fills) * taker_fee_bps / 10000 / risk
 
     is **linear in the rate**, and the fills depend only on slippage. So changing the taker
-    rate alone scales the recorded fee cost and leaves everything else untouched:
+    rate alone scales the recorded taker fee cost and leaves everything else untouched:
 
-        total_net_r(new) = total_net_r(old) - total_fee_cost_r(old) * (new/old - 1)
+        total_net_r(new) = total_net_r(old) - total_taker_fee_cost_r(old) * (new/old - 1)
 
     Both terms are already in `cost_summary`. The result is exact, not an estimate — a test
     pins it against a real backtest re-run at the new rate rather than asserting the algebra.
+
+    **Only the taker portion scales.** Since 2026-07-28 a take-profit exit rests as a maker
+    LIMIT and is charged the maker rate, so `total_fee_cost_r` is a mixture. Scaling the whole
+    mixture by a taker ratio would charge the maker leg a rate it never faced — so the maker
+    share is subtracted first, read from `total_maker_fee_cost_r`. A record without that field
+    predates the change and is all-taker by construction, which is what a missing value means
+    here; it is not a guess, it is the recorded history of a model that had no maker leg.
 
     Returns None when the record predates `cost_summary`, or carries no closed trades, or
     was scored at a rate of zero (nothing to scale). Never guesses.
@@ -85,7 +92,12 @@ def expectancy_at(record: Mapping[str, Any], *, taker_fee_bps: float) -> float |
         return None
     if not old_rate or not closed:
         return None
-    return round((net - fee * (taker_fee_bps / old_rate - 1.0)) / closed, 8)
+    maker_fee = summary.get("total_maker_fee_cost_r", 0.0)
+    if not isinstance(maker_fee, (int, float)) or isinstance(maker_fee, bool):
+        # Present but unreadable is not the same as absent: absent means all-taker, unreadable
+        # means the split is unknown and any rescale would be a guess about real money.
+        return None
+    return round((net - (fee - maker_fee) * (taker_fee_bps / old_rate - 1.0)) / closed, 8)
 
 
 def cost_basis_of(record: Mapping[str, Any]) -> str:
@@ -95,13 +107,20 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
     scoring used rather than what the module currently defaults to. A record predating that
     field reports UNRECORDED — not the current default, which would claim a candidate had
     paid a rate it never faced.
+
+    The maker rate joins the string only when the record carries one. That is deliberate: a
+    candidate scored before the maker take-profit exit (2026-07-28) keeps the exact basis
+    string it has always reported, so the split in the store stays legible as two bases rather
+    than every old candidate silently acquiring a third term it was never scored under.
     """
     summary = (record.get("backtest_evidence") or {}).get("cost_summary") or {}
     model = summary.get("cost_model") or {}
     taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
     if not isinstance(taker, (int, float)) or not isinstance(slip, (int, float)):
         return EDGE_COST_BASIS_UNRECORDED
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps+slip_{slip}bps"
+    maker = model.get("maker_fee_bps")
+    maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps"
 
 
 # --- candidate identity (single source) ----------------------------------------

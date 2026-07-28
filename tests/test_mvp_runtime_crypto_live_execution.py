@@ -566,3 +566,57 @@ def test_the_readiness_board_constant_agrees_with_the_import_graph():
         "live_readiness.AUTONOMOUS_ROUTING_WIRED disagrees with the real import graph; "
         "the board would report a build state that is not true"
     )
+
+
+# --- the LIMIT take-profit leg (2026-07-28) --------------------------------------
+
+def _limit_intent(**over):
+    return {
+        "status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "side": "SELL",
+        "order_type_exchange": "LIMIT", "price": 62000.0, "time_in_force": "GTC",
+        "quantity": 0.001, "reduce_only": True, "close_position": False,
+        "client_order_id": "TAI_BTCUSDT_TP_abc", "connectivity_test": False, **over,
+    }
+
+
+def test_a_limit_carries_price_time_in_force_quantity_and_reduce_only():
+    req = lx.build_order_request(_limit_intent())
+    assert req["type"] == "LIMIT"
+    assert req["price"] == 62000.0
+    assert req["timeInForce"] == "GTC"
+    assert req["quantity"] == 0.001
+    assert req["reduceOnly"] is True
+    # Not a conditional order: no trigger, no workingType.
+    assert "stopPrice" not in req and "workingType" not in req
+
+
+def test_a_limit_without_a_price_is_refused():
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request(_limit_intent(price=None))
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_a_limit_without_a_time_in_force_is_refused():
+    """The venue makes it mandatory, and defaulting it would be this module deciding how long
+    real money rests at a price."""
+    for bad in (None, "FOREVER"):
+        with pytest.raises(ToolError) as exc:
+            lx.build_order_request(_limit_intent(time_in_force=bad))
+        assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_close_position_is_refused_on_a_limit():
+    """closePosition is documented for the two _MARKET conditional types only. That constraint
+    is why the target leg has to be sized from the actual fill."""
+    with pytest.raises(ToolError) as exc:
+        lx.build_order_request(_limit_intent(close_position=True))
+    assert exc.value.reason_code == lx.MALFORMED_INTENT
+
+
+def test_the_dry_run_adapter_rests_a_limit_rather_than_filling_it():
+    """A LIMIT waits for the market to reach its price. Echoing FILLED would let a dry run
+    confirm a target that has not been reached."""
+    adapter = lx.DryRunOrderAdapter()
+    req = lx.build_order_request(_limit_intent())
+    adapter.submit(req)
+    assert adapter.fetch_order("BTCUSDT", req["newClientOrderId"])["status"] == "NEW"

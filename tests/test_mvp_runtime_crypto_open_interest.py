@@ -198,3 +198,71 @@ def test_the_null_feed_reports_open_interest_absent():
     assert status["open_interest"] == "absent"
     assert "open_interest" not in snapshot          # absent ≠ degraded
     assert OPEN_INTEREST_DEGRADED not in reasons
+
+
+# --- family selectivity: a spec must trade enough to BE judged --------------------
+
+def _entry(family, timeframe="1h"):
+    template = next(t for t in factory.templates_for_timeframe(timeframe) if t.family == family)
+    return template, template.entry_builder(template.base_params)
+
+
+def _spec_of(template, conditions, symbol="BTCUSDT"):
+    return StrategySpec.from_dict({
+        "schema_version": "strategy_spec.v1", "strategy_id": "S1", "strategy_version": "1.0",
+        "strategy_family": template.family, "symbol_scope": [symbol],
+        "timeframe": template.timeframe, "direction": template.direction,
+        "entry_rules": {"operator": "AND", "conditions": conditions},
+        "exit_rules": {"stop_model": "atr", "stop_atr": template.base_params["stop_atr"],
+                       "target_atr": template.base_params["target_atr"],
+                       "max_holding_bars": int(template.base_params["max_holding_bars"])},
+        "risk_constraints": {"max_risk_per_trade_R": 1.0},
+    })
+
+
+@pytest.mark.parametrize("family,excluded", [
+    ("oi_squeeze_long", "TREND_UP"),
+    ("oi_squeeze_short", "TREND_DOWN"),
+])
+def test_squeeze_asks_for_not_yet_trending_rather_than_exactly_RANGE(family, excluded):
+    """The premise is "open interest is building before the move", and `== RANGE` was an
+    arbitrarily narrow spelling of it — the classifier also emits LOW_VOLATILITY,
+    HIGH_VOLATILITY and UNCLEAR, none of which is a confirmed trend either. Measured on
+    live frames, the RANGE form fired the full condition on 0.43% of ETHUSDT 1h bars
+    (10-15 trades across a 500-day replay), which is below the sample the robustness
+    scorer needs: the family was structurally unable to earn ANY verdict, whatever its
+    edge. This pins the wording, not a return."""
+    _template, conditions = _entry(family)
+    regime = next(c for c in conditions if c["feature"] == "market_regime")
+    assert (regime["comparison"], regime["value"]) == ("!=", excluded)
+    assert not any(c.get("value") == "RANGE" for c in conditions)
+
+
+@pytest.mark.parametrize("family", ["htf_pullback_long", "htf_pullback_short"])
+def test_htf_pullback_drops_the_adx_floor_its_neighbour_already_implies(family):
+    """``classify_market_regime`` only returns TREND_UP/TREND_DOWN when adx is already at
+    or above its trend threshold, so a separate htf_adx floor overlapped the regime
+    condition beside it — little extra selectivity, and it cost a free parameter that the
+    robustness score divides the trade count by."""
+    from runtime.mvp_runtime.crypto.features import ADX_TREND_THRESHOLD
+
+    template, conditions = _entry(family)
+    assert not any(c["feature"] == "htf_adx" for c in conditions)
+    assert any(c["feature"] == "htf_market_regime" for c in conditions)
+    assert "htf_adx_min" not in template.param_space
+    assert ADX_TREND_THRESHOLD > 0  # the implication this removal rests on
+
+
+@pytest.mark.parametrize("family", [
+    "oi_squeeze_long", "oi_squeeze_short", "htf_pullback_long", "htf_pullback_short",
+])
+def test_loosened_families_still_validate_and_stay_within_the_free_parameter_budget(family):
+    """Loosening must not smuggle in degrees of freedom: every literal threshold is one the
+    scorer holds against the sample size, so a wider family that added parameters would
+    move the bar it was widened to clear."""
+    from runtime.mvp_runtime.crypto.robustness import count_free_parameters
+
+    template, conditions = _entry(family)
+    spec = _spec_of(template, conditions)
+    assert factory.validate_strategy(spec)["approved_for_backtest"] is True
+    assert count_free_parameters(spec) <= 6

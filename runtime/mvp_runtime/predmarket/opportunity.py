@@ -55,6 +55,26 @@ def direction_name(buy_venue: str, sell_venue: str) -> str:
 # silently omits unquoted scans overstates how often the pair was observable.
 NOT_QUOTED = "NOT_QUOTED"
 NO_SIZE = "NO_SIZE_AT_TOUCH"
+# An edge so large it refutes its own premise. Two venues quoting ONE question do not sit a
+# quarter of a dollar apart; if they appear to, they are not quoting one question — whatever
+# their titles and settlement text say.
+IMPLAUSIBLE_EDGE = "IMPLAUSIBLE_EDGE"
+
+# Where that line sits, and it is a policy choice inside an empty band rather than a measured
+# boundary. Live on 2026-07-28, the confirmed pairings separated cleanly:
+#
+#     genuine readings   |net| <= 0.035   (fees alone are ~0.025/contract, so this is the
+#                                          scale the whole phase operates at)
+#     broken pairings    |net| >= 0.699   Binance quoting a July-FOMC market at 0.73 against
+#                                         Polymarket's 0.0015 on $2.56M of liquidity; and
+#                                         0.82 against 0.003 on a market Binance had traded
+#                                         $7.17 of, with no bids at all
+#
+# Nothing observed lives between 0.035 and 0.699. The threshold sits in that gap, far above
+# anything real and far below every artifact — and it FLAGS rather than drops: the row keeps
+# its numbers and its reason, because a pairing that produces one of these is evidence about
+# the pairing, and deleting it would delete the evidence.
+MAX_PLAUSIBLE_NET_EDGE = 0.25
 
 
 @dataclass(frozen=True)
@@ -165,6 +185,13 @@ def evaluate_pairing(
     if best is not None and best["size_at_touch"] is None:
         # Priced but with no depth on one side: an edge nobody could take any of.
         reasons.append(NO_SIZE)
+    implausible = best is not None and abs(best["net_edge"]) >= MAX_PLAUSIBLE_NET_EDGE
+    if implausible:
+        # Not a find. A gap this wide between two venues that publish the same question means
+        # one of them is not quoting that question — a stale book, a mirrored listing nobody
+        # trades, a market about a different instance. Confirmed live twice on 2026-07-28,
+        # both at the top of the report, both looking like the best thing in it.
+        reasons.append(IMPLAUSIBLE_EDGE)
 
     legs = [
         {"venue": left.venue, "market_id": left.market_id, "category": left.category,
@@ -182,7 +209,9 @@ def evaluate_pairing(
         # The three numbers a report is built from, hoisted for readability.
         "gross_edge": best["gross_edge"] if best else None,
         "net_edge": best["net_edge"] if best else None,
-        "is_opportunity": bool(best and best["is_opportunity"]),
+        # An implausible edge is never an opportunity, however positive its arithmetic. The
+        # numbers stay on the row; only the claim is withdrawn.
+        "is_opportunity": bool(best and best["is_opportunity"] and not implausible),
         "reasons": reasons,
         "observed_at_utc": now,
         # Stated on every record: observing is not acting, and this phase has no order path.
@@ -242,6 +271,8 @@ def observation_status_line(record: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "IMPLAUSIBLE_EDGE",
+    "MAX_PLAUSIBLE_NET_EDGE",
     "NOT_QUOTED",
     "NO_SIZE",
     "OPPORTUNITY_VERSION",
