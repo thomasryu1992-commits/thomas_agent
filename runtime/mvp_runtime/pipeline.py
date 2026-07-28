@@ -63,6 +63,55 @@ from .workspace import DryRunWriter, WorkspaceWriter, run_write
 # only when the task's classification requires it (see independent_validation_required).
 AUTO_VALIDATION = "auto"
 
+# The run's steps, named once. Two consumers read these and they must not drift: the
+# programization observer records WHICH steps ran (repetition detection keys on the list), and
+# the progress reporter says which one is running NOW. They are the same concepts, so a rename
+# has to move both — which is only true if there is one spelling.
+STEP_INTAKE = "intake"
+STEP_CORE_BINDING = "core_binding"
+STEP_PRIME_PLANNING = "prime_planning"
+STEP_SEARCH = "readonly_search"
+STEP_MEMORY_RETRIEVAL = "memory_retrieval"
+STEP_ANALYSIS_WORKER = "analysis_worker"
+STEP_AUTOMATIC_VALIDATION = "automatic_validation"
+STEP_INDEPENDENT_VALIDATION = "independent_validation"
+STEP_CONTROLLED_WRITE = "controlled_write"
+# M3's regeneration is a step the observer's list does not carry (it records the shape of a
+# run for repetition detection, and a revision is an exception, not part of the shape) — but
+# it is a second full model call, so a run that silently sat in it for another 30 seconds is
+# exactly the silence this reporting exists to remove.
+STEP_REVISION = "revision"
+
+# The subset :func:`run_task` actually reports, in order. Deliberately NOT every step: intake,
+# core binding and prime planning are sub-second, so announcing them would cost three channel
+# round-trips to tell Thomas about nothing, and Telegram rate-limits edits to a message. What
+# is announced is what can make him wait — a network search, a model call, a review, a write.
+PROGRESS_STAGES: tuple[str, ...] = (
+    STEP_SEARCH,
+    STEP_ANALYSIS_WORKER,
+    STEP_AUTOMATIC_VALIDATION,
+    STEP_INDEPENDENT_VALIDATION,
+    STEP_REVISION,
+    STEP_CONTROLLED_WRITE,
+)
+
+
+def _progress(on_progress: Any, stage: str) -> None:
+    """Report one stage, and never let reporting cost the run.
+
+    Every exception is swallowed, not just the typed ones: the callback reaches a network
+    channel, and the whole point of the run is the analysis at the end of it. A progress
+    notice that could raise would make this feature able to destroy the thing it narrates —
+    the ack and delivery-pointer precedent, applied to something that fires six times a run
+    instead of once.
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(stage)
+    except Exception:      # noqa: BLE001 — deliberate: see the docstring
+        pass
+
 
 # §8.5: the Role that was actually selected decides the prompt, the output mapping and the
 # validation requirement. `general.specialist` keeps the business-analysis path byte-identical
@@ -564,14 +613,14 @@ def _observe_repetition(
     """
     if programization is None or outcome != "PASS":
         return None, None, False, None
-    steps_run = ["intake", "core_binding", "prime_planning", "readonly_search"]
+    steps_run = [STEP_INTAKE, STEP_CORE_BINDING, STEP_PRIME_PLANNING, STEP_SEARCH]
     if working_memory is not None:
-        steps_run.append("memory_retrieval")
-    steps_run += ["analysis_worker", "automatic_validation"]
+        steps_run.append(STEP_MEMORY_RETRIEVAL)
+    steps_run += [STEP_ANALYSIS_WORKER, STEP_AUTOMATIC_VALIDATION]
     if independently_validated:
-        steps_run.append("independent_validation")
+        steps_run.append(STEP_INDEPENDENT_VALIDATION)
     if wrote:
-        steps_run.append("controlled_write")
+        steps_run.append(STEP_CONTROLLED_WRITE)
     try:
         observation, pattern, triggered = observe_completed_run(
             programization, task=task, assignment=assignment, steps=steps_run,
@@ -718,11 +767,20 @@ def run_task(
     revise: bool = False,
     write_path: str | None = None,
     writer: WorkspaceWriter | None = None,
+    on_progress: Callable[[str], None] | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
     fail-closed condition (those become ``status == "BLOCKED"``). Pass ``store`` to
     persist the records + audit trail durably (the CLI does).
+
+    ``on_progress`` (opt-in) is called with one of :data:`PROGRESS_STAGES` as each
+    time-consuming stage begins. It is a **notification, not a hook**: it receives a stage
+    name and nothing else, it cannot influence the run, and every exception it raises is
+    swallowed (see :func:`_progress`) — a run must never die narrating itself. It is called
+    only on stages that actually run, so a caller learns the shape of this run rather than a
+    plan of it: no search-and-then-nothing when the search degraded, no independent review
+    announced for a run that skipped it.
 
     ``search_tool`` runs a read-only web search whose hits become source-attributed
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
@@ -866,6 +924,7 @@ def run_task(
         # and audited (SEARCH_DEGRADED), never a blocked analysis. The R7.2
         # triage-degradation precedent, decided with the Tavily rollout.
         query = plan["task"].get("request", {}).get("normalized_goal") or raw_request
+        _progress(on_progress, STEP_SEARCH)
         try:
             search_hits, tool_use = run_search(query, tool=search_tool, now=now)
         except ToolBlocked as exc:
@@ -892,6 +951,7 @@ def run_task(
         role_prompt, role_output_keys = _role_execution(
             plan, search_hits=search_hits, memory_entries=memory_entries,
             validated_entries=validated_entries)
+        _progress(on_progress, STEP_ANALYSIS_WORKER)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
@@ -901,6 +961,7 @@ def run_task(
         records["agent_output"] = agent_output
         records["invocation"] = invocation
 
+        _progress(on_progress, STEP_AUTOMATIC_VALIDATION)
         validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"],
                                            now=now, repo_root=repo_root,
                                            required_role_output_keys=role_output_keys)
@@ -923,6 +984,7 @@ def run_task(
         # and a trial's `independent_result` is worth more than the tokens it costs.
         independent_validation_result = validator_invocation = None
         if validate_run and validation["validation"]["result"] == "PASS":
+            _progress(on_progress, STEP_INDEPENDENT_VALIDATION)
             independent_validation_result, validator_invocation = run_validation_worker(
                 plan["task"], plan["validator_assignment"], agent_output,
                 provider=validator_provider, created_at=now, repo_root=repo_root,
@@ -945,6 +1007,7 @@ def run_task(
         revision = None
         revision_spend = _RevisionSpend()
         if revise and outcome == "REVISE":
+            _progress(on_progress, STEP_REVISION)
             attempt = _revise_once(
                 plan, records,
                 raw_request=raw_request, validation=validation,
@@ -978,6 +1041,7 @@ def run_task(
         # that claims a file exists when it does not.
         write_use = None
         if write_path is not None and outcome == "PASS":
+            _progress(on_progress, STEP_CONTROLLED_WRITE)
             _write_result, write_use = run_write(
                 write_path,
                 render_response(

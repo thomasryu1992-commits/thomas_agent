@@ -247,6 +247,38 @@ def grouped_market_keys(groups: Iterable[Mapping[str, Any]]) -> set[str]:
     return keys
 
 
+def retired_pairing_reasons(groups: Iterable[Mapping[str, Any]]) -> dict[frozenset[str], dict[str, Any]]:
+    """Every pairing a RETIRED group covered, mapped to why it was retired.
+
+    Keyed by the unordered pair of ``venue:market_id`` legs, so a retired three-leg group
+    answers for all three of its pairings and the answer does not depend on which side the
+    matcher happened to put first.
+
+    This exists because retirement is an operator's judgement and it was evaporating.
+    Discovery suppresses markets that are in a CONFIRMED group but re-proposed retired ones
+    the next run — twice, at the very top of the sheet, because a pairing that was retired
+    for quoting 0.73 against 0.0015 still scores 1.0 on wording. The operator was being asked
+    to re-derive a conclusion they had already reached and written down.
+    """
+    reasons: dict[frozenset[str], dict[str, Any]] = {}
+    for group in groups or []:
+        if group.get("status") != RETIRED:
+            continue
+        detail = {
+            "event_id": group.get("event_id"),
+            "retired_at_utc": group.get("retired_at_utc"),
+            "retired_by": group.get("retired_by"),
+            "retired_reason": group.get("retired_reason"),
+        }
+        for left, right in pairings_of(group):
+            key = frozenset({
+                f"{left.get('venue')}:{left.get('market_id')}",
+                f"{right.get('venue')}:{right.get('market_id')}",
+            })
+            reasons[key] = detail
+    return reasons
+
+
 def confirm_group(record: Mapping[str, Any], *, root: Path | None = None) -> dict[str, Any]:
     """Append one operator-confirmed group. Refuses a duplicate or a re-used market.
 
@@ -412,6 +444,7 @@ __all__ = [
     "events_path",
     "group_status_line",
     "grouped_market_keys",
+    "retired_pairing_reasons",
     "normalize_legs",
     "now_iso",
     "pairings_of",

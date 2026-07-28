@@ -122,6 +122,9 @@ def test_one_pass_runs_one_task_and_returns_to_the_poll(tmp_path, monkeypatch):
 
 
 def test_the_result_is_sent_as_its_own_message(tmp_path, monkeypatch):
+    """Three messages, and no more however long the run is: the queue receipt, the progress
+    line the run then EDITS in place, and the deliverable. The progress line is the one
+    addition — six stages would otherwise be six notifications for one task."""
     _stub_run(monkeypatch)
     store = _registry(tmp_path)
     channel = MockOperatorChannel(inbound=[_msg("분석해줘: 아이디어")])
@@ -129,9 +132,10 @@ def test_the_result_is_sent_as_its_own_message(tmp_path, monkeypatch):
     run_operator_once(channel, REG, registry=store, repo_root=tmp_path)
 
     texts = [text for _chat, text in channel.sent]
-    assert len(texts) == 2
+    assert len(texts) == 3
     assert "접수했습니다" in texts[0]
-    assert "분석: 분석해줘: 아이디어" in texts[1]
+    assert "상태: 시작했습니다" in texts[1]
+    assert "분석: 분석해줘: 아이디어" in texts[2]
     assert all(chat == REG.chat_id for chat, _text in channel.sent)
 
 

@@ -194,6 +194,64 @@ def test_discovery_resolves_grants_against_the_root_it_was_given(state, monkeypa
     assert seen == [state, state]
 
 
+# --- a candidate outlives the listing that proposed it --------------------------
+
+def test_a_run_records_the_fee_rates_it_read():
+    record = proposals.build_proposal_record(
+        _result(fee_rate_bps={"binance:B1": 200, "polymarket:P1": 0}), now=NOW)
+    assert record["fee_rate_bps"] == {"binance:B1": 200.0, "polymarket:P1": 0.0}
+    assert record["generated_at_utc"] == NOW      # how old the rate is, on the same row
+
+
+def test_a_recorded_rate_keeps_a_candidate_confirmable_after_rotation(state, monkeypatch):
+    """The window an operator cannot see, and loses.
+
+    Binance states its fee only on the listing and shows 40 markets at a time, so a candidate
+    proposed at 08:05 can be unconfirmable by lunchtime — the rate is gone and `confirm` has
+    nothing to capture, which makes the group permanently unreadable. Measured 2026-07-27: **11
+    of 17** Binance candidates aged out inside eighteen hours, six of them exact title matches.
+    """
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    proposals.append_proposal(
+        proposals.build_proposal_record(_result(fee_rate_bps={"binance:GONE": 200}), now=NOW),
+        root=state)
+    # The venue no longer lists it — the live read comes back with nothing for this id.
+    monkeypatch.setattr(pairs_cli, "collect_pred_markets",
+                        lambda venue, **kw: ({"markets": []}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+
+    rates = pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state)
+    assert rates["binance:GONE"] == 200.0
+
+
+def test_a_rate_the_venue_states_now_overwrites_the_recorded_one(state, monkeypatch):
+    """Recorded rates are a fallback for what rotation carried away, never a substitute for a
+    read that succeeded. Both are real reads; they differ only in age."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    proposals.append_proposal(
+        proposals.build_proposal_record(_result(fee_rate_bps={"binance:B1": 200}), now=NOW),
+        root=state)
+    monkeypatch.setattr(
+        pairs_cli, "collect_pred_markets",
+        lambda venue, **kw: ({"markets": [{"venue": "binance", "market_id": "B1",
+                                           "fee_rate_bps": 350}]}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+
+    rates = pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state)
+    assert rates["binance:B1"] == 350.0        # live, not the recorded 200
+
+
+def test_no_proposals_yet_is_not_an_error(state, monkeypatch):
+    """A first confirmation happens before any discovery run has written anything."""
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    monkeypatch.setattr(pairs_cli, "collect_pred_markets", lambda venue, **kw: ({"markets": []}, {}))
+    monkeypatch.setattr(pairs_cli, "select_pred_market_collector", lambda venue, **kw: object())
+    assert pairs_cli._stated_fee_rates(["binance"], now=NOW, root=state) == {}
+
+
 def test_scheduled_discovery_inherits_the_refusal_to_read_the_mock(state):
     """The third door, and the one that got the guard for free.
 
@@ -350,3 +408,75 @@ def test_writing_the_sheet_to_a_file_still_reports_a_degraded_venue(tmp_path, mo
     assert "DEGRADED polymarket: TOOL_ERROR" in printed
     # And the file still carries the full story.
     assert "Degraded this run" in out.read_text(encoding="utf-8")
+
+
+# --- a pairing a person already rejected is not a new proposal --------------------
+
+def _retired_group(left=("kalshi", "K1"), right=("polymarket", "P1"), reason="the book was stale"):
+    return {
+        "event_id": "predmarket_event_group_x",
+        "status": pairs.RETIRED,
+        "legs": [{"venue": left[0], "market_id": left[1]},
+                 {"venue": right[0], "market_id": right[1]}],
+        "retired_at_utc": "2026-07-28T02:11:34Z",
+        "retired_by": "thomas",
+        "retired_reason": reason,
+    }
+
+
+def test_a_retired_group_answers_for_every_pairing_it_covered():
+    """A three-leg group covers three pairings, and retiring it rejected all three. The key is
+    order-free because the matcher decides which side is `left`, and the store does not."""
+    three = {**_retired_group(), "legs": [
+        {"venue": "kalshi", "market_id": "K1"},
+        {"venue": "polymarket", "market_id": "P1"},
+        {"venue": "binance", "market_id": "B1"},
+    ]}
+    found = pairs.retired_pairing_reasons([three])
+    assert len(found) == 3
+    assert frozenset({"kalshi:K1", "polymarket:P1"}) in found
+    assert frozenset({"polymarket:P1", "kalshi:K1"}) in found      # same key, either order
+    assert found[frozenset({"binance:B1", "kalshi:K1"})]["retired_by"] == "thomas"
+
+
+def test_a_confirmed_group_is_not_a_retired_one():
+    live = {**_retired_group(), "status": pairs.CONFIRMED}
+    assert pairs.retired_pairing_reasons([live]) == {}
+
+
+def test_the_sheet_moves_a_retired_pairing_out_of_the_list_and_keeps_its_reason():
+    """Found by reading a real sheet: two pairings retired an hour earlier were back at the
+    TOP, because a pair retired for quoting 0.73 against 0.0015 still scores 1.0 on wording.
+    The operator was being asked to re-derive a conclusion they had already written down."""
+    retired = {**_candidate("K9", "P9"),
+               "close_delta_hours": 0.0,
+               "previously_retired": {"retired_at_utc": "2026-07-28T02:11:34Z",
+                                      "retired_by": "thomas",
+                                      "retired_reason": "binance quoted 0.73 against 0.0015"}}
+    sheet = proposals.render_confirmation_sheet(
+        _result([_candidate()], previously_retired=[retired]), now=NOW)
+
+    body, tail = sheet.split("## Previously retired", 1)
+    assert "K9" not in body, "a retired pairing must not sit among the proposals"
+    assert "K9" in tail
+    assert "binance quoted 0.73 against 0.0015" in tail
+    assert "thomas" in tail
+
+
+def test_nothing_retired_means_no_section_at_all():
+    sheet = proposals.render_confirmation_sheet(_result(), now=NOW)
+    assert "Previously retired" not in sheet
+
+
+def test_a_retired_pairing_is_shown_rather_than_dropped():
+    """A retirement reason can be about a moment ("the venue was down") rather than about the
+    pairing. Hiding it forever would make one bad afternoon permanent, and there is no
+    un-retire — so the row survives with the reason attached and the operator can overrule it
+    knowingly."""
+    retired = {**_candidate("K9", "P9"), "close_delta_hours": 0.0,
+               "previously_retired": {"retired_at_utc": "2026-07-28T02:11:34Z",
+                                      "retired_by": "thomas", "retired_reason": "venue outage"}}
+    sheet = proposals.render_confirmation_sheet(
+        _result([], previously_retired=[retired]), now=NOW)
+    assert "K9" in sheet and "venue outage" in sheet
+    assert "Confirming one again is a decision to overrule that reason" in sheet
