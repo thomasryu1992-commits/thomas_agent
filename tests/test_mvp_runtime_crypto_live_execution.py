@@ -196,11 +196,16 @@ def test_selection_is_inert_by_default(tmp_path, monkeypatch):
     assert isinstance(lx.select_order_adapter(now=NOW, root=tmp_path), lx.DryRunOrderAdapter)
 
 
-def test_env_alone_fails_closed(tmp_path, monkeypatch):
+def test_env_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Thomas, 2026-07-28: the env opt-in IS the gate for live trading — no grant record.
+
+    This test used to assert the exact opposite (`ACTIVATION_MISSING`), and the inversion is
+    the change, not a slip. `tmp_path` holds no activations directory, so nothing but the
+    variable is authorizing this."""
     monkeypatch.setenv(LIVE_TRADING_ENV, REAL_LIVE_TRADING)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        lx.select_order_adapter(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    adapter = lx.select_order_adapter(now=NOW, root=tmp_path)
+    assert isinstance(adapter, lx.BinanceFuturesOrderAdapter)
+    assert adapter.network_egress is True
 
 
 def test_real_adapter_refuses_without_authorization():
@@ -224,8 +229,8 @@ def test_real_adapter_refuses_without_authorization():
 # ways this could rot: a second module growing an order path, and an entry point reaching
 # around the chokepoint.
 #
-# The gate itself is tested where it belongs (`test_mvp_runtime_crypto_live_route.py`): with
-# no `live_trading` grant the routing reads nothing and sends nothing.
+# The gate itself is tested where it belongs (`test_mvp_runtime_crypto_live_route.py`): without
+# `MVP_LIVE_TRADING=real` the routing reads nothing and sends nothing.
 
 # The modules that can reach a venue with an order. ``live_pnl`` is deliberately absent: the
 # cycle reads live OUTCOMES so the risk guard can see live losses, and reading a result is not

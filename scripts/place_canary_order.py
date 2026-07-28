@@ -19,13 +19,17 @@ this command refuses rather than skipping the check — on the runs where market
 A canary is one small **real** order, placed on purpose, to prove that signing, submission, and
 reconciliation actually work at the venue. Three clean canaries are what the autonomous path's
 promotion gate requires — so this is the only door that is *not* gated on that evidence, because
-it is what earns it. Everything else still applies: the `live_trading` grant, the **canary**
+it is what earns it. Everything else still applies: `MVP_LIVE_TRADING=real`, the **canary**
 confirmation phrase (distinct from the autonomous one), a valid registered budget, both kill
 switches, the daily-loss breaker, and the size / daily-count / exposure caps.
 
 **Real money. Every step here is Thomas's.** Claude does not run this, does not handle the keys,
-and does not enable live trading. Without the grant and the canary phrase this command refuses;
-with the default (no grant) it selects the inert dry-run adapter and sends nothing.
+and does not enable live trading. Without the opt-in and the canary phrase this command refuses;
+with the default (opt-in unset) it selects the inert dry-run adapter and sends nothing.
+
+Since 2026-07-28 the opt-in is the whole switch — the per-machine `live_trading` grant that used
+to also be required was removed by Thomas. One fewer thing to set, and one fewer thing standing
+between an exported variable and a real order.
 
 Deliberately one order per invocation, and deliberately **entry-only**: a canary opens a small
 position, which the operator then closes on the venue. It is not wired into any autonomous cycle.

@@ -339,7 +339,7 @@ def test_an_unsizable_plan_refuses():
 # --- the final guard ------------------------------------------------------------
 
 @pytest.mark.parametrize("closed,expected", [
-    ({"gate_open": False}, "grant"),
+    ({"gate_open": False}, "live trading is not enabled"),
     ({"runtime_active": False}, "runtime"),
     ({"daily_loss_breached": True}, "loss"),
     ({"budget_registered": False}, "budget"),

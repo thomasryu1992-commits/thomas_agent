@@ -222,11 +222,15 @@ def test_risk_snapshot_reports_the_day(tmp_path):
 
 # === LP2: the one switch ===========================================================
 
-def test_ledger_env_alone_fails_closed(tmp_path, monkeypatch):
+def test_ledger_env_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Inverted 2026-07-28 with the rest of the live surface. The ledger MUST move with the
+    order adapter: a durable adapter over an inert ledger would trade real money with the
+    daily loss breaker reading a permanent zero."""
     monkeypatch.setenv(LIVE_TRADING_ENV, REAL_LIVE_TRADING)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_live_ledger(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    ledger = select_live_ledger(now=NOW, root=tmp_path)
+    assert isinstance(ledger, RealLiveLedger)
+    ledger.append_outcome(_outcome(-1.0))
+    assert len(read_live_outcomes(tmp_path)) == 1   # it really did persist
 
 
 def test_ledger_default_is_inert(tmp_path, monkeypatch):
@@ -260,7 +264,7 @@ def test_fully_configured_intent_is_ready():
 def test_closed_gate_blocks():
     verdict = evaluate_live_order_guard(_intent(), **_ready(gate_open=False))
     assert verdict["approved"] is False
-    assert any("grant is not active" in b for b in verdict["blocks"])
+    assert any("live trading is not enabled" in b for b in verdict["blocks"])
 
 
 def test_missing_confirmation_blocks():
@@ -560,7 +564,7 @@ def test_the_canary_phrase_cannot_authorize_autonomous_trading():
 
 
 @pytest.mark.parametrize("fact, needle", [
-    (dict(gate_open=False), "grant is not active"),
+    (dict(gate_open=False), "live trading is not enabled"),
     (dict(runtime_active=False), "external_execution"),
     (dict(daily_loss_breached=True), "halted for today"),
     (dict(submitted_today=2), "daily order cap reached"),

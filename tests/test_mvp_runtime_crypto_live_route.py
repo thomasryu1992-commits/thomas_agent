@@ -39,7 +39,7 @@ SYMBOL = "BTCUSDT"
 
 class _Adapter:
     """A venue that answers from a script. ``network_egress`` is what the gate reads, so a
-    test that sets it True is standing in for a machine holding the live_trading grant."""
+    test that sets it True is standing in for a machine with ``MVP_LIVE_TRADING=real``."""
 
     tool_id, tool_version = "fake", "0"
     network_egress = True
@@ -153,20 +153,30 @@ def test_without_a_grant_the_live_leg_reads_nothing_and_sends_nothing(tmp_path, 
     assert record["halt"] is False
 
 
-def test_the_env_var_alone_does_not_open_the_gate(tmp_path, monkeypatch):
-    """``MVP_LIVE_TRADING=real`` with no local grant is the gate's fail-closed path, and the
-    reason is named — "I set the env var and nothing happens" is otherwise silent."""
+def test_the_env_var_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Inverted 2026-07-28: ``MVP_LIVE_TRADING=real`` with no local grant used to be the gate's
+    fail-closed path (``ACTIVATION_MISSING``). Thomas removed the grant, so this is now the
+    open path — the leg gets past selection and goes on to read the account.
+
+    Asserting the account read *happens* is the point: it is the first thing on the other side
+    of the gate, so it is what distinguishes "opened" from "returned DISABLED quietly". The
+    read is stubbed to raise, which is how the leg's own never-raise contract gets exercised
+    at the same time — a failure past the gate must still come back as a record."""
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
-    monkeypatch.setattr(
-        live_route, "read_account",
-        lambda **kw: pytest.fail("the gated leg read the account with no grant"),
-    )
+    reads: list[dict] = []
+
+    def _account(**kw):
+        reads.append(kw)
+        raise ToolError("ACCOUNT_UNAVAILABLE", "stubbed: no venue in a test")
+
+    monkeypatch.setattr(live_route, "read_account", _account)
     record = live_route.run_live_leg(
         route=None, feature_row={}, verdict={"allow_new_position": True},
         symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
     )
-    assert record["live_route_status"] == live_route.ROUTE_DISABLED
-    assert record["live_reason_codes"] == ["ACTIVATION_MISSING"]
+    assert reads, "the gate did not open — the account was never read"
+    assert record["live_route_status"] != live_route.ROUTE_DISABLED
+    assert record["halt"] is False
 
 
 def test_the_gate_is_the_adapter_selection_itself(tmp_path, monkeypatch):

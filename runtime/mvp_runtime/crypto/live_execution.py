@@ -23,7 +23,7 @@ implementation:
   canary at a time;
 * ``financial_executor_enabled`` is ``false``, and cycle routing (LP5.3's last piece) is
   deliberately unbuilt — building it *is* the decision to relax that tripwire;
-* reaching the venue at all still requires the operator's per-machine ``live_trading`` grant,
+* reaching the venue at all still requires the operator's ``MVP_LIVE_TRADING=real`` opt-in,
   the order key, the confirmation phrase and a registered budget — none of which this code can
   create.
 
@@ -34,9 +34,14 @@ reconciles the result against the venue, and returns the ``exchange_order_id`` +
 the LP2 P&L ledger. It does not size, decide, or manage positions.
 
 The gate is the established chokepoint: the real adapter is constructed only behind the one
-``live_trading`` grant via ``safety_gate.select_gated`` (``MVP_LIVE_TRADING=real`` alone fails
-closed), and it re-asserts authorization at every egress so deleting the grant is a live
-revocation. The order-capable key is its **own** env, distinct from the read-only account key.
+live-trading switch via ``safety_gate.select_env_gated``, and it re-asserts that switch at every
+egress, so clearing ``MVP_LIVE_TRADING`` stops a running process rather than only the next one.
+The order-capable key is its **own** env, distinct from the read-only account key.
+
+That switch was a per-machine grant record until 2026-07-28, when Thomas removed it and made
+``MVP_LIVE_TRADING=real`` the whole gate. The trade is real and recorded in
+``docs/BUILD_HISTORY.md``: what a machine can do is now decided entirely by the environment the
+operator hands the container, with no artifact on disk to inspect afterwards.
 """
 
 from __future__ import annotations
@@ -346,7 +351,7 @@ class DryRunOrderAdapter:
 
 
 class BinanceFuturesOrderAdapter:
-    """The real adapter — constructed only behind the ``live_trading`` grant, host-allowlisted,
+    """The real adapter — constructed only behind the live-trading opt-in, host-allowlisted,
     re-asserting authorization at every egress.
 
     **This is the repository's first WRITE network egress.** Every other network path
@@ -357,12 +362,13 @@ class BinanceFuturesOrderAdapter:
       missing credential is reported **by name only**;
     - a transport failure raises a deliberately **generic** error — the signed URL never reaches
       a message, a log, or a record;
-    - authorization is re-asserted before every request, so deleting the grant is a live
-      revocation mid-flight.
+    - authorization is re-asserted before every request, so clearing ``MVP_LIVE_TRADING`` is a
+      live revocation mid-flight — weaker than the grant file it replaced, since a running
+      container's environment does not change under it, but not nothing.
 
     It still sends nothing on its own: ``submit_and_reconcile`` refuses unless the final guard
-    PASSed, and the whole adapter is only reachable once the operator has minted the
-    ``live_trading`` grant and set the order key."""
+    PASSed, and the whole adapter is only reachable once the operator has set
+    ``MVP_LIVE_TRADING=real`` and the order key."""
 
     tool_id = ORDER_ADAPTER_TOOL_ID
     tool_version = ORDER_ADAPTER_TOOL_VERSION
@@ -518,19 +524,24 @@ class BinanceFuturesOrderAdapter:
 
 
 def select_order_adapter(*, now: str | None = None, root: Path | None = None) -> OrderAdapter:
-    """Return the real order adapter if the ``live_trading`` grant is open, else the inert one.
+    """Return the real order adapter if live trading is opted in, else the inert one.
 
-    The gated factory receives the ``Authorization``, so the capable adapter cannot be
-    constructed before the gate opens (the ``select_gated`` safety property)."""
-    return safety_gate.select_gated(
+    ``select_env_gated``, not ``select_gated``: Thomas removed the per-machine grant for this
+    capability on 2026-07-28, so ``MVP_LIVE_TRADING=real`` IS the gate. The construction order is
+    unchanged — the capable adapter is built only after the opt-in is confirmed and receives its
+    ``Authorization``, so it still cannot exist before the gate opens, and it still re-verifies at
+    every egress. See the block comment above ``select_env_gated`` for the decision and its cost.
+
+    ``now``/``root`` are kept in the signature and unused: every caller passes them, they cost
+    nothing, and restoring the grant should be a one-line change here rather than a change at
+    each call site."""
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunOrderAdapter,
         gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

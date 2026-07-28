@@ -17,7 +17,14 @@ Every claim below was re-checked against `main` and against the code it describe
 > and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
 > the clean-canary evidence threshold is not met **on any machine this file can speak for** (the
 > count is per-machine state — ask the board, below), and every egress needs the operator's
-> per-machine `live_trading` grant, order key, confirmation phrase and registered budget.
+> `MVP_LIVE_TRADING=real` opt-in, order key, confirmation phrase and registered budget.
+>
+> ⚠️ **Two of those reasons weakened on 2026-07-28 and this banner is corrected rather than
+> rewritten.** "No autonomous entry point may import the order path" became "exactly one module
+> may" when cycle routing shipped; and the per-machine `live_trading` grant was removed by
+> Thomas, so `MVP_LIVE_TRADING=real` is the entire gate. The reasons live trading cannot start
+> are still structural, but there is one fewer of them and the remaining ones are all operator
+> state rather than code.
 >
 > **The canary count is per-machine.** On the machine that placed them the board now reads
 > **4/4** (2026-07-28); on a fresh checkout it reads `0/3`. Ask the machine
@@ -36,9 +43,13 @@ Every claim below was re-checked against `main` and against the code it describe
 > **Cycle routing landed 2026-07-28** (`crypto/live_route.py`): the executing leg now has one
 > autonomous caller, and `AUTONOMOUS_ROUTING_WIRED` is `True`. That was the last *build* item.
 > What stands between here and an autonomous live order is now entirely operator state — the
-> per-machine `live_trading` grant, the confirmation phrase, the registered budget, the canary
+> `MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, the registered budget, the canary
 > evidence — each of which the readiness board reports as its own computed row. **Wired is not
 > permitted**, and the board deliberately does not fold the routing row into `ready`.
+>
+> **The grant came off the same day** (Thomas, 2026-07-28): the live surface is gated by the env
+> opt-in alone. The gate no longer expires, so nothing turns live trading off but the operator —
+> and the halt that acts on a *running* scheduler is the console `kill` verb, not the env var.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -419,11 +430,21 @@ scopes at different levels, so nothing was owed to it.
           is that "which code can start a live order" has a single answer.
           `AUTONOMOUS_ROUTING_WIRED` is now `True` and is deliberately still **not** part of
           `ready`: wired is not permitted, and every door below it is unchanged. The gate comes
-          first — with no `live_trading` grant the leg returns DISABLED having read no account
+          first — without `MVP_LIVE_TRADING=real` the leg returns DISABLED having read no account
           and opened no socket, so a machine that has not been through the operator checklist
           behaves exactly as before. Live entries use the **same** `build_entry_plan` as paper
           and the same C4 verdict, so a live entry can never be permitted where a paper one was
           not.
+    - [ ] **`execution.live_trader` still names the removed `live_trading` grant in its stop
+          conditions.** `03_ROLE_CONTRACTS/ROLES/CANDIDATES/EXECUTION_LIVE_TRADER_ROLE.md` lists
+          `live_trading_grant_revoked` (abort reason) and `live_trading_grant_absent_or_revoked`
+          (stop condition); the grant was removed 2026-07-28 and the correct condition is the
+          `MVP_LIVE_TRADING=real` opt-in being cleared. **Left alone deliberately** rather than
+          fixed in the gate-removal PR: the definition is hash-pinned in `ROLE_REGISTRY.yaml`
+          (`definition_sha256`), so editing it is a version bump + hash refresh + role governance
+          change, not a text fix. Low urgency — the role is `status: candidate`, `routable: false`,
+          so nothing resolves it and no runtime reads these strings. Fold it into whatever change
+          next touches this role.
     - [ ] **Live does not enforce the strategy's time exit, and the backtest evidence assumed it.**
           Found reviewing the routing PR; recorded rather than fixed because fixing it changes
           LP5.1's record shape, which is its own increment.

@@ -8,7 +8,7 @@ contract says BLOCK, degraded where it says DEGRADE:
 **LP5.3 step 3 added a live leg (C5b), and it reaches the venue through exactly one module:**
 ``crypto/live_route``. That indirection is not layering for its own sake — it is what keeps
 "which code can start a live order" a question with a single answer, and a test pins it. The
-leg is inert on any machine without an active ``live_trading`` grant: it reads no account and
+leg is inert on any machine that has not set ``MVP_LIVE_TRADING=real``: it reads no account and
 opens no socket, and this cycle behaves exactly as it did before the wiring existed.
 
 - A backend failure at collection **degrades** the cycle (``MARKET_DATA_DEGRADED``
@@ -313,8 +313,8 @@ def run_crypto_cycle(
         reason_codes.append(counterfactual_summary["degraded"])
 
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
-    # module that may. On a machine with no `live_trading` grant this returns DISABLED having
-    # read nothing, so the whole branch costs one env-and-grant check. It runs AFTER the paper
+    # module that may. On a machine that has not opted in this returns DISABLED having read
+    # nothing, so the whole branch costs one env check. It runs AFTER the paper
     # step so it can share that step's routing result rather than re-evaluating the pool, and
     # it is given the same C4 verdict — a live entry can never be permitted where a paper one
     # was not. Never raises: `run_live_leg` reports, because a traceback here would be

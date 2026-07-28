@@ -14,10 +14,11 @@ first live order becomes possible, not be wired up afterwards.
 possible state, so it reads as "halted", never as "unlimited" — the source system encoded the
 same rule and it is the single most important line in this module.
 
-The ledger write is gated by the **one live-trading grant** (``live_trading``), the same
-per-machine grant that will authorize order egress. One grant means one switch: minting it
-enables live trading, deleting it revokes the whole capability at once — including the
-ability to append to this ledger.
+The ledger write rides the **one live-trading switch**, the same switch that authorizes order
+egress. One switch means the capability cannot be half-enabled: turning it on enables live
+trading, turning it off revokes the whole capability at once — including the ability to append
+to this ledger. Since 2026-07-28 that switch is the environment alone
+(``MVP_LIVE_TRADING=real``); see the constant block below.
 """
 
 from __future__ import annotations
@@ -38,11 +39,18 @@ from ..safety_gate import FILESYSTEM_WRITE, NETWORK_ACCESS, Authorization
 LIVE_LEDGER_TOOL_ID = "crypto.live.pnl_ledger"
 LIVE_LEDGER_TOOL_VERSION = "0.1.0"
 
-# THE live-trading switch. One provider id, one per-machine grant, minted only by the
-# operator via scripts/activate_safety_flag.py. It carries BOTH flags the live path needs —
-# network_access to reach the venue, filesystem_write to record what happened — so the
-# capability cannot be half-enabled, and deleting the grant revokes all of it at once
-# (assert_authorization re-reads the record at every egress).
+# THE live-trading switch, and the only one: `MVP_LIVE_TRADING=real` in the process
+# environment (Thomas, 2026-07-28). It used to ALSO require a per-machine grant record minted
+# by scripts/activate_safety_flag.py; Thomas removed that second requirement because the
+# deployment already places these vars under operator-only control and the grant's expiry could
+# trap an open position — an expired grant closed the gate on the CLOSE path too. Under the
+# grant this was one switch across two mechanisms; now it is one switch, full stop.
+#
+# The provider id and flag pair survive the removal. They are what `assert_authorization`
+# re-checks at every egress and what each capable class declares, so they still keep the
+# capability from being half-enabled — network_access to reach the venue, filesystem_write to
+# record what happened, never one without the other. What changed is what opens the gate, not
+# what the gate covers.
 LIVE_TRADING_ENV = "MVP_LIVE_TRADING"
 REAL_LIVE_TRADING = "real"
 LIVE_TRADING_PROVIDER_ID = "live_trading"
@@ -490,7 +498,7 @@ class LiveLedger(Protocol):
 class DryRunLiveLedger:
     """Default, inert ledger: accepts the record and writes nothing.
 
-    A live outcome should be structurally impossible to produce without the grant, but if one
+    A live outcome should be structurally impossible to produce with the switch off, but if one
     ever arrives here it is dropped rather than persisted — an unbacked record in the live
     ledger would misinform the breaker.
     """
@@ -507,7 +515,7 @@ class RealLiveLedger:
     """Durable live outcomes under ``.runtime_governance_state/crypto/``.
 
     Constructed only behind the Safety-Flag Gate for the ``live_trading`` provider, and it
-    re-asserts that authorization on every append, so revoking the grant stops the ledger
+    re-asserts that authorization on every append, so revoking the opt-in stops the ledger
     mid-flight exactly as it stops order egress.
     """
 
@@ -543,14 +551,18 @@ class RealLiveLedger:
 
 
 def select_live_ledger(*, now: str | None = None, root: Path | None = None) -> LiveLedger:
-    """Return the durable live ledger if the live-trading grant is open, else the inert one."""
-    return safety_gate.select_gated(
+    """Return the durable live ledger if live trading is opted in, else the inert one.
+
+    On ``select_env_gated`` with the rest of the live surface (Thomas, 2026-07-28). This one is
+    the least optional of the set: the daily loss breaker reads this ledger, so a durable order
+    adapter over an inert ledger is real money traded with the breaker permanently reading zero
+    loss. The whole surface moves together or the safety devices come apart from the capability
+    they guard."""
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunLiveLedger,
         gated_factory=lambda authorization: RealLiveLedger(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )

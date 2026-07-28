@@ -209,11 +209,17 @@ make the account read separable from the trading capability.
 **The operator service still receives none of it**, and that half did not reverse: the operator
 loop reads no market or account data, so a key that can trade buys it nothing.
 
-What this does **not** change, and what still stands between the scheduler and an autonomous
-order: no autonomous entry point may import the order path
-(`test_no_autonomous_entry_point_reaches_the_live_order_path`), the per-machine `live_trading`
-grant, the registered budget, and the confirmation phrase for the capability being exercised.
-Env alone opens nothing.
+> **This section said "Env alone opens nothing" until 2026-07-28. It no longer does.** Two
+> changes landed that day and both cut the same way: cycle routing shipped, so a *scheduled*
+> run reaches the order path (through exactly one module, `crypto/live_route.py`); and Thomas
+> removed the per-machine `live_trading` grant, making `MVP_LIVE_TRADING=real` the entire gate.
+> **The `.env` file described below is now, by itself, the difference between a scheduler that
+> trades paper and one that trades real money.** Treat it accordingly.
+
+What still stands between the scheduler and an autonomous order: only one module may reach the
+order path (`test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`), the
+registered budget, the canary evidence, the confirmation phrase for the capability being
+exercised, both kill switches, and the loss breaker.
 
 So the variables below belong in the compose `.env` (the scheduler reads them from there), and
 you can still export them in a shell for a one-off run against the host checkout.
@@ -239,8 +245,9 @@ export MVP_ACCOUNT_FEED=binance_futures_account
 export MVP_LIVE_ORDER_API_KEY="$BINANCE_ACCOUNT_API_KEY"
 export MVP_LIVE_ORDER_API_SECRET="$BINANCE_ACCOUNT_API_SECRET"
 
-# The switch. Fails closed on its own: without the per-machine `live_trading` grant
-# this authorizes nothing.
+# THE switch, and since 2026-07-28 the only one. This line alone selects the real
+# order adapter, the real P&L ledger, the real position book, the real daily counter
+# and the real canary registry. There is no second factor behind it any more.
 export MVP_LIVE_TRADING=real
 
 # One phrase per capability. Export ONLY the one you are exercising — the canary phrase
@@ -257,17 +264,15 @@ daily-count, exposure and loss limits come from the registered `live_trading_bud
 (`scripts/register_live_trading_budget.py`). There is deliberately no cap an operator can set
 outside that record.
 
-Two grants are still required, and they are separate on purpose so the read can be revoked
-without revoking the ability to trade, or the reverse:
+**One grant is still required** — the read-only account feed. The `live_trading` grant that used
+to sit beside it was removed on 2026-07-28 (Thomas); `MVP_LIVE_TRADING=real` above replaces it
+entirely. If you have an old `live_trading` activation file on a machine, it is now inert: it
+grants nothing and blocks nothing, and you can delete it.
 
 ```bash
 python scripts/activate_safety_flag.py --provider-id binance_futures_account \
     --flags network_access --authority-level P2 \
     --reason "read-only account visibility" --ttl-minutes 43200
-
-python scripts/activate_safety_flag.py --provider-id live_trading \
-    --flags network_access,filesystem_write --authority-level P5 \
-    --reason "canary orders" --ttl-minutes 43200
 ```
 
 Verify before spending anything — both commands are read-only and place no order:
@@ -281,9 +286,14 @@ python -m runtime.mvp_runtime.crypto.live_readiness   # every gate, computed
 exempt from, and the canary is what earns it. Everything else must be PASS. The full operator
 sequence is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gates 2 and 3.
 
-**When you are done trading:** the per-machine `live_trading` grant is now the switch that
-matters, since the env no longer expires with a shell. Delete the grant file if you are not
-placing another canary soon — deleting it is a live revocation, checked at every egress.
+**When you are done trading:** remove `MVP_LIVE_TRADING` from the compose `.env` and restart the
+scheduler. There is no grant file to delete any more, and that is the cost of the 2026-07-28
+change: the gate no longer expires on its own, so nothing turns this off but you.
+
+**To halt a scheduler that is trading right now, do not clear `MVP_LIVE_TRADING`.** It takes
+effect only on the next start, and because the close guard also requires the opt-in it would
+strand every open position. Use the runtime kill below — it writes control state, lands on the
+running service at its next guard, and the close path is deliberately exempt from it.
 
 ## Emergency controls on a running service
 
