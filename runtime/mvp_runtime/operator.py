@@ -44,6 +44,7 @@ from . import (
     safety_gate, task_registry, timeutil,
 )
 from .audit import build_approval_decision_audit, build_audit_gap_record
+from .budgets import clip_for_prompt
 from .control import ControlStore
 from .errors import (
     ApprovalBlocked, AuditError, ControlBlocked, MvpRuntimeError, OperatorBlocked, PersistenceError,
@@ -685,17 +686,25 @@ def render_result_reply(result: dict[str, Any]) -> OperatorReply:
 
 class OperatorChannel(Protocol):
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]: ...
-    def send(self, chat_id: str, text: str) -> None: ...
+    # Returns the sent message's id when the transport has one, else None. Callers that only
+    # deliver ignore it; the progress notice needs it, because editing one message in place is
+    # the difference between a live status line and six notifications for one task.
+    def send(self, chat_id: str, text: str) -> str | None: ...
 
 
 @dataclass
 class MockOperatorChannel:
     """Deterministic, network-free channel for tests and local runs. ``inbound`` is drained
     on each ``poll``; ``sent`` captures ``(chat_id, text)`` for assertions. ``long_poll_seconds``
-    is accepted for protocol parity but ignored — the in-memory queue returns immediately."""
+    is accepted for protocol parity but ignored — the in-memory queue returns immediately.
+
+    ``edited`` captures ``(chat_id, message_id, text)``. The mock supports editing so the
+    progress path is exercised by the default test channel rather than only by the networked
+    one — a feature only the real transport can run is a feature only production tests."""
 
     inbound: list[InboundMessage] = field(default_factory=list)
     sent: list[tuple[str, str]] = field(default_factory=list)
+    edited: list[tuple[str, str, str]] = field(default_factory=list)
     network_egress: bool = False
     last_long_poll_seconds: int | None = None
 
@@ -704,8 +713,12 @@ class MockOperatorChannel:
         batch, self.inbound = list(self.inbound), []
         return batch
 
-    def send(self, chat_id: str, text: str) -> None:
+    def send(self, chat_id: str, text: str) -> str | None:
         self.sent.append((chat_id, text))
+        return f"mock-msg-{len(self.sent)}"
+
+    def edit(self, chat_id: str, message_id: str, text: str) -> None:
+        self.edited.append((chat_id, message_id, text))
 
 
 def select_operator_channel(*, now: str | None = None, root: Path | None = None) -> OperatorChannel:
@@ -873,17 +886,26 @@ class TelegramChannel:
     # The 96 units of headroom below the real cap hold the `(i/n)` counter added per chunk.
     _MAX_SEND_UNITS = 4000
 
-    def send(self, chat_id: str, text: str) -> None:
+    def send(self, chat_id: str, text: str) -> str | None:
         token = self._assert()
         chunks = _split_for_send(text, self._MAX_SEND_UNITS)
         total = len(chunks)
+        first_message_id: str | None = None
         for index, chunk in enumerate(chunks, start=1):
             # A multi-part answer is NUMBERED. Without this, losing part 3 of 5 to a transport
             # error left Thomas reading an analysis that simply stopped mid-sentence with
             # nothing to say a piece was missing — the reply looked complete and was not.
             body = f"({index}/{total})\n{chunk}" if total > 1 else chunk
             try:
-                self._call(token, "sendMessage", {"chat_id": chat_id, "text": body}, timeout=30)
+                payload = self._call(token, "sendMessage", {"chat_id": chat_id, "text": body}, timeout=30)
+                if index == 1:
+                    # Only the FIRST part's id is returned, and only an editable single-part
+                    # message is ever edited by the caller: editing part 1 of a five-part
+                    # answer would rewrite a fragment and leave the other four contradicting
+                    # it. The progress notice is one short line, so it is always single-part.
+                    result = payload.get("result")
+                    if isinstance(result, dict) and result.get("message_id") is not None:
+                        first_message_id = str(result["message_id"])
             except OperatorBlocked as exc:
                 if index == 1:
                     raise       # nothing arrived: an ordinary delivery failure
@@ -895,6 +917,21 @@ class TelegramChannel:
                     f"delivered {index - 1} of {total} message parts before failing "
                     f"({exc.reason_code}); the answer reached Thomas incomplete",
                 ) from exc
+        return first_message_id
+
+    def edit(self, chat_id: str, message_id: str, text: str) -> None:
+        """Rewrite one already-sent message in place (``editMessageText``).
+
+        Used only for the progress notice, and deliberately NOT wired into any delivery path:
+        an analysis Thomas has already read must not change under him, and the ledger is
+        append-only for the same reason. Editing is how a status line stays one message
+        instead of becoming six notifications for one task."""
+        token = self._assert()
+        self._call(
+            token, "editMessageText",
+            {"chat_id": chat_id, "message_id": message_id, "text": text},
+            timeout=30,
+        )
 
 
 def _split_for_send(text: str, limit: int) -> list[str]:
@@ -943,6 +980,102 @@ def _message_from_update(update: dict[str, Any]) -> InboundMessage | None:
     )
 
 
+# What each reported pipeline stage is called on the channel. The KEYS must be exactly
+# `pipeline.PROGRESS_STAGES` (pinned by a test): a stage the pipeline reports and this map does
+# not know would print a bare identifier at Thomas, and a label for a stage that no longer
+# exists is a line that can never appear.
+#
+# Stage NAMES, never a percentage. A percentage would have to be invented — the run has no
+# measurable denominator (a model call takes as long as it takes), and a progress bar that
+# reaches 80% and sits there is a lie told slowly.
+PROGRESS_LABELS: dict[str, str] = {
+    "readonly_search": "자료 검색 중",
+    "analysis_worker": "분석 중",
+    "automatic_validation": "결과 검증 중",
+    "independent_validation": "독립 검증 중",
+    "revision": "수정본 생성 중",
+    "controlled_write": "파일 작성 중",
+}
+PROGRESS_STARTED_LABEL = "시작했습니다"
+
+
+class ProgressNotice:
+    """One live status line for one queued run: sent once, then edited in place.
+
+    Why a second message rather than editing the queue receipt: the receipt is sent from the
+    message handler, possibly polls earlier, and its id is not on the durable entry — carrying
+    it there would mean another `task_registry_entry` version for something that is pure UI and
+    does not survive a restart anyway. So the drain sends its own line when the run actually
+    STARTS, which is a different fact from "queued" and worth saying once on its own.
+
+    Every failure direction is the same one: **the run wins.** A notice that cannot be sent
+    means no progress display and a run that proceeds silently, exactly as before this existed;
+    a notice that cannot be edited is switched off for the rest of the run rather than retried,
+    because a channel that just failed an edit will most likely fail the next five too, and
+    spending five more failing HTTP calls per run buys nothing — the delivery at the end is the
+    message that matters. Nothing here is audited: these are `CONTROL_CHANNEL_RESPONSE` (ALLOW)
+    notices on the already-verified channel, the ack precedent, and the durable record of what
+    this run did is the registry entry plus its ledger trail.
+    """
+
+    def __init__(self, channel: OperatorChannel, chat_id: str, *, entry_id: str, request_text: str):
+        self._channel = channel
+        self._chat_id = chat_id
+        self._entry_id = entry_id
+        self._request = clip_for_prompt(request_text, 60)
+        self._message_id: str | None = None
+        self._last_text: str | None = None
+        self._live = callable(getattr(channel, "edit", None))
+
+    def _render(self, label: str) -> str:
+        return f"[{self._entry_id[:12]}] {self._request}\n상태: {label}"
+
+    def start(self) -> None:
+        """Send the line. Best-effort: a channel that cannot send it, or one with no edit
+        support at all, simply gets no progress display."""
+        if not self._live:
+            return
+        text = self._render(PROGRESS_STARTED_LABEL)
+        try:
+            self._message_id = self._channel.send(self._chat_id, text)
+        except Exception:      # noqa: BLE001 — a status line must never cost the run
+            self._live = False
+            return
+        if self._message_id is None:
+            # The transport sent it but cannot say which message it was, so there is nothing
+            # to edit. One notice is better than six, so stop here rather than falling back
+            # to a new message per stage.
+            self._live = False
+            return
+        self._last_text = text
+
+    def stage(self, stage: str) -> None:
+        """Update the line for one pipeline stage. An unknown stage is dropped rather than
+        printed raw — the label map is pinned to the pipeline's own list, so this can only
+        fire if the two drift, and a bare `analysis_worker` on the channel helps nobody."""
+        label = PROGRESS_LABELS.get(stage)
+        if label is not None:
+            self.finish(label)
+
+    def finish(self, label: str) -> None:
+        """Rewrite the line with ``label``. Also the terminal update, so a finished run does
+        not sit forever claiming it is still analyzing — the deliverable is a separate
+        message, and this one only ever holds the status."""
+        if not self._live or self._message_id is None:
+            return
+        text = self._render(label)
+        if text == self._last_text:
+            # Telegram rejects an edit that changes nothing ("message is not modified"), which
+            # would then switch the notice off for the rest of the run over a non-event.
+            return
+        try:
+            self._channel.edit(self._chat_id, self._message_id, text)
+        except Exception:      # noqa: BLE001 — see the class docstring
+            self._live = False
+            return
+        self._last_text = text
+
+
 def run_queued_task(
     entry: Any,
     *,
@@ -975,8 +1108,17 @@ def run_queued_task(
     arrives through the queue speaks the same way as one that ran inline.
     """
     stamp = now or timeutil.utc_now_iso()
+    # The silence this closes: the queue receipt was the last thing Thomas heard until the
+    # finished analysis arrived, which for a validated run is two model calls later. "Queued"
+    # and "still working" are different facts and the channel could only say the first.
+    progress = ProgressNotice(
+        channel, registration.chat_id,
+        entry_id=entry.registry_entry_id, request_text=entry.request_text,
+    )
+    progress.start()
     reply = render_result_reply(run_task(
         entry.request_text,
+        on_progress=progress.stage,
         provider=provider,
         search_tool=search_tool,
         working_memory=working_memory,
@@ -997,6 +1139,12 @@ def run_queued_task(
         authenticated=True,
         source_ref=f"telegram:private_chat:{registration.chat_id}",
     ))
+
+    # Closed BEFORE the deliverable is sent: a long analysis is several messages, and a status
+    # line still reading "분석 중" underneath a finished answer is the display contradicting the
+    # channel. What it says is what happened to the RUN, not whether the send worked — that is
+    # not known yet, and the send's own outcome speaks for itself.
+    progress.finish("완료 — 결과 전송 중" if reply.status == "COMPLETED" else f"중단됨 ({reply.reason_code or 'BLOCKED'})")
 
     delivered = True
     partial = False
