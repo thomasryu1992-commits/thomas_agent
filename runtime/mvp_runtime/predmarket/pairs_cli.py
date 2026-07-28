@@ -232,12 +232,35 @@ def run_discovery(
                 candidate[f"{side}_resolution_rules"] = rules.get(key)
     # Already-paired markets are not proposals — showing them again would invite a duplicate
     # confirmation the store would only refuse.
-    taken = pairs.grouped_market_keys(pairs.read_groups(root))
+    all_groups = pairs.read_groups(root, include_retired=True)
+    taken = pairs.grouped_market_keys(
+        [g for g in all_groups if g.get("status") != pairs.RETIRED])
     result["candidates"] = [
         c for c in result["candidates"]
         if f"{c['left_venue']}:{c['left_market_id']}" not in taken
         and f"{c['right_venue']}:{c['right_market_id']}" not in taken
     ]
+
+    # A pairing an operator already looked at and rejected is not a new proposal. It is not
+    # dropped either — a retirement reason can be about a moment ("the venue was down")
+    # rather than about the pairing, so the row survives with the reason attached and the
+    # operator can act on it again knowingly. What must not happen is what did: two retired
+    # pairings returning to the TOP of the sheet, because a pair retired for quoting 0.73
+    # against 0.0015 still scores 1.0 on wording.
+    retired = pairs.retired_pairing_reasons(all_groups)
+    still_open, previously_retired = [], []
+    for candidate in result["candidates"]:
+        key = frozenset({
+            f"{candidate['left_venue']}:{candidate['left_market_id']}",
+            f"{candidate['right_venue']}:{candidate['right_market_id']}",
+        })
+        detail = retired.get(key)
+        if detail is None:
+            still_open.append(candidate)
+        else:
+            previously_retired.append({**candidate, "previously_retired": detail})
+    result["candidates"] = still_open
+    result["previously_retired"] = previously_retired
     return result
 
 
@@ -423,6 +446,11 @@ def _cmd_sheet(args: argparse.Namespace) -> int:
             sys.stdout.write(f"  {venue:<11}: {screening.screening_status_line(screen)}\n")
         for venue, code in sorted((result.get("venue_errors") or {}).items()):
             sys.stdout.write(f"  DEGRADED {venue}: {code} (no candidates from this venue)\n")
+        retired = result.get("previously_retired") or []
+        if retired:
+            sys.stdout.write(
+                f"  {len(retired)} previously-retired pairing(s) held back, listed at the end "
+                f"with your reason\n")
         return EXIT_OK
     sys.stdout.write(sheet)
     return EXIT_OK
