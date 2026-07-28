@@ -19,8 +19,10 @@ real exchange account through the separately-gated ``binance_futures_account`` f
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import sys
+import statistics
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -174,6 +176,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "expectancy": (report.get("summary") or {}).get("expectancy") if report else None,
             "max_drawdown": (report.get("summary") or {}).get("max_drawdown") if report else None,
             "recommendation": report.get("recommendation") if report else None,
+            # Computed here from the R values rather than added to the performance report:
+            # that report is a versioned, persisted record, and this is a reading of it.
+            "sample_verdict": sample_verdict([
+                float(o["result_R"]) for o in own_outcomes
+                if isinstance(o.get("result_R"), (int, float))
+            ]),
         },
         # Imported crypto_AI_System history, reported separately and never merged above: it is
         # the predecessor's record, useful as context, not as evidence about this runtime.
@@ -201,6 +209,50 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
 # 11 closed trades is noise, and the board already knows to say INSUFFICIENT_SAMPLE about
 # its trends while saying nothing about the headline it prints two lines above them.
 MIN_MEANINGFUL_SAMPLE = 30
+
+# ...but a count is the wrong test, and this board graduated on it. At 30 closed trades the
+# headline stopped saying "표본 부족" and started saying "검토 가능", while the number it was
+# qualifying — +0.08R over 60 trades, with an R standard deviation of 1.56 — sat 0.4 standard
+# errors from zero. A fixed count answers "are there enough rows?"; the question a reader has
+# is "can I tell the sign?", and those diverge exactly when the variance is large relative to
+# the edge, which is always true of trade returns.
+#
+# So the board now computes the interval. `MIN_MEANINGFUL_SAMPLE` stays as a floor — below it
+# even the interval is unstable — but it is no longer what promotes the verdict.
+CONFIDENCE_Z = 1.96          # two-sided 95%
+POWER_Z = 0.84               # 80% power, the usual pairing
+
+
+def sample_verdict(r_values: list[float]) -> dict[str, Any]:
+    """Can this sample tell the sign of its own edge, and if not, how far off is it?
+
+    Pure. `trades_needed` is for the OBSERVED effect: if the true edge is what has been seen
+    so far, this is roughly the sample at which it would separate from zero. It is a scale
+    ("weeks" vs "years"), not a promise — a smaller true edge needs quadratically more.
+    """
+    n = len(r_values)
+    if n < 2:
+        return {"count": n, "mean_r": None, "stdev_r": None, "stderr_r": None,
+                "ci_low": None, "ci_high": None, "distinguishable_from_zero": False,
+                "trades_needed": None}
+    mean = statistics.fmean(r_values)
+    stdev = statistics.pstdev(r_values)
+    stderr = stdev / math.sqrt(n)
+    low, high = mean - CONFIDENCE_Z * stderr, mean + CONFIDENCE_Z * stderr
+    needed = None
+    if mean and stdev:
+        needed = int(round(((CONFIDENCE_Z + POWER_Z) * stdev / abs(mean)) ** 2))
+    return {
+        "count": n,
+        "mean_r": round(mean, 4),
+        "stdev_r": round(stdev, 4),
+        "stderr_r": round(stderr, 4),
+        "ci_low": round(low, 4),
+        "ci_high": round(high, 4),
+        # The whole point: zero outside the interval, not merely a row count reached.
+        "distinguishable_from_zero": bool(low > 0 or high < 0),
+        "trades_needed": needed,
+    }
 # The second: a gate whose BLOCKED trades would have been profitable is costing money. The
 # numbers for that were always printed; the subtraction was left to the reader.
 _GATE_COSTING = "손해"
@@ -259,17 +311,35 @@ def _headline(status: dict[str, Any]) -> list[str]:
     if not closed:
         lines.append("판단: 자체 페이퍼 성과 없음 — 라이브 판단 근거 없음")
     else:
+        verdict_stats = perf.get("sample_verdict") or {}
         thin = closed < MIN_MEANINGFUL_SAMPLE
         try:
             losing = float(expectancy) < 0
         except (TypeError, ValueError):
             losing = False
+        # The interval decides, not the row count. "검토 가능" used to appear the moment the
+        # 30th trade closed, on a figure sitting 0.4 standard errors from zero — a verdict
+        # about how much data there is, printed where a verdict about what it shows belongs.
+        # Absence of the interval is not evidence of indistinguishability. A caller that did
+        # not compute it (a hand-built status, an older document) gets the count-based verdict
+        # it always got, rather than a "판단 불가" asserted from a missing field.
+        measured = verdict_stats.get("ci_low") is not None
         if thin:
             verdict = f"표본 부족 ({closed}건 < {MIN_MEANINGFUL_SAMPLE}건) — 확대 근거 없음"
+        elif measured and not verdict_stats.get("distinguishable_from_zero"):
+            need = verdict_stats.get("trades_needed")
+            more = f", 관측 효과 검출에 ~{need:,}건" if need and need > closed else ""
+            verdict = (
+                f"판단 불가 — {_r(expectancy)}R × {closed}건, 95% 구간 "
+                f"[{_r(verdict_stats.get('ci_low'))}, {_r(verdict_stats.get('ci_high'))}]이 "
+                f"0을 포함{more}"
+            )
         elif losing:
-            verdict = f"자체 성과 손실 중 ({_r(expectancy)}R) — 확대 근거 없음"
+            verdict = (f"자체 성과 손실 중 ({_r(expectancy)}R"
+                       + (", 0과 구별됨" if measured else "") + ") — 확대 근거 없음")
         else:
-            verdict = f"자체 성과 {_r(expectancy)}R × {closed}건 — 검토 가능"
+            verdict = (f"자체 성과 {_r(expectancy)}R × {closed}건"
+                       + (", 0과 구별됨" if measured else "") + " — 검토 가능")
         lines.append(f"판단: {verdict}")
 
     costing = [row for row in _gate_rows(status) if row[0] == _GATE_COSTING]
@@ -320,6 +390,20 @@ def render_status_text(status: dict[str, Any]) -> str:
     if closed and closed < MIN_MEANINGFUL_SAMPLE:
         # Attached to the number it qualifies, not stranded in a trends section below.
         lines.append(f"       ⚠ {closed}건은 판단 불가 표본 ({MIN_MEANINGFUL_SAMPLE}건 이상 필요)")
+    sv = perf.get("sample_verdict") or {}
+    if sv.get("stderr_r") is not None:
+        # The dispersion, once, next to the mean it qualifies. Without it "+0.08R" reads as a
+        # result; with it, as one draw from something 20x wider.
+        lines.append(
+            f"       표준편차 {_r(sv.get('stdev_r'), signed=False)}R · 표준오차 "
+            f"{_r(sv.get('stderr_r'), signed=False)}R · 95% 구간 "
+            f"[{_r(sv.get('ci_low'))}, {_r(sv.get('ci_high'))}]"
+        )
+        if not sv.get("distinguishable_from_zero") and sv.get("trades_needed"):
+            lines.append(
+                f"       0과 구별되려면 관측 효과 기준 약 {sv['trades_needed']:,}건 "
+                f"(현재 {closed}건)"
+            )
     digest_block = status.get("digest") or {}
     trends = [f"{label.split('_')[0]} {((digest_block.get(label) or {}).get('verdict'))}"
               for label in ("weekly_trend", "monthly_trend") if digest_block.get(label)]
