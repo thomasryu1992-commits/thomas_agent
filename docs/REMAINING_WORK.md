@@ -4,9 +4,12 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-28** (`main` = `c823e2f`), after the canary path ran end to end for the
-first time and the defect wave that followed it (#227/#228/#231/#232/#233/#246), the evidence
-corrections (#247/#249/#251/#254/#257/#260) and the board's sample verdicts (#292/#304).
+Last updated: **2026-07-28** (`main` = `279c233`), after cycle routing landed (#302), the cost
+basis became a promotion gate rather than a warning (#309), the per-fill fee instrument was built
+(#313) and the last unguarded state writer got a door (#315). Before that, on the same day: the
+canary path ran end to end for the first time and the defect wave that followed it
+(#227/#228/#231/#232/#233/#246), the evidence corrections (#247/#249/#251/#254/#257/#260) and the
+board's sample verdicts (#292/#304).
 Previously **2026-07-27** (predmarket wave, second pass) and **2026-07-26** (the review round).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
 
@@ -282,11 +285,16 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 #184 on 2026-07-25; that doc's own step table remains the authority). Status:
 `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
-**What is left in this section is no longer governance, and no longer plumbing — it is one build
-decision and one operator action:** cycle routing (below), and three clean canary orders on the
-machine that would run. Neither is blocked on a contract, a schema, or a gate — and clearing the
-canary row **enables nothing on its own**: it satisfies one precondition of a step (cycle routing)
-that is still deliberately unbuilt.
+**What is left in this section is no longer governance, no longer plumbing, and as of 2026-07-28
+no longer a build decision either — it is operator state.** Cycle routing landed (below), so the
+"one build decision" this paragraph used to name is gone; what remains is the per-machine
+checklist the readiness board computes row by row, and none of it is code anyone can write here.
+
+That inverts the old caveat rather than removing it. The canary row used to enable nothing
+because the step it fed — cycle routing — was deliberately unbuilt; now that step exists, so the
+canary evidence does gate something real. **Wired is still not permitted**: the routing row is
+deliberately not folded into `ready`, and with no `live_trading` grant the leg returns DISABLED
+having read no account and opened no socket.
 
 **The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
 end to end for the first time turned up six defects that had been sitting in code nobody had
@@ -306,8 +314,40 @@ expectancy to negative** (#260). And the board's own verdict on this runtime's r
 `판단 불가` rather than a number: 60 closed trades at +0.08R, 95% interval `[−0.32, +0.48]`
 (#292/#304).
 
+**The cost basis became a door on 2026-07-28 (#309), because warning about it was not working.**
+`--list` counted the split and printed "rank tiers are comparable within a basis, not across
+them" — and then `rank_candidates` sorted straight across them, on keys (`champion_score`,
+`edge_quality`, `expectancy`) every one of which is read off evidence scored at the old rate.
+Same defect class as #249 in the same file, fixed the same way: order on the property instead of
+describing it. The basis is now a tier that leads the sort, and `assert_promotable_cost_basis`
+refuses stale evidence at **both** write doors — the ask as well as the install, since an
+approval Thomas answers for a promotion the next step was always going to block spends his
+attention on nothing. `--allow-stale-cost-basis` is the escape and the ledger records it.
+
+The tier is a **direction** test, not equality, and that distinction is the whole design. Rows
+scored at taker 5.0 with no maker leg charged their take-profit exit taker-plus-slippage where
+the current model charges maker 2.0 and none — too *pessimistic*, so refusing them would have
+made the escape hatch the normal door. What is refused is evidence scored more **cheaply** than
+the venue charges, plus evidence that cannot say which way it errs at all. Measured on the
+machine that has the store, 2026-07-28:
+
+| tier | rows | promotable |
+|---|---|---|
+| `CURRENT` (taker 5.0 + maker 2.0 + slip 3.0) | 90 | yes |
+| `conservative` (taker 5.0, pre-maker) | 90 | yes |
+| `OPTIMISTIC` (taker 2.5) | 224 | **no** |
+| `UNRECORDED` | 45 | **no** |
+
+269 of 449 stop being promotable on their own evidence. That is the intent, and it is not a dead
+end: the factory has already minted a generation at the current model, so the store converges by
+re-minting without rewriting a byte of durable history. **What a rate change can never repair is
+worth stating once** — `expectancy` re-derives exactly, but win-rate, realized reward:risk and
+the robustness verdict all need per-trade signs the store does not keep. That is why the answer
+is a gate at the door rather than a backfill.
+
 So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
-sooner would automate a strategy set whose sign nobody can currently state.
+existing (it now does) does not change that — it is why the routing row is deliberately not part
+of `ready`. Automating today would automate a strategy set whose sign nobody can currently state.
 
 The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
 the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
@@ -424,6 +464,30 @@ scopes at different levels, so nothing was owed to it.
           behaves exactly as before. Live entries use the **same** `build_entry_plan` as paper
           and the same C4 verdict, so a live entry can never be permitted where a paper one was
           not.
+    - [ ] **The maker fee rate is published, not measured, and it errs in the unsafe direction.**
+          Since the take-profit exit became a resting `reduceOnly` LIMIT (2026-07-28) the backtest
+          charges `DEFAULT_MAKER_FEE_BPS = 2.0` on that leg — Binance's **published** standard
+          rate. Unlike the taker figure it has never been measured on this account, because no
+          maker fill has ever happened. If the real rate is higher the backtest reports an edge
+          **better** than reality, which is the wrong way for evidence that gates real money.
+          Two of the three pieces are in place. `pool.expectancy_at` rescales the maker leg
+          independently of the taker one (#309), so the eventual measurement converts every
+          maker-scored candidate exactly instead of splitting the store a fourth time — done
+          while no candidate carried a maker term, which was the cheap moment to do it. And the
+          instrument exists (#313): `account.fill_history` reads `/fapi/v1/userTrades`, whose
+          per-fill `commission` / `quoteQty` / `maker` fields give the split `/fapi/v1/income`
+          cannot, since income totals a window with no leg attribution — which is exactly why the
+          taker rate had to be hand-derived and why the maker rate could not be. Surface is
+          `python -m runtime.mvp_runtime.crypto.account --fee-rates BTCUSDT`; with no maker fill
+          it reports the absence and its reason, never `0.0` (the two are opposite claims about
+          real money).
+          **What is missing is a maker fill**, and it is now operator state rather than a build
+          item: `place_canary_order` is entry-only MARKET by construction, so the only door that
+          can produce one is the autonomous leg's resting target — which exists and is wired, and
+          waits on the same live-trading checklist as everything else in this section. When one
+          lands, replace the constant. If the measured rate comes in **above** 2.0, every
+          candidate scored at the published rate becomes `OPTIMISTIC` and stops being promotable
+          on its own evidence — intended behaviour of the gate above, not a regression.
     - [ ] **Live does not enforce the strategy's time exit, and the backtest evidence assumed it.**
           Found reviewing the routing PR; recorded rather than fixed because fixing it changes
           LP5.1's record shape, which is its own increment.
