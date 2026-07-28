@@ -1,9 +1,10 @@
 # LP5.3 — The Executing Leg + Cycle Routing: Design Record v0.1
 
-**Status:** PARTIALLY IMPLEMENTED — **the executing leg is built** (`crypto/live_leg.py`, Thomas
-2026-07-25). The **cycle routing is not**, and remains the line that makes an autonomous live
-order reachable. Nothing here enables trading: the leg takes an injected adapter, and no
-autonomous entry point may import it (the tripwire below now covers `live_leg`).
+**Status:** IMPLEMENTED — the executing leg (`crypto/live_leg.py`, Thomas 2026-07-25) and the
+**cycle routing** (`crypto/live_route.py`, 2026-07-28) are both built. An autonomous live order
+is now structurally reachable, and what stands between the wiring and an order is the gate
+rather than the absence of a caller: no grant, no phrase, no registered budget, no canary
+evidence → no order, each on its own readiness row.
 **Owner:** Thomas
 **Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule.
 
@@ -11,10 +12,18 @@ autonomous entry point may import it (the tripwire below now covers `live_leg`).
 > one cannot. LP4 shipped an order path and `financial_transaction_execution_implemented` is
 > `true`; LP5.1/5.2/5.4 shipped state, sizing and the outcome bridge; LP5.3's *decision* half
 > (`live_entry.plan_live_entry`) shipped too. **The executing leg and the cycle routing are the
-> piece that makes an autonomous live order structurally reachable.** Today the only door is
-> `scripts/place_canary_order.py`, one deliberate canary at a time, and a test
-> (`test_no_autonomous_entry_point_reaches_the_live_order_path`) fails loudly if any autonomous
-> entry point starts importing the order path. Building this is the decision to remove that.
+> piece that makes an autonomous live order structurally reachable**, and as of 2026-07-28 both
+> have landed. Until then the only door was `scripts/place_canary_order.py`, one deliberate
+> canary at a time, held there by a test
+> (`test_no_autonomous_entry_point_reaches_the_live_order_path`) that failed loudly if any
+> autonomous entry point imported the order path.
+>
+> **That test is gone, deliberately, and what replaced it is the thing to check next.** Its
+> successors are `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module` and
+> `test_the_chokepoint_is_the_only_runtime_module_that_imports_the_executing_leg`: the cycle may
+> reach the venue, but only through `crypto/live_route.py`, so "which code can start a live
+> order" keeps exactly one answer. Adding a second caller is the same size of decision as adding
+> the first was.
 
 ## What already exists (and must not be rebuilt)
 
@@ -172,12 +181,63 @@ which moves the daily-loss breaker the *permissive* way.
        missing `result_R` as `0.0` (a *breakeven*), so an R-less live loss would have **shortened**
        a loss streak. An unreadable or tampered live history fails the guard closed, exactly like
        an unreadable paper one.
-3. [ ] **The cycle routing.** Still unbuilt, still the moment the safety posture changes. The
-       tripwire now covers `live_leg` as well, so wiring an autonomous entry point to the
-       executing leg fails a test rather than happening quietly — and relaxing that test should be
-       its own reviewable commit.
+3. [x] **The cycle routing.** Done 2026-07-28 (`crypto/live_route.py`), on Thomas's explicit
+       instruction. The safety posture changed here, and the change is in one place: `cycle.py`
+       runs a live leg through one module, which is inert without the `live_trading` grant.
+       What landed with it:
+
+       - `live_route.run_live_leg` — gate → reconcile → settle → protect → maybe open, with
+         every runtime fact read once and shared by every door;
+       - the **shared route**: `run_paper_update` now returns its own routing result and both
+         the counterfactual shadow and the live leg consume it, so three consumers cannot
+         disagree about what the pool said (it was evaluated twice before, identically, which
+         is two chances to differ);
+       - `live_leg.settle_venue_closed_position` + `read_bracket_legs` — the venue's own exit.
+         Not in the original shape, and **required rather than optional**: see below;
+       - the portfolio-level halt: `run_pool_cycle` stops the fan-out on a live incident and
+         names the contexts it never visited, rather than filing one context's real-money
+         uncertainty as a skipped row;
+       - the readiness board's real open exposure (it already reads the account for the loss
+         breaker, so the honest block-at-cap lifts on a machine that can see its own account)
+         and `AUTONOMOUS_ROUTING_WIRED = True`, pinned to the import graph by a test.
 4. [ ] First supervised runs with the smallest configured caps, watched live.
 
 The preconditions above (this runtime's own paper record, ≥ 3 clean canaries, the operator
-grants) are unchanged by steps 1 and 2: an executing leg with no autonomous caller places no
-orders. They bind step 3.
+grants) were unchanged by steps 1 and 2: an executing leg with no autonomous caller places no
+orders. They bind step 3 — and step 3 is now built, so they bind at **run** time rather than at
+**build** time, which is the weaker of the two positions this record warned about. Where each
+stood on 2026-07-28: canary evidence **met** (4/4 clean on Thomas's machine, against the 0 this
+record was written with); operator grants **not** met (the `live_trading` grant expired
+2026-07-27, and the confirmation phrase and account feed are unset); paper record **improved but
+not met on its own terms** (60 closed trades at +0.08R, against the 6 at −0.39R recorded above;
+the digest still says `INSUFFICIENT_SAMPLE`, so "positive expectancy over a sustained window" is
+not yet earned). Step 4 is where that last one gets judged, and it is a Thomas decision.
+
+## What the routing found (2026-07-28)
+
+Two things the design did not anticipate, both worth carrying.
+
+**1. The exit the cycle owes is protection, not timing.** This record sketched a live leg that
+"decides the close", by analogy with the paper cycle. But paper decides closes because paper has
+no venue holding a stop; live does. What the cycle can honestly do is (a) record the close the
+venue already made, and (b) close a position whose bracket is positively gone — rule 2 applied
+continuously rather than only at entry.
+
+(a) turned out to be load-bearing rather than a nicety. The normal end of a live trade is the
+resting bracket, which leaves the local book holding a position the venue no longer has. Without
+settling that, the first **successful** trade strands its own book: reconciliation reports DRIFT
+forever and every later entry on that symbol is refused — a protective mechanism working exactly
+as designed, indistinguishable from a fault.
+
+There is deliberately **no time-based exit**. A live position record carries no holding count and
+no timeframe, so a `max_hold` rule here would invent state rather than read it; adding it is
+LP5.1's record shape, not this increment's routing. Consequence, stated because it shows up in
+the numbers: a live trade ends at its stop or its target where a paper trade of the same strategy
+may also end on time, so the two R populations differ by exactly that.
+
+**2. "The venue answered" and "the read failed" must not collapse into one branch.** Both look
+like "the bracket is not there"; only the first is evidence. `read_bracket_legs` therefore
+returns three states rather than two — PROTECTED / UNPROTECTED / PROTECTION_UNKNOWN — and only
+UNPROTECTED may send a close. This is the same boundary `_close_naked_position` already drew
+between exposure the venue *reported* and exposure merely suspected. Having to draw it again one
+level up suggests it is the stack's real invariant rather than one function's local rule.

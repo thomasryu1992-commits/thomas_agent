@@ -375,7 +375,15 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     assert "NOT READY" in text
     # The board must not let green ticks read as harmless now that a path exists.
     assert "an order path EXISTS" in text and "a real order can be placed" in text
-    assert "LP5" in text and "place_canary_order.py" in text
+    # Which autonomous note is correct depends on the wiring, so assert the one that matches
+    # rather than pinning the board to one era of the build. Both must say the consequential
+    # thing: unwired, that the only door is the deliberate canary; wired, that a scheduled run
+    # moves real money and how to stop it.
+    if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        assert "WIRED" in text and "REAL positions" in text
+        assert "delete the live_trading grant" in text
+    else:
+        assert "LP5" in text and "place_canary_order.py" in text
 
 
 def test_autonomous_routing_is_reported_and_never_fails_the_board(tmp_path, clean_env):
