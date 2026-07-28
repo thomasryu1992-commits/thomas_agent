@@ -27,7 +27,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "03_ROLE_CONTRACTS" / "ROLE_REGISTRY.yaml"
 DEFINITION_PATH = ROOT / "03_ROLE_CONTRACTS" / "CONVERSATION_FRONTDESK_ROLE.md"
-SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.2.schema.json"
+SCHEMA_PATH = ROOT / "schemas" / "frontdesk_turn.v0.3.schema.json"
 
 
 def _registry_entry() -> dict:
@@ -144,13 +144,17 @@ def _validate(record: dict) -> None:
 
 
 def _turn(kind: str, payload: dict, reply: str = "네, 확인했습니다.") -> dict:
-    return {"schema_version": "frontdesk_turn.v0.2", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.3", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
 @pytest.mark.parametrize("kind, payload", [
     ("SUBMIT_TASK", {"request_text": "이 사업 아이디어를 분석해줘: 구독형 세차",
                      "important": False, "independent_validation": False}),
+    ("SUBMIT_TASK", {"request_text": "이 문서 번역해줘", "important": False,
+                     "independent_validation": False, "request_kind": "translation"}),
+    ("SUBMIT_TASK", {"request_text": "이 문서 번역해줘", "important": False,
+                     "independent_validation": False, "request_kind": None}),
     ("QUERY_STATUS", {}),
     ("QUERY_HISTORY", {}),
     ("QUERY_HISTORY", {"limit": 5}),
@@ -176,10 +180,16 @@ def test_each_turn_kind_validates(kind, payload):
      "the verbatim request text is required, not optional"),
     (_turn("SUBMIT_TASK", {"request_text": "x"}),
      "flags must be stated explicitly, never defaulted"),
+    (_turn("SUBMIT_TASK", {"request_text": "x", "important": False,
+                           "independent_validation": False, "request_kind": "trading"}),
+     "a kind outside the router's table cannot even be expressed"),
+    (_turn("SUBMIT_TASK", {"request_text": "x", "important": False,
+                           "independent_validation": False, "role_id": "execution.live_trader"}),
+     "no payload field can name a Role — a kind names capabilities, the Registry picks the Role"),
     (_turn("CANCEL_TASK", {}), "a cancel must name its target"),
     (_turn("CHAT_REPLY", {"entry_id": "treg_x"}), "chat carries no arguments"),
     (_turn("CHAT_REPLY", {}, reply="") , "the operator always sees something"),
-    ({"schema_version": "frontdesk_turn.v0.2", "turn_kind": "CHAT_REPLY",
+    ({"schema_version": "frontdesk_turn.v0.3", "turn_kind": "CHAT_REPLY",
       "payload": {}}, "reply_text is required"),
     ({**_turn("CHAT_REPLY", {}), "side_effect": "write"}, "no fields beyond the four"),
 ])
@@ -193,7 +203,7 @@ def test_the_contract_names_the_downgrade_rule():
     """An invalid turn becomes CHAT_REPLY (uncertain => submits nothing). The runtime will
     implement it in F2; the contract carries it now so F2 cannot 'forget'."""
     output = _front_matter()["output_contract"]
-    assert output["base_contract"] == "frontdesk_turn.v0.2"
+    assert output["base_contract"] == "frontdesk_turn.v0.3"
     assert output["invalid_turn_downgrade"] == "CHAT_REPLY"
 
 
@@ -227,7 +237,31 @@ def test_the_widening_stayed_an_enumeration():
 def test_the_contract_names_the_new_capability():
     data = _front_matter()
     assert "runtime_state_lookup" in data["capabilities"]
-    assert data["output_contract"]["base_contract"] == "frontdesk_turn.v0.2"
+    assert data["output_contract"]["base_contract"] == "frontdesk_turn.v0.3"
     # The prohibitions are untouched by the widening.
     unsupported = set(data["unsupported_capabilities"])
     assert {"task_execution", "workspace_write", "memory_promotion", "external_action"} <= unsupported
+
+
+# --- v0.3: the request kind ---------------------------------------------------
+
+def test_selecting_a_kind_did_not_relax_the_routing_prohibition():
+    """`planning_or_routing` stays refused, and the two must be able to coexist: a kind names
+    the CAPABILITIES the work needs, the Role Registry alone decides which Role covers them,
+    and Prime still owns classification, permission level, validation requirement and Role
+    selection. The contract has to say both things, or the next reader has to guess which
+    won."""
+    data = _front_matter()
+    assert "planning_or_routing" in data["unsupported_capabilities"]
+    output = data["output_contract"]
+    assert output["request_kind_selection_allowed"] is True
+    assert output["request_kind_names_capabilities_never_a_role"] is True
+
+
+def test_no_turn_can_name_a_role_or_reach_one_directly():
+    """The layering IS the safety property. If a payload could name a Role, the front desk
+    would be one model output away from selecting `execution.live_trader`."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    blob = json.dumps(schema)
+    for forbidden in ('"role_id"', '"role"', '"provider"', '"tool_id"', '"permission"'):
+        assert forbidden not in blob, forbidden

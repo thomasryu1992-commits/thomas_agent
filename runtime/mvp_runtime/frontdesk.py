@@ -9,6 +9,13 @@ be the second; it now only *proposes* the ``/cancel`` for Thomas to type, so the
 output can no longer mutate coordination state at all. The front desk holds the conversation;
 it never holds authority.
 
+v0.3 lets ``SUBMIT_TASK`` carry a ``request_kind``, which is what makes the other activated
+Roles reachable by conversation at all: the kind gate in the operator channel runs the front
+desk only for an unmarked message, so before this every conversational submission queued with
+no kind and routed to the analysis Role — five of six Roles were reachable only by typing a
+``!marker``, which bypasses the conversation. The addition changes routing, not authority: a
+kind names CAPABILITIES and the Role Registry still decides which Role covers them.
+
 Reuse over invention, per the contract (`03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md`):
 
 - **Provider**: the R7.2 triage precedent — the turn rides in the shared analysis JSON the
@@ -64,7 +71,7 @@ from .worker import Provider
 
 FRONTDESK_PROVIDER_ENV = "MVP_FRONTDESK_PROVIDER"
 FRONTDESK_ROLE_ID = "conversation.frontdesk"
-TURN_SCHEMA_VERSION = "frontdesk_turn.v0.2"
+TURN_SCHEMA_VERSION = "frontdesk_turn.v0.3"
 TURN_EVENT_TYPE = "frontdesk_turn.v0"
 
 SESSION_SCOPE = "frontdesk_session"
@@ -86,6 +93,21 @@ _TURN_KINDS_REGISTRY = frozenset({"QUERY_STATUS", "QUERY_HISTORY", "QUERY_RESULT
 # not open access: each is read-only and renders from the same source its /verb does.
 _TURN_KINDS_RUNTIME = frozenset({"QUERY_SCHEDULES", "QUERY_CONTROL", "QUERY_MEMORY"})
 _TURN_KINDS_CHAT = frozenset({"CLARIFY", "CHAT_REPLY"})
+
+# What each request kind is called in the prompt, so the model can match Thomas's words to
+# one. The KEYS are not an authority — `planner.REQUEST_KIND_CAPABILITIES` is, and a test
+# pins these two sets equal, so a kind added to the router without a gloss (or the reverse)
+# fails in CI rather than becoming a kind the front desk can never select. The wordings are
+# the operator's own marker vocabulary (`!분석` `!조사` `!번역` `!콘텐츠` `!개발`): the same
+# request should reach the same Role whether he typed the marker or just said it.
+REQUEST_KIND_GLOSSES: dict[str, str] = {
+    "analysis": "분석 (사업 아이디어·구조·타당성 분석) — 기본값",
+    "research": "조사 (자료·근거 수집과 출처 비교)",
+    "translation": "번역 (다른 언어로 옮기기)",
+    "content": "콘텐츠 (글·게시물 기획과 작성)",
+    "development": "개발 (기술 분석과 구현 계획)",
+}
+
 
 def select_frontdesk_provider(*, now: str | None = None, root: Path | None = None) -> Provider | None:
     """Choose the front desk's own gated provider, or ``None`` when the feature is off.
@@ -231,6 +253,12 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
   **한 글자도 바꾸지 말고 원문 그대로** 넣습니다 (요약/의역/번역 금지 — 당신의 이해는
   reply_text에서 확인용으로만 서술). important와 independent_validation은 Thomas가 그렇게
   **말했을 때만** true (어조에서 추론 금지).
+  payload.request_kind는 **어떤 종류의 작업인지**를 아래 중 하나로 고릅니다:
+%(request_kinds)s
+  같은 규칙이 적용됩니다 — Thomas의 **말에서** 고르고, 주제의 분위기로 추측하지 마세요.
+  ("이 문서 번역해줘"는 translation, "번역 시장이 어떤지 분석해줘"는 analysis입니다.)
+  종류가 분명하지 않으면 **null**을 넣으세요 (분석으로 처리됩니다). 종류를 잘못 고르면
+  다른 출력 형식을 가진 담당에게 가서 엉뚱한 모양의 답이 나오므로, 애매하면 null입니다.
 - QUERY_STATUS: 지금 무엇이 실행/대기 중인지 물음.
 - QUERY_HISTORY: 지난 작업 목록을 물음. payload.limit은 개수를 말했을 때만.
 - QUERY_RESULT: 특정 작업의 결과를 다시 보여달라 함. payload.entry_id 필요.
@@ -259,15 +287,24 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 
 
 def _prompt_header() -> str:
-    """The instruction block, with the schema version the runtime ACTUALLY enforces.
+    """The instruction block, with the schema version the runtime ACTUALLY enforces and the
+    request kinds the router can ACTUALLY resolve.
 
     Interpolated rather than typed out: the header hard-coded ``frontdesk_turn.v0.1`` while the
     validator's ``const`` had moved to v0.2, so a model that followed the instruction exactly
     produced a turn that failed validation — and every failed turn is downgraded to CHAT_REPLY.
     The whole vocabulary (SUBMIT_TASK, every QUERY_*, CANCEL_TASK) was one obedient model away
     from being dead, silently, with only ``FRONTDESK_TURN_INVALID`` in the ledger to say so. The
-    version now comes from the same constant the validation uses, so the two cannot drift."""
-    return _PROMPT_TEMPLATE % {"schema_version": TURN_SCHEMA_VERSION}
+    version now comes from the same constant the validation uses, so the two cannot drift.
+
+    The kind list is built the same way and for the same reason: a kind the prompt offers but
+    the schema's enum or the router's table does not carry is a submission that dies at
+    validation or at the queue's far end. Listing them from one dict, pinned by a test to the
+    router's own table, is what keeps the three honest."""
+    kinds = "\n".join(
+        f"    - {kind}: {REQUEST_KIND_GLOSSES[kind]}" for kind in sorted(REQUEST_KIND_GLOSSES)
+    )
+    return _PROMPT_TEMPLATE % {"schema_version": TURN_SCHEMA_VERSION, "request_kinds": kinds}
 
 
 def _build_prompt(session: list[dict[str, Any]], text: str) -> str:
@@ -313,6 +350,29 @@ def _verbatim_ok(request_text: str, current: str, session: list[dict[str, Any]])
     return any(
         needle in _normalize(str(e.get("operator_text", ""))) for e in session
     )
+
+
+def _resolve_request_kind(raw: Any) -> str | None:
+    """The request kind to queue, asked of the router that owns the question.
+
+    The schema's enum already bounds this, so reaching the refusal below means the enum and
+    ``planner.REQUEST_KIND_CAPABILITIES`` have drifted apart. Asking the router anyway is
+    deliberate: it is the authority on which kinds are routable, and the alternative — queueing
+    a kind it will refuse — turns a drift into a task that sits in the queue only to fail at the
+    far end, minutes later, in a different process.
+
+    An unknown kind is **refused, never defaulted to analysis**. That direction is the router's
+    own recorded decision (``capabilities_for_request_kind``): silently analyzing a request
+    someone asked to have translated is the wrong answer delivered confidently, which is worse
+    than a refusal naming the kinds that exist. The front desk does not get to re-decide it
+    more leniently just because it is closer to the operator.
+    """
+    if raw is None:
+        return None
+    from .planner import capabilities_for_request_kind      # light, but only this branch needs it
+
+    kind, _capabilities = capabilities_for_request_kind(str(raw))
+    return kind
 
 
 def _propose_cancel(entry_id: Any, *, registry: Any, control_store: Any = None) -> dict[str, Any]:
@@ -531,24 +591,35 @@ def run_turn(
             }
         else:
             try:
+                request_kind = _resolve_request_kind(payload.get("request_kind"))
                 entry, position = task_registry.enqueue(
                     registry, request_text=request_text, origin="FRONTDESK",
                     requester_id=operator_id, now=stamp,
                     flags={"important": bool(payload.get("important")),
                            "independent_validation": bool(payload.get("independent_validation"))},
+                    request_kind=request_kind,
                 )
             except MvpRuntimeError as exc:
-                # The queue's own fail-closed refusals (QUEUE_FULL, an unwritable store)
-                # surface as the reply — never a silent drop (the F1 enqueue rule).
+                # The queue's own fail-closed refusals (QUEUE_FULL, an unwritable store) and
+                # an unroutable kind alike surface as the reply — never a silent drop (the F1
+                # enqueue rule).
                 outcome = {"reply": exc.reason, "action": exc.reason_code}
             else:
                 queue_note = "바로 시작합니다" if position == 1 else f"대기 {position}번째"
+                # The kind is named in the receipt, and that is what makes selecting it from
+                # conversation acceptable at all. Routing used to come only from an explicit
+                # `!marker`, precisely because a wrong guess sends work to a Role with a
+                # different output contract. A model may now read the kind from Thomas's words,
+                # so the receipt says which one it read — arriving BEFORE the pipeline runs, so
+                # a misread is one `/cancel` away instead of a wrong-shaped answer later.
+                kind_note = f"\n종류: {request_kind}" if request_kind else ""
                 outcome = {
-                    "reply": (f"{reply_text}\n\n접수했습니다 ({queue_note})\n"
+                    "reply": (f"{reply_text}\n\n접수했습니다 ({queue_note}){kind_note}\n"
                               f"id: {entry.registry_entry_id[:12]}\n"
                               "완료되면 결과를 보내드립니다 — /tasks 로 진행 상황을 볼 수 있습니다."),
                     "action": "FRONTDESK_TASK_QUEUED",
                     "registry_entry_id": entry.registry_entry_id,
+                    "request_kind": request_kind,
                 }
     else:  # pragma: no cover — the schema's enum makes this unreachable
         outcome = {"reply": reply_text, "action": "FRONTDESK_CHAT_REPLY"}

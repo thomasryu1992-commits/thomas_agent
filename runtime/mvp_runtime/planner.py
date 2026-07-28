@@ -55,11 +55,20 @@ MVP_REQUIRED_CAPABILITIES = ("research", "analysis")
 # the point: the Role Registry stays the only thing that decides which Role covers a capability
 # set, so activating, renaming or retiring a Role changes routing without touching this table.
 #
-# Derived from an explicit marker rather than inferred from the request text. Inferring "this
-# looks like a translation" is a guess, and a wrong guess silently routes work to a Role with a
-# different output contract and different quality criteria — the reader would get a confident
-# answer of the wrong shape. The `!중요` / `--important` precedent already established that an
-# explicit operator marker is how this runtime takes a routing signal from a person.
+# Originally derived from an explicit marker ONLY, never inferred from the request text.
+# Inferring "this looks like a translation" is a guess, and a wrong guess silently routes work
+# to a Role with a different output contract and different quality criteria — the reader would
+# get a confident answer of the wrong shape. The `!중요` / `--important` precedent established
+# that an explicit operator marker is how this runtime takes a routing signal from a person.
+#
+# The conversational front desk (frontdesk_turn.v0.3) is now a SECOND source of this signal, and
+# the reasoning above is why it is shaped the way it is rather than being contradicted: it reads
+# the kind from what Thomas SAID (not from the topic's flavour), it answers null — this table's
+# analysis default — whenever his words do not say, and the queue receipt names the kind it read
+# BEFORE the pipeline runs, so a misread costs a `/cancel` instead of a wrong-shaped answer. What
+# has not changed is that a kind names capabilities and never a Role, and that an unknown one is
+# refused rather than defaulted (`capabilities_for_request_kind` below is the one authority on
+# both, and the front desk asks it rather than keeping a second copy).
 #
 # Each set must be covered by exactly one active routable Role or `select_role` fails closed
 # (NO_ROUTABLE_ROLE / AMBIGUOUS_ROLE); `test_every_request_kind_resolves_to_exactly_one_role`

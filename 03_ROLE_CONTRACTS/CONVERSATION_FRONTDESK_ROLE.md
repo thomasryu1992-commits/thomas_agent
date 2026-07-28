@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: conversation.frontdesk
 role_name: Conversational Frontdesk Role
-role_version: 0.3.0
+role_version: 0.4.0
 status: active
 routable: false
 role_type: session_front
@@ -69,13 +69,15 @@ memory_policy:
   direct_core_write_allowed: false
   secret_candidate_creation_allowed: false
 output_contract:
-  base_contract: frontdesk_turn.v0.2
+  base_contract: frontdesk_turn.v0.3
   invalid_turn_downgrade: CHAT_REPLY
   role_specific_output:
     turn_kind: SUBMIT_TASK | QUERY_STATUS | QUERY_HISTORY | QUERY_RESULT | QUERY_SCHEDULES |
       QUERY_CONTROL | QUERY_MEMORY | CANCEL_TASK | CLARIFY | CHAT_REPLY
     payload: object
     reply_text: string
+  request_kind_selection_allowed: true
+  request_kind_names_capabilities_never_a_role: true
 validation_policy:
   default_mode: none
   independent_required_conditions: []
@@ -143,8 +145,8 @@ validation_block_conditions: []
 
 ## 2. 닫힌 출력 계약 (권한 분리의 나머지 반쪽)
 
-프론트데스크의 모델 호출은 자유 텍스트를 내지 않는다. 출력은 **`frontdesk_turn.v0.1`**
-(closed schema)의 7종 턴 중 정확히 하나다:
+프론트데스크의 모델 호출은 자유 텍스트를 내지 않는다. 출력은 **`frontdesk_turn.v0.3`**
+(closed schema)의 10종 턴 중 정확히 하나다:
 
 | turn_kind | 성격 | 런타임 행동 |
 |---|---|---|
@@ -165,6 +167,33 @@ validation_block_conditions: []
   들어가는 것을 금지한다. 원문 일치는 런타임이 대화 이력에 대해 검증한다.
 - `important`/`independent_validation` 플래그는 **operator가 말했을 때만** true다.
   톤에서 추론하지 않는다.
+
+### 2.1 `request_kind` (v0.3) — 라우팅 *신호*이지 라우팅 *결정*이 아니다
+
+`SUBMIT_TASK.payload.request_kind`는 이 작업이 **어떤 능력(capabilities)을 필요로 하는지**를
+닫힌 enum에서 고른다. 이것이 `planning_or_routing` 금지와 공존하는 이유는 계층 때문이다:
+
+- kind는 **Role을 지목하지 않는다.** 어떤 Role이 그 능력 집합을 담당하는지는 Role Registry가
+  단독으로 결정한다 (`planner.REQUEST_KIND_CAPABILITIES` → `select_role`). 프론트데스크가
+  Role을 이름으로 부를 수 있는 필드는 여전히 없다.
+- 계획은 그대로 Prime의 것이다 — 분류, 위험도, 필요 권한 수준, 검증 요구, Role 선택.
+- enum은 라우터의 표와 **같아야 한다** (테스트가 고정). 런타임은 큐에 넣기 전에 라우터에게
+  다시 물으며, 모르는 kind는 **분석으로 대체하지 않고 거절한다** — 번역해달라는 요청을 조용히
+  분석해서 자신 있게 내놓는 것이 거절보다 나쁘다는 라우터 자신의 판단을 그대로 따른다.
+
+**왜 v0.2까지는 없었는가, 그리고 무엇이 바뀌었는가.** 원래 kind는 operator의 명시적 마커
+(`!번역` 등)에서만 왔다. 근거는 "텍스트에서 추론하는 것은 추측이고, 틀린 추측은 출력 계약이
+다른 Role로 조용히 보내 엉뚱한 모양의 답을 자신 있게 내놓는다"였다. 그 근거는 여전히 유효하다.
+바뀐 것은 그 위험을 감수하는 대신 **보이게 만든 것**이다:
+
+- 프롬프트는 "Thomas의 **말에서** 고르고 주제의 분위기로 추측하지 말라"고 못박는다 —
+  `important`/`independent_validation`과 같은 규율이며, 애매하면 `null`(분석)이다.
+- 접수 메시지가 **어떤 kind로 접수했는지 표시**한다. 이 메시지는 파이프라인이 돌기 **전에**
+  도착하므로, 잘못 읽은 kind는 `/cancel` 한 번이지 나중에 받는 엉뚱한 답이 아니다.
+
+마커 경로는 그대로 남는다. 마커가 붙은 메시지는 애초에 프론트데스크에 도달하지 않는다
+(결정론적 의도는 모델을 기다리지 않는다). 같은 요청이 마커로 왔든 말로 왔든 같은 Role에
+도달하는 것이 이 확장의 전부다.
 
 ## 3. 권한
 
