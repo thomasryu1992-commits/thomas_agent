@@ -74,6 +74,20 @@ NOT_ACCEPTING_ORDERS = "NOT_ACCEPTING_ORDERS"
 # legs by it. A market the venue cannot be asked about again is proposable and
 # unobservable — see `market_data.is_re_readable`.
 MARKET_ID_NOT_RE_READABLE = "MARKET_ID_NOT_RE_READABLE"
+# A market nobody has traded has a quote, not a price. Measured 2026-07-28: **55% of the 953
+# markets Binance lists have traded exactly zero**, and their books are whatever a maker
+# parked there — one of them quoted 0.82 against Polymarket's 0.003 on the same question.
+#
+# Zero is the whole rule, and deliberately so. The distribution offers no larger cut to make:
+# past zero it is a smooth tail (Binance p75 = $145, Polymarket median = $3,090/24h, Kalshi
+# median = 615 contracts) with no gap to put a threshold in, and inventing one would be a
+# number nobody could defend. What zero HAS is a meaning: no trade has happened, so there is
+# no traded price, and that is a fact rather than a judgement.
+#
+# It therefore does not catch a market that has traded and gone stale — Binance's July-FOMC
+# book had $83.6k of volume and 23 levels a side, and was still 70 cents away from
+# Polymarket. That failure is caught where it shows up, as `opportunity.IMPLAUSIBLE_EDGE`.
+NO_TRADED_VOLUME = "NO_TRADED_VOLUME"
 
 
 def hours_to_close(close_time: Any, *, now: str) -> float | None:
@@ -142,6 +156,13 @@ def screen_market(
 
     if market.accepting_orders is False:
         reasons.append(NOT_ACCEPTING_ORDERS)
+
+    # Reported zero, not merely absent. `None` is the venue declining to say — the watch
+    # path never fetches volume at all — and unknown is not zero, the same rule this module
+    # applies to `accepting_orders` and the matcher applies to a missing category.
+    if isinstance(market.volume, (int, float)) and not isinstance(market.volume, bool) \
+            and market.volume <= 0:
+        reasons.append(NO_TRADED_VOLUME)
 
     # Last, because it is the only gate about *us* rather than about the market. The market
     # is fine; we are holding an id we cannot use, and proposing it would spend an operator's
@@ -249,6 +270,7 @@ __all__ = [
     "DERIVED_COMBINATION",
     "HORIZON_TOO_SHORT",
     "MARKET_ID_NOT_RE_READABLE",
+    "NO_TRADED_VOLUME",
     "MIN_HORIZON_HOURS",
     "NOT_ACCEPTING_ORDERS",
     "SCREENING_VERSION",
