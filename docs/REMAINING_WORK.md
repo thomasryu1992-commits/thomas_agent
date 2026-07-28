@@ -142,6 +142,27 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
   - [ ] Confirm the Binance prediction fee formula (flat vs `P x (1-P)`), then drop the
         assumption. Until then costs are over-estimated, which skips observations rather than
         inventing them.
+  - [ ] ⚠️ **Decide whether Binance belongs in a multi-week observation at all** — a venue
+        question, not a bug, and the reason it is written down is that the alternative is
+        rediscovering it in three weeks with an empty report.
+        Its **listing returns 40 markets regardless of `limit`, and rotates.** Two consequences,
+        both measured on 2026-07-27:
+        (a) `feeRateBps` rides on the listing and nowhere else — the watch scan re-reads a
+        confirmed leg by id, and that response is a price alone — so a leg captures its rate at
+        confirmation (#287) or never. **A market that has since left the listing cannot be
+        repaired**: re-confirming captures nothing, and the group returns `net_edge: null`
+        forever. One group was retired for exactly this after producing `readable 0/1` from
+        confirmation onward.
+        (b) The same rotation means a **confirmed Binance leg silently ages out of the corpus**
+        the pipeline can describe, which is a broader problem than the fee: a two-to-four week
+        window assumes the legs stay knowable for its duration.
+        Kalshi and Polymarket are unaffected — their fees come from a verified schedule rather
+        than the market row, and their listings are not the only source of anything the scan
+        needs. So the observation window can proceed on those two while this is decided.
+        **The options are venue-shaped, and Thomas's:** treat Binance as discovery-only (propose
+        from it, never confirm it), confirm Binance legs only for short-dated events that resolve
+        inside the window, or drop it from PM1 and revisit at PM2. Whichever, record it here —
+        "we tried Binance and the report was empty" is not a finding about prediction markets.
   - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
         (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
         the venues a confirmed group needs**, prices every pairing inside every group, and
@@ -194,6 +215,17 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         *priced*, putting a number derived from `(venue, index)` into the store the report's
         persistence figure is computed from. Both doors closed plus the report's incident tally
         (#271). The rule is crypto's `guards.BLOCK_SYNTHETIC_DATA_FOR_TRADING`, one package over.
+  - [x] **A confirmed leg keeps the fee rate the by-id re-read cannot carry** — done 2026-07-27
+        (#287). `confirm` captures the venue's stated rate from the listing; the scan fills it in
+        where the live read has none. **Fallback, never override** — a rate the venue states now
+        always wins, because `live_sizing`'s *venue filters are an input, never a memory* is the
+        rule this bends and a rate captured weeks ago is exactly that memory. Found on the one
+        group confirmed at the time: both legs quoted, `gross_edge` computed, `net_edge: null` on
+        every row since confirmation. The seam was invisible because everything upstream looked
+        healthy. `_quote_known`'s docstring claimed the leg was then "priced at the pessimistic
+        default"; it was not — Binance has no schedule entry, so the leg priced at *no knowable
+        cost*. Intent and implementation had drifted. See the open box above for what this does
+        **not** fix.
 - [ ] **PM2 — paper trading** (1–2 PRs): pessimistic fill model (taker + book depth + fees), virtual
       portfolio, **hold-to-resolution** (also measures cross-venue resolution mismatch).
   - [ ] ⚠️ Thomas sets **PM3 entry criteria as numbers** before PM2 ends.
