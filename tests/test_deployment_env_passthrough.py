@@ -13,12 +13,18 @@ grants minted, key in `.env`, container restarted, and the runtime still reading
 Compose forwarded nothing. `MVP_MARKET_DATA` and `MVP_PAPER_TRADING` are forwarded and stay
 out of scope here — asserting a shape for them from this file would be guessing.
 
-The **live-trading and account** variables are no longer out of scope, and the direction is
-inverted: they must NOT reach either service. That intent is stated in `docs/DEPLOYMENT.md`
-("Live trading env — a shell session, **never** the compose `.env`") and confirmed by Thomas
-on 2026-07-27, and until now it lived only in that prose. One line added to a service's
-`environment:` block would arm a permanently-restarting container with a key that can trade,
-and nothing would have objected.
+The **live-trading and account** variables are in scope, and they moved twice on 2026-07-27 —
+which is why the reasoning is written down rather than the conclusion. First they were pinned
+as reaching NEITHER service, because `docs/DEPLOYMENT.md` said credentials belong in the
+terminal of the human placing an order and that rule lived only in prose. Then Thomas decided
+the opposite for the scheduler: forward them, so the readiness board and the account read
+answer on the service without a per-session export.
+
+So the assertion below inverts for the scheduler and HOLDS for the operator. Both halves are
+load-bearing. The scheduler is where the crypto and prediction paths run, so it is where the
+account read is useful; the operator loop reads no market or account data, and handing it a
+key that can trade would widen a blast radius for nothing — the same reason the signed
+prediction credential is scheduler-only.
 
 Adding a new operator capability means adding it below — which forces the deploy question
 to be answered at authoring time, not discovered on a server that quietly does nothing.
@@ -74,26 +80,30 @@ NOT_DEPLOYED = {
 
 
 
-# The live-trading surface, which must reach NEITHER service. Named from the code's own
-# constants so a rename cannot silently empty this list.
+# The live-trading surface. Forwarded to the SCHEDULER (Thomas decision, 2026-07-27) and
+# withheld from the OPERATOR. Named from the code's own constants so a rename cannot silently
+# empty this list.
 #
-# Why a prohibition rather than an omission: the credentials are supposed to live in the
-# terminal of the human placing an order, for the length of that session. In a service's
-# environment they outlive the intent that set them and come back on every restart
-# (`restart: unless-stopped`), readable by anything that can inspect the container.
+# What forwarding costs, kept here rather than deleted with the prohibition it used to justify:
+# in a service's environment these outlive the session that set them and come back on every
+# restart (`restart: unless-stopped`), readable by anything that can inspect the container.
+# That was the argument for withholding them; it did not become wrong when the decision went
+# the other way, it became a cost Thomas accepted. A future reader reversing this again should
+# see what was traded.
 #
 # And the key is ONE key. `docs/DEPLOYMENT.md` derives the order credentials from the account
 # ones (`MVP_LIVE_ORDER_API_KEY="$BINANCE_ACCOUNT_API_KEY"`), so the account variables are not
-# a safer subset: `account.py` is read-only by construction, but that is a property of THIS
-# code, not of the key, which carries futures-trading permission at the venue. Splitting it
-# into a genuinely read-only venue key is the only thing that would change this answer, and it
-# would be a deliberate edit to this list rather than a quiet compose change.
+# a safer subset one could forward while withholding the rest: `account.py` is read-only by
+# construction, but that is a property of THIS code, not of the key, which carries
+# futures-trading permission at the venue. Splitting it into a genuinely read-only venue key
+# is what would make the two separable.
 #
-# Note what does NOT protect us today: no autonomous entry point can reach the order path
-# (`test_no_autonomous_entry_point_reaches_the_live_order_path`), so a container holding these
-# could not place an order right now. That is exactly why this is defence in depth — the day
-# cycle routing lands, the credentials must not already be sitting there.
-LIVE_TRADING_NEVER_DEPLOYED = {
+# What still stands between a forwarded scheduler and an autonomous order, unchanged by any of
+# this: no autonomous entry point can reach the order path
+# (`test_no_autonomous_entry_point_reaches_the_live_order_path`), the per-machine
+# `live_trading` grant, and the registered budget. Env alone opens nothing — which is why
+# forwarding is a cost rather than a capability.
+LIVE_TRADING_SURFACE = {
     live_pnl.LIVE_TRADING_ENV: "the live-trading switch",
     live_order.CONFIRMATION_ENV: "the autonomous-trading confirmation phrase",
     live_order.CANARY_CONFIRMATION_ENV: "the canary confirmation phrase",
@@ -157,17 +167,27 @@ def test_the_signed_prediction_credential_stays_out_of_the_operator_service():
 
 # --- the live-trading surface must reach neither service --------------------------------
 
-@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_NEVER_DEPLOYED.items()))
-@pytest.mark.parametrize("service", ("operator", "scheduler"))
-def test_no_service_receives_a_live_trading_variable(service, env_var, what):
-    """The rule `docs/DEPLOYMENT.md` states, made enforceable.
+@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+def test_the_scheduler_receives_the_live_trading_surface(env_var, what):
+    """Thomas decision 2026-07-27: forwarded, so the board and the account read answer on the
+    service. Asserted rather than assumed for the reason the whole file exists — Compose
+    forwards only what its `environment:` block names, and every one of these fails closed
+    without noticing that the variable never arrived."""
+    environment = _service_environment("scheduler")
+    assert env_var in environment, f"the scheduler never receives {env_var} ({what})"
+    # From the host `.env`, defaulting to empty (= the inert, fail-closed path). A committed
+    # literal here would put a credential in source, which no decision authorizes.
+    assert environment[env_var] == "${%s:-}" % env_var
 
-    Checked per service rather than once, because per-service drift is the failure this whole
-    file exists for: #245 was one selector reaching the operator and not the scheduler."""
-    assert env_var not in _service_environment(service), (
-        f"the {service} service would receive {env_var} ({what}). Live-trading credentials "
-        f"belong in the terminal of the human placing an order, not in a service that "
-        f"restarts forever — see docs/DEPLOYMENT.md."
+
+@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+def test_the_operator_receives_none_of_it(env_var, what):
+    """The half that did NOT reverse. The operator loop reads no market or account data, so a
+    key that can trade buys it nothing and widens a blast radius — the same reasoning that
+    keeps the signed prediction credential scheduler-only. Checked per variable because
+    per-service drift is the failure this file exists for (#245)."""
+    assert env_var not in _service_environment("operator"), (
+        f"the operator service would receive {env_var} ({what}), which it has no code path for"
     )
 
 
@@ -186,10 +206,11 @@ def test_no_service_bulk_forwards_the_environment(service):
     )
 
 
-def test_the_prohibition_covers_the_whole_live_surface():
+def test_the_list_covers_the_whole_live_surface():
     """A guard against the list quietly shrinking: these are the variables a live order needs,
-    and every one of them must be named above. A rename that emptied the list would otherwise
-    leave every test in this section vacuously green."""
-    assert len(LIVE_TRADING_NEVER_DEPLOYED) == 8
-    for env_var in LIVE_TRADING_NEVER_DEPLOYED:
+    and every one must be named above. A rename that emptied the list would otherwise leave
+    every test in this section vacuously green — in BOTH directions now, since the same list
+    drives the scheduler's forwarding requirement and the operator's prohibition."""
+    assert len(LIVE_TRADING_SURFACE) == 8
+    for env_var in LIVE_TRADING_SURFACE:
         assert env_var.startswith(("MVP_", "BINANCE_")), env_var
