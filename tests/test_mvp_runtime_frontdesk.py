@@ -62,7 +62,7 @@ class TurnProvider:
 
 
 def _turn(kind, payload, reply="알겠습니다."):
-    return {"schema_version": "frontdesk_turn.v0.3", "turn_kind": kind,
+    return {"schema_version": "frontdesk_turn.v0.4", "turn_kind": kind,
             "payload": payload, "reply_text": reply}
 
 
@@ -177,7 +177,7 @@ def test_the_prompt_offers_exactly_the_kinds_the_router_can_resolve():
     at validation or at the queue's far end, and the operator would only see a downgrade."""
     from runtime.mvp_runtime import planner
 
-    schema = json.loads((ROOT / "schemas" / "frontdesk_turn.v0.3.schema.json").read_text(
+    schema = json.loads((ROOT / "schemas" / "frontdesk_turn.v0.4.schema.json").read_text(
         encoding="utf-8"))
     submit = next(b for b in schema["allOf"]
                   if b["if"]["properties"]["turn_kind"]["const"] == "SUBMIT_TASK")
@@ -813,3 +813,121 @@ def test_a_non_queued_entry_is_named_rather_than_proposed(tmp_path):
 
     assert outcome["action"] == "CANCEL_PROPOSAL_NOT_CANCELLABLE"
     assert "/cancel" not in outcome["reply"]
+
+
+# --- v0.4: clarification resume ----------------------------------------------
+#
+# The gap, measured before it was built: the verbatim rule requires a submission to be a
+# substring of ONE message, so after "분석해줘" → (CLARIFY) → "7일" the front desk could
+# submit the request without the period, or the period without the request, and the one
+# thing Thomas actually meant was the only unsubmittable option.
+
+def test_a_clarification_answer_is_carried_into_the_same_request(tmp_path):
+    """The whole point. Two of his messages, one submission, and the period survives."""
+    registry = TaskRegistryStore(tmp_path)
+    working_memory = WorkingMemoryStore(tmp_path / "wm")
+    # Turn 1: he asks, the front desk asks back.
+    _run("Prediction 데이터 분석해줘", TurnProvider(_turn("CLARIFY", {}, reply="기간을 알려주세요.")),
+         tmp_path, registry=registry, working_memory=working_memory)
+    # Turn 2: he answers, and the front desk assembles both.
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK",
+        {"request_text": "Prediction 데이터 분석해줘", "important": False,
+         "independent_validation": False, "clarification_texts": ["7일"]},
+    ))
+    outcome = _run("7일", provider, tmp_path, registry=registry, working_memory=working_memory)
+
+    assert outcome["action"] == "FRONTDESK_TASK_QUEUED"
+    assert registry.latest()[0].request_text == "Prediction 데이터 분석해줘\n7일"
+
+
+def test_one_bad_segment_refuses_the_whole_submission(tmp_path):
+    """Checked per segment, and a failure is total. Checking the composed string would pass a
+    paraphrase glued between two real quotes; submitting only the segments that passed would
+    silently drop the very answer this feature exists to carry."""
+    registry = TaskRegistryStore(tmp_path)
+    provider = TurnProvider(_turn(
+        "SUBMIT_TASK",
+        {"request_text": "Prediction 데이터 분석해줘", "important": False,
+         "independent_validation": False,
+         "clarification_texts": ["최근 7일 기준으로, 그리고 요약도 붙여서"]},   # never typed
+    ))
+    outcome = _run("Prediction 데이터 분석해줘", provider, tmp_path, registry=registry)
+
+    assert outcome["action"] == "FRONTDESK_VERBATIM_MISMATCH"
+    assert registry.latest() == []
+
+
+def test_the_receipt_quotes_what_was_actually_assembled(tmp_path):
+    """Assembling is the one thing he cannot see from his own scrollback — he said two things
+    and one request went in. The composed text arrives BEFORE the pipeline runs."""
+    registry = TaskRegistryStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    _run("이 아이디어 분석해줘", TurnProvider(_turn("CLARIFY", {}, reply="기간은요?")),
+         tmp_path, registry=registry, working_memory=wm)
+    outcome = _run("30일", TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "이 아이디어 분석해줘", "important": False,
+                        "independent_validation": False, "clarification_texts": ["30일"]})),
+        tmp_path, registry=registry, working_memory=wm)
+
+    assert "요청 내용:" in outcome["reply"]
+    assert "이 아이디어 분석해줘\n30일" in outcome["reply"]
+
+
+def test_a_single_segment_request_gets_no_echo(tmp_path):
+    """Noise on every task would train him past the one place it matters."""
+    outcome = _run("이 아이디어 분석해줘", TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "이 아이디어 분석해줘", "important": False,
+                        "independent_validation": False})), tmp_path)
+    assert "요청 내용:" not in outcome["reply"]
+
+
+def test_a_repeated_segment_is_not_submitted_twice(tmp_path):
+    """Every element is still his own words, so a repeat is not dangerous — but "7일 7일"
+    reaches the specialist as an emphasis he did not write."""
+    registry = TaskRegistryStore(tmp_path)
+    outcome = _run("7일", TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "7일", "important": False,
+                        "independent_validation": False,
+                        "clarification_texts": ["7일", "7일"]})),
+        tmp_path, registry=registry)
+
+    assert outcome["action"] == "FRONTDESK_TASK_QUEUED"
+    assert registry.latest()[0].request_text == "7일"
+
+
+def test_blank_and_null_segments_are_dropped(tmp_path):
+    registry = TaskRegistryStore(tmp_path)
+    _run("분석해줘", TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "분석해줘", "important": False,
+                        "independent_validation": False,
+                        "clarification_texts": ["   ", "분석해줘"]})),
+        tmp_path, registry=registry)
+    assert registry.latest()[0].request_text == "분석해줘"
+
+
+def test_omitting_the_field_is_exactly_the_v0_3_behaviour(tmp_path):
+    """Opt-in: a turn that carries no clarification is byte-identical to before."""
+    registry = TaskRegistryStore(tmp_path)
+    for payload in (
+        {"request_text": "분석해줘", "important": False, "independent_validation": False},
+        {"request_text": "분석해줘", "important": False, "independent_validation": False,
+         "clarification_texts": None},
+    ):
+        _run("분석해줘", TurnProvider(_turn("SUBMIT_TASK", payload)), tmp_path, registry=registry)
+        assert registry.latest()[0].request_text == "분석해줘"
+
+
+def test_nothing_of_the_front_desks_own_is_added_to_the_request(tmp_path):
+    """No labels, no "clarification:" prefix. Every character submitted is one he typed."""
+    registry = TaskRegistryStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    _run("A를 분석해줘", TurnProvider(_turn("CLARIFY", {}, reply="언제 기준인가요?")),
+         tmp_path, registry=registry, working_memory=wm)
+    _run("B 기준", TurnProvider(_turn(
+        "SUBMIT_TASK", {"request_text": "A를 분석해줘", "important": False,
+                        "independent_validation": False, "clarification_texts": ["B 기준"]})),
+        tmp_path, registry=registry, working_memory=wm)
+
+    submitted = registry.latest()[0].request_text
+    assert set(submitted.split("\n")) == {"A를 분석해줘", "B 기준"}

@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "frontdesk_turn.v0.4.schema.json",
+  "title": "Frontdesk Turn v0.4 — the closed output contract of the conversational front desk",
+  "description": "One turn of the conversation.frontdesk role. This is the FORCED output shape of the front desk's model call: the LLM does not emit free text with side effects, it emits exactly one of ten typed turns, and the runtime acts only on what the closed payload carries. A turn that fails this schema is downgraded to CHAT_REPLY by the runtime (uncertain => submits nothing). The privilege separation lives here: eight of the ten kinds are read-only or pure conversation, and the only one that changes anything (SUBMIT_TASK) can only feed the already-governed task queue — there is no payload field through which a turn could name a tool, a file, a provider, or a permission. v0.3 added SUBMIT_TASK.request_kind: which CAPABILITIES the work needs, from a closed enum that must equal the router's own table. It names no Role and grants nothing — the Role Registry still decides which Role covers a capability set, and every Role is behind its own gate. Before it existed, a conversational submission could only ever route to the analysis kind, so five of the six activated Roles were reachable only by the deterministic `!marker` path, which bypasses the conversation entirely. v0.4 adds SUBMIT_TASK.clarification_texts: the operator's OWN follow-up words that complete a request — typically his answer to a CLARIFY the front desk just sent. Before it, the verbatim rule (a submission must be a substring of ONE message) made the one thing he actually meant unsubmittable: asked \"which period?\" and answered \"7일\", the front desk could submit the original request without the period, or the period without the request, but never both. Every element is verbatim-checked independently against the same window, so composing changes WHICH of his words are submitted, never WHOSE.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "turn_kind",
+    "payload",
+    "reply_text"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frontdesk_turn.v0.4"
+    },
+    "turn_kind": {
+      "description": "What this turn asks the runtime to do. SUBMIT_TASK/CANCEL_TASK feed the task queue; every QUERY_* is a read-only lookup the runtime answers from its own deterministic renderers (task registry, scheduler, control state, working memory) — never from the model's account of them; CLARIFY asks the operator a question instead of guessing; CHAT_REPLY is conversation with no runtime action at all — and is also the mandatory downgrade for any turn the runtime cannot validate.",
+      "enum": [
+        "SUBMIT_TASK",
+        "QUERY_STATUS",
+        "QUERY_HISTORY",
+        "QUERY_RESULT",
+        "QUERY_SCHEDULES",
+        "QUERY_CONTROL",
+        "QUERY_MEMORY",
+        "CANCEL_TASK",
+        "CLARIFY",
+        "CHAT_REPLY"
+      ]
+    },
+    "payload": {
+      "description": "The kind-specific closed arguments. Every variant is additionalProperties:false — an unexpected field is a schema failure, never a silently ignored extra.",
+      "type": "object"
+    },
+    "reply_text": {
+      "description": "What the operator sees for this turn, in natural language. Always required: even a SUBMIT_TASK narrates what was submitted, so the operator can catch a misunderstanding before the pipeline finishes. For SUBMIT_TASK this narration is confirmation only — the pipeline receives payload.request_text verbatim, never this rendering.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "SUBMIT_TASK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_text",
+              "important",
+              "independent_validation"
+            ],
+            "properties": {
+              "request_text": {
+                "description": "The operator's request VERBATIM — the exact words to submit to the pipeline. The front desk must not paraphrase, summarize, or translate here; its own understanding belongs in reply_text, where the operator can check it. Verbatimness itself is enforced by the runtime against the conversation, not by this schema.",
+                "type": "string",
+                "minLength": 1
+              },
+              "request_kind": {
+                "description": "Which KIND of work the operator asked for, which selects the capabilities the task needs — never a Role (the Role Registry owns that mapping, so this cannot name, widen, or reach a Role). Null means the analysis kind: the routing every conversational submission had before v0.3, and the answer whenever the operator's own words do not say what kind of work this is. Set it only from what he SAID, never from the topic's flavour — the same discipline `important` and `independent_validation` already carry, and for a sharper reason: a wrong kind routes the work to a Role with a different output contract, so the operator gets a confident answer of the wrong shape. The enum must equal the router's own table (pinned by a test), so a kind that validates here is always one the router can resolve; the runtime re-asks the router anyway and refuses rather than queueing work that could only fail.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "analysis",
+                  "content",
+                  "development",
+                  "research",
+                  "translation",
+                  null
+                ]
+              },
+              "important": {
+                "description": "True only when the operator marked the request important (!중요 semantics), never inferred from tone.",
+                "type": "boolean"
+              },
+              "independent_validation": {
+                "description": "True only when the operator asked for independent review, never volunteered.",
+                "type": "boolean"
+              },
+              "clarification_texts": {
+                "description": "Additional operator messages, VERBATIM, that belong to this same request — his answer to a clarification you asked, or a correction he sent right after. Each element is checked against the conversation exactly as request_text is: a paraphrase here is refused the same way, so this widens what can be assembled from his words and not who may write them. The runtime appends them to request_text in the order given and shows the composed result in the receipt, so a wrong assembly is one /cancel away. Null or omitted is the v0.3 behaviour. Do NOT use it to re-send the request itself, to carry your own summary, or to attach an unrelated earlier message.",
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "maxItems": 3,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_STATUS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_HISTORY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "description": "How many finished entries to list. Null means the runtime default; the runtime clamps, this schema only types.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_RESULT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entry_id"
+            ],
+            "properties": {
+              "entry_id": {
+                "description": "The task-registry entry id (or unambiguous prefix) whose deliverable to re-send.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CANCEL_TASK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entry_id"
+            ],
+            "properties": {
+              "entry_id": {
+                "description": "The QUEUED task-registry entry to cancel. The runtime's own rules still apply (QUEUED only — stopping running work stays the kill switch's authority).",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CLARIFY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "CHAT_REPLY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_SCHEDULES"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_CONTROL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "turn_kind": {
+            "const": "QUERY_MEMORY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+          }
+        }
+      }
+    }
+  ]
+}

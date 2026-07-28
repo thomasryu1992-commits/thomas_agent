@@ -29,7 +29,7 @@ non_dynamic_roles:
   status: active          # D2 flip: explicit Thomas decision, 2026-07-25 (F2 runtime PR)
   routable: false
   definition_path: 03_ROLE_CONTRACTS/CONVERSATION_FRONTDESK_ROLE.md
-  definition_sha256: 68a8a31f064cdd598aad8ad4d45f2d8be06148f85aa1c1ff8024606234bf6172
+  definition_sha256: 3515c2e41926bdaf248e5dc0b3022ef75789a1ed50d7dcaf8a50f11e12be2045
 roles:
 - role_id: general.specialist
   version: 0.4.0
