@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Git-side guard for the "No direct main commits" rule in CLAUDE.md.
+#
+# Why here and not only in the Claude PreToolUse hook: that one runs in the AGENT's
+# working directory, which is the primary checkout. A commit made inside a linked
+# worktree — the normal way work happens here, since several sessions share this repo
+# and an external sync keeps returning the primary checkout to main — is judged against
+# the wrong branch. In practice that meant the primary checkout sitting on main (its
+# resting state) denied every worktree commit, while the rule it was enforcing was
+# already satisfied.
+#
+# Git runs this hook in the worktree being committed to, so `rev-parse` here is the
+# branch the commit will actually land on. No inference, no parsing of the command.
+#
+# Detached HEAD is allowed: it is not main, and a rebase or bisect must stay usable.
+set -uo pipefail
+
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+
+case "$branch" in
+  main|master) ;;
+  *) exit 0 ;;
+esac
+
+cat >&2 <<EOF
+Refusing to commit on '$branch'. CLAUDE.md: no direct main commits — branch first
+(git checkout -b <type>/<name>), then PR.
+
+If an external sync moved HEAD onto $branch, re-create the feature branch and move the
+commit to it by ref:
+  git branch -f <feature> <sha> && git switch <feature> && git branch -f $branch origin/$branch
+EOF
+exit 1

@@ -38,8 +38,14 @@ approval turns it on.
   dangerous case at the door but does not self-heal — `chown -R 10001:10001` is the fix.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
-- **No direct `main` commits.** Branch → PR → gates → merge. A PreToolUse hook
-  (`.claude/hooks/block-main-commits.sh`) denies a `git commit` while HEAD is on `main`.
+- **No direct `main` commits.** Branch → PR → gates → merge. Enforced by
+  `.githooks/pre-commit`, which git runs **in the worktree being committed to** — enable
+  it once per clone: `git config core.hooksPath .githooks`. A PreToolUse hook
+  (`.claude/hooks/block-main-commits.sh`) is the coarse net for a bare `git commit` in the
+  agent's own directory; it deliberately declines to judge commands that change directory
+  first (`cd <worktree> && git commit …`), because it cannot see which tree those land in
+  and guessing denied every legitimate worktree commit while the primary checkout rested
+  on `main`.
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
 
