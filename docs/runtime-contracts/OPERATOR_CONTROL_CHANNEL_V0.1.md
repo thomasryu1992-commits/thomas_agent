@@ -1,4 +1,10 @@
-# Operator Control Channel (R4) — v0.1
+# Operator Control Channel
+
+> **Verb families on this door:** emergency console (`control`), approval, memory, task
+> coordination (`registry_console`), feedback, and the domain console (`domain_console`:
+> `/crypto`, `/pred`). Every verb is inventoried in `operator.CHANNEL_VERB_AUTHORITY` with the
+> policy clause that permits it, and a test asserts that inventory **both ways** — a new family
+> cannot answer anything until its author writes down what allows it. (R4) — v0.1
 
 **Status:** Active (MVP runtime). **Normative authority:** None — the canonical
 `governance/GOVERNANCE_POLICY.yaml` `control_channel` block and `runtime/mvp_runtime/`
