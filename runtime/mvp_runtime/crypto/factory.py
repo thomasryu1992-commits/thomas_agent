@@ -625,6 +625,7 @@ def _replay(
     position: dict[str, Any] | None = None
     entry_regime: str | None = None
     total_fee_cost_r = 0.0
+    total_maker_fee_cost_r = 0.0
     total_slippage_cost_r = 0.0
 
     for i, row in enumerate(rows):
@@ -636,15 +637,17 @@ def _replay(
             if reason is not None:
                 breakdown = apply_cost_model(
                     position["direction"], position["entry_price"], float(exit_price),
-                    position["risk"], cost=cost,
+                    position["risk"], cost=cost, close_reason=reason,
                 )
                 total_fee_cost_r += breakdown.fee_cost_r
+                total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
                 outcomes.append({
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
                     "gross_R": breakdown.gross_r,
                     "fee_cost_R": breakdown.fee_cost_r,
+                    "maker_fee_cost_R": breakdown.maker_fee_cost_r,
                     "slippage_cost_R": breakdown.slippage_cost_r,
                     "close_reason": reason,
                     "created_at_utc": candle.get("close_time"),
@@ -672,7 +675,7 @@ def _replay(
                 "holding_candles": 0,
             }
             entry_regime = row.get("market_regime")
-    return outcomes, total_fee_cost_r, total_slippage_cost_r
+    return outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r
 
 
 def _holdout_evidence(
@@ -684,7 +687,7 @@ def _holdout_evidence(
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
     that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
+    outcomes, fees, maker_fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
     total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
     closed = len(outcomes)
     return {
@@ -699,8 +702,16 @@ def _holdout_evidence(
         # on whatever rate happened to be current when the candidate was minted. The replay
         # already computes these; only the return dropped them.
         "fee_cost_r": round(fees, 8),
+        # The maker share of `fee_cost_r`, without which the re-derivation above is wrong rather
+        # than merely unavailable: `expectancy_at` scales the taker rate, and scaling a maker fee
+        # by it would report a rate this candidate never faced on that leg.
+        "maker_fee_cost_r": round(maker_fees, 8),
         "slippage_cost_r": round(slippage, 8),
-        "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
+        "cost_model": {
+            "taker_fee_bps": cost.taker_fee_bps,
+            "maker_fee_bps": cost.maker_fee_bps,
+            "slippage_bps": cost.slippage_bps,
+        },
     }
 
 
@@ -727,7 +738,9 @@ def backtest_spec(
     # re-warming — the split is about what the SCORE may see, not about the data itself.
     split = holdout_split_index(len(all_rows))
     rows, candles = all_rows[:split], all_candles[:split]
-    outcomes, total_fee_cost_r, total_slippage_cost_r = _replay(spec, rows, candles, cost=cost)
+    outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r = _replay(
+        spec, rows, candles, cost=cost
+    )
     holdout = _holdout_evidence(spec, all_rows[split:], all_candles[split:], cost=cost, offset=split)
 
     summary = summarize_outcomes(outcomes)
@@ -788,8 +801,18 @@ def backtest_spec(
         "cost_summary": {
             "total_net_r": total_net_r,
             "total_fee_cost_r": round(total_fee_cost_r, 8),
+            # The maker share of the line above. `pool.expectancy_at` re-derives an old
+            # candidate's expectancy at a different TAKER rate, and that algebra is linear in the
+            # taker portion only — so the portion has to be recorded, not inferred. A record
+            # without this field predates the maker exit and is all-taker by construction, which
+            # is exactly how `expectancy_at` reads a missing value.
+            "total_maker_fee_cost_r": round(total_maker_fee_cost_r, 8),
             "total_slippage_cost_r": round(total_slippage_cost_r, 8),
-            "cost_model": {"taker_fee_bps": cost.taker_fee_bps, "slippage_bps": cost.slippage_bps},
+            "cost_model": {
+                "taker_fee_bps": cost.taker_fee_bps,
+                "maker_fee_bps": cost.maker_fee_bps,
+                "slippage_bps": cost.slippage_bps,
+            },
         },
         "regime_breakdown": regime_breakdown,
         "walk_forward": walk_forward,
