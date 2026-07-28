@@ -201,6 +201,15 @@ permanently and outlive the intent that set them.
 So do **not** add anything below to `docker-compose.yml` or to the compose `.env`. Export it in
 the shell you are about to run the canary from, and close that shell afterwards.
 
+**This is enforced, not just stated** (2026-07-27): `tests/test_deployment_env_passthrough.py`
+fails if either service's `environment:` block names a live-trading or account variable, and
+also if a service declares `env_file:` — which would forward the whole file and slip past a
+per-variable check. Note what the prohibition does *not* rest on: no autonomous entry point can
+reach the order path today, so a container holding these could not trade right now. It is
+defence in depth, for the day cycle routing lands. Note too that the account variables are not
+a safer subset — the order credentials are derived from them below, so it is one key, and
+`account.py` being read-only is a property of this code rather than of the key.
+
 ```bash
 # --- live trading (canary session) ------------------------------------------
 # ONE Binance API key: Futures trading ON, withdrawals and internal transfer OFF,
