@@ -73,9 +73,23 @@ DEFAULT_ACCOUNT_BASE_URL = "https://fapi.binance.com"
 ACCOUNT_PATH = "/fapi/v2/account"
 INCOME_PATH = "/fapi/v1/income"
 
+# Per-FILL history, which `/fapi/v1/income` cannot give. Income reports COMMISSION as a
+# per-window total with no way to tell which leg paid it, so the taker rate in `cost.py` had
+# to be hand-derived on 2026-07-26 by dividing one window's commission by an estimated
+# notional — and the maker rate could not be derived at all, because a maker exit's fee and a
+# taker entry's fee land in the same bucket. This endpoint returns `commission`,
+# `commissionAsset`, `quoteQty` and a `maker` boolean per fill, which is exactly the split.
+USER_TRADES_PATH = "/fapi/v1/userTrades"
+
 RECV_WINDOW_MS = 5000
 INCOME_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/income call
+USER_TRADES_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/userTrades call
 QUOTE_ASSET = "USDT"
+
+# How far back a fee measurement looks by default. Fee tiers change, so an unbounded history
+# would average across rates the account no longer pays; 30 days matches the longest window
+# the snapshot already reports.
+FEE_MEASUREMENT_DAYS = 30
 
 # Realized-P&L windows reported by a snapshot, in days. The longest one bounds the single
 # income query; the shorter ones are bucketed from the same rows (one call, three windows).
@@ -136,15 +150,31 @@ class AccountSnapshot:
 class AccountFeed(Protocol):
     """Read-only account access.
 
-    The protocol deliberately has exactly one method. There is no ``submit``/``cancel``
-    sibling to forget to gate — an order-placing capability cannot be reached through an
-    ``AccountFeed`` reference at all.
+    Every method here is a GET. There is no ``submit``/``cancel`` sibling to forget to gate —
+    an order-placing capability cannot be reached through an ``AccountFeed`` reference at all.
+
+    That invariant used to be stated as "the protocol deliberately has exactly one method",
+    which was a proxy for it and stopped being true when ``fill_history`` was added. The count
+    was never the point; **read-only** was. A second GET does not widen the blast radius —
+    it reads the same account under the same grant — and stating the rule directly means the
+    next read does not have to argue with a sentence about arithmetic.
     """
 
     feed_id: str
     feed_version: str
 
     def account_snapshot(self, *, timeout_seconds: int) -> AccountSnapshot | None: ...
+
+    # `fill_history`, not `user_trades` after the endpoint it calls. A structural test
+    # (`test_account_feed_has_no_order_capability`) refuses any public method on these classes
+    # whose name contains "order"/"submit"/"cancel"/"trade"/…, and that guard is valuable
+    # precisely because it is blunt enough to be unarguable — carving an exception into it for
+    # a method that only reads would teach the next reader that the list is negotiable.
+    # "Fill history" is also the more accurate name: it returns fills, and in this codebase
+    # "trade" names the action.
+    def fill_history(
+        self, symbol: str, *, start_ms: int, timeout_seconds: int
+    ) -> list[dict[str, Any]] | None: ...
 
 
 class NoAccountFeed:
@@ -156,6 +186,14 @@ class NoAccountFeed:
     network_egress = False
 
     def account_snapshot(self, *, timeout_seconds: int) -> AccountSnapshot | None:
+        return None
+
+    def fill_history(
+        self, symbol: str, *, start_ms: int, timeout_seconds: int
+    ) -> list[dict[str, Any]] | None:
+        # None, not []: an empty list is a real answer ("this account has no fills") and a
+        # fee rate measured over it would be an honest absence. No feed at all is a different
+        # statement, and the two must not collapse into one.
         return None
 
 
@@ -219,6 +257,36 @@ class BinanceFuturesAccountFeed:
 
         latency_ms = int((time.monotonic() - started) * 1000)
         return self._build(account, income, latency_ms=latency_ms, warnings=warnings)
+
+    def fill_history(
+        self, symbol: str, *, start_ms: int, timeout_seconds: int = 10
+    ) -> list[dict[str, Any]]:
+        """This account's own fills for one symbol since ``start_ms``. A GET, nothing else.
+
+        Same egress chokepoint as ``account_snapshot`` — the grant is re-verified here rather
+        than trusted from construction, because that is the property the gate actually
+        guarantees and a second entry point is a second place to forget it.
+
+        The venue requires a symbol on this endpoint and caps a page at 1000 fills; a canary
+        account is nowhere near that, so this deliberately does not paginate. It returns what
+        the page holds and the caller decides — a silent truncation dressed as a complete
+        history is exactly the failure a fee measurement must not make, so the count travels
+        with the answer (:class:`MeasuredFeeRate.fills`) rather than being dropped here.
+        """
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        rows = self._signed_get(
+            USER_TRADES_PATH,
+            {"symbol": symbol, "startTime": int(start_ms), "limit": USER_TRADES_PAGE_LIMIT},
+            timeout_seconds=timeout_seconds,
+        )
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", "live account returned an unparseable fill history")
+        return [row for row in rows if isinstance(row, dict)]
 
     def _signed_get(
         self, path: str, params: dict[str, Any], *, timeout_seconds: int
@@ -371,6 +439,84 @@ def return_pct(net_pnl: float, margin_balance: float) -> float | None:
     return round(net_pnl / basis * 100.0, 4)
 
 
+# --- measured fee rates (the maker/taker split income cannot give) -----------------
+
+MAKER, TAKER = "maker", "taker"
+
+
+@dataclass(frozen=True)
+class MeasuredFeeRate:
+    """What this account was actually charged on one side of the book.
+
+    ``rate_bps`` is None whenever the number would be invented rather than measured, and the
+    other fields say which case it was. That distinction is the whole point of the class:
+    `cost.DEFAULT_MAKER_FEE_BPS` is Binance's PUBLISHED rate carrying an explicit "should be
+    replaced with a measurement", and a measurement that quietly returns 0.0 for "no maker
+    fill has ever happened" would look exactly like a real reading of a zero-fee venue.
+    """
+
+    fills: int
+    notional_usdt: float
+    commission_usdt: float
+    rate_bps: float | None
+    # Why there is no rate, when there is none. Empty on a successful measurement.
+    unmeasurable_reason: str = ""
+    # Commission assets seen on this side. A BNB-paid fee is a real discount, not a bug, but
+    # it is not denominated in the notional's currency — so it is named, never divided.
+    commission_assets: tuple[str, ...] = ()
+
+
+def measure_fee_rates(trades: Any) -> dict[str, MeasuredFeeRate]:
+    """Split fills into maker/taker and derive the effective bps rate of each. Pure.
+
+    ``rate_bps = commission / notional * 10000`` per side, over the fills the venue itself
+    labelled — ``maker`` is a boolean on every ``/fapi/v1/userTrades`` row, so neither side is
+    inferred from an order type this code chose.
+
+    Three cases refuse rather than answer, each named in ``unmeasurable_reason``:
+
+    - **no fills on that side.** The live state as of 2026-07-28: every order this account has
+      ever placed is a MARKET canary, so the maker side has a sample of zero. "No maker fill
+      has happened yet" and "the maker fee is zero" are opposite claims about real money.
+    - **zero notional.** Nothing to divide by.
+    - **a commission asset other than USDT.** Paying fees in BNB is a legitimate discount, but
+      that commission is not in the notional's units and converting it would need a BNB price
+      this function does not have and must not guess.
+
+    A negative rate is returned as-is: some tiers rebate the maker side, and clamping it would
+    hide the one result that would most change how the cost model is written.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {MAKER: [], TAKER: []}
+    for row in trades if isinstance(trades, list) else []:
+        if isinstance(row, dict):
+            buckets[MAKER if row.get("maker") else TAKER].append(row)
+
+    measured: dict[str, MeasuredFeeRate] = {}
+    for side, rows in buckets.items():
+        notional = sum(_f(row.get("quoteQty")) for row in rows)
+        commission = sum(_f(row.get("commission")) for row in rows)
+        assets = tuple(sorted({
+            str(row.get("commissionAsset") or "").upper() for row in rows
+        } - {""}))
+        if not rows:
+            reason = f"no {side} fill in the window"
+        elif set(assets) - {QUOTE_ASSET}:
+            reason = f"commission paid in {', '.join(assets)}, not {QUOTE_ASSET} only"
+        elif notional <= 0:
+            reason = "fills carry no notional"
+        else:
+            reason = ""
+        measured[side] = MeasuredFeeRate(
+            fills=len(rows),
+            notional_usdt=round(notional, 8),
+            commission_usdt=round(commission, 8),
+            rate_bps=round(commission / notional * 10_000.0, 4) if not reason else None,
+            unmeasurable_reason=reason,
+            commission_assets=assets,
+        )
+    return measured
+
+
 def select_account_feed(
     *, now: str | None = None, root: Any | None = None
 ) -> AccountFeed:
@@ -497,6 +643,80 @@ def read_account(
     return snapshot, snapshot_record(snapshot, feed=feed, now=now)
 
 
+def read_fee_rates(
+    symbol: str, *, days: int = FEE_MEASUREMENT_DAYS, timeout_seconds: int = 10,
+    root: Any | None = None, now_ms: int | None = None,
+) -> tuple[dict[str, MeasuredFeeRate] | None, dict[str, Any]]:
+    """Measure this account's maker/taker rates from its own fills. Read-only, degrades.
+
+    Same shape and same posture as :func:`read_account` — a transport failure, a missing
+    credential or an unconfigured feed yields ``(None, record)`` rather than raising, because
+    a fee measurement is diagnostic and must never be able to take a caller down with it.
+
+    ``(None, …)`` means *the read did not happen*. A successful read over an account with no
+    fills returns a dict whose sides both carry ``rate_bps=None`` and say why — the difference
+    between "could not look" and "looked, and there is nothing there" is the difference between
+    retrying and accepting an answer.
+    """
+    feed = select_account_feed(root=root)
+    now = timeutil.utc_now_iso()
+    start_ms = (now_ms if now_ms is not None else int(time.time() * 1000)) - days * 86_400_000
+    record: dict[str, Any] = {
+        "tool_id": ACCOUNT_TOOL_ID,
+        "tool_version": getattr(feed, "feed_version", ACCOUNT_TOOL_VERSION),
+        "tool_class": ACCOUNT_TOOL_CLASS,
+        "operation": "fee_rate_measurement",
+        "feed_id": getattr(feed, "feed_id", "none"),
+        "read_only": True,
+        "external_action": False,
+        "network_egress": bool(getattr(feed, "network_egress", False)),
+        "symbol": symbol,
+        "window_days": days,
+        "created_at": now,
+    }
+    try:
+        trades = feed.fill_history(symbol, start_ms=start_ms, timeout_seconds=timeout_seconds)
+    except ToolError as exc:
+        record.update({"configured": True, "degraded": True,
+                       "degraded_reason_code": ACCOUNT_DATA_DEGRADED,
+                       "error_reason_code": exc.reason_code})
+        return None, record
+    if trades is None:
+        record["configured"] = False
+        return None, record
+
+    measured = measure_fee_rates(trades)
+    record.update({
+        "configured": True,
+        # Rates and counts only. A fill row carries an order id and an exact price; this
+        # record is evidence that a measurement happened, not a copy of the venue's book.
+        "measured": {side: asdict(rate) for side, rate in measured.items()},
+    })
+    return measured, record
+
+
+def render_fee_rates(measured: dict[str, MeasuredFeeRate] | None, *, symbol: str, days: int) -> str:
+    """The operator-facing board. States the sample size next to every rate, always.
+
+    A bps figure with no fill count behind it is how the 2026-07-26 taker reading came to be
+    quoted as settled: it was two canary entries and their closes, which is a fine measurement
+    of a published rate and a poor one of anything that varies.
+    """
+    if measured is None:
+        return f"=== measured fee rates ({symbol}, {days}d) ===\nnot configured or read failed"
+    lines = [f"=== measured fee rates ({symbol}, {days}d) ==="]
+    for side in (MAKER, TAKER):
+        rate = measured[side]
+        if rate.rate_bps is None:
+            lines.append(f"{side:6}: -            ({rate.unmeasurable_reason})")
+        else:
+            lines.append(
+                f"{side:6}: {rate.rate_bps:8.4f} bps  over {rate.fills} fill(s), "
+                f"{rate.commission_usdt:+.6f} / {rate.notional_usdt:.2f} USDT"
+            )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     force_utf8_io()
     parser = argparse.ArgumentParser(
@@ -504,7 +724,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="emit the snapshot as JSON")
     parser.add_argument("--timeout", type=int, default=10, help="per-request timeout in seconds")
+    parser.add_argument("--fee-rates", metavar="SYMBOL", default=None,
+                        help="instead of the board, measure this symbol's maker/taker fee "
+                             "rates from this account's own fills")
+    parser.add_argument("--fee-window-days", type=int, default=FEE_MEASUREMENT_DAYS,
+                        help="how far back --fee-rates looks (default 30)")
     args = parser.parse_args(argv)
+
+    if args.fee_rates:
+        measured, record = read_fee_rates(
+            args.fee_rates, days=args.fee_window_days, timeout_seconds=args.timeout,
+        )
+        if args.json:
+            sys.stdout.write(json.dumps({"record": record}, ensure_ascii=False, indent=1) + "\n")
+        else:
+            sys.stdout.write(
+                render_fee_rates(measured, symbol=args.fee_rates, days=args.fee_window_days) + "\n"
+            )
+        return 1 if record.get("degraded") else 0
 
     snapshot, record = read_account(timeout_seconds=args.timeout)
     if args.json:
