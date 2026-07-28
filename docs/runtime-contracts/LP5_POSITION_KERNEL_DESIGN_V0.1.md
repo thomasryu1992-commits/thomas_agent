@@ -199,6 +199,17 @@ the existing per-order / daily-count / open-exposure / daily-loss caps from the 
 - **Fee and funding accounting** for realized PnL — the venue's income endpoint is the honest
   source, not a computed `(exit - entry) * qty`.
 
+**Bracket shape note added 2026-07-28 (maker take-profit).** The two legs are no longer the same
+shape. The stop stays a `closePosition` `STOP_MARKET`; the target became a **sized `reduceOnly`
+`LIMIT`**, which earns the maker rate instead of triggering into a market order at a price the
+market had already reached. The venue documents `closePosition` for the two `_MARKET` conditional
+types **only**, so the target leg cannot be Close-All and must carry a quantity — it is sized
+from the ACTUAL entry fill, never the intent, or a partial fill would leave it resting to reduce
+more than exists. The asymmetry runs in the safe direction: the stop still covers whatever is
+open. `cost.DEFAULT_MAKER_FEE_BPS` is the venue's **published** 2.0 bps and is **not yet measured
+on this account** — the first live maker fill should replace it with a measurement, because an
+understated maker rate reports an edge better than reality.
+
 ## Open engineering decisions (deferred to implementation, not blockers)
 
 - Exit-decision cadence: keep the paper shape (decide on the last closed candle at cycle

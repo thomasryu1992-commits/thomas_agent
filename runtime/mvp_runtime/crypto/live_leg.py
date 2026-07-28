@@ -26,14 +26,29 @@ The three rules this leg owes, each implemented as a branch you can point at:
    live position is exactly what the bracket exists to prevent, so the fail-closed direction
    is *out*, not in.
 3. **Cancel the surviving leg on close.** The venue documents no auto-cancel for conditional
-   orders when a position closes, so a leftover leg is withdrawn explicitly. A stale
-   ``closePosition`` leg cannot open anything — it can only reduce — so a failed cancel is
-   reported, never treated as fatal.
+   orders when a position closes, and a resting ``reduceOnly`` LIMIT is not cancelled either, so
+   a leftover leg of either shape is withdrawn explicitly. Neither can open anything — Close-All
+   and reduceOnly both only ever reduce — so a failed cancel is reported, never treated as fatal.
 
-**Both bracket legs are ``closePosition`` conditional orders**, not sized reduceOnly ones. The
-venue treats ``closePosition`` as Close-All and forbids it from carrying a quantity, so the
-bracket protects whatever is actually open even if the fill drifted from the intent, and the
-two legs cannot reserve quantity against each other.
+**The two bracket legs have deliberately different shapes** (changed 2026-07-28):
+
+- **The stop is a ``closePosition`` ``STOP_MARKET``.** The venue treats ``closePosition`` as
+  Close-All and forbids it from carrying a quantity, so the stop protects whatever is actually
+  open even if the fill drifted from the intent. This is the leg that defines the risk, and it
+  stays a market order on purpose: a stop that can fail to fill is not a stop.
+- **The target is a sized ``reduceOnly`` ``LIMIT``.** A ``TAKE_PROFIT_MARKET`` triggers into a
+  market order, so it pays the taker rate plus adverse slippage to exit at a price the market
+  had to come to anyway. A resting LIMIT at the same price earns the maker rate and fills at
+  the target exactly — which is also what the backtest has always assumed the target does
+  (``paper.settle_trade_plan`` returns the target price itself as the exit), so this closes a
+  model-versus-reality gap rather than opening one.
+
+The cost of that asymmetry is stated rather than hidden: ``closePosition`` is documented for
+the two ``_MARKET`` conditional types only, so the target leg **cannot** be Close-All and must
+carry a quantity. It is therefore sized from the ACTUAL entry fill, not the intent. If the
+position later grows (nothing here does that) the target leg would cover only the original
+size, while the stop would still cover all of it — the asymmetry runs in the safe direction.
+A ``reduceOnly`` order can only ever reduce, so neither leg can open anything.
 
 **A known limitation, stated rather than hidden:** realized P&L here is computed from the
 venue's actual fill figures and is therefore **gross of fees and funding**. The honest
@@ -52,9 +67,10 @@ from typing import Any, Mapping
 from ..coerce import as_optional_float as _f
 from ..errors import ToolError
 from .live_execution import (
+    ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
-    ORDER_TYPE_TAKE_PROFIT_MARKET,
+    TIME_IN_FORCE_GTC,
     submit_and_reconcile,
 )
 from .live_order import evaluate_live_close_guard, make_client_order_id, make_idempotency_key
@@ -101,35 +117,68 @@ CLOSE_REASON_NAKED = "naked_position_close"
 # --- the bracket ---------------------------------------------------------------
 
 def build_bracket_intent(
-    *, symbol: str, leg: str, side: str, stop_price: float, working_type: str, position_seed: str
+    *,
+    symbol: str,
+    leg: str,
+    side: str,
+    price: float,
+    working_type: str,
+    position_seed: str,
+    quantity: float | None = None,
 ) -> dict[str, Any]:
-    """One protective leg as an order intent. Pure.
+    """One protective leg as an order intent. Pure. ``price`` is the level the leg acts at —
+    the stop trigger for ``SL``, the resting limit price for ``TP``.
 
-    ``closePosition`` rather than a sized ``reduceOnly``: the venue forbids the two together and
-    treats ``closePosition`` as Close-All, so the leg protects whatever is actually open. That
-    matters because the fill can differ from the intent, and a bracket sized to the *intent*
-    would leave a sliver unprotected after a partial fill.
+    The two legs are shaped differently on purpose; the module docstring says why. In short:
+
+    - ``SL`` → ``closePosition`` ``STOP_MARKET``. Close-All, so it protects whatever is actually
+      open even when the fill differs from the intent. No quantity, no ``reduceOnly`` — the venue
+      rejects both alongside ``closePosition``.
+    - ``TP`` → sized ``reduceOnly`` ``LIMIT`` (GTC), which earns the maker rate instead of paying
+      taker plus slippage. ``closePosition`` is not available on a LIMIT at this venue, so this
+      leg **requires** a positive ``quantity``, and the caller must pass the ACTUAL filled size.
+      Refused rather than defaulted: a target leg sized from the intent after a partial fill
+      would try to reduce more than exists.
 
     The client order id folds ``leg`` into its seed, so the stop and the target get distinct
     idempotency keys and neither can be mistaken for the entry.
     """
+    if leg not in ("SL", "TP"):
+        raise ToolError("MALFORMED_BRACKET_LEG", f"bracket leg must be SL or TP, got {leg!r}")
     key = make_idempotency_key({"seed": position_seed, "leg": leg, "symbol": symbol})
-    return {
+    intent: dict[str, Any] = {
         "status": "ORDER_INTENT_CREATED",
         "symbol": symbol,
         "side": side,
-        "order_type_exchange": (
-            ORDER_TYPE_STOP_MARKET if leg == "SL" else ORDER_TYPE_TAKE_PROFIT_MARKET
-        ),
-        "stop_price": float(stop_price),
-        "working_type": working_type,
-        # Close-All: no quantity, no reduceOnly — the venue rejects those alongside it.
-        "close_position": True,
-        "reduce_only": False,
         "client_order_id": make_client_order_id(symbol, leg, key),
         "idempotency_key": key,
         "connectivity_test": False,
     }
+    if leg == "SL":
+        intent.update({
+            "order_type_exchange": ORDER_TYPE_STOP_MARKET,
+            "stop_price": float(price),
+            "working_type": working_type,
+            # Close-All: no quantity, no reduceOnly — the venue rejects those alongside it.
+            "close_position": True,
+            "reduce_only": False,
+        })
+        return intent
+    if not (isinstance(quantity, (int, float)) and quantity > 0):
+        raise ToolError(
+            "MISSING_BRACKET_QUANTITY",
+            "a LIMIT take-profit leg cannot be closePosition at this venue, so it needs the "
+            "actual filled quantity — never the intent's requested size",
+        )
+    intent.update({
+        "order_type_exchange": ORDER_TYPE_LIMIT,
+        "price": float(price),
+        "time_in_force": TIME_IN_FORCE_GTC,
+        "quantity": float(quantity),
+        "close_position": False,
+        "reduce_only": True,
+    })
+    return intent
 
 
 def place_bracket_leg(
@@ -139,8 +188,9 @@ def place_bracket_leg(
 
     Deliberately not ``submit_and_reconcile``: that function reconciles against ``status ==
     FILLED``, which is right for an entry or a close and wrong for a protective order. A
-    correctly placed stop is ``NEW`` — it has not executed and must not. Reusing the entry's
-    reconciler here would report every healthy bracket as a MISMATCH.
+    correctly placed stop is ``NEW`` — it has not executed and must not, and so is a correctly
+    placed target LIMIT, which rests until the market reaches it. Reusing the entry's reconciler
+    here would report every healthy bracket as a MISMATCH.
 
     Returns ``{placed, status, client_order_id, exchange_order_id, error}``. Never raises: a
     failure here has a defined consequence (close the position), so it is data, not an
@@ -153,7 +203,12 @@ def place_bracket_leg(
         "leg": intent.get("side"),
         "client_order_id": client_order_id,
         "order_type": intent.get("order_type_exchange"),
+        # The level the leg acts at, under whichever field its type carries it in: a trigger for
+        # the conditional stop, a resting price for the target LIMIT. Recorded under one name so
+        # an audit reader does not have to know the leg's shape to read its price.
         "stop_price": intent.get("stop_price"),
+        "price": intent.get("stop_price") if intent.get("price") is None else intent.get("price"),
+        "quantity": intent.get("quantity"),
         "placed": False,
         "status": None,
         "exchange_order_id": None,
@@ -198,8 +253,8 @@ def cancel_bracket_legs(
     The venue documents no auto-cancel, so the leg that did *not* trigger is still resting. The
     leg that did trigger answers "unknown order", which the adapter reports as ``None`` — an
     expected result, not a failure. A cancel that fails for any other reason is reported so the
-    operator can clear it by hand; it is not fatal, because a ``closePosition`` leg can only
-    ever reduce a position, never open one.
+    operator can clear it by hand; it is not fatal, because neither leg shape can open anything —
+    a ``closePosition`` stop is Close-All and a ``reduceOnly`` target can only reduce.
     """
     symbol = str(position.get("symbol") or "")
     results: list[dict[str, Any]] = []
@@ -338,13 +393,17 @@ def execute_live_entry(
     legs = [
         build_bracket_intent(
             symbol=symbol, leg="SL", side=bracket["stop_side"],
-            stop_price=bracket["stop_loss"], working_type=bracket["working_type"],
+            price=bracket["stop_loss"], working_type=bracket["working_type"],
             position_seed=seed,
         ),
         build_bracket_intent(
             symbol=symbol, leg="TP", side=bracket["take_profit_side"],
-            stop_price=bracket["take_profit"], working_type=bracket["working_type"],
+            price=bracket["take_profit"], working_type=bracket["working_type"],
             position_seed=seed,
+            # The ACTUAL fill, never the intent: the target leg is a sized reduceOnly LIMIT
+            # (closePosition is unavailable on a LIMIT here), so a partial fill sized from the
+            # intent would rest asking to reduce more than the position holds.
+            quantity=filled_qty,
         ),
     ]
     placements = [place_bracket_leg(leg, adapter=adapter, timeout_seconds=timeout_seconds) for leg in legs]

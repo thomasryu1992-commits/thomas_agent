@@ -93,3 +93,39 @@ def test_no_closed_trades_derives_nothing():
                          "cost_model": {"taker_fee_bps": 2.5, "slippage_bps": 3.0}},
     }}
     assert expectancy_at(record, taker_fee_bps=5.0) is None
+
+
+# --- the maker split (2026-07-28) ------------------------------------------------
+
+def test_the_rescale_ignores_the_maker_portion():
+    """Since the target exit became a maker LIMIT, `total_fee_cost_r` is a mixture. Scaling the
+    whole mixture by a taker ratio would charge the maker leg a rate it never faced."""
+    candidate = _candidate_at(2.5)
+    summary = candidate["backtest_evidence"]["cost_summary"]
+    assert summary["total_maker_fee_cost_r"] > 0.0, "fixture must actually exercise a maker exit"
+
+    naive = (
+        summary["total_net_r"] - summary["total_fee_cost_r"] * (5.0 / 2.5 - 1.0)
+    ) / candidate["backtest_evidence"]["closed_count"]
+    assert not math.isclose(expectancy_at(candidate, taker_fee_bps=5.0), naive, abs_tol=1e-9)
+
+
+def test_a_record_without_the_maker_field_is_read_as_all_taker():
+    """Every pre-2026-07-28 candidate. Absent is not unknown: that model had no maker leg, so
+    the whole fee was taker by construction and the old algebra is exactly right for it."""
+    candidate = _candidate_at(2.5)
+    summary = candidate["backtest_evidence"]["cost_summary"]
+    summary["total_fee_cost_r"] -= summary.pop("total_maker_fee_cost_r")
+
+    expected = (
+        summary["total_net_r"] - summary["total_fee_cost_r"] * (5.0 / 2.5 - 1.0)
+    ) / candidate["backtest_evidence"]["closed_count"]
+    assert math.isclose(expectancy_at(candidate, taker_fee_bps=5.0), expected, abs_tol=1e-9)
+
+
+def test_an_unreadable_maker_share_refuses_rather_than_guesses():
+    """Present but not a number means the split is unknown, and any rescale would be a guess
+    about real money. Fail-closed: None, not a best effort."""
+    candidate = _candidate_at(2.5)
+    candidate["backtest_evidence"]["cost_summary"]["total_maker_fee_cost_r"] = "unknown"
+    assert expectancy_at(candidate, taker_fee_bps=5.0) is None

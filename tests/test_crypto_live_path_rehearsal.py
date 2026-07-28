@@ -296,13 +296,18 @@ def test_the_leg_opens_a_position_from_a_decision_the_planner_actually_produced(
     assert result["status"] == live_leg.ENTRY_OPENED
     assert result["reason_codes"] == []
 
-    # Entry plus both protective legs, at the decision's own rounded prices and sides.
+    # Entry plus both protective legs, at the decision's own rounded prices and sides. The two
+    # legs have different shapes on purpose: the stop is a closePosition conditional, the target
+    # rests in the book as a sized reduceOnly LIMIT so it earns the maker rate.
     sent = {r["type"]: r for r in venue.submitted}
-    assert set(sent) == {"MARKET", "STOP_MARKET", "TAKE_PROFIT_MARKET"}
+    assert set(sent) == {"MARKET", "STOP_MARKET", "LIMIT"}
     assert sent["STOP_MARKET"]["stopPrice"] == decision["bracket"]["stop_loss"]
-    assert sent["TAKE_PROFIT_MARKET"]["stopPrice"] == decision["bracket"]["take_profit"]
     assert sent["STOP_MARKET"]["side"] == decision["bracket"]["stop_side"]
     assert sent["STOP_MARKET"]["workingType"] == decision["bracket"]["working_type"]
+    assert sent["LIMIT"]["price"] == decision["bracket"]["take_profit"]
+    assert sent["LIMIT"]["side"] == decision["bracket"]["take_profit_side"]
+    assert sent["LIMIT"]["reduceOnly"] is True
+    assert sent["LIMIT"]["quantity"] == sent["MARKET"]["quantity"]
 
 
 def test_the_book_records_the_actual_fill_not_the_planned_entry(tmp_path):
