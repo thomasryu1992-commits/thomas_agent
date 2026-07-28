@@ -208,6 +208,24 @@ def test_real_adapter_refuses_without_authorization():
         lx.BinanceFuturesOrderAdapter(authorization=None).submit({"newClientOrderId": "x"})
 
 
+# Every file from which a run can start without a human typing the deliberate canary script.
+# Named ONCE: the tripwire below and the readiness board's import-graph check both read this,
+# and they used to carry their own copies — so a file added to one and not the other would
+# have left the board reporting a build state the tripwire disagreed with, which is the exact
+# drift the board exists to prevent.
+AUTONOMOUS_ENTRY_POINTS = [
+    "runtime/mvp_runtime/crypto/cycle.py",
+    "runtime/mvp_runtime/scheduler.py",
+    "runtime/mvp_runtime/pipeline.py",
+    "runtime/mvp_runtime/operator.py",
+    # The domain console reads the crypto stack from a chat verb. It is reached only through
+    # `operator.py`, which is already here — but this scan is per-FILE, so the import that
+    # matters would sit in the console and never show up in the operator. A chat verb is the
+    # surface where "just one more argument" is most tempting, and it is one token away.
+    "runtime/mvp_runtime/domain_console.py",
+]
+
+
 def test_no_autonomous_entry_point_reaches_the_live_order_path():
     """Increment 2b flipped the flags, so what keeps an order from happening autonomously is
     structural, not a missing implementation.
@@ -222,12 +240,7 @@ def test_no_autonomous_entry_point_reaches_the_live_order_path():
 
     from runtime.mvp_runtime.paths import repo_root
 
-    entry_points = [
-        "runtime/mvp_runtime/crypto/cycle.py",
-        "runtime/mvp_runtime/scheduler.py",
-        "runtime/mvp_runtime/pipeline.py",
-        "runtime/mvp_runtime/operator.py",
-    ]
+    entry_points = AUTONOMOUS_ENTRY_POINTS
     # LP5.3: ``live_leg`` joins the surface. The executing leg now EXISTS, so an autonomous
     # entry point importing it is exactly the wiring this test exists to make deliberate.
     # ``live_pnl`` is deliberately absent: the cycle reads live OUTCOMES so the risk guard can
@@ -482,12 +495,7 @@ def test_the_readiness_board_constant_agrees_with_the_import_graph():
     from runtime.mvp_runtime.crypto.live_readiness import AUTONOMOUS_ROUTING_WIRED
     from runtime.mvp_runtime.paths import repo_root
 
-    entry_points = [
-        "runtime/mvp_runtime/crypto/cycle.py",
-        "runtime/mvp_runtime/scheduler.py",
-        "runtime/mvp_runtime/pipeline.py",
-        "runtime/mvp_runtime/operator.py",
-    ]
+    entry_points = AUTONOMOUS_ENTRY_POINTS
     wired = any(
         "live_leg" in (Path(repo_root()) / rel).read_text(encoding="utf-8")
         for rel in entry_points
