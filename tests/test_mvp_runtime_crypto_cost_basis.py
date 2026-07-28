@@ -16,11 +16,26 @@ as the one the orders reach, and the promotion gate is a person reading these nu
 
 from __future__ import annotations
 
+import pytest
+
+from runtime.mvp_runtime.crypto.cost import (
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
+)
 from runtime.mvp_runtime.crypto.pool import (
+    COST_BASIS_RANK_CONSERVATIVE,
+    COST_BASIS_RANK_CURRENT,
+    COST_BASIS_RANK_OPTIMISTIC,
+    COST_BASIS_RANK_UNRECORDED,
     EDGE_COST_BASIS_NET,
     EDGE_COST_BASIS_UNRECORDED,
+    assert_promotable_cost_basis,
     candidate_quality,
+    cost_basis_rank,
+    rank_candidates,
 )
+from runtime.mvp_runtime.errors import ToolError
 
 _RECORD = {
     "candidate_id": "cand_x",
@@ -89,12 +104,11 @@ def test_the_promotion_listing_states_the_basis_before_the_numbers(monkeypatch, 
 
 
 def test_a_mixed_basis_store_is_flagged_not_silently_ranked(monkeypatch, capsys):
-    """The consequence of moving the default: the store now holds both, and ranking is blind.
+    """The consequence of moving the default: the store now holds both, and says which is which.
 
     `backtest_evidence` is durable, so raising the taker default does not re-score anything —
-    it splits the store. `rank_candidates` orders by verdict tier and edge quality with no
-    notion that one row paid half the fee the other did, so the listing is the only place that
-    can say so.
+    it splits the store. The listing names the split; `rank_candidates` then orders on it, so
+    the warning and the ordering agree instead of the second quietly undoing the first.
     """
     from scripts import promote_strategy_candidates as prom
 
@@ -131,3 +145,98 @@ def test_a_single_basis_store_is_not_warned_about(monkeypatch, capsys):
     monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [record])
     prom.main(["--list"])
     assert "MIXED BASES" not in capsys.readouterr().out
+
+
+# --- which WAY the basis errs, and what the promotion door does about it ----------
+#
+# Equality against the current model was the first rule tried and it was too blunt. On the live
+# machine 90 of 359 rows are scored at taker 5.0 with no maker leg: their take-profit exit paid
+# taker plus adverse slippage where the current model charges maker 2.0 and no slippage, so
+# their numbers are too PESSIMISTIC. Refusing those would have made the escape hatch the normal
+# door. What the gate actually blocks is evidence scored more CHEAPLY than the venue charges.
+
+def _scored(cid, **model):
+    return {**_RECORD, "candidate_id": cid, "backtest_evidence": {
+        **_RECORD["backtest_evidence"],
+        "cost_summary": {"total_net_r": 14.0, "total_fee_cost_r": 1.0,
+                         "total_maker_fee_cost_r": 0.2, "cost_model": model},
+    }}
+
+
+def _current(cid="cand_now"):
+    return _scored(cid, taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                   slippage_bps=DEFAULT_SLIPPAGE_BPS)
+
+
+def test_the_current_model_is_the_top_tier():
+    assert cost_basis_rank(_current()) == COST_BASIS_RANK_CURRENT
+
+
+def test_a_cheaper_taker_rate_is_optimistic():
+    """The 224-row case: half the fee the venue charges, so the edge on file is inflated."""
+    assert cost_basis_rank(_scored("c", taker_fee_bps=2.5, slippage_bps=3.0)) == (
+        COST_BASIS_RANK_OPTIMISTIC)
+
+
+def test_a_pre_maker_record_at_the_right_taker_rate_is_conservative_not_optimistic():
+    """The 90-row case, and the reason this is a direction test rather than an equality test.
+
+    No maker term means that model had no maker leg: the exit paid the TAKER rate plus adverse
+    slippage where today's charges maker 2.0 and none. Its error runs against the candidate.
+    """
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
+
+
+def test_a_maker_rate_below_the_current_one_is_optimistic():
+    """The shape the eventual maker MEASUREMENT takes. `DEFAULT_MAKER_FEE_BPS` is published,
+    not measured; if the real rate lands above it, every candidate scored at the published one
+    becomes exactly this case and stops being promotable on its own evidence."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
+                     maker_fee_bps=DEFAULT_MAKER_FEE_BPS - 0.5, slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_OPTIMISTIC
+
+
+def test_lower_slippage_is_optimistic_too():
+    """Slippage is not re-derivable the way a fee rate is, so it can only be refused."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS - 1.0)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_OPTIMISTIC
+
+
+def test_no_recorded_cost_model_is_its_own_tier():
+    """Worse than stale: an unrecorded basis cannot even say which way it errs."""
+    assert cost_basis_rank(_RECORD) == COST_BASIS_RANK_UNRECORDED
+
+
+def test_the_promotion_door_refuses_optimistic_evidence():
+    with pytest.raises(ToolError) as excinfo:
+        assert_promotable_cost_basis([_scored("cand_cheap", taker_fee_bps=2.5, slippage_bps=3.0)])
+    assert excinfo.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
+    assert "cand_cheap" in str(excinfo.value)
+    assert "--allow-stale-cost-basis" in str(excinfo.value), "a refusal must name its escape"
+
+
+def test_the_promotion_door_refuses_unrecorded_evidence():
+    with pytest.raises(ToolError) as excinfo:
+        assert_promotable_cost_basis([dict(_RECORD)])
+    assert excinfo.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
+
+
+def test_the_promotion_door_admits_current_and_conservative_evidence():
+    """The gate has to let the safe direction through, or it is just an off switch."""
+    conservative = _scored("cand_pre_maker", taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
+                           slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    assert_promotable_cost_basis([_current(), conservative])  # does not raise
+
+
+def test_cheaper_evidence_ranks_below_dearer_evidence_whatever_its_score():
+    """The gap the printed warning left open. `champion_score`, `edge_quality` and `expectancy`
+    are all read off evidence scored under the old model, and the basis tier leads the sort so
+    a cheap-venue row cannot top the list an operator promotes from."""
+    cheap = {**_scored("cand_cheap", taker_fee_bps=2.5, slippage_bps=3.0), "champion_score": 0.99}
+    cheap["backtest_evidence"] = {**cheap["backtest_evidence"], "expectancy": 9.9,
+                                  "win_count": 40, "avg_win_R": 9.0, "avg_loss_R": 1.0}
+    real = {**_current("cand_real"), "champion_score": 0.10}
+
+    assert [c["candidate_id"] for c in rank_candidates([cheap, real])] == ["cand_real", "cand_cheap"]
