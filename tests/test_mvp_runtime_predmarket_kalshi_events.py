@@ -345,3 +345,111 @@ def test_kalshi_rotates_over_the_corpus_it_already_swept(monkeypatch):
     assert seen_ids[0] == ["A-0", "A-1", "A-2", "B-0"]
     assert seen_ids[1] == ["A-0", "A-1", "B-1", "B-2"]
     assert seen_ids[0][:2] == seen_ids[1][:2]
+
+
+# --- a Binance topic is an event, not a market ------------------------------------
+
+def test_a_binance_topic_yields_one_leg_per_candidate_each_with_its_own_name(monkeypatch):
+    """End to end for the defect. The topic's `question` names ONE candidate; its markets are
+    one per candidate. Taking the title from the topic and the token from "the first OPEN
+    market" put Rick Caruso's name on Michael Younger's token — quoted 0.998 against
+    Polymarket's 0.0005, on a market that had never traded."""
+    listing = {"marketTopics": [{
+        "marketTopicId": 4423246,
+        "question": "Will Rick Caruso win the California Governor Election in 2026?",
+        "title": "California Governor Election Winner",
+        "endDate": 1793664000000,
+        "feeRateBps": 200,
+        "tradeVolume": "34765.02",          # the TOPIC's aggregate
+        "status": "REGISTERED",
+    }]}
+    detail = {"markets": [
+        {"marketId": 6774172, "conditionId": "0xyounger", "tradingStatus": "OPEN",
+         "tradeVolume": "0", "description": "resolves on the certified result",
+         "question": "Will Michael Younger win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "tokY"}]},
+        {"marketId": 6774162, "conditionId": "0xbecerra", "tradingStatus": "OPEN",
+         "tradeVolume": "7421.14", "description": "resolves on the certified result",
+         "question": "Will Xavier Becerra win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "tokB"}]},
+    ]}
+
+    def _signed(self, path, params, *, timeout_seconds):
+        return listing if path == self.LIST_PATH else detail
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _signed)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    got = md.BinancePredictionCollector().list_markets(
+        limit=10, timeout_seconds=5, with_quotes=False).markets
+
+    assert len(got) == 2, "one leg per candidate, not one per topic"
+    by_id = {m.market_id: m for m in got}
+    younger, becerra = by_id["6774172:tokY"], by_id["6774162:tokB"]
+
+    # Each leg is named after the outcome it can actually trade.
+    assert "Michael Younger" in younger.title
+    assert "Xavier Becerra" in becerra.title
+    assert "Rick Caruso" not in younger.title + becerra.title
+
+    # Its own volume, not the topic's $34,765 — which is what let a never-traded market pass
+    # a gate built to refuse exactly that.
+    assert younger.volume == 0.0 and becerra.volume == 7421.14
+    assert screening.screen_market(younger, now="2026-07-28T00:00:00Z").observable is False
+    assert screening.NO_TRADED_VOLUME in screening.screen_market(
+        younger, now="2026-07-28T00:00:00Z").reasons
+
+    # Its own cross-reference axis: every candidate in one race has a different conditionId.
+    assert younger.group_id == "0xyounger" and becerra.group_id == "0xbecerra"
+
+    # Facts that ARE the topic's still come from it.
+    assert younger.fee_rate_bps == becerra.fee_rate_bps == 200
+    assert younger.close_time == becerra.close_time
+
+
+def test_binance_ranks_the_outcomes_by_their_own_volume(monkeypatch):
+    """A topic's busiest candidate is not its quietest, and the first ranking only chose
+    which topics were worth a signed call."""
+    listing = {"marketTopics": [{"marketTopicId": 1, "question": "race",
+                                 "endDate": 1793664000000, "tradeVolume": "100"}]}
+    detail = {"markets": [
+        {"marketId": i, "tradingStatus": "OPEN", "tradeVolume": str(v),
+         "question": f"candidate {i}", "outcomes": [{"name": "YES", "tokenId": f"t{i}"}]}
+        for i, v in ((1, 5.0), (2, 900.0), (3, 50.0))
+    ]}
+
+    def _signed(self, path, params, *, timeout_seconds):
+        return listing if path == self.LIST_PATH else detail
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _signed)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    got = md.BinancePredictionCollector().list_markets(
+        limit=10, timeout_seconds=5, with_quotes=False).markets
+    assert [m.volume for m in got] == [900.0, 50.0, 5.0]
+
+
+def test_flattening_costs_no_extra_signed_calls(monkeypatch):
+    """One `detail` per topic, as before — a topic with five candidates still costs one call.
+    The discovery path fetches no books at all, so the correction is free."""
+    paths: list[str] = []
+    listing = {"marketTopics": [{"marketTopicId": 1, "question": "race",
+                                 "endDate": 1793664000000, "tradeVolume": "100"}]}
+    detail = {"markets": [
+        {"marketId": i, "tradingStatus": "OPEN", "tradeVolume": "10",
+         "question": f"candidate {i}", "outcomes": [{"name": "YES", "tokenId": f"t{i}"}]}
+        for i in range(1, 6)
+    ]}
+
+    def _signed(self, path, params, *, timeout_seconds):
+        paths.append(path)
+        return listing if path == self.LIST_PATH else detail
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _signed)
+    monkeypatch.setattr(md.safety_gate, "assert_authorization", lambda *a, **k: None)
+
+    got = md.BinancePredictionCollector().list_markets(
+        limit=10, timeout_seconds=5, with_quotes=False).markets
+    assert len(got) == 5
+    assert paths.count(md.BinancePredictionCollector.DETAIL_PATH) == 1
+    assert md.BinancePredictionCollector.BOOK_PATH not in paths
