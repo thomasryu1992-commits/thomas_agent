@@ -410,24 +410,55 @@ def test_a_malformed_listing_raises_rather_than_returning_nothing(payload):
 def test_the_detail_yields_the_yes_token_and_the_cross_reference():
     """`market_id` becomes the YES outcome token — what the book and any later order key on —
     and `conditionId` is the cross-reference axis, the same shape Polymarket uses."""
-    found = md.parse_prediction_yes_outcome(_detail_row())
-    assert found[:3] == (5567895, "112233", "0xabc123")
-    # The settlement text belongs to the market that was selected here, not to whichever
-    # market a second pass over the same payload would have picked.
-    assert len(found) == 4
+    rows = md.parse_prediction_markets(_detail_row())
+    assert len(rows) == 1
+    assert (rows[0]["market_id"], rows[0]["token_id"], rows[0]["condition_id"]) == (
+        5567895, "112233", "0xabc123")
+
+
+def test_a_topic_becomes_every_outcome_it_holds_not_one_of_them():
+    """THE fix. A topic is an EVENT: "California Governor Election Winner" holds one market
+    per candidate. Returning only the first OPEN one — while the title came from the topic —
+    produced legs whose NAME and whose TOKEN were different candidates, and 354 of 500 live
+    topics hold more than one market."""
+    detail = {"marketTopicId": 4423246, "markets": [
+        {"marketId": 1, "conditionId": "0xa", "tradingStatus": "OPEN", "tradeVolume": "0",
+         "question": "Will Michael Younger win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "t1"}]},
+        {"marketId": 2, "conditionId": "0xb", "tradingStatus": "OPEN", "tradeVolume": "7421.14",
+         "question": "Will Xavier Becerra win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "t2"}]},
+    ]}
+    rows = md.parse_prediction_markets(detail)
+    assert [r["market_id"] for r in rows] == [1, 2]
+    # Each carries its OWN question, conditionId and traded volume — none of them the topic's.
+    assert "Younger" in rows[0]["question"] and "Becerra" in rows[1]["question"]
+    assert rows[0]["condition_id"] != rows[1]["condition_id"]
+    assert rows[0]["volume"] == 0.0 and rows[1]["volume"] == 7421.14
 
 
 def test_a_market_that_is_not_open_is_not_priced():
     """A topic can be REGISTERED while its market's trading is CLOSED. Pricing one nobody can
     trade is pricing something that could never be acted on."""
-    assert md.parse_prediction_yes_outcome(_detail_row(tradingStatus="CLOSED")) is None
+    assert md.parse_prediction_markets(_detail_row(tradingStatus="CLOSED")) == []
 
 
 def test_an_outcome_with_no_token_id_yields_nothing():
     detail = _detail_row(outcomes=[{"name": "YES", "price": "0.52", "index": 0}])
-    assert md.parse_prediction_yes_outcome(detail) is None
-    assert md.parse_prediction_yes_outcome({}) is None
-    assert md.parse_prediction_yes_outcome(None) is None
+    assert md.parse_prediction_markets(detail) == []
+    assert md.parse_prediction_markets({}) == []
+    assert md.parse_prediction_markets(None) == []
+
+
+def test_one_closed_outcome_does_not_hide_the_open_ones():
+    """A race where one candidate has withdrawn still has the others."""
+    detail = {"markets": [
+        {"marketId": 1, "tradingStatus": "CLOSED", "question": "gone",
+         "outcomes": [{"name": "YES", "tokenId": "t1"}]},
+        {"marketId": 2, "tradingStatus": "OPEN", "question": "still running",
+         "outcomes": [{"name": "YES", "tokenId": "t2"}]},
+    ]}
+    assert [r["market_id"] for r in md.parse_prediction_markets(detail)] == [2]
 
 
 def test_the_order_book_gives_the_best_bid_and_ask_regardless_of_page_order():

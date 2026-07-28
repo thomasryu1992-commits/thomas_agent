@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: conversation.frontdesk
 role_name: Conversational Frontdesk Role
-role_version: 0.4.0
+role_version: 0.5.0
 status: active
 routable: false
 role_type: session_front
@@ -69,7 +69,7 @@ memory_policy:
   direct_core_write_allowed: false
   secret_candidate_creation_allowed: false
 output_contract:
-  base_contract: frontdesk_turn.v0.3
+  base_contract: frontdesk_turn.v0.4
   invalid_turn_downgrade: CHAT_REPLY
   role_specific_output:
     turn_kind: SUBMIT_TASK | QUERY_STATUS | QUERY_HISTORY | QUERY_RESULT | QUERY_SCHEDULES |
@@ -145,7 +145,7 @@ validation_block_conditions: []
 
 ## 2. 닫힌 출력 계약 (권한 분리의 나머지 반쪽)
 
-프론트데스크의 모델 호출은 자유 텍스트를 내지 않는다. 출력은 **`frontdesk_turn.v0.3`**
+프론트데스크의 모델 호출은 자유 텍스트를 내지 않는다. 출력은 **`frontdesk_turn.v0.4`**
 (closed schema)의 10종 턴 중 정확히 하나다:
 
 | turn_kind | 성격 | 런타임 행동 |
@@ -194,6 +194,32 @@ validation_block_conditions: []
 마커 경로는 그대로 남는다. 마커가 붙은 메시지는 애초에 프론트데스크에 도달하지 않는다
 (결정론적 의도는 모델을 기다리지 않는다). 같은 요청이 마커로 왔든 말로 왔든 같은 Role에
 도달하는 것이 이 확장의 전부다.
+
+### 2.2 `clarification_texts` (v0.4) — 되묻기가 이어지게 만드는 것
+
+`CLARIFY`는 v0.3까지 **끝나는 턴**이었다. 되묻고 나서 Thomas가 답하면 그 답은 새 메시지일
+뿐이고, 원문 규칙(제출문은 **한 메시지**의 부분 문자열이어야 한다)이 그가 실제로 의도한
+조합을 **유일하게 제출 불가능한 것**으로 만들었다:
+
+| 제출 시도 | 원문 검사 | 문제 |
+|---|---|---|
+| "Prediction 데이터 분석해줘" | 통과 | 기간("7일")이 사라짐 |
+| "7일" | 통과 | 단독으로는 의미 없음 |
+| "Prediction 데이터 분석해줘 7일" | **거절** | 그가 말한 그것 |
+
+`SUBMIT_TASK.payload.clarification_texts`는 그가 **추가로 말한 문장들**을 원문 그대로 담고,
+런타임이 `request_text` 뒤에 줄바꿈으로 이어 붙여 파이프라인에 넘긴다.
+
+- **원문 규칙은 약해지지 않는다 — 세그먼트마다 따로 검사한다.** 합친 문자열을 검사하면 진짜
+  인용 두 개 사이에 낀 의역이 통과하고, 통과한 것만 골라 제출하면 이 기능이 존재하는 이유인
+  그 답이 조용히 빠진다. 그래서 **하나라도 실패하면 전체 거절**이다.
+- 붙이는 것은 그의 문장뿐이다. 라벨도, "clarification:" 같은 접두사도, 프론트데스크 자신의
+  말도 넣지 않는다 — 제출된 모든 글자는 Thomas가 친 글자다.
+- **조립은 그가 자기 스크롤백에서 볼 수 없는 유일한 동작**이다(두 번 말했는데 요청은 하나가
+  들어간다). 그래서 세그먼트가 둘 이상이면 접수 메시지가 **조립 결과를 그대로 인용**한다 —
+  파이프라인이 돌기 전에 도착하므로 잘못된 조립은 `/cancel` 한 번이다.
+- 이것은 라우팅도 계획도 아니다. 바뀐 것은 **그의 말 중 무엇이 제출되는가**이지 **누가 쓴
+  말인가**가 아니므로, `planning_or_routing` 금지와 무관하다.
 
 ## 3. 권한
 
