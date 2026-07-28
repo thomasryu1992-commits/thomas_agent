@@ -572,3 +572,47 @@ def test_discovery_still_respects_the_book_budget(monkeypatch):
 
     md.PolymarketPublicCollector(pages=1).list_markets(limit=200, timeout_seconds=5)
     assert len(books) == md.DEFAULT_BOOK_LIMIT
+
+
+# --- a quote nobody trades against is not a price --------------------------------
+
+def test_a_market_that_has_never_traded_is_not_observable():
+    """Measured 2026-07-28: 55% of the 953 markets Binance lists have traded exactly zero.
+    Their books are whatever a maker parked there — one quoted 0.82 against Polymarket's
+    0.003 on the same question, with no bids at all."""
+    untraded = PredMarket(venue=BINANCE, market_id="5:9", group_id=None, title="q",
+                          close_time="2026-08-15T00:00:00Z", status="active", volume=0.0)
+    verdict = screening.screen_market(untraded, now=NOW)
+    assert verdict.observable is False
+    assert screening.NO_TRADED_VOLUME in verdict.reasons
+
+
+def test_a_venue_that_did_not_report_volume_is_not_treated_as_zero():
+    """Unknown is not zero — the same rule this module applies to `accepting_orders` and the
+    matcher applies to a missing category. The watch path never fetches volume at all, so a
+    gate that read `None` as "never traded" would refuse every confirmed leg."""
+    silent = PredMarket(venue=BINANCE, market_id="5:9", group_id=None, title="q",
+                        close_time="2026-08-15T00:00:00Z", status="active", volume=None)
+    assert screening.screen_market(silent, now=NOW).observable is True
+
+
+def test_any_trading_at_all_passes_this_gate():
+    """Zero is the whole rule. Past it the distribution is a smooth tail with no gap to put a
+    threshold in, and inventing one would be a number nobody could defend — so the gate stops
+    where the meaning stops."""
+    for volume in (0.01, 7.17, 145.0, 83580.91):
+        traded = PredMarket(venue=BINANCE, market_id="5:9", group_id=None, title="q",
+                            close_time="2026-08-15T00:00:00Z", status="active", volume=volume)
+        assert screening.screen_market(traded, now=NOW).observable is True, volume
+
+
+def test_the_gate_does_not_claim_to_catch_a_stale_but_traded_book():
+    """Binance's July-FOMC book had $83.6k of volume and 23 levels a side, and was still 70
+    cents away from Polymarket. Volume cannot see that; `opportunity.IMPLAUSIBLE_EDGE` can,
+    and the two gates are kept separate so neither pretends to be the other."""
+    from runtime.mvp_runtime.predmarket import opportunity
+
+    stale = PredMarket(venue=BINANCE, market_id="5:9", group_id=None, title="q",
+                       close_time="2026-08-15T00:00:00Z", status="active", volume=83580.91)
+    assert screening.screen_market(stale, now=NOW).observable is True
+    assert opportunity.IMPLAUSIBLE_EDGE
