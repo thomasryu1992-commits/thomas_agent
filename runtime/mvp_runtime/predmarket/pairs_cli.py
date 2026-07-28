@@ -381,6 +381,15 @@ def _cmd_sheet(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(sheet, encoding="utf-8")
         sys.stdout.write(f"wrote {len(result['candidates'])} candidate(s) to {args.out}\n")
+        # The count alone is not a finding. "wrote 0" reads as a quiet market, and the run
+        # that produced it here had simply failed to reach Polymarket eight seconds after a
+        # restart — the sheet said so, on its own first page, and the console did not. A
+        # module built so that an empty result can never be mistaken for an empty market
+        # should not hide that behind a file path.
+        for venue, screen in sorted((result.get("screening") or {}).items()):
+            sys.stdout.write(f"  {venue:<11}: {screening.screening_status_line(screen)}\n")
+        for venue, code in sorted((result.get("venue_errors") or {}).items()):
+            sys.stdout.write(f"  DEGRADED {venue}: {code} (no candidates from this venue)\n")
         return EXIT_OK
     sys.stdout.write(sheet)
     return EXIT_OK
