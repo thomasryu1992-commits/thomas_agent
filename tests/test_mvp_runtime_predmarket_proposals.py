@@ -377,3 +377,34 @@ def test_settlement_text_is_opt_in_so_the_cadence_does_not_store_it(monkeypatch)
     with_rules = pairs_cli.run_discovery(
         now=NOW, venues=["kalshi", "polymarket"], with_rules=True)
     assert all("left_resolution_rules" in c for c in with_rules["candidates"])
+
+
+# --- an empty sheet must not read as a quiet market ------------------------------
+
+def test_writing_the_sheet_to_a_file_still_reports_a_degraded_venue(tmp_path, monkeypatch, capsys):
+    """Found by using it. `sheet --out` printed "wrote 0 candidate(s)" and nothing else; the
+    run had failed to reach Polymarket eight seconds after a container restart. The sheet
+    itself said so on its first page — the console did not, and the console is what a person
+    reads first.
+
+    A module built so an empty result can never be mistaken for an empty market must not hide
+    that behind a file path.
+    """
+    import argparse
+
+    from runtime.mvp_runtime.predmarket import pairs_cli
+
+    monkeypatch.setattr(pairs_cli, "run_discovery", lambda **kw: {
+        "candidates": [], "judged_count": 0, "market_counts": {"kalshi": 4, "polymarket": 0},
+        "screening": {"polymarket": {"screened_count": 0, "observable_count": 0,
+                                     "excluded_count": 0, "excluded_by_reason": {}}},
+        "venue_errors": {"polymarket": "TOOL_ERROR"},
+    })
+    out = tmp_path / "sheet.md"
+    pairs_cli._cmd_sheet(argparse.Namespace(limit=10, out=str(out)))
+
+    printed = capsys.readouterr().out
+    assert "wrote 0 candidate(s)" in printed
+    assert "DEGRADED polymarket: TOOL_ERROR" in printed
+    # And the file still carries the full story.
+    assert "Degraded this run" in out.read_text(encoding="utf-8")

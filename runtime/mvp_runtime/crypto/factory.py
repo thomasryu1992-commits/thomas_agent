@@ -216,10 +216,14 @@ def _htf_trend_short_entry(p: dict) -> list[dict]:
 def _htf_pullback_long_entry(p: dict) -> list[dict]:
     # The reason the families exist: buy weakness only while the timeframe ABOVE is
     # still trending up. Same dip, opposite meaning, depending on the higher regime.
+    #
+    # No separate htf_adx floor: ``classify_market_regime`` only returns TREND_UP when
+    # adx is already at or above its trend threshold, so the two conditions overlapped —
+    # the extra one bought little selectivity and cost a free parameter, which the
+    # robustness score divides its trade count by.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
         {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
-        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
@@ -227,18 +231,25 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
         {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
-        {"feature": "htf_adx", "comparison": ">=", "value": p["htf_adx_min"]},
     ]
 
 
 def _oi_squeeze_long_entry(p: dict) -> list[dict]:
-    # Position building into a quiet market: open interest climbing while price has not
-    # yet moved is crowding, and the release tends to travel. The RANGE gate is what
-    # makes it a squeeze setup rather than plain trend-following.
+    # Position building ahead of a move: open interest climbing while the market has not
+    # yet confirmed a trend in this direction is crowding, and the release tends to
+    # travel. The regime gate is what makes it a squeeze rather than plain trend-following.
+    #
+    # It asks "not yet trending up" rather than "== RANGE" because RANGE was an
+    # arbitrarily narrow spelling of that premise: the classifier also emits
+    # LOW_VOLATILITY, HIGH_VOLATILITY and UNCLEAR, none of which is a confirmed up-trend
+    # either. Measured on live frames, requiring exactly RANGE fired the full condition on
+    # 0.43% of ETHUSDT 1h bars (10-15 trades over a 500-day replay) — below the sample the
+    # robustness scorer needs to judge anything, so the family was structurally unable to
+    # earn a verdict, whatever its edge. The same premise as `!= TREND_UP` fires on 4.88%.
     return [
         {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
         {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
-        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "market_regime", "comparison": "!=", "value": "TREND_UP"},
         {"feature": "close", "comparison": ">", "value_from": "ma20"},
     ]
 
@@ -247,7 +258,7 @@ def _oi_squeeze_short_entry(p: dict) -> list[dict]:
     return [
         {"feature": "open_interest_change_pct", "comparison": ">=", "value": p["oi_change_min"]},
         {"feature": "open_interest_zscore", "comparison": ">=", "value": p["oi_z_min"]},
-        {"feature": "market_regime", "comparison": "==", "value": "RANGE"},
+        {"feature": "market_regime", "comparison": "!=", "value": "TREND_DOWN"},
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
     ]
 
@@ -378,8 +389,8 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
     StrategyTemplate("htf_pullback_long", "long", "1h",
-                     {"rsi_max": ParamSpec(25.0, 45.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
-                     {"rsi_max": 38.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_long_entry),
+                     {"rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
+                     {"rsi_max": 38.0, **_EXIT_BASE}, _htf_pullback_long_entry),
     StrategyTemplate("oi_squeeze_long", "long", "1h",
                      {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_long_entry),
@@ -393,8 +404,8 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
                      {"oi_change_min": 0.03, "rsi_min": 70.0, **_EXIT_BASE}, _oi_unwind_short_entry),
     StrategyTemplate("htf_pullback_short", "short", "1h",
-                     {"rsi_min": ParamSpec(55.0, 75.0), "htf_adx_min": ParamSpec(18.0, 32.0), **_EXIT_PARAMS},
-                     {"rsi_min": 62.0, "htf_adx_min": 22.0, **_EXIT_BASE}, _htf_pullback_short_entry),
+                     {"rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
+                     {"rsi_min": 62.0, **_EXIT_BASE}, _htf_pullback_short_entry),
 )
 
 # Families whose entry rules read the open-interest columns — mintable only where the
