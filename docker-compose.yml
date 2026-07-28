@@ -148,3 +148,26 @@ services:
       # The one venue of the three that is not keyless; every prediction endpoint is signed.
       BINANCE_PREDICTION_API_KEY: ${BINANCE_PREDICTION_API_KEY:-}
       BINANCE_PREDICTION_API_SECRET: ${BINANCE_PREDICTION_API_SECRET:-}
+      # Live-trading and account variables (scheduler-only). Thomas decision, 2026-07-27:
+      # forwarded from `.env` so the readiness board and the account read answer on the
+      # service without an operator exporting them per session.
+      #
+      # This reverses the earlier posture, and the reason that posture existed is kept visible
+      # rather than deleted: these credentials now live in a service that restarts on its own
+      # (`restart: unless-stopped`), so they outlast the session that set them and are readable
+      # by anything that can inspect the container. It is ONE Binance key — the order
+      # credentials are derived from the account ones — so `account.py` being read-only by
+      # construction is a property of this code, not of a key that carries futures-trading
+      # permission at the venue.
+      #
+      # Unchanged by this block, and still what stands between here and an autonomous order:
+      # no autonomous entry point may import the order path (a test enforces it), the
+      # per-machine `live_trading` grant, and the registered budget. Env alone opens nothing.
+      MVP_ACCOUNT_FEED: ${MVP_ACCOUNT_FEED:-}
+      BINANCE_ACCOUNT_API_KEY: ${BINANCE_ACCOUNT_API_KEY:-}
+      BINANCE_ACCOUNT_API_SECRET: ${BINANCE_ACCOUNT_API_SECRET:-}
+      MVP_LIVE_TRADING: ${MVP_LIVE_TRADING:-}
+      MVP_LIVE_ORDER_API_KEY: ${MVP_LIVE_ORDER_API_KEY:-}
+      MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
+      MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
+      MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
