@@ -12,9 +12,13 @@ It also means this module cannot reach the venue on its own: a caller must hand 
 adapter, which only ``live_execution.select_order_adapter`` can build, and only behind the
 ``live_trading`` grant.
 
-**Nothing autonomous calls this yet.** Wiring it into the crypto cycle is the separate step the
-design record sequences last, because that is the line which makes an autonomous live order
-reachable. Until then the only caller is a test or a deliberate operator script.
+**The crypto cycle now calls this**, through exactly one module: ``crypto/live_route.py``. That
+wiring was the step the design record sequenced last, because it is the line which makes an
+autonomous live order reachable — so it is deliberately a single chokepoint rather than a call
+from the cycle itself, and a test pins that no entry point reaches this module by any other
+route. What still stands between the wiring and an order is the gate: ``live_route`` runs
+nothing at all unless the ``live_trading`` grant is active on the machine, and every door below
+it (the guard, the phrase, the registered budget, the canary evidence) is unchanged.
 
 The three rules this leg owes, each implemented as a branch you can point at:
 
@@ -55,6 +59,7 @@ from .live_execution import (
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
     ORDER_TYPE_TAKE_PROFIT_MARKET,
+    fill_facts,
     submit_and_reconcile,
 )
 from .live_order import evaluate_live_close_guard, make_client_order_id, make_idempotency_key
@@ -75,6 +80,7 @@ ENTRY_OPENED = "ENTRY_OPENED"                  # filled, bracketed, booked
 EXIT_REFUSED = "EXIT_REFUSED"                  # the close guard refused; nothing was sent
 EXIT_NOT_CONFIRMED = "EXIT_NOT_CONFIRMED"      # submitted, unconfirmed — the book stays OPEN
 EXIT_CLOSED = "EXIT_CLOSED"                    # closed, brackets cancelled, outcome recorded
+EXIT_UNSETTLEABLE = "EXIT_UNSETTLEABLE"        # the venue closed it and cannot say at what
 
 # Reason codes.
 NOT_READY = "LIVE_ENTRY_NOT_READY"
@@ -88,14 +94,32 @@ BRACKET_CANCEL_FAILED = "LIVE_BRACKET_CANCEL_FAILED"
 FILL_FACTS_MISSING = "LIVE_FILL_FACTS_MISSING"
 POSITION_PERSIST_FAILED = "LIVE_POSITION_PERSIST_FAILED"
 OUTCOME_PERSIST_FAILED = "LIVE_OUTCOME_PERSIST_FAILED"
+BRACKET_IDS_MISSING = "LIVE_BRACKET_IDS_MISSING"
+VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 
 # A conditional order rests at the venue until its trigger price is reached. Only that resting
 # state counts as "the bracket is in place": anything else (a rejection, an instant trigger, an
 # unknown status) means the position is not protected the way the decision assumed.
 BRACKET_RESTING_STATUSES = frozenset({"NEW"})
 
-# Close reasons written onto the outcome record.
+# Close reasons written onto the outcome record. The first two deliberately reuse paper's
+# vocabulary (`paper.settle_trade_plan`) so a live result and a paper result of the same shape
+# read identically to every consumer — the R statistics are compared across the two.
 CLOSE_REASON_NAKED = "naked_position_close"
+CLOSE_REASON_STOP = "stop_loss"
+CLOSE_REASON_TARGET = "take_profit"
+CLOSE_REASON_UNPROTECTED = "unprotected_position_close"
+
+# Whether this position's protective legs are still where the entry left them.
+PROTECTED = "PROTECTED"
+UNPROTECTED = "UNPROTECTED"
+PROTECTION_UNKNOWN = "PROTECTION_UNKNOWN"
+
+# The two stored bracket ids, and the close reason each one's fill means.
+_BRACKET_LEGS = (
+    ("stop_client_order_id", CLOSE_REASON_STOP),
+    ("take_profit_client_order_id", CLOSE_REASON_TARGET),
+)
 
 
 # --- the bracket ---------------------------------------------------------------
@@ -559,6 +583,10 @@ def execute_live_exit(
         "symbol": position.get("symbol"),
         "position_id": position.get("position_id"),
         "reason_codes": [],
+        # The intent this leg built, so a caller can audit against exactly what was sent
+        # rather than reconstructing it. `p5_policy_gate`'s post-action report needs the
+        # order's own identity, and a second construction of it is a second chance to differ.
+        "intent": None,
         "exit": None,
         "cancels": [],
         "outcome": None,
@@ -587,6 +615,7 @@ def execute_live_exit(
         ),
     }
 
+    result["intent"] = close_intent
     close_guard = evaluate_live_close_guard(close_intent, gate_open=gate_open, limits=limits)
     result["close_guard"] = close_guard
     if not close_guard["approved"]:
@@ -660,6 +689,185 @@ def execute_live_exit(
     return result
 
 
+# --- the venue's own exit ---------------------------------------------------------
+#
+# The normal way a live position ends is not a close this runtime sends: it is the bracket
+# already resting at the venue. LP5.3's executing leg covers the *decided* close; these two
+# cover the one the venue makes on its own, which the cycle can only ever observe.
+#
+# Without them the routing would strand its own book on the first successful trade — the
+# position is gone at the venue, the local record still says OPEN, reconciliation reports
+# DRIFT forever, and that symbol refuses every later entry. A protective mechanism working
+# exactly as designed would look identical to a fault.
+
+def read_bracket_legs(
+    position: Mapping[str, Any], *, adapter: Any, timeout_seconds: int = 10
+) -> dict[str, Any]:
+    """What the venue says about this position's two protective legs. Never raises.
+
+    Returns ``{status, legs}`` where ``status`` is:
+
+    - ``PROTECTED`` — both legs are resting (``NEW``), i.e. the position is covered;
+    - ``UNPROTECTED`` — the venue positively answered and at least one leg is not resting;
+    - ``PROTECTION_UNKNOWN`` — a query failed, or the record carries no bracket ids, so the
+      venue said nothing about at least one leg.
+
+    The three are kept distinct because they have different consequences and only one of
+    them may send an order. Acting on ``PROTECTION_UNKNOWN`` would be acting on a guess —
+    the same boundary ``_close_naked_position`` draws between exposure the venue *reported*
+    and exposure merely suspected.
+    """
+    symbol = str(position.get("symbol") or "")
+    legs: list[dict[str, Any]] = []
+    unknown = False
+    for key, close_reason in _BRACKET_LEGS:
+        client_order_id = position.get(key)
+        leg: dict[str, Any] = {
+            "leg": key,
+            "close_reason": close_reason,
+            "client_order_id": client_order_id if isinstance(client_order_id, str) else None,
+            "status": None,
+            "resting": False,
+            "filled": False,
+            "fill": None,
+            "exchange_order_id": None,
+            "error": None,
+        }
+        if not isinstance(client_order_id, str) or not client_order_id:
+            leg["error"] = BRACKET_IDS_MISSING
+            unknown = True
+            legs.append(leg)
+            continue
+        try:
+            venue_order = adapter.fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds)
+        except ToolError as exc:
+            leg["error"] = exc.reason_code
+            unknown = True
+            legs.append(leg)
+            continue
+        if venue_order is None:
+            # The venue answered, and its answer is "no such order": a leg that triggered,
+            # was cancelled, or never landed. That is a fact, not a failed read.
+            leg["status"] = "NOT_FOUND"
+            legs.append(leg)
+            continue
+        status = str(venue_order.get("status") or "")
+        leg["status"] = status
+        leg["exchange_order_id"] = venue_order.get("orderId")
+        leg["resting"] = status in BRACKET_RESTING_STATUSES
+        facts = fill_facts(venue_order)
+        leg["fill"] = facts
+        leg["filled"] = status == "FILLED" and (_f(facts.get("executed_qty")) or 0.0) > 0
+        legs.append(leg)
+
+    if unknown:
+        status = PROTECTION_UNKNOWN
+    elif all(leg["resting"] for leg in legs):
+        status = PROTECTED
+    else:
+        status = UNPROTECTED
+    return {"status": status, "legs": legs}
+
+
+def settle_venue_closed_position(
+    position: Mapping[str, Any],
+    *,
+    adapter: Any,
+    position_store: Any,
+    ledger: Any,
+    legs: Mapping[str, Any] | None = None,
+    now: str,
+    timeout_seconds: int = 10,
+) -> dict[str, Any]:
+    """Record the outcome of a position the venue's own bracket already closed.
+
+    Sends **no order** — there is nothing left to close. The exit facts come from whichever
+    bracket leg filled, read through the same ``fill_facts`` coercion every other exit uses,
+    so a venue-closed trade and a runtime-closed one are the same kind of record.
+
+    Refuses rather than invents. If no leg reports a fill, or the fill will not price, the
+    book is left OPEN and the result says ``EXIT_UNSETTLEABLE``: the money moved and this
+    runtime cannot say how much, which an operator must resolve. Leaving the book open keeps
+    reconciliation refusing new entries on that symbol, which is the correct consequence of
+    not knowing — and far better than clearing it against a fabricated result.
+    """
+    result: dict[str, Any] = {
+        "live_leg_version": LIVE_LEG_VERSION,
+        "status": EXIT_UNSETTLEABLE,
+        "symbol": position.get("symbol"),
+        "position_id": position.get("position_id"),
+        "reason_codes": [],
+        "exit": None,
+        "cancels": [],
+        "outcome": None,
+        "venue_closed": True,
+        "created_at": now,
+    }
+    read = dict(legs) if isinstance(legs, Mapping) else read_bracket_legs(
+        position, adapter=adapter, timeout_seconds=timeout_seconds
+    )
+    result["bracket"] = read
+
+    filled = next((leg for leg in read.get("legs") or [] if leg.get("filled")), None)
+    if filled is None:
+        result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
+        return result
+
+    pnl, pnl_detail = realized_pnl_usdt(position, filled["fill"])
+    result["pnl_detail"] = pnl_detail
+    result["exit"] = filled
+    if pnl is None:
+        result["reason_codes"].append(FILL_FACTS_MISSING)
+        result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
+        return result
+
+    close_reason = str(filled["close_reason"])
+    # Rule 3 again: the leg that did NOT trigger is still resting against a position that no
+    # longer exists. `cancel_bracket_legs` treats an already-gone order as a success, so the
+    # triggered leg costs nothing here.
+    result["cancels"] = cancel_bracket_legs(position, adapter=adapter, timeout_seconds=timeout_seconds)
+    if any(c.get("error") for c in result["cancels"]):
+        result["reason_codes"].append(BRACKET_CANCEL_FAILED)
+
+    outcome = build_live_outcome_record(
+        realized_pnl_usdt=pnl,
+        symbol=str(position.get("symbol") or ""),
+        side="SELL" if str(position.get("direction") or "").upper() == "LONG" else "BUY",
+        quantity=_f(position.get("quantity")) or 0.0,
+        entry_price=_f(position.get("entry_price")),
+        exit_price=pnl_detail["exit_price"],
+        entry_order_id=position.get("entry_exchange_order_id"),
+        exit_order_id=filled.get("exchange_order_id"),
+        strategy_id=position.get("strategy_id"),
+        position_id=position.get("position_id"),
+        close_reason=close_reason,
+        opened_at_utc=position.get("opened_at_utc"),
+        risk_usdt=_f(position.get("risk")),
+        candidate_id=position.get("candidate_id"),
+        strategy_rule_hash=position.get("strategy_rule_hash"),
+        strategy_generation_id=position.get("strategy_generation_id"),
+        now=now,
+    )
+    result["outcome"] = outcome
+
+    # Ledger before book, for the reason `execute_live_exit` gives: an outcome that never
+    # lands is a loss the breaker will never see.
+    try:
+        ledger.append_outcome(outcome)
+    except ToolError as exc:
+        result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
+        result["reason_codes"].append(exc.reason_code)
+        return result
+
+    try:
+        position_store.clear_position(str(position.get("symbol") or ""))
+    except ToolError as exc:
+        result["reason_codes"].append(exc.reason_code)
+
+    result["status"] = EXIT_CLOSED
+    return result
+
+
 def leg_status_line(result: Mapping[str, Any]) -> str:
     """One ASCII line for the console (Windows consoles are cp949)."""
     parts = [f"live_leg {result.get('symbol')}: {result.get('status')}"]
@@ -675,7 +883,12 @@ def leg_status_line(result: Mapping[str, Any]) -> str:
 __all__ = [
     "BRACKET_CANCEL_FAILED",
     "BRACKET_FAILED",
+    "BRACKET_IDS_MISSING",
     "BRACKET_RESTING_STATUSES",
+    "CLOSE_REASON_NAKED",
+    "CLOSE_REASON_STOP",
+    "CLOSE_REASON_TARGET",
+    "CLOSE_REASON_UNPROTECTED",
     "ENTRY_NAKED_CLOSED",
     "ENTRY_NAKED_OPEN",
     "ENTRY_NOT_CONFIRMED",
@@ -686,6 +899,7 @@ __all__ = [
     "EXIT_NOT_CONFIRMED",
     "EXIT_REFUSED",
     "EXIT_UNCONFIRMED",
+    "EXIT_UNSETTLEABLE",
     "FILL_FACTS_MISSING",
     "LIVE_LEG_VERSION",
     "NAKED_CLOSE_FAILED",
@@ -694,11 +908,17 @@ __all__ = [
     "NO_GOVERNANCE",
     "OUTCOME_PERSIST_FAILED",
     "POSITION_PERSIST_FAILED",
+    "PROTECTED",
+    "PROTECTION_UNKNOWN",
+    "UNPROTECTED",
+    "VENUE_CLOSE_UNSETTLEABLE",
     "build_bracket_intent",
     "cancel_bracket_legs",
     "execute_live_entry",
     "execute_live_exit",
     "leg_status_line",
     "place_bracket_leg",
+    "read_bracket_legs",
     "realized_pnl_usdt",
+    "settle_venue_closed_position",
 ]

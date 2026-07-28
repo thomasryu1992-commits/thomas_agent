@@ -530,7 +530,7 @@ def submit_and_reconcile(
             request["symbol"], request["newClientOrderId"], timeout_seconds=timeout_seconds
         )
     except ToolError as exc:
-        # No venue answer at all: the fill is unknown, NOT empty — `_fill_facts(None)` reports
+        # No venue answer at all: the fill is unknown, NOT empty — `fill_facts(None)` reports
         # every figure as None so a caller can never read an unreconciled order as a free trade.
         venue_order = None
         status, mismatches, exchange_order_id = (
@@ -553,15 +553,20 @@ def submit_and_reconcile(
         "order_type": request["type"],
         # The ACTUAL fill, straight from the venue — what LP5 must compute realized PnL from,
         # never the modelled entry/exit the plan carried (the venue reports these as strings).
-        "fill": _fill_facts(venue_order),
+        "fill": fill_facts(venue_order),
         "submit_error": submit_error,
         "submit_response": submit_response,
         "created_at": now,
     }
 
 
-def _fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:
+def fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:
     """The venue's own fill numbers, coerced to floats where they parse.
+
+    Public because LP5.3's cycle routing settles a position the venue's own bracket closed:
+    the exit facts then come from querying the *bracket leg*, not from a submit this runtime
+    made, and reading them through anything but this one coercion would be a second opinion
+    about what the venue said.
 
     ``avgPrice`` is the real average fill price and ``cumQuote`` the filled notional — the two
     figures a truthful ``realized_pnl_usdt`` has to come from. A field that will not parse is
