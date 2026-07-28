@@ -193,6 +193,23 @@ def run_discovery(
     }
     result["venue_errors"] = errors
     result["rotation"] = turn
+    # The fee rates this run actually read, keyed `venue:market_id`.
+    #
+    # Carried because a candidate outlives the listing that proposed it. Binance states its
+    # fee only on the listing and shows 40 markets at a time, so a candidate found at 08:05 can
+    # be unconfirmable by lunchtime: the rate is gone and `confirm` has nothing to capture. That
+    # is not hypothetical — 11 of 17 Binance candidates aged out of confirmability inside
+    # eighteen hours, six of them exact title matches.
+    #
+    # This is the same read #287 makes at confirmation, taken one step earlier in the pipeline,
+    # with `generated_at_utc` on the record saying when. It stays a **fallback**: `confirm`
+    # prefers a rate the venue states now, and only reaches for a recorded one when the live
+    # listing no longer carries it.
+    result["fee_rate_bps"] = {
+        f"{venue}:{m.market_id}": float(m.fee_rate_bps)
+        for venue, rows in markets.items() for m in rows
+        if isinstance(m.fee_rate_bps, (int, float)) and not isinstance(m.fee_rate_bps, bool)
+    }
     # Which slice each candidate came from, so "was reading past the head worth it?" is
     # answered by the record rather than argued. `tail` means at least ONE leg would not
     # have been read without rotation — which is exactly the pairing rotation paid for.
@@ -280,7 +297,12 @@ def _parse_leg(spec: str) -> dict[str, str]:
 
 
 def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = None) -> dict[str, float]:
-    """``{"venue:market_id": bps}`` for every market a venue states a fee rate for.
+    """``{"venue:market_id": bps}`` for every market a fee rate is known for, live first.
+
+    Two sources, in that precedence: what a discovery run recorded, then what the venue states
+    **now** — so a live read always wins and the recorded one only fills what rotation has
+    carried away. Both are real reads; they differ only in age, which `generated_at_utc` on the
+    proposal record states.
 
     Read from the **listing** endpoint, which is the only one that carries it. The watch scan
     re-reads a confirmed leg by id — one order-book call, and that response is a price and
@@ -293,7 +315,18 @@ def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = No
     reflex about a step whose whole value is deliberation. A leg with no captured rate simply
     behaves as it did before this existed.
     """
+    # Rates a discovery run recorded, oldest first, so a live read below overwrites them.
+    # This is the half that keeps a candidate confirmable after the listing rotated past it —
+    # without it the operator races a window they cannot see, and loses: 11 of 17 Binance
+    # candidates aged out inside eighteen hours, six of them exact title matches.
     rates: dict[str, float] = {}
+    try:
+        for row in proposals.read_proposals(root):
+            for key, bps in (row.get("fee_rate_bps") or {}).items():
+                if isinstance(bps, (int, float)) and not isinstance(bps, bool):
+                    rates[str(key)] = float(bps)
+    except MvpRuntimeError:
+        pass                                   # no proposals yet, or unreadable: live read only
     for venue in dict.fromkeys(venues):
         try:
             collector = select_pred_market_collector(venue, now=now, root=root)
