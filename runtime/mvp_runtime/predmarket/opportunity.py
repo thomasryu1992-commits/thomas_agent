@@ -204,13 +204,20 @@ def evaluate_pairing(
         # silence: a venue reporting size 0 used to produce no reason at all, because the
         # check asked only about `None`.
         #
-        # This is a structural hole, NOT an observed incident. Measured 2026-07-29 over the
-        # 11,968 priced readings in the store: `size_at_touch == 0` has never occurred and
-        # `NO_SIZE_AT_TOUCH` has never fired. It was written after misreading a display that
-        # rounded sizes to whole contracts — 52 readings carry a size under 0.5 (smallest
-        # 0.0276) and print as `0`. The gate is still right, and the arithmetic it guards is
-        # real; what is not real is a claim that it has already saved us. Both venues could
-        # start reporting a zero resting size tomorrow, and until then this costs nothing.
+        # This is a structural hole, NOT an observed incident. Measured 2026-07-29 across the
+        # whole observation store: `size_at_touch == 0` has never occurred, `size_at_touch is
+        # None` never has either, and so `NO_SIZE_AT_TOUCH` has never fired on either of its
+        # two branches. It was written after misreading a display that rounds sizes to whole
+        # contracts, where a fractional depth (the smallest then 0.0276) prints as `0`. The
+        # gate is still right, and the arithmetic it guards is real; what is not real is a
+        # claim that it has already saved us. Both venues could start reporting a zero resting
+        # size tomorrow, and until then this costs nothing.
+        #
+        # The count of readings that measurement ran over is deliberately not written here. It
+        # said "11,968" for about three hours and was 12,756 by the time anyone re-checked —
+        # the observation window is still collecting, so any total is a number that goes stale
+        # while the sentence around it stays true. Which is the failure this comment was
+        # rewritten to remove in the first place: a claim that was accurate when typed.
         reasons.append(NO_SIZE)
     implausible = best is not None and abs(best["net_edge"]) >= MAX_PLAUSIBLE_NET_EDGE
     if implausible:

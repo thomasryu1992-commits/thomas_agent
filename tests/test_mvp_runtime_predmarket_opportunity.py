@@ -232,7 +232,10 @@ def test_a_venue_reporting_zero_depth_is_flagged_too():
     record with no flag at all.
 
     A guard against a structural hole, not a regression test for an observed incident —
-    measured 2026-07-29, `size_at_touch == 0` had never occurred in 11,968 priced readings."""
+    measured 2026-07-29 across the whole observation store, neither `size_at_touch == 0` nor
+    `size_at_touch is None` had ever occurred, so this reason had never fired on either branch.
+    No total is quoted on purpose — the window is still collecting, so any count here would go
+    stale while the sentence around it stayed true."""
     record = opportunity.evaluate_pairing(
         _market(KALSHI, bid=0.43, ask=0.45, ask_size=0.0),
         _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),

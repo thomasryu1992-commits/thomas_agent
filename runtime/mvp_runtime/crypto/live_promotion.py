@@ -322,3 +322,96 @@ def select_canary_registry(*, now: str | None = None, root: Path | None = None) 
         default_factory=DryRunCanaryRegistry,
         gated_factory=lambda authorization: RealCanaryRegistry(root=root, authorization=authorization),
     )
+
+
+# --- the operator's read side: can each canary prove what it was? ------------
+#
+#     python -m runtime.mvp_runtime.crypto.live_promotion
+#
+# The readiness board already reports the AGGREGATE ("4 of 4 cannot prove their size"), which
+# answers "is the evidence sound" but not "did the one I just placed record its fill". During a
+# live canary run that second question is the whole question, and answering it meant opening the
+# jsonl by hand. Read-only, no gate, no network: it re-reads the same registry the promotion
+# gate counts, and renders per record what the record itself carries.
+
+
+def canary_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
+    """One row per canary, newest last, saying whether it can prove its own size.
+
+    ``size_proven`` is derived from the record, never asserted: a record proves its size when it
+    carries the venue's filled notional, because only then is declared-versus-filled a
+    subtraction. Records written before those fields existed carry no comparison at all, and
+    that is reported as *unproven*, not as agreement."""
+    rows: list[dict[str, Any]] = []
+    for record in read_canary_orders(root):
+        gap = record.get("notional_declared_vs_filled_usdt")
+        proven = isinstance(gap, (int, float)) and not isinstance(gap, bool)
+        rows.append({
+            "recorded_at_utc": record.get("recorded_at_utc"),
+            "symbol": record.get("symbol"),
+            "clean": record.get("clean") is True,
+            "exchange_order_id": record.get("exchange_order_id"),
+            "declared_usdt": record.get("notional_usdt"),
+            "filled_usdt": record.get("filled_notional_usdt"),
+            "gap_usdt": float(gap) if proven else None,
+            "size_proven": proven,
+        })
+    return rows
+
+
+def render_canary_evidence_text(rows: list[dict[str, Any]]) -> str:
+    """The rows as a board. Deliberately says *why* an old record is unproven rather than
+    printing a blank: "no fill recorded" is a fact about the record, and a blank column would
+    read as a zero-sized order."""
+    lines = ["=== canary evidence ===", ""]
+    if not rows:
+        lines.append("no canary orders recorded on this machine")
+        return "\n".join(lines)
+    for index, row in enumerate(rows, start=1):
+        mark = "PROVEN " if row["size_proven"] else "UNPROVEN"
+        size = (f"declared {row['declared_usdt']} / filled {row['filled_usdt']} "
+                f"(gap {row['gap_usdt']:+.2f})" if row["size_proven"]
+                else f"declared {row['declared_usdt']} / filled ? — no fill recorded")
+        lines.append(f"[{mark}] {index}. {row['recorded_at_utc']}  {row['symbol']}  "
+                     f"order {row['exchange_order_id']}")
+        lines.append(f"           {size}"
+                     + ("" if row["clean"] else "   (NOT clean — does not count as evidence)"))
+    proven = sum(1 for r in rows if r["size_proven"])
+    lines += ["", f"{proven}/{len(rows)} can prove their size"]
+    if proven < len(rows):
+        lines.append("a record written before the fill fields existed cannot be repaired — "
+                     "only a NEW canary can add provable evidence")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Print the canary evidence board. Read-only; writes nothing and opens no socket."""
+    import argparse
+    import json as _json
+    import sys
+
+    from ..cli_common import force_utf8_io
+
+    # A board with an em dash is not cp949-encodable, and this one has several. Called at
+    # every entry point rather than the ones that print non-ASCII today — which strings are
+    # ASCII is not a property anyone maintains.
+    force_utf8_io()
+    parser = argparse.ArgumentParser(description="Canary evidence: can each order prove its size?")
+    parser.add_argument("--json", action="store_true", help="machine-readable rows")
+    args = parser.parse_args(argv)
+    try:
+        rows = canary_evidence_rows()
+    except ToolError as exc:
+        # A registry that cannot be verified counts zero for the gate; say so here too rather
+        # than printing an empty board that reads as "no canaries placed".
+        sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
+        return 2
+    if args.json:
+        sys.stdout.write(_json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
+    else:
+        sys.stdout.write(render_canary_evidence_text(rows) + "\n")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
