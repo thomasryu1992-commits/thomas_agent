@@ -269,6 +269,12 @@ def main(argv: list[str] | None = None) -> int:
             client_order_id=result["client_order_id"],
             mismatches=result["mismatches"],
             notional_usdt=args.notional,
+            # The venue's own numbers, so the evidence can be re-derived instead of trusted.
+            # `--notional` is the operator's declaration; `fill.cum_quote` is what the order
+            # actually cost. Step 3 checks them against a reference price before the order,
+            # and this records what the venue said after it.
+            quantity=args.quantity,
+            fill=result.get("fill"),
             now=now,
         )
         registry_error = None

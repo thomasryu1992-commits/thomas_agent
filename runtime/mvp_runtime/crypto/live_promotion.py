@@ -66,14 +66,34 @@ def build_canary_order_record(
     client_order_id: str | None = None,
     mismatches: list[str] | None = None,
     notional_usdt: float | None = None,
+    quantity: float | None = None,
+    fill: Mapping[str, Any] | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One placed-and-reconciled canary order, self-hashed.
 
     ``clean`` is derived here rather than accepted from the caller: an order counts only if
     the venue reconciled it AND nothing mismatched. A caller cannot assert cleanliness.
+
+    **The record has to prove its own size.** ``notional_usdt`` is what the operator declared,
+    and until #268 nothing checked it — so the four canaries standing as evidence on
+    2026-07-28 carried a declared figure, no quantity and no fill, and there is now no way to
+    ask whether 65.0 described the order. That is the wrong shape for the sole evidence gating
+    autonomous live trading: a promotion gate whose records cannot be re-derived is an
+    assertion with a hash on it.
+
+    So the venue's own numbers ride along — ``quantity`` as sent, and ``fill`` carrying
+    ``avg_price`` / ``executed_qty`` / ``cum_quote``, which `live_execution.fill_facts`
+    already produced and the record simply discarded. ``cum_quote`` is the venue's filled
+    notional: with it, ``declared`` versus ``filled`` is a subtraction rather than a memory.
+
+    ``notional_declared_vs_filled_usdt`` is stated rather than judged. Making a disagreement
+    a ``mismatch`` would change what ``clean`` means and therefore what the promotion gate
+    counts — a separate decision, deliberately not taken here.
     """
     problems = list(mismatches or [])
+    facts = dict(fill or {})
+    filled_notional = facts.get("cum_quote")
     body: dict[str, Any] = {
         "reconcile_status": reconcile_status,
         "clean": reconcile_status == RECONCILED and not problems,
@@ -82,6 +102,18 @@ def build_canary_order_record(
         "client_order_id": client_order_id,
         "mismatches": problems,
         "notional_usdt": notional_usdt,
+        # What the venue said, beside what the operator declared.
+        "quantity": quantity,
+        "fill_avg_price": facts.get("avg_price"),
+        "fill_executed_qty": facts.get("executed_qty"),
+        "filled_notional_usdt": filled_notional,
+        # None when either side is unknown — never 0.0, which would read as "they agreed".
+        "notional_declared_vs_filled_usdt": (
+            round(float(notional_usdt) - float(filled_notional), 8)
+            if isinstance(notional_usdt, (int, float)) and isinstance(filled_notional, (int, float))
+            and not isinstance(notional_usdt, bool) and not isinstance(filled_notional, bool)
+            else None
+        ),
         "recorded_at_utc": now,
         "stage": "live_canary",
         "provenance": CANARY_PROVENANCE,
