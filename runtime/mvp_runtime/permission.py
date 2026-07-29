@@ -1065,6 +1065,81 @@ def build_strategy_promotion_permission_decision(
     )
 
 
+def build_strategy_retirement_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    strategy_ids: list[str],
+    candidate_ids: list[str],
+    rule_hashes: list[str],
+    reason: str,
+    content_sha256: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to SUSPEND named
+    active-pool strategies.
+
+    The same scope and level as a promotion, deliberately: both change what the runtime
+    trades, and "this one only stops trading" is not a reason to ask Thomas less. What
+    differs is the effect's width — a retirement touches ``status`` on the named entries
+    and nothing else, never membership — and the action identity says so, so an approval
+    of a retirement can never execute as a promotion.
+
+    The identity binds the display id, its lineage, AND its rule hash together: a pool
+    slot whose display name later belongs to a different lineage mints a different hash
+    and refuses, rather than retiring whatever happens to hold the name at execute time.
+    """
+    if not strategy_ids or not all(isinstance(s, str) and s for s in strategy_ids):
+        raise PlannerBlocked("INVALID_RETIREMENT", "retirement needs at least one strategy id")
+    if len(candidate_ids) != len(strategy_ids):
+        raise PlannerBlocked("INVALID_RETIREMENT", "every retired entry must carry its candidate id slot")
+    if len(rule_hashes) != len(strategy_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
+        raise PlannerBlocked("INVALID_RETIREMENT", "every retired entry must carry its rule hash")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise PlannerBlocked("INVALID_RETIREMENT", "a retirement needs an operator reason")
+
+    action = _ActionSpec(
+        action_type="crypto.strategy_pool.retirement",
+        target_suffix="strategy_pool_retirement",
+        tool_id=None,
+        data_scope=("crypto.active_strategy_pool",),
+        normalized_parameters={
+            "strategy_ids": sorted(strategy_ids),
+            # Empty strings where an entry predates lineage — kept positional against
+            # strategy_ids so the pairing stays readable in the record.
+            "candidate_ids": sorted(str(c or "") for c in candidate_ids),
+            "rule_hashes": sorted(rule_hashes),
+            "new_status": "SUSPENDED",
+        },
+        risk_reason="Stops named strategies from trading; requires explicit Thomas approval per policy.",
+        authority_reason="Prime may prepare a strategy retirement for Thomas review; the decision is Thomas's.",
+        decision_reason="RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a pool change.",
+        constraint=(
+            "Paper-stage status change only: the named entries move to SUSPENDED, pool "
+            "membership is unchanged, no other entry is touched, no order capability, no "
+            "live/testnet effect; full audit required."
+        ),
+        target_ref="active_strategy_pool:paper",
+        content_sha256=content_sha256,
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=STRATEGY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
 def build_trial_work_permission_decision(
     bound_task: Mapping[str, Any],
     *,
