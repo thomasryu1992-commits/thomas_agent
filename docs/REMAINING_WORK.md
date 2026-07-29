@@ -4,7 +4,19 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-29** (`main` = `01854b3`), after the front-desk prompt started naming the
+Last updated: **2026-07-29**, after an architecture review of the crypto stack and the seven
+fixes it produced (branch `claude/auto-trading-system-review-x9p6d5`). Two changed what the
+evidence *means* and are written up in section C: the backtest now charges **funding**, and
+Gate 0's `live_candidate_eligible` now reads the paper record **net of costs** rather than
+gross. Three were defects the review found rather than performance work — a live position's
+holding clock advanced once per timeframe instead of once per bar (4x too fast on a
+four-timeframe symbol), a 429 was reported as a timeout while the fan-out kept knocking toward
+the 418 ban, and the fan-out's scarce live slots were arbitrated alphabetically. Two were pure
+cost: the fan-out asked each symbol-scoped question once instead of four times (115 venue calls
+-> 45) and the factory builds its replay frame once instead of once per spec (20.5s -> 5.5s at
+the 15m window).
+
+Previously the same day (`main` = `01854b3`), after the front-desk prompt started naming the
 fields its parser requires (#336) — which opened a new line in section B, because establishing
 that took the production front desk down for a quota reset — and the `NO_SIZE` gate's provenance
 was corrected to say it closes a hole rather than repairs damage (#334).
