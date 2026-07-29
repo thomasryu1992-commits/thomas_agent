@@ -96,7 +96,7 @@ def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
 
 def run_import(
     *, source: Path, root: Path | None = None, confirm: bool = False,
-    activate_pool: bool = False, now: str | None = None,
+    activate_pool: bool = False, now: str | None = None, allow_duplicates: bool = False,
 ) -> dict[str, Any]:
     """Perform (or dry-run) the import. Returns the summary the event records."""
     now = now or timeutil.utc_now_iso()
@@ -144,6 +144,20 @@ def run_import(
         for entry in (raw_pool.get("active_strategies") or [])
         if entry.get("strategy_id") not in existing_candidate_ids
     ]
+    # The `strategy_id` filter above is a RE-IMPORT guard, not a duplicate guard: it stops
+    # the same source row arriving twice, and says nothing about two different source rows
+    # holding the same strategy. The source system's rule miner appends conditions that
+    # never discriminate, so its pool routinely carries one strategy under several ids and
+    # therefore several rule hashes. Importing those seeds the store with clones that no
+    # later door can tell apart. Refused here, where the batch is still a list.
+    #
+    # Rule-form only, by necessity: source rows arrive with no backtest evidence, so the
+    # behavioural half of the check has nothing to read. That is the honest limit of an
+    # import-time guard, and it is why the promotion door checks again.
+    if not allow_duplicates:
+        pool_store.assert_no_semantic_duplicates(
+            new_candidates, incumbents=pool_store.read_candidates(root),
+        )
 
     summary = {
         "import_batch_id": batch_id,
@@ -159,6 +173,7 @@ def run_import(
         "counterfactuals_imported": len(new_counterfactuals),
         "pool_strategies_total": len(pool_specs),
         "candidates_imported": len(new_candidates),
+        "duplicate_escape": bool(allow_duplicates),
         "pool_activated": False,
         "confirmed": confirm,
         "created_at": now,
@@ -189,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="One-time audited import of crypto_AI_System history.")
     parser.add_argument("--source", required=True, help="crypto_AI_System repo root (read-only)")
     parser.add_argument("--confirm", action="store_true", help="actually write; without it, dry-run report")
+    parser.add_argument("--allow-duplicates", action="store_true",
+                        help="explicit escape: import source rows that are the same strategy "
+                             "under a different rule hash")
     parser.add_argument("--activate-pool", action="store_true",
                         help="ALSO install the imported pool as the ACTIVE pool (explicit operator decision)")
     args = parser.parse_args(argv)
@@ -206,7 +224,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
             return EXIT_BLOCKED
 
-    summary = run_import(source=Path(args.source), confirm=args.confirm, activate_pool=args.activate_pool)
+    summary = run_import(source=Path(args.source), confirm=args.confirm,
+                         activate_pool=args.activate_pool, allow_duplicates=args.allow_duplicates)
     mode = "IMPORTED" if args.confirm else "DRY-RUN (nothing written; re-run with --confirm)"
     print(f"{mode}: batch {summary['import_batch_id']}")
     for key in ("outcomes_imported", "counterfactuals_imported", "candidates_imported", "pool_activated"):

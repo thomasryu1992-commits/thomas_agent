@@ -307,7 +307,10 @@ def render_pm1_report_text(report: Mapping[str, Any]) -> str:
         + (f"\n         BOUNDED to >= {window.get('since')}"
            f"  ({window.get('excluded_before_since')} earlier observation(s) excluded)"
            if window.get("since") else ""),
-        f"reads  : {report.get('readable_count')}/{report.get('observation_count')} readable"
+        # "priced", not "readable": the ratio is observations that produced a net edge, and
+        # the ones that did not are usually a one-sided book rather than a venue we failed to
+        # reach. Venues that could not be read are counted under `incidents`.
+        f"reads  : {report.get('readable_count')}/{report.get('observation_count')} priced"
         f"  (coverage {report.get('coverage')})",
         f"totals : {report.get('pairing_count')} pairing(s), "
         f"{report.get('opportunity_count')} opportunity reading(s), "
@@ -325,7 +328,7 @@ def render_pm1_report_text(report: Mapping[str, Any]) -> str:
         lines += [
             "",
             f"  {pairing.get('event_id')}  [{legs}]",
-            f"    frequency : {pairing.get('opportunity_count')}/{pairing.get('readable_count')} readings"
+            f"    frequency : {pairing.get('opportunity_count')}/{pairing.get('readable_count')} priced readings"
             f"  rate={pairing.get('opportunity_rate')}",
             f"    net edge  : median={(pairing.get('opportunity_net_edge') or {}).get('median')}"
             f"  max={(pairing.get('opportunity_net_edge') or {}).get('max')}",

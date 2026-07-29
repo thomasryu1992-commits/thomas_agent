@@ -30,6 +30,10 @@ from runtime.mvp_runtime.crypto.dashboard import build_status
 
 NOW = "2026-07-29T12:00:00Z"
 
+# Sentinel: `bars_replayed=None` means "a row that records no window", which is a case under
+# test, so it cannot double as "caller said nothing".
+_MISSING = object()
+
 
 def _candidate(
     cid,
@@ -43,6 +47,7 @@ def _candidate(
     holdout="CONFIRMED",
     net_r=16.0,
     rule_hash=None,
+    bars_replayed=_MISSING,
 ):
     """One candidate row. Defaults describe a lineage the door would accept today.
 
@@ -83,6 +88,12 @@ def _candidate(
             "avg_loss_R": 1.0,
             "expectancy": round(net_r / 40, 8),
             "cost_summary": cost_summary,
+            # Read from the factory's live target rather than written down, so these fixtures
+            # follow the window when it moves — the same shape the promotion fixtures use.
+            # Absent by default would read as UNRECORDED, which the door refuses, so every
+            # "the door would accept this" case has to say what window it was scored over.
+            "bars_replayed": (pool.expected_replayed_bars(timeframe)
+                              if bars_replayed is _MISSING else bars_replayed),
         },
     }
 
@@ -294,3 +305,29 @@ def test_an_unreadable_cursor_reports_no_known_inbound_rather_than_raising(tmp_p
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
     assert operator.last_inbound_at(tmp_path) is None
+
+
+# --- the chain has to name every axis the door refuses on --------------------
+
+def test_the_backlog_does_not_count_what_the_depth_gate_refuses():
+    """The counter filtered on cost basis and not on evidence depth, so a row whose window
+    was never recorded was advertised as promotable and refused at the ask.
+
+    Latent when found — no row in the real store passed every other filter AND failed this
+    one — but not hypothetical: 41 rows there carry no window at all, and one of them
+    becoming ROBUST is a matter of time. The failure is the one the cost-basis line in
+    `promotable_backlog` is written to prevent, on the axis added seven minutes later.
+    """
+    result = _backlog([
+        _candidate("cand_windowed"),
+        _candidate("cand_no_window", family="breakout", bars_replayed=None),
+    ])
+    assert result["candidate_ids"] == ["cand_windowed"]
+
+
+def test_a_shallow_row_is_still_backlog_because_the_door_still_promotes_it():
+    """Only UNRECORDED is refused. A short window is a known error running against the
+    candidate, so the door takes it — and a backlog that dropped those would disagree with
+    the door in the other direction, hiding work an operator could actually do."""
+    result = _backlog([_candidate("cand_shallow", bars_replayed=12)])
+    assert result["count"] == 1

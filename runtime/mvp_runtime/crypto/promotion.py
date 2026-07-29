@@ -87,6 +87,7 @@ def request_promotion(
     candidates_root: Path | None = None,
     allow_stale_cost_basis: bool = False,
     allow_unrecorded_evidence_depth: bool = False,
+    allow_duplicates: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
@@ -100,11 +101,25 @@ def request_promotion(
     root = repo_root if repo_root is not None else _repo_root()
     # Candidates may live under a different root only in tests (the trial-test split:
     # real Core for binding, tmp state for stores); production passes one root.
+    store_root = candidates_root if candidates_root is not None else root
     candidates = _resolve_candidates(
-        selectors, candidates_root if candidates_root is not None else root,
+        selectors, store_root,
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
     )
+    # Same rule again, one door earlier. Incumbents matter only when the batch ADDS to
+    # the pool: a replace promotion installs exactly this batch, so yesterday's pool
+    # cannot collide with it. Checked here rather than in ``_resolve_candidates``
+    # because that helper also backs verification, where the pool has already changed
+    # by design and re-running this would refuse an approval Thomas legitimately gave.
+    if not allow_duplicates:
+        try:
+            pool_store.assert_no_semantic_duplicates(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
     content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
