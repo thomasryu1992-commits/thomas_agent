@@ -102,6 +102,20 @@ class Authorization:
     expires_at: str
     evidence_ref: str
     activation_path: str | None = None
+    # Set ONLY by `env_only_authorization` — `(env_var, opt_in_value)` for the one capability
+    # Thomas moved onto the environment opt-in alone (2026-07-28). `assert_authorization` keys
+    # its re-check on this field.
+    #
+    # It is a field rather than a marker inside `evidence_ref`, and that is load-bearing:
+    # `evidence_ref` on a grant-backed authorization is copied verbatim out of the operator's
+    # activation record, so keying on its text let a RECORD choose which check ran. A record
+    # carrying `evidence_ref: "env_only:MVP_LIVE_TRADING=real"` passed the path validation
+    # (no drive, not absolute, no `..`, and a file of that name is legal on Linux) and then took
+    # the env branch — skipping the grant re-read, so deleting the grant file stopped revoking
+    # it. That defeated the one property `assert_authorization` below promises about grants, on
+    # providers this decision deliberately KEPT on a grant. `authorize` never sets this field,
+    # so no record content can reach it.
+    env_gate: tuple[str, str] | None = None
 
 
 def activation_path(root: Path, provider_id: str) -> Path:
@@ -342,7 +356,7 @@ def assert_authorization(
         raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"authorization does not enable required flags: {missing}")
     if now >= authorization.expires_at:
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "authorization has expired since it was granted")
-    if authorization.evidence_ref.startswith(ENV_ONLY_EVIDENCE_PREFIX):
+    if authorization.env_gate is not None:
         # The live-trading exception (2026-07-28): there is no grant record to re-read, so the
         # egress re-check re-reads the ENV. Be honest about how much weaker that is — a running
         # process's environment does not change under it, so unlike deleting a grant file this
@@ -351,12 +365,13 @@ def assert_authorization(
         # egress path with no re-check at all and this still fails closed for every caller that
         # builds its authorization once and uses it later.
         #
-        # Keyed on the evidence prefix, NOT on `activation_path is None`: that is the documented
-        # hand-built-test seam, and reusing it would make a production authorization
-        # indistinguishable from a test one.
-        setting = authorization.evidence_ref[len(ENV_ONLY_EVIDENCE_PREFIX):]
-        env_var, _, expected = setting.partition("=")
-        if os.environ.get(env_var, "").strip().lower() != expected:
+        # Keyed on `env_gate`, which only `env_only_authorization` sets. Not on
+        # `activation_path is None` — that is the documented hand-built-test seam, and reusing it
+        # would make a production authorization indistinguishable from a test one. And not on the
+        # `evidence_ref` text either: that string is copied verbatim from the operator's grant
+        # record, so keying on it let a RECORD select which check ran (see `env_gate`'s comment).
+        env_var, expected = authorization.env_gate
+        if os.environ.get(env_var, "").strip().lower() != expected.strip().lower():
             raise SafetyGateBlocked(
                 "ENV_OPT_IN_WITHDRAWN",
                 f"{env_var} no longer opts in to {expected!r} — the environment IS the gate for "
@@ -457,11 +472,12 @@ def env_only_authorization(
     their constructor and their egress re-check unchanged, so this exception cannot also quietly
     remove the "re-verify immediately before opening a socket" property.
 
-    ``evidence_ref`` names the env var behind the ``env_only:`` prefix, which is what
-    :func:`assert_authorization` keys on to re-read the environment at egress instead of a file
-    that does not exist. ``expires_at`` is far-future **by design** — removing the expiry is the
-    decision; encoding a fake one would make the board and the audit trail claim a bound that
-    nothing enforces.
+    ``env_gate`` carries the setting :func:`assert_authorization` re-reads at egress instead of a
+    file that does not exist. ``evidence_ref`` spells the same thing for a human reading a log
+    and is **not** load-bearing — it used to be, and a grant record could spell the same prefix
+    into its own evidence path to skip its file re-check. ``expires_at`` is far-future **by
+    design** — removing the expiry is the decision; encoding a fake one would make the board and
+    the audit trail claim a bound that nothing enforces.
     """
     return Authorization(
         flags=tuple(flags),
@@ -470,6 +486,7 @@ def env_only_authorization(
         expires_at="9999-12-31T23:59:59Z",
         evidence_ref=f"{ENV_ONLY_EVIDENCE_PREFIX}{env_var}={opt_in_value}",
         activation_path=None,
+        env_gate=(env_var, opt_in_value),
     )
 
 
@@ -488,8 +505,14 @@ def select_env_gated(
     confirmed and receives its ``Authorization`` as an argument, so "never construct the capable
     thing before the gate opens" stays structural here too. Only what "the gate" means differs.
     """
+    # Both sides normalised, and `assert_authorization`'s re-check normalises the same way. Only
+    # the env value was, which is right for every caller today (all five pass
+    # `REAL_LIVE_TRADING = "real"`) and silently wrong for one that passes "REAL": the gate would
+    # never open and nothing would say why. `select_gated` above has the same asymmetry and is
+    # left alone deliberately — it is pre-existing, it governs every other capability, and
+    # widening what opens THOSE gates does not belong in a live-trading change.
     choice = os.environ.get(env_var, "").strip().lower()
-    if choice != opt_in_value:
+    if choice != opt_in_value.strip().lower():
         return default_factory()
     return gated_factory(
         env_only_authorization(
