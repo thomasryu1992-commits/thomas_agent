@@ -211,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             submitted_today=submitted_today,
             current_open_notional_usdt=open_notional,
             budget_registered=bool(budget.get("valid")),
+            allowed_symbols=budget.get("symbol_allowlist") or (),
             canary=True,
             limits=limits,
         )

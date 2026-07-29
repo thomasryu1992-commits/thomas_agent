@@ -113,7 +113,7 @@ def _ready(**kw):
     facts = dict(
         gate_open=True, runtime_active=True, daily_loss_breached=False,
         clean_canary_orders=3, submitted_today=0, current_open_notional_usdt=0.0,
-        budget_registered=True, limits=_ready_limits(),
+        budget_registered=True, allowed_symbols=["BTCUSDT"], limits=_ready_limits(),
     )
     facts.update(kw)
     return facts
@@ -658,7 +658,12 @@ def test_the_canary_the_script_would_place_is_actually_approvable(tmp_path, monk
         # 0 clean canaries is the real state before the first one; canary mode is what
         # exempts the promotion gate, and the whole point of this path.
         clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
-        budget_registered=status["valid"], limits=limits, canary=True,
+        budget_registered=status["valid"],
+        # Composed from the same resolved budget the script uses — the parity this test is
+        # for. Reading the allowlist off `status` rather than restating it here is what keeps
+        # the scope the script passes and the scope this test passes the same object.
+        allowed_symbols=status.get("symbol_allowlist") or (),
+        limits=limits, canary=True,
     )
     assert verdict["blocks"] == []
     assert verdict["approved"] is True

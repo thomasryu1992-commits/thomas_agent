@@ -27,7 +27,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -78,6 +78,27 @@ MANUAL_KILL_SWITCH_ENV = "MVP_LIVE_MANUAL_KILL_SWITCH"
 # env var here instead sent them to a knob that has not authorized anything since step 6b —
 # fail-closed, but pointing at the wrong next action, which is how #201 hid.
 REGISTER_BUDGET_HINT = "register a budget with scripts/register_live_trading_budget.py"
+
+
+def normalize_symbols(symbols: Any) -> tuple[str, ...]:
+    """The budget's allowlist as the guard compares it: stripped, upper-cased, deduplicated.
+
+    Same normalization ``build_live_trading_budget_record`` applies when the record is
+    written, applied again on read rather than trusted. A record edited by hand — the one
+    way an allowlist can arrive un-normalized — must not widen scope through a case
+    difference, and must not narrow it through one either."""
+    if isinstance(symbols, (str, bytes)):
+        return ()
+    try:
+        items = list(symbols or ())
+    except TypeError:
+        return ()
+    seen: list[str] = []
+    for item in items:
+        name = str(item).strip().upper()
+        if name and name not in seen:
+            seen.append(name)
+    return tuple(seen)
 
 # The ceiling a configured cap can never exceed, whatever the operator types. Source value.
 DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
@@ -396,6 +417,13 @@ def evaluate_live_order_guard(
     # env one is reachable by forgetting an argument. Callers state it.
     limits: LiveOrderLimits,
     budget_registered: bool = False,
+    # The registered budget's symbol allowlist. Defaults to EMPTY, which blocks every symbol —
+    # the same fail-closed default as `budget_registered=False`, and for the same reason: a
+    # caller that does not state the scope must not be able to authorize an order outside it
+    # by omission. The budget declared this list from the first record written; nothing read
+    # it, so a budget naming BTCUSDT sat next to an active pool trading four other symbols
+    # and the two never disagreed out loud.
+    allowed_symbols: Sequence[str] = (),
     canary: bool = False,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
@@ -437,6 +465,25 @@ def evaluate_live_order_guard(
             "no valid registered live-trading budget "
             "(autonomous_spend_without_registered_budget); register one with "
             "scripts/register_live_trading_budget.py"
+        )
+    # 0b. The symbol this budget authorizes. Registered from the first budget record and read
+    #     by nothing until now, so the caps bound how MUCH could be traded while nothing bound
+    #     WHAT. Applied to the canary too: a canary is a smaller real order, not a different
+    #     kind of one, and the operator widens scope by re-registering rather than by aiming
+    #     the canary door somewhere the budget does not name.
+    allowlist = normalize_symbols(allowed_symbols)
+    order_symbol = str(intent.get("symbol") or "").strip().upper()
+    if not allowlist:
+        blocks.append(
+            f"no symbol allowlist backs this order (an unstated scope authorizes nothing); "
+            f"{REGISTER_BUDGET_HINT}"
+        )
+    elif not order_symbol:
+        blocks.append("live order intent names no symbol, so it cannot be checked against the allowlist")
+    elif order_symbol not in allowlist:
+        blocks.append(
+            f"{order_symbol} is not in the registered budget's symbol allowlist "
+            f"({', '.join(allowlist)}); re-register the budget to widen it"
         )
     # 1. The switch. Without the operator's live-trading opt-in nothing else matters.
     if not gate_open:
@@ -536,6 +583,11 @@ def evaluate_live_order_guard(
         "daily_loss_limit_usdt": cfg.daily_loss_limit_usdt,
         "daily_loss_breached": daily_loss_breached,
         "clean_canary_orders": clean_canary_orders,
+        # Structured alongside the prose block, so a caller decides on the field rather than by
+        # matching an error string — the reason `blocks` is the report and never the interface.
+        "order_symbol": order_symbol,
+        "allowed_symbols": list(allowlist),
+        "symbol_allowlisted": bool(allowlist) and order_symbol in allowlist,
         "close_guard": False,
         "canary": bool(canary),
     }

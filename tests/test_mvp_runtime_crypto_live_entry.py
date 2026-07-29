@@ -88,6 +88,7 @@ def _plan(**kw):
         filters=kw.pop("filters", FILTERS),
         limits=kw.pop("limits", LIMITS),
         budget_registered=kw.pop("budget_registered", True),
+        allowed_symbols=kw.pop("allowed_symbols", ["BTCUSDT"]),
         gate_open=kw.pop("gate_open", True),
         runtime_active=kw.pop("runtime_active", True),
         daily_loss_breached=kw.pop("daily_loss_breached", False),
