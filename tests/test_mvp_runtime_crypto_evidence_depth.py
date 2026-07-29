@@ -28,6 +28,7 @@ from runtime.mvp_runtime.crypto.pool import (
     EVIDENCE_DEPTH_RANK_SHALLOW,
     EVIDENCE_DEPTH_RANK_UNRECORDED,
     EVIDENCE_DEPTH_UNRECORDED,
+    assert_promotable_evidence_depth,
     candidate_quality,
     current_evidence_depth,
     evidence_depth_of,
@@ -35,7 +36,9 @@ from runtime.mvp_runtime.crypto.pool import (
     expected_replayed_bars,
     rank_candidates,
 )
+from runtime.mvp_runtime.crypto.promotion import request_promotion
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
+from runtime.mvp_runtime.errors import ApprovalBlocked, ToolError
 
 from scripts.promote_strategy_candidates import run_promotion
 
@@ -315,7 +318,12 @@ def test_a_mixed_depth_store_is_flagged_and_the_rows_say_which_they_are(monkeypa
 # --- the door: ranked and recorded, not refused --------------------------------
 
 def _seed(tmp_path, *, bars):
+    """``bars=None`` seeds a row that records no window — the 41 rows the live store holds."""
     spec = StrategySpec.from_dict(_spec_dict())
+    evidence = {"closed_count": 20, "expectancy": 0.5,
+                "cost_summary": _current_cost_summary()}
+    if bars is not None:
+        evidence["bars_replayed"] = bars
     pool.append_candidates([{
         "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash,
@@ -323,8 +331,7 @@ def _seed(tmp_path, *, bars):
         "status": "BACKTESTED",
         "champion_score": 0.5,
         "strategy_spec": spec.to_dict(),
-        "backtest_evidence": {"closed_count": 20, "expectancy": 0.5, "bars_replayed": bars,
-                              "cost_summary": _current_cost_summary()},
+        "backtest_evidence": evidence,
         "evidence_input_sha256": "sha256:test",
         "provenance": "mvp_factory",
     }], root=tmp_path)
@@ -362,3 +369,93 @@ def test_a_promotion_on_todays_window_records_that_too(tmp_path):
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                             keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     assert summary["evidence_depths"] == [current_evidence_depth("1d")]
+    assert summary["unrecorded_evidence_depth_escape"] is False
+
+
+# --- ...but a window that cannot be READ is refused ----------------------------
+#
+# Counted on the live store while the depth floor was being reviewed (PR #339): the pool spans
+# four depths already — 25 rows at 1400 bars, 12 at 500, 18 at 350 — and 41 rows record no
+# depth at all. Those 41 arrive through the C7 import, which copies an outside pool's entries
+# verbatim; `bars_replayed` has been written by every factory row since C8a.
+
+def test_the_door_refuses_evidence_that_records_no_window(tmp_path):
+    """Every argument for ranking a SHALLOW row instead of refusing it collapses here.
+
+    "The error runs against the candidate" is a claim about a window you can see. An
+    unrecorded one has no readable direction — which is exactly why the cost tier refuses
+    `cost_model_unrecorded` rather than ranking it — and it is worse than the cost case,
+    because nothing re-windows a candidate: the snapshot behind `evidence_input_sha256` is not
+    kept, so no later arithmetic can recover what `expectancy_at` recovers for cost."""
+    _seed(tmp_path, bars=None)
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED" in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
+
+
+def test_the_ask_refuses_what_the_install_would_refuse(tmp_path):
+    """An ask that cannot execute is worse than no ask: it spends Thomas's answer on a
+    promotion the next step was always going to block. Same rule the stale-basis gate uses."""
+    _seed(tmp_path, bars=None)
+    with pytest.raises(ApprovalBlocked) as exc:
+        request_promotion(["S1"], keep_active=False, now=NOW, candidates_root=tmp_path)
+    assert exc.value.reason_code == "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED"
+
+
+def test_the_unrecorded_depth_escape_promotes_and_is_recorded(tmp_path):
+    """An escape that leaves no trace is an escape nobody can audit — and the depth string
+    rides along, so the ledger says the window was unreadable rather than merely unremarked."""
+    _seed(tmp_path, bars=None)
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            allow_unrecorded_evidence_depth=True)
+    assert summary["unrecorded_evidence_depth_escape"] is True
+    assert summary["evidence_depths"] == [EVIDENCE_DEPTH_UNRECORDED]
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+def test_the_two_escapes_are_separate_keys(tmp_path):
+    """Two doors that fail for different reasons must not open with one key: the cost escape
+    does not admit an unreadable window, and each is recorded on its own."""
+    _seed(tmp_path, bars=None)
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                      allow_stale_cost_basis=True)
+    assert "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED" in str(exc.value)
+
+
+def test_the_refusal_names_the_rows_and_the_escape():
+    """A gate that will not say which rows it stopped sends the operator back to the listing."""
+    with pytest.raises(ToolError) as exc:
+        assert_promotable_evidence_depth([_record("cand_blind", bars=None)])
+    assert exc.value.reason_code == "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED"
+    assert "cand_blind" in exc.value.reason
+    assert "--allow-unrecorded-evidence-depth" in exc.value.reason
+
+
+def test_a_known_shallow_window_is_never_what_the_gate_stops():
+    """The distinction the whole tier turns on, asserted directly on the gate."""
+    assert_promotable_evidence_depth([
+        _record("cand_shallow", bars=_TODAY_1D // 4),
+        _record("cand_current", bars=_TODAY_1D),
+    ])
+
+
+def test_the_listing_names_the_refused_rows(monkeypatch, capsys):
+    """The listing and the gate must agree: a row the door will stop has to be visible as such
+    before an operator selects it, not discovered at the ask."""
+    from scripts import promote_strategy_candidates as prom
+
+    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [
+        _record("cand_blind", bars=None),
+        _record("cand_current", bars=_TODAY_1D),
+    ])
+    prom.main(["--list"])
+
+    out = capsys.readouterr().out
+    assert "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED" in out
+    assert "1 row(s) record NO window" in out
+    assert "--allow-unrecorded-evidence-depth" in out

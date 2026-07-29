@@ -241,15 +241,19 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 #
 # The second axis on which two candidates can be incomparable. The cost basis above asks what
 # a row PAID; this asks how much market it was shown. `backtest_evidence.bars_replayed` has
-# recorded it since the holdout split landed and nothing has ever read it, so a row scored
-# over 500 bars and a row scored over 2000 sat in one list looking equally examined.
+# recorded it since the factory's first version and nothing has ever read it, so a row scored
+# over 350 bars and a row scored over 1400 sat in one list looking equally examined.
 #
 # It became load-bearing when the factory grew a bar-count floor beneath its calendar window
 # (`market_data.MIN_FACTORY_BARS` under `FACTORY_DEPTH_DAYS`), taking 1d from 500 collected
 # bars to 2000. Re-scoring the same 25 specs at the deeper window moved them from
 # 0 ROBUST / 20 FRAGILE to 12 ROBUST / 12 PROVISIONAL / 1 FRAGILE — so the verdict beside a
-# row is partly a statement about that row's window, and this store holds 1d candidates
-# scored at both depths with nothing marking which is which.
+# row is partly a statement about that row's window.
+#
+# The store does not hold two depths; counted on the live machine (Thomas, reviewing the
+# floor on PR #339) it already holds FOUR, and the floor adds a fifth: 25 rows replayed 1400
+# bars, 12 replayed 500, 18 replayed 350 — and 41 record no depth at all. That last group is
+# the one that decides the shape of this tier, so it is answered first, below.
 #
 # WHICH WAY THE ERROR POINTS — the question the cost tiers are ordered by, asked of depth.
 # Three of the scorer's five terms and both of its verdict gates are counted over TRADES, and
@@ -272,7 +276,7 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 # can back a refusal. Re-running a spec over a longer window is a DIFFERENT sample. A shallow
 # row is not a deep row carrying a handicap; it is a smaller one.
 #
-# So this tier RANKS, REPORTS and IS RECORDED — it does not refuse. Three reasons, in order:
+# So A KNOWN-SHALLOW ROW RANKS, REPORTS AND IS RECORDED — it is not refused. Three reasons:
 #   1. Every 1d row in the store was scored at the old window, so the day the floor lands a
 #      refusal makes the escape hatch the normal door. The cost tiers already record that
 #      lesson (equality was tried first and refused 90 of 359 rows on their own merits).
@@ -284,6 +288,26 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 #      shallow evidence here blocks the cheapest way to earn the depth it lacks.
 # What replaces the refusal is attribution: the tier orders the list, the `--list` view names
 # the split, and the depth each promoted row stood on rides onto the ledger beside its basis.
+#
+# AN UNRECORDED WINDOW IS REFUSED, AND ALL THREE OF THOSE REASONS COLLAPSE ON IT.
+# (1) does not grow: every row the factory mints records its depth, so the unrecorded set is a
+# closed legacy population that shrinks, not one the next policy change re-creates — the 41
+# arrive through the C7 import, which copies an outside pool's entries verbatim. (2) is the
+# argument that fails hardest: "the error runs against the candidate" is a claim about a
+# window you can SEE. An unrecorded one has no known direction, which is precisely why
+# `COST_BASIS_RANK_UNRECORDED` is refused rather than ranked. (3) proves nothing, because the
+# cost door already refuses unrecorded evidence into this same paper pool.
+#
+# And unrecorded depth is WORSE than unrecorded cost, not merely equal to it. An unrecorded
+# cost basis is partially repairable: `expectancy_at` re-derives the number that matters at
+# today's rates, exactly, from what the row already stores. Nothing re-windows a candidate.
+# The snapshot that produced the evidence is not kept — only `evidence_input_sha256`, its hash
+# — so a row that cannot say how much market it replayed cannot be made to say it, ever, by
+# any amount of arithmetic. The repo's standing rule for that case is not a ranking:
+# missing / uncertain → BLOCK, never guess.
+#
+# The escape is its own flag rather than a widening of `--allow-stale-cost-basis`. Two doors
+# that fail for different reasons must not open with one key.
 
 EVIDENCE_DEPTH_REPLAYED = "replayed"
 EVIDENCE_DEPTH_UNRECORDED = "evidence_depth_unrecorded"
@@ -291,6 +315,13 @@ EVIDENCE_DEPTH_UNRECORDED = "evidence_depth_unrecorded"
 EVIDENCE_DEPTH_RANK_CURRENT = 0     # replayed at least the window the factory collects today
 EVIDENCE_DEPTH_RANK_SHALLOW = 1     # a shorter window: less market, and a verdict that reflects it
 EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one in: span unknown
+
+# Which of those may back a promotion. SHALLOW promotes because its error is known and runs
+# against the candidate; UNRECORDED is refused because no direction can be read off it and,
+# unlike an unrecorded cost basis, no part of it can be re-derived later.
+PROMOTABLE_EVIDENCE_DEPTH_RANKS = frozenset({
+    EVIDENCE_DEPTH_RANK_CURRENT, EVIDENCE_DEPTH_RANK_SHALLOW,
+})
 
 # CURRENT is "at or above" rather than "exactly at". A deeper row is better supported, not
 # incomparable, and giving depth its own top tier would sort every freshly minted candidate
@@ -375,13 +406,13 @@ def current_evidence_depth(timeframe: str) -> str:
 def evidence_depth_rank(record: Mapping[str, Any]) -> int:
     """Which `EVIDENCE_DEPTH_RANK_*` tier this candidate's window falls in.
 
-    One authority for two consumers, like `cost_basis_rank`: `rank_candidates` orders on it
-    and the `--list` view reports it, so the ordering an operator reads and the block that
-    explains that ordering can never disagree.
+    One authority for three consumers, like `cost_basis_rank`: `rank_candidates` orders on it,
+    the `--list` view reports it, and `assert_promotable_evidence_depth` refuses on it — so
+    the ordering an operator reads, the block that explains it and the gate that stops them
+    can never disagree.
 
-    Deliberately consulted by neither `assert_promotable_cost_basis` nor any sibling of it —
-    see the block above for why shallow evidence is ranked, surfaced and recorded rather than
-    refused at the door."""
+    Note which tier the gate acts on: SHALLOW is ranked and surfaced, never refused. Only
+    UNRECORDED is a door. See the block above for why the two cases part company."""
     window = _replayed_window(record)
     if window is None:
         return EVIDENCE_DEPTH_RANK_UNRECORDED
@@ -391,6 +422,36 @@ def evidence_depth_rank(record: Mapping[str, Any]) -> int:
         return EVIDENCE_DEPTH_RANK_UNRECORDED
     return (EVIDENCE_DEPTH_RANK_CURRENT if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
             else EVIDENCE_DEPTH_RANK_SHALLOW)
+
+
+def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
+    """Refuse a promotion backed by evidence that cannot say how much market it replayed.
+
+    Not a depth threshold — a KNOWN shallow window promotes, because a verdict scored on less
+    market errs against the candidate and paper routing is how it earns the rest. This refuses
+    only the rows that record no window at all, where "errs against the candidate" is not a
+    claim anyone can make.
+
+    Unrecoverable in a way an unrecorded cost basis is not: `expectancy_at` re-derives the
+    number that matters at today's rates from what the row already stores, while nothing
+    re-windows a candidate — the snapshot behind `evidence_input_sha256` is not kept, only its
+    hash. So this cannot be repaired in place, on any later day, by any arithmetic.
+
+    Raises `CANDIDATE_EVIDENCE_DEPTH_UNRECORDED`, naming every offending candidate."""
+    unknown = [
+        candidate_id(record)
+        for record in records
+        if evidence_depth_rank(record) not in PROMOTABLE_EVIDENCE_DEPTH_RANKS
+    ]
+    if unknown:
+        listed = ", ".join(unknown)
+        raise ToolError(
+            "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED",
+            f"record no replay window, so how much market their verdict was earned on cannot "
+            f"be read and cannot be re-derived: {listed}. A candidate minted now records it "
+            f"({current_evidence_depth('1d')} at 1d) — re-mint the lineage through the "
+            f"factory, or pass the explicit --allow-unrecorded-evidence-depth escape.",
+        )
 
 
 # --- candidate identity (single source) ----------------------------------------

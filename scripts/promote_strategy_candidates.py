@@ -64,12 +64,14 @@ EXIT_BLOCKED = 3
 
 
 def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
-                now: str | None = None, allow_stale_cost_basis: bool = False) -> dict:
+                now: str | None = None, allow_stale_cost_basis: bool = False,
+                allow_unrecorded_evidence_depth: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
         selectors, keep_active=keep_active, now=now, repo_root=root,
         allow_stale_cost_basis=allow_stale_cost_basis,
+        allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -89,7 +91,7 @@ def run_promotion(
     *, selectors: list[str], promoted_by: str, reason: str,
     keep_active: bool, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
-    allow_stale_cost_basis: bool = False,
+    allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -101,10 +103,13 @@ def run_promotion(
 
     Evidence scored under a cost model cheaper than the venue charges refuses with
     ``CANDIDATE_COST_BASIS_STALE`` unless ``allow_stale_cost_basis`` says otherwise —
-    see ``pool.assert_promotable_cost_basis``. The escape stays out of
-    ``promotion_content_sha256``: the candidate ids are already in the hash and the
-    check is a pure function of them, so the same approval can never need the escape
-    in one execution and not another."""
+    see ``pool.assert_promotable_cost_basis``. Evidence that cannot say how much market
+    it replayed refuses with ``CANDIDATE_EVIDENCE_DEPTH_UNRECORDED`` unless
+    ``allow_unrecorded_evidence_depth`` says otherwise; a KNOWN shallow window is ranked,
+    never refused (see ``pool.assert_promotable_evidence_depth``). Both escapes stay out of
+    ``promotion_content_sha256``: the candidate ids are already in the hash and each check
+    is a pure function of them, so the same approval can never need an escape in one
+    execution and not another."""
     now = now or timeutil.utc_now_iso()
 
     # Kill switch first: promotion mutates what the runtime trades.
@@ -135,6 +140,12 @@ def run_promotion(
         # reads when a selection fails on both counts.
         if not allow_stale_cost_basis:
             pool_store.assert_promotable_cost_basis(candidates)
+        # After the basis, because a row that records neither is more usefully reported as the
+        # cheaper failure first: "scored under an unknown cost model" is the one an operator
+        # can act on by re-minting, and re-minting fixes both. A KNOWN shallow window is not
+        # checked here at all — only an unreadable one.
+        if not allow_unrecorded_evidence_depth:
+            pool_store.assert_promotable_evidence_depth(candidates)
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -213,11 +224,12 @@ def run_promotion(
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
-        # the basis beside it — and here it is the ONLY record, because unlike the cost basis
-        # this one has no gate to refuse it. A shallow verdict is a floor rather than an
-        # inflated number, so it is attributed instead of blocked (see `pool`'s depth block);
+        # the basis beside it — and here it carries more weight, because a SHALLOW row is
+        # deliberately not refused. A shallow verdict is a floor rather than an inflated
+        # number, so it is attributed instead of blocked (see `pool`'s depth block), and
         # attribution that is not written down is just a listing nobody kept.
         "evidence_depths": [pool_store.evidence_depth_of(c) for c in candidates],
+        "unrecorded_evidence_depth_escape": bool(allow_unrecorded_evidence_depth),
         "created_at": now,
     }
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
@@ -243,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-stale-cost-basis", action="store_true",
                         help="explicit escape: promote evidence scored under a cost model cheaper "
                              "than the venue charges (its expectancy is overstated; recorded as such)")
+    parser.add_argument("--allow-unrecorded-evidence-depth", action="store_true",
+                        help="explicit escape: promote evidence that records no replay window, so "
+                             "how much market its verdict was earned on cannot be read and cannot "
+                             "be re-derived (recorded as such). A KNOWN shallow window needs no "
+                             "escape — it is ranked, not refused.")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -336,6 +353,19 @@ def main(argv: list[str] | None = None) -> int:
             print("      on the ledger. Re-mint the lineage at the current window before reading "
                   "a shallow")
             print("      FRAGILE as a no.")
+        # The one depth that IS a door, counted like the stale-basis block above it. Refused
+        # rather than ranked because "a shallow verdict errs against the candidate" is a claim
+        # about a window you can see, and no arithmetic can recover one that was never written
+        # down — unlike a cost basis, where `exp@` above repairs the number that matters.
+        unreadable = sum(n for (rank, _), n in depths.items()
+                         if rank not in pool_store.PROMOTABLE_EVIDENCE_DEPTH_RANKS)
+        if unreadable:
+            print(f"      {unreadable} row(s) record NO window at all and are REFUSED at the "
+                  "promotion door")
+            print("      (CANDIDATE_EVIDENCE_DEPTH_UNRECORDED); re-mint the lineage through the "
+                  "factory, or")
+            print("      pass --allow-unrecorded-evidence-depth. A merely SHALLOW row needs no "
+                  "escape.")
         # The mixing is reported, but it is also fixable for the number that matters most:
         # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
         # is exactly derivable from what its evidence already records. `exp@` below is that
@@ -405,8 +435,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.request:
         try:
-            prepared = run_request(selectors=selectors, keep_active=args.keep_active,
-                                   allow_stale_cost_basis=args.allow_stale_cost_basis)
+            prepared = run_request(
+                selectors=selectors, keep_active=args.keep_active,
+                allow_stale_cost_basis=args.allow_stale_cost_basis,
+                allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
             return EXIT_BLOCKED
@@ -430,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         promoted_by=args.promoted_by, reason=args.reason, keep_active=args.keep_active,
         approval_id=args.approval_id, without_approval=args.without_approval,
         allow_stale_cost_basis=args.allow_stale_cost_basis,
+        allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
