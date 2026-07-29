@@ -355,8 +355,15 @@ def run_crypto_cycle(
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
+    # Handed the history this cycle already read and verified at step 3, rather than paying for
+    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
+    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
+    # and the except below records it — a report over a history nobody could verify is exactly
+    # what must not be produced.
     try:
-        report, report_text = feedback.run_paper_performance_report(now=now, root=root)
+        report, report_text = feedback.run_paper_performance_report(
+            now=now, root=root, outcomes=outcomes,
+        )
     except ToolError as exc:
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"
         if exc.reason_code not in reason_codes:

@@ -410,12 +410,28 @@ def render_report_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_paper_performance_report(*, now: str, root=None) -> tuple[dict[str, Any], str]:
+def run_paper_performance_report(
+    *, now: str, root=None, outcomes: Iterable[Mapping[str, Any]] | None = None
+) -> tuple[dict[str, Any], str]:
     """Read the paper outcome store and produce (report, rendered_text).
 
     An unreadable store propagates as the typed ``OUTCOME_HISTORY_UNREADABLE`` —
-    a report over a silently-truncated history would be a lie with a status field."""
-    outcomes = paper.read_outcomes(root)  # raises ToolError when unreadable
+    a report over a silently-truncated history would be a lie with a status field.
+
+    ``outcomes`` lets a caller that has **already** performed that verified read hand it over
+    instead of paying for a second one. `read_outcomes` re-parses every row and recomputes every
+    native record's sha256: 98 ms over 3,000 rows, twice per cycle, times twenty contexts in a
+    pool fan-out — 3.9 s a fire, growing with the history for as long as the runtime trades.
+
+    Deliberately an argument rather than a cache keyed on the file's mtime and size. This store
+    is the one the risk guard reads to decide whether to keep trading, and its tamper evidence is
+    the per-record hash; a freshness heuristic that decides when to skip re-checking those hashes
+    is a weakening of a fail-closed path in exchange for milliseconds. An explicit hand-off from
+    the one caller that already read is worth the same and gives up nothing. Passing ``None``
+    reads, exactly as before — including the raise, which is why `cycle` passes ``None`` when its
+    own read failed."""
+    if outcomes is None:
+        outcomes = paper.read_outcomes(root)  # raises ToolError when unreadable
     report = build_performance_report(outcomes, now=now)
     return report, render_report_text(report)
 

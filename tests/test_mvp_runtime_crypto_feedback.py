@@ -318,3 +318,38 @@ def test_the_gross_summary_keeps_its_meaning_and_its_consumers():
     report = build_performance_report(SPREAD, now=NOW)
     assert report["summary"] == summarize_outcomes(SPREAD)
     assert all("net" not in key for key in report["summary"])
+
+
+# --- the history is read once per cycle, not twice (2026-07-29) --------------------------------
+#
+# `read_outcomes` re-parses every row and recomputes every native record's sha256 — 98 ms over
+# 3,000 rows, and it ran twice per cycle (the risk guard's read, then the report's) times twenty
+# contexts in a pool fan-out. The verification is not the waste; doing it twice on an unchanged
+# file is.
+
+def test_the_report_uses_a_history_the_caller_already_verified(tmp_path, monkeypatch):
+    reads = []
+    real = paper.read_outcomes
+    monkeypatch.setattr(paper, "read_outcomes", lambda root=None: (reads.append(1), real(root))[1])
+
+    report, _text = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
+    assert not reads, "the store was read despite being handed the rows"
+    assert report["sample_size"] == 4
+
+
+def test_a_handed_history_produces_the_identical_report(tmp_path):
+    """Reuse must change nothing about the answer — the same property the replay frame owes."""
+    a, text_a = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
+    b, text_b = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=list(SPREAD))
+    assert a == b and text_a == text_b
+
+
+def test_passing_none_still_reads_and_still_raises(tmp_path):
+    """The cycle passes None precisely when its own read failed, and the report must then fail
+    the same way — a report over a history nobody could verify is what must not be produced."""
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / paper.OUTCOMES_FILENAME).write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(ToolError) as excinfo:
+        run_paper_performance_report(now=NOW, root=tmp_path, outcomes=None)
+    assert excinfo.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
