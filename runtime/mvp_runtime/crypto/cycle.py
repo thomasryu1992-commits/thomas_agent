@@ -48,7 +48,13 @@ from .market_data import (
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
-from .live_route import ROUTE_DISABLED, live_position_symbols, live_route_status_line, run_live_leg
+from .live_route import (
+    DEFAULT_TIMING_CONTEXT,
+    ROUTE_DISABLED,
+    live_position_contexts,
+    live_route_status_line,
+    run_live_leg,
+)
 from .paper import (
     PaperStore,
     build_entry_plan,
@@ -338,6 +344,10 @@ def run_crypto_cycle(
         symbol=symbol,
         collector=collector,
         now=now,
+        # This cycle's own context. Only the timeframe a position was opened at may advance its
+        # holding counter — every other one still settles and protects it. See
+        # `live_route.position_timing_context`.
+        timeframe=timeframe,
         root=root,
         control_store=control_store,
     )
@@ -424,7 +434,7 @@ def run_crypto_cycle(
 
 
 def pool_cycle_contexts(
-    root: Path | None = None, *, default_timeframe: str = "1d"
+    root: Path | None = None, *, default_timeframe: str = DEFAULT_TIMING_CONTEXT
 ) -> list[tuple[str, str]]:
     """Every ``(symbol, timeframe)`` one pool pass must visit, sorted.
 
@@ -436,12 +446,18 @@ def pool_cycle_contexts(
     - the contexts of every currently OPEN paper position — so a position whose
       strategy has since been demoted out of the routable set is still visited by
       its own symbol's cycle and can settle, never stranded; and
-    - the symbol of every open **live** position (LP5.3). Same rule, higher stakes:
-      a live position whose strategy has been demoted would otherwise have no cycle
-      that could settle it, and it holds real money. Live positions are keyed by
-      symbol alone, so one is paired with ``default_timeframe`` when the symbol is
-      not already being visited — the timeframe governs which candles are collected
-      and which strategies route, neither of which the settlement reads.
+    - the ``(symbol, timeframe)`` of every open **live** position (LP5.3). Same rule,
+      higher stakes: a live position whose strategy has been demoted would otherwise
+      have no cycle that could settle it, and it holds real money.
+
+      The timeframe here is the position's **own** — the one its ``max_holding_bars``
+      was backtested against — and it is added even when the symbol is already being
+      visited at some other one. That is the counterpart to
+      ``live_route.position_timing_context``: only the owning context may advance a
+      position's holding counter, so the owning context has to be guaranteed to run.
+      This used to pair the symbol with ``default_timeframe`` and only when it was
+      otherwise unvisited, which meant a 4h position on a symbol still routed at 15m
+      was serviced by a cycle counting 15m bars.
 
     A tampered/unreadable pool or position book contributes nothing rather than
     raising: each per-context cycle re-reads and records its own fail-closed reason,
@@ -457,10 +473,7 @@ def pool_cycle_contexts(
             contexts.add((context.symbol, context.timeframe))
     except MvpRuntimeError:
         pass
-    visited = {symbol for symbol, _timeframe in contexts}
-    for symbol in live_position_symbols(root):
-        if symbol not in visited:
-            contexts.add((symbol, default_timeframe))
+    contexts.update(live_position_contexts(root, default_timeframe=default_timeframe))
     return sorted(contexts)
 
 
@@ -470,7 +483,7 @@ def run_pool_cycle(
     store: PaperStore,
     now: str,
     default_symbol: str = "BTCUSDT",
-    default_timeframe: str = "1d",
+    default_timeframe: str = DEFAULT_TIMING_CONTEXT,
     limit: int = 120,
     root: Path | None = None,
     control_store: ControlStore | None = None,

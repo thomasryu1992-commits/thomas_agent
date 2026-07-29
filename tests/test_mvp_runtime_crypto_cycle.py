@@ -354,6 +354,40 @@ def test_pool_cycle_settles_open_position_even_after_its_strategy_leaves(tmp_pat
     assert load_open_position(ETH_CTX, tmp_path) is None
 
 
+def _book_live_position(tmp_path, symbol: str, **fields):
+    """Write an OPEN live position straight to the book — no gate, no venue, no order."""
+    from runtime.mvp_runtime.crypto.live_position import live_position_path
+
+    path = live_position_path(symbol, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    position = {"stage": "live", "status": "OPEN", "symbol": symbol, "direction": "LONG",
+                "quantity": 0.002, "entry_price": 100.0, "notional_usdt": 0.2,
+                "opened_at_utc": "2026-07-27T00:00:00Z", "position_id": f"live-{symbol}"}
+    position.update(fields)
+    path.write_text(json.dumps(position), encoding="utf-8")
+    return position
+
+
+def test_a_live_position_pulls_in_its_own_timeframe_not_the_default(tmp_path):
+    """The context that owns a live position's clock is its own timeframe, so that context has to
+    be guaranteed to run. This used to add the symbol only when it was otherwise unvisited, and
+    then at the DEFAULT timeframe — so a 4h position on a symbol still routed at 15m was serviced
+    by a cycle counting 15m bars against a 4h rule."""
+    _install_pool(tmp_path, _always_spec("S_ETH_15m", "ETHUSDT", timeframe="15m"))
+    _book_live_position(tmp_path, "ETHUSDT", timeframe="4h", max_holding_bars=12)
+
+    contexts = pool_cycle_contexts(tmp_path)
+    assert ("ETHUSDT", "4h") in contexts, "the position's own timeframe never got a cycle"
+    assert ("ETHUSDT", "15m") in contexts, "the routable context was dropped"
+
+
+def test_a_legacy_live_position_pulls_in_the_default_timeframe(tmp_path):
+    """No stored timeframe means no owner to name, so `position_timing_context` hands it to the
+    default — and this is what makes that default a context that actually runs."""
+    _book_live_position(tmp_path, "ETHUSDT")  # no `timeframe` field: pre-exit-terms record
+    assert pool_cycle_contexts(tmp_path, default_timeframe="1d") == [("ETHUSDT", "1d")]
+
+
 def test_pool_cycle_skips_a_bad_symbol_without_starving_the_rest(tmp_path):
     # A pool symbol that parses as a spec but cannot be collected (INVALID_SYMBOL)
     # must not abort the batch — the other symbol still runs.
