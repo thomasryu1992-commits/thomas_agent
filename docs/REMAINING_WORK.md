@@ -4,7 +4,10 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-28** (`main` = `279c233`), after cycle routing landed (#302), the cost
+Last updated: **2026-07-29** (`main` = `36fd1f7`), after the live-trading grant was removed and
+`MVP_LIVE_TRADING=real` became the whole gate (#320), the `execution.live_trader` definition stopped
+describing a build that had shipped (#323), and section D was re-audited against the code.
+Previously **2026-07-28** (`main` = `279c233`), after cycle routing landed (#302), the cost
 basis became a promotion gate rather than a warning (#309), the per-fill fee instrument was built
 (#313) and the last unguarded state writer got a door (#315). Before that, on the same day: the
 canary path ran end to end for the first time and the defect wave that followed it
@@ -717,9 +720,17 @@ decision.
 noting: §8.8 and §10.4 were real gaps and got built; §8.5 turned out to be one decision (activate
 the roles) plus the routing to make activation non-inert; and the §8.4 risk-classification entry was
 **written up wrong the first time** — the correction, not the fix, is the reusable part. What stays
-open below is either an explicit Thomas decision (`business.analysis`, `execution.live_trader`) or a
-state that is now *correct rather than missing* (the high-risk route, `complexity`), and each says
-which it is. Do not read an open box here as work waiting to be done.
+open below is one of three things, and each box says which: an explicit Thomas decision
+(`business.analysis`, `execution.live_trader`); a state that is now *correct rather than missing*
+(the high-risk route, the PROGRAM route, `complexity`); or a mismatch between the design document
+and the build where **the document is the thing to change** (§8.7). Do not read an open box here as
+work waiting to be done.
+
+**Re-audited 2026-07-29** against `main`, after the live-gate and cycle-routing changes. Two boxes
+moved and both moved for the same reason — *a claim that was true when written, and was not
+re-checked when the thing it described moved*: §8.4's high-risk box had a re-check condition phrased
+around the router, and a RED action became autonomously reachable through a different door; §8.7 had
+no box at all. Nothing else in this section changed.
 
 The Target layers (§4–§5: Common Capability Organization, Opportunity & Business Creation, Business
 Portfolio, Dynamic Strategic Board) are **not** listed here: §9 says do not build them now, so their
@@ -742,12 +753,36 @@ absence is compliance.
         `GREEN` while carrying `EXECUTE_AND_REPORT`. Both fixed, plus a floor invariant at the one
         construction site (§10 read backwards) so no future action can be added below its
         disposition. See `BUILD_HISTORY.md`.
-  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable — and that is now
-        a correct state, not a gap.** No action on the run path is priced ORANGE/RED, so no task
-        classifies there. The approval-bearing actions that *are* ORANGE (memory promotion,
-        candidate trial, program registration) reach Thomas through R9/R10 rather than through the
-        router. This box stays open only as the place to re-check the day a run-path action is
-        priced above YELLOW; there is nothing to build today.
+  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable through the
+        router — still correct, but the re-check condition below was too narrow and is
+        rewritten.** No action on the **analysis** run path (intake → Prime → specialist →
+        validation → audit) is priced ORANGE/RED, so no task classifies there. The
+        approval-bearing ORANGE actions (memory promotion, candidate trial, program
+        registration, strategy promotion) reach Thomas through R9/R10, not the router.
+
+        **What the old wording missed, found re-auditing 2026-07-29.** It said to re-check "the
+        day a run-path action is priced above YELLOW" — and that day already came through a door
+        this box was not watching. Cycle routing (#302, 2026-07-28) gave `exchange.order.place`
+        — `risk_level: RED`, the one action in the runtime that reaches money and a counterparty
+        — an **autonomous caller**: scheduler → `crypto/cycle.py` → `crypto/live_route.py` → the
+        P5 gate. So a RED action does now run without a human in the loop per-order, and it never
+        touches the Task Classifier, which is why a box phrased around the router stayed quiet.
+
+        **This is not a defect and nothing here needs building.** §10.5's pattern (specialists →
+        independent risk review → Thomas approval → restricted execution) *is* implemented for
+        that path — as the P5 live-execution gate plus an operator checklist (confirmation
+        phrase, registered budget, ≥3 clean canary orders, both kill switches, the loss breaker),
+        each a computed row on the readiness board. What differs from §8.4's row is the
+        **mechanism**: a standing operator checklist rather than a per-action approval record.
+        Worth stating because the two are not interchangeable — a checklist is set once and
+        persists, an approval record is minted per action and is single-use.
+
+        **Re-check condition, corrected:** re-open this the day an ORANGE/RED action becomes
+        reachable **from any autonomous entry point**, not merely from the run path — and when
+        one does, decide deliberately whether it belongs behind a per-action approval record or
+        behind a standing gate. `exchange.order.place` chose the standing gate (Thomas,
+        documented in `CRYPTO_LIVE_EXECUTION_V0.1.md`); that choice was never written down as a
+        choice, which is how this box came to describe a world that had moved.
   - [ ] **The PROGRAM route — unbuilt, and *not* merely awaiting an approval.** An earlier
         version of this line said "blocked, not unbuilt"; that was wrong, and the correction is
         the useful part. Three things are missing, and the approval is the **last** of them:
@@ -807,6 +842,38 @@ absence is compliance.
         non-live candidate, so the trial suite rests on it staying one.
   - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
         P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
+- [ ] **§8.7 The registries hold neither of the design's example lists, and that was never
+      written down.** Opened 2026-07-29 by re-auditing, not by working a roadmap.
+
+      §8.7 names six "Initial Programs" (text format conversion, data validation, file saving,
+      duplicate checking, schedule calculation, basic quality check) and five "Initial Tools"
+      (LLM, Memory, File System, Search, Telegram). `05_REGISTRIES/PROGRAM_REGISTRY.yaml` holds
+      **none of the six** — it holds `schema.validator` and `document.parser`, both `candidate`,
+      `enabled: false`, `runtime_implementation_available: false`, under
+      `status: active_registry_no_active_programs`. `TOOL_REGISTRY.yaml` is the same shape with
+      `document.reader` and `search.readonly`.
+
+      **Recorded as an observation, not as work owed**, and the distinction matters:
+
+      * §8.7's actual *rule* — "Agents cannot arbitrarily use unregistered Programs or Tools" —
+        **is enforced**, and fail-closed: `registry_resolution.py` refuses an entry with no
+        `definition_sha256` and refuses on hash mismatch. That is the part that governs.
+      * The five "Initial Tools" are mostly **not** registry tools at all, and reading them as
+        owed items would be a category error. LLM is the provider behind the Safety-Flag Gate;
+        Memory is the four-rung ladder; Telegram is the operator channel; Search runs as an
+        `INTERNAL_READ` ALLOW action whose backend a `network_access` activation enables per
+        machine — `SEARCH_READONLY_TOOL`'s own registry comment says flipping its fields would
+        not and must not enable it. Each exists; none arrives through this registry.
+      * The six Programs are genuinely absent, but building them is exactly what the **PROGRAM
+        route** box above says not to do yet, and for the same reason: the MVP's one use case is
+        judgment work, so there is no rule-based task to route. Six unrunnable definitions would
+        be §16's "building for future possibilities" with extra hash maintenance.
+
+      **So the honest state is: the lists in §8.7 are illustrative, the registries are real, and
+      the design document does not say which its lists are.** The work here is one sentence in
+      the architecture document marking those two lists as examples rather than an inventory —
+      a Thomas edit, since §0 makes him the owner of that file. Until then this box exists so
+      the mismatch is a recorded decision rather than a silent one.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
       MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
       reach their own verdict before the integrated answer, declared in the role's output contract
