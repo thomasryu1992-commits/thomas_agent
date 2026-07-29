@@ -229,8 +229,10 @@ def test_a_venue_reporting_zero_depth_is_flagged_too():
     """`None` and `0` are different facts — did not say, versus said none — and both mean the
     same thing at the touch. What they must not differ in is whether a reason is raised: the
     check used to ask only about `None`, so a venue answering `size: 0` produced a clean
-    record with no flag at all. Seen live 2026-07-28 as a 0.09c opportunity on a touch of zero
-    contracts, counted alongside real ones."""
+    record with no flag at all.
+
+    A guard against a structural hole, not a regression test for an observed incident —
+    measured 2026-07-29, `size_at_touch == 0` had never occurred in 11,968 priced readings."""
     record = opportunity.evaluate_pairing(
         _market(KALSHI, bid=0.43, ask=0.45, ask_size=0.0),
         _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
@@ -241,9 +243,12 @@ def test_a_venue_reporting_zero_depth_is_flagged_too():
 
 
 def test_an_edge_nobody_could_take_is_not_an_opportunity():
-    """The reason was raised from the day it was introduced and never once acted on — the
-    record called it "an edge nobody could take any of" and then counted it as an opportunity.
-    Frequency is the number PM1 exists to produce, and PM2 and PM3 are built on it."""
+    """The reason was never once acted on — the record called it "an edge nobody could take
+    any of" and then counted it as an opportunity. Frequency is the number PM1 exists to
+    produce, and PM2 and PM3 are built on it.
+
+    The reason has also never fired in the store, so this guards a hole rather than
+    correcting a recorded number."""
     for label, kalshi_ask_size, poly_bid_size in (
         ("venue said none", 0.0, 500.0),
         ("venue said nothing", None, None),

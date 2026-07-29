@@ -202,8 +202,15 @@ def evaluate_pairing(
         # `None` and `0` are different facts — did not say, versus said none — and both mean
         # the same thing here, which is why they share a reason. What they must NOT share is
         # silence: a venue reporting size 0 used to produce no reason at all, because the
-        # check asked only about `None`. Seen live on 2026-07-28, a 0.09c "opportunity" on a
-        # touch of zero contracts, sitting in the count next to real ones.
+        # check asked only about `None`.
+        #
+        # This is a structural hole, NOT an observed incident. Measured 2026-07-29 over the
+        # 11,968 priced readings in the store: `size_at_touch == 0` has never occurred and
+        # `NO_SIZE_AT_TOUCH` has never fired. It was written after misreading a display that
+        # rounded sizes to whole contracts — 52 readings carry a size under 0.5 (smallest
+        # 0.0276) and print as `0`. The gate is still right, and the arithmetic it guards is
+        # real; what is not real is a claim that it has already saved us. Both venues could
+        # start reporting a zero resting size tomorrow, and until then this costs nothing.
         reasons.append(NO_SIZE)
     implausible = best is not None and abs(best["net_edge"]) >= MAX_PLAUSIBLE_NET_EDGE
     if implausible:
@@ -241,11 +248,14 @@ def evaluate_pairing(
         # nothing was miscounted; with the signs reversed it would have been counted as an
         # opportunity, and **"how often" is the number PM1 exists to produce.** Overstating the
         # frequency is the direction that later misleads PM2 and PM3.
-        # `NO_SIZE` joined them on 2026-07-29, having been recorded but never acted on since
-        # it was introduced. The comment where it is raised already called it "an edge nobody
-        # could take any of" — and the record then went on to call it an opportunity anyway.
-        # Frequency is the number PM1 exists to produce, so a touch nobody could trade must
-        # not be in it.
+        # `NO_SIZE` joined them on 2026-07-29. The comment where it is raised already called
+        # it "an edge nobody could take any of" — and the record then went on to call it an
+        # opportunity anyway. Frequency is the number PM1 exists to produce, so a touch nobody
+        # could trade must not be in it.
+        #
+        # Like the zero-size branch above, this closes a hole rather than fixing damage: the
+        # reason has never once fired in the store, so no recorded frequency was ever
+        # overstated by it, and no reading changed meaning when the gate went in.
         "is_opportunity": bool(
             best and best["is_opportunity"] and not implausible
             and NOT_QUOTED not in reasons and NO_SIZE not in reasons
