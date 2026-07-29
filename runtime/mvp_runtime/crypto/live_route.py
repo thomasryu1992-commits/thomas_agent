@@ -409,6 +409,9 @@ def _run_gated_live_leg(
         record["live_route_status"] = ROUTE_OPENED
     else:
         record["live_route_status"] = ROUTE_HELD
+    # Last, so the message describes the record as it will be stored — including any audit
+    # failure recorded above, which is exactly the kind of thing the operator must hear about.
+    _notify_operator(record, now=now, root=root)
     return record
 
 
@@ -610,6 +613,66 @@ def _report(
         record["live_reason_codes"].append(getattr(exc, "reason_code", type(exc).__name__))
     except Exception as exc:  # noqa: BLE001 — the order is at the venue; report, never raise
         record["live_reason_codes"].append(AUDIT_NOT_RECORDED)
+        record["live_reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
+
+
+# Notification vocabulary. Recorded on the cycle record when the send fails, so a silent
+# operator is distinguishable from a quiet market.
+NOTIFY_FAILED = "LIVE_NOTIFY_FAILED"
+
+
+def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> None:
+    """Tell Thomas that real money moved, or that it is somewhere this runtime cannot account for.
+
+    Sent for exactly two outcomes — a position opened, and an incident. Everything else is the
+    cycle doing nothing, and a channel that pings every fifteen minutes is a channel nobody
+    reads by the second day; the one message that matters would arrive in a stream the operator
+    has learned to skip. `crypto_report` already carries the routine picture daily.
+
+    **Best-effort, and never in the money path's way.** By the time this runs the order is at
+    the venue: a send failure is recorded on the cycle record and never raised, exactly like
+    the audit append above it. The destination is not caller-supplied — `notify_operator` sends
+    only to the one registered private chat — and the channel is selected at fire time, so a
+    revoked telegram grant degrades this to "not sent" rather than breaking the cycle.
+    """
+    status = record.get("live_route_status")
+    if status not in (ROUTE_OPENED, ROUTE_INCIDENT):
+        return
+    opened = record.get("live_opened") or {}
+    position = opened.get("position") or {}
+    reasons = [r for r in (record.get("live_reason_codes") or [])]
+    if status == ROUTE_INCIDENT:
+        head = "[LIVE INCIDENT] real money is in a state the runtime cannot account for"
+    else:
+        head = "[LIVE] position opened and bracketed"
+    lines = [
+        head,
+        f"symbol   : {position.get('symbol') or record.get('symbol')}",
+        f"side     : {position.get('direction') or position.get('side')}",
+        f"quantity : {position.get('quantity')}",
+        f"entry    : {position.get('entry_price')}",
+        f"stop     : {position.get('stop_price')}",
+        f"target   : {position.get('target_price')}",
+        f"status   : {opened.get('status')}",
+        f"at       : {now}",
+    ]
+    if reasons:
+        lines.append("reasons  : " + ",".join(str(r) for r in reasons[:8]))
+    if status == ROUTE_INCIDENT:
+        lines.append("")
+        lines.append("Check the venue. To stop new entries: console_cli kill --reason ...")
+    try:
+        # Imported here, not at module scope: `operator` imports back into this package, and
+        # the scheduler's crypto_report seam already takes this shape for the same reason.
+        from .. import operator as operator_mod
+
+        channel = operator_mod.select_operator_channel(now=now, root=root)
+        operator_mod.notify_operator(channel, "\n".join(lines), repo_root=root)
+    except MvpRuntimeError as exc:
+        record["live_reason_codes"].append(NOTIFY_FAILED)
+        record["live_reason_codes"].append(getattr(exc, "reason_code", "UNKNOWN"))
+    except Exception as exc:  # noqa: BLE001 — the order is at the venue; report, never raise
+        record["live_reason_codes"].append(NOTIFY_FAILED)
         record["live_reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
 
 
