@@ -36,6 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -757,6 +758,44 @@ class MockOperatorChannel:
         self.edited.append((chat_id, message_id, text))
 
 
+# How many days the control channel may receive nothing before the daily board says so.
+# Two, because what this catches is a HALF-dead channel: outbound kept working — the daily
+# report went out every morning, `report_sent warnings=0` — while nothing inbound arrived
+# for three days. Every `/approve` sent in that window reached nobody, three approvals
+# expired unanswered, and no surface anywhere said why. A liveness check that only proves
+# the loop is turning (the heartbeat) passes throughout; only the cursor knows.
+INBOUND_SILENCE_ALERT_DAYS = 2
+
+
+def last_inbound_at(root: Path | None = None) -> dict[str, Any] | None:
+    """When the control channel last received a message, or ``None`` if it never has.
+
+    Read from the poll cursor's state file, because that file is written exactly when a
+    message arrives: ``_save_offset`` runs only after the cursor advanced past a fetched
+    update. ``source`` says which timestamp answered — ``recorded`` is the stamp
+    ``_save_offset`` writes, ``file_mtime`` the fallback for a state file written before
+    that stamp existed. The fallback is weaker evidence on purpose (a copy, a rebuild or
+    a chown moves mtime without a message arriving) and says so rather than passing
+    itself off as the recorded time.
+
+    Read-only, and never raises: an absent, unreadable or malformed file reports "no known
+    inbound" instead of failing. This is a diagnostic ABOUT a channel that may be broken,
+    and one that dies on the broken case is not a diagnostic.
+    """
+    path = (root if root is not None else _repo_root()) / OFFSET_STATE_REL
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        recorded = data.get("updated_at") if isinstance(data, dict) else None
+        if isinstance(recorded, str) and recorded:
+            return {"at": recorded, "source": "recorded"}
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        return {"at": timeutil.format_iso(mtime), "source": "file_mtime"}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def select_operator_channel(*, now: str | None = None, root: Path | None = None) -> OperatorChannel:
     """Choose the operator channel — the enforced Safety-Flag Gate chokepoint.
 
@@ -871,13 +910,23 @@ class TelegramChannel:
     def _save_offset(self) -> None:
         """Persist the advanced cursor atomically, BEFORE the batch is handed to the caller:
         a fetched batch is claimed once. If persisting fails, fail closed — processing a
-        batch whose claim is not durable would re-execute it after the next restart."""
+        batch whose claim is not durable would re-execute it after the next restart.
+
+        ``updated_at`` rides along because this write happens exactly when a message
+        arrives — the cursor only advances on a fetched update — which makes it the one
+        durable record of when the control channel last heard anything. Recorded rather
+        than left to the file's mtime: a rebuild, a copy or a chown moves mtime without a
+        message ever arriving, and :func:`last_inbound_at` is read to decide whether an
+        approval can still reach this runtime."""
         if self._state_path is None:
             return
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"offset": self._offset}), encoding="utf-8")
+            tmp.write_text(
+                json.dumps({"offset": self._offset, "updated_at": timeutil.utc_now_iso()}),
+                encoding="utf-8",
+            )
             os.replace(tmp, self._state_path)
         except OSError as exc:
             raise OperatorBlocked(

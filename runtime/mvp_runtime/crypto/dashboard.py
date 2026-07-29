@@ -130,6 +130,46 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         active, status_counts = {"active_strategies": []}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
 
+    # Two things the board could always have said and did not, both about work waiting on a
+    # human rather than on the runtime. They are warnings rather than rows because a queue
+    # nobody is told about is a queue nobody works: promotion went untouched for three days
+    # while the factory kept minting, and the daily report went out every one of those
+    # mornings saying `warnings=0`.
+    try:
+        backlog = pool.promotable_backlog(root, active_pool=active)
+    except MvpRuntimeError as exc:
+        backlog = None
+        warnings.append(f"candidate store unreadable ({exc.reason_code})")
+    if backlog and backlog["count"] >= backlog["threshold"]:
+        warnings.append(
+            f"승격 대기 {backlog['count']}건 (임계 {backlog['threshold']}) — "
+            f"scripts/promote_strategy_candidates.py --list"
+        )
+
+    # Imported inside the function, the way `live_route` reaches the same module: the
+    # operator package pulls in the whole console/pipeline tree, and the board is imported
+    # from inside it (`/crypto status`).
+    from .. import operator as operator_mod
+
+    inbound = operator_mod.last_inbound_at(root)
+    silent_days = _days_since(inbound["at"], now) if inbound else None
+    if inbound is None:
+        # Only worth saying where a control channel is supposed to exist. A fresh checkout
+        # and every mock-channel deployment have no registration and no cursor, and warning
+        # there would park a permanent line on a board that is working as configured.
+        try:
+            operator_mod.load_operator_registration(root)
+        except MvpRuntimeError:
+            pass
+        else:
+            warnings.append("제어 채널 인바운드 수신 기록 없음 — /approve 도달 여부 미확인")
+    elif silent_days is not None and silent_days >= operator_mod.INBOUND_SILENCE_ALERT_DAYS:
+        stale = " (파일 시각 추정)" if inbound["source"] == "file_mtime" else ""
+        warnings.append(
+            f"제어 채널 인바운드 {silent_days}일 무응답 (마지막 {_stamp(inbound['at'])}{stale}) "
+            f"— /approve 가 도달하지 못할 수 있음"
+        )
+
     try:
         cf_records = counterfactual.read_counterfactual_outcomes(root)
         cf_summary = counterfactual.summarize_counterfactuals(cf_records)
@@ -174,6 +214,14 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_positions": open_positions,
         "pool_status_counts": status_counts,
         "pool_size": len(active.get("active_strategies") or []),
+        # Work waiting on a human, carried as data as well as a warning so a reader past the
+        # threshold can see the queue shrink instead of only learning when it crosses back.
+        "promotion_backlog": backlog,
+        "control_channel": {
+            "last_inbound_at": inbound["at"] if inbound else None,
+            "last_inbound_source": inbound["source"] if inbound else None,
+            "silent_days": silent_days,
+        },
         # THIS runtime's own paper trading — the only evidence about this codebase.
         "performance": {
             "closed_count": report.get("sample_size") if report else 0,
@@ -504,6 +552,19 @@ def _days_until(expires_at: str, now: Any) -> int | None:
         return int((timeutil.parse_iso(expires_at) - timeutil.parse_iso(str(now))).total_seconds() // 86400)
     except (MvpRuntimeError, TypeError, ValueError):
         return None
+
+
+def _days_since(stamp: str, now: Any) -> int | None:
+    """Whole days from ``stamp`` to ``now``; None when either will not parse.
+
+    Floored, and never negative: a state file stamped slightly ahead of the board's clock
+    is zero days old, not minus one, and a warning threshold must not be crossed from
+    below by a clock skew."""
+    try:
+        elapsed = (timeutil.parse_iso(str(now)) - timeutil.parse_iso(stamp)).total_seconds()
+    except (MvpRuntimeError, TypeError, ValueError):
+        return None
+    return max(0, int(elapsed // 86400))
 
 
 def main(argv: list[str] | None = None) -> int:
