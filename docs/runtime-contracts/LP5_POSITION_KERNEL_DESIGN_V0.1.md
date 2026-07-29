@@ -235,5 +235,10 @@ understated maker rate reports an edge better than reality.
 
 Merging LP5 authorizes nothing. Still required: `MVP_LIVE_TRADING=real` + the order key, the
 confirmation phrase, a valid registered budget, the kill switch ACTIVE, a guard PASS, **≥ 3 clean
-canary orders** (currently 0), the `execution.live_trader` role **activated** (a separate
-`ROLE_GOVERNANCE` approval), and LP4 increment 2 (the real signed send).
+canary orders**, and the `execution.live_trader` role **activated** (a separate
+`ROLE_GOVERNANCE` approval).
+
+This list carried "(currently 0)" against the canary count and "and LP4 increment 2 (the real
+signed send)" until 2026-07-29. Both are gone rather than updated: LP4's signed send shipped
+2026-07-25, and the canary count is **per-machine state** that no committed file can report.
+Ask `python -m runtime.mvp_runtime.crypto.live_readiness`.

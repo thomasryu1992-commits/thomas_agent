@@ -499,16 +499,17 @@ scopes at different levels, so nothing was owed to it.
           lands, replace the constant. If the measured rate comes in **above** 2.0, every
           candidate scored at the published rate becomes `OPTIMISTIC` and stops being promotable
           on its own evidence — intended behaviour of the gate above, not a regression.
-    - [ ] **`execution.live_trader` still names the removed `live_trading` grant in its stop
-          conditions.** `03_ROLE_CONTRACTS/ROLES/CANDIDATES/EXECUTION_LIVE_TRADER_ROLE.md` lists
-          `live_trading_grant_revoked` (abort reason) and `live_trading_grant_absent_or_revoked`
-          (stop condition); the grant was removed 2026-07-28 and the correct condition is the
-          `MVP_LIVE_TRADING=real` opt-in being cleared. **Left alone deliberately** rather than
-          fixed in the gate-removal PR: the definition is hash-pinned in `ROLE_REGISTRY.yaml`
-          (`definition_sha256`), so editing it is a version bump + hash refresh + role governance
-          change, not a text fix. Low urgency — the role is `status: candidate`, `routable: false`,
-          so nothing resolves it and no runtime reads these strings. Fold it into whatever change
-          next touches this role.
+    - [x] **`execution.live_trader` named the removed `live_trading` grant** — done 2026-07-29
+          (role `0.1.0` → `0.2.0`, registry hash refreshed). `live_trading_grant_revoked` →
+          `live_trading_opt_in_cleared`, `live_trading_grant_absent_or_revoked` →
+          `live_trading_opt_in_absent`. **The bigger find was in the prose, not the conditions:**
+          the definition still said "the order adapter (LP4) and position kernel (LP5) do not
+          exist yet" and that the canary count was "currently 0". LP4 shipped 2026-07-25 and LP5
+          followed — a role definition asserting build status is exactly how status got four
+          owners. It now states requirements only and points at the readiness board, which is the
+          one thing that can answer a per-machine question. Two sibling docs carried the same
+          dead claim and were corrected with it (`LP5_POSITION_KERNEL_DESIGN`,
+          `CRYPTO_LIVE_EXECUTION_VERIFICATION`).
     - [ ] **Live does not enforce the strategy's time exit, and the backtest evidence assumed it.**
           Found reviewing the routing PR; recorded rather than fixed because fixing it changes
           LP5.1's record shape, which is its own increment.

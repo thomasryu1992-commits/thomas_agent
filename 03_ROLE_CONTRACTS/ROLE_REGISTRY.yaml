@@ -107,12 +107,12 @@ roles:
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
   definition_sha256: ade8a410ae91a38aac7cc94eb3643cfc94759e290bd244ef22ed656a834f18d7
 - role_id: execution.live_trader
-  version: 0.1.0
+  version: 0.2.0
   role_type: dynamic_specialist
   status: candidate
   routable: false
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/EXECUTION_LIVE_TRADER_ROLE.md
-  definition_sha256: f69e771b5b423d9a8498fdc02efba0f074e6bdf058b90642a4b285fc9c03e7a1
+  definition_sha256: 038f04ffea8cf85e6bfb8d2b5f38ed2d7add5cbe1047812f33c52d3c15c9a0cd
 resolution:
   resolver_module: runtime/registry_resolution.py
   definition_fields_loaded_at_consumer_boundary: true

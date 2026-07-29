@@ -44,7 +44,8 @@ until LP4/LP5 are deliberately written; this is not a disabled flag, it is an ab
 | `kill_blocks: external_execution` blocks a live **entry** (PAUSED/KILLED runtime) | `live_order.py:286` | ✅ |
 | Damaged canary evidence counts as **zero** clean orders (never the last good number); `min_orders ≤ 0` refused | `live_promotion.py` (`promotion_status`, `clean_canary_order_count`) | ✅ |
 | One live-trading switch (both `network_access` + `filesystem_write`); re-asserted at **every** egress | `safety_gate.py` (`assert_authorization`, `select_env_gated`); `live_pnl.py`, `live_position.py`, `live_order.py` counter, `live_promotion.py`, `live_execution.py` | ⚠️ **weakened 2026-07-28** — the switch is `MVP_LIVE_TRADING=real` alone, no grant record. The egress re-check re-reads the env, so it is no longer a mid-flight revocation; use the runtime `kill` verb for that |
-| Every real writer defaults to **inert/DryRun**; the env var alone fails closed (`ACTIVATION_MISSING`) | each `select_*` (`live_pnl.py:323`, etc.) | ✅ |
+| Every real writer defaults to **inert/DryRun** | each `select_*` | ✅ |
+| ~~the env var alone fails closed (`ACTIVATION_MISSING`)~~ | — | ❌ **no longer true, 2026-07-28** — Thomas removed the `live_trading` grant, so `MVP_LIVE_TRADING=real` alone now builds every real writer. Split onto its own row rather than edited into the one above, because the inert default still holds and the second half no longer does |
 
 ## Credential handling (`account.py` — the only module holding real keys)
 
@@ -102,7 +103,12 @@ would reach it.
 
 ## Verdict
 
-The ported live-execution safety infrastructure is **trustworthy to build on**. What remains
-before any live order — LP4 order adapter, LP5 position kernel, the `live_trading_budget.v0.1`
-schema (step 6), the `execution.live_trader` P5 role (step 7), and ≥3 clean canary orders
-(currently 0) — is all explicit Thomas decision-and-execution work, gated as documented.
+The ported live-execution safety infrastructure is **trustworthy to build on**.
+
+This paragraph listed LP4, LP5, the `live_trading_budget.v0.1` schema and ≥3 clean canary orders
+"(currently 0)" as what remained before any live order. **All four of the build items shipped**
+(LP4 2026-07-25; LP5 and its executing leg, then cycle routing, by 2026-07-28; the budget schema
+at step 6). What remains is operator state, not code: the `execution.live_trader` P5 role
+activated (step 7, a separate `ROLE_GOVERNANCE` approval), the live-trading opt-in, the
+confirmation phrase, a registered budget, and the canary evidence — the count being per-machine,
+so ask `python -m runtime.mvp_runtime.crypto.live_readiness` rather than this file.
