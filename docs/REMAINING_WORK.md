@@ -513,23 +513,27 @@ scopes at different levels, so nothing was owed to it.
           one thing that can answer a per-machine question. Two sibling docs carried the same
           dead claim and were corrected with it (`LP5_POSITION_KERNEL_DESIGN`,
           `CRYPTO_LIVE_EXECUTION_VERIFICATION`).
-    - [ ] **Live does not enforce the strategy's time exit, and the backtest evidence assumed it.**
-          Found reviewing the routing PR; recorded rather than fixed because fixing it changes
-          LP5.1's record shape, which is its own increment.
-          `build_entry_plan` puts `max_holding_bars` in the plan, and its own comment says why:
-          *"a strategy promoted on max_holding_bars=12 must not hold 48."* The **paper** leg
-          enforces it. The **live** leg does not — `live_route` states plainly that there is no
-          time-based exit, because a live position record carries no holding count and no
-          timeframe, so a max-hold rule there would be inventing state rather than reading it.
-          Consequence, stated so it is not rediscovered from a divergent R curve: a live trade
-          ends only at its stop or its target, where a paper trade of the same strategy may also
-          end on time. **The promotion evidence was built with the time exit in force, so it does
-          not fully transfer to live**, and the direction is unfavourable — a time exit usually
-          cuts losers, so live holds them longer. Do not compare live R against backtest
-          expectancy without pricing this in (`r_basis` already keeps the two populations
-          separately labelled).
-          The fix is a live position record that carries entry bar/timeframe — LP5.1's shape, not
-          routing's.
+    - [x] **Live now enforces the strategy's time exit** — done 2026-07-29, the LP5.1 record-shape
+          increment this box asked for. The live position carries `timeframe`,
+          `max_holding_bars` and a deduped holding counter; `live_route` advances the counter
+          every cycle and closes at market (reduceOnly) when the count reaches the limit.
+          `max_holding_bars` rides on the **position**, not re-read from the spec at exit time —
+          paper's parity rule, so a spec edited mid-hold cannot move the exit of a trade already
+          open. Legacy positions (opened before this shape) fall back to the timeframe table and
+          say so (`LIVE_ROUTING_MAX_HOLD_FALLBACK`), so that gap stays attributable.
+          Two properties carried over deliberately, because the counter *is* the rule: it
+          advances on cycles that close nothing (persisted unconditionally, so a failed close
+          cannot reset the clock), and one bar counts once — `paper.advance_holding` is now
+          shared by both legs rather than copied, so they cannot drift on what "a bar passed"
+          means.
+          **What still differs, and is not a defect:** paper models the exit at the bar's close,
+          live pays taker plus slippage on a market order. Same rule, different cost; `r_basis`
+          keeps the populations labelled. So the evidence transfers **better** than before but
+          still not exactly — do not read the residual gap as drift.
+          One asymmetry worth knowing: a time exit that will not confirm is reported
+          (`LIVE_ROUTING_TIME_EXIT_DEFERRED`) and retried next cycle, **not** escalated to a
+          portfolio halt — unlike an unprotected position, it still has its bracket resting at
+          the venue, so it is protected, merely held past its window.
     - [ ] **The paper record does not yet justify turning the routing on.** Carried across from
           the pre-merge version of the box above (#292), because it annotated a precondition
           rather than the build, and the build landing does not settle it.
@@ -540,8 +544,11 @@ scopes at different levels, so nothing was owed to it.
           verdict.** At ~18 closed trades a day that is months for the observed effect, or about
           a month if the true edge is the ~+0.2R the backtests claim — and the distance between
           those two figures is the reason to keep collecting rather than to route.
-          Note this compounds with the item below: the backtests that claim ~+0.2R were run with
-          a time exit the live leg does not enforce.
+          Note this compounded with the item above until 2026-07-29: the backtests that claim
+          ~+0.2R were run with a time exit the live leg did not enforce. The live leg enforces it
+          now, so the evidence transfers better — but the sample question this box is about did
+          not move, and the exit's *cost* still differs (paper models the bar close, live pays
+          taker plus slippage).
 - [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
       board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
       evidence store is

@@ -109,6 +109,8 @@ def build_live_position(
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
     cycle_id: str | None = None,
+    timeframe: str | None = None,
+    max_holding_bars: int | None = None,
 ) -> dict[str, Any]:
     """One OPEN live position, from a real fill. Pure — persisting it is the store's job.
 
@@ -161,6 +163,24 @@ def build_live_position(
         # None however faithfully the other two travel.
         "strategy_generation_id": strategy_generation_id,
         "cycle_id": cycle_id,
+        # --- the time exit (2026-07-29) ------------------------------------------------
+        # Until now a live position carried no holding count and no timeframe, so the live
+        # leg had nothing to judge a max-hold rule against and deliberately enforced none.
+        # That made live and paper end trades on different rules while the promotion evidence
+        # was built under paper's — and unfavourably, since a time exit usually cuts losers,
+        # so live held them longer. These four fields are what closed that gap.
+        #
+        # `max_holding_bars` rides on the POSITION, not read from the spec at exit time: the
+        # parity rule paper already enforces (`position_max_hold`) is that a position is judged
+        # by the number its own backtest was built on. A spec edited mid-hold must not move the
+        # exit of a trade already open.
+        "timeframe": timeframe,
+        "max_holding_bars": max_holding_bars,
+        "holding_candles": 0,
+        # Dedup key for the counter: one bar counts once however many times a cycle re-runs
+        # within it. Paper learned this from the source system; live inherits it via the
+        # shared `paper.advance_holding` rather than by keeping a second copy of the rule.
+        "last_counted_candle_ts": None,
     }
     position["position_id"] = integrity.short_id(
         "live_position",

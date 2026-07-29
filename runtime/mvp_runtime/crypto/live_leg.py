@@ -125,6 +125,12 @@ CLOSE_REASON_NAKED = "naked_position_close"
 CLOSE_REASON_STOP = "stop_loss"
 CLOSE_REASON_TARGET = "take_profit"
 CLOSE_REASON_UNPROTECTED = "unprotected_position_close"
+# Paper's vocabulary again, and here the shared name is the point rather than a courtesy: a
+# live time exit and a paper time exit are the same strategy rule ending the same way, so they
+# must aggregate into one bucket. What is NOT identical is the price — paper models the exit at
+# the bar's close, live pays taker plus slippage on a reduceOnly market order. The rule matches;
+# the cost does not, and `r_basis` keeps the two populations labelled.
+CLOSE_REASON_TIME_EXIT = "time_exit"
 
 # Whether this position's protective legs are still where the entry left them.
 PROTECTED = "PROTECTED"
@@ -136,6 +142,18 @@ _BRACKET_LEGS = (
     ("stop_client_order_id", CLOSE_REASON_STOP),
     ("take_profit_client_order_id", CLOSE_REASON_TARGET),
 )
+
+
+def _exit_terms(decision: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The plan's exit terms as the decision recorded them, or empty.
+
+    Empty is a legitimate answer, not a defect: a decision built before `exit_terms` existed
+    carries none, and `build_live_position` stores `None` for both. What that produces is a
+    *legacy* position, which `paper.position_max_hold` already knows how to judge — timeframe
+    table fallback, with the fallback reported so the gap stays attributable.
+    """
+    terms = decision.get("exit_terms")
+    return terms if isinstance(terms, Mapping) else {}
 
 
 # --- the bracket ---------------------------------------------------------------
@@ -465,6 +483,9 @@ def execute_live_entry(
         candidate_id=decision.get("sizing", {}).get("candidate_id") or intent.get("candidate_id"),
         strategy_rule_hash=intent.get("strategy_rule_hash"),
         strategy_generation_id=intent.get("strategy_generation_id"),
+        # From the decision, not from a spec re-read — see `exit_terms` in live_entry.
+        timeframe=_exit_terms(decision).get("timeframe"),
+        max_holding_bars=_exit_terms(decision).get("max_holding_bars"),
     )
     # The bracket ids ride on the stored record (additive keys, so LP5.1's builder is untouched)
     # because the exit path has to cancel exactly these orders and nothing else.
@@ -947,6 +968,7 @@ __all__ = [
     "CLOSE_REASON_NAKED",
     "CLOSE_REASON_STOP",
     "CLOSE_REASON_TARGET",
+    "CLOSE_REASON_TIME_EXIT",
     "CLOSE_REASON_UNPROTECTED",
     "ENTRY_NAKED_CLOSED",
     "ENTRY_NAKED_OPEN",

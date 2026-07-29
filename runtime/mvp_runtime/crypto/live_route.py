@@ -43,13 +43,24 @@ exit responsibility here is *protection and bookkeeping*, not timing:
    clear the book (:func:`live_leg.settle_venue_closed_position`);
 2. the position is open but its bracket is positively gone → close it
    (:func:`live_leg.execute_live_exit`), rule 2 applied continuously rather than only at entry;
-3. otherwise → hold.
+3. the position is protected but out of time → close it at market
+   (:func:`_time_exit_or_hold`), paper's ``max_hold`` rule;
+4. otherwise → advance the holding count and hold.
 
-There is **no time-based exit** (paper's ``max_hold``). A live position record carries no
-holding count and no timeframe, so a max-hold rule here would be inventing state rather than
-reading it; adding it is LP5.1's record shape, not this increment's routing. Stated rather than
-left to be discovered: a live trade ends at its stop or its target, where a paper trade of the
-same strategy may also end on time, and the two R populations differ by exactly that.
+**Rule 3 was absent until 2026-07-29 and its absence was a real gap**, recorded here rather
+than deleted because the reasoning it replaced is what a future reader will otherwise re-derive.
+This docstring used to say there was no time-based exit, because a live position record carried
+no holding count and no timeframe — true, and the right call for the routing increment, since a
+max-hold rule then would have been inventing state rather than reading it. What made it not
+merely a difference: **the promotion evidence gating live trading was produced with the time
+exit in force**, so a live leg without one is not running the strategy the evidence describes,
+and the direction is unfavourable — a time exit mostly cuts losers, so live held them longer.
+LP5.1's record now carries ``timeframe``, ``max_holding_bars`` and the deduped holding counter,
+which is what rule 3 reads.
+
+What still differs, and is not a defect: paper models the time exit at the bar's close, live
+pays taker plus slippage on a reduceOnly market order. Same rule, different cost — ``r_basis``
+keeps the two populations labelled, so do not read the residual gap as drift.
 """
 
 from __future__ import annotations
@@ -77,6 +88,7 @@ from .live_position import (
     reconcile_positions,
     select_live_position_store,
 )
+from . import paper
 from .paper import build_entry_plan
 
 LIVE_ROUTE_VERSION = "live_route.v0.1"
@@ -96,6 +108,13 @@ ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"
 BOOK_DRIFT = "LIVE_ROUTING_BOOK_DRIFT"
 AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
 CANARY_HISTORY = "LIVE_ROUTING_CANARY_HISTORY"
+# This position is judged by the timeframe table rather than by the `max_holding_bars` its own
+# backtest was built on, because it predates the record shape that carries one. Reported so a
+# live/backtest R gap stays attributable instead of being rediscovered from a curve.
+LIVE_MAX_HOLD_FALLBACK = "LIVE_ROUTING_MAX_HOLD_FALLBACK"
+# The time exit was due and the close did not confirm. Not an incident — the bracket is still
+# resting at the venue, so the position is protected, just held past its strategy's window.
+LIVE_TIME_EXIT_DEFERRED = "LIVE_ROUTING_TIME_EXIT_DEFERRED"
 
 # The leg results that mean real money is in a state this runtime cannot account for. Each one
 # is a fact about the venue, not a local error: an unprotected position that would not close, a
@@ -270,13 +289,17 @@ def _run_gated_live_leg(
     # 2. Settle and protect BEFORE anything else. Closing is risk-reducing and is never gated
     #    on reconciliation, the verdict, or the kill switch — a halt that traps an open
     #    position is worse than what the halt prevents.
+    # The bar this cycle is acting on. `timestamp` IS the candle's close_time (features.py sets
+    # it from exactly that field), which is what makes the live counter dedup on the same key
+    # paper's does — the parity the time exit depends on.
+    candle_ts = feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None
     open_here = [p for p in local_positions if position_symbol(p) == symbol]
     for position in open_here:
         _settle_or_protect(
             record, position,
             adapter=adapter, position_store=position_store, ledger=ledger,
-            reconciliation=reconciliation, limits=limits, now=now, root=root,
-            timeout_seconds=timeout_seconds,
+            reconciliation=reconciliation, limits=limits, candle_ts=candle_ts,
+            now=now, root=root, timeout_seconds=timeout_seconds,
         )
 
     # A book that still disagrees with the venue AFTER settlement is the dangerous kind: the
@@ -398,11 +421,12 @@ def _settle_or_protect(
     ledger: Any,
     reconciliation: Mapping[str, Any],
     limits: Any,
+    candle_ts: Any,
     now: str,
     root: Path | None,
     timeout_seconds: int,
 ) -> None:
-    """Close the loop on one open live position: settle it, protect it, or leave it."""
+    """Close the loop on one open live position: settle it, protect it, time it out, or hold."""
     symbol = position_symbol(position)
     book = (reconciliation.get("books") or {}).get(symbol) or {}
     reasons = list(book.get("reasons") or [])
@@ -424,6 +448,17 @@ def _settle_or_protect(
     if legs["status"] != live_leg.UNPROTECTED:
         # PROTECTED holds; PROTECTION_UNKNOWN reports and holds — closing on a failed read
         # would be acting on a guess, and the bracket is probably still doing its job.
+        #
+        # ...unless the position has run out of time. Ordered AFTER protection on purpose: an
+        # unprotected position is the more urgent close and has its own branch below, and a
+        # position whose protection could not be READ still deserves its time exit — the bracket
+        # is a price rule, the max-hold is a time rule, and neither substitutes for the other.
+        _time_exit_or_hold(
+            record, position,
+            adapter=adapter, position_store=position_store, ledger=ledger,
+            limits=limits, candle_ts=candle_ts, now=now, root=root,
+            timeout_seconds=timeout_seconds,
+        )
         return
 
     # Rule 2, applied to a position already on the books: an unprotected live position is
@@ -460,6 +495,93 @@ def _settle_or_protect(
         # An unprotected position this runtime could not close is exactly the portfolio-level
         # incident: real exposure, no stop, and no way to remove it from here.
         record["halt"] = True
+
+
+def _time_exit_or_hold(
+    record: dict[str, Any],
+    position: Mapping[str, Any],
+    *,
+    adapter: Any,
+    position_store: Any,
+    ledger: Any,
+    limits: Any,
+    candle_ts: Any,
+    now: str,
+    root: Path | None,
+    timeout_seconds: int,
+) -> None:
+    """Advance this position's holding count and close it if the strategy's time is up.
+
+    The rule paper has always enforced and live did not (added 2026-07-29). Why it had to be
+    added rather than left as a documented difference: the promotion evidence gating live
+    trading was produced **with** the time exit in force, so a live leg without one is not
+    running the strategy the evidence describes — and the direction is unfavourable, because a
+    time exit mostly cuts losers, so live held them longer than the backtest ever did.
+
+    Two properties carried over from paper deliberately, because the counter is the whole rule:
+
+    * **the count advances even when nothing closes** — that is what makes time pass at all,
+      and it is why the store write below is unconditional rather than only on the exit;
+    * **one bar counts once**, deduped on the candle timestamp by ``paper.advance_holding``, so
+      a cycle that re-runs inside one interval cannot accelerate the exit.
+
+    ``max_holding_bars`` comes from ``paper.position_max_hold``, the same authority paper uses,
+    which falls back to the timeframe table for a **legacy** position — one opened before this
+    record shape existed — and says so, so the fallback is attributable rather than silent.
+    """
+    updated = dict(position)
+    paper.advance_holding(updated, candle_ts)
+    timeframe = str(updated.get("timeframe") or "")
+    max_hold, legacy = paper.position_max_hold(updated, timeframe)
+    held = int(updated.get("holding_candles") or 0)
+
+    # Persist the advanced counter before deciding anything. If the close below fails, the bar
+    # that passed still passed — a counter that only advanced on successful exits would reset
+    # the clock every time the venue was unreachable.
+    position_store.save_position(updated)
+    record["live_holding"] = {
+        "symbol": position_symbol(updated), "holding_candles": held,
+        "max_holding_bars": max_hold, "timeframe": timeframe or None,
+        "legacy_max_hold_fallback": legacy,
+    }
+    if legacy:
+        # Named rather than inferred from a divergent R curve later: this position is being
+        # judged by the timeframe table, not by the number its own backtest was built on.
+        record["live_reason_codes"].append(LIVE_MAX_HOLD_FALLBACK)
+    if held < max_hold:
+        return
+
+    closed = live_leg.execute_live_exit(
+        updated,
+        adapter=adapter,
+        position_store=position_store,
+        ledger=ledger,
+        gate_open=True,
+        limits=limits,
+        close_reason=live_leg.CLOSE_REASON_TIME_EXIT,
+        now=now,
+        timeout_seconds=timeout_seconds,
+    )
+    record["live_settled"] = closed
+    record["live_reason_codes"].extend(closed["reason_codes"])
+    if closed["status"] == live_leg.EXIT_CLOSED and isinstance(closed.get("intent"), Mapping):
+        try:
+            governance = live_governance.prepare_live_order_governance(
+                closed["intent"], purpose=live_governance.PURPOSE_AUTONOMOUS,
+                now=now, repo_root=root,
+            )
+        except (MvpRuntimeError, ValueError) as exc:
+            record["live_reason_codes"].append(AUDIT_NOT_RECORDED)
+            record["live_reason_codes"].append(getattr(exc, "reason_code", type(exc).__name__))
+        else:
+            _report(record, governance, closed["exit"], guard=closed["close_guard"], now=now, root=root)
+    if closed["status"] != live_leg.EXIT_CLOSED:
+        # Deliberately NOT a halt, and this is the one place this module treats a failed close
+        # as survivable. An unprotected position that will not close is an incident because the
+        # exposure has no stop; a time-exit position that will not close still has its bracket
+        # resting at the venue, so it is protected — just held longer than the strategy wanted.
+        # Reported, retried next cycle (the counter is already past the threshold), not escalated.
+        record["live_reason_codes"].append(LIVE_TIME_EXIT_DEFERRED)
 
 
 def _report(
