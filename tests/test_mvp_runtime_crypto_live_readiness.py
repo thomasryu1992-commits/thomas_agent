@@ -535,3 +535,73 @@ def test_a_failing_account_read_leaves_the_row_failing(tmp_path, monkeypatch):
 
     row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
     assert row["ok"] is False
+
+
+# --- the evidence has to prove its own size -------------------------------------
+
+def test_a_canary_record_carries_the_venues_own_numbers():
+    """The four canaries standing as evidence on 2026-07-28 carried a declared notional, no
+    quantity and no fill — so there was no way left to ask whether 65.0 described the order.
+    A promotion gate whose records cannot be re-derived is an assertion with a hash on it."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001,
+        fill={"avg_price": 64512.0, "executed_qty": 0.001, "cum_quote": 64.512},
+        now="2026-07-29T00:00:00Z",
+    )
+    assert record["quantity"] == 0.001
+    assert record["fill_avg_price"] == 64512.0
+    assert record["filled_notional_usdt"] == 64.512
+    # Declared minus filled: a subtraction, not a memory. 65.0 declared for a 64.51 order.
+    assert record["notional_declared_vs_filled_usdt"] == pytest.approx(0.488, abs=1e-6)
+    assert record["clean"] is True          # stated, not judged — see the next test
+
+
+def test_a_declared_notional_that_disagrees_is_recorded_not_judged():
+    """Making a disagreement a mismatch would change what `clean` means, and therefore what
+    the promotion gate counts. That is a separate decision and is deliberately not taken here:
+    the record states the gap so an operator can see it."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    understated = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=60.0, quantity=0.001,
+        fill={"avg_price": 70000.0, "executed_qty": 0.001, "cum_quote": 70.0},
+        now="2026-07-29T00:00:00Z",
+    )
+    assert understated["notional_declared_vs_filled_usdt"] == pytest.approx(-10.0)
+    assert understated["clean"] is True and understated["mismatches"] == []
+
+
+@pytest.mark.parametrize("fill", [None, {}, {"cum_quote": None}, {"cum_quote": "n/a"}])
+def test_an_unknown_fill_leaves_the_comparison_unknown_never_zero(fill):
+    """`0.0` would read as 'declared and filled agreed'. They did not agree; nobody knows."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001, fill=fill,
+        now="2026-07-29T00:00:00Z",
+    )
+    assert record["notional_declared_vs_filled_usdt"] is None
+    assert record["filled_notional_usdt"] in (None, "n/a")
+
+
+def test_records_written_before_this_existed_still_read():
+    """Every canary already in the registry predates these fields. They must keep verifying —
+    the store is self-hashed, and a field added to the builder must not invalidate history."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    old = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, now="2026-07-29T00:00:00Z",
+    )
+    assert old["quantity"] is None and old["filled_notional_usdt"] is None
+    assert old["notional_declared_vs_filled_usdt"] is None
+    assert old["clean"] is True
