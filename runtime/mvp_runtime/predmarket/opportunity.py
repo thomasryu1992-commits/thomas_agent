@@ -55,6 +55,17 @@ def direction_name(buy_venue: str, sell_venue: str) -> str:
 # silently omits unquoted scans overstates how often the pair was observable.
 NOT_QUOTED = "NOT_QUOTED"
 NO_SIZE = "NO_SIZE_AT_TOUCH"
+
+
+def _has_depth(size: float | None) -> bool:
+    """Whether there is anything at the touch to trade against.
+
+    A reported ``0`` is as untradeable as no report at all, and the venue is more certain of
+    it. Booleans are excluded on principle — ``True`` is not one contract.
+    """
+    return isinstance(size, (int, float)) and not isinstance(size, bool) and size > 0
+
+
 # An edge so large it refutes its own premise. Two venues quoting ONE question do not sit a
 # quarter of a dollar apart; if they appear to, they are not quoting one question — whatever
 # their titles and settlement text say.
@@ -125,6 +136,9 @@ def _direction(
     # no help against a 3-contract ask.
     sizes = [s for s in (buy_size, sell_size) if s is not None]
     size_at_touch = min(sizes) if len(sizes) == 2 else None
+    # Kept as the venue reported it, including a reported zero: the record states what was
+    # seen, and `evaluate_pairing` decides what it means. Rewriting 0 to None here would
+    # erase the distinction between a venue that said "none" and one that said nothing.
     return {
         "direction": direction_name(buy_venue, sell_venue),
         "buy": Leg(buy_venue, "BUY_YES", buy_price, buy_size).as_dict(),
@@ -182,8 +196,14 @@ def evaluate_pairing(
     ]
     priced = [d for d in directions if d is not None and d["net_edge"] is not None]
     best = max(priced, key=lambda d: d["net_edge"]) if priced else None
-    if best is not None and best["size_at_touch"] is None:
+    if best is not None and not _has_depth(best["size_at_touch"]):
         # Priced but with no depth on one side: an edge nobody could take any of.
+        #
+        # `None` and `0` are different facts — did not say, versus said none — and both mean
+        # the same thing here, which is why they share a reason. What they must NOT share is
+        # silence: a venue reporting size 0 used to produce no reason at all, because the
+        # check asked only about `None`. Seen live on 2026-07-28, a 0.09c "opportunity" on a
+        # touch of zero contracts, sitting in the count next to real ones.
         reasons.append(NO_SIZE)
     implausible = best is not None and abs(best["net_edge"]) >= MAX_PLAUSIBLE_NET_EDGE
     if implausible:
@@ -221,8 +241,14 @@ def evaluate_pairing(
         # nothing was miscounted; with the signs reversed it would have been counted as an
         # opportunity, and **"how often" is the number PM1 exists to produce.** Overstating the
         # frequency is the direction that later misleads PM2 and PM3.
+        # `NO_SIZE` joined them on 2026-07-29, having been recorded but never acted on since
+        # it was introduced. The comment where it is raised already called it "an edge nobody
+        # could take any of" — and the record then went on to call it an opportunity anyway.
+        # Frequency is the number PM1 exists to produce, so a touch nobody could trade must
+        # not be in it.
         "is_opportunity": bool(
-            best and best["is_opportunity"] and not implausible and NOT_QUOTED not in reasons
+            best and best["is_opportunity"] and not implausible
+            and NOT_QUOTED not in reasons and NO_SIZE not in reasons
         ),
         "reasons": reasons,
         "observed_at_utc": now,
