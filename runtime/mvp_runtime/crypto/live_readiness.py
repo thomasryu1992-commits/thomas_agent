@@ -224,11 +224,24 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     promotion = live_promotion.promotion_status(
         min_orders=limits.min_clean_canary_orders, root=root
     )
+    # The count says how MANY orders back the promotion; this says whether they can prove what
+    # they were. The records gained a declared-versus-filled subtraction so it would stop being
+    # a memory, and then nothing read it — a number stored where the person the gate consists of
+    # never sees it is only half the repair. Appended rather than folded into `ready`: making a
+    # size disagreement block promotion would change what the count means, which is a separate
+    # decision the field's own author declined to take.
+    size_note = ""
+    if promotion["size_unproven"]:
+        size_note = (f" [{promotion['size_unproven']} of {promotion['clean_count']} cannot prove "
+                     "their size — no fill recorded]")
+    elif promotion["largest_size_gap_usdt"]:
+        size_note = f" [largest declared-vs-filled gap {promotion['largest_size_gap_usdt']:.2f} USDT]"
     checks.append(_check(
         "canary_evidence",
         promotion["ready"],
         f"{promotion['clean_count']}/{promotion['required']} clean canary orders"
-        + ("" if promotion["ready"] else " - " + "; ".join(promotion["reasons"])),
+        + ("" if promotion["ready"] else " - " + "; ".join(promotion["reasons"]))
+        + size_note,
     ))
 
     # 8. The account read (LP1) — not required to place an order, but going live without
