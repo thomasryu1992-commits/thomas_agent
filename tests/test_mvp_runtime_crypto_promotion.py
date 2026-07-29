@@ -67,11 +67,23 @@ def _current_cost_summary():
             }}
 
 
+def _current_bars_replayed(spec):
+    """The replay window in force, because the promotion door now checks that too.
+
+    Same shape as `_current_cost_summary` above and for the same reason: evidence that records
+    no window cannot say how much market its verdict was earned on, so
+    `assert_promotable_evidence_depth` refuses it. That refusal is correct and is tested in
+    `test_mvp_runtime_crypto_evidence_depth.py`; here it is noise. Read from the factory's live
+    target rather than written down, so these fixtures follow the window when it moves."""
+    return pool.expected_replayed_bars(spec.timeframe)
+
+
 def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MISSING):
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = {"closed_count": 20, "expectancy": 0.5}
+        evidence = {"closed_count": 20, "expectancy": 0.5,
+                    "bars_replayed": _current_bars_replayed(spec)}
         summary = _current_cost_summary() if cost_summary is _MISSING else cost_summary
         if summary is not None:
             evidence["cost_summary"] = summary

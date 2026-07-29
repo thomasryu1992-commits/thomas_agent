@@ -23,6 +23,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
+from . import market_data
 from .cost import DEFAULT_MAKER_FEE_BPS, DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_BPS
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import classify_verdict, verdict_rank
@@ -233,6 +234,223 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
             f"({current_cost_basis()}), so their expectancy is overstated: {listed}. "
             f"Re-mint the lineage at the current model, or pass the explicit "
             f"--allow-stale-cost-basis escape.",
+        )
+
+
+# --- evidence window depth -----------------------------------------------------
+#
+# The second axis on which two candidates can be incomparable. The cost basis above asks what
+# a row PAID; this asks how much market it was shown. `backtest_evidence.bars_replayed` has
+# recorded it since the factory's first version and nothing has ever read it, so a row scored
+# over 350 bars and a row scored over 1400 sat in one list looking equally examined.
+#
+# It became load-bearing when the factory grew a bar-count floor beneath its calendar window
+# (`market_data.MIN_FACTORY_BARS` under `FACTORY_DEPTH_DAYS`), taking 1d from 500 collected
+# bars to 2000. Re-scoring the same 25 specs at the deeper window moved them from
+# 0 ROBUST / 20 FRAGILE to 12 ROBUST / 12 PROVISIONAL / 1 FRAGILE — so the verdict beside a
+# row is partly a statement about that row's window.
+#
+# The store does not hold two depths; counted on the live machine (Thomas, reviewing the
+# floor on PR #339) it already holds FOUR, and the floor adds a fifth: 25 rows replayed 1400
+# bars, 12 replayed 500, 18 replayed 350 — and 41 record no depth at all. That last group is
+# the one that decides the shape of this tier, so it is answered first, below.
+#
+# WHICH WAY THE ERROR POINTS — the question the cost tiers are ordered by, asked of depth.
+# Three of the scorer's five terms and both of its verdict gates are counted over TRADES, and
+# a shorter window produces fewer of them:
+#   - `sample_adequacy` (weight 0.30) is trades-per-parameter, and beneath
+#     `CRITICAL_TRADES_PER_PARAMETER` it vetoes straight to FRAGILE whatever else scored;
+#   - `temporal_consistency` (0.25) reads a walk-forward pass rate that stays None — scoring
+#     zero — until the replay's slices each hold `MIN_TRADES_PER_WINDOW` trades;
+#   - ROBUST additionally requires a holdout of at least `MIN_HOLDOUT_TRADES` closed trades,
+#     so a thin tail puts the top verdict out of reach however good the edge is.
+# A shallow row's verdict is therefore a FLOOR: it withholds credit the strategy may deserve,
+# which is exactly what the 500 → 2000 re-score demonstrated.
+#
+# IT IS NOT AIRTIGHT THE WAY THE COST TIERS ARE, and that difference decides the door.
+# `regime_breadth` (0.20) is a RATIO — profitable regimes over regimes traded — so a window
+# short enough to hold one regime can score it 1.0 where a longer window would show the edge
+# failing in half of them. Depth cuts both ways on that term. More fundamentally: re-pricing
+# a candidate's trades at a new fee rate is the SAME sample seen differently, which is why
+# "clears the bar under a conservative basis ⇒ clears it under the real one" is a theorem and
+# can back a refusal. Re-running a spec over a longer window is a DIFFERENT sample. A shallow
+# row is not a deep row carrying a handicap; it is a smaller one.
+#
+# So A KNOWN-SHALLOW ROW RANKS, REPORTS AND IS RECORDED — it is not refused. Three reasons:
+#   1. Every 1d row in the store was scored at the old window, so the day the floor lands a
+#      refusal makes the escape hatch the normal door. The cost tiers already record that
+#      lesson (equality was tried first and refused 90 of 359 rows on their own merits).
+#   2. The error runs AGAINST the candidate: a shallow row that still shows a verdict cleared
+#      a harder bar on the counted terms, and a shallow FRAGILE is absence of evidence rather
+#      than evidence of absence — refusing it would discard the 12-of-25 that were real.
+#   3. This door installs into the PAPER pool (`stage: paper`, `PAPER_ACTIVE`); live money has
+#      its own gates. Paper routing is where thin evidence goes to get thicker, so refusing
+#      shallow evidence here blocks the cheapest way to earn the depth it lacks.
+# What replaces the refusal is attribution: the tier orders the list, the `--list` view names
+# the split, and the depth each promoted row stood on rides onto the ledger beside its basis.
+#
+# AN UNRECORDED WINDOW IS REFUSED, AND ALL THREE OF THOSE REASONS COLLAPSE ON IT.
+# (1) does not grow: every row the factory mints records its depth, so the unrecorded set is a
+# closed legacy population that shrinks, not one the next policy change re-creates — the 41
+# arrive through the C7 import, which copies an outside pool's entries verbatim. (2) is the
+# argument that fails hardest: "the error runs against the candidate" is a claim about a
+# window you can SEE. An unrecorded one has no known direction, which is precisely why
+# `COST_BASIS_RANK_UNRECORDED` is refused rather than ranked. (3) proves nothing, because the
+# cost door already refuses unrecorded evidence into this same paper pool.
+#
+# And unrecorded depth is WORSE than unrecorded cost, not merely equal to it. An unrecorded
+# cost basis is partially repairable: `expectancy_at` re-derives the number that matters at
+# today's rates, exactly, from what the row already stores. Nothing re-windows a candidate.
+# The snapshot that produced the evidence is not kept — only `evidence_input_sha256`, its hash
+# — so a row that cannot say how much market it replayed cannot be made to say it, ever, by
+# any amount of arithmetic. The repo's standing rule for that case is not a ranking:
+# missing / uncertain → BLOCK, never guess.
+#
+# The escape is its own flag rather than a widening of `--allow-stale-cost-basis`. Two doors
+# that fail for different reasons must not open with one key.
+
+EVIDENCE_DEPTH_REPLAYED = "replayed"
+EVIDENCE_DEPTH_UNRECORDED = "evidence_depth_unrecorded"
+
+EVIDENCE_DEPTH_RANK_CURRENT = 0     # replayed at least the window the factory collects today
+EVIDENCE_DEPTH_RANK_SHALLOW = 1     # a shorter window: less market, and a verdict that reflects it
+EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one in: span unknown
+
+# Which of those may back a promotion. SHALLOW promotes because its error is known and runs
+# against the candidate; UNRECORDED is refused because no direction can be read off it and,
+# unlike an unrecorded cost basis, no part of it can be re-derived later.
+PROMOTABLE_EVIDENCE_DEPTH_RANKS = frozenset({
+    EVIDENCE_DEPTH_RANK_CURRENT, EVIDENCE_DEPTH_RANK_SHALLOW,
+})
+
+# CURRENT is "at or above" rather than "exactly at". A deeper row is better supported, not
+# incomparable, and giving depth its own top tier would sort every freshly minted candidate
+# beneath the legacy rows this tier exists to flag.
+#
+# The tolerance absorbs COLLECTION shortfall, not policy: a venue gap or an unclosed final
+# candle returns the window a bar or two short, and marking those SHALLOW forever would make
+# the tier noise. It cannot hide a policy change — the only one on record is 4x. A symbol
+# younger than the window falls short by far more than this, and is correctly SHALLOW.
+EVIDENCE_DEPTH_TOLERANCE = 0.95
+
+
+def _replayed_window(record: Mapping[str, Any]) -> tuple[int, str] | None:
+    """This row's ``(bars_replayed, timeframe)``, or None if either is missing.
+
+    Both are required because neither means anything alone: a bar count is a span only once
+    you know how long a bar is."""
+    bars = (record.get("backtest_evidence") or {}).get("bars_replayed")
+    timeframe = (record.get("strategy_spec") or {}).get("timeframe")
+    if not _is_number(bars) or bars <= 0 or timeframe not in market_data.TIMEFRAMES:
+        return None
+    return int(bars), str(timeframe)
+
+
+def evidence_depth_of(record: Mapping[str, Any]) -> str:
+    """The window one candidate was actually replayed over, from its own evidence.
+
+    Bars AND calendar span, because neither alone is the property in question: 2000 bars is
+    5.5 years at 1d and three weeks at 15m, and the regimes an edge has faced are a calendar
+    fact. A row with no ``bars_replayed`` — or no timeframe to read one in — reports
+    UNRECORDED rather than the current window, the same rule `cost_basis_of` applies to a
+    missing cost model."""
+    window = _replayed_window(record)
+    if window is None:
+        return EVIDENCE_DEPTH_UNRECORDED
+    bars, timeframe = window
+    days = round(bars * market_data.TIMEFRAMES[timeframe] / 1440)
+    return f"{EVIDENCE_DEPTH_REPLAYED}:{bars}bars_{timeframe}_{days}d"
+
+
+def expected_replayed_bars(timeframe: str) -> int | None:
+    """How many bars a candidate minted right now at ``timeframe`` would be SCORED over.
+
+    The collector's target for that timeframe, put through the factory's holdout split —
+    `bars_replayed` records the scored window, not the collected one, so both sides of the
+    comparison have to be the same fraction of it.
+
+    Reads the live `market_data.factory_candle_target`, so the day the factory's window moves
+    every stored row is re-tiered against the new one with no second constant to keep in step.
+    `current_cost_basis` reads the live fee defaults for exactly this reason. Called through
+    the module rather than a bound name so the read follows the policy wherever it moves —
+    the target is a calendar span, a bar floor and a clamp, and which of the three binds is
+    itself subject to change.
+
+    None for a timeframe the collector has no window for — a junk value on a durable row is
+    an unknown span, not an error to raise through a reporting path."""
+    if timeframe not in market_data.TIMEFRAMES:
+        return None
+    # Deferred: `factory` imports this module for candidate ids, so the split rule can only be
+    # read at call time. Read rather than copied — a second 0.70 here would drift the day the
+    # holdout fraction moves, and the two sides would silently stop meaning the same window.
+    from .factory import holdout_split_index
+
+    return holdout_split_index(market_data.factory_candle_target(timeframe))
+
+
+def current_evidence_depth(timeframe: str) -> str:
+    """The depth a candidate minted right now at ``timeframe`` would carry.
+
+    Formatted by `evidence_depth_of` over a synthetic record rather than by a second format
+    string, so "what the store holds" and "what the factory collects" cannot drift into two
+    spellings of the same window — same construction as `current_cost_basis`."""
+    expected = expected_replayed_bars(timeframe)
+    if expected is None:
+        return EVIDENCE_DEPTH_UNRECORDED
+    return evidence_depth_of({
+        "strategy_spec": {"timeframe": timeframe},
+        "backtest_evidence": {"bars_replayed": expected},
+    })
+
+
+def evidence_depth_rank(record: Mapping[str, Any]) -> int:
+    """Which `EVIDENCE_DEPTH_RANK_*` tier this candidate's window falls in.
+
+    One authority for three consumers, like `cost_basis_rank`: `rank_candidates` orders on it,
+    the `--list` view reports it, and `assert_promotable_evidence_depth` refuses on it — so
+    the ordering an operator reads, the block that explains it and the gate that stops them
+    can never disagree.
+
+    Note which tier the gate acts on: SHALLOW is ranked and surfaced, never refused. Only
+    UNRECORDED is a door. See the block above for why the two cases part company."""
+    window = _replayed_window(record)
+    if window is None:
+        return EVIDENCE_DEPTH_RANK_UNRECORDED
+    bars, timeframe = window
+    expected = expected_replayed_bars(timeframe)
+    if expected is None:
+        return EVIDENCE_DEPTH_RANK_UNRECORDED
+    return (EVIDENCE_DEPTH_RANK_CURRENT if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
+            else EVIDENCE_DEPTH_RANK_SHALLOW)
+
+
+def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
+    """Refuse a promotion backed by evidence that cannot say how much market it replayed.
+
+    Not a depth threshold — a KNOWN shallow window promotes, because a verdict scored on less
+    market errs against the candidate and paper routing is how it earns the rest. This refuses
+    only the rows that record no window at all, where "errs against the candidate" is not a
+    claim anyone can make.
+
+    Unrecoverable in a way an unrecorded cost basis is not: `expectancy_at` re-derives the
+    number that matters at today's rates from what the row already stores, while nothing
+    re-windows a candidate — the snapshot behind `evidence_input_sha256` is not kept, only its
+    hash. So this cannot be repaired in place, on any later day, by any arithmetic.
+
+    Raises `CANDIDATE_EVIDENCE_DEPTH_UNRECORDED`, naming every offending candidate."""
+    unknown = [
+        candidate_id(record)
+        for record in records
+        if evidence_depth_rank(record) not in PROMOTABLE_EVIDENCE_DEPTH_RANKS
+    ]
+    if unknown:
+        listed = ", ".join(unknown)
+        raise ToolError(
+            "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED",
+            f"record no replay window, so how much market their verdict was earned on cannot "
+            f"be read and cannot be re-derived: {listed}. A candidate minted now records it "
+            f"({current_evidence_depth('1d')} at 1d) — re-mint the lineage through the "
+            f"factory, or pass the explicit --allow-unrecorded-evidence-depth escape.",
         )
 
 
@@ -652,6 +870,12 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         # ...and which way that basis errs against the model in force today. The string says
         # WHAT this row paid; this says whether reading it next to a current row flatters it.
         "cost_basis_rank": cost_basis_rank(record),
+        # The other half of "were these two rows measured alike": how much market this one
+        # replayed. The verdict above is counted over trades, and a shorter window has fewer
+        # of them — so the window is a property OF the verdict, in the same way the cost basis
+        # is a property of the expectancy, and it travels with the row for the same reason.
+        "evidence_depth": evidence_depth_of(record),
+        "evidence_depth_rank": evidence_depth_rank(record),
         # The same expectancy at the rates the venue actually charges, so a candidate scored
         # under the old default can be read against a new one instead of merely flagged as
         # incomparable. None when it cannot be derived — never the stored number relabelled.
@@ -673,9 +897,10 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Candidates ordered for the promotion decision, latest-wins per lineage.
 
     Deterministic total order: **cost basis tier first**, then robustness verdict tier (the
-    anti-overfit first-pass), then ``edge_quality`` (win-rate × realized reward:risk)
-    descending, then ``expectancy`` descending, then ``candidate_id`` ascending so a tie never
-    depends on store order. Re-appends of a lineage collapse to the latest row.
+    anti-overfit first-pass), then the **evidence depth tier**, then ``edge_quality``
+    (win-rate × realized reward:risk) descending, then ``expectancy`` descending, then
+    ``candidate_id`` ascending so a tie never depends on store order. Re-appends of a lineage
+    collapse to the latest row.
 
     The basis tier leads because every key after it is a number scored under that basis, and
     269 of 359 rows on this machine were scored under a cheaper one. `verdict` is recomputed
@@ -683,15 +908,25 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     read straight off the old evidence. Sorting those together put candidates that never paid
     the real fee above candidates that did, and the surface said so in a printed warning while
     the ranking underneath went on mixing them — the same shape as the stored-verdict bug
-    below, which was also fixed by ordering on the property rather than describing it."""
+    below, which was also fixed by ordering on the property rather than describing it.
+
+    The DEPTH tier sits after the verdict rather than before it, which is the opposite of
+    where the cost tier sits, and the asymmetry is the point. A cheap cost basis FLATTERS the
+    numbers beside it, so it has to lead or the flattery survives the sort. A shallow window
+    does the reverse — it depresses the very verdict the row is already being sorted by — so
+    leading with it would charge one row twice for a single shortfall. As a tiebreak WITHIN a
+    verdict tier it says the one thing left to say: same verdict, more market behind it. It
+    ranks above ``edge_quality`` for the reason the tier exists at all — a win rate over 12
+    trades and one over 120 are not the same measurement, and the sort should not pretend
+    they are."""
     by_cid: dict[str, dict[str, Any]] = {}
     for record in records:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
 
-    def _key(record: Mapping[str, Any]) -> tuple[int, int, float, float, str]:
+    def _key(record: Mapping[str, Any]) -> tuple[int, int, int, float, float, str]:
         q = candidate_quality(record)
-        return (q["cost_basis_rank"], q["verdict_rank"], -q["edge_quality"], -q["expectancy"],
-                str(record["candidate_id"]))
+        return (q["cost_basis_rank"], q["verdict_rank"], q["evidence_depth_rank"],
+                -q["edge_quality"], -q["expectancy"], str(record["candidate_id"]))
 
     return sorted(by_cid.values(), key=_key)
