@@ -4,7 +4,11 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-29** (`main` = `36fd1f7`), after the live-trading grant was removed and
+Last updated: **2026-07-29** (`main` = `d6b65df`), after the canary evidence learned to prove its
+own size (#328) and the board learned to say when it cannot (#332), `/kill` started reaching the
+control state during an analysis instead of after it (#329/#333), a live entry started announcing
+itself (#331), and the live leg started enforcing the strategy's time exit (#330).
+Previously the same day (`main` = `36fd1f7`), after the live-trading grant was removed and
 `MVP_LIVE_TRADING=real` became the whole gate (#320), the `execution.live_trader` definition stopped
 describing a build that had shipped (#323), and section D was re-audited against the code.
 Previously **2026-07-28** (`main` = `279c233`), after cycle routing landed (#302), the cost
@@ -56,6 +60,14 @@ Every claim below was re-checked against `main` and against the code it describe
 > **The grant came off the same day** (Thomas, 2026-07-28): the live surface is gated by the env
 > opt-in alone. The gate no longer expires, so nothing turns live trading off but the operator —
 > and the halt that acts on a *running* scheduler is the console `kill` verb, not the env var.
+>
+> **And that halt now arrives during an analysis rather than after it** (#329, 2026-07-29). The
+> sentence above was true and incomplete: the operator loop is the only process that receives
+> Telegram and it does not poll while it drains, so for the length of an analysis `/kill` existed
+> **nowhere in the runtime** — and the control state file is what `live_route` re-reads in the
+> other container immediately before a live entry. This loop's responsiveness had quietly become a
+> dependency of the money path. A mid-run peek that reads without claiming now writes the halt at
+> the next stage boundary. It does **not** stop the running analysis; that is decision K4, open.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -542,6 +554,14 @@ scopes at different levels, so nothing was owed to it.
           one thing that can answer a per-machine question. Two sibling docs carried the same
           dead claim and were corrected with it (`LP5_POSITION_KERNEL_DESIGN`,
           `CRYPTO_LIVE_EXECUTION_VERIFICATION`).
+    - [x] **A live entry now tells the operator it happened** — done 2026-07-29 (#331). Cycle
+          routing meant a scheduled run could open a real position **with nobody watching**, and
+          nothing said so: the cycle recorded it and the audit chain recorded it, which are both
+          places you have to go and look. Fine for a daily review, useless for the first
+          autonomous entries this system has ever made. Sent for exactly two outcomes, `OPENED`
+          and `INCIDENT` — a channel that pings every fifteen minutes is one nobody reads by the
+          second day, and the routine picture already goes out daily in `crypto_report`. This
+          changes nothing about what is permitted; it changes how long a surprise can go unseen.
     - [x] **Live now enforces the strategy's time exit** — done 2026-07-29, the LP5.1 record-shape
           increment this box asked for. The live position carries `timeframe`,
           `max_holding_bars` and a deduped holding counter; `live_route` advances the counter
@@ -597,6 +617,20 @@ scopes at different levels, so nothing was owed to it.
       active also leaves no evidence at all: `DryRunCanaryRegistry` accepts and discards, because
       unbacked evidence here would unlock autonomous trading.
       (1 canary existed in the frozen source system and did not migrate.)
+      **And all four count while being unable to say what size they were** (#328/#332,
+      2026-07-29). The record carried `notional_usdt` — what the operator typed — with no
+      quantity and no fill to check it against, and all four predate #268, which is when that
+      declaration started being checked at all. So "65.0" cannot now be asked about. The record
+      gained the venue's own numbers (`quantity`, `avg_price`, `executed_qty`, `cum_quote`), which
+      `submit_and_reconcile` had been producing and the record discarding, so declared-versus-
+      filled became a subtraction; and the board says when it cannot make that subtraction, which
+      today is every row:
+      `4/4 clean canary orders [4 of 4 cannot prove their size — no fill recorded]`.
+      Stated beside the count, never folded into it — making a size disagreement block promotion
+      would change what this box counts, and that decision has not been taken. **The previous four
+      are not repairable**: their fills are not in the record, and inventing them is the failure
+      the whole thing refuses. Whether evidence that cannot prove its own size should count toward
+      a threshold is an operator decision, like the other two this box already defers.
       **Re-verification is owed for the two placed on 2026-07-26, and here is why.** Three
       separate defects sat on this path and were fixed afterwards, so earlier evidence cannot be
       read at face value:

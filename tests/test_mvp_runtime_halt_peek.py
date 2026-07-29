@@ -300,3 +300,57 @@ def test_the_kill_is_still_handled_normally_afterwards(tmp_path, monkeypatch):
     assert store.load().mode == control.KILLED
     assert any("KILLED" in text or "정지" in text or "kill" in text.lower()
                for _chat, text in channel.sent)
+
+
+# --- the halt has to say when it happened ---------------------------------------
+
+def test_the_halt_is_stamped_when_it_arrives_not_when_the_run_began(tmp_path, monkeypatch):
+    """`_at_stage` used to pass `now=stamp`, and `stamp` is bound before the analysis runs.
+
+    `control.apply_command` writes what it is given straight into `ControlState.updated_at`, so a
+    `/kill` arriving three minutes into a four-minute analysis was recorded as having happened
+    when the analysis BEGAN. Nothing compares that field, so no gate behaved differently — but it
+    is the operator's record of when they halted the runtime, on the state that gates the money
+    path, and it is the field consulted afterwards to ask exactly that.
+    """
+    store = _control(tmp_path)
+
+    def _run(request, **kwargs):
+        channel.inbound.append(_msg("/kill"))
+        kwargs["on_progress"]("analysis_worker")
+        return {"status": "COMPLETED", "final_response": "분석 결과",
+                "records": {"received_task": {"identity": {"task_id": "t", "trace_id": "tr"}}}}
+
+    monkeypatch.setattr("runtime.mvp_runtime.operator.run_task", _run)
+    monkeypatch.setattr("runtime.mvp_runtime.operator_feedback.record_delivery",
+                        lambda *a, **k: None)
+    channel = MockOperatorChannel(inbound=[_msg("분석해줘")])
+
+    RUN_ENTERED = "2020-01-01T00:00:00Z"
+    run_operator_once(channel, REG, registry=TaskRegistryStore(tmp_path),
+                      control_store=store, repo_root=tmp_path, now=RUN_ENTERED)
+
+    state = store.load()
+    assert state.mode == control.KILLED
+    assert state.updated_at != RUN_ENTERED, (
+        "the halt was stamped with the timestamp the run entered with, not when it arrived"
+    )
+
+
+def test_one_unusable_message_does_not_take_the_rest_of_the_batch_with_it(tmp_path):
+    """The `try` used to wrap the whole loop, so a message that blew up on the way through
+    skipped every message behind it — including a `/kill`. Nothing is claimed either way, so the
+    next poll would still have handled it; the halt would just have waited for the one thing it
+    exists not to wait for."""
+    store = _control(tmp_path)
+
+    class _Exploding:
+        text = property(lambda self: (_ for _ in ()).throw(RuntimeError("unreadable")))
+        chat_id = "1"
+        sender_id = REG.operator_id
+
+    channel = MockOperatorChannel(inbound=[])
+    channel.inbound = [_Exploding(), _msg("/kill")]
+
+    assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) == control.CMD_KILL
+    assert store.load().mode == control.KILLED
