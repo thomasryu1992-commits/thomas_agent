@@ -671,3 +671,131 @@ def test_a_new_fire_asks_again():
     PerRunFeedCache(inner).funding_history("BTCUSDT", records=1600, timeout_seconds=10)
     PerRunFeedCache(inner).funding_history("BTCUSDT", records=1600, timeout_seconds=10)
     assert _counts(inner, "funding_history") == 2
+
+
+# --- a rate limit is not a timeout (2026-07-29) ------------------------------------------------
+#
+# `urllib.error.HTTPError` is a SUBCLASS of `URLError`, so every read here caught a 429 and
+# reported it as "failed or timed out". A timeout says "try again"; a 429 at this venue says
+# "stop, and if you do not, this becomes a 418 ban". The runtime was reporting the second as the
+# first, and then doing the thing that escalates it.
+
+def _http_error(status, *, retry_after=None):
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    return urllib.error.HTTPError("https://redacted", status, "rate limited", headers, None)
+
+
+def test_a_429_is_classified_as_a_rate_limit_not_a_transport_failure():
+    err = market_data.classify_transport_error(_http_error(429), "market-data")
+    assert err.reason_code == market_data.TOOL_RATE_LIMITED
+    assert "429" in str(err)
+
+
+def test_a_418_ban_is_a_rate_limit_too():
+    """418 is where this venue escalates a 429 that kept knocking. Reading it as anything softer
+    than a full stop is what turns minutes of throttling into days of ban."""
+    assert market_data.classify_transport_error(_http_error(418), "market-data").reason_code == (
+        market_data.TOOL_RATE_LIMITED)
+
+
+def test_the_retry_after_the_venue_asked_for_is_reported():
+    """"Rate limited" and "rate limited, come back in 120 seconds" are different operational
+    facts, and only one of them tells an operator when the next fire can succeed."""
+    assert "120" in str(market_data.classify_transport_error(_http_error(429, retry_after="120"),
+                                                             "market-data"))
+
+
+def test_an_ordinary_timeout_is_still_a_transport_failure():
+    assert market_data.classify_transport_error(TimeoutError(), "market-data").reason_code == (
+        "TOOL_TRANSPORT")
+    assert market_data.classify_transport_error(
+        urllib.error.URLError("unreachable"), "market-data").reason_code == "TOOL_TRANSPORT"
+
+
+def test_a_transport_error_never_echoes_the_url():
+    """A signed request carries its signature in the query string, and this classifier is shared
+    with paths that sign."""
+    for exc in (_http_error(429), _http_error(500), TimeoutError()):
+        assert "redacted" not in str(market_data.classify_transport_error(exc, "market-data"))
+
+
+class _RateLimitedCollector:
+    tool_id, tool_version = "limited", "0"
+    provider_id, source, network_egress = "binance_futures", "limited", True
+
+    def __init__(self, *, status=429):
+        self.attempts = 0
+        self.status = status
+
+    def _raise(self):
+        self.attempts += 1
+        raise market_data.classify_transport_error(_http_error(self.status), "market-data")
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self._raise()
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        self._raise()
+
+
+def test_the_memo_stops_knocking_once_the_venue_says_stop():
+    """The response that does not escalate. A fan-out that keeps going after the first refusal
+    makes twenty more requests, which is exactly how a throttle becomes a ban."""
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+        with pytest.raises(ToolError) as excinfo:
+            cache.collect(symbol, "1d", limit=120, timeout_seconds=10)
+        assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert inner.attempts == 1, f"kept knocking after a 429 ({inner.attempts} attempts)"
+    assert cache.rate_limited is not None
+
+
+def test_the_latch_covers_every_feed_not_just_the_one_that_tripped_it():
+    """Being rate limited is a property of the IP, not of the endpoint that reported it."""
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError):
+        cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    with pytest.raises(ToolError) as excinfo:
+        cache.collect("ETHUSDT", "1d", limit=120, timeout_seconds=10)
+    assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert inner.attempts == 1
+
+
+def test_an_ordinary_failure_does_not_latch_the_whole_fire():
+    """Only a rate limit means "stop asking". A symbol that times out must not silence the rest —
+    that would turn one bad symbol into a blind fan-out."""
+    class _OneBadSymbol(_RateLimitedCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.attempts += 1
+            raise ToolError("TOOL_TRANSPORT", "timed out")
+
+    inner = _OneBadSymbol()
+    cache = PerRunFeedCache(inner)
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        with pytest.raises(ToolError):
+            cache.collect(symbol, "1d", limit=120, timeout_seconds=10)
+    assert inner.attempts == 2
+    assert cache.rate_limited is None
+
+
+def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():
+    """The scope that matters most. A rate-limited fire must still settle, protect and CLOSE an
+    open live position — those run on separate objects and separate endpoints, and neither is
+    wrapped here. What the latch stops is opening new positions, which is the right posture for
+    a runtime that cannot currently see the market."""
+    from runtime.mvp_runtime.crypto import account, live_execution, live_route
+
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError):
+        cache.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+
+    # Neither the adapter nor the account feed is reachable from the wrapper: they are not
+    # attributes of a collector, so a latched cache cannot answer for them at all.
+    for name in ("submit", "fetch_order", "cancel_order", "read_account"):
+        assert not hasattr(cache, name)
+    assert live_execution.select_order_adapter is not None      # separate selector
+    assert account.read_account is not None                     # separate endpoint
+    assert live_route.run_live_leg is not None

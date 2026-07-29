@@ -68,6 +68,46 @@ LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
 OPEN_INTEREST_DEGRADED = "OPEN_INTEREST_DEGRADED"
 LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
 
+# --- being rate limited is not "the exchange is slow" -----------------------------------------
+#
+# Every read here caught ``(TimeoutError, urllib.error.URLError)`` and raised TOOL_TRANSPORT
+# with "failed or timed out". `urllib.error.HTTPError` is a SUBCLASS of `URLError`, so a 429
+# (rate limited) and a 418 (IP banned, which is where Binance escalates a 429 that keeps
+# knocking) both arrived as a generic timeout — the runtime reported a ban as latency, and the
+# operator reading the ledger had no way to tell the two apart.
+#
+# They are opposite failures. A timeout says "try again"; a 429 says "stop, and if you do not,
+# this becomes a ban". So this is not a cosmetic reason code: `PerRunFeedCache` latches on it and
+# stops the rest of the fire from knocking, which is the only response that does not escalate.
+TOOL_RATE_LIMITED = "TOOL_RATE_LIMITED"
+# Venue statuses that mean "you are asking too often". 418 is Binance's escalation of a 429 that
+# kept going; treating it as anything softer than a full stop is what turns minutes into days.
+_RATE_LIMIT_STATUSES = frozenset({429, 418})
+
+
+def classify_transport_error(exc: BaseException, label: str) -> ToolError:
+    """One shared reading of a failed HTTP read → the typed error to raise.
+
+    Deliberately never echoes the URL (the R3 transport-error posture — a signed request carries
+    its signature in the query string, and this classifier is shared with paths that sign).
+    ``Retry-After`` rides into the message when the venue sends one, because "rate limited" and
+    "rate limited, come back in 120 seconds" are different operational facts.
+    """
+    status = getattr(exc, "code", None)
+    if isinstance(status, int) and status in _RATE_LIMIT_STATUSES:
+        retry_after = ""
+        try:
+            value = exc.headers.get("Retry-After")  # type: ignore[attr-defined]
+            if value:
+                retry_after = f"; venue asked for {str(value).strip()}s"
+        except Exception:  # noqa: BLE001 — a missing/odd header must not mask the rate limit
+            pass
+        return ToolError(
+            TOOL_RATE_LIMITED,
+            f"{label} was rate limited by the venue (HTTP {status}{retry_after})",
+        )
+    return ToolError("TOOL_TRANSPORT", f"{label} request failed or timed out")
+
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
 # stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
@@ -470,9 +510,8 @@ class BinanceFuturesCollector:
             try:
                 with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                     raw = response.read().decode("utf-8")
-            except (TimeoutError, urllib.error.URLError):
-                # Deliberately generic — never echo the URL (the R3 transport-error posture).
-                raise ToolError("TOOL_TRANSPORT", "market-data request failed or timed out") from None
+            except (TimeoutError, urllib.error.URLError) as exc:
+                raise classify_transport_error(exc, "market-data") from None
             page = self._parse(raw, now_ms=now_ms)
             if not page:
                 break  # the venue has no more history in this direction
@@ -561,8 +600,8 @@ class BinanceFuturesCollector:
             try:
                 with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                     raw = response.read().decode("utf-8")
-            except (TimeoutError, urllib.error.URLError):
-                raise ToolError("TOOL_TRANSPORT", "funding request failed or timed out") from None
+            except (TimeoutError, urllib.error.URLError) as exc:
+                raise classify_transport_error(exc, "funding") from None
             try:
                 payload = json.loads(raw)
                 page = [
@@ -606,8 +645,8 @@ class BinanceFuturesCollector:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
-            raise ToolError("TOOL_TRANSPORT", "exchange-info request failed or timed out") from None
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise classify_transport_error(exc, "exchange-info") from None
         try:
             payload = json.loads(raw)
         except ValueError:
@@ -692,9 +731,9 @@ class CoinalyzeLiquidationFeed:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
-            # Deliberately generic — never echo the URL or key.
-            raise ToolError("TOOL_TRANSPORT", "liquidation request failed or timed out") from None
+        except (TimeoutError, urllib.error.URLError) as exc:
+            # Never echoes the URL or key — see `classify_transport_error`.
+            raise classify_transport_error(exc, "liquidation") from None
         return self._parse(raw, days, now_s=now_s)
 
     def _parse(self, raw: str, days: int, *, now_s: int) -> list[dict[str, Any]]:
@@ -773,8 +812,8 @@ class CoinalyzeLiquidationFeed:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
-            raise ToolError("TOOL_TRANSPORT", "open-interest request failed or timed out") from None
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise classify_transport_error(exc, "open-interest") from None
         rows = self._parse_open_interest(raw, days, now_s=now_s, interval=interval)
         # `days` bounds a DAILY series one row per day. An hourly series has 24, so trimming to
         # the same number would silently return the last `days` hours and a coverage count built
@@ -959,6 +998,26 @@ class PerRunFeedCache:
         self.__dict__["_memo"] = {}
         self.__dict__["requests"] = 0   # what was actually asked of the venue
         self.__dict__["hits"] = 0       # what a repeat context did not have to ask again
+        self.__dict__["rate_limited"] = None  # the venue's refusal, once it has given one
+
+    def _latch(self) -> None:
+        """Refuse before opening a socket, once the venue has said we are asking too often.
+
+        A 429 is not a transient failure to retry past — at this venue it is the step BEFORE a
+        418 IP ban, and the thing that causes the escalation is continuing to knock. A fan-out
+        that keeps going after the first refusal makes twenty more requests, which is precisely
+        how minutes of throttling become days of ban.
+
+        The scope is deliberate and narrow. This latches **market data**: candles, funding,
+        liquidations, open interest, exchangeInfo. It cannot reach the order adapter or the
+        account read — those are separate objects on separate endpoints with separate limits, and
+        neither is wrapped here — so a rate-limited fire still settles, protects and closes an
+        open live position. What it does stop is opening new ones, which is the correct posture
+        for a runtime that cannot currently see the market.
+        """
+        latched = self.__dict__["rate_limited"]
+        if latched is not None:
+            raise latched
 
     def collect(self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int) -> MarketSnapshot:
         """Candles, served from a DEEPER cached window when one exists for this ``(symbol,
@@ -987,10 +1046,23 @@ class PerRunFeedCache:
             if asked_for >= limit:
                 self.__dict__["hits"] += 1
                 return replace(snapshot, candles=snapshot.candles[-limit:]) if limit else snapshot
+        self._latch()
         self.__dict__["requests"] += 1
-        snapshot = self._inner.collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+        try:
+            snapshot = self._inner.collect(
+                symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds
+            )
+        except ToolError as exc:
+            self._note_rate_limit(exc)
+            raise
         self._memo[key] = (limit, snapshot)
         return snapshot
+
+    def _note_rate_limit(self, exc: ToolError) -> None:
+        """Latch the FIRST refusal and keep it. A later one would say the same thing about a
+        request this wrapper should not have made."""
+        if getattr(exc, "reason_code", None) == TOOL_RATE_LIMITED and self.rate_limited is None:
+            self.__dict__["rate_limited"] = exc
 
     def __getattr__(self, name: str) -> Any:
         # getattr on the inner object first: an attribute it does not have must stay absent here,
@@ -1007,10 +1079,13 @@ class PerRunFeedCache:
                 if outcome == "raised":
                     raise value
                 return value
+            self._latch()
             self.__dict__["requests"] += 1
             try:
                 value = attr(*args, **kwargs)
             except MvpRuntimeError as exc:
+                if isinstance(exc, ToolError):
+                    self._note_rate_limit(exc)
                 self._memo[key] = ("raised", exc)
                 raise
             self._memo[key] = ("returned", value)
