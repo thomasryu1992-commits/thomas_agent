@@ -312,7 +312,14 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 EVIDENCE_DEPTH_REPLAYED = "replayed"
 EVIDENCE_DEPTH_UNRECORDED = "evidence_depth_unrecorded"
 
-EVIDENCE_DEPTH_RANK_CURRENT = 0     # replayed at least the window the factory collects today
+# The tier means **at least** the current window, and the name now says so. It was
+# `..._CURRENT`, and the `--list` view printed `CURRENT` beside four different depth strings
+# under a header reading "these rows were NOT shown the same market" — the table contradicting
+# the sentence above it. Renaming was the fix rather than adding a `DEEPER` tier, because a
+# fourth rank has to sort somewhere and every position is wrong: below FULL demotes the
+# better-supported row, above it demotes every freshly minted candidate to second place
+# forever. Adequacy is one fact; the exact window is already printed next to it.
+EVIDENCE_DEPTH_RANK_FULL = 0        # replayed at least the window the factory collects today
 EVIDENCE_DEPTH_RANK_SHALLOW = 1     # a shorter window: less market, and a verdict that reflects it
 EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one in: span unknown
 
@@ -320,10 +327,10 @@ EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one 
 # against the candidate; UNRECORDED is refused because no direction can be read off it and,
 # unlike an unrecorded cost basis, no part of it can be re-derived later.
 PROMOTABLE_EVIDENCE_DEPTH_RANKS = frozenset({
-    EVIDENCE_DEPTH_RANK_CURRENT, EVIDENCE_DEPTH_RANK_SHALLOW,
+    EVIDENCE_DEPTH_RANK_FULL, EVIDENCE_DEPTH_RANK_SHALLOW,
 })
 
-# CURRENT is "at or above" rather than "exactly at". A deeper row is better supported, not
+# FULL is "at or above" rather than "exactly at". A deeper row is better supported, not
 # incomparable, and giving depth its own top tier would sort every freshly minted candidate
 # beneath the legacy rows this tier exists to flag.
 #
@@ -420,7 +427,7 @@ def evidence_depth_rank(record: Mapping[str, Any]) -> int:
     expected = expected_replayed_bars(timeframe)
     if expected is None:
         return EVIDENCE_DEPTH_RANK_UNRECORDED
-    return (EVIDENCE_DEPTH_RANK_CURRENT if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
+    return (EVIDENCE_DEPTH_RANK_FULL if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
             else EVIDENCE_DEPTH_RANK_SHALLOW)
 
 
@@ -969,6 +976,9 @@ def promotable_backlog(
     - evidence at a basis the door accepts (:data:`PROMOTABLE_COST_BASIS_RANKS`); an
       OPTIMISTIC row is refused at the ask, so counting it would advertise work that
       cannot be done
+    - and at a depth it accepts (:data:`PROMOTABLE_EVIDENCE_DEPTH_RANKS`), for exactly
+      the same reason — the chain has to name every axis the door refuses on, or it
+      drifts back into advertising refusals every time a new one is added
     - ROBUST on the *recomputed* verdict, and CONFIRMED out-of-sample
     - positive expectancy at the CURRENT rates, not at whatever rate it was scored under
     - one row per (family, symbol scope, timeframe), counting the active pool's own
@@ -1001,6 +1011,15 @@ def promotable_backlog(
             continue
         quality = candidate_quality(record)
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
+            continue
+        # The same rule for the other axis the door refuses on. It was missing here for seven
+        # minutes' worth of merge ordering — the depth gate landed just after this counter —
+        # and the omission is the exact failure the line above is written to prevent: a row the
+        # ask will refuse must not be advertised as work an operator could do. Latent when
+        # found (no row passed every other filter AND failed this one) but not hypothetical:
+        # the store holds 41 rows the depth gate refuses, and one of them becoming ROBUST is a
+        # matter of time rather than of possibility.
+        if quality["evidence_depth_rank"] not in PROMOTABLE_EVIDENCE_DEPTH_RANKS:
             continue
         if quality["verdict"] != ROBUST or quality["holdout_status"] != HOLDOUT_CONFIRMED:
             continue

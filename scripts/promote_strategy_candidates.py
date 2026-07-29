@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             for q in (pool_store.candidate_quality(c) for c in candidates)
         )
         depth_label = {
-            pool_store.EVIDENCE_DEPTH_RANK_CURRENT: "CURRENT   ",
+            pool_store.EVIDENCE_DEPTH_RANK_FULL: "FULL      ",
             pool_store.EVIDENCE_DEPTH_RANK_SHALLOW: "SHALLOW   ",
             pool_store.EVIDENCE_DEPTH_RANK_UNRECORDED: "UNRECORDED",
         }
@@ -406,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
             # Same rule for the window, and for the same reason: the depth tier is a sort key,
             # so a row sitting below a same-verdict neighbour has to be able to say why.
             depth_mark = (
-                "" if q["evidence_depth_rank"] == pool_store.EVIDENCE_DEPTH_RANK_CURRENT
+                "" if q["evidence_depth_rank"] == pool_store.EVIDENCE_DEPTH_RANK_FULL
                 else f" depth={depth_label[q['evidence_depth_rank']].strip()}"
             )
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
