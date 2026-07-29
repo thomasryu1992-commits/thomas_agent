@@ -304,8 +304,14 @@ checklist the readiness board computes row by row, and none of it is code anyone
 That inverts the old caveat rather than removing it. The canary row used to enable nothing
 because the step it fed — cycle routing — was deliberately unbuilt; now that step exists, so the
 canary evidence does gate something real. **Wired is still not permitted**: the routing row is
-deliberately not folded into `ready`, and with no `live_trading` grant the leg returns DISABLED
-having read no account and opened no socket.
+deliberately not folded into `ready`, and without `MVP_LIVE_TRADING=real` the leg returns
+DISABLED having read no account and opened no socket.
+
+*(That sentence said "with no `live_trading` grant" until 2026-07-29 — written on the 28th and
+outlived by its own subject within a day, when Thomas removed the grant. Left visible rather
+than silently swapped: this file's recurring defect is not being wrong, it is describing a door
+that has since moved, and the banner above already carried the correction while this paragraph
+did not.)*
 
 **The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
 end to end for the first time turned up six defects that had been sitting in code nobody had
@@ -499,6 +505,29 @@ scopes at different levels, so nothing was owed to it.
           lands, replace the constant. If the measured rate comes in **above** 2.0, every
           candidate scored at the published rate becomes `OPTIMISTIC` and stops being promotable
           on its own evidence — intended behaviour of the gate above, not a regression.
+    - [x] **The grant's revocation was defeatable by the grant** — done 2026-07-29 (#324),
+          reviewing #320 rather than running it. `assert_authorization` branched on
+          `evidence_ref.startswith("env_only:")` to decide whether to re-read the grant file or
+          the environment — and on a grant-backed authorization `evidence_ref` is copied verbatim
+          out of the operator's activation record. The sentinel passes the path validation (no
+          drive, not absolute, no `..`) and a file of that name is legal on Linux, so a record
+          could name itself onto the env branch and skip its own file re-read. Reproduced: with
+          the sentinel in place, **deleting the grant file left the authorization valid** — the
+          one property `assert_authorization` promises about grants, broken on the providers
+          #320 deliberately KEPT on a grant (`binance_futures_account`).
+          Not privilege escalation — writing that record already takes the access to mint a normal
+          grant — but persistence: the documented revocation silently stopped working. Fixed with
+          an explicit `Authorization.env_gate` field only `env_only_authorization` sets, so no
+          record content can reach it. Worth keeping as a shape rather than an incident: the
+          weakening came from **one field carrying two meanings, where the meaning selected which
+          security check ran**. #320's own reasoning ("a keyword would put 'no grant needed' one
+          token away from the model provider") is the same instinct applied one level up.
+          The containment test had a matching hole — it collected only `ast.Attribute`, so a
+          caller written `from ..safety_gate import select_env_gated` scored zero, and that is
+          the idiomatic import style in six modules under `runtime/`. A test that asserts an
+          exact caller set can only fail on a *new* caller, so nothing in it would have noticed
+          the matcher going blind to a whole calling convention; there is now a unit test on the
+          matcher itself.
     - [x] **`execution.live_trader` named the removed `live_trading` grant** — done 2026-07-29
           (role `0.1.0` → `0.2.0`, registry hash refreshed). `live_trading_grant_revoked` →
           `live_trading_opt_in_cleared`, `live_trading_grant_absent_or_revoked` →
