@@ -437,3 +437,17 @@ def test_a_watch_schedule_actually_runs_the_scan(state, monkeypatch, live_venues
     )
     assert result.startswith("pm_scan watch:")
     assert len(obs.read_observations(state)) == 1
+
+
+def test_the_console_line_calls_the_ratio_priced_not_readable():
+    """It counts observations that produced a net edge. That fails on a one-sided book, not
+    on a venue we could not reach — and "64/65 readable" sent a reader hunting an outage that
+    was not there, beside a scan whose only reason was NOT_QUOTED and whose 65 legs had all
+    been fetched. Whether a venue answered at all is `venue_errors`, printed as `degraded=`.
+    """
+    line = obs.scan_status_line({
+        "scan_kind": "watch", "opportunity_count": 22, "readable_count": 64,
+        "observation_count": 65, "groups_observed": 65, "venue_errors": {},
+    })
+    assert "64/65 priced" in line
+    assert "readable" not in line
