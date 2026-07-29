@@ -428,3 +428,86 @@ def test_the_counter_survives_a_close_that_did_not_confirm():
     store = _Store()
     _settle(_timed(holding_candles=9), adapter=adapter, store=store)
     assert store.saved[0]["holding_candles"] == 10
+
+
+# --- the operator hears about real money ----------------------------------------
+
+def _notified(record, monkeypatch, *, fail=None):
+    """Drive `_notify_operator` and return what would have been sent."""
+    from runtime.mvp_runtime import operator as operator_mod
+    from runtime.mvp_runtime.crypto import live_route
+
+    sent: list[str] = []
+
+    def _send(channel, text, *, repo_root=None):
+        if fail:
+            raise fail
+        sent.append(text)
+
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **kw: object())
+    monkeypatch.setattr(operator_mod, "notify_operator", _send)
+    live_route._notify_operator(record, now="2026-07-29T08:00:00Z", root=None)
+    return sent
+
+
+def _opened_record(status):
+    return {
+        "live_route_status": status,
+        "live_reason_codes": [],
+        "live_opened": {"status": "ENTRY_OPENED", "position": {
+            "symbol": "BTCUSDT", "direction": "LONG", "quantity": 0.001,
+            "entry_price": 64512.0, "stop_price": 63000.0, "target_price": 67000.0}},
+    }
+
+
+def test_an_opened_position_reaches_the_operator(monkeypatch):
+    """Real money moved with nobody watching. The message carries what an operator needs to
+    check the venue against: symbol, side, size, and both bracket legs."""
+    sent = _notified(_opened_record("OPENED"), monkeypatch)
+    assert len(sent) == 1
+    for fragment in ("[LIVE]", "BTCUSDT", "LONG", "0.001", "64512.0", "63000.0", "67000.0"):
+        assert fragment in sent[0]
+
+
+def test_an_incident_says_so_and_names_the_halt(monkeypatch):
+    """`INCIDENT` means money is somewhere the runtime cannot account for. That message must
+    not read like the routine one, and it must carry the verb that stops new entries."""
+    record = _opened_record("INCIDENT")
+    record["live_reason_codes"] = ["ENTRY_NAKED_OPEN"]
+    sent = _notified(record, monkeypatch)
+    assert "[LIVE INCIDENT]" in sent[0]
+    assert "ENTRY_NAKED_OPEN" in sent[0]
+    assert "console_cli kill" in sent[0]
+
+
+@pytest.mark.parametrize("status", ["HELD", "SETTLED", "BLOCKED", "DISABLED", None])
+def test_a_quiet_cycle_says_nothing(status):
+    """A channel that pings every fifteen minutes is one nobody reads by the second day, and
+    the one message that matters would arrive in a stream the operator has learned to skip."""
+    from runtime.mvp_runtime.crypto import live_route
+
+    record = {"live_route_status": status, "live_reason_codes": [], "live_opened": {}}
+    # No monkeypatching at all: if it tried to send, selecting a channel would be attempted.
+    live_route._notify_operator(record, now="2026-07-29T08:00:00Z", root=None)
+    assert record["live_reason_codes"] == []
+
+
+def test_a_failed_send_is_recorded_and_never_raised(monkeypatch):
+    """By the time this runs the order is at the venue. A notification failure is reported on
+    the record — the audit-append precedent one function up — and never allowed to raise."""
+    from runtime.mvp_runtime.crypto import live_route
+    from runtime.mvp_runtime.errors import MvpRuntimeError
+
+    record = _opened_record("OPENED")
+    _notified(record, monkeypatch, fail=MvpRuntimeError("TELEGRAM_DOWN", "no"))
+    assert live_route.NOTIFY_FAILED in record["live_reason_codes"]
+
+
+def test_an_unexpected_error_is_caught_too(monkeypatch):
+    """The money path must not die because a transport raised something nobody typed."""
+    from runtime.mvp_runtime.crypto import live_route
+
+    record = _opened_record("OPENED")
+    _notified(record, monkeypatch, fail=RuntimeError("boom"))
+    assert live_route.NOTIFY_FAILED in record["live_reason_codes"]
+    assert "UNEXPECTED_RuntimeError" in record["live_reason_codes"]
