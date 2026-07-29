@@ -726,3 +726,69 @@ def test_rank_candidates_is_deterministic_and_latest_wins():
     # dup now carries the newer (stronger) evidence, so it leads; equal-quality ties
     # fall back to candidate_id ascending (aaa before bbb).
     assert ids == ["dup", "aaa", "bbb"]
+
+
+# --- one frame per fire, not one per spec (2026-07-29) -----------------------------------------
+#
+# Features, candles and the carry series are properties of the market and the calendar; the spec
+# decides only which bars it enters on. `backtest_spec` rebuilt all three per spec anyway, and
+# `build_feature_rows` is 6.0 seconds at the 48,000-bar 15m window — so a batch of four plus
+# fusion children spent ~30s a fire recomputing an identical frame, on a scheduler that runs
+# schedules sequentially and shares that tick with the live leg.
+
+def test_a_shared_frame_scores_a_spec_identically_to_a_rebuilt_one():
+    """The property the whole optimisation rests on: reuse changes nothing about the answer."""
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot = _trending_snapshot()
+    spec = StrategySpec.from_dict(_spec_dict())
+    assert backtest_spec(spec, snapshot) == backtest_spec(
+        spec, snapshot, frame=build_replay_frame(snapshot)
+    )
+
+
+def test_the_factory_builds_the_frame_once_however_many_specs_it_scores():
+    from runtime.mvp_runtime.crypto import factory as factory_mod
+    from runtime.mvp_runtime.crypto.factory import run_factory
+
+    built = []
+    real = factory_mod.build_feature_rows
+
+    def counting(snapshot):
+        built.append(1)
+        return real(snapshot)
+
+    original = factory_mod.build_feature_rows
+    factory_mod.build_feature_rows = counting
+    try:
+        result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                             existing_candidates=[], now=NOW, count=4)
+    finally:
+        factory_mod.build_feature_rows = original
+
+    assert result["accepted_count"] >= 2, "the run has to actually score several specs"
+    assert len(built) == 1, f"the feature frame was rebuilt {len(built)} times"
+
+
+def test_a_frame_from_a_different_cost_model_is_refused():
+    """With no venue funding history the carry series spreads `funding_bps_per_interval` over
+    each bar, so a frame built under one model and replayed under another would price trades at
+    rates they never faced — the failure `pool.cost_basis_rank` catches only after the fact."""
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot = _trending_snapshot()
+    frame = build_replay_frame(snapshot, cost=CostModel(funding_bps_per_interval=0.0))
+    with pytest.raises(ValueError) as excinfo:
+        backtest_spec(StrategySpec.from_dict(_spec_dict()), snapshot, frame=frame)
+    assert "cost model" in str(excinfo.value)
+
+
+def test_a_frame_built_at_a_matching_cost_model_is_accepted():
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot, cost = _trending_snapshot(), CostModel(taker_fee_bps=7.5)
+    frame = build_replay_frame(snapshot, cost=cost)
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), snapshot, frame=frame, cost=cost)
+    assert evidence["cost_summary"]["cost_model"]["taker_fee_bps"] == 7.5

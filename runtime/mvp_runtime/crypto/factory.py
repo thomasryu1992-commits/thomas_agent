@@ -817,8 +817,56 @@ def _holdout_evidence(
     }
 
 
+@dataclass(frozen=True)
+class ReplayFrame:
+    """The spec-INDEPENDENT half of a backtest, computed once and replayed many times.
+
+    Features, candles and the carry series are properties of the market and the calendar. The
+    spec decides only which bars it enters on. `backtest_spec` nevertheless rebuilt all three
+    per spec, and `build_feature_rows` is the expensive one: **6.0 seconds at 48,000 bars**,
+    which is the 15m factory window (500 calendar days). A batch of four plus fusion children
+    therefore spent ~30 seconds per fire recomputing an identical frame — on a scheduler that
+    runs schedules sequentially, and shares that tick with the live leg.
+
+    ``cost`` is carried because the carry series depends on it: with no venue funding history
+    `funding_charges_per_bar` spreads ``cost.funding_bps_per_interval`` over each bar. A frame
+    built under one cost model and replayed under another would silently score trades against
+    rates they never faced, which is the failure `pool.cost_basis_rank` exists to catch after
+    the fact — so `backtest_spec` refuses the mismatch at the door instead.
+    """
+
+    rows: list[dict[str, Any]]
+    candles: list[Mapping[str, Any]]
+    funding: list[float]
+    funding_source: str
+    split: int
+    cost: CostModel
+
+
+def build_replay_frame(
+    snapshot: Mapping[str, Any], *, cost: CostModel | None = None
+) -> ReplayFrame:
+    """Everything a replay needs that does not depend on the spec. Pure.
+
+    The train/holdout split is computed here too (see HOLDOUT_FRACTION): features are built over
+    the FULL series and only then sliced, so the holdout starts with warm indicators instead of
+    re-warming — the split is about what the SCORE may see, not about the data itself."""
+    cost = cost or CostModel()
+    rows = build_feature_rows(dict(snapshot))
+    candles = list(snapshot.get("candles") or [])
+    funding, funding_source = funding_charges_per_bar(
+        candles, snapshot.get("funding"),
+        timeframe=str(snapshot.get("timeframe") or "1d"), cost=cost,
+    )
+    return ReplayFrame(
+        rows=rows, candles=candles, funding=funding, funding_source=funding_source,
+        split=holdout_split_index(len(rows)), cost=cost,
+    )
+
+
 def backtest_spec(
     spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
+    frame: ReplayFrame | None = None,
 ) -> dict[str, Any]:
     """Replay ``spec`` over the snapshot's history. Deterministic, pure.
 
@@ -833,19 +881,18 @@ def backtest_spec(
     outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
     NET R after costs; ``gross_R`` rides alongside for transparency."""
     cost = cost or CostModel()
-    all_rows = build_feature_rows(dict(snapshot))
-    all_candles = snapshot.get("candles") or []
-    # The carry series, computed once over the FULL window and sliced with everything else. It
-    # is a property of the venue and the calendar, not of the spec, so recomputing it per spec
-    # would be the same waste `build_feature_rows` already is.
-    all_funding, funding_source = funding_charges_per_bar(
-        list(all_candles), snapshot.get("funding"),
-        timeframe=str(snapshot.get("timeframe") or "1d"), cost=cost,
-    )
-    # Train / holdout split (see HOLDOUT_FRACTION). Features are computed over the FULL
-    # series and only then sliced, so the holdout starts with warm indicators instead of
-    # re-warming — the split is about what the SCORE may see, not about the data itself.
-    split = holdout_split_index(len(all_rows))
+    # Reused when the caller already built it (`run_factory` builds one per fire and replays
+    # every spec and fusion child through it), rebuilt when it did not. A frame from a different
+    # cost model is refused rather than used: see `ReplayFrame`.
+    if frame is None:
+        frame = build_replay_frame(snapshot, cost=cost)
+    elif frame.cost != cost:
+        raise ValueError(
+            "replay frame was built under a different cost model than this backtest charges; "
+            "the carry series would price trades at rates they never faced"
+        )
+    all_rows, all_candles = frame.rows, frame.candles
+    all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
     rows, candles = all_rows[:split], all_candles[:split]
     (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
      total_funding_cost_r) = _replay(
@@ -1145,6 +1192,7 @@ def fusion_parent_buckets(
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
+    frame: ReplayFrame | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
 
@@ -1179,7 +1227,7 @@ def _fuse_batch(
         if child.strategy_rule_hash in seen_hashes:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
             continue
-        evidence = backtest_spec(child, snapshot)
+        evidence = backtest_spec(child, snapshot, frame=frame)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
             continue
@@ -1257,10 +1305,15 @@ def run_factory(
         known_rule_hashes=known_hashes,
     )
 
+    # Built once for the whole run. Features, candles and carry are properties of the market and
+    # the calendar, not of any spec, and `build_feature_rows` alone is 6.0s at the 48,000-bar 15m
+    # window — so rebuilding it per candidate cost ~30s a fire on a sequential scheduler.
+    frame = build_replay_frame(snapshot)
+
     candidates: list[dict[str, Any]] = []
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = backtest_spec(spec, snapshot)
+        evidence = backtest_spec(spec, snapshot, frame=frame)
         record = {
             "strategy_id": spec.strategy_id,
             "strategy_rule_hash": spec.strategy_rule_hash,
@@ -1295,6 +1348,7 @@ def run_factory(
             pairs=fusion_pairs,
             seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
             evidence_sha=candles_sha,
+            frame=frame,
             now=now,
         )
 
