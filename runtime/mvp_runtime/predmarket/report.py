@@ -164,9 +164,27 @@ def build_pm1_report(
     now: str,
     root: Path | None = None,
     max_gap_seconds: float = DEFAULT_MAX_GAP_SECONDS,
+    since: str | None = None,
 ) -> dict[str, Any]:
-    """The three questions, answered per pairing and overall. Reads; writes nothing."""
+    """The three questions, answered per pairing and overall. Reads; writes nothing.
+
+    ``since`` bounds the window to observations at or after that instant. It exists because the
+    rules that produce a row have changed while rows were accumulating: whether a mock read
+    counted, whether a Binance leg could be priced at all, and — twice — what counted as an
+    opportunity. Frequency computed across a rule change is a number about two instruments.
+
+    Deliberately a **filter, never a delete**. The store is append-only and self-hashed because
+    it is evidence; the answer to "these rows were made under an older rule" is to be able to
+    say so, not to destroy them. A bounded report says on its face that it is bounded, so it
+    cannot be mistaken for one over everything.
+    """
     observed = list(rows) if rows is not None else obs.read_observations(root)
+    excluded_before = 0
+    if since:
+        kept = [r for r in observed
+                if isinstance(r, Mapping) and str(r.get("observed_at_utc") or "") >= since]
+        excluded_before = len(observed) - len(kept)
+        observed = kept
 
     by_pairing: dict[str, list[Mapping[str, Any]]] = {}
     for row in observed:
@@ -242,6 +260,11 @@ def build_pm1_report(
             "last_observation_utc": stamps[-1] if stamps else None,
             "span_days": round(days, 4),
             "required_days": EXIT_ARTIFACT_MIN_DAYS,
+            # Stated so a bounded report cannot be mistaken for one over everything. The count
+            # of what was left out is part of that: "bounded" without "by how much" invites the
+            # reader to assume it was a rounding detail.
+            "since": since,
+            "excluded_before_since": excluded_before,
         },
         "observation_count": len(observed),
         "readable_count": len(readable),
@@ -280,7 +303,10 @@ def render_pm1_report_text(report: Mapping[str, Any]) -> str:
         f"verdict: {report.get('verdict')}"
         f"  (exit artifact: {'yes' if report.get('is_exit_artifact') else 'NO'})",
         f"window : {window.get('first_observation_utc')} .. {window.get('last_observation_utc')}"
-        f"  = {window.get('span_days')} of {window.get('required_days')} days required",
+        f"  = {window.get('span_days')} of {window.get('required_days')} days required"
+        + (f"\n         BOUNDED to >= {window.get('since')}"
+           f"  ({window.get('excluded_before_since')} earlier observation(s) excluded)"
+           if window.get("since") else ""),
         f"reads  : {report.get('readable_count')}/{report.get('observation_count')} readable"
         f"  (coverage {report.get('coverage')})",
         f"totals : {report.get('pairing_count')} pairing(s), "

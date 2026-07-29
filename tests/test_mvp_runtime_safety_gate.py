@@ -22,6 +22,7 @@ from runtime.mvp_runtime.safety_gate import (
     assert_authorization,
     authorize,
     build_activation_record,
+    env_only_authorization,
     select_env_gated,
     select_gated,
 )
@@ -581,10 +582,23 @@ def test_only_live_trading_uses_the_env_only_gate():
     `select_gated`. Thomas relaxed the gate for ONE capability; a later change that quietly
     moves model_invocation or a search tool onto the same weaker door would be invisible in
     review. Every call site is listed here, so adding one is a decision someone has to make on
-    purpose."""
+    purpose.
+
+    Both spellings are collected, and that is not defensive padding. The first version matched
+    only `ast.Attribute` — `safety_gate.select_env_gated(...)` — so a caller written
+    `from ..safety_gate import select_env_gated` and then called bare is an `ast.Name` and scored
+    ZERO. That import style is the idiomatic one in this repo: `workspace.py`, `providers.py`,
+    `tools.py`, `operator.py`, `predmarket/market_data.py` and `live_order.py` itself all use it.
+    A containment test the common idiom walks straight through contains nothing.
+
+    `env_only_authorization` is pinned by the same sweep, because it is public and a caller can
+    build one directly and hand it to any capable constructor without naming `select_env_gated`
+    at all — the same weaker door reached by a different handle.
+    """
     import ast
     import pathlib
 
+    watched = {"select_env_gated", "env_only_authorization"}
     repo = pathlib.Path(__file__).resolve().parents[1]
     callers = set()
     for path in (repo / "runtime").rglob("*.py"):
@@ -592,7 +606,13 @@ def test_only_live_trading_uses_the_env_only_gate():
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr == "select_env_gated":
+            named = (
+                (isinstance(node, ast.Attribute) and node.attr in watched)
+                or (isinstance(node, ast.Name) and node.id in watched)
+                or (isinstance(node, ast.ImportFrom)
+                    and any(a.name in watched for a in node.names))
+            )
+            if named:
                 callers.add(path.relative_to(repo).as_posix())
     assert callers == {
         "runtime/mvp_runtime/crypto/live_execution.py",   # the order adapter
@@ -601,3 +621,81 @@ def test_only_live_trading_uses_the_env_only_gate():
         "runtime/mvp_runtime/crypto/live_order.py",       # the daily submission counter
         "runtime/mvp_runtime/crypto/live_promotion.py",   # the canary evidence registry
     }, callers
+
+
+def test_the_containment_sweep_sees_a_bare_name_call(tmp_path):
+    """The sweep's own blind spot, checked directly rather than trusted.
+
+    Written as a unit on the matcher because the real test asserts an exact caller set — it can
+    only fail on a NEW caller, so nothing in it would notice that the matcher had stopped seeing
+    a whole calling convention. This is the assertion that would have caught it."""
+    import ast
+
+    watched = {"select_env_gated", "env_only_authorization"}
+    module = ast.parse(
+        "from ..safety_gate import select_env_gated\n"
+        "def pick():\n"
+        "    return select_env_gated(env_var='X', opt_in_value='real', flags=(),\n"
+        "                            provider_id='p', default_factory=None, gated_factory=None)\n"
+    )
+    hits = [
+        node for node in ast.walk(module)
+        if (isinstance(node, ast.Attribute) and node.attr in watched)
+        or (isinstance(node, ast.Name) and node.id in watched)
+        or (isinstance(node, ast.ImportFrom) and any(a.name in watched for a in node.names))
+    ]
+    assert hits, "a `from ... import select_env_gated` caller must not be invisible to the sweep"
+
+
+# --- the env-only gate cannot be reached from a grant record ----------------------
+
+def test_a_grant_record_cannot_smuggle_itself_onto_the_env_gate(tmp_path):
+    """The egress re-check must not be selectable by the content of the record it re-checks.
+
+    `assert_authorization` used to branch on `evidence_ref.startswith("env_only:")`, and
+    `evidence_ref` is copied verbatim out of the operator's activation record. The sentinel
+    passes the path validation — no drive, not absolute, no `..` — and a file of that name is
+    legal on Linux, so a record could name itself onto the env branch and skip its own file
+    re-read. Deleting the grant then stopped revoking it, on providers this decision
+    deliberately KEPT on a grant (`binance_futures_account`).
+    """
+    smuggled = "env_only:MVP_LIVE_TRADING=real"
+    _write_activation(tmp_path, _valid_record(tmp_path, evidence_rel=smuggled))
+    authorization = authorize(FLAGS, provider_id=PROVIDER, now=NOW, root=tmp_path)
+    assert authorization.evidence_ref == smuggled
+    assert authorization.env_gate is None, "a record must never reach the env-only branch"
+
+    # The grant file is the revocation mechanism; deleting it must still stop the next egress,
+    # whatever the record called itself.
+    activation_path(tmp_path, PROVIDER).unlink()
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(authorization, required_flags=FLAGS, provider_id=PROVIDER, now=NOW)
+    assert exc.value.reason_code == "ACTIVATION_REVOKED"
+
+
+def test_the_env_gate_field_is_what_drives_the_recheck(monkeypatch):
+    """...and it is set only by `env_only_authorization`, never by `authorize`."""
+    authorization = env_only_authorization(
+        flags=(NETWORK_ACCESS,), provider_id="p", env_var="MVP_X", opt_in_value="real",
+    )
+    assert authorization.env_gate == ("MVP_X", "real")
+
+    monkeypatch.setenv("MVP_X", "real")
+    assert_authorization(authorization, required_flags=(NETWORK_ACCESS,), provider_id="p", now=NOW)
+
+    monkeypatch.setenv("MVP_X", "true")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(authorization, required_flags=(NETWORK_ACCESS,), provider_id="p", now=NOW)
+    assert exc.value.reason_code == "ENV_OPT_IN_WITHDRAWN"
+
+
+def test_the_opt_in_value_is_matched_case_insensitively_on_both_sides(monkeypatch):
+    """Only the env value was normalised. A caller passing "REAL" would leave the gate shut
+    forever with nothing saying why — and the egress re-check has to agree with the selector."""
+    monkeypatch.setenv("MVP_X", "real")
+    built = select_env_gated(
+        env_var="MVP_X", opt_in_value="REAL", flags=(NETWORK_ACCESS,), provider_id="p",
+        default_factory=lambda: "inert", gated_factory=lambda auth: auth,
+    )
+    assert built != "inert", "an uppercase opt_in_value must still open the gate"
+    assert_authorization(built, required_flags=(NETWORK_ACCESS,), provider_id="p", now=NOW)

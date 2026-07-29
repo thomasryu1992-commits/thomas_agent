@@ -249,3 +249,38 @@ def test_the_report_reads_the_store_when_no_rows_are_passed(tmp_path, monkeypatc
     obs.append_observations([_row(0), _row(2)], root=tmp_path)
     built = report.build_pm1_report(now=NOW, root=tmp_path)
     assert built["observation_count"] == 2 and built["pairing_count"] == 1
+
+
+# --- the window can be named ----------------------------------------------------
+
+def test_since_bounds_the_window_and_says_it_did():
+    """The rules that produce a row changed while rows accumulated — what counted as a
+    reading, whether a Binance leg could be priced, twice what counted as an opportunity.
+    Frequency computed across a rule change is a number about two instruments.
+
+    A bounded report has to say so, or it is indistinguishable from one over everything —
+    which is the mistake it exists to prevent."""
+    rows = [_row(0), _row(2), _row(4), _row(6)]
+    bounded = report.build_pm1_report(rows, now=NOW, since="2026-08-01T00:04:00Z")
+
+    assert bounded["observation_count"] == 2                 # minute 4 and 6
+    assert bounded["window"]["since"] == "2026-08-01T00:04:00Z"
+    assert bounded["window"]["excluded_before_since"] == 2
+    assert "BOUNDED" in report.render_pm1_report_text(bounded)
+
+
+def test_an_unbounded_report_says_nothing_about_bounds():
+    """The flag must not leak into the normal case: a report over everything should read
+    exactly as it did before this existed."""
+    built = report.build_pm1_report([_row(0), _row(2)], now=NOW)
+    assert built["window"]["since"] is None
+    assert built["window"]["excluded_before_since"] == 0
+    assert "BOUNDED" not in report.render_pm1_report_text(built)
+
+
+def test_since_filters_and_never_deletes():
+    """The store is append-only and self-hashed because it is evidence. The answer to 'these
+    rows were made under an older rule' is to be able to say so, not to destroy them."""
+    rows = [_row(0), _row(2), _row(4)]
+    report.build_pm1_report(rows, now=NOW, since="2026-08-01T00:04:00Z")
+    assert len(rows) == 3                                    # the caller's list is untouched
