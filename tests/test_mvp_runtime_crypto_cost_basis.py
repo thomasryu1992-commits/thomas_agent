@@ -19,9 +19,11 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.crypto.cost import (
+    DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
+    FUNDING_SOURCE_VENUE,
 )
 from runtime.mvp_runtime.crypto.pool import (
     COST_BASIS_RANK_CONSERVATIVE,
@@ -32,6 +34,7 @@ from runtime.mvp_runtime.crypto.pool import (
     EDGE_COST_BASIS_UNRECORDED,
     assert_promotable_cost_basis,
     candidate_quality,
+    cost_basis_of,
     cost_basis_rank,
     rank_candidates,
 )
@@ -165,7 +168,9 @@ def _scored(cid, **model):
 
 def _current(cid="cand_now"):
     return _scored(cid, taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
-                   slippage_bps=DEFAULT_SLIPPAGE_BPS)
+                   slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                   funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                   funding_source=FUNDING_SOURCE_VENUE)
 
 
 def test_the_current_model_is_the_top_tier():
@@ -183,9 +188,68 @@ def test_a_pre_maker_record_at_the_right_taker_rate_is_conservative_not_optimist
 
     No maker term means that model had no maker leg: the exit paid the TAKER rate plus adverse
     slippage where today's charges maker 2.0 and none. Its error runs against the candidate.
+
+    Carries a funding term so the case stays about the MAKER axis. The real 90 rows are also
+    pre-funding, so today they fall into `test_evidence_with_no_funding_term_is_optimistic`
+    below and are refused — one stale axis is enough, and which one it is does not change the
+    verdict.
     """
-    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                     funding_source=FUNDING_SOURCE_VENUE)
     assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
+
+
+# --- the funding axis (2026-07-29) ------------------------------------------------------------
+#
+# These are perpetuals. A position pays or earns funding every 8 hours, and `_EXIT_PARAMS` lets a
+# 1d spec hold 12-48 days — 36 to 144 settlements against a modelled 10 bps of fees. Every
+# candidate minted before this axis existed was scored on an instrument with no carry.
+
+def test_evidence_with_no_funding_term_is_optimistic():
+    """The whole pre-2026-07-29 store, in one assertion. A missing cost cannot read as a cost of
+    zero on an instrument that charges every 8 hours."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_OPTIMISTIC
+
+
+def test_the_basis_string_names_the_omission_rather_than_dropping_the_term():
+    """An omitted term reads as one fewer axis; a named one reads as a missing cost. The operator
+    listing has to say which, because that is the difference between "older model" and "priced a
+    perpetual as though it were free to hold"."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS)
+    assert cost_basis_of(record).endswith("+funding_uncharged")
+    assert "funding_source" not in cost_basis_of(record)  # the value, not the key name
+    assert f"({FUNDING_SOURCE_VENUE})" in cost_basis_of(_current())
+
+
+def test_a_cheaper_funding_rate_is_optimistic():
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL / 2,
+                     funding_source=FUNDING_SOURCE_VENUE)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_OPTIMISTIC
+
+
+def test_a_dearer_funding_rate_is_conservative():
+    """Same direction rule as every other axis: an error that runs against the candidate promotes."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL * 2,
+                     funding_source=FUNDING_SOURCE_VENUE)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
+
+
+def test_the_promotion_door_refuses_evidence_with_no_carry():
+    with pytest.raises(ToolError) as excinfo:
+        assert_promotable_cost_basis([
+            _scored("cand_no_carry", taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
+                    maker_fee_bps=DEFAULT_MAKER_FEE_BPS, slippage_bps=DEFAULT_SLIPPAGE_BPS)
+        ])
+    assert excinfo.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
+    assert "cand_no_carry" in str(excinfo.value)
 
 
 def test_a_maker_rate_below_the_current_one_is_optimistic():
@@ -226,7 +290,9 @@ def test_the_promotion_door_refuses_unrecorded_evidence():
 def test_the_promotion_door_admits_current_and_conservative_evidence():
     """The gate has to let the safe direction through, or it is just an off switch."""
     conservative = _scored("cand_pre_maker", taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
-                           slippage_bps=DEFAULT_SLIPPAGE_BPS)
+                           slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                           funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                           funding_source=FUNDING_SOURCE_VENUE)
     assert_promotable_cost_basis([_current(), conservative])  # does not raise
 
 

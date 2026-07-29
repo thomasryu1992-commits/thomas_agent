@@ -75,12 +75,58 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # decision about which side of the fee it lands on.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
+# --- funding: the cost this model did not have, and the one that dominates ------------------
+#
+# These are PERPETUAL futures. There is no expiry, and the mechanism that keeps the contract
+# near spot is a payment between longs and shorts every 8 hours, charged on NOTIONAL. Until
+# 2026-07-29 this model charged fees and slippage and nothing else, which is defensible for an
+# intraday book and wrong by an order of magnitude for this one:
+#
+#   modelled per trade : entry taker 5bps + slippage 3bps + exit maker 2bps  = 10 bps
+#   omitted per trade  : 24 days x 3 intervals x 1bp                         = 72 bps
+#
+# `_EXIT_PARAMS` allows `max_holding_bars` up to 48, so a 1d spec holds 12-48 DAYS — 36 to 144
+# funding settlements. Against a book whose measured expectancy is +0.08R with a 95% interval
+# of [-0.32, +0.48], a systematically omitted ~0.2R is not a refinement.
+#
+# Two properties make this worth charging properly rather than approximating:
+#
+# **It is directional.** A long PAYS when the rate is positive and a short RECEIVES. Fees and
+# slippage are direction-blind, so the factory could rank long and short specs on one scale;
+# funding breaks that, and a model that omits it ranks them as though their carry were equal
+# when it differs by twice the figure above.
+#
+# **It is already measured.** The cycle fetches DEFAULT_FUNDING_RECORDS real settlements per
+# symbol for the `funding_rate`/`funding_zscore` features, so the venue's own per-interval
+# history covers the replay window. Charging a modelled constant when the real series is right
+# there would be inventing a number this repo already has — so `backtest_spec` charges the
+# actual settlements, and the constant below is only the fallback.
+#
+# 1.0 bp is Binance USD-M's BASE funding rate (0.01% per 8h) — the value the venue clamps
+# toward and the long-run BTC/ETH mean. It is a fallback, not a measurement, and it is used
+# only when the funding series is absent or empty. `cost_summary.cost_model.funding_source`
+# records which of the two a candidate was scored under, because "charged the venue's own
+# history" and "charged a constant" are different qualities of evidence.
+DEFAULT_FUNDING_BPS_PER_INTERVAL = 1.0
+
+# Settlements per day at this venue (00:00 / 08:00 / 16:00 UTC). Used only by the fallback,
+# which has no event times to count.
+FUNDING_INTERVALS_PER_DAY = 3
+
+FUNDING_SOURCE_VENUE = "venue_history"
+FUNDING_SOURCE_FALLBACK = "modelled_constant"
+# No funding accounted for at all. Not produced by this module — it is what `pool.cost_basis_of`
+# reports for evidence minted before funding was charged, so the store can say which candidates
+# carry the omission rather than having it inferred from a rate that is simply missing.
+FUNDING_SOURCE_UNCHARGED = "uncharged"
+
 
 @dataclass(frozen=True)
 class CostModel:
     taker_fee_bps: float = DEFAULT_TAKER_FEE_BPS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
     maker_fee_bps: float = DEFAULT_MAKER_FEE_BPS
+    funding_bps_per_interval: float = DEFAULT_FUNDING_BPS_PER_INTERVAL
 
     def fill_price(self, mid: float, direction: str, action: str) -> float:
         """Adverse-slippage fill: a taker buys above and sells below the mid.
@@ -95,18 +141,51 @@ class CostModel:
 @dataclass(frozen=True)
 class CostBreakdown:
     gross_r: float       # on intended (mid) prices, no costs — what settle_trade_plan already returns
-    net_r: float         # after fees + slippage — the honest simulated outcome
+    net_r: float         # after fees + slippage + funding — the honest simulated outcome
     fee_cost_r: float    # taker + maker together, the figure that comes off net_r
     slippage_cost_r: float
     # The maker share of `fee_cost_r`, carried separately because `pool.expectancy_at` re-derives
     # an old candidate's expectancy at a different TAKER rate, and that rescale is only linear in
     # the taker portion. Zero on a taker exit, which is what every pre-2026-07-28 record is.
     maker_fee_cost_r: float = 0.0
+    # Carry over the holding window. SIGNED, unlike every other field here: a short in a
+    # positive-funding regime is paid to hold, so this is the one cost term that can be negative
+    # and the only reason `net_r` can exceed the on-fill figure. Zero on a trade that closed
+    # inside one interval, and on every record minted before 2026-07-29.
+    funding_cost_r: float = 0.0
+
+
+def funding_cost_r(
+    direction: str, entry_price: float, risk: float, funding_rate_sum: float
+) -> float:
+    """Carry over one holding window, in R. Signed: a long pays a positive rate, a short earns it.
+
+    ``funding_rate_sum`` is the sum of the settlement rates the position was actually open
+    across, as fractions (0.0001 = 1 bp), which is exactly the shape
+    ``/fapi/v1/fundingRate`` returns. Summing first is not an approximation — each settlement is
+    charged on notional at the same rate structure, so the total is linear in the rates.
+
+    Quantity cancels the same way it does for fees: a payment is ``qty * price * rate`` and one
+    R is ``qty * risk_per_unit``, so the ratio is ``price * rate / risk_per_unit`` with no
+    quantity anywhere. That is what keeps this module R-only (see the module docstring).
+
+    ``entry_price`` stands in for the mark price at each settlement. The real charge is on the
+    mark at the moment of settlement, which drifts from entry over the hold — but the drift is
+    unbiased (it is the same price path the trade's own R already measures) and using entry
+    keeps this a pure function of the position, with no second price series to keep aligned.
+    Stated rather than silently assumed: for a trade that runs far in its favour this
+    UNDER-charges a long, which is the unsafe direction, bounded by the target distance.
+    """
+    if risk <= 0:
+        return 0.0
+    sign = 1.0 if direction == "LONG" else -1.0
+    return sign * entry_price * funding_rate_sum / risk
 
 
 def apply_cost_model(
     direction: str, entry_price: float, exit_price: float, risk: float, *,
     cost: CostModel | None = None, close_reason: str | None = None,
+    funding_rate_sum: float = 0.0,
 ) -> CostBreakdown:
     """Decompose a gross (intended-price) R multiple into net R after costs.
 
@@ -128,10 +207,18 @@ def apply_cost_model(
     ``close_reason=None`` charges the taker branch. That keeps every existing caller's numbers
     identical and makes the pessimistic case the default — a cost model that got optimistic
     when it was told nothing would be the wrong way round.
+
+    ``funding_rate_sum`` is the carry over the holding window (see :func:`funding_cost_r`). It
+    defaults to 0.0 — no carry — and that default is deliberately the *optimistic* one, against
+    the rule above, because the alternative is worse: this function cannot see how long the
+    position was open, so any non-zero default would be a holding period invented here rather
+    than measured by the caller that has the bars. The safety lives one level up instead, where
+    it can be honest: ``factory.backtest_spec`` always passes a real sum, and a candidate scored
+    with no funding term at all is refused at the promotion door by ``pool.cost_basis_rank``.
     """
     cost = cost or CostModel()
     if risk <= 0:
-        return CostBreakdown(0.0, 0.0, 0.0, 0.0, 0.0)
+        return CostBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     sign = 1.0 if direction == "LONG" else -1.0
     gross_r = sign * (exit_price - entry_price) / risk
     maker_exit = close_reason in MAKER_EXIT_REASONS
@@ -145,7 +232,10 @@ def apply_cost_model(
     fee_cost_r = (
         entry_fill * cost.taker_fee_bps + exit_fill * exit_rate
     ) / 10000.0 / risk
-    net_r = on_fill_r - fee_cost_r
+    # Charged on the ENTRY fill, not the mid: the position that carries is the one that was
+    # actually opened, and that is the price the notional is denominated in.
+    carry_r = funding_cost_r(direction, entry_fill, risk, funding_rate_sum)
+    net_r = on_fill_r - fee_cost_r - carry_r
 
     return CostBreakdown(
         gross_r=round(gross_r, 8),
@@ -153,4 +243,5 @@ def apply_cost_model(
         fee_cost_r=round(fee_cost_r, 8),
         slippage_cost_r=round(slippage_cost_r, 8),
         maker_fee_cost_r=round(maker_fee_cost_r, 8),
+        funding_cost_r=round(carry_r, 8),
     )

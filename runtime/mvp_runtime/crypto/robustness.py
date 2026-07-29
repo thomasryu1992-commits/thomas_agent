@@ -122,12 +122,21 @@ def _parameter_parsimony(free_parameters: int) -> float:
 
 
 def _cost_robustness(metrics: Mapping[str, Any]) -> float:
-    """Fraction of the pre-cost edge surviving fees/slippage. With no cost model the
-    factory withholds ``total_net_r``, so this scores 0 (unmeasured ≠ survives)."""
+    """Fraction of the pre-cost edge surviving fees/slippage/funding. With no cost model the
+    factory withholds ``total_net_r``, so this scores 0 (unmeasured ≠ survives).
+
+    ``funding_cost_r`` is SIGNED — a short book in a positive-funding regime is paid to hold —
+    so a credit correctly makes ``gross`` smaller than ``net`` and the ratio saturates at 1.0
+    through the clamp. That is the honest reading: an edge that survives its costs completely
+    is the best this component can say, and being paid to hold is not evidence of a better
+    entry rule. Absent (a record predating the carry) reads as 0.0 and the score is then the
+    pre-2026-07-29 figure, which is why `pool.cost_basis_rank` refuses such evidence outright
+    rather than leaving it to look merely slightly better than it was."""
     net = _f(metrics.get("total_net_r"))
     if net <= 0:
         return 0.0
-    costs = _f(metrics.get("fee_cost_r")) + _f(metrics.get("slippage_cost_r"))
+    costs = (_f(metrics.get("fee_cost_r")) + _f(metrics.get("slippage_cost_r"))
+             + _f(metrics.get("funding_cost_r")))
     gross = net + costs
     if gross <= 0:
         return 0.0

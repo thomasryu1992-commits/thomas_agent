@@ -402,6 +402,39 @@ worth stating once** — `expectancy` re-derives exactly, but win-rate, realized
 the robustness verdict all need per-trade signs the store does not keep. That is why the answer
 is a gate at the door rather than a backfill.
 
+**A fourth axis landed 2026-07-29, and it invalidates the table above rather than extending it:
+the cost model now charges FUNDING.** These are perpetual futures — there is no expiry, and the
+mechanism holding the contract near spot is a payment between longs and shorts every 8 hours,
+charged on notional. The model had never charged it. `_EXIT_PARAMS` allows `max_holding_bars` up
+to 48, so a 1d spec holds 12–48 **days**: 36 to 144 settlements at the venue's 1 bp base rate,
+against a modelled ~10 bps of fees and slippage per trade. Measured on a 400-bar replay of the
+same spec with and only with the carry, the per-trade carry (0.061R) exceeded fees and slippage
+combined (0.052R) and expectancy fell 20%; on the real 1d book, whose holds are 14–39 bars rather
+than the fixture's, the ratio is larger.
+
+Two properties make this different from a rate change:
+
+- **It is directional.** A long pays and a short receives, so the factory had been ranking long
+  and short lineages on one scale when their real carry differs by twice the figure above. Fees
+  are direction-blind; carry is not.
+- **It was never missing data.** The cycle already fetches `DEFAULT_FUNDING_RECORDS` real
+  settlements per symbol for the `funding_rate`/`funding_zscore` features, so `backtest_spec`
+  charges the venue's own history over the replay window. `cost_model.funding_source` records
+  `venue_history` or `modelled_constant` per candidate, because those are different qualities of
+  evidence.
+
+**Every candidate minted before this is `OPTIMISTIC`** — including the 180 rows the table above
+calls promotable. A missing cost cannot read as a cost of zero on an instrument that charges
+every 8 hours, and the basis string says `+funding_uncharged` rather than dropping the term, so
+the listing distinguishes "older model" from "priced a perpetual as free to hold". Shorts are
+refused too, where the omission ran in their favour; that is a cost accepted deliberately,
+because a tier whose meaning depended on the spec's direction would be a property of the trade
+rather than of the cost model the tier ranks. The convergence path is unchanged: re-mint.
+
+The judgement this hands back to the operator is the same one #260 did, one axis over: the
+board's verdict on this runtime's record was already `판단 불가` at +0.08R over 60 trades with a
+95% interval of `[−0.32, +0.48]`, and the omitted carry is R-material against that interval.
+
 So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
 existing (it now does) does not change that — it is why the routing row is deliberately not part
 of `ready`. Automating today would automate a strategy set whose sign nobody can currently state.
