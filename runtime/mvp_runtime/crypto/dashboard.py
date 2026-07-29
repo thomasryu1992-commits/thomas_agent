@@ -32,7 +32,7 @@ from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
-from . import account, counterfactual, digest, feedback, paper, pool
+from . import account, counterfactual, digest, feedback, oi_store, paper, pool
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -151,6 +151,21 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     # from inside it (`/crypto status`).
     from .. import operator as operator_mod
 
+    # Hourly OI coverage — a field, deliberately not a warning. It will read "not eligible" for
+    # roughly a year (84 seed days against a 500-day requirement), and a warning that is true
+    # every morning for a year is how a board teaches its reader to skip the warning block.
+    pool_symbols = {
+        str(symbol)
+        for entry in (active.get("active_strategies") or [])
+        for symbol in ((entry.get("strategy_spec") or {}).get("symbol_scope") or [])
+        if symbol
+    }
+    try:
+        oi_1h = oi_store.coverage_summary(root, symbols=pool_symbols)
+    except MvpRuntimeError as exc:
+        oi_1h = None
+        warnings.append(f"hourly OI store unreadable ({exc.reason_code})")
+
     inbound = operator_mod.last_inbound_at(root)
     silent_days = _days_since(inbound["at"], now) if inbound else None
     if inbound is None:
@@ -217,6 +232,9 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
         "promotion_backlog": backlog,
+        # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
+        # because the strategies it would re-base are in it.
+        "open_interest_1h": oi_1h,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
             "last_inbound_source": inbound["source"] if inbound else None,
@@ -469,6 +487,16 @@ def render_status_text(status: dict[str, Any]) -> str:
     counts = status.get("pool_status_counts") or {}
     breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
     lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    backlog = status.get("promotion_backlog") or {}
+    if backlog.get("count"):
+        lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")
+    oi_1h = status.get("open_interest_1h") or {}
+    if oi_1h.get("symbols"):
+        state = "적격" if oi_1h.get("eligible") else "축적 중"
+        lines.append(
+            f"       1h OI {oi_1h.get('min_covered_days')}/{oi_1h.get('required_days')}일 "
+            f"({state}, 최소 커버 심볼 기준)"
+        )
     lines.append("")
 
     # --- performance -------------------------------------------------------------

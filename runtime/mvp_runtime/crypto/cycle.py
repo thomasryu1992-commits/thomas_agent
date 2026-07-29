@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, pool
+from . import feedback, oi_store, pool
 from .features import latest_feature_row
 from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_check, run_risk_guard
 from .market_data import (
@@ -87,6 +87,7 @@ def attach_feeds(
     collector: MarketDataCollector,
     liquidation_feed: Any | None,
     now: str,
+    root: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Fetch the C9 derivative feeds onto ``snapshot`` (mutating it). Degrade-only.
 
@@ -133,6 +134,17 @@ def attach_feeds(
             snapshot["open_interest"] = []
             status["open_interest"] = "degraded"
             reason_codes.append(OPEN_INTEREST_DEGRADED)
+        # The hourly series, accumulated into a store the runtime retains itself. It feeds
+        # NOTHING here — `snapshot` is untouched, so the features, the backtest and the live
+        # router all keep reading the daily series above and stay identical to each other.
+        # What this writes is future depth: the vendor keeps ~84 days of hourly history, the
+        # factory replays 500, and the only way past a retention window is to stop depending
+        # on it. Throttled to one vendor request per symbol per hour inside the store, so the
+        # twenty contexts of a pool fan-out do not become twenty requests.
+        oi_1h = oi_store.record_intraday_oi(
+            symbol=symbol, feed=liquidation_feed, now=now, root=root,
+        )
+        status["open_interest_1h"] = str(oi_1h["status"])
     else:
         status["liquidations"] = "absent"
         status["open_interest"] = "absent"
@@ -214,7 +226,7 @@ def run_crypto_cycle(
 
     # 1b) derivative feeds (C9) — enrichment; degrade-only, never block.
     feed_reasons, feed_status = attach_feeds(
-        snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now,
+        snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now, root=root,
     )
     reason_codes.extend(feed_reasons)
 

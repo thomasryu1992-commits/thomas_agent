@@ -730,13 +730,17 @@ scopes at different levels, so nothing was owed to it.
       trades to earn a verdict — the switch would delete the evidence behind the strategies it
       was meant to improve. There is no partial-coverage escape: depth is global, not per family.
 
-      **So the only path is to become the retainer.** Seed an append-only store from the 84 days
-      the vendor still has and append every cycle thereafter, keyed `(symbol, hour)` with
-      latest-wins so a re-fetch is idempotent and a gap shorter than 84 days self-heals on the
-      next read. Cost is one extra request per symbol per cycle, and the write is worth
-      throttling to once per hour rather than once per 15-minute fire. **The store feeds nothing
-      at first** — features keep reading daily OI, so backtest and live stay identical while the
-      history builds.
+      **So the only path is to become the retainer, and that store now exists**
+      (`crypto/oi_store.py`, wired into `cycle.attach_feeds`): seeded from the days the vendor
+      still has, appended every cycle thereafter, keyed `(symbol, hour)` with latest-wins so a
+      re-fetch is idempotent and a gap shorter than the vendor's window self-heals on the next
+      read. The vendor request is throttled to **once per symbol per hour** inside the store, so
+      the twenty contexts of a pool fan-out do not become twenty requests. **It feeds nothing** —
+      `snapshot` is untouched, so features, backtest and live router all keep reading the daily
+      series and stay identical to each other. A test pins that.
+
+      **What is left is time, and then a decision.** The accumulation starts on the first cycle
+      after this deploys — not when it merged — so the clock and the deploy are the same event.
 
       **The threshold, stated now so it is not re-litigated later:** a timeframe becomes eligible
       when the 1h store covers `FACTORY_DEPTH_DAYS` (500) for that symbol. From an 84-day seed
@@ -744,12 +748,15 @@ scopes at different levels, so nothing was owed to it.
       and the clock only starts when the store does, which is the whole argument for starting it
       before the feature change is wanted.
 
-      **Eligibility is surfaced, never self-applied.** Coverage belongs on the daily board next
-      to the promotion backlog (same pattern, same reason: a condition nobody is told about is a
-      condition nobody acts on), and flipping the feature source stays an explicit change with
-      Thomas reading the diff. An automatic flip would silently re-base the evidence under
-      live-capable strategies mid-flight — the same class of silent-widening this section spent
-      two other items closing.
+      **Eligibility is surfaced, never self-applied.** `oi_store.coverage_summary` reports the
+      span per symbol and takes the **weakest** one (a switch is per timeframe across every
+      symbol the pool trades, so a deep BTC series must not carry a thin DOGE one), and the
+      daily board prints it next to the pool as a field rather than a warning — it will read
+      "축적 중" for about a year, and a warning true every morning for a year is how a board
+      teaches its reader to skip the warning block. Flipping the feature source stays an
+      explicit change with Thomas reading the diff. An automatic flip would silently re-base
+      the evidence under live-capable strategies mid-flight — the same class of silent widening
+      this section spent two other items closing.
 
 ### Review findings — raised and closed 2026-07-26
 

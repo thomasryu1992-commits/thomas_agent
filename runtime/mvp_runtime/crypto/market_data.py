@@ -67,6 +67,17 @@ FUNDING_DEGRADED = "FUNDING_DEGRADED"
 LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
 OPEN_INTEREST_DEGRADED = "OPEN_INTEREST_DEGRADED"
 LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
+
+# Open-interest aggregation intervals the feed will request. `daily` is what every feature path
+# reads — it is the only depth that covers the factory's 500-day replay, since hourly history
+# stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
+# retains the hourly series itself against the day it is deep enough to replace the daily one.
+# A closed set rather than a pass-through string: an unknown interval would be answered by the
+# vendor with a series of some other cadence, and the store would count it as hours.
+OI_INTERVAL_DAILY = "daily"
+OI_INTERVAL_1H = "1hour"
+OI_INTERVAL_SECONDS = {OI_INTERVAL_DAILY: 86_400, OI_INTERVAL_1H: 3_600}
+OI_INTERVALS = frozenset(OI_INTERVAL_SECONDS)
 COINALYZE = "coinalyze_market_data"
 FUNDING_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/fundingRate call
 FUNDING_MAX_PAGES = 4      # 8h cadence: 4 pages ≈ 3.6 years — beyond any window we replay
@@ -618,7 +629,8 @@ class LiquidationFeed(Protocol):
 
     def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]: ...
 
-    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]: ...
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
+                              interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]: ...
 
 
 class NoLiquidationFeed:
@@ -631,7 +643,8 @@ class NoLiquidationFeed:
     def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
         raise ToolError("FEED_ABSENT", "no liquidation feed is configured")
 
-    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
+                              interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
         raise ToolError("FEED_ABSENT", "no open-interest feed is configured")
 
 
@@ -713,8 +726,9 @@ class CoinalyzeLiquidationFeed:
         rows.sort(key=lambda r: r["timestamp"])
         return rows[-days:]
 
-    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
-        """Daily open-interest closes for the same perp. Same provider, same grant.
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
+                              interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
+        """Open-interest closes for the same perp. Same provider, same grant.
 
         Open interest is the third leg of the positioning picture the runtime already
         collects two of (funding, liquidations): how much position is *outstanding*,
@@ -723,8 +737,21 @@ class CoinalyzeLiquidationFeed:
         key, same authorization, same egress chokepoint — so it widens what the runtime
         reads, never what it is allowed to reach.
 
-        Like the liquidation series, the still-forming current day is dropped: a partial
-        day's OI close is not a close."""
+        Like the liquidation series, the still-forming current period is dropped: a partial
+        close is not a close.
+
+        ``interval`` defaults to ``daily``, which is what every feature path reads and the only
+        depth that covers the factory's 500-day replay — hourly history stops ~84 days back
+        (measured 2026-07-29; older windows return empty, and Binance's own endpoint is
+        shallower). ``OI_INTERVAL_1H`` exists for :mod:`oi_store`, which accumulates the hourly
+        series into a store the runtime retains itself and feeds to nothing until it is deep
+        enough to replace the daily one. The parameter is the whole change here: the endpoint,
+        the key, the grant and the parse are shared, so the two intervals cannot drift apart."""
+        if interval not in OI_INTERVALS:
+            raise ToolError(
+                "OI_INTERVAL_UNKNOWN",
+                f"open-interest interval {interval!r} is not one of {sorted(OI_INTERVALS)}",
+            )
         safety_gate.assert_authorization(
             self._authorization, required_flags=_NETWORK_FLAGS,
             provider_id=self.provider_id, now=timeutil.utc_now_iso(),
@@ -735,7 +762,7 @@ class CoinalyzeLiquidationFeed:
         now_s = int(time.time())
         params = urllib.parse.urlencode({
             "symbols": f"{symbol}_PERP.A",
-            "interval": "daily",
+            "interval": interval,
             "from": now_s - (int(days) + 2) * 86400,
             "to": now_s,
         })
@@ -748,9 +775,14 @@ class CoinalyzeLiquidationFeed:
                 raw = response.read().decode("utf-8")
         except (TimeoutError, urllib.error.URLError):
             raise ToolError("TOOL_TRANSPORT", "open-interest request failed or timed out") from None
-        return self._parse_open_interest(raw, days, now_s=now_s)
+        rows = self._parse_open_interest(raw, days, now_s=now_s, interval=interval)
+        # `days` bounds a DAILY series one row per day. An hourly series has 24, so trimming to
+        # the same number would silently return the last `days` hours and a coverage count built
+        # on it would be 24x short. The row cap is the vendor's (~2000/response) either way.
+        return rows if interval != OI_INTERVAL_DAILY else rows[-days:]
 
-    def _parse_open_interest(self, raw: str, days: int, *, now_s: int) -> list[dict[str, Any]]:
+    def _parse_open_interest(self, raw: str, days: int, *, now_s: int,
+                             interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
         try:
             payload = json.loads(raw)
         except ValueError:
@@ -760,18 +792,23 @@ class CoinalyzeLiquidationFeed:
         if not isinstance(payload, list):
             raise ToolError("MALFORMED_RESULT", "open-interest backend returned an unparseable response")
         rows: list[dict[str, Any]] = []
-        day_start_today = (now_s // 86400) * 86400
+        # The still-forming period, sized to the interval actually requested. Reading the day
+        # boundary for an hourly series would drop every row since midnight — up to 23 complete
+        # hours thrown away as "still forming", which on a store that accumulates would be a
+        # permanent hole rather than a delay.
+        period = OI_INTERVAL_SECONDS.get(interval, 86400)
+        period_start_now = (now_s // period) * period
         for item in payload:
             for h in (item.get("history") or []) if isinstance(item, dict) else []:
                 try:
                     t = int(h["t"])
                     t_s = t // 1000 if t > 10_000_000_000 else t
-                    if t_s >= day_start_today:
-                        continue  # still-forming current day — dropped
+                    if t_s >= period_start_now:
+                        continue  # still-forming current period — dropped
                     rows.append({
                         "timestamp": BinanceFuturesCollector._iso(t_s * 1000),
-                        # The OHLC of open interest across the day; the close is the
-                        # standing position at the day's end, which is the quantity a
+                        # The OHLC of open interest across the period; the close is the
+                        # standing position at its end, which is the quantity a
                         # point-in-time feature should carry.
                         "open_interest": float(h["c"]),
                     })
@@ -779,7 +816,8 @@ class CoinalyzeLiquidationFeed:
                     raise ToolError("MALFORMED_RESULT",
                                     "open-interest backend returned an unparseable response") from None
         rows.sort(key=lambda r: r["timestamp"])
-        return rows[-days:]
+        # Trimming to `days` happens in the caller, which knows whether one row means one day.
+        return rows
 
 
 def select_liquidation_feed(*, now: str | None = None, root: Path | None = None) -> LiquidationFeed:
