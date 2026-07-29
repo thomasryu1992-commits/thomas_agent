@@ -65,6 +65,7 @@ EXIT_BLOCKED = 3
 
 def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
+                allow_duplicates: bool = False,
                 allow_unrecorded_evidence_depth: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
@@ -72,6 +73,7 @@ def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = 
         selectors, keep_active=keep_active, now=now, repo_root=root,
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
+        allow_duplicates=allow_duplicates,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -92,6 +94,7 @@ def run_promotion(
     keep_active: bool, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
+    allow_duplicates: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -106,7 +109,10 @@ def run_promotion(
     see ``pool.assert_promotable_cost_basis``. Evidence that cannot say how much market
     it replayed refuses with ``CANDIDATE_EVIDENCE_DEPTH_UNRECORDED`` unless
     ``allow_unrecorded_evidence_depth`` says otherwise; a KNOWN shallow window is ranked,
-    never refused (see ``pool.assert_promotable_evidence_depth``). Both escapes stay out of
+    never refused (see ``pool.assert_promotable_evidence_depth``). A batch that would put
+    the same strategy in the pool twice under different rule hashes refuses with
+    ``CANDIDATE_SEMANTIC_DUPLICATE`` unless ``allow_duplicates`` says otherwise — see
+    ``pool.assert_no_semantic_duplicates``. Every escape stays out of
     ``promotion_content_sha256``: the candidate ids are already in the hash and each check
     is a pure function of them, so the same approval can never need an escape in one
     execution and not another."""
@@ -146,6 +152,14 @@ def run_promotion(
         # checked here at all — only an unreadable one.
         if not allow_unrecorded_evidence_depth:
             pool_store.assert_promotable_evidence_depth(candidates)
+        # Last, because it is the only one of the three that is about the POOL rather than
+        # about the evidence: the other two ask whether a number can be believed, this one
+        # asks whether the pool already holds this strategy under another rule hash.
+        if not allow_duplicates:
+            pool_store.assert_no_semantic_duplicates(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
+            )
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -222,6 +236,7 @@ def run_promotion(
         # cost model is this lineage's evidence standing on" has to be answerable from the
         # ledger later rather than reconstructed from whoever ran the command.
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
+        "duplicate_escape": bool(allow_duplicates),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
         # the basis beside it — and here it carries more weight, because a SHALLOW row is
@@ -252,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
     parser.add_argument("--without-approval", action="store_true",
                         help="explicit legacy escape: promote without an approval record (audited as such)")
+    parser.add_argument("--allow-duplicates", action="store_true",
+                        help="explicit escape: promote a candidate that is the same strategy as "
+                             "another selected candidate or an incumbent under a different rule hash")
     parser.add_argument("--allow-stale-cost-basis", action="store_true",
                         help="explicit escape: promote evidence scored under a cost model cheaper "
                              "than the venue charges (its expectancy is overstated; recorded as such)")
@@ -380,6 +398,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      {len(flipped)} candidate(s) show a POSITIVE stored expectancy that is "
                   f"negative at the current rates (marked FLIPS below).")
             print("      win_rate and rr are NOT re-derivable — those still reflect the old rate.")
+        # Clones the promotion door WILL refuse, said here so the refusal is not the first
+        # an operator hears of it — they are picking from this list.
+        dupes = pool_store.semantic_duplicate_groups(candidates)
+        if dupes:
+            print(f"      {len(dupes)} group(s) are the SAME strategy under different rule hashes;")
+            print("      the promotion door refuses these (CANDIDATE_SEMANTIC_DUPLICATE):")
+            for g in dupes[:8]:
+                print(f"        {'/'.join(g['strategy_ids'])}  matched on {g['match']}")
+        # And the ones it will NOT refuse, because they are a judgement rather than a proof:
+        # same window, same trade counts, R differing in the last decimals. Almost certainly
+        # one strategy wearing two rules — but "almost" is why this reports instead of gating.
+        near = pool_store.near_duplicate_groups(candidates)
+        if near:
+            print(f"      {len(near)} group(s) traded ALMOST identically (same window, same "
+                  "trade counts,")
+            print("      R differing only in the last decimals) — not refused, worth a look:")
+            # Collapsed by display name: strategy_id restarts every generation, so several
+            # distinct lineage PAIRS routinely render as the same "S005/S006" line. Printing
+            # it four times reads like a bug; the count says what is actually there.
+            by_name = collections.Counter("/".join(g["strategy_ids"]) for g in near)
+            for name, count in by_name.most_common(8):
+                print(f"        {name}" + (f"  ({count} lineage pairs)" if count > 1 else ""))
         print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
@@ -438,7 +478,8 @@ def main(argv: list[str] | None = None) -> int:
             prepared = run_request(
                 selectors=selectors, keep_active=args.keep_active,
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
-                allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth)
+                allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
+                allow_duplicates=args.allow_duplicates)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
             return EXIT_BLOCKED
@@ -463,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         approval_id=args.approval_id, without_approval=args.without_approval,
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
+        allow_duplicates=args.allow_duplicates,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
