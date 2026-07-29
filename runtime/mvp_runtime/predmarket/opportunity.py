@@ -209,9 +209,21 @@ def evaluate_pairing(
         # The three numbers a report is built from, hoisted for readability.
         "gross_edge": best["gross_edge"] if best else None,
         "net_edge": best["net_edge"] if best else None,
-        # An implausible edge is never an opportunity, however positive its arithmetic. The
-        # numbers stay on the row; only the claim is withdrawn.
-        "is_opportunity": bool(best and best["is_opportunity"] and not implausible),
+        # An implausible edge, or one computed off a half-open book, is never an opportunity —
+        # however positive its arithmetic. The numbers stay on the row; only the claim is
+        # withdrawn, which is the treatment `IMPLAUSIBLE_EDGE` already established.
+        #
+        # `NOT_QUOTED` joined it on 2026-07-28. A venue quoting one side still lets ONE
+        # direction be computed — buy where there is an ask, sell where there is a bid — so the
+        # arithmetic is valid and the row should keep it. But a half-open book is where the thin
+        # side lives: observed live the same day, a Binance leg quoting `ask=0.10 size=100`
+        # against a Polymarket bid with size 54,972. That direction happened to be a loss, so
+        # nothing was miscounted; with the signs reversed it would have been counted as an
+        # opportunity, and **"how often" is the number PM1 exists to produce.** Overstating the
+        # frequency is the direction that later misleads PM2 and PM3.
+        "is_opportunity": bool(
+            best and best["is_opportunity"] and not implausible and NOT_QUOTED not in reasons
+        ),
         "reasons": reasons,
         "observed_at_utc": now,
         # Stated on every record: observing is not acting, and this phase has no order path.

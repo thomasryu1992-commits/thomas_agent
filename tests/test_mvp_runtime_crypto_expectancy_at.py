@@ -28,11 +28,12 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from tests.test_mvp_runtime_crypto_cost import _spec_dict, _trending_snapshot
 
 
-def _candidate_at(taker: float) -> dict:
+def _candidate_at(taker: float, maker: float = 2.0) -> dict:
     spec = StrategySpec.from_dict(_spec_dict())
     evidence = backtest_spec(spec, _trending_snapshot(),
-                             cost=CostModel(taker_fee_bps=taker, slippage_bps=3.0))
-    return {"candidate_id": f"cand_{taker}", "backtest_evidence": evidence}
+                             cost=CostModel(taker_fee_bps=taker, slippage_bps=3.0,
+                                            maker_fee_bps=maker))
+    return {"candidate_id": f"cand_{taker}_{maker}", "backtest_evidence": evidence}
 
 
 def test_the_derived_expectancy_equals_a_real_rerun_at_that_rate():
@@ -129,3 +130,74 @@ def test_an_unreadable_maker_share_refuses_rather_than_guesses():
     candidate = _candidate_at(2.5)
     candidate["backtest_evidence"]["cost_summary"]["total_maker_fee_cost_r"] = "unknown"
     assert expectancy_at(candidate, taker_fee_bps=5.0) is None
+
+
+# --- rescaling the maker leg too -------------------------------------------------
+#
+# `DEFAULT_MAKER_FEE_BPS` is Binance's PUBLISHED standard rate, not a figure measured on this
+# account — no maker fill has been placed yet. Its error direction is the unsafe one, so the
+# first live maker fill has to be able to replace it. These pin that the replacement converts
+# existing candidates exactly, rather than splitting the store a third time.
+
+def test_the_derived_expectancy_at_a_new_maker_rate_equals_a_real_rerun():
+    """The same measured-not-argued check as the taker axis, on the leg that is unmeasured."""
+    scored_low = _candidate_at(5.0, maker=2.0)
+    assert scored_low["backtest_evidence"]["cost_summary"]["total_maker_fee_cost_r"] > 0.0
+
+    derived = expectancy_at(scored_low, taker_fee_bps=5.0, maker_fee_bps=4.0)
+    measured = _candidate_at(5.0, maker=4.0)["backtest_evidence"]["expectancy"]
+    assert derived is not None
+    assert math.isclose(derived, measured, abs_tol=1e-8), f"{derived} != {measured}"
+
+
+def test_both_legs_rescale_together():
+    """Neither axis is privileged: change both rates at once and the result still equals a
+    re-run at both. A per-axis fix that only worked one at a time would pass every test above
+    and fail the day the venue's two rates move together."""
+    scored = _candidate_at(2.5, maker=2.0)
+    derived = expectancy_at(scored, taker_fee_bps=5.0, maker_fee_bps=3.5)
+    measured = _candidate_at(5.0, maker=3.5)["backtest_evidence"]["expectancy"]
+    assert derived is not None
+    assert math.isclose(derived, measured, abs_tol=1e-8), f"{derived} != {measured}"
+
+
+def test_a_higher_maker_rate_never_improves_the_edge():
+    """The direction that makes this worth building: if the real maker rate is above the
+    published 2.0, the honest number is lower than the one on file."""
+    scored = _candidate_at(5.0, maker=2.0)
+    assert (expectancy_at(scored, taker_fee_bps=5.0, maker_fee_bps=4.0)
+            < scored["backtest_evidence"]["expectancy"])
+
+
+def test_omitting_the_maker_rate_leaves_that_leg_alone():
+    """Back-compatible by construction: the taker-only call is still the taker-only answer."""
+    scored = _candidate_at(2.5, maker=2.0)
+    assert math.isclose(
+        expectancy_at(scored, taker_fee_bps=5.0),
+        expectancy_at(scored, taker_fee_bps=5.0, maker_fee_bps=2.0), abs_tol=1e-10,
+    )
+
+
+def test_a_record_with_no_maker_leg_is_untouched_by_a_maker_rate():
+    """Every pre-2026-07-28 candidate. A zero maker share has nothing to rescale, so the answer
+    is the taker-only one — arithmetic, not an assumption about what that model would have paid."""
+    candidate = _candidate_at(2.5)
+    summary = candidate["backtest_evidence"]["cost_summary"]
+    summary["total_fee_cost_r"] -= summary.pop("total_maker_fee_cost_r")
+    summary["cost_model"].pop("maker_fee_bps")
+
+    assert math.isclose(
+        expectancy_at(candidate, taker_fee_bps=5.0, maker_fee_bps=9.9),
+        expectancy_at(candidate, taker_fee_bps=5.0), abs_tol=1e-10,
+    )
+
+
+def test_a_maker_share_with_no_recorded_maker_rate_refuses():
+    """A ratio needs its denominator. Fees were charged on a maker leg at a rate the record
+    does not name, so rescaling it would invent the rate it had paid."""
+    candidate = _candidate_at(2.5, maker=2.0)
+    assert candidate["backtest_evidence"]["cost_summary"]["total_maker_fee_cost_r"] > 0.0
+    candidate["backtest_evidence"]["cost_summary"]["cost_model"].pop("maker_fee_bps")
+    assert expectancy_at(candidate, taker_fee_bps=5.0, maker_fee_bps=4.0) is None
+    # ...and the taker-only question is still answerable: that axis lost nothing.
+    assert expectancy_at(candidate, taker_fee_bps=5.0) is not None
