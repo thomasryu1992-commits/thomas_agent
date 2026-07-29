@@ -344,10 +344,18 @@ def _result_r(direction: str, entry: float, exit_price: float, risk: float) -> f
     return signed / risk
 
 
-def _advance_holding(position: dict[str, Any], candle: Mapping[str, Any] | None) -> None:
-    """Advance holding_candles once per DISTINCT candle (dedup on close_time), so a
-    re-run within one interval cannot accelerate time_exit (the source's fix)."""
-    ts = candle.get("close_time") if isinstance(candle, Mapping) else None
+def advance_holding(position: dict[str, Any], candle_ts: Any) -> None:
+    """Advance holding_candles once per DISTINCT candle, so a re-run within one interval
+    cannot accelerate time_exit (the source's fix).
+
+    Takes the **timestamp**, not the candle, because the live leg counts the same bars from a
+    different shape: paper dedups on a candle's ``close_time``, the live leg on the feature
+    row's ``timestamp``, which is that same close time under another key. One function so the
+    two legs cannot drift on what "a bar has passed" means — the parity this whole rule exists
+    to hold. A ``None`` timestamp still advances (an uncounted bar would stall the exit) but
+    records nothing to dedup against, which is the pre-existing behaviour.
+    """
+    ts = candle_ts if candle_ts is not None else None
     if ts is not None and str(ts) == str(position.get("last_counted_candle_ts") or ""):
         return
     position["holding_candles"] = int(position.get("holding_candles", 0)) + 1
@@ -461,7 +469,7 @@ def settle_trade_plan(
     if manual_exit and last_close is not None:
         return "manual_exit", last_close, _result_r(direction, entry, last_close, risk)
 
-    _advance_holding(position, candle)
+    advance_holding(position, candle.get("close_time") if isinstance(candle, Mapping) else None)
     if candle is not None and risk > 0:
         hit_stop, hit_target = _touches(direction, candle, sl, tp)
         if hit_stop and hit_target:

@@ -29,6 +29,7 @@ import pytest
 
 from runtime.mvp_runtime.crypto import live_leg, live_route
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
+from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
 
 NOW = "2026-07-28T00:00:00Z"
@@ -289,3 +290,141 @@ def test_an_ordinary_refusal_is_not_an_incident():
     assert not live_route._is_incident(
         {"status": live_leg.ENTRY_NAKED_CLOSED, "reason_codes": [live_leg.NAKED_POSITION_CLOSED]}
     )
+
+
+# --- the time exit (2026-07-29) --------------------------------------------------------------
+#
+# Paper has always enforced `max_holding_bars`; live did not, and the promotion evidence gating
+# live trading was built WITH it in force. These pin the rule and, more importantly, the two
+# properties that make the counter trustworthy: it advances when nothing closes, and one bar
+# counts once however often a cycle re-runs inside it.
+
+def _timed(**kw) -> dict[str, Any]:
+    """A position carrying the exit terms `build_live_position` now stores."""
+    base = {"timeframe": "1d", "max_holding_bars": 3, "holding_candles": 0,
+            "last_counted_candle_ts": None}
+    base.update(kw)
+    return _position(**base)
+
+
+class _ClosingAdapter(_Adapter):
+    """Both bracket legs resting, and any *other* order id answers FILLED.
+
+    The two behaviours together are what a time exit needs: the brackets must still look
+    resting (or protection would fail first and the unprotected branch would close it for a
+    different reason), while the close this test is about must confirm."""
+
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+        if self.fetch_raises:
+            raise ToolError(self.fetch_raises, "scripted")
+        known = self.orders.get(str(client_order_id))
+        if known is not None:
+            return known
+        # The close. Shaped to satisfy `reconcile_order` exactly — symbol, side, FILLED,
+        # the intent's quantity, and reduceOnly — because a close that does not reconcile
+        # is a different test (`..._will_not_close...`), not this one.
+        return {
+            "status": "FILLED", "orderId": "venue-close", "symbol": SYMBOL, "side": "SELL",
+            "executedQty": 0.002, "avgPrice": 61000.0, "cumQuote": 122.0, "reduceOnly": True,
+        }
+
+
+def _protected_adapter() -> _Adapter:
+    """Both bracket legs resting — so protection holds and the time exit is the only door."""
+    return _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}})
+
+
+# The close guard needs the confirmation phrase from the resolved limits — a time exit is a
+# close, so it passes the same door every other close does. Present here so these tests exercise
+# the exit rather than the phrase check.
+_LIMITS = LiveOrderLimits(
+    max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
+    max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0, min_clean_canary_orders=3,
+    confirmation=LIVE_CONFIRMATION_PHRASE,
+)
+
+
+def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=None, ledger=None):
+    record = {"live_reason_codes": [], "live_settled": None, "halt": False,
+              "live_protection": None}
+    live_route._settle_or_protect(
+        record, position,
+        adapter=adapter or _protected_adapter(),
+        position_store=store or _Store(), ledger=ledger or _Ledger(),
+        reconciliation={"status": "RECONCILED", "books": {}},
+        limits=_LIMITS, candle_ts=candle_ts, now=NOW, root=None, timeout_seconds=10,
+    )
+    return record
+
+
+def test_holding_advances_on_a_cycle_that_closes_nothing():
+    """The counter is the rule. If it only moved when something closed, time would never pass
+    and the exit would never fire — so the store write is unconditional."""
+    store = _Store()
+    record = _settle(_timed(), store=store)
+    assert record["live_settled"] is None                    # held, as expected
+    assert store.saved, "the advanced counter was never persisted"
+    assert store.saved[-1]["holding_candles"] == 1
+    assert record["live_holding"]["holding_candles"] == 1
+    assert record["live_holding"]["max_holding_bars"] == 3
+
+
+def test_one_bar_counts_once_however_often_the_cycle_reruns():
+    """A re-run inside the same interval must not accelerate the exit — paper learned this from
+    the source system and live shares the rule via `paper.advance_holding`, not a second copy."""
+    position = _timed()
+    for _ in range(4):
+        store = _Store()
+        record = _settle(position, candle_ts="2026-07-28T00:00:00Z", store=store)
+        position = store.saved[-1]
+        assert record["live_settled"] is None
+    assert position["holding_candles"] == 1
+
+
+def test_the_position_closes_at_market_when_its_time_is_up():
+    store, ledger = _Store(), _Ledger()
+    record = _settle(_timed(holding_candles=2), store=store, ledger=ledger)
+    settled = record["live_settled"]
+    assert settled is not None, "the time exit did not fire at max_holding_bars"
+    assert settled["intent"]["reduce_only"] is True          # can only shrink, never open
+    assert settled["intent"]["close_reason"] == live_leg.CLOSE_REASON_TIME_EXIT
+    assert settled["status"] == live_leg.EXIT_CLOSED
+    assert ledger.appended, "a closed live position must reach the P&L ledger"
+    assert store.cleared == [SYMBOL], "the book must be cleared on a confirmed close"
+
+
+def test_the_close_reason_is_papers_word_so_the_two_populations_aggregate():
+    """A live time exit and a paper time exit are the same strategy rule ending the same way.
+    The PRICE differs (paper models the bar close, live pays taker + slippage) and `r_basis`
+    carries that; the reason must not differ too, or the buckets split."""
+    assert live_leg.CLOSE_REASON_TIME_EXIT == "time_exit"
+
+
+def test_a_legacy_position_falls_back_and_says_so():
+    """A position opened before the record carried exit terms is judged by the timeframe table.
+    That is a live/backtest gap, so it is named — never inferred later from a divergent curve."""
+    legacy = _position()                                     # no timeframe, no max_holding_bars
+    record = _settle(legacy)
+    assert record["live_holding"]["legacy_max_hold_fallback"] is True
+    assert live_route.LIVE_MAX_HOLD_FALLBACK in record["live_reason_codes"]
+
+
+def test_a_time_exit_that_will_not_close_is_reported_and_not_a_halt():
+    """The one survivable failed close in this module. An UNPROTECTED position that will not
+    close is an incident — no stop on real exposure. A time-exit position still has its bracket
+    resting, so it is protected, just held too long: report, retry next cycle, do not escalate."""
+    adapter = _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}},
+                              fetch_raises="TOOL_TRANSPORT")
+    record = _settle(_timed(holding_candles=9), adapter=adapter)
+    assert record["halt"] is False
+    assert live_route.LIVE_TIME_EXIT_DEFERRED in record["live_reason_codes"]
+
+
+def test_the_counter_survives_a_close_that_did_not_confirm():
+    """The bar that passed still passed. A counter that advanced only on a successful exit would
+    reset the clock every time the venue was unreachable, and the position would never time out."""
+    adapter = _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}},
+                              fetch_raises="TOOL_TRANSPORT")
+    store = _Store()
+    _settle(_timed(holding_candles=9), adapter=adapter, store=store)
+    assert store.saved[0]["holding_candles"] == 10

@@ -164,6 +164,17 @@ def plan_live_entry(
     if not isinstance(plan, Mapping) or not plan:
         return _decision(STATUS_NO_ROUTE, [NO_PLAN], symbol=symbol, now=now)
 
+    # The exit terms travel from the plan to the position record through this decision, for the
+    # same "read once, share it" reason every other fact here does — the alternative is the
+    # execution step reaching back into the plan and the two disagreeing about which spec's
+    # numbers applied. `max_holding_bars` in particular must be the value THIS entry was
+    # planned under: it is what the position is judged by for its whole life, so re-reading a
+    # spec that may have been edited mid-hold would move the exit of an already-open trade.
+    detail["exit_terms"] = {
+        "timeframe": plan.get("timeframe"),
+        "max_holding_bars": plan.get("max_holding_bars"),
+    }
+
     # 2-4. The cheap doors, accumulated so a refusal names every closed one at once.
     if not isinstance(verdict, Mapping) or not bool(verdict.get("allow_new_position")):
         # A malformed verdict is refused rather than ignored: "I could not read the guards" and
