@@ -93,7 +93,20 @@ def build_canary_order_record(
     """
     problems = list(mismatches or [])
     facts = dict(fill or {})
-    filled_notional = facts.get("cum_quote")
+
+    def _money(value: Any) -> float | None:
+        """A number, or nothing. Never whatever the venue happened to send.
+
+        In practice `live_execution.fill_facts` already coerces these to ``float | None``, so
+        this is unreachable through the canary door. It is here because the builder is what
+        produces a **self-hashed, durable governance record**: a money field on it should not be
+        able to hold an arbitrary string just because some future caller passed one through, and
+        the record is the evidence gating autonomous live trading for as long as it exists."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    filled_notional = _money(facts.get("cum_quote"))
     body: dict[str, Any] = {
         "reconcile_status": reconcile_status,
         "clean": reconcile_status == RECONCILED and not problems,
@@ -104,14 +117,13 @@ def build_canary_order_record(
         "notional_usdt": notional_usdt,
         # What the venue said, beside what the operator declared.
         "quantity": quantity,
-        "fill_avg_price": facts.get("avg_price"),
-        "fill_executed_qty": facts.get("executed_qty"),
+        "fill_avg_price": _money(facts.get("avg_price")),
+        "fill_executed_qty": _money(facts.get("executed_qty")),
         "filled_notional_usdt": filled_notional,
         # None when either side is unknown — never 0.0, which would read as "they agreed".
         "notional_declared_vs_filled_usdt": (
-            round(float(notional_usdt) - float(filled_notional), 8)
-            if isinstance(notional_usdt, (int, float)) and isinstance(filled_notional, (int, float))
-            and not isinstance(notional_usdt, bool) and not isinstance(filled_notional, bool)
+            round(_money(notional_usdt) - filled_notional, 8)
+            if _money(notional_usdt) is not None and filled_notional is not None
             else None
         ),
         "recorded_at_utc": now,
@@ -201,6 +213,40 @@ def promotion_status(
         "required": required,
         "history_error": history_error,
         "reasons": reasons,
+        **_size_evidence(root),
+    }
+
+
+def _size_evidence(root: Path | None) -> dict[str, Any]:
+    """How much of the counted evidence can prove its own size.
+
+    The record gained ``filled_notional_usdt`` and ``notional_declared_vs_filled_usdt`` so that
+    declared-versus-filled would be a subtraction rather than a memory — and then nothing read
+    them, so the subtraction was stored where no operator would see it. This is the read side.
+
+    Reported **beside** ``ready``, never folded into it. Making a size disagreement block
+    promotion would change what the canary count means, and that is a separate decision the
+    field's own author declined to take; this only makes the number visible to the person the
+    promotion gate actually is.
+
+    ``size_unproven`` counts clean records carrying no comparison at all — the four standing as
+    evidence on 2026-07-29 are all of them, because they predate the fields. That is the figure
+    worth seeing first: it is not "the sizes disagreed", it is "nobody can ask".
+    """
+    try:
+        records = [r for r in read_canary_orders(root) if r.get("clean") is True]
+    except ToolError:
+        # The count above already reported the verification failure and counted zero; this is a
+        # decoration on that row and must not raise a second, louder version of the same news.
+        return {"size_unproven": 0, "largest_size_gap_usdt": None}
+    gaps = [
+        abs(float(r["notional_declared_vs_filled_usdt"])) for r in records
+        if isinstance(r.get("notional_declared_vs_filled_usdt"), (int, float))
+        and not isinstance(r.get("notional_declared_vs_filled_usdt"), bool)
+    ]
+    return {
+        "size_unproven": len(records) - len(gaps),
+        "largest_size_gap_usdt": round(max(gaps), 8) if gaps else None,
     }
 
 

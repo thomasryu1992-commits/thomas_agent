@@ -589,12 +589,15 @@ def test_an_unknown_fill_leaves_the_comparison_unknown_never_zero(fill):
         now="2026-07-29T00:00:00Z",
     )
     assert record["notional_declared_vs_filled_usdt"] is None
-    assert record["filled_notional_usdt"] in (None, "n/a")
+    # `is None`, not `in (None, "n/a")`. The looser form accepted either answer, which pins
+    # whatever the builder happens to do rather than checking it — and what it happened to do
+    # was store the venue's unparseable string verbatim in a money field on a self-hashed
+    # governance record.
+    assert record["filled_notional_usdt"] is None
 
 
-def test_records_written_before_this_existed_still_read():
-    """Every canary already in the registry predates these fields. They must keep verifying —
-    the store is self-hashed, and a field added to the builder must not invalidate history."""
+def test_the_builder_omitting_the_new_fields_leaves_them_none():
+    """The shape a caller that has no fill produces. Not the same claim as the test below."""
     from runtime.mvp_runtime.crypto import live_promotion
 
     old = live_promotion.build_canary_order_record(
@@ -605,3 +608,83 @@ def test_records_written_before_this_existed_still_read():
     assert old["quantity"] is None and old["filled_notional_usdt"] is None
     assert old["notional_declared_vs_filled_usdt"] is None
     assert old["clean"] is True
+
+
+def test_records_written_before_this_existed_still_verify(tmp_path):
+    """The claim that matters, made against a record the CURRENT builder cannot produce.
+
+    The previous version of this test built a new record with the new builder and asserted the
+    new fields were None. That is a statement about the builder, not about history: it never
+    called `read_canary_orders`, never wrote a record, never checked a hash — so it would have
+    stayed green if the read path had started normalising the body before verifying it.
+
+    Here the eleven pre-existing keys are hashed the way they were hashed on disk, which is the
+    only construction that can answer "do the four canaries standing as evidence still count".
+    """
+    import json
+
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    body = {
+        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
+        "exchange_order_id": 1083969664118, "client_order_id": "canary-1", "mismatches": [],
+        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
+        "stage": "live_canary", "provenance": live_promotion.CANARY_PROVENANCE,
+        "canary_order_id": "canary_abc",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(body) + "\n", encoding="utf-8")
+
+    assert len(live_promotion.read_canary_orders(tmp_path)) == 1
+    assert live_promotion.clean_canary_order_count(tmp_path) == (1, None)
+
+
+def test_the_board_says_when_the_evidence_cannot_prove_its_own_size(tmp_path):
+    """The other half of the repair. The subtraction was recorded and nothing read it, so an
+    operator could only find it by opening the JSONL — which is not a surface."""
+    import json
+
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    body = {
+        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
+        "exchange_order_id": 1, "client_order_id": "canary-1", "mismatches": [],
+        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
+        "stage": "live_canary", "provenance": live_promotion.CANARY_PROVENANCE,
+        "canary_order_id": "canary_abc",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(body) + "\n", encoding="utf-8")
+
+    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
+    assert status["ready"] is True, "an unprovable size must not change what the count means"
+    assert status["size_unproven"] == 1
+    assert status["largest_size_gap_usdt"] is None
+
+
+def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
+    import json
+
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001,
+        fill={"avg_price": 64512.0, "executed_qty": 0.001, "cum_quote": 64.512},
+        now="2026-07-29T00:00:00Z",
+    )
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
+    assert status["size_unproven"] == 0
+    assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
+    assert status["ready"] is True          # surfaced, not judged
