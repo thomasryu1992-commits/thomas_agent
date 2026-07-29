@@ -312,7 +312,14 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 EVIDENCE_DEPTH_REPLAYED = "replayed"
 EVIDENCE_DEPTH_UNRECORDED = "evidence_depth_unrecorded"
 
-EVIDENCE_DEPTH_RANK_CURRENT = 0     # replayed at least the window the factory collects today
+# The tier means **at least** the current window, and the name now says so. It was
+# `..._CURRENT`, and the `--list` view printed `CURRENT` beside four different depth strings
+# under a header reading "these rows were NOT shown the same market" — the table contradicting
+# the sentence above it. Renaming was the fix rather than adding a `DEEPER` tier, because a
+# fourth rank has to sort somewhere and every position is wrong: below FULL demotes the
+# better-supported row, above it demotes every freshly minted candidate to second place
+# forever. Adequacy is one fact; the exact window is already printed next to it.
+EVIDENCE_DEPTH_RANK_FULL = 0        # replayed at least the window the factory collects today
 EVIDENCE_DEPTH_RANK_SHALLOW = 1     # a shorter window: less market, and a verdict that reflects it
 EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one in: span unknown
 
@@ -320,10 +327,10 @@ EVIDENCE_DEPTH_RANK_UNRECORDED = 2  # no bar count, or no timeframe to read one 
 # against the candidate; UNRECORDED is refused because no direction can be read off it and,
 # unlike an unrecorded cost basis, no part of it can be re-derived later.
 PROMOTABLE_EVIDENCE_DEPTH_RANKS = frozenset({
-    EVIDENCE_DEPTH_RANK_CURRENT, EVIDENCE_DEPTH_RANK_SHALLOW,
+    EVIDENCE_DEPTH_RANK_FULL, EVIDENCE_DEPTH_RANK_SHALLOW,
 })
 
-# CURRENT is "at or above" rather than "exactly at". A deeper row is better supported, not
+# FULL is "at or above" rather than "exactly at". A deeper row is better supported, not
 # incomparable, and giving depth its own top tier would sort every freshly minted candidate
 # beneath the legacy rows this tier exists to flag.
 #
@@ -420,7 +427,7 @@ def evidence_depth_rank(record: Mapping[str, Any]) -> int:
     expected = expected_replayed_bars(timeframe)
     if expected is None:
         return EVIDENCE_DEPTH_RANK_UNRECORDED
-    return (EVIDENCE_DEPTH_RANK_CURRENT if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
+    return (EVIDENCE_DEPTH_RANK_FULL if bars >= expected * EVIDENCE_DEPTH_TOLERANCE
             else EVIDENCE_DEPTH_RANK_SHALLOW)
 
 
@@ -452,6 +459,205 @@ def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
             f"({current_evidence_depth('1d')} at 1d) — re-mint the lineage through the "
             f"factory, or pass the explicit --allow-unrecorded-evidence-depth escape.",
         )
+
+
+# --- semantic duplicates -------------------------------------------------------
+#
+# `strategy_rule_hash` covers the condition **sequence**, which makes it an identity
+# for the record and a poor one for the strategy. Two ways to hold the same strategy
+# under a different hash, both observed in this store on 2026-07-29:
+#
+#   1. Reorder the conditions. `evaluate_spec` folds them with `all()`/`any()` over the
+#      full result list — no short-circuit — so order cannot change what a spec does.
+#      One such pair was already in the store.
+#   2. Append a condition that never discriminates. The rule miner minted four BNBUSDT
+#      lineages that are one base rule plus `low < high` or `mark_index_basis_bps <= 0.0`
+#      (a constant 0.0 in this runtime's feature builder). All five traded identically,
+#      and the padded clones outscored the base rule, so the router picked a tautology.
+#
+# Both checks below are EXACT. Neither reasons about whether a condition "looks"
+# redundant — proving a condition inert in general needs invariants this module does
+# not have, and a guess in a fail-closed gate is worse than the gap it fills. What is
+# provable is used, and the rest is reported rather than refused (`near_duplicate_groups`).
+
+def canonical_rule_form(record: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """What a spec DOES, independent of how its conditions happen to be ordered.
+
+    Sound because evaluation is order-free (see above), so two specs with the same
+    condition SET, operator, exits and scope are the same strategy by construction —
+    no evidence required, which is what makes this the only check available at the
+    import door, where rows can arrive with no backtest at all.
+    """
+    spec = record.get("strategy_spec")
+    if not isinstance(spec, Mapping):
+        return None
+    entry = spec.get("entry_rules") or {}
+    conditions = entry.get("conditions")
+    if not isinstance(conditions, list) or not conditions:
+        return None
+    return (
+        str(entry.get("operator")),
+        frozenset(
+            (str(c.get("feature")), str(c.get("comparison")),
+             str(c.get("value_from") or ""), repr(c.get("value")))
+            for c in conditions if isinstance(c, Mapping)
+        ),
+        str(spec.get("direction")),
+        str(spec.get("timeframe")),
+        tuple(spec.get("symbol_scope") or ()),
+        json.dumps(spec.get("exit_rules") or {}, sort_keys=True),
+    )
+
+
+def behavioural_fingerprint(record: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """What a spec DID, on one exact window. ``None`` when it cannot say.
+
+    Keyed on ``evidence_input_sha256`` first: comparing outcome aggregates across
+    different windows compares two different questions. Two specs replayed over the
+    SAME candles that closed the same number of trades, won and lost the same number,
+    and landed on the same expectancy, drawdown and net R to eight decimals took the
+    same trades — the aggregates agreeing by coincidence over ~100 trades is not a
+    case worth designing for.
+
+    A spec that traded zero times fingerprints as ``None``: no-trade specs all "agree"
+    and would otherwise collapse into one enormous false group.
+
+    So does a spec whose evidence is INCOMPLETE. Agreeing on the two aggregates a
+    partial record happens to carry is not the same claim as agreeing on all of them,
+    and treating it as one turns every sparsely-recorded row into everyone else's
+    duplicate. Every term must be present or this says nothing.
+    """
+    evidence = record.get("backtest_evidence")
+    window = record.get("evidence_input_sha256")
+    if not isinstance(evidence, Mapping) or not isinstance(window, str) or not window:
+        return None
+    closed = evidence.get("closed_count")
+    if not isinstance(closed, int) or closed <= 0:
+        return None
+    cost = evidence.get("cost_summary") or {}
+    terms = (
+        evidence.get("win_count"), evidence.get("loss_count"),
+        evidence.get("expectancy"), evidence.get("max_drawdown"), cost.get("total_net_r"),
+    )
+    if any(term is None for term in terms):
+        return None
+    return (window, closed, *terms)
+
+
+def semantic_duplicate_groups(
+    records: list[Mapping[str, Any]], *, incumbents: list[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Groups of records that are the same strategy under either exact test.
+
+    ``incumbents`` are compared against but never reported alone: a group surfaces only
+    when it contains at least one of ``records``, so an existing pool that already holds
+    a duplicate pair does not block every unrelated promotion until someone cleans it up.
+    """
+    pool_records = list(incumbents or [])
+    buckets: dict[tuple[str, Any], list[Mapping[str, Any]]] = {}
+    for record in [*records, *pool_records]:
+        for kind, key in (("rule_form", canonical_rule_form(record)),
+                          ("behaviour", behavioural_fingerprint(record))):
+            if key is not None:
+                buckets.setdefault((kind, key), []).append(record)
+
+    incoming = {id(r) for r in records}
+    groups: list[dict[str, Any]] = []
+    seen: set[frozenset[str]] = set()
+    for (kind, _key), members in buckets.items():
+        if len(members) < 2 or not any(id(m) in incoming for m in members):
+            continue
+        ids = frozenset(candidate_id(m) for m in members)
+        # "The same strategy under a DIFFERENT rule hash" is the whole claim. Members
+        # sharing a hash are one lineage measured more than once — a re-scored row and
+        # its original are the obvious case, and the store is append-only precisely so
+        # both can exist. Duplicate LINEAGES are already refused by
+        # `assert_pool_identity_unique` and the promotion door's candidate_id check;
+        # this function exists only for what those cannot see.
+        if len({str(m.get("strategy_rule_hash")) for m in members}) < 2:
+            continue
+        if len(ids) < 2 or ids in seen:
+            continue
+        seen.add(ids)
+        groups.append({
+            "match": kind,
+            "candidate_ids": sorted(ids),
+            "strategy_ids": sorted({str(m.get("strategy_id")) for m in members}),
+        })
+    return groups
+
+
+def assert_no_semantic_duplicates(
+    records: list[Mapping[str, Any]], *, incumbents: list[Mapping[str, Any]] | None = None,
+) -> None:
+    """Refuse a batch that would put the same strategy in the pool twice.
+
+    Not cosmetic. The router picks ONE strategy per context, so a duplicate does not
+    double a position — it takes the slot and then never trades, which means the
+    lifecycle collects no outcomes for it and can never demote it. A clone entering
+    the pool is a clone staying in the pool.
+
+    Raises ``CANDIDATE_SEMANTIC_DUPLICATE``, naming each group and which test matched.
+    """
+    groups = semantic_duplicate_groups(records, incumbents=incumbents)
+    if not groups:
+        return
+    listed = "; ".join(
+        f"{'/'.join(g['strategy_ids'])} [{', '.join(g['candidate_ids'])}] matched on {g['match']}"
+        for g in groups
+    )
+    raise ToolError(
+        "CANDIDATE_SEMANTIC_DUPLICATE",
+        f"these are the same strategy under a different rule hash: {listed}. "
+        f"Promote one of each group, or pass the explicit --allow-duplicates escape.",
+    )
+
+
+def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
+    """The candidate rows behind the entries currently in the pool.
+
+    The pool entry carries the spec but not the evidence, and the behavioural test
+    needs evidence — so an incumbent has to be read back through its lineage. An entry
+    whose ``candidate_id`` resolves to nothing (a pre-lineage import) simply
+    contributes its spec, which is all the rule-form test needs anyway.
+    """
+    entries = load_active_pool(root).get("active_strategies") or []
+    wanted = {e.get("candidate_id") for e in entries if e.get("candidate_id")}
+    by_id = {candidate_id(c): c for c in read_candidates(root)}
+    resolved = [by_id[cid] for cid in wanted if cid in by_id]
+    unresolved = [e for e in entries if not e.get("candidate_id") or e["candidate_id"] not in by_id]
+    return [*resolved, *unresolved]
+
+
+def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Same window, same trade counts, but not identical R — reported, never refused.
+
+    The pair this exists for: two SOLUSDT lineages that closed 82 trades each with the
+    same 45/37 split and the same drawdown, differing in net R by 0.0016. Almost
+    certainly one strategy wearing two rules, but "almost certainly" is a judgement,
+    and this module refuses only on what it can prove. So an operator gets told.
+    """
+    buckets: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
+    for record in records:
+        evidence = record.get("backtest_evidence")
+        window = record.get("evidence_input_sha256")
+        if not isinstance(evidence, Mapping) or not isinstance(window, str) or not window:
+            continue
+        closed = evidence.get("closed_count")
+        if not isinstance(closed, int) or closed <= 0:
+            continue
+        buckets.setdefault(
+            (window, closed, evidence.get("win_count"), evidence.get("loss_count")), []
+        ).append(record)
+    groups = []
+    for members in buckets.values():
+        ids = sorted({candidate_id(m) for m in members})
+        if len(ids) > 1 and len({behavioural_fingerprint(m) for m in members}) > 1:
+            groups.append({
+                "candidate_ids": ids,
+                "strategy_ids": sorted({str(m.get("strategy_id")) for m in members}),
+            })
+    return groups
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -969,6 +1175,9 @@ def promotable_backlog(
     - evidence at a basis the door accepts (:data:`PROMOTABLE_COST_BASIS_RANKS`); an
       OPTIMISTIC row is refused at the ask, so counting it would advertise work that
       cannot be done
+    - and at a depth it accepts (:data:`PROMOTABLE_EVIDENCE_DEPTH_RANKS`), for exactly
+      the same reason — the chain has to name every axis the door refuses on, or it
+      drifts back into advertising refusals every time a new one is added
     - ROBUST on the *recomputed* verdict, and CONFIRMED out-of-sample
     - positive expectancy at the CURRENT rates, not at whatever rate it was scored under
     - one row per (family, symbol scope, timeframe), counting the active pool's own
@@ -1001,6 +1210,15 @@ def promotable_backlog(
             continue
         quality = candidate_quality(record)
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
+            continue
+        # The same rule for the other axis the door refuses on. It was missing here for seven
+        # minutes' worth of merge ordering — the depth gate landed just after this counter —
+        # and the omission is the exact failure the line above is written to prevent: a row the
+        # ask will refuse must not be advertised as work an operator could do. Latent when
+        # found (no row passed every other filter AND failed this one) but not hypothetical:
+        # the store holds 41 rows the depth gate refuses, and one of them becoming ROBUST is a
+        # matter of time rather than of possibility.
+        if quality["evidence_depth_rank"] not in PROMOTABLE_EVIDENCE_DEPTH_RANKS:
             continue
         if quality["verdict"] != ROBUST or quality["holdout_status"] != HOLDOUT_CONFIRMED:
             continue

@@ -43,7 +43,7 @@ from runtime.read_only_kernel import integrity
 from .fees import round_trip_fee
 from .market_data import PredMarket, VenueQuote
 
-OPPORTUNITY_VERSION = "predmarket_opportunity.v0.1"
+OPPORTUNITY_VERSION = "predmarket_opportunity.v0.2"
 
 def direction_name(buy_venue: str, sell_venue: str) -> str:
     """The direction, named from where the YES leg is bought. Derived rather than enumerated,
@@ -86,6 +86,17 @@ IMPLAUSIBLE_EDGE = "IMPLAUSIBLE_EDGE"
 # its numbers and its reason, because a pairing that produces one of these is evidence about
 # the pairing, and deleting it would delete the evidence.
 MAX_PLAUSIBLE_NET_EDGE = 0.25
+
+# Every reason that withdraws the opportunity claim while leaving the arithmetic on the row.
+# ONE list, used both to decide and to record, so the two cannot disagree — spelling the
+# conditions out in the `and` chain is what let three separate rule changes ship under one
+# unchanged version string.
+WITHDRAWS_OPPORTUNITY = frozenset({IMPLAUSIBLE_EDGE, NOT_QUOTED, NO_SIZE})
+
+
+def reasons_that_withdraw(reasons: Any) -> list[str]:
+    """The gates this reading tripped, in a stable order. Empty means the claim stands."""
+    return sorted(WITHDRAWS_OPPORTUNITY.intersection(reasons or ()))
 
 
 @dataclass(frozen=True)
@@ -264,10 +275,20 @@ def evaluate_pairing(
         # reason has never once fired in the store, so no recorded frequency was ever
         # overstated by it, and no reading changed meaning when the gate went in.
         "is_opportunity": bool(
-            best and best["is_opportunity"] and not implausible
-            and NOT_QUOTED not in reasons and NO_SIZE not in reasons
+            best and best["is_opportunity"] and not reasons_that_withdraw(reasons)
         ),
         "reasons": reasons,
+        # Which gates were in force when this record was made. The rule that decides "how
+        # often" has changed three times — IMPLAUSIBLE_EDGE, then NOT_QUOTED, then NO_SIZE —
+        # and every one of those readings went into the store under the same version string,
+        # because nobody remembered to bump a constant. A frequency computed across such a
+        # window has no way to say which rule produced which reading.
+        #
+        # So the record states the rule instead of naming a version that stands for it. Add a
+        # gate and every subsequent record says so, without anyone remembering this line
+        # exists — the same reason the field-preservation tests iterate `dataclasses.fields`
+        # rather than listing names.
+        "opportunity_gates": sorted(WITHDRAWS_OPPORTUNITY),
         "observed_at_utc": now,
         # Stated on every record: observing is not acting, and this phase has no order path.
         "authorizes_trading": False,
@@ -331,9 +352,11 @@ __all__ = [
     "NOT_QUOTED",
     "NO_SIZE",
     "OPPORTUNITY_VERSION",
+    "WITHDRAWS_OPPORTUNITY",
     "Leg",
     "direction_name",
     "evaluate_group",
     "evaluate_pairing",
     "observation_status_line",
+    "reasons_that_withdraw",
 ]

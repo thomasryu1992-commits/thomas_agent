@@ -24,7 +24,7 @@ from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.crypto import cost, market_data, pool
 from runtime.mvp_runtime.crypto.factory import backtest_spec
 from runtime.mvp_runtime.crypto.pool import (
-    EVIDENCE_DEPTH_RANK_CURRENT,
+    EVIDENCE_DEPTH_RANK_FULL,
     EVIDENCE_DEPTH_RANK_SHALLOW,
     EVIDENCE_DEPTH_RANK_UNRECORDED,
     EVIDENCE_DEPTH_UNRECORDED,
@@ -137,7 +137,7 @@ def test_a_junk_timeframe_reads_as_unknown_rather_than_raising():
 # --- the tier, measured against the window in force today ----------------------
 
 def test_the_tier_is_measured_against_the_window_the_factory_collects_today():
-    assert evidence_depth_rank(_record(bars=_TODAY_1D)) == EVIDENCE_DEPTH_RANK_CURRENT
+    assert evidence_depth_rank(_record(bars=_TODAY_1D)) == EVIDENCE_DEPTH_RANK_FULL
     assert evidence_depth_rank(_record(bars=_TODAY_1D // 4)) == EVIDENCE_DEPTH_RANK_SHALLOW
 
 
@@ -156,7 +156,7 @@ def test_the_tier_re_reads_the_factory_window_instead_of_pinning_a_bar_count(mon
     only while the calendar term was the binding one — which stopped being true at 1d the day
     the bar floor landed."""
     row = _record(bars=_TODAY_1D)
-    assert evidence_depth_rank(row) == EVIDENCE_DEPTH_RANK_CURRENT
+    assert evidence_depth_rank(row) == EVIDENCE_DEPTH_RANK_FULL
 
     deeper = market_data.factory_candle_target("1d") * 4
     monkeypatch.setattr(market_data, "factory_candle_target", lambda timeframe: deeper)
@@ -171,14 +171,14 @@ def test_the_tier_re_reads_the_factory_window_instead_of_pinning_a_bar_count(mon
 def test_a_collection_gap_is_not_a_shallower_window_but_a_policy_change_is():
     """The tolerance exists to absorb a venue gap or an unclosed final candle, not history.
     The only window change on record is 4x, which no sane tolerance can hide."""
-    assert evidence_depth_rank(_record(bars=_TODAY_1D - 2)) == EVIDENCE_DEPTH_RANK_CURRENT
+    assert evidence_depth_rank(_record(bars=_TODAY_1D - 2)) == EVIDENCE_DEPTH_RANK_FULL
     assert evidence_depth_rank(_record(bars=_TODAY_1D // 4)) == EVIDENCE_DEPTH_RANK_SHALLOW
 
 
 def test_a_deeper_window_than_todays_is_not_penalised():
     """A longer window is better supported, not incomparable. Giving depth its own top tier
     would sort every freshly minted candidate beneath the legacy rows the tier exists to flag."""
-    assert evidence_depth_rank(_record(bars=_TODAY_1D * 2)) == EVIDENCE_DEPTH_RANK_CURRENT
+    assert evidence_depth_rank(_record(bars=_TODAY_1D * 2)) == EVIDENCE_DEPTH_RANK_FULL
 
 
 def test_the_current_window_is_formatted_by_the_same_function_as_a_stored_one():
@@ -222,7 +222,7 @@ def test_a_candidate_minted_right_now_is_never_shallow(timeframe):
     minted = {"strategy_spec": spec.to_dict(), "backtest_evidence": evidence}
 
     assert evidence["bars_replayed"] == expected_replayed_bars(timeframe)
-    assert evidence_depth_rank(minted) == EVIDENCE_DEPTH_RANK_CURRENT
+    assert evidence_depth_rank(minted) == EVIDENCE_DEPTH_RANK_FULL
     assert evidence_depth_of(minted) == current_evidence_depth(timeframe)
 
 

@@ -407,6 +407,20 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
     Reads outcomes only. The cycle already reads live outcomes so the risk guard can see live
     losses, and reading a result is not reaching the order path — the same boundary the
     order-path tripwire draws by leaving ``live_pnl`` out of its module set.
+
+    **WHICH STRATEGY placed it rides along too.** The outcome record has carried
+    ``candidate_id`` / ``strategy_rule_hash`` / ``strategy_generation_id`` since 2026-07-26,
+    when the executing leg stopped copying only the display id — and then this board, the one
+    surface an operator reads live results on, dropped all three again. That is the same half
+    repair `_size_evidence` above was written to finish: a field stored where nobody can see
+    it answers no question.
+
+    It is not decoration while a live test is running. 25 of the 72 strategies currently
+    routing came through the C7 import and carry **no ``candidate_id`` at all**, so a trade
+    from one of them cannot be traced to the evidence that promoted it. Their rule hash and
+    generation are the whole attribution that exists, which is exactly why the board has to
+    print them — and has to say plainly when the stronger key is missing, rather than leaving
+    a blank an operator reads as "not filled in yet".
     """
     from .live_pnl import read_live_outcomes
 
@@ -415,6 +429,8 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
         qty = _money(record.get("quantity"))
         entry = _money(record.get("entry_price"))
         proven = bool(qty) and bool(entry)
+        rule_hash = record.get("strategy_rule_hash")
+        candidate_id = record.get("candidate_id")
         rows.append({
             "closed_at_utc": record.get("closed_at_utc"),
             "symbol": record.get("symbol"),
@@ -426,6 +442,14 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
             "realized_pnl_usdt": _money(record.get("realized_pnl_usdt")),
             "entry_order_id": record.get("entry_order_id"),
             "size_proven": proven,
+            "strategy_id": record.get("strategy_id"),
+            "candidate_id": candidate_id,
+            "strategy_rule_hash": rule_hash if isinstance(rule_hash, str) and rule_hash else None,
+            "strategy_generation_id": record.get("strategy_generation_id"),
+            # Its own field rather than something the reader infers from a null: "no
+            # candidate_id" is a statement about the STRATEGY (imported, never minted by the
+            # factory), not about this trade.
+            "lineage_attributable": bool(isinstance(candidate_id, str) and candidate_id),
         })
     return rows
 
@@ -450,8 +474,29 @@ def render_live_trade_evidence_text(rows: list[dict[str, Any]]) -> str:
         lines.append(f"[{mark}] {index}. {row['closed_at_utc']}  {row['symbol']} {row['side']}"
                      f"  order {row['entry_order_id']}")
         lines.append(f"           {body}   realized {row['realized_pnl_usdt']} USDT")
+        # The display id restarts at S001 every generation, so it names the row without
+        # identifying it; the generation and the rule hash are what make it a lineage.
+        rule_hash = row["strategy_rule_hash"]
+        short_hash = f"{rule_hash[:12]}…" if rule_hash else "NO RULE HASH"
+        lines.append(f"           strategy {row['strategy_id'] or '-'} "
+                     f"({row['strategy_generation_id'] or 'no generation'})  rule {short_hash}")
+        if not row["lineage_attributable"]:
+            lines.append("           ^ NOT ATTRIBUTABLE — no candidate_id, so this trade cannot "
+                         "be traced back to")
+            lines.append("             the backtest evidence that promoted it. Imported "
+                         "lineage; the rule hash")
+            lines.append("             above is the whole attribution that exists for it.")
     proven = sum(1 for r in rows if r["size_proven"])
-    lines += ["", f"{proven}/{len(rows)} can prove their size"]
+    traceable = sum(1 for r in rows if r["lineage_attributable"])
+    lines += ["", f"{proven}/{len(rows)} can prove their size",
+              f"{traceable}/{len(rows)} can be traced to promotion evidence"]
+    if traceable < len(rows):
+        lines += [
+            "",
+            "the untraceable ones came through the C7 import and were never minted by the",
+            "factory, so no candidate row holds their window or cost model — group them by",
+            "rule hash instead, and read the result as a rule's, not a lineage's",
+        ]
     return "\n".join(lines)
 
 
