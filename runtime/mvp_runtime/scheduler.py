@@ -660,7 +660,8 @@ def _execute(
         # C9: the factory backtests on the same feed-enriched frame the router
         # evaluates — one feature source for backtest and live (the source rule).
         attach_feeds(snapshot, collector=collector,
-                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now)
+                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now,
+                     root=repo_root)
         # The same rule for the HTF leg: mining htf_* families over a frame with no
         # higher timeframe would score every one of them as a no-trade spec. The
         # window must cover the replay span, so the depth is the higher timeframe's
