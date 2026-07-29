@@ -13,6 +13,16 @@ the ladder became collected (Thomas 2026-07-25) — the standing rule being that
 family is ported only once its inputs exist, since specs that can never match would
 be noise pretending to be diversity.
 
+``taker_*`` and ``session_*`` joined under that same rule once ``features`` began
+computing their columns. They differ from every family before them in what they are made
+of: the twenty families that preceded them all read transformations of one series, the
+OHLCV history, so adding a twenty-first of that kind recombines information the pool
+already holds. Order flow (who crossed the spread) and session (who is at the desk) are
+not recoverable from price at all — which is the argument for adding them and, equally,
+the reason each is minted as its own family first rather than grafted onto proven ones:
+a new information source has to earn a verdict on its own evidence before fusion may
+carry it anywhere.
+
 Everything in this module is ALLOW-tier record creation: the factory produces
 **candidates with evidence**, appended to the candidates store. It cannot touch the
 active pool — installing a candidate is the operator promotion door
@@ -126,6 +136,22 @@ NUMERIC_FEATURES = frozenset({
     # on every symbol and nothing at all after the venue grows. Absent feed = None =
     # never matches, the liquidation posture.
     "open_interest_change_pct", "open_interest_zscore",
+    # Taker order flow — who CROSSED the spread, from the kline legs the collector was
+    # already downloading and discarding. The first information source admitted here that
+    # is not a transformation of the price series: two bars with identical OHLC differ
+    # completely depending on which side was the aggressor.
+    #
+    # The same normalized-only rule as open interest, and for the same reason. Raw
+    # `quote_volume`, `trade_count`, `taker_buy_base`, `taker_buy_quote` and
+    # `avg_trade_size` are on the row as evidence but are deliberately NOT here: every one
+    # of them is a venue-scale quantity. The five below are ratios or z-scores, so a mined
+    # threshold carries the same meaning on BTC and on SOL.
+    #
+    # Absent legs (a pre-flow snapshot, or a venue that changes its payload) leave all of
+    # them None, so a flow spec is indeterminate and simply stops trading — the open
+    # interest posture, never the spike-ratio one.
+    "taker_buy_ratio", "taker_flow_imbalance", "taker_flow_zscore", "taker_flow_ma",
+    "avg_trade_size_zscore", "trade_count_zscore",
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -133,6 +159,12 @@ CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
     "market_regime": _REGIME_VALUES,
     # Same classifier, one timeframe up — so the same closed vocabulary.
     "htf_market_regime": _REGIME_VALUES,
+    # Session context. CATEGORICAL rather than a numeric hour on purpose: `hour_of_day`
+    # would admit `== 3`, which is a free pick of one bucket in twenty-four that the
+    # robustness scorer counts as a single literal — the cheapest possible way to mine
+    # noise. Three labels with only ==/!= available bounds that to a choice among three.
+    "session": features.SESSION_VALUES,
+    "day_type": features.DAY_TYPE_VALUES,
 }
 _NUMERIC_COMPARISONS = frozenset({">", ">=", "<", "<=", "==", "!="})
 _CATEGORICAL_COMPARISONS = frozenset({"==", "!="})
@@ -325,6 +357,71 @@ def _bollinger_breakdown_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _taker_flow_long_entry(p: dict) -> list[dict]:
+    # Flow-confirmed trend: price above its mean AND the aggressor side has been the buy
+    # side for a sustained stretch. The rolling mean rather than the single bar's print is
+    # the point — one bar's imbalance is mostly that bar's own move restated, while the
+    # mean is the part that persisted across bars.
+    return [
+        {"feature": "taker_flow_ma", "comparison": ">=", "value": p["flow_ma_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _taker_flow_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "taker_flow_ma", "comparison": "<=", "value": -p["flow_ma_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+    ]
+
+
+def _taker_absorption_long_entry(p: dict) -> list[dict]:
+    # The family that justifies the whole feature: price and flow DISAGREE. RSI says the
+    # move is washed out, while aggressive buying is unusually heavy against its own recent
+    # norm — someone is absorbing the supply that is being sold into them.
+    #
+    # This is the shape no price transformation can express. A washed-out RSI is in the row
+    # already; what is new is being able to ask what the tape was doing while it got there.
+    return [
+        {"feature": "taker_flow_zscore", "comparison": ">=", "value": p["flow_z_min"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _taker_absorption_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "taker_flow_zscore", "comparison": "<=", "value": -p["flow_z_min"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
+def _session_label(p: dict) -> str:
+    """The session this spec trades, chosen by the seeded mutation rather than by hand.
+
+    A hand-written ``session == "US"`` template would be the author picking one bucket in
+    three and the robustness scorer never learning that a choice was made. Routing the
+    choice through a mutated parameter makes it a literal on the emitted condition, which
+    is exactly what ``count_free_parameters`` charges for."""
+    index = int(p["session_index"]) % len(features.SESSION_BOUNDS)
+    return features.SESSION_BOUNDS[index][0]
+
+
+def _session_trend_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "session", "comparison": "==", "value": _session_label(p)},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _session_trend_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "session", "comparison": "==", "value": _session_label(p)},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
 def _funding_fade_short_entry(p: dict) -> list[dict]:
     # Crowded longs: funding far above its rolling norm while momentum is
     # stretched — fade the crowd short. (C9: the funding feed made this mintable.)
@@ -406,6 +503,30 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("htf_pullback_short", "short", "1h",
                      {"rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
                      {"rsi_min": 62.0, **_EXIT_BASE}, _htf_pullback_short_entry),
+    # Taker order flow. The legs these read arrived in every klines response the collector
+    # ever made; nothing new is fetched to mint them.
+    StrategyTemplate("taker_flow_long", "long", "1h",
+                     {"flow_ma_min": ParamSpec(0.02, 0.20), **_EXIT_PARAMS},
+                     {"flow_ma_min": 0.06, **_EXIT_BASE}, _taker_flow_long_entry),
+    StrategyTemplate("taker_flow_short", "short", "1h",
+                     {"flow_ma_min": ParamSpec(0.02, 0.20), **_EXIT_PARAMS},
+                     {"flow_ma_min": 0.06, **_EXIT_BASE}, _taker_flow_short_entry),
+    StrategyTemplate("taker_absorption_long", "long", "1h",
+                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
+                     {"flow_z_min": 1.3, "rsi_max": 38.0, **_EXIT_BASE}, _taker_absorption_long_entry),
+    StrategyTemplate("taker_absorption_short", "short", "1h",
+                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
+                     {"flow_z_min": 1.3, "rsi_min": 62.0, **_EXIT_BASE}, _taker_absorption_short_entry),
+    # Session context. `session_index` is mutated like any other parameter, so WHICH session
+    # a spec claims is part of the seeded search and is charged as a free parameter.
+    StrategyTemplate("session_trend_long", "long", "1h",
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_long_entry),
+    StrategyTemplate("session_trend_short", "short", "1h",
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_short_entry),
 )
 
 # Families whose entry rules read the open-interest columns — mintable only where the
@@ -419,18 +540,39 @@ OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
 HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
                           "htf_pullback_long", "htf_pullback_short"})
 
+# Families whose entry rules read ``session`` — mintable only where a bar is short enough
+# for the label to describe the market during it rather than just its opening instant.
+# `features.MAX_SESSION_BAR_MINUTES` owns that rule; this is the minting side of it.
+SESSION_FAMILIES = frozenset({"session_trend_long", "session_trend_short"})
+
 
 def templates_for_timeframe(timeframe: str) -> tuple[StrategyTemplate, ...]:
     """The rotation retimed to ``timeframe``.
 
-    Every price/feed family is retimeable. The htf_* families additionally need a
-    higher timeframe to read, so they drop out at the top of the ladder (``1d``):
-    minting one there would produce a spec whose HTF conditions can never be
-    determined — permanently no-entry rather than merely selective."""
+    Every price/feed family is retimeable. Two groups need more than a retiming:
+
+    - the htf_* families need a higher timeframe to read, so they drop out at the top of
+      the ladder (``1d``) — minting one there would produce a spec whose HTF conditions
+      can never be determined, permanently no-entry rather than merely selective;
+    - the session_* families need a bar shorter than one session block, for the same
+      class of reason: at ``1d`` every bar opens at 00:00 UTC, so ``features`` reports
+      no session at all and the condition could never be determined either.
+
+    The taker_* families need neither — their legs ride the same klines call as the OHLCV
+    at every timeframe."""
     timeframe = str(timeframe)
     has_htf = timeframe in market_data.HIGHER_TIMEFRAME
-    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES
-                 if has_htf or t.family not in HTF_FAMILIES)
+    bar_minutes = market_data.TIMEFRAMES.get(timeframe)
+    has_session = bar_minutes is not None and bar_minutes <= features.MAX_SESSION_BAR_MINUTES
+
+    def _minted(template: StrategyTemplate) -> bool:
+        if template.family in HTF_FAMILIES and not has_htf:
+            return False
+        if template.family in SESSION_FAMILIES and not has_session:
+            return False
+        return True
+
+    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES if _minted(t))
 
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---

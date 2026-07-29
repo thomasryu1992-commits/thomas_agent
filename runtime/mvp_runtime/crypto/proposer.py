@@ -29,10 +29,17 @@ Why a proposal cannot smuggle a bad strategy in:
   ``BLOCK_UNKNOWN_FEATURE`` alone does not say which one, and a review sheet that cannot
   say "you invented `quantum_flux`" wastes the reader's time.
 
-  Worth knowing while reading proposals: three C9 liquidation features
-  (``liquidation_total``, ``long_liquidation``, ``short_liquidation``) are computed into
-  the feature row but are **not** in the validator's vocabulary, so a proposal using them
-  is rejected even though the data exists. Only ``liquidation_spike_ratio`` is usable.
+  Worth knowing while reading proposals: the row computes several columns the validator
+  does **not** admit, so a proposal using one is rejected even though the data exists.
+  They are the venue-scale quantities — raw ``open_interest``, ``quote_volume``,
+  ``trade_count``, ``taker_buy_base``, ``taker_buy_quote``, ``avg_trade_size`` — which are
+  withheld on purpose: a threshold on any of them means a different thing on every symbol.
+  Their normalized derivatives (``*_change_pct``, ``*_zscore``, ``taker_buy_ratio``,
+  ``taker_flow_imbalance``, ``taker_flow_ma``) are the usable forms.
+
+  *(This note previously said the three liquidation columns were excluded. They were
+  admitted by Thomas on 2026-07-24 and the note was not updated — a proposal naming them
+  has been accepted ever since, contrary to what the sentence claimed.)*
 
 Fail direction — degraded, never blocking (the ``TRIAGE_DEGRADED`` precedent): a
 provider failure or an unparseable answer yields zero proposals with the reason
