@@ -15,6 +15,7 @@ API served integer cents, and a parser written from memory would have read nothi
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import urllib.parse
 
@@ -821,3 +822,66 @@ def test_being_told_to_slow_down_is_retried(monkeypatch):
             md.urllib.error.HTTPError("https://example.invalid/x", code, "no", {}, None)])
         assert md._get_json("https://example.invalid/x", timeout_seconds=1) == {"ok": True}
         assert len(attempts) == 2, f"HTTP {code} should be retried"
+
+
+# --- a quoted read must not lose the market ------------------------------------
+
+def test_attaching_a_book_keeps_every_other_field(monkeypatch):
+    """Attaching a book changes the quote and nothing else.
+
+    Every hand-written rebuild of this shape has drifted. This one was last updated before
+    `fee_rate_bps`, `derived_from`, `accepting_orders`, `resolution_rules` and `volume`
+    existed, so a quoted Polymarket read returned a market missing five of its thirteen
+    fields — while `observations._markets_by_key` was reading four of them straight back out.
+
+    Asserted field by field over `dataclasses.fields` rather than by name, so a field added
+    tomorrow is covered without anyone remembering to come back here.
+    """
+    # Every field Gamma actually populates, so the comparison below has something to lose.
+    row = _gamma_row(
+        description="Resolves Yes if the Fed lowers the target range in December.",
+        resolutionSource="https://www.federalreserve.gov/",
+        volumeNum=1234567.0,
+        enableOrderBook=True,
+        acceptingOrders=True,
+    )
+
+    def _fake(url, *, timeout_seconds, headers=None):
+        if "gamma" in url:
+            return [row]
+        return _book()
+
+    monkeypatch.setattr(md, "_get_json", _fake)
+    collector = md.PolymarketPublicCollector(
+        authorization=_authorized_for(md.POLYMARKET_PROVIDER_ID))
+
+    unquoted = collector.list_markets(limit=10, timeout_seconds=1, with_quotes=False).markets[0]
+    quoted = collector.list_markets(limit=10, timeout_seconds=1, with_quotes=True).markets[0]
+
+    assert quoted.quote.quoted() is True, "the book did attach"
+    # Guard the guard: if the fixture stopped populating these, the loop below would pass by
+    # comparing None to None and prove nothing.
+    assert unquoted.resolution_rules and unquoted.volume and unquoted.accepting_orders
+
+    for f in dataclasses.fields(md.PredMarket):
+        if f.name == "quote":
+            continue
+        assert getattr(quoted, f.name) == getattr(unquoted, f.name), \
+            f"quoted read lost {f.name}"
+
+
+def test_the_mock_drops_only_the_quote_too(monkeypatch):
+    """Same contract on the network-free path — a caller that forgot to ask for quotes must
+    behave the same here as against a venue."""
+    collector = md.MockPredMarketCollector()
+    quoted = {m.market_id: m
+              for m in collector.list_markets(limit=10, timeout_seconds=1).markets}
+    for stripped in collector.list_markets(
+            limit=10, timeout_seconds=1, with_quotes=False).markets:
+        original = quoted[stripped.market_id]
+        assert stripped.quote.quoted() is False
+        for f in dataclasses.fields(md.PredMarket):
+            if f.name == "quote":
+                continue
+            assert getattr(stripped, f.name) == getattr(original, f.name), \
+                f"unquoted mock read lost {f.name}"

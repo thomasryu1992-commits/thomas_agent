@@ -49,7 +49,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -243,9 +243,15 @@ class PredMarket:
     # `enableOrderBook`/`acceptingOrders`). `None` is *did not say*, never *no*.
     accepting_orders: bool | None = None
     # How the venue says this market settles, in the venue's own words (Kalshi
-    # `rules_primary`, Gamma `description`, Binance `markets[].description`). Populated only
-    # on a discovery read that asked for it: this is reading material for the one judgement
-    # no algorithm can make, and an observation record has no use for a kilobyte of prose.
+    # `rules_primary`, Gamma `description`, Binance `markets[].description`). Reading material
+    # for the one judgement no algorithm can make.
+    #
+    # Carried by whatever read produced the market, quoted or not — a venue that states its
+    # rules states them the same way either way, and the collector has no business deciding
+    # which caller deserves them. It reaches no stored record: an observation leg carries
+    # `venue`, `market_id`, `category` and `quote`, and that is where the "no kilobyte of
+    # prose in a record" rule actually lives. Binance is the exception, and not by choice —
+    # its targeted read is an order-book call that returns no market metadata at all.
     #
     # It is NOT a comparison. Two venues can publish near-identical text and still settle
     # differently on the same news — that is the risk the whole strategy turns on, and
@@ -370,15 +376,7 @@ class MockPredMarketCollector:
         if not with_quotes:
             # The mock's prices cost nothing, but it honours the contract anyway: a caller
             # that forgot to ask for quotes must behave the same here as against a venue.
-            markets = [
-                PredMarket(
-                    venue=m.venue, market_id=m.market_id, group_id=m.group_id, title=m.title,
-                    close_time=m.close_time, status=m.status, category=m.category,
-                    fee_rate_bps=m.fee_rate_bps, derived_from=m.derived_from,
-                    accepting_orders=m.accepting_orders, volume=m.volume, quote=VenueQuote(),
-                )
-                for m in markets
-            ]
+            markets = [replace(m, quote=VenueQuote()) for m in markets]
         return PredMarketSnapshot(
             venue=self.venue,
             markets=markets,
@@ -1147,11 +1145,13 @@ class PolymarketPublicCollector:
                 # One market's book failing is not the scan failing. It stays unquoted.
                 priced.append(market)
                 continue
-            priced.append(PredMarket(
-                venue=market.venue, market_id=market.market_id, group_id=market.group_id,
-                title=market.title, close_time=market.close_time, status=market.status,
-                category=market.category, quote=parse_clob_book(book),
-            ))
+            # `replace`, not a re-listing of fields. Attaching a book changes the quote and
+            # nothing else, and every hand-written rebuild of this shape has drifted: this one
+            # was last updated before `fee_rate_bps`, `derived_from`, `accepting_orders`,
+            # `resolution_rules` and `volume` existed, so a quoted Polymarket read silently
+            # returned a market missing five of its thirteen fields while
+            # `observations._markets_by_key` was reading four of them straight back out.
+            priced.append(replace(market, quote=parse_clob_book(book)))
 
         return PredMarketSnapshot(
             venue=self.venue,
