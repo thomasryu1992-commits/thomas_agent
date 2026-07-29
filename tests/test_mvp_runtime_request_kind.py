@@ -54,7 +54,7 @@ def test_the_activated_roles_are_active_and_routable(role_id):
 def test_the_live_trading_role_was_not_swept_in():
     """The approval was for two P3 read-only specialists. `execution.live_trader` is P5 with
     `external_action_allowed: true` — activating it is a live-trading decision with canaries and
-    per-machine grants behind it, and must never ride along on a routing change."""
+    the live-trading opt-in behind it, and must never ride along on a routing change."""
     entry = next(r for r in _registry()["roles"] if r["role_id"] == "execution.live_trader")
     assert (entry["status"], entry["routable"]) == ("candidate", False)
 
