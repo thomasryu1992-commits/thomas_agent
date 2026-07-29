@@ -422,7 +422,8 @@ def _cmd_retire(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    built = report.build_pm1_report(now=pairs.now_iso(), max_gap_seconds=args.max_gap_seconds)
+    built = report.build_pm1_report(
+        now=pairs.now_iso(), max_gap_seconds=args.max_gap_seconds, since=args.since)
     if args.json:
         sys.stdout.write(json.dumps(built, ensure_ascii=False, indent=1) + "\n")
         return EXIT_OK
@@ -513,6 +514,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     reporting = sub.add_parser("report", help="what the observations said: how often, how large, how long")
     reporting.add_argument("--json", action="store_true")
+    reporting.add_argument(
+        "--since", default=None, metavar="UTC_ISO",
+        help="only count observations at or after this instant (e.g. 2026-07-29T04:00:00Z). "
+             "The rules that produce a row have changed while rows accumulated — what counted "
+             "as a reading, whether a Binance leg could be priced, twice what counted as an "
+             "opportunity — and frequency computed across a rule change is a number about two "
+             "instruments. Filters; never deletes. The report says on its face that it is bounded")
     reporting.add_argument(
         "--max-gap-seconds", type=float, default=report.DEFAULT_MAX_GAP_SECONDS,
         help=("how long a hole between two readings still counts as one episode (default "
