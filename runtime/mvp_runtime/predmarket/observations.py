@@ -304,12 +304,19 @@ def run_watch_scan(
 
 
 def scan_status_line(scan: Mapping[str, Any]) -> str:
-    """One ASCII line for the console (Windows consoles are cp949)."""
+    """One ASCII line for the console (Windows consoles are cp949).
+
+    Says **priced**, not "readable". The number counts observations that produced a net edge,
+    which fails when one venue quotes a single side — not when a venue could not be read. The
+    older wording sent a reader hunting an outage that was not there: 64/65 "readable" beside
+    a scan whose only reason was `NOT_QUOTED` and whose 65 legs had all been fetched. Whether
+    a venue answered at all is `venue_errors`, and it prints separately as `degraded=`.
+    """
     errors = scan.get("venue_errors") or {}
     tail = f" degraded={','.join(sorted(errors))}" if errors else ""
     return (
         f"pm_scan {scan.get('scan_kind')}: {scan.get('opportunity_count')} opportunity/ies "
-        f"from {scan.get('readable_count')}/{scan.get('observation_count')} readable "
+        f"from {scan.get('readable_count')}/{scan.get('observation_count')} priced "
         f"across {scan.get('groups_observed')} group(s){tail}"
     )
 

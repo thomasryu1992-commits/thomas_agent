@@ -417,3 +417,55 @@ def test_an_edge_at_the_scale_this_phase_operates_at_is_untouched():
     assert record["is_opportunity"] is True
     assert opportunity.IMPLAUSIBLE_EDGE not in record["reasons"]
     assert abs(record["net_edge"]) < opportunity.MAX_PLAUSIBLE_NET_EDGE
+
+
+# --- the record states the rule it was made under -------------------------------
+
+def test_every_reading_records_which_gates_were_in_force():
+    """The rule that decides "how often" has changed three times — IMPLAUSIBLE_EDGE, then
+    NOT_QUOTED, then NO_SIZE — and every reading went into the store under one unchanged
+    version string, because a constant had to be bumped by hand and never was. A frequency
+    computed across such a window cannot say which rule produced which reading."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45), _market(POLYMARKET, bid=0.55, ask=0.57), now=NOW
+    )
+    assert record["opportunity_gates"] == sorted(opportunity.WITHDRAWS_OPPORTUNITY)
+    assert record["opportunity_gates"] == [
+        opportunity.IMPLAUSIBLE_EDGE, opportunity.NOT_QUOTED, opportunity.NO_SIZE,
+    ], "the recorded set is the real one, not a copy that can drift from it"
+
+
+def test_a_gate_added_tomorrow_shows_up_in_the_record_by_itself(monkeypatch):
+    """The point of recording the set rather than a version standing for it: nobody has to
+    remember to bump anything. Add a gate, and every subsequent reading says so."""
+    monkeypatch.setattr(
+        opportunity, "WITHDRAWS_OPPORTUNITY",
+        frozenset(opportunity.WITHDRAWS_OPPORTUNITY | {"SOME_FUTURE_GATE"}),
+    )
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45), _market(POLYMARKET, bid=0.55, ask=0.57), now=NOW
+    )
+    assert "SOME_FUTURE_GATE" in record["opportunity_gates"]
+
+
+def test_deciding_and_recording_read_the_same_list(monkeypatch):
+    """One list, used both to decide and to record, so the two cannot disagree. Spelling the
+    conditions out in the `and` chain is what let three rule changes ship unversioned."""
+    monkeypatch.setattr(
+        opportunity, "WITHDRAWS_OPPORTUNITY", frozenset({opportunity.NOT_QUOTED}))
+    # NO_SIZE is no longer a gate, so an edge with no depth counts again — which is wrong as
+    # policy and exactly right as evidence that one list drives both.
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45, ask_size=0.0),
+        _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
+        now=NOW,
+    )
+    assert opportunity.NO_SIZE in record["reasons"], "the reason is still raised"
+    assert record["is_opportunity"] is True, "but it no longer withdraws the claim"
+    assert record["opportunity_gates"] == [opportunity.NOT_QUOTED]
+
+
+def test_the_version_moved_when_the_record_shape_did():
+    """`opportunity_version` has no reader today; its whole value is to a future one going
+    through the store. A record that gained a field is a different record."""
+    assert opportunity.OPPORTUNITY_VERSION == "predmarket_opportunity.v0.2"
