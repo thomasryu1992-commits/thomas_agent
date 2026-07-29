@@ -91,13 +91,15 @@ def test_an_unverifiable_registry_is_a_typed_refusal_not_an_empty_board(monkeypa
     assert "CANARY_REGISTRY_INVALID" in capsys.readouterr().err
 
 
-def test_json_mode_emits_the_rows(monkeypatch, capsys):
+def test_json_mode_emits_the_canary_rows(monkeypatch, capsys):
     monkeypatch.setattr(lp, "read_canary_orders",
                         lambda root=None: [_record(filled_notional_usdt=64.9,
                                                    notional_declared_vs_filled_usdt=0.1)])
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl.read_live_outcomes",
+                        lambda root=None: [])
     assert lp.main(["--json"]) == 0
-    rows = json.loads(capsys.readouterr().out)
-    assert rows[0]["size_proven"] is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["canaries"][0]["size_proven"] is True
 
 
 def test_the_reader_opens_no_socket_and_writes_nothing():
@@ -111,3 +113,91 @@ def test_the_reader_opens_no_socket_and_writes_nothing():
     for forbidden in ("urlopen(", "requests.", "select_gated", "select_env_gated",
                       "write_text(", "open(", "record_submission", "submit"):
         assert forbidden not in src, forbidden
+
+
+# --- the evidence that matters from here on: real live trades ----------------
+#
+# The four canaries are frozen at 0/4 and cannot be repaired, and no more are being placed.
+# So "can the live path prove what it did" has to be answered by real trades.
+
+def _outcome(**over):
+    base = {"closed_at_utc": "2026-07-29T10:12:00Z", "symbol": "BTCUSDT", "side": "SELL",
+            "quantity": 0.001, "entry_price": 66830.0, "exit_price": 67010.0,
+            "realized_pnl_usdt": 0.18, "entry_order_id": 1090000000001}
+    base.update(over)
+    return base
+
+
+def _trades(monkeypatch, records):
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl.read_live_outcomes",
+                        lambda root=None: list(records))
+    return lp.live_trade_evidence_rows()
+
+
+def test_a_real_trade_proves_its_size_from_the_venues_own_numbers(monkeypatch):
+    rows = _trades(monkeypatch, [_outcome()])
+    assert rows[0]["size_proven"] is True
+    assert rows[0]["entry_notional_usdt"] == pytest.approx(66.83)
+
+
+def test_a_trade_without_fill_figures_is_flagged_for_investigation(monkeypatch):
+    """A live position is built from the ACTUAL fill or it is not booked at all, so this does
+    not mean the size drifted — it means something wrote an outcome by a path that skipped
+    that rule. The wording has to say so, or the row reads as a rounding complaint."""
+    rows = _trades(monkeypatch, [_outcome(quantity=0.0, entry_price=None)])
+    assert rows[0]["size_proven"] is False
+    assert rows[0]["entry_notional_usdt"] is None
+    assert "investigate" in lp.render_live_trade_evidence_text(rows)
+
+
+def test_no_live_trades_yet_says_what_will_appear(monkeypatch):
+    """The empty state is the state during live testing, so it has to be informative rather
+    than blank — it is what the operator sees while waiting for the first real trade."""
+    text = lp.render_live_trade_evidence_text(_trades(monkeypatch, []))
+    assert "no live trades closed on this machine yet" in text
+    assert "ACTUAL fill" in text
+
+
+def test_the_board_shows_both_halves(monkeypatch, capsys):
+    monkeypatch.setattr(lp, "read_canary_orders", lambda root=None: [_record()])
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl.read_live_outcomes",
+                        lambda root=None: [_outcome()])
+    assert lp.main([]) == 0
+    out = capsys.readouterr().out
+    assert "=== canary evidence ===" in out and "=== live trades ===" in out
+
+
+def test_json_carries_both_halves_under_named_keys(monkeypatch, capsys):
+    monkeypatch.setattr(lp, "read_canary_orders", lambda root=None: [_record()])
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl.read_live_outcomes",
+                        lambda root=None: [_outcome()])
+    assert lp.main(["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"canaries", "live_trades"}
+    assert payload["live_trades"][0]["size_proven"] is True
+
+
+def test_the_reader_reads_outcomes_and_never_the_order_path():
+    """`live_pnl` is deliberately outside the order-path module set — the cycle already reads
+    live outcomes so the risk guard can see live losses, and reading a result is not reaching
+    the order path. This board stays on that side of the line."""
+    import ast
+    import inspect
+    import textwrap
+
+    # The IMPORT GRAPH, not a substring scan. The first version of this searched the source
+    # text and failed on the function's own docstring, which explains why a live position is
+    # built from the actual fill and names the module that enforces it — the same way the
+    # order-path tripwire once tripped on a docstring, and the reason main rewrote that check
+    # to walk the AST. A check that fails on its own explanation gets the explanation deleted.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(lp.live_trade_evidence_rows)))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.rsplit(".", 1)[-1])
+            imported.update(a.name.rsplit(".", 1)[-1] for a in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(a.name.rsplit(".", 1)[-1] for a in node.names)
+
+    assert "live_pnl" in imported
+    assert imported & {"live_leg", "live_execution", "live_position"} == set()

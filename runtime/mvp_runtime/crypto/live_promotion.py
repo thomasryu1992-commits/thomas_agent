@@ -58,6 +58,24 @@ CANARY_HISTORY_DUPLICATE = "CANARY_HISTORY_DUPLICATE"
 DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3
 
 
+def _money(value: Any) -> float | None:
+    """A number, or nothing. Never whatever the venue happened to send.
+
+    In practice `live_execution.fill_facts` already coerces these to ``float | None``, so this
+    is unreachable through the canary door. It exists because the builder produces a
+    **self-hashed, durable governance record**: a money field on it should not be able to hold
+    an arbitrary string just because some future caller passed one through, and the record is
+    the evidence gating autonomous live trading for as long as it exists.
+
+    Module level rather than nested in the builder, because the evidence READERS need the same
+    rule — a board that renders `"66.83"` as a number where the record refuses to store one
+    would report agreement the record never claimed.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def build_canary_order_record(
     *,
     reconcile_status: str,
@@ -93,18 +111,6 @@ def build_canary_order_record(
     """
     problems = list(mismatches or [])
     facts = dict(fill or {})
-
-    def _money(value: Any) -> float | None:
-        """A number, or nothing. Never whatever the venue happened to send.
-
-        In practice `live_execution.fill_facts` already coerces these to ``float | None``, so
-        this is unreachable through the canary door. It is here because the builder is what
-        produces a **self-hashed, durable governance record**: a money field on it should not be
-        able to hold an arbitrary string just because some future caller passed one through, and
-        the record is the evidence gating autonomous live trading for as long as it exists."""
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return float(value)
 
     filled_notional = _money(facts.get("cum_quote"))
     body: dict[str, Any] = {
@@ -384,6 +390,71 @@ def render_canary_evidence_text(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
+    """One row per CLOSED live trade, saying whether it recorded the venue's numbers.
+
+    This is the evidence that matters from here on. The four canaries are frozen at 0/4 and
+    cannot be repaired — the venue's figures were never stored — and no more are being placed,
+    so "can the live path prove what it did" has to be answered by real trades instead.
+
+    Real trades answer it **by construction**, which is a stronger guarantee than the canary
+    path ever had: `build_live_position` takes ``entry_price``/``quantity`` from the actual
+    fill and never from the intent, and `live_leg` refuses to confirm an entry unless the
+    venue reported a positive filled quantity AND price. A position that cannot show a fill is
+    not booked at all. So an UNPROVEN row here does not mean "the size drifted" — it means
+    something wrote an outcome by a path that skipped that rule, which is worth seeing.
+
+    Reads outcomes only. The cycle already reads live outcomes so the risk guard can see live
+    losses, and reading a result is not reaching the order path — the same boundary the
+    order-path tripwire draws by leaving ``live_pnl`` out of its module set.
+    """
+    from .live_pnl import read_live_outcomes
+
+    rows: list[dict[str, Any]] = []
+    for record in read_live_outcomes(root):
+        qty = _money(record.get("quantity"))
+        entry = _money(record.get("entry_price"))
+        proven = bool(qty) and bool(entry)
+        rows.append({
+            "closed_at_utc": record.get("closed_at_utc"),
+            "symbol": record.get("symbol"),
+            "side": record.get("side"),
+            "quantity": qty,
+            "entry_price": entry,
+            "exit_price": _money(record.get("exit_price")),
+            "entry_notional_usdt": round(qty * entry, 8) if proven else None,
+            "realized_pnl_usdt": _money(record.get("realized_pnl_usdt")),
+            "entry_order_id": record.get("entry_order_id"),
+            "size_proven": proven,
+        })
+    return rows
+
+
+def render_live_trade_evidence_text(rows: list[dict[str, Any]]) -> str:
+    """The real-trade half of the board."""
+    lines = ["=== live trades ===", ""]
+    if not rows:
+        lines += [
+            "no live trades closed on this machine yet",
+            "",
+            "when one closes it appears here with the venue's own entry price and quantity —",
+            "a live position is built from the ACTUAL fill or it is not booked at all, so a row",
+            "that cannot prove its size means something skipped that rule, not that it drifted",
+        ]
+        return "\n".join(lines)
+    for index, row in enumerate(rows, start=1):
+        mark = "PROVEN " if row["size_proven"] else "UNPROVEN"
+        body = (f"qty {row['quantity']} @ {row['entry_price']} "
+                f"= {row['entry_notional_usdt']} USDT  ->  exit {row['exit_price']}"
+                if row["size_proven"] else "no fill figures recorded — investigate")
+        lines.append(f"[{mark}] {index}. {row['closed_at_utc']}  {row['symbol']} {row['side']}"
+                     f"  order {row['entry_order_id']}")
+        lines.append(f"           {body}   realized {row['realized_pnl_usdt']} USDT")
+    proven = sum(1 for r in rows if r["size_proven"])
+    lines += ["", f"{proven}/{len(rows)} can prove their size"]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Print the canary evidence board. Read-only; writes nothing and opens no socket."""
     import argparse
@@ -406,10 +477,13 @@ def main(argv: list[str] | None = None) -> int:
         # than printing an empty board that reads as "no canaries placed".
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return 2
+    trades = live_trade_evidence_rows()
     if args.json:
-        sys.stdout.write(_json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
+        sys.stdout.write(_json.dumps({"canaries": rows, "live_trades": trades},
+                                     ensure_ascii=False, indent=2) + "\n")
     else:
-        sys.stdout.write(render_canary_evidence_text(rows) + "\n")
+        sys.stdout.write(render_canary_evidence_text(rows) + "\n\n"
+                         + render_live_trade_evidence_text(trades) + "\n")
     return 0
 
 
