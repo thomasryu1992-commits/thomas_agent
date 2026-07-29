@@ -9,7 +9,7 @@ current behaviour. For what the code does now read `CRYPTO_LIVE_EXECUTION_V0.1.m
 exists** (`financial_transaction_execution_implemented: true`, `ORDER_PATH_IMPLEMENTED = True`,
 both flipped 2026-07-25 in lockstep with increment 2b). That says the *code* exists, not that
 this machine may act: `financial_executor_enabled` stays false, and acting still needs the
-per-machine `live_trading` grant, the confirmation phrase, a registered budget, both kill
+`MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, a registered budget, both kill
 switches, and — for the autonomous path — the canary evidence.
 Sequenced after: verification (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`), the budget
 (steps 6/6b), and the P5 role (step 7). Depends decisions: `LIVE_EXECUTION_GOVERNANCE_V0.1.md`.
@@ -177,7 +177,9 @@ autonomous cycle; the cycle (via LP5) is a separate, later step and only after t
 
 Merging LP4 (behind the gate, DryRun default) still authorizes nothing. Before a real order:
 
-1. The `live_trading` grant minted (Thomas, TTL-capped, revocable) + the order key provisioned.
+1. `MVP_LIVE_TRADING=real` set by Thomas + the order key provisioned. (This step read "the
+   `live_trading` grant minted, TTL-capped, revocable" until 2026-07-28, when Thomas removed
+   the grant — there is no TTL and no per-machine record behind this step any more.)
 2. The confirmation phrase set (distinct per capability).
 3. A valid registered trading budget (step 6/6b).
 4. The runtime kill switch ACTIVE.

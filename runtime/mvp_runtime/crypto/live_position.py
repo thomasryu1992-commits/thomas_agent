@@ -274,7 +274,7 @@ class LivePositionStore(Protocol):
 
 class DryRunLivePositionStore:
     """The default: touches nothing. Lets the whole LP5 flow run and be tested with no
-    grant, no disk, and no venue. ``filesystem_write=False`` rides into every record so a
+    switch, no disk, and no venue. ``filesystem_write=False`` rides into every record so a
     dry run can never be read back as a real one."""
 
     provider_id = "dry_run"
@@ -291,7 +291,7 @@ class RealLivePositionStore:
     """Durable live book under ``.runtime_governance_state/crypto/live_positions/``.
 
     Constructed only behind the Safety-Flag Gate for the one ``live_trading`` provider, and
-    it re-asserts that authorization on **every** mutation — so deleting the grant file
+    it re-asserts that authorization on **every** mutation — so clearing ``MVP_LIVE_TRADING``
     stops the book mid-flight exactly as it stops order egress and the P&L ledger. Writes
     are atomic (temp + replace) under a per-symbol cross-process lock, and fsynced: a live
     position that reached the disk buffer but not the disk would be a real position the
@@ -337,20 +337,21 @@ class RealLivePositionStore:
 def select_live_position_store(
     *, now: str | None = None, root: Path | None = None
 ) -> LivePositionStore:
-    """Return the durable live book if the live-trading grant is open, else the inert one.
+    """Return the durable live book if live trading is opted in, else the inert one.
 
-    The capable store is constructed **by** the gate, so it cannot exist before the
-    authorization does; ``MVP_LIVE_TRADING=real`` without a valid local grant fails closed.
+    The capable store is still constructed **by** the gate, so it cannot exist before the
+    authorization does. What changed on 2026-07-28 (Thomas) is what opens the gate: the opt-in
+    ``MVP_LIVE_TRADING=real`` alone, no per-machine grant. It moves with the rest of the live
+    surface and must — this book is what the close path reads to know a position exists. Durable
+    orders over an inert book is an account holding positions the runtime cannot see to close.
     """
-    return safety_gate.select_gated(
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunLivePositionStore,
         gated_factory=lambda authorization: RealLivePositionStore(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

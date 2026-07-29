@@ -17,8 +17,8 @@ Fail-closed toward NOT ready, in two independent ways, both carried over from th
 * A minimum of zero or less is refused outright — that would be promotion with no evidence
   at all, which is the one configuration that must never read as satisfied.
 
-Writes ride the same single ``live_trading`` grant as the P&L ledger and the order counter:
-one switch for the whole live capability, revoked together.
+Writes ride the same single live-trading switch as the P&L ledger and the order counter
+(``MVP_LIVE_TRADING=real``): one switch for the whole live capability, revoked together.
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class CanaryRegistry(Protocol):
 class DryRunCanaryRegistry:
     """Inert registry: accepts and discards.
 
-    A canary record should be impossible to produce without the grant, since producing one
+    A canary record should be impossible to produce with the switch off, since producing one
     means an order was actually placed. If one arrives here anyway it is dropped rather than
     persisted — unbacked evidence in this registry would unlock autonomous trading.
     """
@@ -198,7 +198,7 @@ class DryRunCanaryRegistry:
 
 
 class RealCanaryRegistry:
-    """Durable canary evidence, behind the one live-trading grant."""
+    """Durable canary evidence, behind the one live-trading switch."""
 
     tool_id = CANARY_TOOL_ID
     tool_version = CANARY_TOOL_VERSION
@@ -230,14 +230,17 @@ class RealCanaryRegistry:
 
 
 def select_canary_registry(*, now: str | None = None, root: Path | None = None) -> CanaryRegistry:
-    """Return the durable canary registry if the live-trading grant is open, else the inert one."""
-    return safety_gate.select_gated(
+    """Return the durable canary registry if live trading is opted in, else the inert one.
+
+    Follows the order adapter onto ``select_env_gated`` (Thomas, 2026-07-28) and must: this
+    registry writes the evidence the promotion gate counts, and evidence must be exactly as hard
+    to produce as the order it evidences. Left on the grant while the adapter moved off it, a
+    machine could place real canaries and record none of them."""
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunCanaryRegistry,
         gated_factory=lambda authorization: RealCanaryRegistry(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )

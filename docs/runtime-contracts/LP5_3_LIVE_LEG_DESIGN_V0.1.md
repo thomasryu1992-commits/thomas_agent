@@ -122,7 +122,8 @@ does not exist", and this increment converts one into the other:
    too few days (the digest still says `INSUFFICIENT_SAMPLE`).
 2. **≥ 3 clean canary orders** (currently 0) — the plumbing has never been exercised against the
    real venue from this codebase.
-3. A registered budget, the `live_trading` grant, the order key, and the confirmation phrase — all
+3. A registered budget, `MVP_LIVE_TRADING=real` (the `live_trading` grant this line named was
+   removed by Thomas 2026-07-28), the order key, and the confirmation phrase — all
    operator steps, none of them present today.
 
 Building the executing leg before (1) and (2) means the autonomous path becomes reachable before
@@ -183,7 +184,7 @@ which moves the daily-loss breaker the *permissive* way.
        an unreadable paper one.
 3. [x] **The cycle routing.** Done 2026-07-28 (`crypto/live_route.py`), on Thomas's explicit
        instruction. The safety posture changed here, and the change is in one place: `cycle.py`
-       runs a live leg through one module, which is inert without the `live_trading` grant.
+       runs a live leg through one module, which is inert without `MVP_LIVE_TRADING=real`.
        What landed with it:
 
        - `live_route.run_live_leg` — gate → reconcile → settle → protect → maybe open, with
@@ -207,7 +208,7 @@ grants) were unchanged by steps 1 and 2: an executing leg with no autonomous cal
 orders. They bind step 3 — and step 3 is now built, so they bind at **run** time rather than at
 **build** time, which is the weaker of the two positions this record warned about. Where each
 stood on 2026-07-28: canary evidence **met** (4/4 clean on Thomas's machine, against the 0 this
-record was written with); operator grants **not** met (the `live_trading` grant expired
+record was written with); operator preconditions **not** met (the live-trading opt-in cleared
 2026-07-27, and the confirmation phrase and account feed are unset); paper record **improved but
 not met on its own terms** (60 closed trades at +0.08R, against the 6 at −0.39R recorded above;
 the digest still says `INSUFFICIENT_SAMPLE`, so "positive expectancy over a sustained window" is

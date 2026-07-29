@@ -136,11 +136,16 @@ def test_store_is_inert_by_default(tmp_path, monkeypatch):
     assert lp.list_open_live_positions(tmp_path) == []   # touched nothing
 
 
-def test_env_alone_fails_closed(tmp_path, monkeypatch):
+def test_env_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Inverted 2026-07-28 with the rest of the live surface. The book MUST move with the order
+    adapter: durable orders over an inert book is an account holding positions the runtime
+    cannot see, and therefore cannot close."""
     monkeypatch.setenv(LIVE_TRADING_ENV, REAL_LIVE_TRADING)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        lp.select_live_position_store(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    store = lp.select_live_position_store(now=NOW, root=tmp_path)
+    assert isinstance(store, lp.RealLivePositionStore)
+    assert store.filesystem_write is True
+    store.save_position(_position())
+    assert len(lp.list_open_live_positions(tmp_path)) == 1   # it really did persist
 
 
 def test_real_store_refuses_every_mutation_without_authorization(tmp_path):

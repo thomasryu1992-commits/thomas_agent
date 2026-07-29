@@ -98,11 +98,25 @@ NOT_DEPLOYED = {
 # futures-trading permission at the venue. Splitting it into a genuinely read-only venue key
 # is what would make the two separable.
 #
-# What still stands between a forwarded scheduler and an autonomous order, unchanged by any of
-# this: no autonomous entry point can reach the order path
-# (`test_no_autonomous_entry_point_reaches_the_live_order_path`), the per-machine
-# `live_trading` grant, and the registered budget. Env alone opens nothing — which is why
-# forwarding is a cost rather than a capability.
+# This comment used to end "Env alone opens nothing — which is why forwarding is a cost rather
+# than a capability." **That sentence is no longer true, and the two changes that falsified it
+# both landed after it was written**, so it is corrected here rather than quietly deleted:
+#
+#   1. cycle routing shipped (LP5.3 step 3, 2026-07-28): a scheduled crypto run now reaches the
+#      order path through `crypto/live_route.py`. The old claim that no autonomous entry point
+#      could get there is gone; what survives is that exactly ONE module may, pinned by
+#      `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`;
+#   2. the per-machine `live_trading` grant was removed (Thomas, 2026-07-28): the env opt-in
+#      `MVP_LIVE_TRADING=real` IS the gate now.
+#
+# Together those mean the `.env` file this test guards is, by itself, the difference between a
+# scheduler that trades paper and one that trades money. Forwarding is therefore a CAPABILITY,
+# not merely a cost, and this list is a correspondingly bigger deal than when it was written.
+#
+# What still stands between a forwarded scheduler and an autonomous order: the confirmation
+# phrase, the registered budget, the canary evidence, both kill switches, the loss breaker, and
+# the single-chokepoint property above. Each has its own row on the readiness board and each
+# has its own test. None of them is the env file.
 LIVE_TRADING_SURFACE = {
     live_pnl.LIVE_TRADING_ENV: "the live-trading switch",
     live_order.CONFIRMATION_ENV: "the autonomous-trading confirmation phrase",

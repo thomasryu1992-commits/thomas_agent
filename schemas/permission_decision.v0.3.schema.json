@@ -63,7 +63,7 @@
               "const": "thomas.governance.policy"
             },
             "policy_version": {
-              "const": "1.1.0"
+              "const": "1.2.0"
             },
             "policy_ref": {
               "const": "governance/GOVERNANCE_POLICY.yaml"

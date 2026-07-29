@@ -2,7 +2,7 @@
 
 Operator step. Builds a self-hashed budget record from the approved caps and writes it to the
 per-machine state dir (gitignored). **This grants nothing and enables no trading** — it is a
-record, not a permission. The `live_trading` safety-flag grant, the confirmation phrase, the
+record, not a permission. The `MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, the
 >= 3 clean canary orders, the P5 role, and LP4/LP5 all still stand between here and a live
 order (see LIVE_EXECUTION_GOVERNANCE_V0.1.md).
 
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  valid:    {record['valid_from']} .. {record['valid_until']}")
     print(f"  sha256:   {record['record_sha256']}")
     print(f"  written:  {path}")
-    print("This record grants nothing and enables no trading — the live_trading grant, the "
+    print("This record grants nothing and enables no trading — MVP_LIVE_TRADING=real, the "
           "confirmation phrase, >= 3 clean canary orders, the P5 role, and LP4/LP5 all still apply.")
     return 0
 

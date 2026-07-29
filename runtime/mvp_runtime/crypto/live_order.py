@@ -37,8 +37,10 @@ from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from ..safety_gate import Authorization
 from .live_pnl import (
+    LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
+    REAL_LIVE_TRADING,
     state_dir,
     utc_day,
 )
@@ -399,7 +401,7 @@ def evaluate_live_order_guard(
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
 
     Every runtime fact arrives as an argument so this can be exhaustively tested without a
-    venue, a grant, or a clock. Checks accumulate — the caller sees the complete refusal.
+    venue, a switch, or a clock. Checks accumulate — the caller sees the complete refusal.
 
     ``budget_registered`` states whether a valid registered live-trading budget backs the
     ``limits`` — the caller resolves both together (``resolve_live_order_limits``). It defaults
@@ -416,7 +418,7 @@ def evaluate_live_order_guard(
        autonomous phrase cannot authorize a canary (and the canary phrase cannot authorize
        autonomous trading — that was already true).
 
-    Every other check — the grant, both kill switches, the loss breaker, the registered budget,
+    Every other check — the opt-in, both kill switches, the loss breaker, the registered budget,
     the size / daily-count / exposure caps, the connectivity refusal, the intent shape — applies
     identically. Sharing one guard rather than writing a second one is deliberate: a check added
     later cannot land on only one of the two paths. ``canary`` defaults to ``False``, so the
@@ -436,10 +438,10 @@ def evaluate_live_order_guard(
             "(autonomous_spend_without_registered_budget); register one with "
             "scripts/register_live_trading_budget.py"
         )
-    # 1. The switch. Without the operator's live-trading grant nothing else matters.
+    # 1. The switch. Without the operator's live-trading opt-in nothing else matters.
     if not gate_open:
-        blocks.append("live trading grant is not active (safety-flag gate closed)")
-    # 2. The phrase. A grant enables the capability; the phrase proves intent to use it. One
+        blocks.append(f"live trading is not enabled ({LIVE_TRADING_ENV} is not '{REAL_LIVE_TRADING}')")
+    # 2. The phrase. The opt-in enables the capability; the phrase proves intent to use it. One
     #    phrase per capability: a canary is authorized by the canary phrase, never the autonomous
     #    one, so a machine armed for canaries cannot start trading autonomously.
     if canary:
@@ -551,8 +553,14 @@ def evaluate_live_close_guard(
     order count, the exposure cap, the promotion gate, and both kill switches. The reasoning
     is the source system's and it is worth stating plainly: a halt that traps you in a losing
     position is more dangerous than the halt was meant to prevent. What survives is the
-    structural boundary — the grant, the confirmation phrase, and reduceOnly itself, so this
-    path can only ever shrink a position, never open one.
+    structural boundary — the live-trading opt-in, the confirmation phrase, and reduceOnly
+    itself, so this path can only ever shrink a position, never open one.
+
+    Moving the opt-in off the per-machine grant (2026-07-28) removed the sharpest remaining
+    version of exactly the trap this docstring warns about: the grant carried an expiry, so a
+    position opened under a valid grant could find the close path shut at 00:00 with nothing
+    having gone wrong. An env var does not expire. The gate still has to be open to close —
+    that is the structural boundary and it stays — but it can no longer swing shut on its own.
 
     ``limits`` is required here too — see ``evaluate_live_order_guard``. The close path needs
     only the confirmation phrase from it, but taking it from the same resolved object keeps
@@ -561,7 +569,7 @@ def evaluate_live_close_guard(
     cfg = limits
     blocks: list[str] = []
     if not gate_open:
-        blocks.append("live trading grant is not active (safety-flag gate closed)")
+        blocks.append(f"live trading is not enabled ({LIVE_TRADING_ENV} is not '{REAL_LIVE_TRADING}')")
     if not cfg.confirmation_present():
         blocks.append(f"live confirmation phrase not present ({CONFIRMATION_ENV})")
     if not intent.get("reduce_only"):
@@ -598,7 +606,7 @@ def count_today(root: Path | None = None, *, day: str | None = None) -> int:
 
 
 class LiveOrderCounter:
-    """Durable per-day submission counter, behind the same live-trading grant as the ledger.
+    """Durable per-day submission counter, behind the same live-trading switch as the ledger.
 
     Incremented for an *ambiguous* submit too: an order that may have reached the venue has
     to consume budget, or a flapping connection could spend the daily cap many times over.
@@ -646,7 +654,7 @@ class LiveOrderCounter:
 
 
 class DryRunLiveOrderCounter:
-    """Inert counter: counts nothing because nothing can be submitted without the grant."""
+    """Inert counter: counts nothing because nothing can be submitted with the switch off."""
 
     filesystem_write = False
 
@@ -655,18 +663,18 @@ class DryRunLiveOrderCounter:
 
 
 def select_live_order_counter(*, now: str | None = None, root: Path | None = None) -> Any:
-    """Return the durable counter if the live-trading grant is open, else the inert one."""
-    from .live_pnl import LIVE_TRADING_ENV, REAL_LIVE_TRADING
+    """Return the durable counter if live trading is opted in, else the inert one.
 
-    return safety_gate.select_gated(
+    On ``select_env_gated`` with the adapter and the canary registry (Thomas, 2026-07-28), and
+    for the same reason as the registry: this counter is what the daily-order cap reads. A
+    durable adapter with an inert counter is an uncapped account."""
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunLiveOrderCounter,
         gated_factory=lambda authorization: LiveOrderCounter(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

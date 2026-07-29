@@ -22,6 +22,7 @@ from runtime.mvp_runtime.safety_gate import (
     assert_authorization,
     authorize,
     build_activation_record,
+    select_env_gated,
     select_gated,
 )
 
@@ -483,3 +484,120 @@ def test_escaping_evidence_ref_fails_closed(tmp_path):
     with pytest.raises(SafetyGateBlocked) as exc:
         authorize([NETWORK_ACCESS], provider_id="telegram", now="2026-07-16T00:00:00Z", root=tmp_path)
     assert exc.value.reason_code == "EVIDENCE_INVALID"
+
+
+# --- select_env_gated: the live-trading exception ----------------------------------
+#
+# Thomas removed the per-machine grant for live trading on 2026-07-28: `MVP_LIVE_TRADING=real`
+# is now the whole gate for that one capability. These tests pin BOTH halves of that decision —
+# that the env alone opens it, and that nothing else can reach the weaker door.
+
+
+def test_env_gated_returns_the_inert_default_without_the_opt_in(monkeypatch, tmp_path):
+    monkeypatch.delenv("PROBE_GATE_ENV", raising=False)
+    built = []
+    got = select_env_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: built.append(auth) or "capable",
+    )
+    assert got == "inert"
+    assert built == []
+
+
+@pytest.mark.parametrize("value", ["", "   ", "something-else", "REALLY", "true", "1"])
+def test_env_gated_opens_for_the_exact_value_and_nothing_near_it(value, monkeypatch, tmp_path):
+    """Dropping the grant makes this string the entire gate, so 'close enough' must not open
+    it. `true` and `1` are in the list on purpose: they are what someone reaches for when they
+    believe they are setting a boolean."""
+    monkeypatch.setenv("PROBE_GATE_ENV", value)
+    got = select_env_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: "capable",
+    )
+    assert got == "inert"
+
+
+def test_env_gated_opens_with_no_activation_record_anywhere(monkeypatch, tmp_path):
+    """The point of the change, stated as a test: the opt-in alone builds the capable thing.
+    `tmp_path` holds no activations directory at all, and this must still succeed — under
+    `select_gated` the identical call raised ACTIVATION_MISSING."""
+    monkeypatch.setenv("PROBE_GATE_ENV", "  REAL  ")
+    got = select_env_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: "inert",
+        gated_factory=lambda auth: auth,
+    )
+    assert isinstance(got, Authorization)
+    assert got.provider_id == "probe"
+    assert got.flags == (NETWORK_ACCESS,)
+
+
+def test_env_gated_authorization_still_re_checks_the_env_at_egress(monkeypatch, tmp_path):
+    """Defense in depth survives the change in weakened form. The grant file was re-read at
+    every egress so deleting it revoked mid-flight; there is no file now, so the re-check
+    re-reads the env. Same shape, and it still fails closed."""
+    monkeypatch.setenv("PROBE_GATE_ENV", "real")
+    auth = select_env_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: None,
+        gated_factory=lambda a: a,
+    )
+    assert_authorization(auth, required_flags=(NETWORK_ACCESS,), provider_id="probe", now=NOW)
+
+    monkeypatch.setenv("PROBE_GATE_ENV", "no")
+    with pytest.raises(SafetyGateBlocked) as exc:
+        assert_authorization(auth, required_flags=(NETWORK_ACCESS,), provider_id="probe", now=NOW)
+    assert exc.value.reason_code == "ENV_OPT_IN_WITHDRAWN"
+
+
+def test_env_gated_authorization_is_still_bound_to_its_provider_and_flags(monkeypatch):
+    """Removing the grant removed one requirement, not the others. An env-only authorization
+    must not become a skeleton key: wrong provider and insufficient flags still block."""
+    monkeypatch.setenv("PROBE_GATE_ENV", "real")
+    auth = select_env_gated(
+        env_var="PROBE_GATE_ENV", opt_in_value="real", flags=(NETWORK_ACCESS,),
+        provider_id="probe",
+        default_factory=lambda: None,
+        gated_factory=lambda a: a,
+    )
+    with pytest.raises(SafetyGateBlocked) as wrong_provider:
+        assert_authorization(auth, required_flags=(NETWORK_ACCESS,), provider_id="other", now=NOW)
+    assert wrong_provider.value.reason_code == "PROVIDER_NOT_AUTHORIZED"
+    with pytest.raises(SafetyGateBlocked) as missing_flag:
+        assert_authorization(
+            auth, required_flags=(NETWORK_ACCESS, MODEL_INVOCATION), provider_id="probe", now=NOW
+        )
+    assert missing_flag.value.reason_code == "FLAG_NOT_ENABLED"
+
+
+def test_only_live_trading_uses_the_env_only_gate():
+    """The containment test, and the reason this is a separate function rather than a flag on
+    `select_gated`. Thomas relaxed the gate for ONE capability; a later change that quietly
+    moves model_invocation or a search tool onto the same weaker door would be invisible in
+    review. Every call site is listed here, so adding one is a decision someone has to make on
+    purpose."""
+    import ast
+    import pathlib
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    callers = set()
+    for path in (repo / "runtime").rglob("*.py"):
+        if path.name == "safety_gate.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "select_env_gated":
+                callers.add(path.relative_to(repo).as_posix())
+    assert callers == {
+        "runtime/mvp_runtime/crypto/live_execution.py",   # the order adapter
+        "runtime/mvp_runtime/crypto/live_pnl.py",         # the realized-P&L ledger
+        "runtime/mvp_runtime/crypto/live_position.py",    # the position book
+        "runtime/mvp_runtime/crypto/live_order.py",       # the daily submission counter
+        "runtime/mvp_runtime/crypto/live_promotion.py",   # the canary evidence registry
+    }, callers

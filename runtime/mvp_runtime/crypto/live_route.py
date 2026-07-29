@@ -14,16 +14,16 @@ from the live stack; a test pins that, so "which code can start a live order" st
 with one answer. Adding a second caller is the same size of decision as adding the first.
 
 What did **not** change, and is worth stating because a reader who knows this stack will look
-for it: no grant is minted, no flag is flipped, no phrase is set, no role is activated, and no
+for it: no switch is thrown, no flag is flipped, no phrase is set, no role is activated, and no
 cap is widened. Every door LP3/LP4/LP5 built is still in the path, in the same order. What this
 adds is a caller that walks up to those doors once per cycle instead of an operator doing it by
 hand, and:
 
 - **the gate comes first, and it is the whole switch.** :func:`select_live_gate` selects the
-  order adapter through the Safety-Flag Gate. Without an active ``live_trading`` grant that
-  yields the inert dry-run adapter, and this module returns ``DISABLED`` having read no
-  account, opened no socket and made no decision. A machine that has not been through the
-  operator checklist behaves exactly as it did before this module existed;
+  order adapter through the Safety-Flag Gate. Without ``MVP_LIVE_TRADING=real`` that yields the
+  inert dry-run adapter, and this module returns ``DISABLED`` having read no account, opened no
+  socket and made no decision. A machine that has not been through the operator checklist
+  behaves exactly as it did before this module existed;
 - **reconcile before anything.** The venue is the truth. Anything but ``RECONCILED`` refuses
   entries for that symbol while closes stay allowed — being unable to see the account must
   never trap an open position;
@@ -82,7 +82,7 @@ from .paper import build_entry_plan
 LIVE_ROUTE_VERSION = "live_route.v0.1"
 
 # What this cycle's live leg did. One value, reported on the cycle record.
-ROUTE_DISABLED = "DISABLED"    # no live-trading grant here; nothing was read and nothing sent
+ROUTE_DISABLED = "DISABLED"    # live trading is off here; nothing was read and nothing sent
 ROUTE_BLOCKED = "BLOCKED"      # gated open, but a precondition refused before any venue action
 ROUTE_HELD = "HELD"            # ran end to end; no entry and no exit was due
 ROUTE_SETTLED = "SETTLED"      # a position closed and its outcome was recorded
@@ -117,9 +117,11 @@ def select_live_gate(*, now: str, root: Path | None = None) -> tuple[Any | None,
     """The order adapter if live routing is open on this machine, else ``(None, reason)``.
 
     Deliberately *the* gate rather than a second copy of it: ``select_order_adapter`` is
-    ``safety_gate.select_gated``, which constructs the capable adapter only after ``authorize``
-    verifies a local integrity-checked ``live_trading`` grant. Reading ``MVP_LIVE_TRADING``
-    here as well would be a second opinion about the same question, and the two could drift.
+    ``safety_gate.select_env_gated``, which constructs the capable adapter only after the
+    ``MVP_LIVE_TRADING=real`` opt-in is confirmed. Reading that env var here as well would be a
+    second opinion about the same question, and the two could drift. That was worth saying when
+    the gate also read a grant file; it matters *more* now that the gate is one env var, because
+    re-reading it here looks trivially safe and is exactly how the second opinion gets added.
 
     Both refusals are the same answer — not open — and both are returned rather than raised:
     a cycle must complete and report, and "this machine does not trade live" is the ordinary
@@ -128,8 +130,11 @@ def select_live_gate(*, now: str, root: Path | None = None) -> tuple[Any | None,
     try:
         adapter = live_execution.select_order_adapter(now=now, root=root)
     except MvpRuntimeError as exc:
-        # Opted in (``MVP_LIVE_TRADING=real``) with no valid grant: the gate's fail-closed
-        # path. Named, because "I set the env var and nothing happens" is otherwise silent.
+        # Used to be the reachable "opted in, but the grant is missing or expired" path. With
+        # the grant gone (2026-07-28) selection itself no longer refuses, so nothing raises here
+        # today. Kept, and kept returning rather than raising, because the contract this
+        # function owes its caller is "a cycle must complete and report" — a future constructor
+        # that can fail should surface as DISABLED-with-a-reason, not as a dead cycle.
         return None, exc.reason_code
     if not bool(getattr(adapter, "network_egress", False)):
         return None, ROUTING_DISABLED

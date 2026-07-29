@@ -43,7 +43,7 @@ until LP4/LP5 are deliberately written; this is not a disabled flag, it is an ab
 | `approved` is `True` only when there are **no blocks and no repairs** | `live_order.py:344-347` | ✅ |
 | `kill_blocks: external_execution` blocks a live **entry** (PAUSED/KILLED runtime) | `live_order.py:286` | ✅ |
 | Damaged canary evidence counts as **zero** clean orders (never the last good number); `min_orders ≤ 0` refused | `live_promotion.py` (`promotion_status`, `clean_canary_order_count`) | ✅ |
-| One `live_trading` grant (both `network_access` + `filesystem_write`); re-asserted at **every** egress, so deleting it is a live revocation | `safety_gate.py:314` (`assert_authorization`); `live_pnl.py:301`, `live_order.py` counter, `live_promotion.py` | ✅ |
+| One live-trading switch (both `network_access` + `filesystem_write`); re-asserted at **every** egress | `safety_gate.py` (`assert_authorization`, `select_env_gated`); `live_pnl.py`, `live_position.py`, `live_order.py` counter, `live_promotion.py`, `live_execution.py` | ⚠️ **weakened 2026-07-28** — the switch is `MVP_LIVE_TRADING=real` alone, no grant record. The egress re-check re-reads the env, so it is no longer a mid-flight revocation; use the runtime `kill` verb for that |
 | Every real writer defaults to **inert/DryRun**; the env var alone fails closed (`ACTIVATION_MISSING`) | each `select_*` (`live_pnl.py:323`, etc.) | ✅ |
 
 ## Credential handling (`account.py` — the only module holding real keys)

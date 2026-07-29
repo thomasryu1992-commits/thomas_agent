@@ -199,11 +199,15 @@ def test_tampered_history_blocks_even_with_enough_records(tmp_path):
 
 # === the gate on writing evidence ===================================================
 
-def test_registry_env_alone_fails_closed(tmp_path, monkeypatch):
+def test_registry_env_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Inverted 2026-07-28 with the rest of the live surface. The registry MUST move with the
+    order adapter: evidence has to be exactly as hard to produce as the order it evidences, or
+    a machine places real canaries and records none of them."""
     monkeypatch.setenv(LIVE_TRADING_ENV, REAL_LIVE_TRADING)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_canary_registry(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    registry = select_canary_registry(now=NOW, root=tmp_path)
+    assert isinstance(registry, RealCanaryRegistry)
+    registry.append_canary_order(_canary(True))
+    assert len(read_canary_orders(tmp_path)) == 1   # it really did persist
 
 
 def test_registry_default_is_inert(tmp_path, monkeypatch):
@@ -251,14 +255,14 @@ def test_fresh_machine_is_not_ready(tmp_path, clean_env):
     assert status["ready"] is False
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
     # order_path_implemented now passes (LP4 landed); every AUTHORITY row must still fail.
-    assert {"live_trading_grant", "confirmation_phrase", "registered_budget",
+    assert {"live_trading_opt_in", "confirmation_phrase", "registered_budget",
             "canary_evidence"} <= failed
 
 
 def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
-        "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
+        "live_trading_opt_in", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
         "market_data_visibility", "order_path_implemented", "autonomous_routing_wired",
     }
@@ -363,7 +367,7 @@ def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_p
     assert status["ready"] is False
     assert next(c for c in status["checks"] if c["check"] == "order_path_implemented")["ok"]
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
-    assert "live_trading_grant" in failed and "registered_budget" in failed
+    assert "live_trading_opt_in" in failed and "registered_budget" in failed
     assert status["guard_dry_run"]["approved"] is False
 
 
@@ -381,7 +385,13 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     # moves real money and how to stop it.
     if live_readiness.AUTONOMOUS_ROUTING_WIRED:
         assert "WIRED" in text and "REAL positions" in text
-        assert "delete the live_trading grant" in text
+        # The halt instruction must name the runtime kill, and must warn against the obvious
+        # wrong move. Clearing MVP_LIVE_TRADING looks like the way to stop a runtime whose gate
+        # IS that variable; it needs a restart to take effect and it strands every open position,
+        # because the close guard still requires the opt-in. Pinned in both directions because
+        # an operator reads this line in a hurry.
+        assert "console_cli kill" in text
+        assert "Do NOT clear MVP_LIVE_TRADING" in text
     else:
         assert "LP5" in text and "place_canary_order.py" in text
 

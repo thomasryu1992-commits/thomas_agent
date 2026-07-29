@@ -97,6 +97,14 @@ _GATE_ENV_VARS = (
     "MVP_WORKSPACE_WRITER",
     "MVP_APPROVAL_CONSUMPTION",
     "MVP_FRONTDESK_PROVIDER",
+    # Added 2026-07-28, the same day the live-trading grant was removed, and *because* it was.
+    # While the grant existed this var was safe to inherit: a suite run on a machine with
+    # MVP_LIVE_TRADING=real still got inert objects, because no test directory holds a grant.
+    # With the env as the whole gate, inheriting it means the suite constructs the REAL order
+    # adapter, ledger, position book, counter and canary registry — writing live-shaped state
+    # and, for anything that reaches egress, holding a genuine authorization. The operator's
+    # own machine is exactly where both this variable and this suite get run.
+    "MVP_LIVE_TRADING",
 )
 
 
