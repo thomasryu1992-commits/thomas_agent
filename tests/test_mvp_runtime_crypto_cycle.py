@@ -733,3 +733,103 @@ def test_the_memo_does_not_let_one_context_read_anothers_symbol(tmp_path):
     assert {r["symbol"] for r in summary["cycles"]} == {"BTCUSDT", "ETHUSDT"}
     for record in summary["cycles"]:
         assert record["collection"]["symbol"] == record["symbol"]
+
+
+# --- the fan-out's order is part of its behaviour (2026-07-29) ---------------------------------
+#
+# The fan-out runs sequentially and its scarce resources are consumed in order: two live slots,
+# twenty paper ones, and a live incident that stops it outright. Sorting alphabetically made all
+# three alphabetical — BNBUSDT took the live slot before BTCUSDT every fire, whatever either of
+# them signalled, and a halt stranded whatever sorted late.
+
+def _scored_pool(root, *entries):
+    """Install a pool whose entries carry distinct champion scores."""
+    pool.install_active_pool(
+        {"active_strategies": [
+            {"strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE",
+             "champion_score": score, "strategy_spec": spec}
+            for spec, score in entries
+        ]},
+        root=root,
+    )
+
+
+def test_contexts_are_visited_best_evidence_first_not_alphabetically(tmp_path):
+    """The slot arbitration. A score is not a signal, so this does not promise the best entry
+    wins — it replaces an ordering that correlates with nothing by one that correlates with the
+    evidence the pool was promoted on."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_AAA", "AAAUSDT", "1d"), 0.20),
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.90),
+        (_always_spec("S_ZZZ", "ZZZUSDT", "1d"), 0.55),
+    )
+    assert pool_cycle_contexts(tmp_path) == [
+        ("BTCUSDT", "1d"), ("ZZZUSDT", "1d"), ("AAAUSDT", "1d"),
+    ]
+
+
+def test_a_context_holding_a_live_position_is_visited_before_any_new_entry(tmp_path):
+    """Real money first. Settling or protecting an open live position is the most urgent thing a
+    fire does, and a live incident halts the fan-out — so a live context that sorted late used to
+    be the one a halt stranded."""
+    _scored_pool(tmp_path, (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.99))
+    _book_live_position(tmp_path, "ZZZUSDT", timeframe="1d", max_holding_bars=12)
+
+    contexts = pool_cycle_contexts(tmp_path)
+    assert contexts[0] == ("ZZZUSDT", "1d"), f"the live position was not visited first: {contexts}"
+
+
+def test_a_context_holding_a_paper_position_outranks_an_empty_one(tmp_path):
+    """Same rule, lower stakes: a book that can settle goes before a book that can only open."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.99),
+        (_always_spec("S_ETH", "ETHUSDT", "1d"), 0.10),
+    )
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    _pool_cycle(tmp_path, FakeExchangeCollector(), store)   # opens both books
+    assert load_open_position(ETH_CTX, tmp_path) is not None
+
+    # Now demote BTC's book away by emptying it, leaving ETH holding and BTC merely routable.
+    paper.RealPaperStore(root=tmp_path, authorization=_AUTH).clear_position(CTX)
+    contexts = pool_cycle_contexts(tmp_path)
+    assert contexts[0] == ("ETHUSDT", "1d"), f"the open book was not visited first: {contexts}"
+
+
+def test_the_order_is_deterministic_when_scores_tie(tmp_path):
+    """A fan-out that reorders itself between fires would make every ledger comparison useless."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_B", "BBBUSDT", "1d"), 0.5),
+        (_always_spec("S_A", "AAAUSDT", "1d"), 0.5),
+        (_always_spec("S_C", "CCCUSDT", "1d"), 0.5),
+    )
+    first = pool_cycle_contexts(tmp_path)
+    assert first == [("AAAUSDT", "1d"), ("BBBUSDT", "1d"), ("CCCUSDT", "1d")]
+    assert first == pool_cycle_contexts(tmp_path)
+
+
+def test_a_scoreless_entry_is_visited_last_never_dropped(tmp_path):
+    """Nothing to argue for going first is not a reason to be skipped."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_NONE", "AAAUSDT", "1d"), None),
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.4),
+    )
+    contexts = pool_cycle_contexts(tmp_path)
+    assert ("AAAUSDT", "1d") in contexts
+    assert contexts.index(("BTCUSDT", "1d")) < contexts.index(("AAAUSDT", "1d"))
+
+
+def test_every_context_still_runs_whatever_the_order(tmp_path):
+    """Ordering must never become filtering — a demoted strategy's book still has to settle."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_A", "AAAUSDT", "1d"), 0.1),
+        (_always_spec("S_B", "BBBUSDT", "1d"), 0.9),
+    )
+    _book_live_position(tmp_path, "ZZZUSDT", timeframe="4h")
+    assert set(pool_cycle_contexts(tmp_path)) == {
+        ("AAAUSDT", "1d"), ("BBBUSDT", "1d"), ("ZZZUSDT", "4h"),
+    }

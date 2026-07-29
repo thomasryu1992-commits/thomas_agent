@@ -469,19 +469,45 @@ def pool_cycle_contexts(
     A tampered/unreadable pool or position book contributes nothing rather than
     raising: each per-context cycle re-reads and records its own fail-closed reason,
     so one corrupt book cannot starve the rest. An empty union is returned as-is;
-    the caller decides the fallback."""
+    the caller decides the fallback.
+
+    **Order is part of the answer, not presentation.** The fan-out runs sequentially and its
+    scarce resources are consumed in order — two live slots, twenty paper ones — and a live
+    incident stops it outright, leaving the remaining contexts unvisited. Sorting alphabetically
+    made both of those alphabetical. The order is now, in tiers:
+
+    1. contexts holding an open **live** position — real money, and settling or protecting it is
+       the most urgent thing a fire does. First also means a halt cannot strand them;
+    2. contexts holding an open **paper** position, for the same reason at lower stakes;
+    3. everything else by the best ``champion_score`` routable there, descending — the evidence
+       the pool was promoted on, standing in for an arbitration the fan-out cannot do without a
+       second pass (see :func:`pool.context_scores`);
+    4. ``(symbol, timeframe)`` as the tiebreak, so the order stays deterministic."""
     contexts: set[tuple[str, str]] = set()
+    scores: dict[tuple[str, str], float] = {}
     try:
-        contexts.update(pool.routable_contexts(pool.load_active_pool(root)))
+        active = pool.load_active_pool(root)
+        scores = pool.context_scores(active)
+        contexts.update(scores)
     except MvpRuntimeError:
         pass  # per-context cycles below still re-read and record the pool's state
+
+    holding_paper: set[tuple[str, str]] = set()
     try:
         for context, _position in list_open_positions(root):
-            contexts.add((context.symbol, context.timeframe))
+            holding_paper.add((context.symbol, context.timeframe))
     except MvpRuntimeError:
         pass
-    contexts.update(live_position_contexts(root, default_timeframe=default_timeframe))
-    return sorted(contexts)
+    contexts.update(holding_paper)
+
+    holding_live = set(live_position_contexts(root, default_timeframe=default_timeframe))
+    contexts.update(holding_live)
+
+    def rank(context: tuple[str, str]) -> tuple[int, float, str, str]:
+        tier = 0 if context in holding_live else (1 if context in holding_paper else 2)
+        return (tier, -scores.get(context, 0.0), context[0], context[1])
+
+    return sorted(contexts, key=rank)
 
 
 def run_pool_cycle(

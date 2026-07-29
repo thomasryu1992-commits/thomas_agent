@@ -865,14 +865,36 @@ def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     multi-symbol strategy contributes each of its symbols) and none where it never
     could. Non-occupying or spec-less entries contribute nothing. Deduplicated and
     sorted for a stable, deterministic cycle order."""
-    contexts: set[tuple[str, str]] = set()
+    return sorted(context_scores(pool))
+
+
+def context_scores(pool: Mapping[str, Any]) -> dict[tuple[str, str], float]:
+    """``(symbol, timeframe)`` → the best ``champion_score`` any routable strategy there carries.
+
+    The same set :func:`routable_contexts` returns, with the evidence attached. It exists because
+    the live leg's slots are scarce — two open positions, one per symbol — while a fan-out visits
+    twenty contexts, so the FIRST context to produce a route takes a slot and the rest are refused
+    on capacity. Visiting in sorted order made that arbitration alphabetical: `BNBUSDT` before
+    `BTCUSDT` before `ETHUSDT`, every fire, whatever any of them actually signalled.
+
+    A score is not a signal — the strategy that scored best may propose nothing this bar — so this
+    does not pick the winner, and nothing here promises the globally best entry wins. What it does
+    is replace an ordering that correlates with nothing by one that correlates with the evidence
+    the pool was promoted on. Picking the true best would mean evaluating every context before
+    executing any of them, which is a second pass over the whole fan-out and its own decision.
+
+    A missing or unreadable score reads as 0.0 rather than being dropped: the context must still
+    be visited, it simply has nothing to argue for going first."""
+    scores: dict[tuple[str, str], float] = {}
     for entry in pool.get("active_strategies") or []:
         if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
             continue
         spec = StrategySpec.from_dict(entry["strategy_spec"])
+        score = _as_float(entry.get("champion_score"))
         for scoped_symbol in spec.symbol_scope:
-            contexts.add((str(scoped_symbol), str(spec.timeframe)))
-    return sorted(contexts)
+            key = (str(scoped_symbol), str(spec.timeframe))
+            scores[key] = max(scores.get(key, 0.0), score)
+    return scores
 
 
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:
