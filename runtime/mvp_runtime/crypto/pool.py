@@ -25,7 +25,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from .cost import DEFAULT_MAKER_FEE_BPS, DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_BPS
 from .paper import OCCUPYING_STATUSES, state_dir
-from .robustness import classify_verdict, verdict_rank
+from .robustness import HOLDOUT_CONFIRMED, ROBUST, classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
@@ -695,3 +695,91 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 str(record["candidate_id"]))
 
     return sorted(by_cid.values(), key=_key)
+
+
+# How many promotable lineages may wait before the daily board says so. Mirrors the
+# proposer's unreviewed-family cap (M4b) in intent and differs in effect: that cap makes
+# a fire SKIP, this one only speaks. Nothing here refuses anything — the promotion door
+# stays exactly as manual as it was.
+PROMOTION_BACKLOG_ALERT_THRESHOLD = 5
+
+
+def _lineage_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
+    """What makes two strategies the SAME promotion decision: one family on one context.
+
+    Not the rule hash — the factory mints a fresh hash for every parameter tweak of the
+    same family on the same symbol and timeframe, and an operator choosing between them is
+    filling one slot, not making four decisions."""
+    return (
+        spec.get("strategy_family"),
+        tuple(spec.get("symbol_scope") or ()),
+        spec.get("timeframe"),
+    )
+
+
+def promotable_backlog(
+    root: Path | None = None,
+    *,
+    candidates: list[Mapping[str, Any]] | None = None,
+    active_pool: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """How many lineages an operator could promote right now and has not.
+
+    Deliberately NOT the candidate count. The factory mints dozens a day, so that number
+    only ever rises and a threshold on it fires every morning until it is ignored. What
+    an operator can actually act on is the far smaller set that would clear the door
+    TODAY — so this applies the same chain ``--list`` and the promotion gate apply, in
+    the same order:
+
+    - evidence at a basis the door accepts (:data:`PROMOTABLE_COST_BASIS_RANKS`); an
+      OPTIMISTIC row is refused at the ask, so counting it would advertise work that
+      cannot be done
+    - ROBUST on the *recomputed* verdict, and CONFIRMED out-of-sample
+    - positive expectancy at the CURRENT rates, not at whatever rate it was scored under
+    - one row per (family, symbol scope, timeframe), counting the active pool's own
+      members first: the factory re-mints the same lineage every generation, so this
+      collapses the re-mints AND drops the ones whose slot an operator already filled
+
+    That last rule is one rule on purpose. Excluding pool members by ``strategy_rule_hash``
+    while collapsing candidates by lineage mixes two granularities, and the backlog then
+    never drains: promoting one re-mint leaves its siblings — same family, same context,
+    different rule hash — to resurface as fresh backlog the next morning, forever. Measured
+    here: 7 reported where 4 were waiting, the other 3 being siblings of rows promoted
+    minutes earlier. The hash check stays as well, for pool entries whose spec cannot
+    supply a lineage.
+
+    Read-only, and it decides nothing: the count exists so the daily board can say a
+    queue formed. Ids come back in :func:`rank_candidates` order, so the first one named
+    is the first one an operator would read.
+    """
+    records = candidates if candidates is not None else read_candidates(root)
+    pool_doc = active_pool if active_pool is not None else load_active_pool(root)
+    active_entries = pool_doc.get("active_strategies") or []
+    active_hashes = {entry.get("strategy_rule_hash") for entry in active_entries}
+    seen_lineages: set[tuple[Any, ...]] = {
+        _lineage_key(entry.get("strategy_spec") or {}) for entry in active_entries
+    }
+
+    candidate_ids: list[str] = []
+    for record in rank_candidates(list(records)):
+        if record.get("strategy_rule_hash") in active_hashes:
+            continue
+        quality = candidate_quality(record)
+        if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
+            continue
+        if quality["verdict"] != ROBUST or quality["holdout_status"] != HOLDOUT_CONFIRMED:
+            continue
+        expectancy = quality["expectancy_at_current_costs"]
+        if not isinstance(expectancy, (int, float)) or expectancy <= 0:
+            continue
+        lineage = _lineage_key(record.get("strategy_spec") or {})
+        if lineage in seen_lineages:
+            continue
+        seen_lineages.add(lineage)
+        candidate_ids.append(candidate_id(record))
+
+    return {
+        "count": len(candidate_ids),
+        "threshold": PROMOTION_BACKLOG_ALERT_THRESHOLD,
+        "candidate_ids": candidate_ids,
+    }
