@@ -97,6 +97,25 @@ DEFAULT_CANDLES = 120
 # bounds egress and memory if the strategy vocabulary is ever widened downward.
 FACTORY_DEPTH_DAYS = 500
 
+# The floor the calendar span does not provide. Expressing depth in days fixed the fast
+# timeframes and left the slow ones starved in the mirror-image way: 500 days is 48k bars
+# at 15m but 500 at 1d, and the robustness scorer counts TRADES, which scale with bars and
+# not with calendar span. Every 1d lineage therefore scored on ~350 replay bars and ~16
+# trades — under the scorer's critical trades-per-parameter — so a 1d candidate was FRAGILE
+# by construction, whatever its edge. Measured 2026-07-29 on the 25 live 1d strategies,
+# same specs and same cost model, only the window changed: at 500 bars the scorer returned
+# 0 ROBUST / 20 FRAGILE with holdout CONFIRMED 11; at this floor, 12 ROBUST / 1 FRAGILE
+# with holdout CONFIRMED 15.
+#
+# One-sided by construction: the floor can only lengthen a window, never shorten one, so
+# every timeframe the calendar reasoning above already bound stays bound (4h is the nearest
+# at 3,000 bars and does not move). Only 1d changes.
+#
+# The value is what the venue can actually answer, not a round number: the shortest history
+# among the routed USD-M perpetuals is ~2.1k daily bars (SOLUSDT), so a higher floor would
+# collect short and score a window it never received.
+MIN_FACTORY_BARS = 2_000
+
 
 @dataclass
 class Candle:
@@ -208,14 +227,17 @@ def _require_timeframe(timeframe: Any) -> str:
 
 
 def factory_candle_target(timeframe: str) -> int:
-    """Bars covering ``FACTORY_DEPTH_DAYS`` at ``timeframe``, clamped to ``MAX_CANDLES``.
+    """Bars covering ``FACTORY_DEPTH_DAYS`` at ``timeframe``, floored at
+    ``MIN_FACTORY_BARS`` and clamped to ``MAX_CANDLES``.
 
     The factory's replay window is a calendar span, not a bar count — see
-    ``FACTORY_DEPTH_DAYS``. 1d resolves to 500, exactly the flat value this replaced,
-    so the timeframe already in production keeps its behavior bar for bar.
+    ``FACTORY_DEPTH_DAYS`` — with a bar floor underneath it, because a span alone
+    buys 1d too few trades for the scorer to judge (see ``MIN_FACTORY_BARS``). The
+    floor binds 1d only; every faster timeframe is already deeper than it.
     """
     minutes = TIMEFRAMES[_require_timeframe(timeframe)]
-    return max(1, min(FACTORY_DEPTH_DAYS * 1440 // minutes, MAX_CANDLES))
+    calendar_bars = FACTORY_DEPTH_DAYS * 1440 // minutes
+    return max(1, min(max(calendar_bars, MIN_FACTORY_BARS), MAX_CANDLES))
 
 
 def collect_market_data(

@@ -36,6 +36,8 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from ..errors import ToolError
+
 DEFAULT_WINDOWS = (20, 30, 50, 100)
 
 _RANK = {"PAPER_ACTIVE": 0, "WARNING": 1, "PROBATION": 2, "SUSPENDED": 3, "ARCHIVED": 4}
@@ -226,6 +228,70 @@ def evaluate_lifecycle(
     decision["strategy_lifecycle_decision_id"] = integrity.short_id(
         "strategy_lifecycle_decision",
         {"strategy_id": str(strategy_id), "prev": current_status, "next": new_status, "at": now},
+    )
+    decision["created_at_utc"] = now
+    return decision
+
+
+# The one status transition an operator may originate. Every other transition in this
+# module is a verdict on realized performance, and that is the right default — but a
+# strategy promoted in error has no performance signal to wait for, and waiting is not
+# neutral: it occupies a routing slot, and `route_entries` picks ONE strategy per
+# context, so the slot-holder is the only one that ever produces the outcomes the
+# automatic path would need in order to demote it. Without this the runtime can only
+# retire a strategy by REPLACING the whole pool through the promotion door, which
+# resets every member's status — reactivating terminal entries as a side effect.
+OPERATOR_RETIREMENT_REASON = "operator_retired"
+
+
+def operator_retirement_decision(
+    entry: Mapping[str, Any], *, reason: str, retired_by: str, now: str,
+) -> dict[str, Any]:
+    """One operator-originated SUSPEND, in the shape ``pool.update_statuses`` accepts.
+
+    Deliberately not a second way to compute a status: the record carries the same
+    fields ``evaluate_lifecycle`` produces, so the pool entry that results is
+    identical in SHAPE to an automatic demotion and fully distinguishable in
+    PROVENANCE (``reasons == ["operator_retired"]`` plus the operator's own text).
+
+    SUSPENDED only. Reactivation is the approval door and ARCHIVED is the lifecycle's
+    own escalation; neither is something an operator reaches through this verb. An
+    entry that is already terminal refuses here rather than at the store, so the
+    caller reads which strategy blocked instead of a whole-batch refusal.
+
+    ``consecutive_failures`` carries over untouched — retiring a strategy is a
+    statement about the pool, never about the strategy's record.
+    """
+    strategy_id = entry.get("strategy_id")
+    if not (isinstance(strategy_id, str) and strategy_id):
+        raise ToolError("LIFECYCLE_DECISION_INVALID", "pool entry has no strategy_id")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise ToolError("RETIREMENT_REASON_REQUIRED", f"{strategy_id}: a retirement needs a reason")
+    current = str(entry.get("status"))
+    if current in TERMINAL_STATUSES:
+        raise ToolError(
+            "LIFECYCLE_TERMINAL_IMMUTABLE",
+            f"{strategy_id} is already {current}; there is nothing to retire",
+        )
+    decision: dict[str, Any] = {
+        "strategy_id": strategy_id,
+        "candidate_id": entry.get("candidate_id"),
+        "strategy_rule_hash": entry.get("strategy_rule_hash"),
+        "previous_status": current,
+        "new_status": "SUSPENDED",
+        "status_changed": True,
+        "is_escalation": True,
+        "is_recovery": False,
+        "consecutive_failures": int(entry.get("lifecycle_consecutive_failures") or 0),
+        "new_entry_blocked": True,
+        "requires_manual_reactivation": True,
+        "reasons": [OPERATOR_RETIREMENT_REASON],
+        "retirement_reason": reason.strip(),
+        "retired_by": retired_by,
+    }
+    decision["strategy_lifecycle_decision_id"] = integrity.short_id(
+        "strategy_lifecycle_decision",
+        {"strategy_id": strategy_id, "prev": current, "next": "SUSPENDED", "at": now},
     )
     decision["created_at_utc"] = now
     return decision

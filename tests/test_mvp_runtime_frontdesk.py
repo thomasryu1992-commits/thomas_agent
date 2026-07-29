@@ -931,3 +931,31 @@ def test_nothing_of_the_front_desks_own_is_added_to_the_request(tmp_path):
 
     submitted = registry.latest()[0].request_text
     assert set(submitted.split("\n")) == {"A를 분석해줘", "B 기준"}
+
+
+# --- the prompt must name what the PARSER requires ---------------------------
+
+def test_the_prompt_names_every_required_analysis_field():
+    """Measured, not reasoned about: the turn rides inside the shared analysis JSON, and this
+    prompt described only `recommendation`. Groq's `json_object` mode constrains no keys, so
+    the model omitted the envelope fields in 3 of 8 live turns — the whole response discarded
+    (`MALFORMED_RESPONSE`), the turn never delivered. Naming them took that to 0 of 8.
+
+    Pinned against the parser's OWN constant, so a fourth required field cannot be added
+    without this prompt learning about it — the same drift gate the schema version and the
+    request kinds already have."""
+    from runtime.mvp_runtime.providers import _REQUIRED_ANALYSIS_KEYS
+
+    header = frontdesk._prompt_header()
+    for key in _REQUIRED_ANALYSIS_KEYS:
+        assert key in header, key
+
+
+def test_the_prompt_demands_the_flags_rather_than_only_explaining_them():
+    """`important`/`independent_validation` are schema-REQUIRED, and the prompt used to say
+    only when to make them true — so a small model read "neither applies" as "omit both" and
+    the turn failed validation (2 of 8 live turns). The instruction now says the fields are
+    mandatory and false is a value, not an absence."""
+    header = frontdesk._prompt_header()
+    assert "생략 금지" in header
+    assert "false" in header

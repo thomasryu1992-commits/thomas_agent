@@ -22,6 +22,7 @@ from runtime.mvp_runtime.crypto.market_data import (
     FACTORY_DEPTH_DAYS,
     MARKET_DATA_ENV,
     MAX_CANDLES,
+    MIN_FACTORY_BARS,
     TIMEFRAMES,
     BinanceFuturesCollector,
     MarketSnapshot,
@@ -266,12 +267,28 @@ def test_binance_malformed_response_fails_closed(monkeypatch, payload):
 
 
 def test_factory_candle_target_is_calendar_depth_not_a_bar_count():
-    # 1d keeps the flat 500 the constant used to be — the timeframe already in
-    # production must not shift when depth becomes timeframe-aware.
-    assert factory_candle_target("1d") == 500
+    # The calendar span alone governs every timeframe deeper than the bar floor.
     assert factory_candle_target("4h") == 3_000
     assert factory_candle_target("1h") == 12_000
     assert factory_candle_target("15m") == 48_000
+
+
+def test_factory_candle_target_floors_the_slowest_timeframe():
+    # 500 days of 1d is 500 bars — ~350 after the holdout split, ~16 trades, under the
+    # scorer's critical trades-per-parameter. The floor is what makes a 1d verdict mean
+    # anything; without it every 1d lineage is FRAGILE by sample size alone.
+    assert factory_candle_target("1d") == MIN_FACTORY_BARS
+    assert FACTORY_DEPTH_DAYS * 1440 // TIMEFRAMES["1d"] < MIN_FACTORY_BARS
+
+
+def test_factory_candle_target_floor_never_shortens_a_window():
+    # One-sided: the floor may only lengthen. A timeframe whose calendar span already
+    # exceeds it must come back unchanged, or the fast-timeframe fix this floor sits on
+    # top of would be silently undone.
+    for timeframe in ("15m", "1h", "4h"):
+        calendar_bars = FACTORY_DEPTH_DAYS * 1440 // TIMEFRAMES[timeframe]
+        assert factory_candle_target(timeframe) == min(calendar_bars, MAX_CANDLES)
+        assert factory_candle_target(timeframe) >= MIN_FACTORY_BARS
 
 
 def test_factory_candle_target_clamps_the_fastest_timeframes():
@@ -288,12 +305,16 @@ def test_every_authorable_timeframe_gets_its_full_depth():
     accepted. Every timeframe that IS authorable must fit under MAX_CANDLES, or the
     clamp would silently shorten a window the factory depends on. Widening either
     vocabulary without re-checking the other trips this.
+
+    The calendar span is a floor on the window, not an equality: ``MIN_FACTORY_BARS``
+    lengthens 1d past it. What must hold for every authorable timeframe is that the
+    window is never SHORTER than the span — that is the direction a clamp could break.
     """
     assert ALLOWED_TIMEFRAMES < set(TIMEFRAMES), "strategy vocabulary must stay a subset"
     for timeframe in ALLOWED_TIMEFRAMES:
         bars = factory_candle_target(timeframe)
         assert bars < MAX_CANDLES, f"{timeframe} is clamped below its full depth"
-        assert bars * TIMEFRAMES[timeframe] // 1440 == FACTORY_DEPTH_DAYS
+        assert bars * TIMEFRAMES[timeframe] // 1440 >= FACTORY_DEPTH_DAYS
 
 
 def test_factory_candle_target_rejects_unknown_timeframe():

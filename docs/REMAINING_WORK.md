@@ -4,7 +4,11 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-29** (`main` = `d6b65df`), after the canary evidence learned to prove its
+Last updated: **2026-07-29** (`main` = `01854b3`), after the front-desk prompt started naming the
+fields its parser requires (#336) — which opened a new line in section B, because establishing
+that took the production front desk down for a quota reset — and the `NO_SIZE` gate's provenance
+was corrected to say it closes a hole rather than repairs damage (#334).
+Earlier the same day (`main` = `d6b65df`), after the canary evidence learned to prove its
 own size (#328) and the board learned to say when it cannot (#332), `/kill` started reaching the
 control state during an analysis instead of after it (#329/#333), a live entry started announcing
 itself (#331), and the live leg started enforcing the strategy's time exit (#330).
@@ -269,7 +273,8 @@ trading, leverage, any US-context Polymarket access.
 ## B. LLM orchestration (M-series) — request → tiered model → verify → deliver
 
 Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (on `main`).
-**This track is code-complete.** The only open line is M5b, which is an operator action, not a build.
+**This track is code-complete.** Both open lines below are operator actions rather than builds:
+M5b (a standing habit) and a provider key that is not the live operator's (a thing to obtain).
 
 - [x] **M0** env cleanup (done 2026-07-24).
 - [x] **M1** difficulty triage 상/중/하, observe-only — merged (PR #145).
@@ -292,6 +297,26 @@ Roadmap: `docs/LLM_ORCHESTRATION_ROADMAP_V0.1.md` (on `main`).
       purpose: M5a captures corrections as unverified `[M#]` candidates and M5c only feeds back what
       was promoted, so the loop produces nothing until someone says yes. That gate is the feature —
       it is what keeps a bad correction from entrenching itself as standing guidance.
+- [ ] **A provider key that is not the live operator's** — for measuring anything against a real
+      model. Not a build item and not urgent, but it has already cost something once, so it is
+      here rather than only in `BUILD_HISTORY`.
+      Establishing that the front-desk prompt never named the fields its parser requires (#336)
+      took ~60 live calls, and those calls went through the **production** front desk's key.
+      They exhausted the free-tier quota and left the live channel degraded until it reset —
+      fail-closed, `/verbs` unaffected, no message lost, but degraded — and the confirming run on
+      the text that actually shipped never completed. So the shipped prompt's 8/8 is measured on
+      text equivalent in content but not byte-identical, and the reason it stayed that way is
+      this missing key rather than any judgement about whether it was worth confirming.
+      **The finding needed the live provider**: every test uses the scripted one, and a response
+      discarded as `MALFORMED_RESPONSE` degrades the channel to the plain queue safely and
+      silently, so nothing in the suite can see it. That makes live measurement a thing this
+      repo will want again — and doing it on the operator's own key means the next one takes
+      the front desk down the same way.
+      Two adjacent questions belong with it rather than on their own: whether
+      `MVP_FRONTDESK_PROVIDER` should be a failover **chain** like `MVP_HOSTED_PROVIDER` (under
+      those 429s `FailoverProvider` would have fired — `PROVIDER_UNAVAILABLE` is exactly and only
+      what it fails over on, unlike the `MALFORMED_RESPONSE` case where it provably would not
+      help), and whether a measurement harness should be pointed at a separate provider entirely.
 - [x] **M5c** a promoted VALIDATED correction feeds back as a correction to *apply* (`[V#]`,
       distinctly framed) — done. `promote_candidate` carries the correction marker forward;
       `worker._validated_context` frames it. Known limit: only revision-path corrections are
