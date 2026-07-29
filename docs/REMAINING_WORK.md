@@ -693,6 +693,64 @@ scopes at different levels, so nothing was owed to it.
       not a safety brake; a test pins the two call sites as scoped differently. The import script
       itself is untouched.
 
+- [ ] **Intraday open interest — a store we own, because the vendor keeps 84 days.** The `oi_*`
+      families are the strongest thing the factory currently mints (four of the ten lineages
+      promoted 2026-07-29 are `oi_squeeze_long` / `oi_unwind_short`, and the top one scores
+      +0.99R at current rates), and every one of them is reading a **daily** OI series.
+      `CoinalyzeLiquidationFeed.open_interest_history` hardcodes `interval: "daily"`, and
+      `_open_interest_event_columns` says so plainly: *"a change here is day against day
+      regardless of the bar size the caller will align onto."* So a 1h or 4h `oi_*` entry is
+      judging hour-scale timing on a value that steps once a day. That is a **collection**
+      problem, not a vocabulary one — the raw level is deliberately unmintable (`open_interest`
+      is evidence-only; the mintable pair is `open_interest_change_pct` and
+      `open_interest_zscore`, the latter a rolling z-score of the level itself, which is exactly
+      the per-symbol normalization a shared parameter space needs).
+
+      **Measured on the vendor, 2026-07-29** (BTCUSDT, one read-only request per interval; the
+      response truncates at ~2000 rows, so each window was sized under it and old windows were
+      requested explicitly to tell a row cap from a retention wall):
+
+      | interval | oldest row | effective retention |
+      |---|---|---|
+      | `daily` | 2025-03-17 | 500 d+ (as much as asked) |
+      | `1hour` | 2026-05-06 | **~84 d** |
+      | `15min` | 2026-07-08 | ~21 d |
+      | `5min` | 2026-07-22 | ~7 d |
+
+      `1hour` windows at 140–200, 340–400 and 460–520 days back all return **empty** — a wall,
+      not a page boundary. Binance's own `futures/data/openInterestHist` is shallower still
+      (500 rows = 21 d at `1h`, HTTP 400 on any older window), so there is no deeper source to
+      switch to.
+
+      **Why the switch cannot simply be made.** `factory_candle_target` replays **500 calendar
+      days** at every timeframe below 1d (48,000 bars at 15m, 12,000 at 1h, 3,000 at 4h), and
+      the source rule holds that the backtest and the live router read the same feature source.
+      Point the feed at `1hour` today and 83% of every replay window has `open_interest = None`,
+      the fail-closed evaluator leaves those bars indeterminate, and the family closes too few
+      trades to earn a verdict — the switch would delete the evidence behind the strategies it
+      was meant to improve. There is no partial-coverage escape: depth is global, not per family.
+
+      **So the only path is to become the retainer.** Seed an append-only store from the 84 days
+      the vendor still has and append every cycle thereafter, keyed `(symbol, hour)` with
+      latest-wins so a re-fetch is idempotent and a gap shorter than 84 days self-heals on the
+      next read. Cost is one extra request per symbol per cycle, and the write is worth
+      throttling to once per hour rather than once per 15-minute fire. **The store feeds nothing
+      at first** — features keep reading daily OI, so backtest and live stay identical while the
+      history builds.
+
+      **The threshold, stated now so it is not re-litigated later:** a timeframe becomes eligible
+      when the 1h store covers `FACTORY_DEPTH_DAYS` (500) for that symbol. From an 84-day seed
+      that is **~416 days of accumulation** — roughly 2027-09 for a store started today. Slow,
+      and the clock only starts when the store does, which is the whole argument for starting it
+      before the feature change is wanted.
+
+      **Eligibility is surfaced, never self-applied.** Coverage belongs on the daily board next
+      to the promotion backlog (same pattern, same reason: a condition nobody is told about is a
+      condition nobody acts on), and flipping the feature source stays an explicit change with
+      Thomas reading the diff. An automatic flip would silently re-base the evidence under
+      live-capable strategies mid-flight — the same class of silent-widening this section spent
+      two other items closing.
+
 ### Review findings — raised and closed 2026-07-26
 
 A full review of the live stack raised six items. Recording them here because each is a rule with a
