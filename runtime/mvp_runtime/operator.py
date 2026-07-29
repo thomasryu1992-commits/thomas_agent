@@ -1191,7 +1191,16 @@ def peek_for_halt(
     if not callable(reader):
         return None       # a transport that cannot peek degrades to the pre-existing silence
     try:
-        for message in reader():
+        batch = reader()
+    except Exception:      # noqa: BLE001 — deliberate: see the docstring
+        return None
+    # Per message, not per batch. Wrapping the whole loop meant one bad message took the rest of
+    # the batch down with it — including a `/kill` queued behind it — which is this function's own
+    # principle (a safety net must not destroy what it protects) failing to reach inside the batch.
+    # Nothing is claimed either way, so the next poll would still have handled it; the halt would
+    # just have waited for the thing it exists not to wait for.
+    for message in batch:
+        try:
             try:
                 verify_control_channel(message, registration)
             except OperatorBlocked:
@@ -1206,8 +1215,8 @@ def peek_for_halt(
                 ledger=None,      # the audit belongs to the normal handling, once
             )
             return verb
-    except Exception:      # noqa: BLE001 — deliberate: see the docstring
-        return None
+        except Exception:      # noqa: BLE001 — deliberate: see the docstring
+            continue
     return None
 
 
@@ -1263,8 +1272,14 @@ def run_queued_task(
         `peek_for_halt` swallows everything.
         """
         progress.stage(stage)
-        peek_for_halt(channel, registration=registration,
-                      control_store=control_store, now=stamp)
+        # No `now=stamp`. `stamp` is bound before the analysis runs, and `control.apply_command`
+        # writes whatever it is given straight into `ControlState.updated_at` — so a `/kill`
+        # arriving three minutes into a four-minute analysis was recorded as having happened when
+        # the analysis BEGAN. Nothing compares that field, so no gate behaved differently; but it
+        # is the operator's record of when they halted the runtime, on the state that gates the
+        # money path, and "when did the kill land" is the question it exists to answer afterwards.
+        # `peek_for_halt` stamps at the moment it acts.
+        peek_for_halt(channel, registration=registration, control_store=control_store)
 
     reply = render_result_reply(run_task(
         entry.request_text,
