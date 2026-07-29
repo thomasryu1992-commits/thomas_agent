@@ -225,6 +225,49 @@ def test_an_edge_with_no_depth_is_flagged():
     assert opportunity.NO_SIZE in record["reasons"]
 
 
+def test_a_venue_reporting_zero_depth_is_flagged_too():
+    """`None` and `0` are different facts — did not say, versus said none — and both mean the
+    same thing at the touch. What they must not differ in is whether a reason is raised: the
+    check used to ask only about `None`, so a venue answering `size: 0` produced a clean
+    record with no flag at all. Seen live 2026-07-28 as a 0.09c opportunity on a touch of zero
+    contracts, counted alongside real ones."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45, ask_size=0.0),
+        _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
+        now=NOW,
+    )
+    assert record["best"]["size_at_touch"] == 0.0, "the record states what the venue said"
+    assert opportunity.NO_SIZE in record["reasons"]
+
+
+def test_an_edge_nobody_could_take_is_not_an_opportunity():
+    """The reason was raised from the day it was introduced and never once acted on — the
+    record called it "an edge nobody could take any of" and then counted it as an opportunity.
+    Frequency is the number PM1 exists to produce, and PM2 and PM3 are built on it."""
+    for label, kalshi_ask_size, poly_bid_size in (
+        ("venue said none", 0.0, 500.0),
+        ("venue said nothing", None, None),
+    ):
+        record = opportunity.evaluate_pairing(
+            _market(KALSHI, bid=0.43, ask=0.45, ask_size=kalshi_ask_size),
+            _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=poly_bid_size, category="crypto"),
+            now=NOW,
+        )
+        assert record["net_edge"] > 0, f"{label}: the arithmetic still stands"
+        assert record["is_opportunity"] is False, f"{label}: but nobody could take it"
+
+
+def test_depth_on_both_sides_is_still_an_opportunity():
+    """The gate is untradeable depth, not depth as such — the ordinary case must survive it."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45, ask_size=500.0),
+        _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
+        now=NOW,
+    )
+    assert record["is_opportunity"] is True
+    assert opportunity.NO_SIZE not in record["reasons"]
+
+
 def test_an_observation_states_that_it_authorizes_nothing():
     record = opportunity.evaluate_pairing(
         _market(KALSHI, bid=0.43, ask=0.45), _market(POLYMARKET, bid=0.55, ask=0.57), now=NOW
