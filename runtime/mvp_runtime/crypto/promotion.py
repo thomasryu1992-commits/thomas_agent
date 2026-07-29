@@ -49,6 +49,7 @@ def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], k
 
 def _resolve_candidates(
     selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
+    allow_unrecorded_evidence_depth: bool = False,
 ) -> list[dict[str, Any]]:
     """Selector resolution via the store's single authority, as approval refusals."""
     try:
@@ -66,6 +67,13 @@ def _resolve_candidates(
             pool_store.assert_promotable_cost_basis(resolved)
         except ToolError as exc:
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # Same rule for evidence that cannot say what window it was scored over, for the same
+    # reason: the execution door refuses it, so asking first only spends the answer.
+    if not allow_unrecorded_evidence_depth:
+        try:
+            pool_store.assert_promotable_evidence_depth(resolved)
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     return resolved
 
 
@@ -78,6 +86,7 @@ def request_promotion(
     repo_root: Path | None = None,
     candidates_root: Path | None = None,
     allow_stale_cost_basis: bool = False,
+    allow_unrecorded_evidence_depth: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
@@ -94,6 +103,7 @@ def request_promotion(
     candidates = _resolve_candidates(
         selectors, candidates_root if candidates_root is not None else root,
         allow_stale_cost_basis=allow_stale_cost_basis,
+        allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
     )
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
