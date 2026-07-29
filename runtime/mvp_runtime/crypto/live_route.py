@@ -355,6 +355,10 @@ def _run_gated_live_leg(
         filters_reason=filters_reason,
         limits=limits,
         budget_registered=bool(budget.get("valid")),
+        # The scope half of the same budget the caps come from. Read here rather than inside
+        # the guard for the reason every other runtime fact is: one read, one set of numbers,
+        # no second door able to disagree about which budget is in force.
+        allowed_symbols=budget.get("symbol_allowlist") or (),
         gate_open=True,  # the adapter above IS the grant; nothing else selects a capable one
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),

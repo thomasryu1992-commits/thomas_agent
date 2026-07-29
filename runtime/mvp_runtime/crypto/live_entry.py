@@ -39,7 +39,7 @@ After rounding, a stop that no longer sits strictly on its own side of the entry
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .live_order import build_live_order_intent, evaluate_live_order_guard
@@ -143,6 +143,10 @@ def plan_live_entry(
     # closed, and it was worse in one way: the test helper omitted it too, so the untested
     # branch was the *guarded* one. A missing or malformed verdict now refuses.
     verdict: Mapping[str, Any],
+    # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
+    # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
+    # the same fail-closed default the guard gives `budget_registered`.
+    allowed_symbols: Sequence[str] = (),
     filters_reason: str | None = None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
 ) -> dict[str, Any]:
@@ -252,6 +256,7 @@ def plan_live_entry(
             snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))
         ),
         budget_registered=budget_registered,
+        allowed_symbols=allowed_symbols,
         limits=limits,
     )
     detail["guard"] = guard

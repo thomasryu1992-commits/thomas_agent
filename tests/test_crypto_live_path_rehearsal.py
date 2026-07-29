@@ -226,6 +226,7 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
         filters_reason=reason,
         limits=LIMITS,
         budget_registered=True,
+        allowed_symbols=[SYMBOL],
         gate_open=True,
         runtime_active=True,
         daily_loss_breached=False,
