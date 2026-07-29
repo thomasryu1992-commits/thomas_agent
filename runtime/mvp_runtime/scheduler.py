@@ -592,13 +592,20 @@ def _execute(
             run_crypto_cycle,
             run_pool_cycle,
         )
-        from .crypto.market_data import select_liquidation_feed, select_market_data_collector
+        from .crypto.market_data import (
+            PerRunFeedCache,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
         from .crypto.paper import select_paper_store
         from .crypto.routing_marks import RoutingMarkStore
 
-        collector = select_market_data_collector(now=now, root=repo_root)
+        # Wrapped for the length of THIS fire only. A fan-out asks the venue the same
+        # symbol-scoped questions once per timeframe; the memo makes one cadence cost one
+        # request without making any cycle read older data. Dropped when the fire ends.
+        collector = PerRunFeedCache(select_market_data_collector(now=now, root=repo_root))
         store = select_paper_store(now=now, root=repo_root)
-        liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+        liquidation_feed = PerRunFeedCache(select_liquidation_feed(now=now, root=repo_root))
         # Freshness marks — local per-machine bookkeeping (no gate of its own): a new
         # entry is evaluated at most once per closed candle per context, so one 15-min
         # fan-out schedule covers 15m/1h/4h/1d without re-entering coarse timeframes

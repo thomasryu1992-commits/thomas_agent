@@ -638,3 +638,98 @@ def test_no_live_history_changes_nothing(tmp_path):
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert record["verdict_status"] == "ALLOW"
     assert "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD" not in record["reason_codes"]
+
+
+# --- what a fan-out actually asks the venue (2026-07-29) ---------------------------------------
+
+class _FeedCountingCollector(FakeExchangeCollector):
+    """FakeExchangeCollector plus the symbol-scoped feeds, counting every real call."""
+
+    def __init__(self, extra_candle: dict | None = None):
+        super().__init__(extra_candle)
+        self.calls: list[tuple] = []
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self.calls.append(("collect", symbol, timeframe, limit))
+        return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        self.calls.append(("funding_history", symbol))
+        return [{"timestamp": "2026-07-01T00:00:00Z", "funding_rate": 0.0001}]
+
+
+class _CountingLiquidationFeed:
+    feed_id = "counting"
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def liquidation_history(self, symbol, *, days, timeout_seconds):
+        self.calls.append(("liquidation_history", symbol))
+        return []
+
+    def open_interest_history(self, symbol, *, days, timeout_seconds, **kwargs):
+        self.calls.append(("open_interest_history", symbol))
+        return []
+
+
+def test_a_fan_out_asks_each_symbol_scoped_question_once(tmp_path):
+    """Funding, liquidations and open interest are keyed by SYMBOL at the venue while a cycle is
+    keyed by (symbol, timeframe). Two symbols across four timeframes used to be eight requests
+    each where two answer — 4x, every fire, on a scheduler that runs everything sequentially."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(
+        tmp_path,
+        *[_always_spec(f"S_{sym}_{tf}", sym, tf)
+          for sym in ("BTCUSDT", "ETHUSDT") for tf in ("15m", "1h", "4h", "1d")],
+    )
+    inner_collector, inner_feed = _FeedCountingCollector(), _CountingLiquidationFeed()
+    _pool_cycle(tmp_path, PerRunFeedCache(inner_collector),
+                liquidation_feed=PerRunFeedCache(inner_feed))
+
+    def per_symbol(calls, name):
+        return [c[1] for c in calls if c[0] == name]
+
+    assert len(per_symbol(inner_collector.calls, "funding_history")) == 2
+    assert sorted(per_symbol(inner_collector.calls, "funding_history")) == ["BTCUSDT", "ETHUSDT"]
+    assert len(per_symbol(inner_feed.calls, "liquidation_history")) == 2
+    # Two per symbol, not one, and that is correct: `attach_feeds` reads the DAILY open-interest
+    # series (memoized here, 4 -> 1) while `oi_store.record_intraday_oi` reads the HOURLY one
+    # (`interval="1hour"`) into the store the runtime keeps for itself. Different intervals are
+    # different questions, so the memo must not collapse them — and `oi_store` has always had its
+    # own once-per-hour-per-symbol throttle for exactly the fan-out this memo now covers for the
+    # other three feeds.
+    assert len(per_symbol(inner_feed.calls, "open_interest_history")) == 4
+    assert sorted(per_symbol(inner_feed.calls, "open_interest_history")) == [
+        "BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT"
+    ]
+
+
+def test_the_candle_windows_a_fan_out_shares_are_fetched_once(tmp_path):
+    """`attach_htf` fetches one step up the ladder, and that step is itself a routed context — so
+    a pool routing 15m/1h/4h collects 1h and 4h twice per fire. Both windows end at the same last
+    closed candle, so the deeper one answers both."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(tmp_path, *[_always_spec(f"S_{tf}", "BTCUSDT", tf)
+                              for tf in ("15m", "1h", "4h")])
+    inner = _FeedCountingCollector()
+    _pool_cycle(tmp_path, PerRunFeedCache(inner))
+
+    fetched = [(c[1], c[2]) for c in inner.calls if c[0] == "collect"]
+    assert len(fetched) == len(set(fetched)), f"the same window was fetched twice: {fetched}"
+
+
+def test_the_memo_does_not_let_one_context_read_anothers_symbol(tmp_path):
+    """The memo keys on the symbol, so this is arithmetic rather than an assumption — but it is
+    the failure that would be silent and expensive, so it is pinned."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT", "1d"),
+                  _always_spec("S_ETH", "ETHUSDT", "1d"))
+    inner = _FeedCountingCollector()
+    summary = _pool_cycle(tmp_path, PerRunFeedCache(inner))
+    assert {r["symbol"] for r in summary["cycles"]} == {"BTCUSDT", "ETHUSDT"}
+    for record in summary["cycles"]:
+        assert record["collection"]["symbol"] == record["symbol"]
