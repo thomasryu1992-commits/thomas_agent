@@ -26,16 +26,21 @@ port, then the source repo was frozen. This document covers bringing it across.
 | LP2 P&L ledger + loss breaker | `execution/live_pnl_ledger.py` (L1) | yes | no |
 | LP3 order intent + final guard | `execution/live_order_final_guard.py` (L2) | yes | no — it only refuses |
 | LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes | no |
-| LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind the `live_trading` grant + the order key + a guard PASS |
+| LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind `MVP_LIVE_TRADING=real` + the order key + a guard PASS |
 | LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **almost** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry decision **and the executing leg**, 5.4 the outcome bridge | the executing leg can, with an **injected** adapter — but nothing autonomous may import it (tripwire test), so **cycle routing is the only piece left** |
 
 The honest summary changed on 2026-07-25 and is worth stating without softening: **an order path
-now exists.** What still holds is that nothing reaches it on its own. Every other module either
-**reads** or **refuses**, and the one that can send requires, simultaneously, the operator's
-per-machine `live_trading` grant, the order-capable API key, a registered budget, the
-autonomous confirmation phrase (or the separate canary phrase), both kill switches clear, and a
-guard PASS — and even then it is only reached from the deliberate
-`scripts/place_canary_order.py`, one canary at a time.
+now exists.** Every other module either **reads** or **refuses**, and the one that can send
+requires, simultaneously, `MVP_LIVE_TRADING=real`, the order-capable API key, a registered
+budget, the autonomous confirmation phrase (or the separate canary phrase), both kill switches
+clear, and a guard PASS.
+
+**The second half of that summary expired on 2026-07-28** and is corrected rather than deleted:
+it used to end "and even then it is only reached from the deliberate
+`scripts/place_canary_order.py`, one canary at a time." Cycle routing shipped that day, so a
+scheduled run also reaches it — through exactly one module, `crypto/live_route.py`, pinned by
+`test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`. "Nothing reaches it on
+its own" is no longer the property; "exactly one thing may" is.
 
 LP5.3 built the **decision** (`live_entry.plan_live_entry` — no adapter, imports none) and then
 the **executing leg** (`live_leg.execute_live_entry` / `execute_live_exit`). The leg takes its
@@ -49,39 +54,62 @@ caller, and therefore the moment the safety posture changes. It is its own decis
 | Behavior | Effect | Expression here |
 |---|---|---|
 | Account balance / positions / realized P&L | External read | `INTERNAL_READ` · ALLOW behind its own `binance_futures_account` grant; failure **degrades** (`ACCOUNT_DATA_DEGRADED`), never blocks — the R3/`MARKET_DATA_DEGRADED` precedent |
-| Realized live P&L ledger + daily-loss breaker | Internal state + validation | Records behind the `live_trading` grant; the breaker is a pure read every caller can make ungated |
+| Realized live P&L ledger + daily-loss breaker | Internal state + validation | Records behind the live-trading switch; the breaker is a pure read every caller can make ungated |
 | Order intent construction, idempotency, final guard | Internal compute | Pure functions. No gate, because computing a refusal is not a capability |
-| Canary promotion evidence | Internal record creation | Append behind the `live_trading` grant; reads ungated and verified |
+| Canary promotion evidence | Internal record creation | Append behind the live-trading switch; reads ungated and verified |
 | **Live order submission** | **External + financial** | **Implemented** (LP4, 2026-07-25) under the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: `FINANCIAL_APPROVED_TRADING_USE` at P5, the `execution.live_trader` role (**candidate, non-routable** — activating it is a separate `ROLE_GOVERNANCE` approval), a registered `live_trading_budget.v0.1`, and the `p5_policy_gate`. Reached only from `scripts/place_canary_order.py`; `financial_executor_enabled` stays `false` |
 | **Live entry decision** (LP5.3) | Internal compute | Pure functions — `live_entry.plan_live_entry` decides and refuses; it holds no adapter, so deciding is not a capability |
 | **Live executing leg** (LP5.3) | **External + financial**, when given an adapter | `live_leg.execute_live_entry` / `execute_live_exit`. The adapter is **injected**, never selected, so the module cannot reach a venue on its own; it also refuses without a governance record. No autonomous entry point may import it (`test_no_autonomous_entry_point_reaches_the_live_order_path`), and the readiness board reports that as the `autonomous_routing_wired` row |
 | **Venue trading rules** (`exchangeInfo`) | External read | `INTERNAL_READ` · ALLOW on the existing `binance_futures` market-data grant; failure **degrades** (`LIVE_FILTERS_DEGRADED`) and sizing then refuses |
 
-## One grant is the whole switch
+## One env var is the whole switch
 
-Every live-side capability shares a single per-machine provider grant, `live_trading`,
-carrying **both** `network_access` and `filesystem_write`:
+**Changed 2026-07-28 (Thomas).** This section described a per-machine `live_trading` grant,
+minted by `scripts/activate_safety_flag.py`, that every live-side capability shared. That grant
+is gone. The switch is now the environment opt-in alone:
 
 ```
-scripts/activate_safety_flag.py --provider-id live_trading \
-    --flags network_access,filesystem_write --authority-level P5 \
-    --reason "..." --ttl-minutes 43200
+MVP_LIVE_TRADING=real
 ```
+
+Why it was removed, recorded so a future reader restoring the grant knows what they are undoing:
+the grant was TTL-capped at 30 days on a system meant to run unattended for months, and — the
+sharper reason — a grant that expired while a position was **open** shut the CLOSE path too.
+`evaluate_live_close_guard` exempts a reduceOnly close from the loss breaker, the daily count,
+the exposure cap, the promotion gate and both kill switches precisely so a halt cannot trap a
+position; expiry walked around all of it.
+
+What was given up: a second factor, an expiry, and an audited per-machine record of scope and
+authority level. What was **not** given up: revocation. The operator console `kill` is
+file-based, lands on a running service at its next guard, and is exempt on the close path — the
+one thing grant expiry could never do.
+
+The provider id and the flag pair survive the removal. `assert_authorization` still re-checks
+them at every egress (re-reading the env var in place of the record), and each capable class
+still declares them, so the capability still cannot be half-enabled — `network_access` to reach
+the venue and `filesystem_write` to record what happened, never one without the other.
 
 The consequences are deliberate:
 
 * It cannot be half-enabled. Orders reaching the venue while the P&L ledger silently fails to
-  record them is the exact failure mode a split grant would allow.
-* **Deleting the grant file is a live revocation.** `assert_authorization` re-reads the record
-  at every egress, so order submission, the P&L ledger, the daily counter, and the canary
-  registry all stop at once.
-* It expires. The 30-day TTL cap applies, so live capability lapses rather than persisting by
-  forgetfulness.
-* The env var alone fails closed. `MVP_LIVE_TRADING=real` without a valid local grant refuses.
+  record them is the exact failure mode a split switch would allow. All five selectors —
+  order adapter, P&L ledger, position book, daily counter, canary registry — read the same
+  variable, and a test asserts that list is exactly those five.
+* **It does not expire, and nothing revokes it but the operator.** This is the reversal, stated
+  plainly rather than buried: live capability now persists by forgetfulness, which is what the
+  30-day TTL existed to prevent. The mitigation is the `kill` verb, not the gate.
+* Clearing the variable is **not** a mid-flight revocation. A running process keeps its
+  environment; the egress re-check catches an authorization built earlier in the same process,
+  but stopping a live scheduler means the runtime `kill` or a restart.
+* Nothing else may use this weaker door. `select_env_gated` is a separate function from
+  `select_gated` — not a flag on it — so moving another capability onto it takes a deliberate
+  edit at the call site, and `test_only_live_trading_uses_the_env_only_gate` fails if one does.
 
-The account read (LP1) deliberately gets its **own** grant, `binance_futures_account`, not
-this one — reading balances needs a key with a wider blast radius than public market data, and
-it must be scoped, expired, and revocable independently of the ability to trade.
+The account read (LP1) deliberately keeps its **own** grant, `binance_futures_account`, and
+**kept it through the 2026-07-28 change** — reading balances needs a key with a wider blast
+radius than public market data, and it must be scoped, expired, and revocable independently of
+the ability to trade. So the readiness board's `market_data_visibility` row still checks a grant
+while `live_trading_opt_in` no longer does. That asymmetry is the decision, not drift.
 
 ## The rules carried over verbatim, and why
 
@@ -236,8 +264,9 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       deliberately distinct, so pasting the wrong one authorizes nothing:
       `MVP_LIVE_CANARY_CONFIRMATION` for canaries, `MVP_LIVE_CONFIRMATION` for autonomous trading.
       A canary needs only the first.
-- [ ] Mint the `live_trading` grant (command above) and set `MVP_LIVE_TRADING=real`. The env var
-      alone fails closed.
+- [ ] Set `MVP_LIVE_TRADING=real`. **This is now the entire gate** — there is no grant to mint
+      since 2026-07-28, so this one line selects every real live component at once. Confirm it
+      on the board (`live_trading_opt_in` PASS) before continuing rather than assuming.
 
 **Gate 3 — promotion evidence: 3 clean canary orders**
 - [ ] Confirm the board first: `python -m runtime.mvp_runtime.crypto.live_readiness`. Everything
@@ -280,11 +309,14 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - [ ] Watch the daily-loss breaker and the open-exposure cap behave.
 
 **Standing controls — know these before you start**
-- **Stop new entries immediately:** delete the `live_trading` grant file. Revocation is live;
-  open positions can still close.
-- **Softer halt:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true`.
-- **Whole-runtime halt:** the operator console `kill` verb. Blocks live entries via
-  `kill_blocks: external_execution`; closes remain permitted.
+- **Stop new entries immediately:** the operator console `kill` verb. It writes control state,
+  so it lands on the running service at its next guard, and closes remain permitted
+  (`kill_blocks: external_execution`). Since 2026-07-28 this is the *only* control that acts on
+  a running scheduler — it replaced "delete the grant file", which no longer exists.
+- **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true`. Refuses entries, closes
+  still permitted. Env-based, so it needs the service restarted.
+- **Do NOT clear `MVP_LIVE_TRADING` to halt.** It needs a restart *and* it shuts the close path,
+  because `evaluate_live_close_guard` requires the opt-in — it would strand open positions.
 - **Daily-loss breaker:** entries halt for the UTC day once realized live loss reaches the
   configured limit, and resume the next UTC day.
 

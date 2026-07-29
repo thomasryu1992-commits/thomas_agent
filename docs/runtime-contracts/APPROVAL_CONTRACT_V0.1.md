@@ -55,7 +55,7 @@ Every new Action Approval must bind the same canonical Governance Policy as its 
 ```yaml
 operating_policy:
   policy_id: thomas.governance.policy
-  policy_version: 1.1.0
+  policy_version: 1.2.0
   policy_ref: governance/GOVERNANCE_POLICY.yaml
 ```
 

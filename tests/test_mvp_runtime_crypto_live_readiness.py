@@ -199,11 +199,15 @@ def test_tampered_history_blocks_even_with_enough_records(tmp_path):
 
 # === the gate on writing evidence ===================================================
 
-def test_registry_env_alone_fails_closed(tmp_path, monkeypatch):
+def test_registry_env_alone_now_opens_the_gate(tmp_path, monkeypatch):
+    """Inverted 2026-07-28 with the rest of the live surface. The registry MUST move with the
+    order adapter: evidence has to be exactly as hard to produce as the order it evidences, or
+    a machine places real canaries and records none of them."""
     monkeypatch.setenv(LIVE_TRADING_ENV, REAL_LIVE_TRADING)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_canary_registry(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    registry = select_canary_registry(now=NOW, root=tmp_path)
+    assert isinstance(registry, RealCanaryRegistry)
+    registry.append_canary_order(_canary(True))
+    assert len(read_canary_orders(tmp_path)) == 1   # it really did persist
 
 
 def test_registry_default_is_inert(tmp_path, monkeypatch):
@@ -251,14 +255,14 @@ def test_fresh_machine_is_not_ready(tmp_path, clean_env):
     assert status["ready"] is False
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
     # order_path_implemented now passes (LP4 landed); every AUTHORITY row must still fail.
-    assert {"live_trading_grant", "confirmation_phrase", "registered_budget",
+    assert {"live_trading_opt_in", "confirmation_phrase", "registered_budget",
             "canary_evidence"} <= failed
 
 
 def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
-        "live_trading_grant", "confirmation_phrase", "registered_budget", "manual_kill_switch",
+        "live_trading_opt_in", "confirmation_phrase", "registered_budget", "manual_kill_switch",
         "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
         "market_data_visibility", "order_path_implemented", "autonomous_routing_wired",
     }
@@ -363,7 +367,7 @@ def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_p
     assert status["ready"] is False
     assert next(c for c in status["checks"] if c["check"] == "order_path_implemented")["ok"]
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
-    assert "live_trading_grant" in failed and "registered_budget" in failed
+    assert "live_trading_opt_in" in failed and "registered_budget" in failed
     assert status["guard_dry_run"]["approved"] is False
 
 
@@ -375,7 +379,21 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     assert "NOT READY" in text
     # The board must not let green ticks read as harmless now that a path exists.
     assert "an order path EXISTS" in text and "a real order can be placed" in text
-    assert "LP5" in text and "place_canary_order.py" in text
+    # Which autonomous note is correct depends on the wiring, so assert the one that matches
+    # rather than pinning the board to one era of the build. Both must say the consequential
+    # thing: unwired, that the only door is the deliberate canary; wired, that a scheduled run
+    # moves real money and how to stop it.
+    if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        assert "WIRED" in text and "REAL positions" in text
+        # The halt instruction must name the runtime kill, and must warn against the obvious
+        # wrong move. Clearing MVP_LIVE_TRADING looks like the way to stop a runtime whose gate
+        # IS that variable; it needs a restart to take effect and it strands every open position,
+        # because the close guard still requires the opt-in. Pinned in both directions because
+        # an operator reads this line in a hurry.
+        assert "console_cli kill" in text
+        assert "Do NOT clear MVP_LIVE_TRADING" in text
+    else:
+        assert "LP5" in text and "place_canary_order.py" in text
 
 
 def test_autonomous_routing_is_reported_and_never_fails_the_board(tmp_path, clean_env):
@@ -517,3 +535,156 @@ def test_a_failing_account_read_leaves_the_row_failing(tmp_path, monkeypatch):
 
     row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
     assert row["ok"] is False
+
+
+# --- the evidence has to prove its own size -------------------------------------
+
+def test_a_canary_record_carries_the_venues_own_numbers():
+    """The four canaries standing as evidence on 2026-07-28 carried a declared notional, no
+    quantity and no fill — so there was no way left to ask whether 65.0 described the order.
+    A promotion gate whose records cannot be re-derived is an assertion with a hash on it."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001,
+        fill={"avg_price": 64512.0, "executed_qty": 0.001, "cum_quote": 64.512},
+        now="2026-07-29T00:00:00Z",
+    )
+    assert record["quantity"] == 0.001
+    assert record["fill_avg_price"] == 64512.0
+    assert record["filled_notional_usdt"] == 64.512
+    # Declared minus filled: a subtraction, not a memory. 65.0 declared for a 64.51 order.
+    assert record["notional_declared_vs_filled_usdt"] == pytest.approx(0.488, abs=1e-6)
+    assert record["clean"] is True          # stated, not judged — see the next test
+
+
+def test_a_declared_notional_that_disagrees_is_recorded_not_judged():
+    """Making a disagreement a mismatch would change what `clean` means, and therefore what
+    the promotion gate counts. That is a separate decision and is deliberately not taken here:
+    the record states the gap so an operator can see it."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    understated = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=60.0, quantity=0.001,
+        fill={"avg_price": 70000.0, "executed_qty": 0.001, "cum_quote": 70.0},
+        now="2026-07-29T00:00:00Z",
+    )
+    assert understated["notional_declared_vs_filled_usdt"] == pytest.approx(-10.0)
+    assert understated["clean"] is True and understated["mismatches"] == []
+
+
+@pytest.mark.parametrize("fill", [None, {}, {"cum_quote": None}, {"cum_quote": "n/a"}])
+def test_an_unknown_fill_leaves_the_comparison_unknown_never_zero(fill):
+    """`0.0` would read as 'declared and filled agreed'. They did not agree; nobody knows."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001, fill=fill,
+        now="2026-07-29T00:00:00Z",
+    )
+    assert record["notional_declared_vs_filled_usdt"] is None
+    # `is None`, not `in (None, "n/a")`. The looser form accepted either answer, which pins
+    # whatever the builder happens to do rather than checking it — and what it happened to do
+    # was store the venue's unparseable string verbatim in a money field on a self-hashed
+    # governance record.
+    assert record["filled_notional_usdt"] is None
+
+
+def test_the_builder_omitting_the_new_fields_leaves_them_none():
+    """The shape a caller that has no fill produces. Not the same claim as the test below."""
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    old = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, now="2026-07-29T00:00:00Z",
+    )
+    assert old["quantity"] is None and old["filled_notional_usdt"] is None
+    assert old["notional_declared_vs_filled_usdt"] is None
+    assert old["clean"] is True
+
+
+def test_records_written_before_this_existed_still_verify(tmp_path):
+    """The claim that matters, made against a record the CURRENT builder cannot produce.
+
+    The previous version of this test built a new record with the new builder and asserted the
+    new fields were None. That is a statement about the builder, not about history: it never
+    called `read_canary_orders`, never wrote a record, never checked a hash — so it would have
+    stayed green if the read path had started normalising the body before verifying it.
+
+    Here the eleven pre-existing keys are hashed the way they were hashed on disk, which is the
+    only construction that can answer "do the four canaries standing as evidence still count".
+    """
+    import json
+
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    body = {
+        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
+        "exchange_order_id": 1083969664118, "client_order_id": "canary-1", "mismatches": [],
+        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
+        "stage": "live_canary", "provenance": live_promotion.CANARY_PROVENANCE,
+        "canary_order_id": "canary_abc",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(body) + "\n", encoding="utf-8")
+
+    assert len(live_promotion.read_canary_orders(tmp_path)) == 1
+    assert live_promotion.clean_canary_order_count(tmp_path) == (1, None)
+
+
+def test_the_board_says_when_the_evidence_cannot_prove_its_own_size(tmp_path):
+    """The other half of the repair. The subtraction was recorded and nothing read it, so an
+    operator could only find it by opening the JSONL — which is not a surface."""
+    import json
+
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    body = {
+        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
+        "exchange_order_id": 1, "client_order_id": "canary-1", "mismatches": [],
+        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
+        "stage": "live_canary", "provenance": live_promotion.CANARY_PROVENANCE,
+        "canary_order_id": "canary_abc",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(body) + "\n", encoding="utf-8")
+
+    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
+    assert status["ready"] is True, "an unprovable size must not change what the count means"
+    assert status["size_unproven"] == 1
+    assert status["largest_size_gap_usdt"] is None
+
+
+def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
+    import json
+
+    from runtime.mvp_runtime.crypto import live_promotion
+
+    record = live_promotion.build_canary_order_record(
+        reconcile_status="RECONCILED", symbol="BTCUSDT",
+        exchange_order_id=1, client_order_id="c1", mismatches=[],
+        notional_usdt=65.0, quantity=0.001,
+        fill={"avg_price": 64512.0, "executed_qty": 0.001, "cum_quote": 64.512},
+        now="2026-07-29T00:00:00Z",
+    )
+    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
+    assert status["size_unproven"] == 0
+    assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
+    assert status["ready"] is True          # surfaced, not judged

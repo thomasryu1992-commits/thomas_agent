@@ -17,8 +17,8 @@ Fail-closed toward NOT ready, in two independent ways, both carried over from th
 * A minimum of zero or less is refused outright — that would be promotion with no evidence
   at all, which is the one configuration that must never read as satisfied.
 
-Writes ride the same single ``live_trading`` grant as the P&L ledger and the order counter:
-one switch for the whole live capability, revoked together.
+Writes ride the same single live-trading switch as the P&L ledger and the order counter
+(``MVP_LIVE_TRADING=real``): one switch for the whole live capability, revoked together.
 """
 
 from __future__ import annotations
@@ -66,14 +66,47 @@ def build_canary_order_record(
     client_order_id: str | None = None,
     mismatches: list[str] | None = None,
     notional_usdt: float | None = None,
+    quantity: float | None = None,
+    fill: Mapping[str, Any] | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One placed-and-reconciled canary order, self-hashed.
 
     ``clean`` is derived here rather than accepted from the caller: an order counts only if
     the venue reconciled it AND nothing mismatched. A caller cannot assert cleanliness.
+
+    **The record has to prove its own size.** ``notional_usdt`` is what the operator declared,
+    and until #268 nothing checked it — so the four canaries standing as evidence on
+    2026-07-28 carried a declared figure, no quantity and no fill, and there is now no way to
+    ask whether 65.0 described the order. That is the wrong shape for the sole evidence gating
+    autonomous live trading: a promotion gate whose records cannot be re-derived is an
+    assertion with a hash on it.
+
+    So the venue's own numbers ride along — ``quantity`` as sent, and ``fill`` carrying
+    ``avg_price`` / ``executed_qty`` / ``cum_quote``, which `live_execution.fill_facts`
+    already produced and the record simply discarded. ``cum_quote`` is the venue's filled
+    notional: with it, ``declared`` versus ``filled`` is a subtraction rather than a memory.
+
+    ``notional_declared_vs_filled_usdt`` is stated rather than judged. Making a disagreement
+    a ``mismatch`` would change what ``clean`` means and therefore what the promotion gate
+    counts — a separate decision, deliberately not taken here.
     """
     problems = list(mismatches or [])
+    facts = dict(fill or {})
+
+    def _money(value: Any) -> float | None:
+        """A number, or nothing. Never whatever the venue happened to send.
+
+        In practice `live_execution.fill_facts` already coerces these to ``float | None``, so
+        this is unreachable through the canary door. It is here because the builder is what
+        produces a **self-hashed, durable governance record**: a money field on it should not be
+        able to hold an arbitrary string just because some future caller passed one through, and
+        the record is the evidence gating autonomous live trading for as long as it exists."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    filled_notional = _money(facts.get("cum_quote"))
     body: dict[str, Any] = {
         "reconcile_status": reconcile_status,
         "clean": reconcile_status == RECONCILED and not problems,
@@ -82,6 +115,17 @@ def build_canary_order_record(
         "client_order_id": client_order_id,
         "mismatches": problems,
         "notional_usdt": notional_usdt,
+        # What the venue said, beside what the operator declared.
+        "quantity": quantity,
+        "fill_avg_price": _money(facts.get("avg_price")),
+        "fill_executed_qty": _money(facts.get("executed_qty")),
+        "filled_notional_usdt": filled_notional,
+        # None when either side is unknown — never 0.0, which would read as "they agreed".
+        "notional_declared_vs_filled_usdt": (
+            round(_money(notional_usdt) - filled_notional, 8)
+            if _money(notional_usdt) is not None and filled_notional is not None
+            else None
+        ),
         "recorded_at_utc": now,
         "stage": "live_canary",
         "provenance": CANARY_PROVENANCE,
@@ -169,6 +213,40 @@ def promotion_status(
         "required": required,
         "history_error": history_error,
         "reasons": reasons,
+        **_size_evidence(root),
+    }
+
+
+def _size_evidence(root: Path | None) -> dict[str, Any]:
+    """How much of the counted evidence can prove its own size.
+
+    The record gained ``filled_notional_usdt`` and ``notional_declared_vs_filled_usdt`` so that
+    declared-versus-filled would be a subtraction rather than a memory — and then nothing read
+    them, so the subtraction was stored where no operator would see it. This is the read side.
+
+    Reported **beside** ``ready``, never folded into it. Making a size disagreement block
+    promotion would change what the canary count means, and that is a separate decision the
+    field's own author declined to take; this only makes the number visible to the person the
+    promotion gate actually is.
+
+    ``size_unproven`` counts clean records carrying no comparison at all — the four standing as
+    evidence on 2026-07-29 are all of them, because they predate the fields. That is the figure
+    worth seeing first: it is not "the sizes disagreed", it is "nobody can ask".
+    """
+    try:
+        records = [r for r in read_canary_orders(root) if r.get("clean") is True]
+    except ToolError:
+        # The count above already reported the verification failure and counted zero; this is a
+        # decoration on that row and must not raise a second, louder version of the same news.
+        return {"size_unproven": 0, "largest_size_gap_usdt": None}
+    gaps = [
+        abs(float(r["notional_declared_vs_filled_usdt"])) for r in records
+        if isinstance(r.get("notional_declared_vs_filled_usdt"), (int, float))
+        and not isinstance(r.get("notional_declared_vs_filled_usdt"), bool)
+    ]
+    return {
+        "size_unproven": len(records) - len(gaps),
+        "largest_size_gap_usdt": round(max(gaps), 8) if gaps else None,
     }
 
 
@@ -184,7 +262,7 @@ class CanaryRegistry(Protocol):
 class DryRunCanaryRegistry:
     """Inert registry: accepts and discards.
 
-    A canary record should be impossible to produce without the grant, since producing one
+    A canary record should be impossible to produce with the switch off, since producing one
     means an order was actually placed. If one arrives here anyway it is dropped rather than
     persisted — unbacked evidence in this registry would unlock autonomous trading.
     """
@@ -198,7 +276,7 @@ class DryRunCanaryRegistry:
 
 
 class RealCanaryRegistry:
-    """Durable canary evidence, behind the one live-trading grant."""
+    """Durable canary evidence, behind the one live-trading switch."""
 
     tool_id = CANARY_TOOL_ID
     tool_version = CANARY_TOOL_VERSION
@@ -230,14 +308,17 @@ class RealCanaryRegistry:
 
 
 def select_canary_registry(*, now: str | None = None, root: Path | None = None) -> CanaryRegistry:
-    """Return the durable canary registry if the live-trading grant is open, else the inert one."""
-    return safety_gate.select_gated(
+    """Return the durable canary registry if live trading is opted in, else the inert one.
+
+    Follows the order adapter onto ``select_env_gated`` (Thomas, 2026-07-28) and must: this
+    registry writes the evidence the promotion gate counts, and evidence must be exactly as hard
+    to produce as the order it evidences. Left on the grant while the adapter moved off it, a
+    machine could place real canaries and record none of them."""
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunCanaryRegistry,
         gated_factory=lambda authorization: RealCanaryRegistry(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )

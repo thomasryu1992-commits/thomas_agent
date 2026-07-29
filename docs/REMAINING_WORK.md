@@ -4,13 +4,21 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-27** (second pass, `main` = `58bf3af`), after the predmarket wave
-(#262/#264/#265/#267/#269), the canary-notional fix (#268), and the role activations
-(#258/#272). Previously **2026-07-27** (section D) and **2026-07-26** (the review round and the
-CLAUDE.md split).
+Last updated: **2026-07-29** (`main` = `d6b65df`), after the canary evidence learned to prove its
+own size (#328) and the board learned to say when it cannot (#332), `/kill` started reaching the
+control state during an analysis instead of after it (#329/#333), a live entry started announcing
+itself (#331), and the live leg started enforcing the strategy's time exit (#330).
+Previously the same day (`main` = `36fd1f7`), after the live-trading grant was removed and
+`MVP_LIVE_TRADING=real` became the whole gate (#320), the `execution.live_trader` definition stopped
+describing a build that had shipped (#323), and section D was re-audited against the code.
+Previously **2026-07-28** (`main` = `279c233`), after cycle routing landed (#302), the cost
+basis became a promotion gate rather than a warning (#309), the per-fill fee instrument was built
+(#313) and the last unguarded state writer got a door (#315). Before that, on the same day: the
+canary path ran end to end for the first time and the defect wave that followed it
+(#227/#228/#231/#232/#233/#246), the evidence corrections (#247/#249/#251/#254/#257/#260) and the
+board's sample verdicts (#292/#304).
+Previously **2026-07-27** (predmarket wave, second pass) and **2026-07-26** (the review round).
 Every claim below was re-checked against `main` and against the code it describes, not carried over.
-That pass is why section A lost two boxes: it was ticking observation records as done in one line
-and open in another, and the newer line was the stale one.
 
 > **The one thing to read first:** an order path **exists**, and so does the **executing leg**
 > that opens, protects and closes a live position. `financial_transaction_execution_implemented`
@@ -19,18 +27,47 @@ and open in another, and the newer line was the stale one.
 > and the readiness board reports it as a computed row), `financial_executor_enabled` is `false`,
 > the clean-canary evidence threshold is not met **on any machine this file can speak for** (the
 > count is per-machine state — ask the board, below), and every egress needs the operator's
-> per-machine `live_trading` grant, order key, confirmation phrase and registered budget.
+> `MVP_LIVE_TRADING=real` opt-in, order key, confirmation phrase and registered budget.
 >
-> **The canary count is per-machine and is currently unknown rather than zero.** Two real canaries
-> went out on 2026-07-26; the daily counter did not record them, because the only door that can
-> place an order never incremented it (#246). The registry that feeds `clean_canary_order_count` is
-> a different store and may hold them, so the honest statement is: **re-read the board on the
-> machine that placed them** (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
-> trusting a number written here. On a fresh checkout it reads `0/3`.
+> ⚠️ **Two of those reasons weakened on 2026-07-28 and this banner is corrected rather than
+> rewritten.** "No autonomous entry point may import the order path" became "exactly one module
+> may" when cycle routing shipped; and the per-machine `live_trading` grant was removed by
+> Thomas, so `MVP_LIVE_TRADING=real` is the entire gate. The reasons live trading cannot start
+> are still structural, but there is one fewer of them and the remaining ones are all operator
+> state rather than code.
 >
-> The single remaining build item between this repository and an **autonomous** live order is
-> **cycle routing** — giving the executing leg a caller. It is deliberately unbuilt, and building it
-> is the decision to relax the tripwire test.
+> **The canary count is per-machine.** On the machine that placed them the board now reads
+> **4/4** (2026-07-28); on a fresh checkout it reads `0/3`. Ask the machine
+> (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than trusting a number here —
+> that has not changed and will not.
+>
+> **One of those four is worth knowing about before it is counted as evidence.** The canary of
+> 2026-07-26T11:03Z filled at the venue and its audit event was built and never appended: step 8
+> called `LedgerStore(None)` and the process died between "the order is at the venue" and "here
+> is what the venue said" (#228). Its gap was recorded late and forward on the chain, marked
+> `LIVE_ORDER_REPORT_RECOVERED`, because `AUDIT_RECOVERY_CONSOLE_V0.1` is explicit that a trail
+> is diagnosed and never repaired (#232). Under the code that now exists that run would have
+> exited BLOCKED. Whether it should still count toward the threshold is an operator decision,
+> not a number this file can settle.
+>
+> **Cycle routing landed 2026-07-28** (`crypto/live_route.py`): the executing leg now has one
+> autonomous caller, and `AUTONOMOUS_ROUTING_WIRED` is `True`. That was the last *build* item.
+> What stands between here and an autonomous live order is now entirely operator state — the
+> `MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, the registered budget, the canary
+> evidence — each of which the readiness board reports as its own computed row. **Wired is not
+> permitted**, and the board deliberately does not fold the routing row into `ready`.
+>
+> **The grant came off the same day** (Thomas, 2026-07-28): the live surface is gated by the env
+> opt-in alone. The gate no longer expires, so nothing turns live trading off but the operator —
+> and the halt that acts on a *running* scheduler is the console `kill` verb, not the env var.
+>
+> **And that halt now arrives during an analysis rather than after it** (#329, 2026-07-29). The
+> sentence above was true and incomplete: the operator loop is the only process that receives
+> Telegram and it does not poll while it drains, so for the length of an analysis `/kill` existed
+> **nowhere in the runtime** — and the control state file is what `live_route` re-reads in the
+> other container immediately before a live entry. This loop's responsiveness had quietly become a
+> dependency of the money path. A mid-run peek that reads without claiming now writes the halt at
+> the next stage boundary. It does **not** stop the running analysis; that is decision K4, open.
 
 Keep it current — when a milestone ships, tick its box or delete it here in the same PR.
 
@@ -44,40 +81,24 @@ the rules and deliberately claims no status, so that status has as few owners as
 
 ## In-flight PRs
 
-**One** (verified 2026-07-27, on the `main` this pass merged into — two of the three named when
-it was written have already resolved, which is the section's own standing hazard):
+```
+gh pr list
+```
 
-- **#271** — predmarket's `is_synthetic` flag had no consumer, so a scan degraded to the mock filed
-  its legs as `MARKET_NOT_LISTED` (the market is gone) instead of "we never looked", and a
-  mock-derived confirmed group produced *priced* observations out of `(venue, index)`.
+**The list that used to live here is deleted, on its own recommendation.** Two passes running it
+reached the same conclusion in writing — "this section was accurate when written and wrong before
+it merged", "the next pass should consider deleting it rather than refreshing it again" — and then
+refreshed it anyway. `main` advances several times an hour from parallel machines; a hand-written
+snapshot of open PRs is stale before the PR carrying it is reviewed.
 
-Resolved while this pass was open:
+What the section was actually for is worth keeping, and it is one line: **before starting anything
+below, run `gh pr list` and confirm nobody else has taken it.** That has cost real work twice —
+#229 duplicated a check #268 had already merged after falling 131 commits behind, and #175 wrote a
+second order adapter beside the one already on `main`, which is the exact ambiguity ("which code
+can send an order") this repo spends most of its rules preventing.
 
-- **#239** — this file's own predmarket header contradicting its boxes. **Closed as superseded by
-  this pass**, which fixes the same contradiction against a `main` that had moved well past the
-  one #239 was written on.
-- **#274** — **merged.** The readiness board grew a `market_data_visibility` row with #268 and the
-  go-live runbook never mentioned `MVP_MARKET_DATA`, so the board failed on a precondition the
-  checklist did not ask for. The runbook names it now.
-
-A hand-maintained list of open PRs cannot stay true in a repository whose `main` advances several
-times an hour — this section was accurate when written and wrong before it merged. Prefer
-`gh pr list` over trusting it; the next pass should consider deleting it rather than refreshing it
-again.
-
-Two PRs were **closed unmerged**, and both are the same lesson:
-
-- **#175** — a second LP4 order adapter written in a worktree without re-checking `main`, which by
-  then already carried `live_execution.py` with its reviewed design record. Two adapters must not
-  coexist: "which code can send an order" is exactly the question this repo keeps unambiguous.
-- **#229** — the declared-notional check, written on a branch that fell **131 commits** behind while
-  **#268** implemented the same check independently and merged first. Its code was redundant on
-  arrival; only its documentation was still owed, and that is #274.
-
-> **This section goes stale within hours.** Check `gh pr list` rather than trusting it — parallel
-> machines open and merge PRs continuously, and on 2026-07-27 that produced two independent fixes
-> for one defect (#229/#268) plus a review document whose P0 list was already merged. Before
-> starting anything below, confirm nobody else has taken it.
+The lesson generalises past PRs: **this whole file is a claim about a `main` that has since
+moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
@@ -290,11 +311,75 @@ Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (dec
 #184 on 2026-07-25; that doc's own step table remains the authority). Status:
 `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`.
 
-**What is left in this section is no longer governance, and no longer plumbing — it is one build
-decision and one operator action:** cycle routing (below), and three clean canary orders on the
-machine that would run. Neither is blocked on a contract, a schema, or a gate — and clearing the
-canary row **enables nothing on its own**: it satisfies one precondition of a step (cycle routing)
-that is still deliberately unbuilt.
+**What is left in this section is no longer governance, no longer plumbing, and as of 2026-07-28
+no longer a build decision either — it is operator state.** Cycle routing landed (below), so the
+"one build decision" this paragraph used to name is gone; what remains is the per-machine
+checklist the readiness board computes row by row, and none of it is code anyone can write here.
+
+That inverts the old caveat rather than removing it. The canary row used to enable nothing
+because the step it fed — cycle routing — was deliberately unbuilt; now that step exists, so the
+canary evidence does gate something real. **Wired is still not permitted**: the routing row is
+deliberately not folded into `ready`, and without `MVP_LIVE_TRADING=real` the leg returns
+DISABLED having read no account and opened no socket.
+
+*(That sentence said "with no `live_trading` grant" until 2026-07-29 — written on the 28th and
+outlived by its own subject within a day, when Thomas removed the grant. Left visible rather
+than silently swapped: this file's recurring defect is not being wrong, it is describing a door
+that has since moved, and the banner above already carried the correction while this paragraph
+did not.)*
+
+**The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
+end to end for the first time turned up six defects that had been sitting in code nobody had
+executed — the documented opt-in value the gate never matched (#227), a crash between the venue
+and the audit chain (#228), `--root` honoured everywhere but the account read (#231), the state
+guard covering one CLI of seven (#233), and a `max_daily_order_count` that refused nothing
+because the only door able to place an order never counted its own (#246). None were regressions.
+Code that has never run is not working code; it is untested code, and this is what that looks
+like when it is finally run.
+
+**The evidence the routing decision would rest on moved too, and in the less comfortable
+direction.** The promotion listing showed a stale top tier — twelve lineages rated `ROBUST` under
+a rule that predated the out-of-sample gate, ranked above thirteen that had actually survived
+unseen bars (#249). The backtest charged 2.5 bps taker where this account is charged 5.0, measured
+(#257); re-deriving the 224 affected candidates at the real rate flips **thirteen from positive
+expectancy to negative** (#260). And the board's own verdict on this runtime's record is now
+`판단 불가` rather than a number: 60 closed trades at +0.08R, 95% interval `[−0.32, +0.48]`
+(#292/#304).
+
+**The cost basis became a door on 2026-07-28 (#309), because warning about it was not working.**
+`--list` counted the split and printed "rank tiers are comparable within a basis, not across
+them" — and then `rank_candidates` sorted straight across them, on keys (`champion_score`,
+`edge_quality`, `expectancy`) every one of which is read off evidence scored at the old rate.
+Same defect class as #249 in the same file, fixed the same way: order on the property instead of
+describing it. The basis is now a tier that leads the sort, and `assert_promotable_cost_basis`
+refuses stale evidence at **both** write doors — the ask as well as the install, since an
+approval Thomas answers for a promotion the next step was always going to block spends his
+attention on nothing. `--allow-stale-cost-basis` is the escape and the ledger records it.
+
+The tier is a **direction** test, not equality, and that distinction is the whole design. Rows
+scored at taker 5.0 with no maker leg charged their take-profit exit taker-plus-slippage where
+the current model charges maker 2.0 and none — too *pessimistic*, so refusing them would have
+made the escape hatch the normal door. What is refused is evidence scored more **cheaply** than
+the venue charges, plus evidence that cannot say which way it errs at all. Measured on the
+machine that has the store, 2026-07-28:
+
+| tier | rows | promotable |
+|---|---|---|
+| `CURRENT` (taker 5.0 + maker 2.0 + slip 3.0) | 90 | yes |
+| `conservative` (taker 5.0, pre-maker) | 90 | yes |
+| `OPTIMISTIC` (taker 2.5) | 224 | **no** |
+| `UNRECORDED` | 45 | **no** |
+
+269 of 449 stop being promotable on their own evidence. That is the intent, and it is not a dead
+end: the factory has already minted a generation at the current model, so the store converges by
+re-minting without rewriting a byte of durable history. **What a rate change can never repair is
+worth stating once** — `expectancy` re-derives exactly, but win-rate, realized reward:risk and
+the robustness verdict all need per-trade signs the store does not keep. That is why the answer
+is a gate at the door rather than a backfill.
+
+So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
+existing (it now does) does not change that — it is why the routing row is deliberately not part
+of `ready`. Automating today would automate a strategy set whose sign nobody can currently state.
 
 The money path now carries its own governance record (**#200**): a P5 PermissionDecision built before
 the order and an audit event after it, closing `p5_policy_gate`'s `post_action_report_and_audit`,
@@ -398,23 +483,132 @@ scopes at different levels, so nothing was owed to it.
           venue on its own and every branch is tested with zero network. Also extended the risk
           guard to see live outcomes — they live in their own store, so the paper provenance split
           never saw them and the breaker would have ignored every live loss.
-    - [ ] **The cycle routing** ⚠️ **the last piece, and its own explicit decision.** Design
-          record: `docs/runtime-contracts/LP5_3_LIVE_LEG_DESIGN_V0.1.md`. This is the line that
-          gives the executing leg an autonomous caller; today the only door is the deliberate
-          `scripts/place_canary_order.py`, one canary at a time, and
-          `test_no_autonomous_entry_point_reaches_the_live_order_path` (which now also covers
-          `live_leg`) fails loudly if an autonomous entry point imports it — **doing this is the
-          decision to relax that tripwire.** It also owes the readiness board the *real* open
-          exposure, so the honest block-at-cap can lift. The preconditions the design record
-          states — this runtime's own paper record (6 closed trades at −0.39R,
-          `INSUFFICIENT_SAMPLE`), ≥ 3 clean canaries (0), and the operator grants — bind **this**
-          step, not the leg above: a leg with no caller places no orders.
-- [ ] **≥ 3 clean canary orders** before any autonomous run. **This file cannot tell you the count**
-      and no longer pretends to: the evidence store is
+    - [x] **The cycle routing** — **done 2026-07-28** (`crypto/live_route.py`). The executing leg
+          has a caller, and exactly one: `cycle.py` reaches the live stack only through that
+          module, pinned by
+          `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`, which
+          *replaced* the old blanket tripwire rather than deleting it — the property being kept
+          is that "which code can start a live order" has a single answer.
+          `AUTONOMOUS_ROUTING_WIRED` is now `True` and is deliberately still **not** part of
+          `ready`: wired is not permitted, and every door below it is unchanged. The gate comes
+          first — without `MVP_LIVE_TRADING=real` the leg returns DISABLED having read no account
+          and opened no socket, so a machine that has not been through the operator checklist
+          behaves exactly as before. Live entries use the **same** `build_entry_plan` as paper
+          and the same C4 verdict, so a live entry can never be permitted where a paper one was
+          not.
+    - [ ] **The maker fee rate is published, not measured, and it errs in the unsafe direction.**
+          Since the take-profit exit became a resting `reduceOnly` LIMIT (2026-07-28) the backtest
+          charges `DEFAULT_MAKER_FEE_BPS = 2.0` on that leg — Binance's **published** standard
+          rate. Unlike the taker figure it has never been measured on this account, because no
+          maker fill has ever happened. If the real rate is higher the backtest reports an edge
+          **better** than reality, which is the wrong way for evidence that gates real money.
+          Two of the three pieces are in place. `pool.expectancy_at` rescales the maker leg
+          independently of the taker one (#309), so the eventual measurement converts every
+          maker-scored candidate exactly instead of splitting the store a fourth time — done
+          while no candidate carried a maker term, which was the cheap moment to do it. And the
+          instrument exists (#313): `account.fill_history` reads `/fapi/v1/userTrades`, whose
+          per-fill `commission` / `quoteQty` / `maker` fields give the split `/fapi/v1/income`
+          cannot, since income totals a window with no leg attribution — which is exactly why the
+          taker rate had to be hand-derived and why the maker rate could not be. Surface is
+          `python -m runtime.mvp_runtime.crypto.account --fee-rates BTCUSDT`; with no maker fill
+          it reports the absence and its reason, never `0.0` (the two are opposite claims about
+          real money).
+          **What is missing is a maker fill**, and it is now operator state rather than a build
+          item: `place_canary_order` is entry-only MARKET by construction, so the only door that
+          can produce one is the autonomous leg's resting target — which exists and is wired, and
+          waits on the same live-trading checklist as everything else in this section. When one
+          lands, replace the constant. If the measured rate comes in **above** 2.0, every
+          candidate scored at the published rate becomes `OPTIMISTIC` and stops being promotable
+          on its own evidence — intended behaviour of the gate above, not a regression.
+    - [x] **The grant's revocation was defeatable by the grant** — done 2026-07-29 (#324),
+          reviewing #320 rather than running it. `assert_authorization` branched on
+          `evidence_ref.startswith("env_only:")` to decide whether to re-read the grant file or
+          the environment — and on a grant-backed authorization `evidence_ref` is copied verbatim
+          out of the operator's activation record. The sentinel passes the path validation (no
+          drive, not absolute, no `..`) and a file of that name is legal on Linux, so a record
+          could name itself onto the env branch and skip its own file re-read. Reproduced: with
+          the sentinel in place, **deleting the grant file left the authorization valid** — the
+          one property `assert_authorization` promises about grants, broken on the providers
+          #320 deliberately KEPT on a grant (`binance_futures_account`).
+          Not privilege escalation — writing that record already takes the access to mint a normal
+          grant — but persistence: the documented revocation silently stopped working. Fixed with
+          an explicit `Authorization.env_gate` field only `env_only_authorization` sets, so no
+          record content can reach it. Worth keeping as a shape rather than an incident: the
+          weakening came from **one field carrying two meanings, where the meaning selected which
+          security check ran**. #320's own reasoning ("a keyword would put 'no grant needed' one
+          token away from the model provider") is the same instinct applied one level up.
+          The containment test had a matching hole — it collected only `ast.Attribute`, so a
+          caller written `from ..safety_gate import select_env_gated` scored zero, and that is
+          the idiomatic import style in six modules under `runtime/`. A test that asserts an
+          exact caller set can only fail on a *new* caller, so nothing in it would have noticed
+          the matcher going blind to a whole calling convention; there is now a unit test on the
+          matcher itself.
+    - [x] **`execution.live_trader` named the removed `live_trading` grant** — done 2026-07-29
+          (role `0.1.0` → `0.2.0`, registry hash refreshed). `live_trading_grant_revoked` →
+          `live_trading_opt_in_cleared`, `live_trading_grant_absent_or_revoked` →
+          `live_trading_opt_in_absent`. **The bigger find was in the prose, not the conditions:**
+          the definition still said "the order adapter (LP4) and position kernel (LP5) do not
+          exist yet" and that the canary count was "currently 0". LP4 shipped 2026-07-25 and LP5
+          followed — a role definition asserting build status is exactly how status got four
+          owners. It now states requirements only and points at the readiness board, which is the
+          one thing that can answer a per-machine question. Two sibling docs carried the same
+          dead claim and were corrected with it (`LP5_POSITION_KERNEL_DESIGN`,
+          `CRYPTO_LIVE_EXECUTION_VERIFICATION`).
+    - [x] **A live entry now tells the operator it happened** — done 2026-07-29 (#331). Cycle
+          routing meant a scheduled run could open a real position **with nobody watching**, and
+          nothing said so: the cycle recorded it and the audit chain recorded it, which are both
+          places you have to go and look. Fine for a daily review, useless for the first
+          autonomous entries this system has ever made. Sent for exactly two outcomes, `OPENED`
+          and `INCIDENT` — a channel that pings every fifteen minutes is one nobody reads by the
+          second day, and the routine picture already goes out daily in `crypto_report`. This
+          changes nothing about what is permitted; it changes how long a surprise can go unseen.
+    - [x] **Live now enforces the strategy's time exit** — done 2026-07-29, the LP5.1 record-shape
+          increment this box asked for. The live position carries `timeframe`,
+          `max_holding_bars` and a deduped holding counter; `live_route` advances the counter
+          every cycle and closes at market (reduceOnly) when the count reaches the limit.
+          `max_holding_bars` rides on the **position**, not re-read from the spec at exit time —
+          paper's parity rule, so a spec edited mid-hold cannot move the exit of a trade already
+          open. Legacy positions (opened before this shape) fall back to the timeframe table and
+          say so (`LIVE_ROUTING_MAX_HOLD_FALLBACK`), so that gap stays attributable.
+          Two properties carried over deliberately, because the counter *is* the rule: it
+          advances on cycles that close nothing (persisted unconditionally, so a failed close
+          cannot reset the clock), and one bar counts once — `paper.advance_holding` is now
+          shared by both legs rather than copied, so they cannot drift on what "a bar passed"
+          means.
+          **What still differs, and is not a defect:** paper models the exit at the bar's close,
+          live pays taker plus slippage on a market order. Same rule, different cost; `r_basis`
+          keeps the populations labelled. So the evidence transfers **better** than before but
+          still not exactly — do not read the residual gap as drift.
+          One asymmetry worth knowing: a time exit that will not confirm is reported
+          (`LIVE_ROUTING_TIME_EXIT_DEFERRED`) and retried next cycle, **not** escalated to a
+          portfolio halt — unlike an unprotected position, it still has its bracket resting at
+          the venue, so it is protected, merely held past its window.
+    - [ ] **The paper record does not yet justify turning the routing on.** Carried across from
+          the pre-merge version of the box above (#292), because it annotated a precondition
+          rather than the build, and the build landing does not settle it.
+          It read "6 closed trades at −0.39R, `INSUFFICIENT_SAMPLE`"; on 2026-07-28 it is **60
+          closed trades at +0.08R**, and the sign is still unknown — 95% interval
+          `[−0.32, +0.48]`, about 0.4 standard errors from zero, with roughly **3,100 trades**
+          needed to separate the effect as observed. **More data moved the number and not the
+          verdict.** At ~18 closed trades a day that is months for the observed effect, or about
+          a month if the true edge is the ~+0.2R the backtests claim — and the distance between
+          those two figures is the reason to keep collecting rather than to route.
+          Note this compounded with the item above until 2026-07-29: the backtests that claim
+          ~+0.2R were run with a time exit the live leg did not enforce. The live leg enforces it
+          now, so the evidence transfers better — but the sample question this box is about did
+          not move, and the exit's *cost* still differs (paper models the bar close, live pays
+          taker plus slippage).
+- [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
+      board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
+      evidence store is
       `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
       Core pointer and the safety-flag grants — so a number written here is a claim about whichever
-      machine last edited it. It said "0" until 2026-07-27, when Thomas reported canaries placed on
-      his own machine; the fix is not a new number, it is to stop asserting one.
+      machine last edited it. It said "0" until 2026-07-27; the fix was not a new number, it was to
+      stop asserting one, and that still holds for any machine but the one that ran them.
+      **On that machine the four are 2026-07-26T11:03Z and 14:05Z, then 2026-07-27T08:02Z and
+      09:00Z** — and the split matters, because the first two were placed while #228 and #246 were
+      still live and the second two after they merged. The 11:03Z order is the one whose audit
+      event was lost; see the header. The 14:05Z order is the first that completed every step.
       Ask the machine: `python -m runtime.mvp_runtime.crypto.live_readiness`, the `canary_evidence`
       row. Two things that count differently from "how many did I place": only records with
       `clean: true` count, and a registry that fails **any** verification — line not JSON, self-hash
@@ -423,7 +617,21 @@ scopes at different levels, so nothing was owed to it.
       active also leaves no evidence at all: `DryRunCanaryRegistry` accepts and discards, because
       unbacked evidence here would unlock autonomous trading.
       (1 canary existed in the frozen source system and did not migrate.)
-      **Re-verification is owed for anything placed before 2026-07-27, and here is why.** Three
+      **And all four count while being unable to say what size they were** (#328/#332,
+      2026-07-29). The record carried `notional_usdt` — what the operator typed — with no
+      quantity and no fill to check it against, and all four predate #268, which is when that
+      declaration started being checked at all. So "65.0" cannot now be asked about. The record
+      gained the venue's own numbers (`quantity`, `avg_price`, `executed_qty`, `cum_quote`), which
+      `submit_and_reconcile` had been producing and the record discarding, so declared-versus-
+      filled became a subtraction; and the board says when it cannot make that subtraction, which
+      today is every row:
+      `4/4 clean canary orders [4 of 4 cannot prove their size — no fill recorded]`.
+      Stated beside the count, never folded into it — making a size disagreement block promotion
+      would change what this box counts, and that decision has not been taken. **The previous four
+      are not repairable**: their fills are not in the record, and inventing them is the failure
+      the whole thing refuses. Whether evidence that cannot prove its own size should count toward
+      a threshold is an operator decision, like the other two this box already defers.
+      **Re-verification is owed for the two placed on 2026-07-26, and here is why.** Three
       separate defects sat on this path and were fixed afterwards, so earlier evidence cannot be
       read at face value:
       **#201** — `resolve_live_order_limits` dropped `canary_confirmation`, so the guard compared an
@@ -553,9 +761,17 @@ decision.
 noting: §8.8 and §10.4 were real gaps and got built; §8.5 turned out to be one decision (activate
 the roles) plus the routing to make activation non-inert; and the §8.4 risk-classification entry was
 **written up wrong the first time** — the correction, not the fix, is the reusable part. What stays
-open below is either an explicit Thomas decision (`business.analysis`, `execution.live_trader`) or a
-state that is now *correct rather than missing* (the high-risk route, `complexity`), and each says
-which it is. Do not read an open box here as work waiting to be done.
+open below is one of three things, and each box says which: an explicit Thomas decision
+(`business.analysis`, `execution.live_trader`); a state that is now *correct rather than missing*
+(the high-risk route, the PROGRAM route, `complexity`); or a mismatch between the design document
+and the build where **the document is the thing to change** (§8.7). Do not read an open box here as
+work waiting to be done.
+
+**Re-audited 2026-07-29** against `main`, after the live-gate and cycle-routing changes. Two boxes
+moved and both moved for the same reason — *a claim that was true when written, and was not
+re-checked when the thing it described moved*: §8.4's high-risk box had a re-check condition phrased
+around the router, and a RED action became autonomously reachable through a different door; §8.7 had
+no box at all. Nothing else in this section changed.
 
 The Target layers (§4–§5: Common Capability Organization, Opportunity & Business Creation, Business
 Portfolio, Dynamic Strategic Board) are **not** listed here: §9 says do not build them now, so their
@@ -578,12 +794,36 @@ absence is compliance.
         `GREEN` while carrying `EXECUTE_AND_REPORT`. Both fixed, plus a floor invariant at the one
         construction site (§10 read backwards) so no future action can be added below its
         disposition. See `BUILD_HISTORY.md`.
-  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable — and that is now
-        a correct state, not a gap.** No action on the run path is priced ORANGE/RED, so no task
-        classifies there. The approval-bearing actions that *are* ORANGE (memory promotion,
-        candidate trial, program registration) reach Thomas through R9/R10 rather than through the
-        router. This box stays open only as the place to re-check the day a run-path action is
-        priced above YELLOW; there is nothing to build today.
+  - [ ] **The "High-risk Decision → Thomas Approval" route is still unreachable through the
+        router — still correct, but the re-check condition below was too narrow and is
+        rewritten.** No action on the **analysis** run path (intake → Prime → specialist →
+        validation → audit) is priced ORANGE/RED, so no task classifies there. The
+        approval-bearing ORANGE actions (memory promotion, candidate trial, program
+        registration, strategy promotion) reach Thomas through R9/R10, not the router.
+
+        **What the old wording missed, found re-auditing 2026-07-29.** It said to re-check "the
+        day a run-path action is priced above YELLOW" — and that day already came through a door
+        this box was not watching. Cycle routing (#302, 2026-07-28) gave `exchange.order.place`
+        — `risk_level: RED`, the one action in the runtime that reaches money and a counterparty
+        — an **autonomous caller**: scheduler → `crypto/cycle.py` → `crypto/live_route.py` → the
+        P5 gate. So a RED action does now run without a human in the loop per-order, and it never
+        touches the Task Classifier, which is why a box phrased around the router stayed quiet.
+
+        **This is not a defect and nothing here needs building.** §10.5's pattern (specialists →
+        independent risk review → Thomas approval → restricted execution) *is* implemented for
+        that path — as the P5 live-execution gate plus an operator checklist (confirmation
+        phrase, registered budget, ≥3 clean canary orders, both kill switches, the loss breaker),
+        each a computed row on the readiness board. What differs from §8.4's row is the
+        **mechanism**: a standing operator checklist rather than a per-action approval record.
+        Worth stating because the two are not interchangeable — a checklist is set once and
+        persists, an approval record is minted per action and is single-use.
+
+        **Re-check condition, corrected:** re-open this the day an ORANGE/RED action becomes
+        reachable **from any autonomous entry point**, not merely from the run path — and when
+        one does, decide deliberately whether it belongs behind a per-action approval record or
+        behind a standing gate. `exchange.order.place` chose the standing gate (Thomas,
+        documented in `CRYPTO_LIVE_EXECUTION_V0.1.md`); that choice was never written down as a
+        choice, which is how this box came to describe a world that had moved.
   - [ ] **The PROGRAM route — unbuilt, and *not* merely awaiting an approval.** An earlier
         version of this line said "blocked, not unbuilt"; that was wrong, and the correction is
         the useful part. Three things are missing, and the approval is the **last** of them:
@@ -643,6 +883,38 @@ absence is compliance.
         non-live candidate, so the trial suite rests on it staying one.
   - [ ] `execution.live_trader` stays a candidate and is **not** part of any routing decision —
         P5, `external_action_allowed: true`; its activation is a live-trading go/no-go.
+- [ ] **§8.7 The registries hold neither of the design's example lists, and that was never
+      written down.** Opened 2026-07-29 by re-auditing, not by working a roadmap.
+
+      §8.7 names six "Initial Programs" (text format conversion, data validation, file saving,
+      duplicate checking, schedule calculation, basic quality check) and five "Initial Tools"
+      (LLM, Memory, File System, Search, Telegram). `05_REGISTRIES/PROGRAM_REGISTRY.yaml` holds
+      **none of the six** — it holds `schema.validator` and `document.parser`, both `candidate`,
+      `enabled: false`, `runtime_implementation_available: false`, under
+      `status: active_registry_no_active_programs`. `TOOL_REGISTRY.yaml` is the same shape with
+      `document.reader` and `search.readonly`.
+
+      **Recorded as an observation, not as work owed**, and the distinction matters:
+
+      * §8.7's actual *rule* — "Agents cannot arbitrarily use unregistered Programs or Tools" —
+        **is enforced**, and fail-closed: `registry_resolution.py` refuses an entry with no
+        `definition_sha256` and refuses on hash mismatch. That is the part that governs.
+      * The five "Initial Tools" are mostly **not** registry tools at all, and reading them as
+        owed items would be a category error. LLM is the provider behind the Safety-Flag Gate;
+        Memory is the four-rung ladder; Telegram is the operator channel; Search runs as an
+        `INTERNAL_READ` ALLOW action whose backend a `network_access` activation enables per
+        machine — `SEARCH_READONLY_TOOL`'s own registry comment says flipping its fields would
+        not and must not enable it. Each exists; none arrives through this registry.
+      * The six Programs are genuinely absent, but building them is exactly what the **PROGRAM
+        route** box above says not to do yet, and for the same reason: the MVP's one use case is
+        judgment work, so there is no rule-based task to route. Six unrunnable definitions would
+        be §16's "building for future possibilities" with extra hash maintenance.
+
+      **So the honest state is: the lists in §8.7 are illustrative, the registries are real, and
+      the design document does not say which its lists are.** The work here is one sentence in
+      the architecture document marking those two lists as examples rather than an inventory —
+      a Thomas edit, since §0 makes him the owner of that file. Until then this box exists so
+      the mismatch is a recorded decision rather than a silent one.
 - [x] **§10.4 multi-perspective judgement** — done 2026-07-27 in the form §10.4 permits for early
       MVP (*"one Agent may separate these perspectives internally"*): research / revenue / risk each
       reach their own verdict before the integrated answer, declared in the role's output contract

@@ -64,11 +64,12 @@ EXIT_BLOCKED = 3
 
 
 def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
-                now: str | None = None) -> dict:
+                now: str | None = None, allow_stale_cost_basis: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
         selectors, keep_active=keep_active, now=now, repo_root=root,
+        allow_stale_cost_basis=allow_stale_cost_basis,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -88,6 +89,7 @@ def run_promotion(
     *, selectors: list[str], promoted_by: str, reason: str,
     keep_active: bool, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
+    allow_stale_cost_basis: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -95,7 +97,14 @@ def run_promotion(
     strategy id shared by several generations refuses (``CANDIDATE_AMBIGUOUS``)
     instead of silently promoting the newest. C8b: requires either an APPROVED,
     unexpired, content-matching approval id or the explicit ``without_approval``
-    escape; the door used is recorded on the ledger."""
+    escape; the door used is recorded on the ledger.
+
+    Evidence scored under a cost model cheaper than the venue charges refuses with
+    ``CANDIDATE_COST_BASIS_STALE`` unless ``allow_stale_cost_basis`` says otherwise —
+    see ``pool.assert_promotable_cost_basis``. The escape stays out of
+    ``promotion_content_sha256``: the candidate ids are already in the hash and the
+    check is a pure function of them, so the same approval can never need the escape
+    in one execution and not another."""
     now = now or timeutil.utc_now_iso()
 
     # Kill switch first: promotion mutates what the runtime trades.
@@ -121,6 +130,11 @@ def run_promotion(
 
     try:
         candidates = pool_store.resolve_candidates(selectors, root)
+        # After the approval check, not before: a promotion that Thomas never approved should
+        # say so first. Both refusals are absolute; this is only about which one an operator
+        # reads when a selection fails on both counts.
+        if not allow_stale_cost_basis:
+            pool_store.assert_promotable_cost_basis(candidates)
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -192,6 +206,12 @@ def run_promotion(
         "approval_id": approval_id,
         "approval_verified": verified_approval is not None,
         "without_approval_escape": bool(without_approval and approval_id is None),
+        # Recorded whether or not it fired, and with the basis each promoted candidate was
+        # actually scored under. A pool entry outlives the argv that installed it, so "which
+        # cost model is this lineage's evidence standing on" has to be answerable from the
+        # ledger later rather than reconstructed from whoever ran the command.
+        "stale_cost_basis_escape": bool(allow_stale_cost_basis),
+        "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         "created_at": now,
     }
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
@@ -214,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
     parser.add_argument("--without-approval", action="store_true",
                         help="explicit legacy escape: promote without an approval record (audited as such)")
+    parser.add_argument("--allow-stale-cost-basis", action="store_true",
+                        help="explicit escape: promote evidence scored under a cost model cheaper "
+                             "than the venue charges (its expectancy is overstated; recorded as such)")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -228,22 +251,41 @@ def main(argv: list[str] | None = None) -> int:
         # automated statistical threshold behind it.
         #
         # The bases are counted rather than assumed. The taker default moved from the ported
-        # 2.5 bps to the venue's measured 5.0, and `backtest_evidence` is durable, so this
-        # store holds candidates scored under both. Ranking them together compares a cheaper
-        # venue to the real one, and the ranking does not know that — only this line can.
-        bases = collections.Counter(
-            pool_store.candidate_quality(c)["cost_basis"] for c in candidates
+        # 2.5 bps to the venue's measured 5.0 and the take-profit exit became a maker fill, and
+        # `backtest_evidence` is durable, so this store holds candidates scored under all of
+        # them. Each is reported with the DIRECTION of its error, because that is the only
+        # thing an operator can act on: an optimistic row's number is inflated, a conservative
+        # row's is not, and the two need opposite amounts of suspicion.
+        bases: dict[tuple[int, str], int] = collections.Counter(
+            (q["cost_basis_rank"], q["cost_basis"])
+            for q in (pool_store.candidate_quality(c) for c in candidates)
         )
+        rank_label = {
+            pool_store.COST_BASIS_RANK_CURRENT: "CURRENT     ",
+            pool_store.COST_BASIS_RANK_CONSERVATIVE: "conservative",
+            pool_store.COST_BASIS_RANK_OPTIMISTIC: "OPTIMISTIC  ",
+            pool_store.COST_BASIS_RANK_UNRECORDED: "UNRECORDED  ",
+        }
         print(f"NOTE: every R below is NET of costs, charged on both legs of every closed trade.")
         print(f"      Current model: {cost_mod.DEFAULT_TAKER_FEE_BPS} bps taker + "
               f"{cost_mod.DEFAULT_SLIPPAGE_BPS} bps slippage per fill (5.0 bps taker measured on")
-        print("      this account 2026-07-26: 0.1291 USDT over ~258 USDT of fills).")
+        print("      this account 2026-07-26: 0.1291 USDT over ~258 USDT of fills), and "
+              f"{cost_mod.DEFAULT_MAKER_FEE_BPS} bps")
+        print("      maker on a take-profit exit — that one is Binance's PUBLISHED rate, not "
+              "measured here.")
         if len(bases) > 1:
             print("      MIXED BASES in this list — these rows were NOT scored alike:")
-            for basis, count in bases.most_common():
-                print(f"        {count:4d}  {basis}")
-            print("      A candidate scored at 2.5 bps paid half the fee one scored at 5.0 did.")
-            print("      Rank tiers are comparable within a basis, not across them.")
+            for (rank, basis), count in sorted(bases.items(), key=lambda kv: (kv[0][0], -kv[1])):
+                print(f"        {count:4d}  {rank_label[rank]}  {basis}")
+            print("      Rows are ranked by this tier FIRST, so cheaper-venue evidence sorts")
+            print("      below evidence that paid the real rate regardless of its score.")
+            blocked = sum(n for (rank, _), n in bases.items()
+                          if rank not in pool_store.PROMOTABLE_COST_BASIS_RANKS)
+            if blocked:
+                print(f"      {blocked} row(s) are REFUSED at the promotion door "
+                      "(CANDIDATE_COST_BASIS_STALE);")
+                print("      re-mint the lineage at the current model, or pass "
+                      "--allow-stale-cost-basis.")
         # The mixing is reported, but it is also fixable for the number that matters most:
         # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
         # is exactly derivable from what its evidence already records. `exp@` below is that
@@ -256,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if flipped:
             print(f"      {len(flipped)} candidate(s) show a POSITIVE stored expectancy that is "
-                  f"negative at {cost_mod.DEFAULT_TAKER_FEE_BPS} bps (marked FLIPS below).")
+                  f"negative at the current rates (marked FLIPS below).")
             print("      win_rate and rr are NOT re-derivable — those still reflect the old rate.")
         print()
         # M4a: robustness stays the first-pass filter; within a verdict tier the
@@ -275,6 +317,12 @@ def main(argv: list[str] | None = None) -> int:
                 exp_now = f" exp@now={at_now:+.4f} FLIPS"
             else:
                 exp_now = f" exp@now={at_now:+.4f}"
+            # The tier rides on every row, not just in the header count: it is the FIRST sort
+            # key, so a row sitting below a visibly weaker one has to be able to say why.
+            basis_mark = (
+                "" if q["cost_basis_rank"] == pool_store.COST_BASIS_RANK_CURRENT
+                else f" basis={rank_label[q['cost_basis_rank']].strip()}"
+            )
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
@@ -282,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"oos={q['holdout_status']:12} "
                   f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
                   f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}"
-                  f"{exp_now}")
+                  f"{exp_now}{basis_mark}")
         return EXIT_OK
 
     if not args.strategy_ids:
@@ -300,7 +348,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BLOCKED
 
     if args.request:
-        prepared = run_request(selectors=selectors, keep_active=args.keep_active)
+        try:
+            prepared = run_request(selectors=selectors, keep_active=args.keep_active,
+                                   allow_stale_cost_basis=args.allow_stale_cost_basis)
+        except MvpRuntimeError as exc:
+            print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+            return EXIT_BLOCKED
         request = prepared["approval_request"]
         from runtime.mvp_runtime import approval as approval_mod  # noqa: E402 (message renderer)
         print(approval_mod.request_message(request, prepared["permission_decision"], history=None))
@@ -320,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         selectors=selectors,
         promoted_by=args.promoted_by, reason=args.reason, keep_active=args.keep_active,
         approval_id=args.approval_id, without_approval=args.without_approval,
+        allow_stale_cost_basis=args.allow_stale_cost_basis,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "

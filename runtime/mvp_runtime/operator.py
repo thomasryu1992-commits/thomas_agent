@@ -710,6 +710,11 @@ def render_result_reply(result: dict[str, Any]) -> OperatorReply:
 
 class OperatorChannel(Protocol):
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]: ...
+    # Read what is waiting WITHOUT claiming it: the cursor does not move, so the next `poll`
+    # delivers these same messages and handles them normally. That is the whole design of the
+    # halt peek (see `peek_for_halt`) — an unclaimed read cannot lose a message, and the price
+    # is that whatever the peek acts on must be safe to see twice.
+    def peek(self) -> list[InboundMessage]: ...
     # Returns the sent message's id when the transport has one, else None. Callers that only
     # deliver ignore it; the progress notice needs it, because editing one message in place is
     # the difference between a live status line and six notifications for one task.
@@ -731,11 +736,18 @@ class MockOperatorChannel:
     edited: list[tuple[str, str, str]] = field(default_factory=list)
     network_egress: bool = False
     last_long_poll_seconds: int | None = None
+    peeks: int = 0
 
     def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
         self.last_long_poll_seconds = long_poll_seconds
         batch, self.inbound = list(self.inbound), []
         return batch
+
+    def peek(self) -> list[InboundMessage]:
+        """What `poll` would return, WITHOUT draining — the unclaimed read the halt peek uses.
+        The same messages stay queued for the next `poll`, exactly as the real cursor behaves."""
+        self.peeks += 1
+        return list(self.inbound)
 
     def send(self, chat_id: str, text: str) -> str | None:
         self.sent.append((chat_id, text))
@@ -902,6 +914,33 @@ class TelegramChannel:
             messages.append(_message_from_update(update))
         if self._offset != before:
             self._save_offset()
+        return [m for m in messages if m is not None]
+
+    def peek(self) -> list[InboundMessage]:
+        """Read what is waiting **without claiming it**: same offset, `timeout=0`, and the
+        cursor is neither advanced in memory nor persisted.
+
+        This is the load-bearing property of the halt peek, and it is a deliberate asymmetry
+        with `poll`. Advancing here would claim every update in the batch while handling only
+        the halt verbs in it, so an ordinary request sent in the same second as a `/kill` would
+        be **silently destroyed** — the one outcome the F1 enqueue rule exists to prevent. Not
+        advancing means the next `poll` re-delivers these same messages and handles them the
+        normal way: one ledger event, one reply, from one place.
+
+        The price is that the peek's caller sees a message it will see again, so it may only
+        act on what is safe to act on twice. That is why `peek_for_halt` acts on `/kill` and
+        `/pause` and nothing else, and why it writes state but never a ledger event or a reply.
+        """
+        token = self._assert()
+        if not self._offset_loaded:
+            self._offset = self._load_offset()
+            self._offset_loaded = True
+        payload = self._call(
+            token, "getUpdates",
+            {"offset": self._offset, "timeout": 0, "allowed_updates": json.dumps(["message"])},
+            timeout=self._DEFAULT_HTTP_TIMEOUT,
+        )
+        messages = [_message_from_update(u) for u in payload.get("result", []) if isinstance(u, dict)]
         return [m for m in messages if m is not None]
 
     # Telegram rejects a sendMessage over 4096 UTF-16 code units. Split just under that so a
@@ -1100,6 +1139,87 @@ class ProgressNotice:
         self._last_text = text
 
 
+# The ONLY verbs the mid-run peek may act on, and the list is short for one reason: the peek
+# does not claim the messages it reads, so everything here is seen again by the next poll and
+# must therefore be safe to apply twice.
+#
+# `kill` and `pause` qualify — applying KILLED to an already-KILLED runtime is the same runtime.
+# `resume` is deliberately absent and its absence is the safety property: a peek that could
+# resume would be a halt undone by a message the operator sent *before* the halt, re-read out of
+# order. `approve` is absent because consuming an approval twice is exactly what
+# `one_time_use_required` forbids. `status`/`audit` are absent because they reply, and a reply
+# the next poll sends again is noise the peek has no reason to create.
+PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
+
+
+def peek_for_halt(
+    channel: OperatorChannel,
+    *,
+    registration: OperatorIdentity,
+    control_store: ControlStore | None,
+    now: str | None = None,
+) -> str | None:
+    """Look for a halt command the loop has not reached yet, and make it real if there is one.
+
+    Returns the verb applied, or None. **Never raises** — see the failure direction below.
+
+    The gap this closes is not "a long analysis cannot be interrupted"; it is that while one
+    runs, `/kill` exists **nowhere in the runtime**. The operator loop is the only process that
+    receives Telegram, and it does not poll while it drains — so the control state file, which
+    is what the crypto cycle's `live_route` re-reads immediately before a live entry, cannot
+    change for the length of an analysis. That made this loop's responsiveness a dependency of
+    the money path in another container.
+
+    So this writes **state** and nothing else: no ledger event, no reply. Both belong to the
+    normal handling that follows, because the peek does not claim what it reads (see
+    `TelegramChannel.peek`) and the next poll will deliver the same message again. Applying the
+    transition through the same `control.apply_command` with `ledger=None` keeps one owner for
+    what a halt *means* while leaving the durable audit to happen exactly once.
+
+    What this deliberately does NOT do: stop the analysis that is running. That needs an abort
+    path and a registry terminal for an interrupted RUNNING entry — decision K4 in
+    `docs/proposals/CONTROL_LANE_SEPARATION_V0.1.md`, not this. The drain already re-reads the
+    control state before claiming the next task, so nothing further starts.
+
+    Failure direction: every exception is swallowed. The peek reaches the network on a path
+    whose job is somebody's analysis, and a safety net that can itself destroy the run is not
+    one. A failed peek leaves exactly the behaviour that existed before it.
+    """
+    if control_store is None:
+        return None
+    reader = getattr(channel, "peek", None)
+    if not callable(reader):
+        return None       # a transport that cannot peek degrades to the pre-existing silence
+    try:
+        batch = reader()
+    except Exception:      # noqa: BLE001 — deliberate: see the docstring
+        return None
+    # Per message, not per batch. Wrapping the whole loop meant one bad message took the rest of
+    # the batch down with it — including a `/kill` queued behind it — which is this function's own
+    # principle (a safety net must not destroy what it protects) failing to reach inside the batch.
+    # Nothing is claimed either way, so the next poll would still have handled it; the halt would
+    # just have waited for the thing it exists not to wait for.
+    for message in batch:
+        try:
+            try:
+                verify_control_channel(message, registration)
+            except OperatorBlocked:
+                continue          # not the registered operator; the normal path drops it too
+            command = control.parse_command(message.text)
+            if command is None or command[0] not in PEEKABLE_HALT_VERBS:
+                continue
+            verb, arg = command
+            control.apply_command(
+                control_store, verb, actor=registration.operator_id,
+                now=now or timeutil.utc_now_iso(), arg=arg,
+                ledger=None,      # the audit belongs to the normal handling, once
+            )
+            return verb
+        except Exception:      # noqa: BLE001 — deliberate: see the docstring
+            continue
+    return None
+
+
 def run_queued_task(
     entry: Any,
     *,
@@ -1114,6 +1234,7 @@ def run_queued_task(
     store: LedgerStore | None = None,
     independent_validation: bool | str = False,
     validator_provider: Provider | None = None,
+    control_store: ControlStore | None = None,
     repo_root: Path | None = None,
 ) -> tuple[OperatorReply, bool, bool]:
     """Run one already-claimed queued entry, deliver its result, and close the entry.
@@ -1140,9 +1261,29 @@ def run_queued_task(
         entry_id=entry.registry_entry_id, request_text=entry.request_text,
     )
     progress.start()
+
+    def _at_stage(stage: str) -> None:
+        """One callback, two jobs, in this order on purpose.
+
+        The status line is what Thomas sees; the halt peek is what protects the money path in
+        the other container. Both hang off the stage boundaries #294 installed, because a
+        boundary is exactly where this loop is between two long-running things and can afford a
+        round trip. Neither can raise: `ProgressNotice` swallows its own failures and
+        `peek_for_halt` swallows everything.
+        """
+        progress.stage(stage)
+        # No `now=stamp`. `stamp` is bound before the analysis runs, and `control.apply_command`
+        # writes whatever it is given straight into `ControlState.updated_at` — so a `/kill`
+        # arriving three minutes into a four-minute analysis was recorded as having happened when
+        # the analysis BEGAN. Nothing compares that field, so no gate behaved differently; but it
+        # is the operator's record of when they halted the runtime, on the state that gates the
+        # money path, and "when did the kill land" is the question it exists to answer afterwards.
+        # `peek_for_halt` stamps at the moment it acts.
+        peek_for_halt(channel, registration=registration, control_store=control_store)
+
     reply = render_result_reply(run_task(
         entry.request_text,
-        on_progress=progress.stage,
+        on_progress=_at_stage,
         provider=provider,
         search_tool=search_tool,
         working_memory=working_memory,
@@ -1253,6 +1394,11 @@ def drain_queue(
             break
         reply, delivered, partial = run_queued_task(
             entry, channel=channel, registration=registration, registry=registry,
+            # The drain already holds the control store — it re-reads it before every claim.
+            # Threading it into the run is what lets the mid-run halt peek write to the same
+            # state, so a `/kill` sent during an analysis reaches the crypto cycle's guard in
+            # the other container instead of waiting for this task to finish.
+            control_store=control_store,
             now=now, **run_kwargs,
         )
         executed.append(reply)

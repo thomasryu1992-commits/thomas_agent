@@ -195,12 +195,18 @@ def test_limits_from_budget_maps_caps_and_leaves_confirmation_to_the_operator():
 
 # --- registration grants nothing ---------------------------------------------
 
-def test_registering_a_budget_does_not_enable_trading(tmp_path):
+def test_registering_a_budget_does_not_enable_trading(tmp_path, monkeypatch):
     """A registered budget is a record, not a permission. Since LP4 the order path exists, so the
-    thing that must stay untouched is the *authority*: registering a budget mints no grant, so the
-    order adapter stays inert and nothing can be sent."""
+    thing that must stay untouched is the *authority*: registering a budget does not throw the
+    live-trading switch, so the order adapter stays inert and nothing can be sent.
+
+    The switch became `MVP_LIVE_TRADING=real` alone on 2026-07-28, which makes this test matter
+    MORE, not less: with the grant gone there is one thing left that separates a configured
+    machine from a trading one, and a record written by a script must not be it. The delenv is
+    explicit rather than inherited so that is visible."""
     from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter, select_order_adapter
+    monkeypatch.delenv("MVP_LIVE_TRADING", raising=False)
     lb.write_registered_budget(_build(), root=tmp_path)
     adapter = select_order_adapter(now=NOW, root=tmp_path)
-    assert isinstance(adapter, DryRunOrderAdapter)          # no grant => inert
+    assert isinstance(adapter, DryRunOrderAdapter)          # switch off => inert
     assert adapter.network_egress is False                  # cannot reach a venue

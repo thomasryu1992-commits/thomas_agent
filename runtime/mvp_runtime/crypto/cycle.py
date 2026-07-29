@@ -5,6 +5,12 @@ The Dynamic-Task-Team shape the contract promised: data (C2) → research featur
 whose sub-records ride back to the caller for the ledger. Fail-closed where the
 contract says BLOCK, degraded where it says DEGRADE:
 
+**LP5.3 step 3 added a live leg (C5b), and it reaches the venue through exactly one module:**
+``crypto/live_route``. That indirection is not layering for its own sake — it is what keeps
+"which code can start a live order" a question with a single answer, and a test pins it. The
+leg is inert on any machine that has not set ``MVP_LIVE_TRADING=real``: it reads no account and
+opens no socket, and this cycle behaves exactly as it did before the wiring existed.
+
 - A backend failure at collection **degrades** the cycle (``MARKET_DATA_DEGRADED``
   recorded; empty snapshot fails the health guard → no-new-position) — never blocks.
   A *configuration* failure (bad symbol/timeframe) still raises: that is a broken
@@ -42,12 +48,12 @@ from .market_data import (
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
+from .live_route import ROUTE_DISABLED, live_position_symbols, live_route_status_line, run_live_leg
 from .paper import (
     PaperStore,
     build_entry_plan,
     list_open_positions,
     read_outcomes,
-    route_entries,
     run_paper_update,
     split_by_provenance,
 )
@@ -281,10 +287,16 @@ def run_crypto_cycle(
     # with the same exit math, and when the guards refused an actionable signal
     # THIS cycle, shadow the plan the router would have taken (tagged with the
     # refusing reasons). Persisted only through the real gated store.
+    # The route is the paper step's own evaluation, reused. It used to be computed a second
+    # time here with identical arguments — two evaluations of the same strategies against the
+    # same feature row, and therefore two chances to disagree about what the pool said this
+    # cycle. LP5.3 adds a third consumer (the live leg), which is what made sharing worth doing
+    # rather than merely tidy. `None` when the paper step returned before routing (a settlement
+    # race), and the fallback is the honest one: no shadow rather than a re-derived route.
+    shared_route = paper_summary.get("route")
     blocked_plan = None
     if not bool(verdict.get("allow_new_position")) and paper_summary.get("opened") is None:
-        cf_route = route_entries(active_pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
-        blocked_plan = build_entry_plan(cf_route, feature_row, now=now)
+        blocked_plan = build_entry_plan(shared_route, feature_row, now=now) if shared_route else None
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
@@ -299,6 +311,25 @@ def run_crypto_cycle(
     )
     if counterfactual_summary.get("degraded"):
         reason_codes.append(counterfactual_summary["degraded"])
+
+    # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
+    # module that may. On a machine that has not opted in this returns DISABLED having read
+    # nothing, so the whole branch costs one env check. It runs AFTER the paper
+    # step so it can share that step's routing result rather than re-evaluating the pool, and
+    # it is given the same C4 verdict — a live entry can never be permitted where a paper one
+    # was not. Never raises: `run_live_leg` reports, because a traceback here would be
+    # indistinguishable from "no live activity".
+    live = run_live_leg(
+        route=shared_route,
+        feature_row=feature_row,
+        verdict=verdict,
+        symbol=symbol,
+        collector=collector,
+        now=now,
+        root=root,
+        control_store=control_store,
+    )
+    reason_codes.extend(live["live_reason_codes"])
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
@@ -351,6 +382,15 @@ def run_crypto_cycle(
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
         "paper_records": paper_records,
+        # The live leg, reported distinctly from paper on purpose: a ledger where the two are
+        # indistinguishable is one where nobody can answer "did this system trade real money
+        # today?" without reading code. `live_halt` rides separately because `run_pool_cycle`
+        # reads it to decide whether the rest of the fan-out may run at all.
+        "live_route_status": live["live_route_status"],
+        "live_opened": live["live_opened"],
+        "live_settled": live["live_settled"],
+        "live_reason_codes": live["live_reason_codes"],
+        "live_halt": live["halt"],
         # Only decisions that DECIDED something are stored whole. A cycle evaluates every
         # active strategy and most conclude "nothing to do"; persisting all of those made
         # lifecycle_decisions 90% of a 24KB record and 99.7% of a 56MB ledger, for one bit
@@ -371,17 +411,25 @@ def run_crypto_cycle(
     return record
 
 
-def pool_cycle_contexts(root: Path | None = None) -> list[tuple[str, str]]:
+def pool_cycle_contexts(
+    root: Path | None = None, *, default_timeframe: str = "1d"
+) -> list[tuple[str, str]]:
     """Every ``(symbol, timeframe)`` one pool pass must visit, sorted.
 
-    The union of two sets, because a cycle both *opens* and *settles*:
+    The union of three sets, because a cycle both *opens* and *settles*:
 
     - the pool's routable contexts (:func:`pool.routable_contexts`) — so every
       strategy is actually evaluated, not just the ones scoped to one default
-      symbol; and
+      symbol;
     - the contexts of every currently OPEN paper position — so a position whose
       strategy has since been demoted out of the routable set is still visited by
-      its own symbol's cycle and can settle, never stranded.
+      its own symbol's cycle and can settle, never stranded; and
+    - the symbol of every open **live** position (LP5.3). Same rule, higher stakes:
+      a live position whose strategy has been demoted would otherwise have no cycle
+      that could settle it, and it holds real money. Live positions are keyed by
+      symbol alone, so one is paired with ``default_timeframe`` when the symbol is
+      not already being visited — the timeframe governs which candles are collected
+      and which strategies route, neither of which the settlement reads.
 
     A tampered/unreadable pool or position book contributes nothing rather than
     raising: each per-context cycle re-reads and records its own fail-closed reason,
@@ -397,6 +445,10 @@ def pool_cycle_contexts(root: Path | None = None) -> list[tuple[str, str]]:
             contexts.add((context.symbol, context.timeframe))
     except MvpRuntimeError:
         pass
+    visited = {symbol for symbol, _timeframe in contexts}
+    for symbol in live_position_symbols(root):
+        if symbol not in visited:
+            contexts.add((symbol, default_timeframe))
     return sorted(contexts)
 
 
@@ -427,29 +479,57 @@ def run_pool_cycle(
     ``skipped`` and the remaining contexts still run — it can never again starve them.
     The one refusal that is *not* per-context is the kill switch: a PAUSED/KILLED
     runtime refuses every context identically, so that refusal propagates and stops
-    the whole fan-out, exactly as it stops a single cycle."""
-    contexts = pool_cycle_contexts(root) or [(default_symbol, default_timeframe)]
+    the whole fan-out, exactly as it stops a single cycle.
+
+    **A live incident is the second such refusal** (LP5.3). Per-context isolation is
+    right for paper — one broken book must not starve the others — and wrong for real
+    money: an unprotected position that would not close, a venue-side close this
+    runtime cannot price, or a book that disagrees with the venue all mean the
+    runtime's picture of real money is now wrong, and opening positions in *other*
+    contexts under that uncertainty is the failure the isolation would cause. So a
+    cycle reporting ``live_halt`` stops the fan-out, and the contexts that never ran
+    are named in ``unvisited`` rather than silently missing."""
+    contexts = pool_cycle_contexts(root, default_timeframe=default_timeframe) or [
+        (default_symbol, default_timeframe)
+    ]
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for symbol, timeframe in contexts:
+    halted: dict[str, Any] | None = None
+    unvisited: list[dict[str, Any]] = []
+    for index, (symbol, timeframe) in enumerate(contexts):
+        if halted is not None:
+            unvisited.append({"symbol": symbol, "timeframe": timeframe})
+            continue
         try:
-            cycles.append(run_crypto_cycle(
+            record = run_crypto_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
                 routing_marks=routing_marks,
-            ))
+            )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
                 raise  # global stop — every remaining context would refuse the same
             skipped.append({"symbol": symbol, "timeframe": timeframe, "reason_code": exc.reason_code})
+            continue
+        cycles.append(record)
+        if record.get("live_halt"):
+            halted = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "live_route_status": record.get("live_route_status"),
+                "reason_codes": list(record.get("live_reason_codes") or []),
+                "at_index": index,
+            }
 
     summary = {
         "pool_cycle_version": POOL_CYCLE_VERSION,
         "contexts": [{"symbol": s, "timeframe": t} for s, t in contexts],
         "cycles": cycles,
         "skipped": skipped,
+        "live_halt": halted,
+        "unvisited": unvisited,
         "created_at": now,
     }
     summary["pool_cycle_id"] = integrity.short_id(
@@ -469,6 +549,11 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # Only when the live leg actually did something. A DISABLED leg is every machine that has
+    # not been through the operator checklist, and printing it on every line would train the
+    # reader to skip exactly the field that matters on the machine where it is not DISABLED.
+    if record.get("live_route_status") not in (None, ROUTE_DISABLED):
+        parts.append(live_route_status_line(record))
     return " ".join(parts)
 
 
@@ -476,9 +561,19 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     """The one-line status a scheduler fire records for a whole pool fan-out."""
     cycles = summary.get("cycles") or []
     skipped = summary.get("skipped") or []
+    unvisited = summary.get("unvisited") or []
     head = f"pool_cycle contexts={len(cycles)}"
     if skipped:
         head += f" skipped={len(skipped)}"
+    halt = summary.get("live_halt")
+    if halt:
+        # First on the line, before any per-context detail: a fan-out that stopped early is
+        # the headline, and a reader who stops after the first phrase must still learn it.
+        head += (
+            f" LIVE HALT at {halt['symbol']} {halt['timeframe']}"
+            f" ({','.join(halt['reason_codes']) or halt['live_route_status']})"
+            f" unvisited={len(unvisited)}"
+        )
     parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
     parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)

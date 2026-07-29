@@ -23,7 +23,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
-from .cost import DEFAULT_TAKER_FEE_BPS
+from .cost import DEFAULT_MAKER_FEE_BPS, DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_BPS
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
@@ -52,8 +52,15 @@ EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
 EDGE_COST_BASIS_UNRECORDED = "cost_model_unrecorded"
 
 
-def expectancy_at(record: Mapping[str, Any], *, taker_fee_bps: float) -> float | None:
-    """This candidate's expectancy re-derived at a different taker rate. Exact, or None.
+def _is_number(value: Any) -> bool:
+    """A real number, not a bool — ``isinstance(True, int)`` is True and would rescale on it."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def expectancy_at(
+    record: Mapping[str, Any], *, taker_fee_bps: float, maker_fee_bps: float | None = None,
+) -> float | None:
+    """This candidate's expectancy re-derived at different fee rates. Exact, or None.
 
     Raising the taker default split the store: 224 candidates on this machine keep numbers
     scored at 2.5 bps while the venue charges 5.0, and `backtest_evidence` is durable so
@@ -72,32 +79,55 @@ def expectancy_at(record: Mapping[str, Any], *, taker_fee_bps: float) -> float |
     Both terms are already in `cost_summary`. The result is exact, not an estimate — a test
     pins it against a real backtest re-run at the new rate rather than asserting the algebra.
 
-    **Only the taker portion scales.** Since 2026-07-28 a take-profit exit rests as a maker
+    **The two legs scale independently.** Since 2026-07-28 a take-profit exit rests as a maker
     LIMIT and is charged the maker rate, so `total_fee_cost_r` is a mixture. Scaling the whole
     mixture by a taker ratio would charge the maker leg a rate it never faced — so the maker
-    share is subtracted first, read from `total_maker_fee_cost_r`. A record without that field
-    predates the change and is all-taker by construction, which is what a missing value means
-    here; it is not a guess, it is the recorded history of a model that had no maker leg.
+    share is separated first, read from `total_maker_fee_cost_r`, and each share is scaled by
+    its own ratio:
+
+        total_net_r(new) = total_net_r(old)
+                         - taker_share * (new_taker/old_taker - 1)
+                         - maker_share * (new_maker/old_maker - 1)
+
+    The maker term exists because the maker rate is the one figure here that is **not
+    measured**: `DEFAULT_MAKER_FEE_BPS` is Binance's published standard rate, and no maker fill
+    has been placed yet to check it against. Its error direction is the unsafe one — a real rate
+    above 2.0 bps means this model reports an edge better than reality. Making the maker leg
+    rescalable *before* the first candidate is scored under it is what keeps that eventual
+    measurement from splitting the store a third time: every candidate scored at the published
+    rate converts exactly to the measured one, the same way the taker change already converts.
+
+    ``maker_fee_bps=None`` leaves the maker share alone — the caller is asking only about the
+    taker axis. A record whose maker share is zero is unaffected either way: a model with no
+    maker leg has nothing on that axis to rescale, and that is arithmetic, not an assumption.
+    A record with a maker share but no recorded maker rate refuses, because the ratio's
+    denominator would be a guess.
 
     Returns None when the record predates `cost_summary`, or carries no closed trades, or
     was scored at a rate of zero (nothing to scale). Never guesses.
     """
     evidence = record.get("backtest_evidence") or {}
     summary = evidence.get("cost_summary") or {}
-    old_rate = (summary.get("cost_model") or {}).get("taker_fee_bps")
+    model = summary.get("cost_model") or {}
+    old_rate = model.get("taker_fee_bps")
     net, fee = summary.get("total_net_r"), summary.get("total_fee_cost_r")
     closed = evidence.get("closed_count")
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-               for v in (old_rate, net, fee, closed)):
+    if not all(_is_number(v) for v in (old_rate, net, fee, closed)):
         return None
     if not old_rate or not closed:
         return None
     maker_fee = summary.get("total_maker_fee_cost_r", 0.0)
-    if not isinstance(maker_fee, (int, float)) or isinstance(maker_fee, bool):
+    if not _is_number(maker_fee):
         # Present but unreadable is not the same as absent: absent means all-taker, unreadable
         # means the split is unknown and any rescale would be a guess about real money.
         return None
-    return round((net - (fee - maker_fee) * (taker_fee_bps / old_rate - 1.0)) / closed, 8)
+    adjusted = net - (fee - maker_fee) * (taker_fee_bps / old_rate - 1.0)
+    if maker_fee_bps is not None and maker_fee:
+        old_maker = model.get("maker_fee_bps")
+        if not _is_number(old_maker) or not old_maker:
+            return None
+        adjusted -= maker_fee * (maker_fee_bps / old_maker - 1.0)
+    return round(adjusted / closed, 8)
 
 
 def cost_basis_of(record: Mapping[str, Any]) -> str:
@@ -121,6 +151,89 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
     return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps"
+
+
+def current_cost_basis() -> str:
+    """The basis a candidate minted right now would carry.
+
+    Formatted by `cost_basis_of` over a synthetic record rather than by a second format
+    string, so the "what the store holds" and "what the model charges" sides cannot drift
+    into two spellings of the same rates."""
+    return cost_basis_of({"backtest_evidence": {"cost_summary": {"cost_model": {
+        "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
+        "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
+        "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+    }}}})
+
+
+# How one candidate's basis stands against the model the venue charges today. Ordered, because
+# the ONLY thing that matters about a stale basis is which way its error points.
+#
+# Equality is the wrong test and was the first thing tried. On this machine 90 of 359 candidates
+# are scored at taker 5.0 with no maker leg: their take-profit exit paid taker 5.0 plus adverse
+# slippage where the current model charges maker 2.0 and no slippage at all. Those numbers are
+# too PESSIMISTIC, not too generous — refusing them would have made the escape hatch the normal
+# door, and a gate everyone escapes is not a gate.
+COST_BASIS_RANK_CURRENT = 0       # scored under exactly this model
+COST_BASIS_RANK_CONSERVATIVE = 1  # every rate at or above the current one: understates the edge
+COST_BASIS_RANK_OPTIMISTIC = 2    # some rate BELOW the current one: overstates the edge
+COST_BASIS_RANK_UNRECORDED = 3    # no cost model recorded: the direction is unknown
+
+# Which of those may back a promotion. Optimistic and unrecorded evidence is refused at the
+# door — the first inflates the number an operator reads, the second cannot even say whether
+# it does. Conservative evidence promotes: its error runs against the candidate, so a lineage
+# that clears the bar under it clears the bar under the real model too.
+PROMOTABLE_COST_BASIS_RANKS = frozenset({COST_BASIS_RANK_CURRENT, COST_BASIS_RANK_CONSERVATIVE})
+
+
+def cost_basis_rank(record: Mapping[str, Any]) -> int:
+    """Which `COST_BASIS_RANK_*` tier this candidate's evidence falls in.
+
+    One authority for two consumers: `rank_candidates` orders by it so cheap-venue rows stop
+    outranking real ones, and `assert_promotable_cost_basis` refuses on it at the promotion
+    door. A single rule means the list an operator reads and the gate that stops them can
+    never disagree about which rows are believable."""
+    model = ((record.get("backtest_evidence") or {}).get("cost_summary") or {}).get("cost_model") or {}
+    taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
+    if not _is_number(taker) or not _is_number(slip):
+        return COST_BASIS_RANK_UNRECORDED
+    maker = model.get("maker_fee_bps")
+    if taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS and slip == DEFAULT_SLIPPAGE_BPS:
+        return COST_BASIS_RANK_CURRENT
+    # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
+    # leg at all, so the honest comparison against today's maker rate is what the exit actually
+    # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
+    maker_charged = maker if _is_number(maker) else taker
+    if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
+            and slip >= DEFAULT_SLIPPAGE_BPS):
+        return COST_BASIS_RANK_CONSERVATIVE
+    return COST_BASIS_RANK_OPTIMISTIC
+
+
+def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
+    """Refuse a promotion backed by evidence scored more cheaply than the venue charges.
+
+    The store is append-only and `backtest_evidence` is durable, so a stale basis can never be
+    repaired in place — the only place it can be caught is the door where evidence turns into
+    real money. `expectancy` alone is re-derivable at the current rates (`expectancy_at`), but
+    win-rate, realized reward:risk and the robustness verdict all need per-trade signs the
+    store does not keep, so a candidate cannot simply be re-read at today's model.
+
+    Raises `CANDIDATE_COST_BASIS_STALE`, naming every offending candidate and its basis."""
+    stale = [
+        (candidate_id(record), cost_basis_of(record))
+        for record in records
+        if cost_basis_rank(record) not in PROMOTABLE_COST_BASIS_RANKS
+    ]
+    if stale:
+        listed = ", ".join(f"{cid} ({basis})" for cid, basis in stale)
+        raise ToolError(
+            "CANDIDATE_COST_BASIS_STALE",
+            f"scored under a cost model cheaper than the venue charges "
+            f"({current_cost_basis()}), so their expectancy is overstated: {listed}. "
+            f"Re-mint the lineage at the current model, or pass the explicit "
+            f"--allow-stale-cost-basis escape.",
+        )
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -536,15 +649,22 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         # later cost-adjusted basis becomes a different value here, and any consumer that
         # compares two candidates can refuse to compare across bases.
         "cost_basis": cost_basis_of(record),
-        # The same expectancy at the rate the venue actually charges, so a candidate scored
+        # ...and which way that basis errs against the model in force today. The string says
+        # WHAT this row paid; this says whether reading it next to a current row flatters it.
+        "cost_basis_rank": cost_basis_rank(record),
+        # The same expectancy at the rates the venue actually charges, so a candidate scored
         # under the old default can be read against a new one instead of merely flagged as
         # incomparable. None when it cannot be derived — never the stored number relabelled.
+        #
+        # Both axes, not just the taker one: the maker rate is published rather than measured,
+        # so the day it IS measured this view converts every maker-scored candidate rather than
+        # stranding it. Records with no maker leg are untouched by the maker argument.
         #
         # Alongside `expectancy` rather than replacing it: the stored figure is what the
         # durable evidence says, and overwriting it would make the record and the view
         # disagree about what was measured.
         "expectancy_at_current_costs": expectancy_at(
-            record, taker_fee_bps=DEFAULT_TAKER_FEE_BPS
+            record, taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
         ),
     }
 
@@ -552,17 +672,26 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
 def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Candidates ordered for the promotion decision, latest-wins per lineage.
 
-    Deterministic total order: robustness verdict tier first (the anti-overfit
-    first-pass), then ``edge_quality`` (win-rate × realized reward:risk) descending,
-    then ``expectancy`` descending, then ``candidate_id`` ascending so a tie never
-    depends on store order. Re-appends of a lineage collapse to the latest row."""
+    Deterministic total order: **cost basis tier first**, then robustness verdict tier (the
+    anti-overfit first-pass), then ``edge_quality`` (win-rate × realized reward:risk)
+    descending, then ``expectancy`` descending, then ``candidate_id`` ascending so a tie never
+    depends on store order. Re-appends of a lineage collapse to the latest row.
+
+    The basis tier leads because every key after it is a number scored under that basis, and
+    269 of 359 rows on this machine were scored under a cheaper one. `verdict` is recomputed
+    but from a `robustness_score` fitted at the old rate; `edge_quality` and `expectancy` are
+    read straight off the old evidence. Sorting those together put candidates that never paid
+    the real fee above candidates that did, and the surface said so in a printed warning while
+    the ranking underneath went on mixing them — the same shape as the stored-verdict bug
+    below, which was also fixed by ordering on the property rather than describing it."""
     by_cid: dict[str, dict[str, Any]] = {}
     for record in records:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
 
-    def _key(record: Mapping[str, Any]) -> tuple[int, float, float, str]:
+    def _key(record: Mapping[str, Any]) -> tuple[int, int, float, float, str]:
         q = candidate_quality(record)
-        return (q["verdict_rank"], -q["edge_quality"], -q["expectancy"], str(record["candidate_id"]))
+        return (q["cost_basis_rank"], q["verdict_rank"], -q["edge_quality"], -q["expectancy"],
+                str(record["candidate_id"]))
 
     return sorted(by_cid.values(), key=_key)

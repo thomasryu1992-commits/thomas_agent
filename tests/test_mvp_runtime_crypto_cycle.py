@@ -388,6 +388,55 @@ def test_pool_cycle_kill_propagates_and_stops_the_fan_out(tmp_path):
     assert exc.value.reason_code == "RUNTIME_KILLED"
 
 
+def test_the_cycle_carries_a_live_leg_that_is_inert_without_a_grant(tmp_path, monkeypatch):
+    """LP5.3 step 3 wired a live leg into the cycle. On every machine that has not been through
+    the operator checklist it must report DISABLED and change nothing — the record grows live
+    fields, and the paper cycle behaves exactly as it did before the wiring existed."""
+    monkeypatch.delenv("MVP_LIVE_TRADING", raising=False)
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"))
+    record = run_crypto_cycle(
+        collector=FakeExchangeCollector(), store=DryRunPaperStore(), now=NOW, root=tmp_path,
+    )
+    assert record["live_route_status"] == "DISABLED"
+    assert record["live_opened"] is None and record["live_settled"] is None
+    assert record["live_halt"] is False
+    # The status line stays exactly as it was: a DISABLED leg is every developer machine, and
+    # printing it on every line would train the reader to skip the field that matters.
+    assert "live=" not in cycle_status_line(record)
+
+
+def test_a_live_incident_stops_the_fan_out_and_names_what_never_ran(tmp_path, monkeypatch):
+    """Per-context isolation is right for paper and wrong for real money: a position this
+    runtime cannot account for must stop the other contexts from opening under that
+    uncertainty. The contexts that never ran are named rather than silently missing."""
+    import runtime.mvp_runtime.crypto.cycle as cycle_module
+
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    calls: list[str] = []
+
+    def _fake_cycle(*, symbol, timeframe, **kw):
+        calls.append(symbol)
+        incident = symbol == "BTCUSDT"
+        return {
+            "symbol": symbol, "timeframe": timeframe,
+            "verdict_status": "ALLOW", "route_status": "NO_ENTRY",
+            "live_halt": incident,
+            "live_route_status": "INCIDENT" if incident else "HELD",
+            "live_reason_codes": ["LIVE_VENUE_CLOSE_UNSETTLEABLE"] if incident else [],
+        }
+
+    monkeypatch.setattr(cycle_module, "run_crypto_cycle", _fake_cycle)
+    summary = run_pool_cycle(
+        collector=FakeExchangeCollector(), store=DryRunPaperStore(), now=NOW, root=tmp_path,
+    )
+
+    assert calls == ["BTCUSDT"], "the fan-out continued past a live incident"
+    assert summary["live_halt"]["symbol"] == "BTCUSDT"
+    assert summary["live_halt"]["reason_codes"] == ["LIVE_VENUE_CLOSE_UNSETTLEABLE"]
+    assert summary["unvisited"] == [{"symbol": "ETHUSDT", "timeframe": "1d"}]
+    assert "LIVE HALT at BTCUSDT" in pool_cycle_status_line(summary)
+
+
 def test_pool_cycle_status_line_lists_every_context(tmp_path):
     _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
     summary = _pool_cycle(tmp_path, FakeExchangeCollector(),

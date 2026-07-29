@@ -222,7 +222,7 @@ understated maker rate reports an edge better than reality.
 
 1. **LP5.1 — state + reconciliation (no orders):** `live_position.py` (record with `stage`,
    quantity, notional, order ids, fill price), `LivePositionStore` (DryRun default, gated on
-   `live_trading`, locked, atomic), `reconcile_positions` against the account snapshot,
+   the live-trading switch, locked, atomic), `reconcile_positions` against the account snapshot,
    `compute_open_notional_usdt`, and the fail-open `0.0` default closed. Fully testable with no
    network and no venue.
 2. **LP5.2 — sizing:** `size_live_order` (min-of-two, venue rounding, refuse-not-default).
@@ -233,7 +233,12 @@ understated maker rate reports an edge better than reality.
 
 ## What still stands between LP5 and an autonomous live order
 
-Merging LP5 authorizes nothing. Still required: the `live_trading` grant + the order key, the
+Merging LP5 authorizes nothing. Still required: `MVP_LIVE_TRADING=real` + the order key, the
 confirmation phrase, a valid registered budget, the kill switch ACTIVE, a guard PASS, **≥ 3 clean
-canary orders** (currently 0), the `execution.live_trader` role **activated** (a separate
-`ROLE_GOVERNANCE` approval), and LP4 increment 2 (the real signed send).
+canary orders**, and the `execution.live_trader` role **activated** (a separate
+`ROLE_GOVERNANCE` approval).
+
+This list carried "(currently 0)" against the canary count and "and LP4 increment 2 (the real
+signed send)" until 2026-07-29. Both are gone rather than updated: LP4's signed send shipped
+2026-07-25, and the canary count is **per-machine state** that no committed file can report.
+Ask `python -m runtime.mvp_runtime.crypto.live_readiness`.

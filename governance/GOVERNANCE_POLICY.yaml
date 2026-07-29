@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.1.0
+policy_version: 1.2.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -145,7 +145,25 @@ authority:
     applies_to_scopes:
       - FINANCIAL_APPROVED_TRADING_USE
     requires:
-      - operator_safety_flag_grant       # per-machine, Thomas-minted, TTL-capped, revocable
+      # `operator_safety_flag_grant` was required here until 2026-07-28, when Thomas removed it
+      # by explicit decision. Recorded rather than deleted, because the reasoning it encoded did
+      # not become wrong — it became a cost that was accepted, and a future reader restoring it
+      # should see what was traded.
+      #
+      # What it bought: a per-machine, Thomas-minted, TTL-capped second factor, so an
+      # environment variable alone could never open the money path.
+      #
+      # What it cost: a 30-day TTL ceiling on a system meant to run unattended for months, and
+      # — the sharper problem — a grant expiring while a position is OPEN blocks the CLOSE path
+      # too. `evaluate_live_close_guard` exempts a reduceOnly close from the loss breaker, the
+      # daily count, the exposure cap, the promotion gate and both kill switches, then requires
+      # the gate. A halt that traps an open position is exactly what those exemptions exist to
+      # prevent, and expiry could produce one.
+      #
+      # Revocation did not go with it: `console_cli kill` is file-based, instant, checked by the
+      # order guard, and deliberately exempted by the close path — so it stops new entries
+      # without trapping a position, which is what the grant could not do.
+      - live_trading_opt_in              # MVP_LIVE_TRADING=real — the gate, not a second factor
       - operator_confirmation_phrase     # distinct per capability
       - registered_budget_record         # a registered trading budget (autonomous_spend_without_registered_budget: '0')
       - runtime_kill_switch_active       # kill_blocks: external_execution

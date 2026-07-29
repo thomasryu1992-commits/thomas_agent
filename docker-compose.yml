@@ -160,9 +160,19 @@ services:
       # construction is a property of this code, not of a key that carries futures-trading
       # permission at the venue.
       #
-      # Unchanged by this block, and still what stands between here and an autonomous order:
-      # no autonomous entry point may import the order path (a test enforces it), the
-      # per-machine `live_trading` grant, and the registered budget. Env alone opens nothing.
+      # !! This block used to end "Env alone opens nothing." It no longer does. Two changes on
+      # 2026-07-28 cut the same way: cycle routing shipped, so a SCHEDULED run reaches the order
+      # path (through exactly one module, pinned by a test); and Thomas removed the per-machine
+      # `live_trading` grant, making MVP_LIVE_TRADING=real the entire gate. The `.env` this
+      # block reads is now by itself the difference between a scheduler that trades paper and
+      # one that trades real money. Forwarding is a capability here, not just a cost.
+      #
+      # What still stands between here and an autonomous order: the confirmation phrase, the
+      # registered budget, the canary evidence, both kill switches, and the loss breaker - each
+      # a computed row on `python -m runtime.mvp_runtime.crypto.live_readiness`.
+      #
+      # To halt a scheduler that is trading: `console_cli kill`. Do NOT clear MVP_LIVE_TRADING -
+      # it only takes effect on restart, and the close guard needs it, so it strands positions.
       MVP_ACCOUNT_FEED: ${MVP_ACCOUNT_FEED:-}
       BINANCE_ACCOUNT_API_KEY: ${BINANCE_ACCOUNT_API_KEY:-}
       BINANCE_ACCOUNT_API_SECRET: ${BINANCE_ACCOUNT_API_SECRET:-}

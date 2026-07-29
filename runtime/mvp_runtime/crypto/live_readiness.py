@@ -60,8 +60,6 @@ from .live_order import (
 )
 from .live_pnl import (
     LIVE_TRADING_ENV,
-    LIVE_TRADING_FLAGS,
-    LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
     LIVE_PNL_NO_SOURCE,
     live_risk_snapshot,
@@ -72,18 +70,22 @@ from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
 # because it is a fact about the codebase, not about this machine — whether an order may
-# actually be sent is the `live_trading` grant, the confirmation phrase, the registered budget,
+# actually be sent is the live-trading opt-in, the confirmation phrase, the registered budget,
 # the kill switches, and the canary evidence, each of which the board checks on its own row.
 # Kept in lockstep with the policy's `financial_transaction_execution_implemented`.
 ORDER_PATH_IMPLEMENTED = True
 
-# Whether any AUTONOMOUS entry point can reach the order path. The executing leg
-# (`crypto/live_leg.py`) exists and can place an order with an injected adapter, but no
-# scheduled or operator-triggered run imports it — `live_leg` is in the surface list that
-# `test_no_autonomous_entry_point_reaches_the_live_order_path` enforces, so this constant and the
-# real import graph are pinned to agree. Flipping it is the cycle-routing decision, and it must
-# move in the same commit that relaxes that test.
-AUTONOMOUS_ROUTING_WIRED = False
+# Whether any AUTONOMOUS entry point can reach the order path. TRUE since LP5.3 step 3
+# (cycle routing): `crypto/cycle.py` runs a live leg through `crypto/live_route.py`, so a
+# scheduled crypto fire on a machine whose environment sets `MVP_LIVE_TRADING=real` can open and
+# close real positions. Pinned to the real import graph by
+# `test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`, so this constant and
+# the code cannot disagree.
+#
+# It is still deliberately NOT part of `ready`. Wired is not permitted: every door below it —
+# the opt-in, the confirmation phrase, the registered budget, the canary evidence, both kill
+# switches, the loss breaker — is unchanged, and each has its own row above.
+AUTONOMOUS_ROUTING_WIRED = True
 
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -101,20 +103,17 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     limits, budget = resolve_live_order_limits(root, now=now)
     checks: list[dict[str, Any]] = []
 
-    # 1. The switch itself.
+    # 1. The switch itself — the environment, and only the environment (Thomas, 2026-07-28).
+    #    The per-machine grant this row used to also require is gone; the row is renamed with it,
+    #    because a board that still said "grant" while checking an env var would be the most
+    #    misleading line on the page. The name change is intentional and load-bearing: the whole
+    #    point of this board is that its rows mean what they say.
     opted_in = os.environ.get(LIVE_TRADING_ENV, "").strip().lower() == REAL_LIVE_TRADING
-    grant_error: str | None = None
-    try:
-        safety_gate.authorize(
-            LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID, now=now, root=root
-        )
-    except MvpRuntimeError as exc:
-        grant_error = exc.reason_code
     checks.append(_check(
-        "live_trading_grant",
-        grant_error is None and opted_in,
-        "granted and opted in" if grant_error is None and opted_in
-        else f"grant: {grant_error or 'ok'}; {LIVE_TRADING_ENV}={'set' if opted_in else 'unset'}",
+        "live_trading_opt_in",
+        opted_in,
+        f"{LIVE_TRADING_ENV}={REAL_LIVE_TRADING}" if opted_in
+        else f"{LIVE_TRADING_ENV} is not {REAL_LIVE_TRADING!r} (live trading off)",
     ))
 
     # 2. The confirmation phrase (presence and exact match, never echoed).
@@ -176,6 +175,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # "could not measure" must never soften into "nothing to report".
     venue_realized = None
     account_error = None
+    snapshot = None
     if account_configured:
         try:
             snapshot, _ = read_account(root=root)
@@ -224,11 +224,24 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     promotion = live_promotion.promotion_status(
         min_orders=limits.min_clean_canary_orders, root=root
     )
+    # The count says how MANY orders back the promotion; this says whether they can prove what
+    # they were. The records gained a declared-versus-filled subtraction so it would stop being
+    # a memory, and then nothing read it — a number stored where the person the gate consists of
+    # never sees it is only half the repair. Appended rather than folded into `ready`: making a
+    # size disagreement block promotion would change what the count means, which is a separate
+    # decision the field's own author declined to take.
+    size_note = ""
+    if promotion["size_unproven"]:
+        size_note = (f" [{promotion['size_unproven']} of {promotion['clean_count']} cannot prove "
+                     "their size — no fill recorded]")
+    elif promotion["largest_size_gap_usdt"]:
+        size_note = f" [largest declared-vs-filled gap {promotion['largest_size_gap_usdt']:.2f} USDT]"
     checks.append(_check(
         "canary_evidence",
         promotion["ready"],
         f"{promotion['clean_count']}/{promotion['required']} clean canary orders"
-        + ("" if promotion["ready"] else " - " + "; ".join(promotion["reasons"])),
+        + ("" if promotion["ready"] else " - " + "; ".join(promotion["reasons"]))
+        + size_note,
     ))
 
     # 8. The account read (LP1) — not required to place an order, but going live without
@@ -244,8 +257,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # 8b. Market data — a canary PRECONDITION since the declared-notional check landed, not a
     #     nicety. `place_canary_order` verifies `--notional` against the venue's own last close
     #     and refuses when there is no usable price, so a machine without this feed cannot place
-    #     the canaries that row 7 is counting. Checked as env AND grant, like the live-trading
-    #     row: the env var alone selects the mock, whose synthesised price the check rejects.
+    #     the canaries that row 7 is counting. Checked as env AND grant — this feed KEPT its
+    #     per-machine grant when live trading lost one (2026-07-28), so the two rows above and
+    #     here now legitimately differ, and the difference is not drift. The env var alone
+    #     selects the mock, whose synthesised price the check rejects.
     #     Stated here because #201's lesson was that a precondition only a document knows about
     #     is discovered by an operator standing at a terminal with real keys.
     market_data_opted_in = (
@@ -305,18 +320,20 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             "reduce_only": False,
             "connectivity_test": False,
         },
-        gate_open=(grant_error is None and opted_in),
+        gate_open=opted_in,
         runtime_active=runtime_active,
         daily_loss_breached=breached,
         clean_canary_orders=promotion["clean_count"],
         submitted_today=submitted_today,
-        # LP5.1: this board performs no venue read, so the open exposure is genuinely
-        # UNKNOWN here — and unknown exposure is reported at the cap, never as zero. The
-        # literal 0.0 that used to sit here asserted "the account is flat" on no evidence,
-        # which is the fail-open the guard's required argument now prevents. LP5.3 supplies
-        # the real figure from the account snapshot; until then this row honestly blocks.
+        # LP5.3: the board now reads the account for the loss breaker, so the same snapshot
+        # answers the exposure question — and the honest block-at-cap can finally lift on a
+        # machine that can see its own account. `compute_open_notional_usdt` still fails
+        # closed: `snapshot is None` (no feed configured, or the read degraded) reports AT
+        # the cap, never zero. What changed is that a configured, readable account now
+        # reports what it actually holds rather than the worst case, so a dry-run BLOCK here
+        # means real exposure, not merely an unconfigured board.
         current_open_notional_usdt=compute_open_notional_usdt(
-            None, at_cap=limits.max_open_notional_usdt
+            snapshot, at_cap=limits.max_open_notional_usdt
         ),
         budget_registered=bool(budget.get("valid")),
         limits=limits,
@@ -355,7 +372,25 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         # READY is no longer an abstract "configured" — say what it now means.
         lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")
         if status.get("autonomous_routing_wired"):
-            lines.append("NOTE  : autonomous routing is WIRED - a scheduled run can place orders")
+            # The loudest line the board has, and it earns it: this is the one state in which
+            # nobody is standing at a terminal when the order goes out. It says how to stop it
+            # too — an operator reading a board they do not like should not have to go and find
+            # the runbook first.
+            lines.append("NOTE  : autonomous routing is WIRED - a scheduled crypto run on this")
+            lines.append("        machine opens and closes REAL positions once every FAIL clears")
+            # The stop instruction changed with the gate (2026-07-28): there is no grant file to
+            # delete any more. `console_cli kill` is what replaces it and is strictly the better
+            # instruction — it writes control state, so it lands on the RUNNING scheduler at its
+            # next guard rather than at the next restart, and the close path is exempt from it.
+            # Both env-based alternatives are worse: MVP_LIVE_MANUAL_KILL_SWITCH needs a restart,
+            # and clearing MVP_LIVE_TRADING needs a restart AND strands open positions, because
+            # the close guard still requires the opt-in. Named in that order, because this line
+            # is read in a hurry.
+            lines.append("NOTE  : to stop new entries immediately, run:")
+            lines.append("          python -m runtime.mvp_runtime.console_cli kill --reason ...")
+            lines.append("        it takes effect on the running service and open positions can")
+            lines.append("        still close. Do NOT clear MVP_LIVE_TRADING to halt - it needs a")
+            lines.append("        restart and it shuts the close path too")
         else:
             lines.append("NOTE  : autonomous routing is NOT wired - the only door is")
             lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")

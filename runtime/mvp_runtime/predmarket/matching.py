@@ -174,6 +174,15 @@ _MOVES_DOWN = frozenset({
     "decrease", "decreases", "cut", "cuts", "down", "below", "lower", "fall", "falls",
     "drop", "drops", "under", "less",
 })
+# A generational suffix is not part of a name, it is a different person. Handled explicitly
+# rather than left to the rarity comparison, which decided this case by ONE document:
+# `donald` appears in 8 titles and `jr` in 7, because most Trump markets say "Trump" without
+# "Donald". A verdict that flips when one market is listed is not a verdict.
+#
+#     Will Donald Trump     win the 2028 US Presidential Election?
+#     Will Donald Trump Jr. win the 2028 US Presidential Election?
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
 _PARTY_D = frozenset({"democrat", "democratic"})
 _PARTY_R = frozenset({"republican"})
 
@@ -328,6 +337,11 @@ def subject_mismatch(
     non-numeric shared token, there is nothing to compare and it stays quiet.
     """
     left, right = set(left_tokens), set(right_tokens)
+    # One side carries a generational suffix and the other does not: the same name, a
+    # different person. Decided before the rarity comparison because that comparison had it
+    # by a single document, and because this is knowledge rather than a measurement.
+    if bool(left & _NAME_SUFFIXES) != bool(right & _NAME_SUFFIXES):
+        return True
     # Tested directly rather than by re-joining the tokens and re-normalizing them. The
     # round trip was both wasteful and wrong: it re-derived "numeric" from a rebuilt string,
     # and any token merely CONTAINING a digit came back as one — a test fixture named
@@ -336,7 +350,15 @@ def subject_mismatch(
     differing = {t for t in left ^ right if not _has_digit(t)}
     if not shared or not differing:
         return False
-    return min(counts.get(t, 0) for t in differing) < min(counts.get(t, 0) for t in shared)
+    # A MARGIN, not merely an inequality. A bare `<` decided the Trump/Trump-Jr. pairing by
+    # one document (`donald` 8, `jr` 7) and fired on a two-title corpus where every count is
+    # 1 or 2 and the comparison means nothing. Requiring the differing token to be at least
+    # twice as rare makes the verdict survive one market being listed or delisted, and makes
+    # a corpus too small to distinguish anything stay quiet — the same posture as
+    # MIN_BOILERPLATE_TITLES next door.
+    rarest_differing = min(counts.get(t, 0) for t in differing)
+    rarest_shared = min(counts.get(t, 0) for t in shared)
+    return rarest_differing * 2 < rarest_shared
 
 
 def distinctive_tokens(

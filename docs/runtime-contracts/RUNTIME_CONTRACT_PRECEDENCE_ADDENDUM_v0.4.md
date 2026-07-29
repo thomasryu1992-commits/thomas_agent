@@ -243,7 +243,7 @@ Every new Permission Decision and Action Approval must bind the exact canonical 
 
 ```yaml
 policy_id: thomas.governance.policy
-policy_version: 1.1.0
+policy_version: 1.2.0
 policy_ref: governance/GOVERNANCE_POLICY.yaml
 ```
 

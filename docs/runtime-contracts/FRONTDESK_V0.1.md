@@ -34,6 +34,43 @@ door does not get its own account of the truth — it *is* `/tasks`.
 **Deterministic intent never waits on a model.** `/verbs` and `!중요`/`!번역`-marked requests
 bypass the front desk entirely; only unmarked plain text is a conversation turn.
 
+## v0.4 — `clarification_texts`, or: `CLARIFY` was a dead end
+
+`CLARIFY` asked a question and ended the turn. When Thomas answered, his answer was just a new
+message — and the verbatim rule (a submission must be a substring of **one** message) made the
+combination he actually meant the only thing that could not be submitted. Measured before
+building anything, with "Prediction 데이터 분석해줘" → *(CLARIFY)* → "7일":
+
+| submitted | verbatim check | outcome |
+|---|---|---|
+| the original alone | passes | the period is lost |
+| the answer alone | passes | meaningless by itself |
+| **both** | **rejected** | what he meant |
+
+`SUBMIT_TASK.payload.clarification_texts` carries his follow-up messages verbatim; the runtime
+appends them to `request_text` with newlines and submits that.
+
+- **The verbatim rule is not weakened — it runs per segment.** Checking the composed string
+  would pass a paraphrase glued between two real quotes; submitting only the segments that
+  passed would silently drop the very answer this exists to carry. **One failure refuses the
+  whole submission.**
+- **Nothing of the front desk's own is added** — no labels, no `clarification:` prefix. Every
+  character submitted is one Thomas typed. What changed is *which* of his words go in, never
+  *whose*.
+- **The receipt quotes the assembly.** Composing is the one thing he cannot see from his own
+  scrollback — he said two things and one request went in — so when more than one segment
+  survives, the composed text is echoed *before* the pipeline runs. A wrong assembly is a
+  `/cancel`, not a wrong answer.
+- Segments are **deduplicated across the whole request**, first occurrence winning. Found by a
+  test rather than by reasoning: the first implementation deduplicated `clarification_texts`
+  and `request_text` separately, so a model that echoed the request into the list produced it
+  twice. A repeat is never *dangerous* (every segment is still his words) but it reaches the
+  specialist as an emphasis he did not write.
+- **No registry change.** An earlier sketch of this item assumed a `task_registry_entry` state
+  (`WAITING_FOR_INPUT`) and a resume path. That was the wrong shape: the clarification happens
+  *before* anything is queued, so there is no entry to suspend — and a state nothing can
+  produce is worse than no state. The pipeline still receives one complete request, once.
+
 ## v0.3 — `request_kind`, or: the conversation could reach one Role
 
 The marker parse above runs *before* the front desk and the front desk runs only for an

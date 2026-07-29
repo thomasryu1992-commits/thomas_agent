@@ -2,7 +2,7 @@
 schema_version: role_definition.v0.2
 role_id: execution.live_trader
 role_name: Live Trader Role
-role_version: 0.1.0
+role_version: 0.2.0
 status: candidate
 routable: false
 role_type: dynamic_specialist
@@ -31,7 +31,7 @@ deactivation_conditions:
 - execution_budget_exhausted
 - permission_boundary_reached
 - escalation_required
-- live_trading_grant_revoked
+- live_trading_opt_in_cleared
 input_contract:
   task_contract: task.v0.3
   task_contract_minimum: task.v0.3
@@ -102,7 +102,7 @@ budget_caps:
     cost_budget: null
     cost_currency: null
 stop_conditions:
-- live_trading_grant_absent_or_revoked
+- live_trading_opt_in_absent
 - confirmation_phrase_absent
 - registered_budget_absent_or_invalid
 - daily_loss_breaker_tripped
@@ -164,14 +164,24 @@ Defining this candidate role **grants nothing and enables no trading**. Even onc
 every condition of the P5 policy gate (`thomas.p5.live_execution_gate`) still applies at the
 moment of the action:
 
-- the per-machine `live_trading` safety-flag grant (Thomas-minted, TTL-capped, revocable),
+- the live-trading opt-in `MVP_LIVE_TRADING=real` (Thomas removed the per-machine
+  `live_trading` grant on 2026-07-28; the env var is now the whole gate, and it does **not**
+  expire — see `CRYPTO_LIVE_EXECUTION_V0.1.md`, "One env var is the whole switch"),
 - the live-trading confirmation phrase (distinct per capability),
 - a valid **registered trading budget** (`live_trading_budget.v0.1`),
 - the runtime kill switch ACTIVE (`kill_blocks: external_execution`),
 - the accumulating pre-action final guard (LP3), fail-closed,
 - and the post-action report + audit (EXECUTE_AND_REPORT is not fire-and-forget).
 
-And structurally: **≥ 3 clean canary orders must exist** (currently 0), and the order
-adapter (LP4) and position kernel (LP5) do not exist yet. The reduceOnly close path is
+And structurally: **≥ 3 clean canary orders must exist**. The reduceOnly close path is
 never an open — a halt must not trap a losing position, but this role can still only ever
 shrink one, never open one.
+
+**This section claimed until 0.2.0 that "the order adapter (LP4) and position kernel (LP5)
+do not exist yet", and that the canary count was "currently 0".** Both were true when the
+candidate was written and neither is now: LP4 shipped 2026-07-25, LP5 and its executing leg
+followed, and cycle routing (LP5.3 step 3) gave the order path one autonomous caller on
+2026-07-28. The canary count is **per-machine state** and no file can speak for it — ask
+`python -m runtime.mvp_runtime.crypto.live_readiness`, which computes every condition above
+as its own row. A role definition asserting build status is how status gets four owners;
+this file now states requirements only, and points at the board for facts.

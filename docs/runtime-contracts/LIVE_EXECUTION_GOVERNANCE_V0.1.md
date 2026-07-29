@@ -332,7 +332,12 @@ The R10 commit (`e8faa88`) is the template; `fadb7a9` repeats it for money. In o
 
 Approving this packet does not enable live trading. It makes LP4 *buildable*. Still standing:
 
-1. The per-machine `live_trading` grant must be minted by Thomas, and it expires (30-day cap).
+1. ~~The per-machine `live_trading` grant must be minted by Thomas, and it expires (30-day cap).~~
+   **Removed by Thomas on 2026-07-28.** `MVP_LIVE_TRADING=real` is now the entire gate: no second
+   factor, no expiry, no per-machine record. The reason was that a grant expiring while a position
+   was open shut the CLOSE path too, and the halt of record is now the file-based `console_cli
+   kill`, which is exempt on that path. See `CRYPTO_LIVE_EXECUTION_V0.1.md` ("One env var is the
+   whole switch") and the 2026-07-28 entry in `docs/BUILD_HISTORY.md`.
 2. The confirmation phrase must be set, distinct from the canary and testnet phrases.
 3. All four caps must be configured; every one defaults to the blocking value.
 4. **>= 3 clean canary orders** must exist. There is 1, from 2026-07-16. The guard refuses until
@@ -364,7 +369,7 @@ Progress (steps 1, 2, 4, 5, 8, 9 landed as one increment — "a live order is bu
 | 6 | New schema `live_trading_budget.v0.1` + the registration path | **done 2026-07-25** — closed schema `schemas/live_trading_budget.v0.1.schema.json`, self-hashed record + verified read + `budget_status` + `limits_from_budget` in `runtime/mvp_runtime/crypto/live_budget.py`, operator registration via `scripts/register_live_trading_budget.py`. **Record only** — registering grants nothing and enables no trading. |
 | 6b | The guard reads the registered budget (authoritative, replacing the env caps) | **done 2026-07-25** — `live_order.resolve_live_order_limits` sources the caps from the registered budget (confirmation phrase + manual kill stay env); `evaluate_live_order_guard` gained a fail-closed `budget_registered` check enforcing `autonomous_spend_without_registered_budget: '0'` (no live order without a valid registered budget); the `live_readiness` board's `risk_caps` row became a `registered_budget` row. The env cap vars (`MVP_LIVE_MAX_*`) no longer authorize an order. Still grants nothing — the grant, phrase, ≥3 canaries, P5 role, and LP4/LP5 all still apply. |
 | 7 | New role `execution.live_trader` (P5, `external_action_allowed: true`, candidate) | **done 2026-07-25** — the candidate role contract (`03_ROLE_CONTRACTS/ROLES/CANDIDATES/EXECUTION_LIVE_TRADER_ROLE.md`, P5, `external_action_allowed: true`, closed memory, empty tool/program allowlists) + its index-only registry entry (definition hash). **Candidate + non-routable — it grants nothing and no actor can hold it in a normal run.** Making it `active` (routable) is the separate remaining `ROLE_GOVERNANCE` approval; until then the P5 builder is still exercised only by tests passing `role_permission_ceiling="P5"` directly. |
-| 10 | LP4 order adapter behind the `live_trading` grant | **pending** — the first thing that can send |
+| 10 | LP4 order adapter behind the live-trading switch | **shipped 2026-07-25**; the switch became `MVP_LIVE_TRADING=real` alone on 2026-07-28 |
 
 Steps 1, 2, 4, 5, 8, 9 grant nothing on their own: a live-order PermissionDecision is now
 *buildable* as REVIEW_ONLY evidence (EXECUTE_AND_REPORT, P5, every runtime-effect flag false),

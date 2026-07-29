@@ -71,7 +71,7 @@ from .worker import Provider
 
 FRONTDESK_PROVIDER_ENV = "MVP_FRONTDESK_PROVIDER"
 FRONTDESK_ROLE_ID = "conversation.frontdesk"
-TURN_SCHEMA_VERSION = "frontdesk_turn.v0.3"
+TURN_SCHEMA_VERSION = "frontdesk_turn.v0.4"
 TURN_EVENT_TYPE = "frontdesk_turn.v0"
 
 SESSION_SCOPE = "frontdesk_session"
@@ -251,8 +251,10 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 턴 종류:
 - SUBMIT_TASK: Thomas가 분석/작업을 요청함. payload.request_text에는 Thomas의 요청 문장을
   **한 글자도 바꾸지 말고 원문 그대로** 넣습니다 (요약/의역/번역 금지 — 당신의 이해는
-  reply_text에서 확인용으로만 서술). important와 independent_validation은 Thomas가 그렇게
-  **말했을 때만** true (어조에서 추론 금지).
+  reply_text에서 확인용으로만 서술). important와 independent_validation은 **생략 금지 —
+  항상 두 필드 모두** 넣습니다. Thomas가 그렇게 **말했을 때만** true, 말하지 않았으면
+  **false**를 명시적으로 넣으세요 (어조에서 추론 금지). 둘 중 하나라도 빠지면 그 턴은
+  접수되지 않습니다.
   payload.request_kind는 **어떤 종류의 작업인지**를 아래 중 하나로 고릅니다:
 %(request_kinds)s
   같은 규칙이 적용됩니다 — Thomas의 **말에서** 고르고, 주제의 분위기로 추측하지 마세요.
@@ -268,6 +270,12 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 - QUERY_MEMORY: 승격 가능한 메모리 후보 목록을 물음.
 - CANCEL_TASK: 대기 중인 작업 취소 요청. payload.entry_id 필요.
 - CLARIFY: 의도가 불확실하면 추측하지 말고 되물음.
+  되물은 뒤 Thomas가 답하면, 그 답만 따로 제출하지 말고 **원래 요청과 함께** 제출하세요:
+  payload.request_text에는 원래 요청 문장을 원문 그대로, payload.clarification_texts에는
+  그가 추가로 말한 문장(들)을 역시 **원문 그대로** 넣습니다. 예 — "Prediction 데이터
+  분석해줘" → (되물음) → "7일"이면 request_text는 "Prediction 데이터 분석해줘",
+  clarification_texts는 ["7일"]입니다. 두 항목 모두 그가 실제로 보낸 문장이어야 하며,
+  요약하거나 합쳐 쓰면 접수되지 않습니다.
 - CHAT_REPLY: 그 외 대화 (인사, 감사, 잡담, 질문에 대한 짧은 답).
 
 규칙:
@@ -280,7 +288,10 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 - 조회 턴(QUERY_*)의 reply_text에는 상태를 지어내지 마세요. 실제 데이터는 런타임이
   붙입니다. 짧게 무엇을 조회하는지만 쓰면 됩니다.
 
-출력: 분석 JSON의 recommendation을 다음 형태로 채우세요.
+출력: 응답 JSON에는 **%(envelope_keys)s 필드가 반드시 있어야 합니다** — 대화 턴이라 내용은
+짧아도 되고 목록은 비어 있어도 됩니다, 있기만 하면 됩니다. 하나라도 빠지면 응답 전체가
+버려지고 당신의 턴은 전달되지 않습니다.
+그 위에 recommendation을 다음 형태로 채우세요.
 "recommendation": {"action": "<턴 종류>", "turn": {"schema_version": "%(schema_version)s",
 "turn_kind": "<턴 종류>", "payload": {...}, "reply_text": "..."}}
 """
@@ -300,11 +311,27 @@ def _prompt_header() -> str:
     The kind list is built the same way and for the same reason: a kind the prompt offers but
     the schema's enum or the router's table does not carry is a submission that dies at
     validation or at the queue's far end. Listing them from one dict, pinned by a test to the
-    router's own table, is what keeps the three honest."""
+    router's own table, is what keeps the three honest.
+
+    The envelope keys are interpolated for the third instance of the same lesson, and this one
+    was measured rather than reasoned about. The turn rides inside the shared analysis JSON, so
+    the provider's parser requires that JSON's own fields — and this prompt described only
+    ``recommendation`` and never mentioned them. Groq's ``json_object`` mode constrains no keys,
+    so the model was free to omit them and did, in **3 of 8** live turns
+    (``MALFORMED_RESPONSE``: the whole response discarded, the turn never delivered, the
+    channel degraded to the plain queue). Naming them here took that to **0 of 8**. Taken from
+    the parser's own constant so a fourth required field cannot appear without this prompt
+    learning about it."""
+    from .providers import _REQUIRED_ANALYSIS_KEYS      # the parser's own list, not a copy
+
     kinds = "\n".join(
         f"    - {kind}: {REQUEST_KIND_GLOSSES[kind]}" for kind in sorted(REQUEST_KIND_GLOSSES)
     )
-    return _PROMPT_TEMPLATE % {"schema_version": TURN_SCHEMA_VERSION, "request_kinds": kinds}
+    return _PROMPT_TEMPLATE % {
+        "schema_version": TURN_SCHEMA_VERSION,
+        "request_kinds": kinds,
+        "envelope_keys": ", ".join(_REQUIRED_ANALYSIS_KEYS),
+    }
 
 
 def _build_prompt(session: list[dict[str, Any]], text: str) -> str:
@@ -350,6 +377,46 @@ def _verbatim_ok(request_text: str, current: str, session: list[dict[str, Any]])
     return any(
         needle in _normalize(str(e.get("operator_text", ""))) for e in session
     )
+
+
+def _clarification_texts(payload: Mapping[str, Any]) -> list[str]:
+    """The follow-up segments this submission carries, with nulls and blanks dropped.
+
+    Only cleaning happens here; deduplication belongs to :func:`_compose_request`, which sees
+    ``request_text`` too. Doing it in this function was the first shape and it was wrong in a
+    way its own test caught: a model that helpfully repeated the request inside this list
+    produced "분석해줘\\n분석해줘", because the two halves were deduplicated separately and so
+    never compared against each other."""
+    raw = payload.get("clarification_texts")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str) and item.strip()]
+
+
+def _compose_request(segments: list[str]) -> str:
+    """The request the pipeline receives: the operator's segments, newline-joined, in the
+    order the front desk assembled them, each appearing once.
+
+    A newline rather than a space because these were separate messages and the specialist
+    should read them as separate statements — "30일로 해줘" glued onto the end of a sentence
+    reads as part of that sentence. Nothing is added: no labels, no "clarification:" prefix,
+    nothing of the front desk's own. Every character submitted is one Thomas typed.
+
+    Deduplicated by normalized text across ALL segments, first occurrence winning. A repeat is
+    never dangerous — every segment already had to be his own words — but "7일 7일" reaches
+    the specialist as an emphasis he did not write, and a model echoing the request into the
+    clarification list is the likeliest way to produce one. The cost is that a genuine
+    repetition loses its second copy, which is the cheaper mistake."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for segment in segments:
+        text = segment.strip()
+        key = _normalize(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(text)
+    return "\n".join(kept)
 
 
 def _resolve_request_kind(raw: Any) -> str | None:
@@ -581,15 +648,21 @@ def run_turn(
             outcome = {"reply": exc.reason, "action": exc.reason_code}
 
     elif kind == "SUBMIT_TASK":
-        request_text = payload["request_text"]
-        if not _verbatim_ok(request_text, text, session):
-            _audit(ledger, "FRONTDESK_VERBATIM_MISMATCH", now=stamp)
+        # Every segment is checked separately, and one failure refuses the whole submission.
+        # Checking the composed string instead would pass a paraphrase glued between two real
+        # quotes; checking segments and submitting only the ones that passed would silently
+        # drop the very answer this feature exists to carry.
+        segments = [payload["request_text"], *_clarification_texts(payload)]
+        if not all(_verbatim_ok(segment, text, session) for segment in segments):
+            _audit(ledger, "FRONTDESK_VERBATIM_MISMATCH", now=stamp,
+                   segments=len(segments))
             outcome = {
                 "reply": ("요청을 원문 그대로 접수하지 못했습니다 — 실행할 요청 문장을 "
                           "한 번에 그대로 보내주시면 그대로 접수합니다."),
                 "action": "FRONTDESK_VERBATIM_MISMATCH",
             }
         else:
+            request_text = _compose_request(segments)
             try:
                 request_kind = _resolve_request_kind(payload.get("request_kind"))
                 entry, position = task_registry.enqueue(
@@ -613,13 +686,30 @@ def run_turn(
                 # so the receipt says which one it read — arriving BEFORE the pipeline runs, so
                 # a misread is one `/cancel` away instead of a wrong-shaped answer later.
                 kind_note = f"\n종류: {request_kind}" if request_kind else ""
+                # When more than one of his messages was assembled into this request, the
+                # receipt quotes what was actually submitted. Assembling is the one thing the
+                # front desk now does that he cannot see from his own scrollback — he said two
+                # things and one request went in — so the composed text is shown BEFORE the
+                # pipeline runs, which is what keeps a wrong assembly a `/cancel` rather than a
+                # wrong answer. A single-segment request already reads back from his own
+                # message, so it gets no echo: noise on every task would train him past it.
+                # Keyed off what was COMPOSED, not off how many segments arrived: a model that
+                # echoed the request into the clarification list sends two segments that
+                # deduplicate to one line, and quoting a single line back as an "assembly"
+                # would be showing him a composition that did not happen.
+                composed_note = (
+                    f"\n요청 내용:\n{clip_for_prompt(request_text, MAX_SESSION_ENTRY_CHARS)}"
+                    if "\n" in request_text else ""
+                )
                 outcome = {
-                    "reply": (f"{reply_text}\n\n접수했습니다 ({queue_note}){kind_note}\n"
+                    "reply": (f"{reply_text}\n\n접수했습니다 ({queue_note}){kind_note}"
+                              f"{composed_note}\n"
                               f"id: {entry.registry_entry_id[:12]}\n"
                               "완료되면 결과를 보내드립니다 — /tasks 로 진행 상황을 볼 수 있습니다."),
                     "action": "FRONTDESK_TASK_QUEUED",
                     "registry_entry_id": entry.registry_entry_id,
                     "request_kind": request_kind,
+                    "segments": len(segments),
                 }
     else:  # pragma: no cover — the schema's enum makes this unreachable
         outcome = {"reply": reply_text, "action": "FRONTDESK_CHAT_REPLY"}

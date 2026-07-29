@@ -109,6 +109,8 @@ def build_live_position(
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
     cycle_id: str | None = None,
+    timeframe: str | None = None,
+    max_holding_bars: int | None = None,
 ) -> dict[str, Any]:
     """One OPEN live position, from a real fill. Pure — persisting it is the store's job.
 
@@ -161,6 +163,24 @@ def build_live_position(
         # None however faithfully the other two travel.
         "strategy_generation_id": strategy_generation_id,
         "cycle_id": cycle_id,
+        # --- the time exit (2026-07-29) ------------------------------------------------
+        # Until now a live position carried no holding count and no timeframe, so the live
+        # leg had nothing to judge a max-hold rule against and deliberately enforced none.
+        # That made live and paper end trades on different rules while the promotion evidence
+        # was built under paper's — and unfavourably, since a time exit usually cuts losers,
+        # so live held them longer. These four fields are what closed that gap.
+        #
+        # `max_holding_bars` rides on the POSITION, not read from the spec at exit time: the
+        # parity rule paper already enforces (`position_max_hold`) is that a position is judged
+        # by the number its own backtest was built on. A spec edited mid-hold must not move the
+        # exit of a trade already open.
+        "timeframe": timeframe,
+        "max_holding_bars": max_holding_bars,
+        "holding_candles": 0,
+        # Dedup key for the counter: one bar counts once however many times a cycle re-runs
+        # within it. Paper learned this from the source system; live inherits it via the
+        # shared `paper.advance_holding` rather than by keeping a second copy of the rule.
+        "last_counted_candle_ts": None,
     }
     position["position_id"] = integrity.short_id(
         "live_position",
@@ -274,7 +294,7 @@ class LivePositionStore(Protocol):
 
 class DryRunLivePositionStore:
     """The default: touches nothing. Lets the whole LP5 flow run and be tested with no
-    grant, no disk, and no venue. ``filesystem_write=False`` rides into every record so a
+    switch, no disk, and no venue. ``filesystem_write=False`` rides into every record so a
     dry run can never be read back as a real one."""
 
     provider_id = "dry_run"
@@ -291,7 +311,7 @@ class RealLivePositionStore:
     """Durable live book under ``.runtime_governance_state/crypto/live_positions/``.
 
     Constructed only behind the Safety-Flag Gate for the one ``live_trading`` provider, and
-    it re-asserts that authorization on **every** mutation — so deleting the grant file
+    it re-asserts that authorization on **every** mutation — so clearing ``MVP_LIVE_TRADING``
     stops the book mid-flight exactly as it stops order egress and the P&L ledger. Writes
     are atomic (temp + replace) under a per-symbol cross-process lock, and fsynced: a live
     position that reached the disk buffer but not the disk would be a real position the
@@ -337,20 +357,21 @@ class RealLivePositionStore:
 def select_live_position_store(
     *, now: str | None = None, root: Path | None = None
 ) -> LivePositionStore:
-    """Return the durable live book if the live-trading grant is open, else the inert one.
+    """Return the durable live book if live trading is opted in, else the inert one.
 
-    The capable store is constructed **by** the gate, so it cannot exist before the
-    authorization does; ``MVP_LIVE_TRADING=real`` without a valid local grant fails closed.
+    The capable store is still constructed **by** the gate, so it cannot exist before the
+    authorization does. What changed on 2026-07-28 (Thomas) is what opens the gate: the opt-in
+    ``MVP_LIVE_TRADING=real`` alone, no per-machine grant. It moves with the rest of the live
+    surface and must — this book is what the close path reads to know a position exists. Durable
+    orders over an inert book is an account holding positions the runtime cannot see to close.
     """
-    return safety_gate.select_gated(
+    return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunLivePositionStore,
         gated_factory=lambda authorization: RealLivePositionStore(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

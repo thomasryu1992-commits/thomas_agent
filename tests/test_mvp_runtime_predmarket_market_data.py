@@ -16,6 +16,7 @@ API served integer cents, and a parser written from memory would have read nothi
 from __future__ import annotations
 
 import json
+import urllib.parse
 
 import pytest
 
@@ -410,24 +411,55 @@ def test_a_malformed_listing_raises_rather_than_returning_nothing(payload):
 def test_the_detail_yields_the_yes_token_and_the_cross_reference():
     """`market_id` becomes the YES outcome token — what the book and any later order key on —
     and `conditionId` is the cross-reference axis, the same shape Polymarket uses."""
-    found = md.parse_prediction_yes_outcome(_detail_row())
-    assert found[:3] == (5567895, "112233", "0xabc123")
-    # The settlement text belongs to the market that was selected here, not to whichever
-    # market a second pass over the same payload would have picked.
-    assert len(found) == 4
+    rows = md.parse_prediction_markets(_detail_row())
+    assert len(rows) == 1
+    assert (rows[0]["market_id"], rows[0]["token_id"], rows[0]["condition_id"]) == (
+        5567895, "112233", "0xabc123")
+
+
+def test_a_topic_becomes_every_outcome_it_holds_not_one_of_them():
+    """THE fix. A topic is an EVENT: "California Governor Election Winner" holds one market
+    per candidate. Returning only the first OPEN one — while the title came from the topic —
+    produced legs whose NAME and whose TOKEN were different candidates, and 354 of 500 live
+    topics hold more than one market."""
+    detail = {"marketTopicId": 4423246, "markets": [
+        {"marketId": 1, "conditionId": "0xa", "tradingStatus": "OPEN", "tradeVolume": "0",
+         "question": "Will Michael Younger win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "t1"}]},
+        {"marketId": 2, "conditionId": "0xb", "tradingStatus": "OPEN", "tradeVolume": "7421.14",
+         "question": "Will Xavier Becerra win the California Governor Election in 2026?",
+         "outcomes": [{"name": "YES", "tokenId": "t2"}]},
+    ]}
+    rows = md.parse_prediction_markets(detail)
+    assert [r["market_id"] for r in rows] == [1, 2]
+    # Each carries its OWN question, conditionId and traded volume — none of them the topic's.
+    assert "Younger" in rows[0]["question"] and "Becerra" in rows[1]["question"]
+    assert rows[0]["condition_id"] != rows[1]["condition_id"]
+    assert rows[0]["volume"] == 0.0 and rows[1]["volume"] == 7421.14
 
 
 def test_a_market_that_is_not_open_is_not_priced():
     """A topic can be REGISTERED while its market's trading is CLOSED. Pricing one nobody can
     trade is pricing something that could never be acted on."""
-    assert md.parse_prediction_yes_outcome(_detail_row(tradingStatus="CLOSED")) is None
+    assert md.parse_prediction_markets(_detail_row(tradingStatus="CLOSED")) == []
 
 
 def test_an_outcome_with_no_token_id_yields_nothing():
     detail = _detail_row(outcomes=[{"name": "YES", "price": "0.52", "index": 0}])
-    assert md.parse_prediction_yes_outcome(detail) is None
-    assert md.parse_prediction_yes_outcome({}) is None
-    assert md.parse_prediction_yes_outcome(None) is None
+    assert md.parse_prediction_markets(detail) == []
+    assert md.parse_prediction_markets({}) == []
+    assert md.parse_prediction_markets(None) == []
+
+
+def test_one_closed_outcome_does_not_hide_the_open_ones():
+    """A race where one candidate has withdrawn still has the others."""
+    detail = {"markets": [
+        {"marketId": 1, "tradingStatus": "CLOSED", "question": "gone",
+         "outcomes": [{"name": "YES", "tokenId": "t1"}]},
+        {"marketId": 2, "tradingStatus": "OPEN", "question": "still running",
+         "outcomes": [{"name": "YES", "tokenId": "t2"}]},
+    ]}
+    assert [r["market_id"] for r in md.parse_prediction_markets(detail)] == [2]
 
 
 def test_the_order_book_gives_the_best_bid_and_ask_regardless_of_page_order():
@@ -648,3 +680,144 @@ def test_the_user_agent_names_this_client_rather_than_imitating_a_browser():
     assert ua.startswith("thomas-agent/")
     for browserish in ("mozilla", "chrome", "safari", "gecko", "applewebkit", "edg/"):
         assert browserish not in ua, f"user agent imitates a browser: {browserish}"
+
+
+# --- pagination -----------------------------------------------------------------
+
+def _offsets_requested(monkeypatch, *, limit, page_rows):
+    """Run discovery against pages of `page_rows` rows each; return the offsets asked for."""
+    offsets: list[int] = []
+
+    def _fake(url, *, timeout_seconds, headers=None):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        offsets.append(int(query["offset"][0]))
+        return [_gamma_row(clobTokenIds=f'["tok-{len(offsets)}-{i}", "no"]')
+                for i in range(page_rows)]
+
+    monkeypatch.setattr(md, "_get_json", _fake)
+    md.PolymarketPublicCollector(
+        authorization=_authorized_for(md.POLYMARKET_PROVIDER_ID)
+    ).list_markets(limit=limit, timeout_seconds=1, with_quotes=False)
+    return offsets
+
+
+def test_discovery_pages_by_what_gamma_served_not_by_what_we_asked_for(monkeypatch):
+    """Gamma caps a page at 100 **regardless of `limit`**. Stepping the offset by `limit`
+    looked right and was not: with limit=300 it asked for 0/300/600 against 100-row pages, so
+    rows 100-299 and 400-599 were never read. We still got 300 markets and still called them
+    "the head by volume" — three disjoint slices of it, with 400 higher-volume rows skipped
+    in between. Measured 2026-07-28: limit=100/300/500 all return exactly 100 rows."""
+    assert _offsets_requested(monkeypatch, limit=300, page_rows=100) == [0, 100, 200]
+
+
+def test_a_page_the_venue_fills_completely_pages_by_that_size(monkeypatch):
+    """Nothing here hard-codes 100 — the step is whatever the venue actually served, so a
+    venue that raises or lowers its cap keeps a contiguous sweep without a code change."""
+    assert _offsets_requested(monkeypatch, limit=60, page_rows=60) == [0, 60, 120]
+
+
+def test_pagination_counts_rows_gamma_served_not_rows_we_could_parse(monkeypatch):
+    """A row served without token ids is dropped by the parser but still occupies an offset
+    slot. Stepping by the parsed count would walk the offset backwards and re-read rows we
+    already had, quietly shrinking reach in exactly the way this whole fix is about."""
+    offsets: list[int] = []
+
+    def _fake(url, *, timeout_seconds, headers=None):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        offsets.append(int(query["offset"][0]))
+        page = len(offsets)
+        # Ten rows served, four of them unparseable.
+        return ([_gamma_row(clobTokenIds=f'["tok-{page}-{i}", "no"]') for i in range(6)]
+                + [_gamma_row(clobTokenIds="") for _ in range(4)])
+
+    monkeypatch.setattr(md, "_get_json", _fake)
+    snapshot = md.PolymarketPublicCollector(
+        authorization=_authorized_for(md.POLYMARKET_PROVIDER_ID)
+    ).list_markets(limit=100, timeout_seconds=1, with_quotes=False)
+
+    assert offsets == [0, 10, 20]
+    assert len({m.market_id for m in snapshot.markets}) == 18   # no page re-read
+
+
+def test_discovery_stops_when_a_page_comes_back_empty(monkeypatch):
+    """Past the end of the listing there is nothing to advance to."""
+    assert _offsets_requested(monkeypatch, limit=300, page_rows=0) == [0]
+
+
+# --- retrying a read ------------------------------------------------------------
+
+class _Response:
+    def __init__(self, body: str):
+        self._body = body
+
+    def read(self):
+        return self._body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _urlopen_failing(monkeypatch, failures, *, body='{"ok": true}'):
+    """Fail the first len(failures) attempts with those errors, then succeed. Returns a
+    counter of attempts made."""
+    attempts: list[int] = []
+
+    def _fake(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) <= len(failures):
+            raise failures[len(attempts) - 1]
+        return _Response(body)
+
+    monkeypatch.setattr(md.urllib.request, "urlopen", _fake)
+    return attempts
+
+
+def test_a_flaky_read_is_retried_once(monkeypatch):
+    """A discovery sweep is several sequential GETs and any one of them failing takes down the
+    whole venue for that scan: measured 2026-07-28, single Gamma calls succeeded 12/12 while
+    the three-page collector failed 1 run in 6."""
+    attempts = _urlopen_failing(monkeypatch, [md.urllib.error.URLError("flaky")])
+    assert md._get_json("https://example.invalid/x", timeout_seconds=1) == {"ok": True}
+    assert len(attempts) == 2
+
+
+def test_a_venue_that_is_actually_down_still_degrades(monkeypatch):
+    """The retry buys one more chance, not silence. Both attempts failing is still a
+    TOOL_TRANSPORT — the caller degrades exactly as before, a beat later."""
+    attempts = _urlopen_failing(
+        monkeypatch, [md.urllib.error.URLError("down")] * 5)
+    with pytest.raises(ToolError) as caught:
+        md._get_json("https://example.invalid/x", timeout_seconds=1)
+    assert caught.value.reason_code == "TOOL_TRANSPORT"
+    assert len(attempts) == 2, "one retry, not a loop"
+
+
+def test_a_timeout_is_retried_because_a_read_is_idempotent(monkeypatch):
+    """Nothing is written by a GET, so a second attempt cannot double an effect."""
+    attempts = _urlopen_failing(monkeypatch, [TimeoutError("slow")])
+    assert md._get_json("https://example.invalid/x", timeout_seconds=1) == {"ok": True}
+    assert len(attempts) == 2
+
+
+def test_a_refusal_is_not_retried(monkeypatch):
+    """A 4xx is the venue's considered answer. Retrying it buys nothing and doubles the wait
+    before we report it — including the Cloudflare 1010 case, where a second identical request
+    gets the identical refusal."""
+    refused = md.urllib.error.HTTPError(
+        "https://example.invalid/x", 403, "Forbidden", {}, None)
+    attempts = _urlopen_failing(monkeypatch, [refused, refused])
+    with pytest.raises(ToolError):
+        md._get_json("https://example.invalid/x", timeout_seconds=1)
+    assert len(attempts) == 1
+
+
+def test_being_told_to_slow_down_is_retried(monkeypatch):
+    """429 and 5xx are the venue saying *not now*, which is the case a retry is for."""
+    for code in (429, 500, 503):
+        attempts = _urlopen_failing(monkeypatch, [
+            md.urllib.error.HTTPError("https://example.invalid/x", code, "no", {}, None)])
+        assert md._get_json("https://example.invalid/x", timeout_seconds=1) == {"ok": True}
+        assert len(attempts) == 2, f"HTTP {code} should be retried"

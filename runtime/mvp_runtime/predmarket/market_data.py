@@ -636,10 +636,32 @@ def select_pred_market_collector(
     )
 
 
+# One retry, for reads only. A discovery sweep is several sequential GETs and any one of them
+# failing takes down the whole venue for that scan: measured 2026-07-28, single Gamma calls
+# succeeded 12/12 while the three-page collector failed 1 run in 6 — per-call flakiness of a
+# few percent, amplified by the page count. Retrying a GET is safe (idempotent, read-only) and
+# it does not paper over an outage: a venue that is actually down fails both attempts and still
+# degrades, just a beat later.
+TRANSPORT_RETRIES = 1
+
+
+def _worth_retrying(exc: BaseException) -> bool:
+    """A second attempt only where one could plausibly answer differently.
+
+    A 4xx is the venue's considered answer — retrying it buys nothing and doubles the wait
+    before we report it. 429 and 5xx are the venue saying *not now*, which is exactly the case
+    a retry is for.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return True
+
+
 def _get_json(url: str, *, timeout_seconds: int, headers: Mapping[str, str] | None = None) -> Any:
-    """One public GET, parsed. Transport errors are deliberately generic — the URL never
-    reaches a message, log or record (the R3 posture; here it also keeps venue query
-    parameters out of the audit trail)."""
+    """One public GET, parsed, with one retry on a transport failure that could resolve.
+
+    Transport errors are deliberately generic — the URL never reaches a message, log or record
+    (the R3 posture; here it also keeps venue query parameters out of the audit trail)."""
     request = urllib.request.Request(
         url,
         method="GET",
@@ -649,11 +671,17 @@ def _get_json(url: str, *, timeout_seconds: int, headers: Mapping[str, str] | No
             **(dict(headers or {})),
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-            raw = response.read().decode("utf-8")
-    except (TimeoutError, urllib.error.URLError):
-        raise ToolError("TOOL_TRANSPORT", "prediction-market request failed or timed out") from None
+    for attempt in range(TRANSPORT_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+            break
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if attempt >= TRANSPORT_RETRIES or not _worth_retrying(exc):
+                raise ToolError(
+                    "TOOL_TRANSPORT",
+                    "prediction-market request failed or timed out",
+                ) from None
     try:
         return json.loads(raw)
     except ValueError:
@@ -1035,18 +1063,29 @@ class PolymarketPublicCollector:
         markets: list[PredMarket] = []
         tail: list[PredMarket] = []
         if market_ids is None:
-            # Gamma caps a page at 100 and honours `offset`, so reach is a handful of cheap
-            # calls rather than a design problem. Rank across ALL of them before slicing —
-            # ranking one page at a time would just re-order each page's own head.
-            for page in range(self._pages):
-                page_params = {**params, "offset": page * int(params["limit"])}
-                rows = parse_gamma_markets(_get_json(
+            # Gamma caps a page at 100 **regardless of `limit`**, so the offset has to advance
+            # by what the page actually returned, not by what we asked for. Stepping by
+            # `limit` looked right and was not: with limit=300 it requested offsets 0/300/600
+            # against 100-row pages, so rows 100-299 and 400-599 were never read. We still got
+            # 300 markets and still called them "the head by volume" — they were three
+            # disjoint slices of it, with 400 higher-volume rows skipped between them.
+            # Measured 2026-07-28: limit=100/300/500 all return exactly 100 rows.
+            #
+            # Advance by the RAW row count, not by len(parsed): a row Gamma serves without
+            # token ids is dropped by the parser but still occupies an offset slot, and
+            # stepping by the parsed count would re-read rows already seen.
+            offset = 0
+            for _ in range(self._pages):
+                page_params = {**params, "offset": offset}
+                payload = _get_json(
                     f"{self.GAMMA_BASE}/markets?{urllib.parse.urlencode(page_params)}",
                     timeout_seconds=timeout_seconds,
-                ))
-                markets.extend(rows)
-                if not rows:
+                )
+                served = _gamma_rows(payload)
+                markets.extend(parse_gamma_markets(payload))
+                if not served:
                     break
+                offset += len(served)
             head, tail = select_head_and_tail(
                 rank_by_volume(markets), limit=limit, rotation=self._rotation)
             markets = head + tail
@@ -1144,6 +1183,20 @@ def _maybe_json_list(value: Any) -> list[Any]:
     return []
 
 
+def _gamma_rows(payload: Any) -> list[Any]:
+    """The raw rows Gamma served, before any are dropped. Pure.
+
+    Separate from parsing because pagination needs the count the *venue* used to fill the
+    page — a row we skip still occupies an offset slot.
+    """
+    rows = payload if isinstance(payload, list) else None
+    if rows is None and isinstance(payload, Mapping):
+        rows = payload.get("data") if isinstance(payload.get("data"), list) else None
+    if rows is None:
+        raise ToolError("MALFORMED_RESULT", "polymarket markets payload is not a list")
+    return rows
+
+
 def parse_gamma_markets(payload: Any) -> list[PredMarket]:
     """Gamma's ``/markets`` payload as normalized, **unquoted** markets. Pure.
 
@@ -1152,11 +1205,7 @@ def parse_gamma_markets(payload: Any) -> list[PredMarket]:
     A market whose token ids cannot be read is skipped — without them there is nothing to
     price and nothing to trade.
     """
-    rows = payload if isinstance(payload, list) else None
-    if rows is None and isinstance(payload, Mapping):
-        rows = payload.get("data") if isinstance(payload.get("data"), list) else None
-    if rows is None:
-        raise ToolError("MALFORMED_RESULT", "polymarket markets payload is not a list")
+    rows = _gamma_rows(payload)
 
     markets: list[PredMarket] = []
     for row in rows:
@@ -1467,48 +1516,57 @@ class BinancePredictionCollector:
                     {"marketTopicId": topic.market_id},
                     timeout_seconds=timeout_seconds,
                 )
-                outcome = parse_prediction_yes_outcome(detail)
+                outcomes = parse_prediction_markets(detail)
             except ToolError:
                 markets.append(topic)   # one topic's detail failing is not the scan failing
                 continue
-            if outcome is None:
+            if not outcomes:
                 markets.append(topic)
                 continue
-            market_id, token_id, condition_id, rules = outcome
-            book = None
-            if with_quotes:
-                # `detail` above stays: it carries the conditionId that becomes `group_id`,
-                # and a venue-asserted cross-reference is the strongest matching evidence
-                # there is. Only the BOOK is price-only, so only the book is skipped.
-                try:
-                    book = self._signed_get(
-                        self.BOOK_PATH,
-                        {"vendor": self.VENDOR, "marketId": market_id, "tokenId": token_id},
-                        timeout_seconds=timeout_seconds,
-                    )
-                except ToolError:
-                    book = None
-            markets.append(PredMarket(
-                venue=BINANCE,
-                # `marketId:tokenId`, because the order book needs BOTH and only the token is
-                # not enough to ask for a quote. Composite so a confirmed leg can be re-read
-                # later in ONE call instead of walking list -> detail -> book again: a watch
-                # scan every two minutes cannot afford to rediscover what it already knows.
-                market_id=f"{market_id}:{token_id}",
-                # The cross-reference axis. Predict.fun's conditionId is the same shape as
-                # Polymarket's, so a group can be matched on it rather than on wording.
-                group_id=condition_id or topic.group_id,
-                title=topic.title,
-                category=topic.category,
-                close_time=topic.close_time,
-                status=topic.status,
-                fee_rate_bps=topic.fee_rate_bps,
-                resolution_rules=rules,
-                volume=topic.volume,
-                quote=parse_prediction_book(book) if book is not None else VenueQuote(),
-            ))
-            if topic.market_id in tail_topic_ids:
-                tail_markets.append(markets[-1])
+            for outcome in outcomes:
+                book = None
+                if with_quotes and len(markets) < self._book_limit:
+                    # `detail` above stays: it carries the conditionId that becomes
+                    # `group_id`, and a venue-asserted cross-reference is the strongest
+                    # matching evidence there is. Only the BOOK is price-only.
+                    try:
+                        book = self._signed_get(
+                            self.BOOK_PATH,
+                            {"vendor": self.VENDOR, "marketId": outcome["market_id"],
+                             "tokenId": outcome["token_id"]},
+                            timeout_seconds=timeout_seconds,
+                        )
+                    except ToolError:
+                        book = None
+                resolved = PredMarket(
+                    venue=BINANCE,
+                    # `marketId:tokenId`, because the order book needs BOTH and the token
+                    # alone cannot be asked for a quote. Composite so a confirmed leg is
+                    # re-readable in ONE call.
+                    market_id=f"{outcome['market_id']}:{outcome['token_id']}",
+                    group_id=outcome["condition_id"],
+                    # Everything below identifies the OUTCOME. Only close time, category and
+                    # the fee rate come from the topic, because those are facts about the
+                    # event rather than about which candidate this market is on.
+                    title=outcome["question"] or topic.title,
+                    resolution_rules=outcome["resolution_rules"],
+                    volume=outcome["volume"],
+                    category=topic.category,
+                    close_time=topic.close_time,
+                    status=topic.status,
+                    fee_rate_bps=topic.fee_rate_bps,
+                    quote=parse_prediction_book(book) if book is not None else VenueQuote(),
+                )
+                markets.append(resolved)
+                if topic.market_id in tail_topic_ids:
+                    tail_markets.append(resolved)
+
+        # Ranked again, now on each market's OWN volume. The first ranking chose which topics
+        # were worth a signed call; this one chooses which of the outcomes they contain are
+        # worth an operator's attention, and a topic's busiest candidate is not its quietest.
+        markets = rank_by_volume(markets)[:limit]
+        kept = {m.market_id for m in markets}
+        tail_markets = [m for m in tail_markets if m.market_id in kept]
 
         return PredMarketSnapshot(
             venue=self.venue,
@@ -1639,19 +1697,27 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
     return topics
 
 
-def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None, str | None] | None:
-    """``market/detail`` → ``(marketId, YES tokenId, conditionId, description)``. Pure.
+def parse_prediction_markets(payload: Any) -> list[dict[str, Any]]:
+    """``market/detail`` → one row per tradable outcome market in the topic. Pure.
 
-    The description comes back with the rest rather than through a second pass over the same
-    payload: it belongs to the market that was *selected* here, and a separate reader picking
-    "the first open market" again could quietly select a different one.
+    A topic is an EVENT, not a market. "California Governor Election Winner" holds one
+    market per candidate, each its own binary YES/NO question with its own token, its own
+    traded volume and its own conditionId — the same shape as a Kalshi event.
 
-    Takes the first market whose ``tradingStatus`` is OPEN and reads its YES outcome. A topic
-    with no open market, or an outcome with no token id, yields ``None`` — there is nothing
-    to price and nothing a later order could key on.
+    The version this replaces returned a single tuple: the first market whose
+    ``tradingStatus`` was OPEN. Paired with a title taken from the TOPIC, that produced legs
+    whose name and whose token were **different candidates**. A sheet handed to the operator
+    proposed "Will Rick Caruso win the California Governor Election in 2026?" against a token
+    belonging to Michael Younger, quoted 0.998 against Polymarket's 0.0005, on a market that
+    had never traded. Measured 2026-07-28: **354 of 500 topics (70.8%) hold more than one
+    market**, so this was the common case rather than an edge.
+
+    Markets with no open trading or no YES token are skipped: there is nothing to price and
+    nothing a later order could key on.
     """
     if not isinstance(payload, Mapping):
-        return None
+        return []
+    rows: list[dict[str, Any]] = []
     for market in payload.get("markets") or []:
         if not isinstance(market, Mapping):
             continue
@@ -1660,22 +1726,36 @@ def parse_prediction_yes_outcome(payload: Any) -> tuple[int, str, str | None, st
         market_id = market.get("marketId")
         if not isinstance(market_id, int):
             continue
-        for outcome in market.get("outcomes") or []:
-            if not isinstance(outcome, Mapping):
-                continue
-            if str(outcome.get("name") or "").upper() != "YES":
-                continue
-            token_id = outcome.get("tokenId")
-            if not (isinstance(token_id, str) and token_id.strip()):
-                continue
-            condition = market.get("conditionId")
-            return (
-                market_id,
-                token_id.strip(),
-                condition.strip() if isinstance(condition, str) and condition.strip() else None,
-                _text(market.get("description")),
-            )
-    return None
+        token_id = next(
+            (
+                str(outcome.get("tokenId")).strip()
+                for outcome in market.get("outcomes") or []
+                if isinstance(outcome, Mapping)
+                and str(outcome.get("name") or "").upper() == "YES"
+                and isinstance(outcome.get("tokenId"), str)
+                and outcome.get("tokenId").strip()
+            ),
+            None,
+        )
+        if token_id is None:
+            continue
+        condition = market.get("conditionId")
+        rows.append({
+            "market_id": market_id,
+            "token_id": token_id,
+            # Per market, not per topic. The cross-reference axis is a property of the
+            # outcome, and every candidate in one race has a different one.
+            "condition_id": condition.strip() if isinstance(condition, str) and condition.strip() else None,
+            # The market's OWN question. Falling back to the topic's would reintroduce the
+            # defect this function exists to fix.
+            "question": _text(market.get("question")) or _text(market.get("title")),
+            "resolution_rules": _text(market.get("description")),
+            # And its own traded volume. Screening on the topic's aggregate while trading the
+            # market is how a market with `tradeVolume: 0` passed a gate built to refuse
+            # exactly that: its topic had traded $34,765 across its other outcomes.
+            "volume": as_optional_float(market.get("tradeVolume")),
+        })
+    return rows
 
 
 def parse_prediction_book(payload: Any) -> VenueQuote:
@@ -1747,7 +1827,7 @@ __all__ = [
     "parse_kalshi_markets",
     "parse_prediction_book",
     "parse_prediction_topics",
-    "parse_prediction_yes_outcome",
+    "parse_prediction_markets",
     "require_venue",
     "split_binance_market_id",
     "select_pred_market_collector",

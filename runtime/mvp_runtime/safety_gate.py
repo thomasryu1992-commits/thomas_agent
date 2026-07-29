@@ -102,6 +102,20 @@ class Authorization:
     expires_at: str
     evidence_ref: str
     activation_path: str | None = None
+    # Set ONLY by `env_only_authorization` — `(env_var, opt_in_value)` for the one capability
+    # Thomas moved onto the environment opt-in alone (2026-07-28). `assert_authorization` keys
+    # its re-check on this field.
+    #
+    # It is a field rather than a marker inside `evidence_ref`, and that is load-bearing:
+    # `evidence_ref` on a grant-backed authorization is copied verbatim out of the operator's
+    # activation record, so keying on its text let a RECORD choose which check ran. A record
+    # carrying `evidence_ref: "env_only:MVP_LIVE_TRADING=real"` passed the path validation
+    # (no drive, not absolute, no `..`, and a file of that name is legal on Linux) and then took
+    # the env branch — skipping the grant re-read, so deleting the grant file stopped revoking
+    # it. That defeated the one property `assert_authorization` below promises about grants, on
+    # providers this decision deliberately KEPT on a grant. `authorize` never sets this field,
+    # so no record content can reach it.
+    env_gate: tuple[str, str] | None = None
 
 
 def activation_path(root: Path, provider_id: str) -> Path:
@@ -325,7 +339,11 @@ def assert_authorization(
     disk with exactly the authorized content. That last check is what makes deleting a
     grant an actual revocation: a long-lived process (the operator loop holds its grant
     for the loop's whole lifetime) re-reads the record at every egress, so removing or
-    replacing the file stops it at the next call rather than at expiry."""
+    replacing the file stops it at the next call rather than at expiry.
+
+    For an authorization from :func:`select_env_gated` there is no record, so the re-check
+    re-reads the environment variable instead. It is the weaker of the two and the code below
+    says why."""
     if not isinstance(authorization, Authorization):
         raise SafetyGateBlocked(
             "NOT_AUTHORIZED",
@@ -338,7 +356,28 @@ def assert_authorization(
         raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"authorization does not enable required flags: {missing}")
     if now >= authorization.expires_at:
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "authorization has expired since it was granted")
-    if authorization.activation_path is not None:
+    if authorization.env_gate is not None:
+        # The live-trading exception (2026-07-28): there is no grant record to re-read, so the
+        # egress re-check re-reads the ENV. Be honest about how much weaker that is — a running
+        # process's environment does not change under it, so unlike deleting a grant file this
+        # is NOT a mid-flight revocation, and stopping a live scheduler means restarting it (see
+        # the halt note the readiness board prints). Kept anyway, because the alternative is an
+        # egress path with no re-check at all and this still fails closed for every caller that
+        # builds its authorization once and uses it later.
+        #
+        # Keyed on `env_gate`, which only `env_only_authorization` sets. Not on
+        # `activation_path is None` — that is the documented hand-built-test seam, and reusing it
+        # would make a production authorization indistinguishable from a test one. And not on the
+        # `evidence_ref` text either: that string is copied verbatim from the operator's grant
+        # record, so keying on it let a RECORD select which check ran (see `env_gate`'s comment).
+        env_var, expected = authorization.env_gate
+        if os.environ.get(env_var, "").strip().lower() != expected.strip().lower():
+            raise SafetyGateBlocked(
+                "ENV_OPT_IN_WITHDRAWN",
+                f"{env_var} no longer opts in to {expected!r} — the environment IS the gate for "
+                "this capability (fail-closed)",
+            )
+    elif authorization.activation_path is not None:
         record_path = Path(authorization.activation_path)
         if not record_path.is_file():
             raise SafetyGateBlocked(
@@ -397,6 +436,89 @@ def select_gated(
     # Opted in — the gate must pass before the capable implementation is even constructed.
     authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
     return gated_factory(authorization)
+
+
+# --- the live-trading exception -------------------------------------------------------------
+#
+# Thomas decision, 2026-07-28: `live_trading` is gated by its environment opt-in ALONE, with no
+# per-machine grant. Every other gated capability keeps `select_gated` above.
+#
+# This is a second function rather than a parameter on the first, and that is the load-bearing
+# part: a `require_grant=False` keyword on `select_gated` would put "no grant needed" one token
+# away from the model provider, the search tool, the operator channel and the workspace writer.
+# A separate function can only be reached by a caller that names it.
+#
+# Why: the grant is TTL-capped at 30 days and this system is meant to run unattended for months.
+# The sharper reason is that a grant expiring while a position is OPEN blocks the CLOSE path too
+# — `evaluate_live_close_guard` exempts a reduceOnly close from the loss breaker, the daily
+# count, the exposure cap, the promotion gate and both kill switches, and then requires the gate.
+# A halt that traps an open position is what those exemptions exist to prevent.
+#
+# What is given up, stated so a future reader restoring the grant knows what they are restoring:
+# a second factor, an expiry, and an audited per-machine record of scope and authority level.
+#
+# What is NOT given up: revocation. `console_cli kill` is file-based, instant, checked by the
+# order guard, and deliberately exempted by the close path — it stops new entries without
+# trapping a position, which is precisely what grant expiry could not do.
+ENV_ONLY_EVIDENCE_PREFIX = "env_only:"
+
+
+def env_only_authorization(
+    *, flags: Sequence[str], provider_id: str, env_var: str, opt_in_value: str
+) -> Authorization:
+    """An :class:`Authorization` backed by the environment opt-in instead of a grant record.
+
+    Deliberately a real ``Authorization`` rather than a bypass: the capable implementations keep
+    their constructor and their egress re-check unchanged, so this exception cannot also quietly
+    remove the "re-verify immediately before opening a socket" property.
+
+    ``env_gate`` carries the setting :func:`assert_authorization` re-reads at egress instead of a
+    file that does not exist. ``evidence_ref`` spells the same thing for a human reading a log
+    and is **not** load-bearing — it used to be, and a grant record could spell the same prefix
+    into its own evidence path to skip its file re-check. ``expires_at`` is far-future **by
+    design** — removing the expiry is the decision; encoding a fake one would make the board and
+    the audit trail claim a bound that nothing enforces.
+    """
+    return Authorization(
+        flags=tuple(flags),
+        provider_id=provider_id,
+        activation_sha256="",
+        expires_at="9999-12-31T23:59:59Z",
+        evidence_ref=f"{ENV_ONLY_EVIDENCE_PREFIX}{env_var}={opt_in_value}",
+        activation_path=None,
+        env_gate=(env_var, opt_in_value),
+    )
+
+
+def select_env_gated(
+    *,
+    env_var: str,
+    opt_in_value: str,
+    flags: Sequence[str],
+    provider_id: str,
+    default_factory: Callable[[], T],
+    gated_factory: Callable[[Authorization], T],
+) -> T:
+    """:func:`select_gated`'s shape, with the environment opt-in as the only gate.
+
+    Same construction order — the capable implementation is built only after the opt-in is
+    confirmed and receives its ``Authorization`` as an argument, so "never construct the capable
+    thing before the gate opens" stays structural here too. Only what "the gate" means differs.
+    """
+    # Both sides normalised, and `assert_authorization`'s re-check normalises the same way. Only
+    # the env value was, which is right for every caller today (all five pass
+    # `REAL_LIVE_TRADING = "real"`) and silently wrong for one that passes "REAL": the gate would
+    # never open and nothing would say why. `select_gated` above has the same asymmetry and is
+    # left alone deliberately — it is pre-existing, it governs every other capability, and
+    # widening what opens THOSE gates does not belong in a live-trading change.
+    choice = os.environ.get(env_var, "").strip().lower()
+    if choice != opt_in_value.strip().lower():
+        return default_factory()
+    return gated_factory(
+        env_only_authorization(
+            flags=flags, provider_id=provider_id, env_var=env_var, opt_in_value=opt_in_value
+        )
+    )
 
 
 def select_gated_optional(

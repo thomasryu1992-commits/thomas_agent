@@ -183,6 +183,27 @@ def test_an_unquoted_side_produces_a_recorded_non_reading_not_a_zero():
     assert record["observation_id"]
 
 
+def test_a_half_open_book_keeps_its_arithmetic_but_loses_the_claim():
+    """A venue quoting one side still lets ONE direction be computed — buy where there is an
+    ask, sell where there is a bid — so the numbers are real and stay on the row. The claim
+    does not: a half-open book is where the thin side lives, and **"how often" is the number
+    PM1 exists to produce**, so overstating it is the direction that misleads PM2 and PM3.
+
+    Observed live 2026-07-28: a Binance leg quoting `ask=0.10 size=100` against a Polymarket
+    bid sized 54,972. That one was a loss so nothing was miscounted — with the signs reversed
+    it would have counted as an opportunity off a book with a hundred contracts on the touch.
+    """
+    record = opportunity.evaluate_pairing(
+        # No ask on Kalshi, so only "buy Polymarket, sell Kalshi" is computable — and it wins.
+        _market(KALSHI, bid=0.90, ask=None, bid_size=100.0),
+        _market(POLYMARKET, bid=0.50, ask=0.52, category="crypto"),
+        now=NOW,
+    )
+    assert opportunity.NOT_QUOTED in record["reasons"]
+    assert record["net_edge"] is not None and record["net_edge"] > 0    # arithmetic kept
+    assert record["is_opportunity"] is False                            # claim withdrawn
+
+
 def test_depth_is_recorded_and_the_smaller_side_binds():
     """A 500-contract bid is no help against a 3-contract ask. PM2 models the fill; PM1 has
     to hand it an honest number."""
@@ -202,6 +223,54 @@ def test_an_edge_with_no_depth_is_flagged():
         now=NOW,
     )
     assert opportunity.NO_SIZE in record["reasons"]
+
+
+def test_a_venue_reporting_zero_depth_is_flagged_too():
+    """`None` and `0` are different facts — did not say, versus said none — and both mean the
+    same thing at the touch. What they must not differ in is whether a reason is raised: the
+    check used to ask only about `None`, so a venue answering `size: 0` produced a clean
+    record with no flag at all.
+
+    A guard against a structural hole, not a regression test for an observed incident —
+    measured 2026-07-29, `size_at_touch == 0` had never occurred in 11,968 priced readings."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45, ask_size=0.0),
+        _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
+        now=NOW,
+    )
+    assert record["best"]["size_at_touch"] == 0.0, "the record states what the venue said"
+    assert opportunity.NO_SIZE in record["reasons"]
+
+
+def test_an_edge_nobody_could_take_is_not_an_opportunity():
+    """The reason was never once acted on — the record called it "an edge nobody could take
+    any of" and then counted it as an opportunity. Frequency is the number PM1 exists to
+    produce, and PM2 and PM3 are built on it.
+
+    The reason has also never fired in the store, so this guards a hole rather than
+    correcting a recorded number."""
+    for label, kalshi_ask_size, poly_bid_size in (
+        ("venue said none", 0.0, 500.0),
+        ("venue said nothing", None, None),
+    ):
+        record = opportunity.evaluate_pairing(
+            _market(KALSHI, bid=0.43, ask=0.45, ask_size=kalshi_ask_size),
+            _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=poly_bid_size, category="crypto"),
+            now=NOW,
+        )
+        assert record["net_edge"] > 0, f"{label}: the arithmetic still stands"
+        assert record["is_opportunity"] is False, f"{label}: but nobody could take it"
+
+
+def test_depth_on_both_sides_is_still_an_opportunity():
+    """The gate is untradeable depth, not depth as such — the ordinary case must survive it."""
+    record = opportunity.evaluate_pairing(
+        _market(KALSHI, bid=0.43, ask=0.45, ask_size=500.0),
+        _market(POLYMARKET, bid=0.55, ask=0.57, bid_size=500.0, category="crypto"),
+        now=NOW,
+    )
+    assert record["is_opportunity"] is True
+    assert opportunity.NO_SIZE not in record["reasons"]
 
 
 def test_an_observation_states_that_it_authorizes_nothing():
