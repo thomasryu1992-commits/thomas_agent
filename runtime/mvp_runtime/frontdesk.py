@@ -251,8 +251,10 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 턴 종류:
 - SUBMIT_TASK: Thomas가 분석/작업을 요청함. payload.request_text에는 Thomas의 요청 문장을
   **한 글자도 바꾸지 말고 원문 그대로** 넣습니다 (요약/의역/번역 금지 — 당신의 이해는
-  reply_text에서 확인용으로만 서술). important와 independent_validation은 Thomas가 그렇게
-  **말했을 때만** true (어조에서 추론 금지).
+  reply_text에서 확인용으로만 서술). important와 independent_validation은 **생략 금지 —
+  항상 두 필드 모두** 넣습니다. Thomas가 그렇게 **말했을 때만** true, 말하지 않았으면
+  **false**를 명시적으로 넣으세요 (어조에서 추론 금지). 둘 중 하나라도 빠지면 그 턴은
+  접수되지 않습니다.
   payload.request_kind는 **어떤 종류의 작업인지**를 아래 중 하나로 고릅니다:
 %(request_kinds)s
   같은 규칙이 적용됩니다 — Thomas의 **말에서** 고르고, 주제의 분위기로 추측하지 마세요.
@@ -286,7 +288,10 @@ Thomas의 텔레그램 메시지 하나를 읽고, 아래 목록 중 정확히 �
 - 조회 턴(QUERY_*)의 reply_text에는 상태를 지어내지 마세요. 실제 데이터는 런타임이
   붙입니다. 짧게 무엇을 조회하는지만 쓰면 됩니다.
 
-출력: 분석 JSON의 recommendation을 다음 형태로 채우세요.
+출력: 응답 JSON에는 **%(envelope_keys)s 필드가 반드시 있어야 합니다** — 대화 턴이라 내용은
+짧아도 되고 목록은 비어 있어도 됩니다, 있기만 하면 됩니다. 하나라도 빠지면 응답 전체가
+버려지고 당신의 턴은 전달되지 않습니다.
+그 위에 recommendation을 다음 형태로 채우세요.
 "recommendation": {"action": "<턴 종류>", "turn": {"schema_version": "%(schema_version)s",
 "turn_kind": "<턴 종류>", "payload": {...}, "reply_text": "..."}}
 """
@@ -306,11 +311,27 @@ def _prompt_header() -> str:
     The kind list is built the same way and for the same reason: a kind the prompt offers but
     the schema's enum or the router's table does not carry is a submission that dies at
     validation or at the queue's far end. Listing them from one dict, pinned by a test to the
-    router's own table, is what keeps the three honest."""
+    router's own table, is what keeps the three honest.
+
+    The envelope keys are interpolated for the third instance of the same lesson, and this one
+    was measured rather than reasoned about. The turn rides inside the shared analysis JSON, so
+    the provider's parser requires that JSON's own fields — and this prompt described only
+    ``recommendation`` and never mentioned them. Groq's ``json_object`` mode constrains no keys,
+    so the model was free to omit them and did, in **3 of 8** live turns
+    (``MALFORMED_RESPONSE``: the whole response discarded, the turn never delivered, the
+    channel degraded to the plain queue). Naming them here took that to **0 of 8**. Taken from
+    the parser's own constant so a fourth required field cannot appear without this prompt
+    learning about it."""
+    from .providers import _REQUIRED_ANALYSIS_KEYS      # the parser's own list, not a copy
+
     kinds = "\n".join(
         f"    - {kind}: {REQUEST_KIND_GLOSSES[kind]}" for kind in sorted(REQUEST_KIND_GLOSSES)
     )
-    return _PROMPT_TEMPLATE % {"schema_version": TURN_SCHEMA_VERSION, "request_kinds": kinds}
+    return _PROMPT_TEMPLATE % {
+        "schema_version": TURN_SCHEMA_VERSION,
+        "request_kinds": kinds,
+        "envelope_keys": ", ".join(_REQUIRED_ANALYSIS_KEYS),
+    }
 
 
 def _build_prompt(session: list[dict[str, Any]], text: str) -> str:
