@@ -150,6 +150,61 @@ def test_a_trade_without_fill_figures_is_flagged_for_investigation(monkeypatch):
     assert "investigate" in lp.render_live_trade_evidence_text(rows)
 
 
+def test_a_trade_names_the_strategy_that_placed_it(monkeypatch):
+    """The read side of a fix that was only half made.
+
+    The outcome record has carried the lineage since 2026-07-26, when the executing leg
+    stopped copying only the display id — and this board, the one surface an operator reads
+    live results on, dropped all three fields again. A field stored where nobody can see it
+    answers no question."""
+    rows = _trades(monkeypatch, [_outcome(
+        strategy_id="S1218", candidate_id="cand_ab12", strategy_generation_id="GEN-712",
+        strategy_rule_hash="ec9e900ed9c3f8a342fcb8ae9ff73f91557697effb11df030f42ae37abc26e5f",
+    )])
+    assert rows[0]["lineage_attributable"] is True
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "S1218" in text and "GEN-712" in text
+    assert "ec9e900ed9c3" in text, "the rule hash is the key that identifies the lineage"
+    assert "1/1 can be traced" in text
+
+
+def test_a_trade_from_an_imported_strategy_says_it_cannot_be_traced(monkeypatch):
+    """25 of the 72 strategies routing right now came through the C7 import and carry no
+    ``candidate_id``, so a live trade from one cannot reach the evidence that promoted it.
+
+    Stated rather than left blank: an empty column reads as "not filled in yet", and during a
+    live test the difference between "not yet" and "never will be" is the whole point."""
+    rows = _trades(monkeypatch, [_outcome(
+        strategy_id="S271", candidate_id=None, strategy_generation_id="GEN-068",
+        strategy_rule_hash="ec9e900ed9c3f8a342fcb8ae9ff73f91557697effb11df030f42ae37abc26e5f",
+    )])
+    assert rows[0]["lineage_attributable"] is False
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "NOT ATTRIBUTABLE" in text
+    assert "0/1 can be traced" in text
+    assert "group them by" in text, "the operator needs the fallback, not just the bad news"
+    assert "ec9e900ed9c3" in text, "the rule hash IS that fallback and must still be printed"
+
+
+def test_a_trade_with_no_rule_hash_at_all_does_not_print_a_blank(monkeypatch):
+    """The worst row: not even the fallback key. It must not render as an empty field that
+    reads like a formatting bug."""
+    rows = _trades(monkeypatch, [_outcome(strategy_rule_hash=None, candidate_id=None)])
+    assert rows[0]["strategy_rule_hash"] is None
+    assert "NO RULE HASH" in lp.render_live_trade_evidence_text(rows)
+
+
+def test_the_lineage_survives_json_mode(monkeypatch, capsys):
+    """The board is also how a later analysis reads these rows back."""
+    monkeypatch.setattr(lp, "read_canary_orders", lambda root=None: [])
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl.read_live_outcomes",
+                        lambda root=None: [_outcome(candidate_id="cand_ab12")])
+    assert lp.main(["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["live_trades"][0]["candidate_id"] == "cand_ab12"
+    assert payload["live_trades"][0]["lineage_attributable"] is True
+
+
 def test_no_live_trades_yet_says_what_will_appear(monkeypatch):
     """The empty state is the state during live testing, so it has to be informative rather
     than blank — it is what the operator sees while waiting for the first real trade."""
