@@ -118,13 +118,21 @@ def test_every_family_in_the_library_is_reachable_across_generations():
     library unreachable. Porting a family was invisible work.
 
     Consecutive generations must walk the whole list, and do it without overlap so the
-    walk is a rotation rather than a random sample that might miss one for weeks."""
-    templates = templates_for_timeframe("1h")
+    walk is a rotation rather than a random sample that might miss one for weeks.
+
+    Mined on a NON-reference symbol, and the choice is load-bearing: the rel_strength_*
+    families are deliberately unmintable for the market proxy (their columns are None there),
+    so covering the whole library requires a symbol that can express every family. Asking
+    ``templates_for_timeframe`` and ``generate_batch`` about the same symbol is what keeps
+    this test measuring the rotation rather than the gate — see
+    ``test_reference_families_are_not_minted_for_the_reference_symbol`` for the gate."""
+    symbol = "ETHUSDT"
+    templates = templates_for_timeframe("1h", symbol=symbol)
     families = {t.family for t in templates}
     runs = -(-len(templates) // 4)  # ceil: batches needed to cover the library once
     seen, minted = set(), []
     for n in range(runs):
-        batch = generate_batch(f"GEN-{n:03d}", seed=n, timeframe="1h")
+        batch = generate_batch(f"GEN-{n:03d}", seed=n, symbol=symbol, timeframe="1h")
         got = [spec["strategy_family"] for spec in batch["specs"]]
         minted.extend(got)
         seen.update(got)
