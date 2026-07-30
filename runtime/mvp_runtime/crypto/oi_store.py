@@ -67,9 +67,24 @@ REFRESH_DAYS = 3
 # whatever it was when this constant was written.
 SEED_DAYS = 120
 
-# A symbol is refreshed when its newest stored hour is older than this. One hour is the series'
+# A symbol is refreshed when its last refresh ATTEMPT is older than this. One hour is the series'
 # own cadence — asking more often can only return a row already held.
+#
+# The first version measured from the newest stored READING and did not work. The vendor's newest
+# complete hour is always at least an hour behind the clock (the forming hour is dropped), so
+# "newest reading is over an hour old" was true for almost every minute of every hour and all
+# four contexts of a symbol re-asked inside one fire — the exact thing the throttle was written
+# to prevent, reported as four `appended` statuses with nothing appended. Measured on the first
+# fire after it deployed. What bounded the requests in practice was `PerSymbolFeedCache`, which
+# is a different mechanism with a different lifetime (one fan-out), so the two do not substitute
+# for each other: the cache stops a fire from asking twice, and this stops the next fire from
+# asking again fifteen minutes later.
 REFRESH_AFTER_SECONDS = 3600
+
+# Where the attempt marks live: a small JSON map, one entry per symbol, rewritten whole — the
+# `routing_marks` idiom, for the same reason it was chosen there (a handful of short values that
+# are read together and never grown).
+REFRESH_MARKS_FILENAME = "open_interest_1h_refresh.json"
 
 # Coverage a timeframe needs before its features could read this store instead of the daily
 # series: the factory's own replay span. Not a new number — the same one `factory_candle_target`
@@ -80,6 +95,51 @@ REQUIRED_COVERAGE_DAYS = FACTORY_DEPTH_DAYS
 
 def oi_1h_path(root: Path | None = None) -> Path:
     return state_dir(root) / OI_1H_FILENAME
+
+
+def refresh_marks_path(root: Path | None = None) -> Path:
+    return state_dir(root) / REFRESH_MARKS_FILENAME
+
+
+def read_refresh_marks(root: Path | None = None) -> dict[str, str]:
+    """``{symbol: last attempt}``. Damage reads as no marks, which means "ask again".
+
+    Fail-open toward asking rather than toward skipping, and that direction is the opposite of
+    the one this store's *reads* take. A corrupt marks file that read as "recently attempted"
+    would silently stop accumulation with the board still reporting whatever coverage it had —
+    a store that quietly stops growing is worse than one that asks the vendor once too often."""
+    path = refresh_marks_path(root)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def record_refresh_attempt(symbol: str, *, now: str, root: Path | None = None) -> None:
+    """Mark that the vendor was asked about ``symbol``, whatever the answer was.
+
+    Recorded on failure too, deliberately. The failure this store already caused once was a
+    request cap, and a marker written only on success turns a refusing vendor into four asks per
+    fire — sixteen an hour per symbol, which is how the cap was reached. A persistent failure now
+    costs one ask an hour, and a transient one delays the self-heal by at most that long, which
+    the vendor's ~84-day retention absorbs."""
+    name = str(symbol).strip().upper()
+    if not name:
+        return
+    directory = state_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = refresh_marks_path(root)
+    with locked(path.with_suffix(".lock"), code="OI_1H_MARKS_LOCKED", label="hourly OI refresh marks"):
+        marks = read_refresh_marks(root)
+        marks[name] = now
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(marks, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -169,16 +229,17 @@ def append_rows(rows: Iterable[Mapping[str, Any]], *, symbol: str, root: Path | 
     return len(fresh)
 
 
-def is_due(newest: str | None, now: str) -> bool:
-    """Whether this symbol should be refreshed from the vendor.
+def is_due(last_attempt: str | None, now: str) -> bool:
+    """Whether this symbol should be asked about again, given when it was last ASKED.
 
-    Empty store → due (the seed). Unparseable mark → due, because a store that cannot say when
-    it last wrote should collect rather than wait: the append is idempotent, so the cost of
-    being wrong here is one redundant request."""
-    if not newest:
+    Not when it was last successfully written: see ``REFRESH_AFTER_SECONDS`` for why measuring
+    from the newest stored reading could never skip. Never attempted → due. Unparseable mark →
+    due, because a marker that cannot be read should not be able to stop accumulation; the
+    append is idempotent, so the cost of being wrong is one redundant request."""
+    if not last_attempt:
         return True
     try:
-        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(newest)).total_seconds()
+        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(last_attempt)).total_seconds()
     except (ValueError, TypeError):
         return True
     return elapsed >= REFRESH_AFTER_SECONDS
@@ -195,9 +256,10 @@ def record_intraday_oi(
     """One throttled refresh for one symbol. Degrade-only: never raises, always reports.
 
     Called from the cycle's feed step, which runs once per context — twenty times per fire on
-    the shipped fan-out. The throttle is what makes that safe: only the first context of a new
-    hour reaches the vendor, and the other nineteen return ``skipped_fresh`` having opened no
-    socket.
+    the shipped fan-out. The throttle is what makes that safe: only the first context after the
+    hour turns reaches the vendor, and the rest return ``skipped_fresh`` having opened no socket.
+    It measures from the last ATTEMPT, recorded whatever the answer was, because measuring from
+    the newest stored reading could never skip (see ``REFRESH_AFTER_SECONDS``).
 
     ``status`` is one of ``seeded`` / ``appended`` / ``skipped_fresh`` / ``skipped_no_feed`` /
     ``degraded``. A vendor failure is ``degraded`` with the reason recorded and nothing written,
@@ -210,12 +272,18 @@ def record_intraday_oi(
     if not hasattr(feed, "open_interest_history"):
         return {"symbol": name, "status": "skipped_no_feed", "written": 0}
 
-    newest = newest_timestamp(root, symbol=name)
-    if not is_due(newest, now):
-        return {"symbol": name, "status": "skipped_fresh", "written": 0, "newest": newest}
+    last_attempt = read_refresh_marks(root).get(name)
+    if not is_due(last_attempt, now):
+        return {"symbol": name, "status": "skipped_fresh", "written": 0,
+                "last_attempt": last_attempt}
 
+    newest = newest_timestamp(root, symbol=name)
     seeding = newest is None
     days = SEED_DAYS if seeding else REFRESH_DAYS
+    # Stamped BEFORE the request, so a fetch that hangs or raises still counts as an attempt. A
+    # marker written after a successful return only would leave the failing path unthrottled,
+    # which is the path that most needs the throttle.
+    record_refresh_attempt(name, now=now, root=root)
     try:
         rows = feed.open_interest_history(
             name, days=days, timeout_seconds=timeout_seconds, interval=OI_1H_INTERVAL,
@@ -289,7 +357,9 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
 
 
 __all__ = [
-    "OI_1H_FILENAME", "OI_1H_INTERVAL", "REQUIRED_COVERAGE_DAYS", "RECORD_TYPE",
+    "OI_1H_FILENAME", "OI_1H_INTERVAL", "REFRESH_MARKS_FILENAME",
+    "REQUIRED_COVERAGE_DAYS", "RECORD_TYPE",
     "append_rows", "coverage", "coverage_summary", "is_due", "newest_timestamp",
-    "oi_1h_path", "read_rows", "record_intraday_oi",
+    "oi_1h_path", "read_refresh_marks", "read_rows", "record_intraday_oi",
+    "record_refresh_attempt", "refresh_marks_path",
 ]

@@ -227,6 +227,73 @@ def zscore(series: Series, window: int, min_periods: int | None = None) -> Serie
     return out
 
 
+def rolling_median(series: Series, window: int, min_periods: int) -> Series:
+    """Rolling median over the window's non-None values, or None.
+
+    **Not a port**, like :func:`rolling_correlation` — no source counterpart exists — but it
+    follows the same conventions so it cannot be told apart downstream.
+
+    Median rather than :func:`rolling_mean` where a *typical* level is wanted, and the reason
+    is the direction of the error. Its one consumer is the volatility reference the live size
+    multiplier divides by, and a mean is pulled upward by exactly the volatility spikes that
+    reference exists to react to — a higher reference means a larger multiplier means **less**
+    de-risking, which is the unsafe direction. The median is not moved by how extreme the
+    spike is, only by how much of the window it occupies.
+    """
+    out: Series = []
+    for i in range(len(series)):
+        values = sorted(_window_values(series, i, window))
+        if len(values) < min_periods:
+            out.append(None)
+            continue
+        middle = len(values) // 2
+        out.append(
+            values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2.0
+        )
+    return out
+
+
+def rolling_correlation(left: Series, right: Series, window: int, min_periods: int) -> Series:
+    """Rolling Pearson correlation of two aligned series, in [-1, 1] or None.
+
+    **Not a port.** Every other function here reproduces a source-system indicator value for
+    value against a recorded fixture; this one has no source counterpart, because the source
+    system never read a second symbol. It follows the same conventions so it cannot be told
+    apart downstream: windowed, ``min_periods`` counted over usable observations, and None —
+    never zero — wherever the value is undefined.
+
+    Only index positions where BOTH series are numeric count toward the window: a pair is
+    the unit of observation, so a bar the reference is missing contributes nothing rather
+    than contributing a half-pair. Zero variance on either leg yields None, matching
+    :func:`zscore`'s rule and for the same reason — a constant series has no correlation with
+    anything, and reporting 0.0 would claim independence that was never measured.
+    """
+    out: Series = []
+    for i in range(len(left)):
+        start = max(0, i - window + 1)
+        pairs = [
+            (float(a), float(b))
+            for a, b in zip(left[start : i + 1], right[start : i + 1])
+            if _is_num(a) and _is_num(b)
+        ]
+        if len(pairs) < max(min_periods, 2):
+            out.append(None)
+            continue
+        n = len(pairs)
+        mean_a = sum(a for a, _ in pairs) / n
+        mean_b = sum(b for _, b in pairs) / n
+        cov = sum((a - mean_a) * (b - mean_b) for a, b in pairs)
+        var_a = sum((a - mean_a) ** 2 for a, _ in pairs)
+        var_b = sum((b - mean_b) ** 2 for _, b in pairs)
+        if var_a <= 0 or var_b <= 0:
+            out.append(None)
+            continue
+        # Clamp: exact arithmetic keeps |r| <= 1, but floating point can land a hair outside
+        # on near-identical series, and a correlation of 1.0000000002 is a wrong number.
+        out.append(max(-1.0, min(1.0, cov / math.sqrt(var_a * var_b))))
+    return out
+
+
 def rolling_percentile(series: Series, window: int = 100) -> Series:
     """Percentile rank of the window's last value (pandas ``rank(pct=True)``,
     average method over the window's non-None values; min_periods as the source:

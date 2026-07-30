@@ -48,10 +48,10 @@ def _hours(count, *, start_day=28, start_hour=0, first=1000.0):
 def _hours_ending_before_now(count, *, hours_before_now=0):
     """`count` readings whose newest sits ``hours_before_now`` behind ``NOW``.
 
-    Freshness is measured against the newest READING, not against when the fetch happened — a
-    store holding the current hour has nothing to ask for. A fixture ending an hour or more back
-    is therefore already DUE, which is the opposite of what the throttle test needs, so the
-    default lands the newest reading on ``NOW`` itself."""
+    The offset no longer decides freshness — the throttle measures from the last refresh
+    ATTEMPT, not from the newest reading — but it is kept because the vendor's newest complete
+    hour really does lag the clock, and a fixture that ignored that would test a series the
+    parser never produces."""
     newest = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc) - timedelta(hours=hours_before_now)
     oldest = newest - timedelta(hours=count - 1)
     return [
@@ -229,3 +229,79 @@ def test_an_unknown_interval_is_refused_by_name():
     with pytest.raises(ToolError) as exc:
         feed.open_interest_history("BTCUSDT", days=1, timeout_seconds=1, interval="30min")
     assert exc.value.reason_code == "OI_INTERVAL_UNKNOWN"
+
+
+# --- the throttle, after it was measured and found not to throttle -------------
+#
+# The first version measured freshness from the newest stored READING. The vendor's newest
+# complete hour is always at least an hour behind the clock, so "over an hour old" was true for
+# almost every minute and all four contexts of a symbol re-asked inside one fire. It shipped,
+# and the first fire after it reported four `appended` statuses per symbol with nothing
+# appended. These pin the attempt-based version.
+
+def test_four_contexts_of_one_symbol_reach_the_vendor_once(tmp_path):
+    """The fan-out, as it actually runs: four timeframes per symbol, one fire."""
+    feed = _Feed()
+    for _ in range(4):
+        oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now=NOW, root=tmp_path)
+    assert len(feed.calls) == 1, feed.calls
+
+
+def test_a_later_fire_in_the_same_hour_also_skips(tmp_path):
+    """Fires are 15 minutes apart. Measuring from the reading made every one of them ask."""
+    feed = _Feed()
+    for minute in ("00", "15", "30", "45"):
+        oi_store.record_intraday_oi(
+            symbol="BTCUSDT", feed=feed, now=f"2026-07-29T12:{minute}:00Z", root=tmp_path)
+    assert len(feed.calls) == 1
+
+
+def test_the_next_hour_asks_again(tmp_path):
+    feed = _Feed()
+    oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now="2026-07-29T12:00:00Z", root=tmp_path)
+    oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now="2026-07-29T13:00:00Z", root=tmp_path)
+    assert len(feed.calls) == 2
+
+
+def test_a_refusing_vendor_is_asked_once_an_hour_not_once_a_context(tmp_path):
+    """The path that most needs the throttle. A marker written only on success would turn a
+    refusing vendor into four asks per fire — sixteen an hour, which is how the cap was hit."""
+    feed = _Feed(error=ToolError("TOOL_TRANSPORT", "vendor down"))
+    for _ in range(4):
+        r = oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now=NOW, root=tmp_path)
+    assert len(feed.calls) == 1
+    assert r["status"] == "skipped_fresh"
+
+
+def test_the_attempt_is_stamped_before_the_request(tmp_path):
+    """A fetch that hangs or raises still counts as an attempt, so a marker stamped after a
+    successful return only would leave the failing path unthrottled."""
+    class _Raises:
+        feed_id = "coinalyze_market_data"
+
+        def open_interest_history(self, symbol, *, days, timeout_seconds, interval=None):
+            raise RuntimeError("boom")
+
+    result = oi_store.record_intraday_oi(symbol="BTCUSDT", feed=_Raises(), now=NOW, root=tmp_path)
+    assert result["status"] == "degraded"
+    assert oi_store.read_refresh_marks(tmp_path) == {"BTCUSDT": NOW}
+
+
+def test_a_corrupt_marks_file_asks_again_rather_than_stopping_accumulation(tmp_path):
+    """Fail-open toward asking — the opposite of this store's read direction, on purpose. A
+    marks file that read as "recently attempted" would silently stop the store growing."""
+    oi_store.record_refresh_attempt("BTCUSDT", now=NOW, root=tmp_path)
+    oi_store.refresh_marks_path(tmp_path).write_text("{not json", encoding="utf-8")
+    assert oi_store.read_refresh_marks(tmp_path) == {}
+
+    feed = _Feed()
+    result = oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now=NOW, root=tmp_path)
+    assert result["status"] == "seeded"
+    assert len(feed.calls) == 1
+
+
+def test_one_symbol_being_fresh_does_not_hold_back_another(tmp_path):
+    feed = _Feed()
+    oi_store.record_intraday_oi(symbol="BTCUSDT", feed=feed, now=NOW, root=tmp_path)
+    oi_store.record_intraday_oi(symbol="ETHUSDT", feed=feed, now=NOW, root=tmp_path)
+    assert [c["symbol"] for c in feed.calls] == ["BTCUSDT", "ETHUSDT"]

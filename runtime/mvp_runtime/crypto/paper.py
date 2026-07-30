@@ -148,6 +148,70 @@ PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker
 
 # --- entry routing (pure) -----------------------------------------------------
 
+# How many closed trades a regime slice needs before its sign may exclude a strategy from
+# trading there. Ten because that is this repo's own stated line for "enough observations to
+# mean anything" (`robustness.HEALTHY_TRADES_PER_PARAMETER`), reused rather than re-invented.
+#
+# The direction of the two errors is not symmetric, which is what sets the number. Excluding on
+# too little evidence stops a strategy trading where it actually works, and that cost is
+# **silent** — no record shows the trades that did not happen. Requiring too much evidence just
+# leaves today's behaviour in place. Slicing an outcome history by regime also multiplies the
+# comparisons being made on it, which is the overfitting hazard `docs/TRADING_STRATEGY_REVIEW_
+# RECORD.md` raises about this pipeline generally; a per-regime sign read off three trades is
+# exactly that hazard wired into live routing. So the bar is evidence, not suspicion.
+MIN_REGIME_TRADES_TO_EXCLUDE = 10
+
+# Why a regime was declined, on the route record, so an operator sees a filter rather than a
+# strategy that mysteriously stopped matching.
+REGIME_EXCLUDED = "regime_demonstrated_unprofitable"
+
+
+def regime_admits(entry: Mapping[str, Any], regime: Any) -> tuple[bool, str | None]:
+    """May this pool entry trade in ``regime``? Returns ``(admitted, reason)``.
+
+    **Derived from the stored numbers, never from a stored verdict**, and that is the whole
+    reason this is a function rather than a field written at promotion time. `pool.
+    candidate_quality` already carries the scar: robustness verdicts were written once at mint
+    time, the rule that produced them changed, and twelve candidates kept a label the rule could
+    no longer produce — inverting the shortlist on exactly the property the new rule existed to
+    enforce. A baked `excluded: [...]` list would repeat that the first time
+    :data:`MIN_REGIME_TRADES_TO_EXCLUDE` moved.
+
+    The rule, and the direction it fails in:
+
+    - No ``regime_evidence`` on the entry (every strategy promoted before this existed) →
+      **admitted**. Absent evidence is not evidence of failure, and a filter that silenced the
+      whole installed pool on the day it shipped would be a worse error than the one it fixes.
+    - The regime is unknown, or was never traded in the replay → **admitted**. Same reason: the
+      backtest says nothing about it, and this gate only ever *declines* on a demonstration.
+    - Traded, but on fewer than :data:`MIN_REGIME_TRADES_TO_EXCLUDE` closed trades →
+      **admitted**, however bad the sign. This is the clause that keeps the gate from being the
+      overfitting it is meant to guard against.
+    - Traded enough, and the regime's total R is at or below zero → **declined**. The strategy
+      was promoted on an aggregate that blended this regime with the ones that paid for it.
+
+    Deliberately one-directional: this can only ever make the pool trade *less*. It never admits
+    an entry the existing checks would have refused, which is why it needs no gate of its own.
+    """
+    evidence = entry.get("regime_evidence")
+    if not isinstance(evidence, Mapping) or not evidence:
+        return True, None
+    if not isinstance(regime, str) or not regime:
+        return True, None
+    cell = evidence.get(regime)
+    if not isinstance(cell, Mapping):
+        return True, None
+    trades = cell.get("trades")
+    total_r = cell.get("total_r")
+    if not isinstance(trades, int) or isinstance(trades, bool) or trades < MIN_REGIME_TRADES_TO_EXCLUDE:
+        return True, None
+    if isinstance(total_r, bool) or not isinstance(total_r, (int, float)):
+        return True, None
+    if float(total_r) > 0:
+        return True, None
+    return False, REGIME_EXCLUDED
+
+
 def route_entries(
     pool: Mapping[str, Any], feature_row: Mapping[str, Any], *, symbol: str, timeframe: str, now: str
 ) -> dict[str, Any]:
@@ -178,12 +242,23 @@ def route_entries(
             })
             continue
         result = evaluate_spec(spec, feature_row)
-        evaluations.append({
+        # The regime filter runs on a MATCH, not before evaluation, so the record still shows
+        # that the rules fired and says separately that the regime declined it. Filtering
+        # earlier would make an excluded strategy indistinguishable from one whose conditions
+        # simply were not met, and those are different things for an operator to read.
+        admitted, regime_reason = (
+            regime_admits(entry, feature_row.get("market_regime")) if result.matched else (True, None)
+        )
+        evaluation = {
             "strategy_id": entry.get("strategy_id"),
             "matched": result.matched,
             "direction": result.direction,
-        })
-        if result.matched:
+        }
+        if regime_reason is not None:
+            evaluation["regime_excluded"] = regime_reason
+            evaluation["regime"] = feature_row.get("market_regime")
+        evaluations.append(evaluation)
+        if result.matched and admitted:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
                 "candidate_id": entry.get("candidate_id"),
@@ -198,6 +273,15 @@ def route_entries(
         "strategies_evaluated": len(entries),
         "evaluations": evaluations,
         "matched_strategy_ids": sorted(m["strategy_id"] for m in matches if m["strategy_id"] is not None),
+        # Named separately from `matched_strategy_ids` because "the rules fired and the regime
+        # declined it" is the one outcome an operator would otherwise have to infer from an
+        # absence. A route that entered nothing because every match was regime-excluded reads
+        # identically to one where nothing matched, and those want different responses.
+        "regime_excluded_strategy_ids": sorted(
+            str(e["strategy_id"]) for e in evaluations
+            if e.get("regime_excluded") and e.get("strategy_id") is not None
+        ),
+        "regime": feature_row.get("market_regime") if feature_row else None,
         # The traded context, so a plan books under the symbol this cycle actually
         # ran — not the spec's primary symbol_scope[0], which for a multi-symbol
         # strategy on a non-primary symbol would mis-book the position.
@@ -241,6 +325,53 @@ def route_entries(
     }
 
 
+# How far the live size may be scaled DOWN when volatility is above its own normal. A floor
+# rather than an open-ended divisor: below it the venue's minimum quantity and minimum notional
+# refuse the entry anyway, and a refusal on a chaotic tape is a defensible outcome — but it
+# should come from the venue's own limits rather than from an arithmetic slide to zero.
+MIN_VOL_SIZE_MULTIPLIER = 0.25
+
+
+def volatility_size_multiplier(feature_row: Mapping[str, Any]) -> float:
+    """How much of the otherwise-permitted live size this bar's volatility allows, in (0, 1].
+
+    **Why this is needed, measured rather than assumed.** ``live_sizing.size_live_order`` takes
+    ``min(risk-based, budget cap)``, and on any realistic equity the *budget cap* binds: at a 60
+    USDT per-order cap, the risk leg only wins below roughly 30 USDT of equity. When the cap
+    binds the notional is fixed, so the risk actually taken is ``cap × (stop distance / price)``
+    — which **rises with volatility**. Measured across plausible stop distances at a fixed cap,
+    the risk taken swings 0.18 → 1.20 USDT, a factor of 6.7, in the direction nobody wants:
+    biggest bets on the most chaotic tape. That is the opposite of volatility targeting, and it
+    is why the multiplier is applied to the FINAL quantity rather than to the risk fraction —
+    scaling the risk fraction changes nothing at all while the cap is what binds.
+
+    ``atr_pct_reference / atr_pct_of_price``, clamped. Both legs are measured from the same
+    series (see ``features.atr_pct_reference``), so there is no target-volatility constant for
+    anybody to have failed to authorize and no number that means one thing on BTC and another on
+    DOGE.
+
+    **One-directional, and the name is chosen to say so.** The ratio is capped at 1.0, so this
+    can only ever make an order smaller. Letting it exceed 1.0 would size *above* the operator's
+    registered per-order cap in quiet markets — widening an authorization from inside the
+    runtime, which is a Thomas decision and not a multiplier's business. So this is a
+    volatility-scaled ceiling, not a two-sided target: in unusually quiet conditions it leaves
+    size where the cap already put it rather than reaching for a risk target.
+
+    Returns ``1.0`` — unscaled — whenever the inputs cannot support a ratio: a missing or
+    non-positive current ATR%, or a reference that has not warmed up
+    (``features.ATR_REFERENCE_MIN_PERIODS``). Unscaled rather than refused, because the entry
+    is already authorized by every other door and this function's only job is to shrink it; a
+    missing reference is not grounds to invent one, and it is not grounds to block either.
+    """
+    current = feature_row.get("atr_pct_of_price")
+    reference = feature_row.get("atr_pct_reference")
+    for value in (current, reference):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return 1.0
+    ratio = float(reference) / float(current)
+    return max(MIN_VOL_SIZE_MULTIPLIER, min(1.0, ratio))
+
+
 def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *, now: str) -> dict[str, Any] | None:
     """Turn an ENTRY_CANDIDATE route into a concrete trade plan — pure, no I/O.
 
@@ -273,6 +404,12 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "stop_loss": float(stop),
         "take_profit": float(target),
         "risk": abs(float(entry) - float(stop)),
+        # Volatility scaling for the LIVE size, computed here for the reason `max_holding_bars`
+        # is: the plan is what the execution step reads, and a fact it could re-derive from a
+        # feature row it fetched itself is a fact the two can disagree about. Paper is
+        # unaffected by construction — its accounting is R-based, and R is already normalized
+        # by risk, so no quantity exists there for a multiplier to scale.
+        "vol_size_multiplier": volatility_size_multiplier(feature_row),
         # Backtest/runtime exit parity: the spec's own time-exit limit rides into the
         # plan so the live settlement uses the SAME rule the backtest evidence was
         # built on — a strategy promoted on max_holding_bars=12 must not hold 48.

@@ -68,6 +68,78 @@ LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
 OPEN_INTEREST_DEGRADED = "OPEN_INTEREST_DEGRADED"
 LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
 
+# Derivative PRICE series — mark, index, and the premium index that funding is computed
+# from. All three are kline-shaped public endpoints of the already-authorized
+# ``binance_futures`` provider, on the SAME time grid and interval as the OHLCV klines,
+# so they need no new provider, key or grant.
+#
+# Why they matter enough to spend three requests on. The feature row has carried
+# ``mark_price``/``index_price``/``mark_index_basis_bps`` since C3 as documented no-feed
+# fallbacks — close, close, and a hardcoded ``0.0`` — while the factory's mintable
+# vocabulary admitted all three. A literal condition on a basis that is always exactly
+# zero can only ever be true or only ever false, so the column was worse than absent.
+# And the premium index is the same information funding carries, at BAR resolution
+# instead of one 8h event: ``funding_zscore`` is a step function that changes three times
+# a day, which is what a 1h ``funding_fade_*`` spec has been timing itself on.
+MARK_PRICE_DEGRADED = "MARK_PRICE_DEGRADED"
+INDEX_PRICE_DEGRADED = "INDEX_PRICE_DEGRADED"
+PREMIUM_INDEX_DEGRADED = "PREMIUM_INDEX_DEGRADED"
+
+# Endpoint path per series kind. A closed mapping rather than an interpolated string: an
+# unknown kind would otherwise become a 404 at egress, or worse a different series
+# answered on the same shape.
+DERIVATIVE_KLINE_PATHS: dict[str, str] = {
+    "mark": "markPriceKlines",
+    "index": "indexPriceKlines",
+    "premium": "premiumIndexKlines",
+}
+DERIVATIVE_KINDS = frozenset(DERIVATIVE_KLINE_PATHS)
+
+# Which query parameter each endpoint names the instrument with. Not cosmetic: the index series
+# is quoted per PAIR (one index for BTCUSDT however many contracts settle against it) while mark
+# and premium are per contract, and the venue rejects the wrong key with 400 `-1102`. Kept as a
+# table beside the paths so the two cannot drift — a new kind has to answer both questions.
+DERIVATIVE_KLINE_SYMBOL_PARAMS: dict[str, str] = {
+    "mark": "symbol",
+    "index": "pair",
+    "premium": "symbol",
+}
+
+# Positioning statistics — WHO is holding what, which is the one thing neither price nor flow
+# reports. Three public `/futures/data/` endpoints of the same authorized provider.
+#
+# The pair is the point, not any single series: `top_position` is the position bias of the top
+# 20% of accounts by margin balance, `global_account` is the bias of ALL accounts counted one
+# each. Large capital and account headcount disagreeing is a statement no other column here can
+# make — every existing feature would read the two situations identically. `top_account` sits
+# beside `top_position` for the same reason at a smaller scale: the two differ exactly when a few
+# large positions inside the top cohort outweigh the many.
+#
+# `takerlongshortRatio` is deliberately NOT collected. It restates the aggressor split the kline
+# legs already carry (`taker_buy_base`), and those come with 500 days of history for free while
+# this endpoint family keeps 30 — collecting it would be paying a retention wall for a worse copy
+# of something already held.
+POSITIONING_PATHS: dict[str, str] = {
+    "top_position": "topLongShortPositionRatio",
+    "top_account": "topLongShortAccountRatio",
+    "global_account": "globalLongShortAccountRatio",
+}
+POSITIONING_SERIES = frozenset(POSITIONING_PATHS)
+POSITIONING_PAGE_LIMIT = 500   # venue cap per call
+POSITIONING_MAX_PAGES = 4      # 30-day retention at 1h is 720 rows — two pages, with head-room
+# Aggregation periods the venue offers, with their lengths, so a partial trailing period can be
+# recognized and dropped. A closed map rather than a pass-through string: an unknown period would
+# be answered with a series of some other cadence and the store would count it as hours.
+POSITIONING_PERIOD_SECONDS: dict[str, int] = {
+    "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200,
+    "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400,
+}
+POSITIONING_DEGRADED = "POSITIONING_DEGRADED"
+# The venue caps these at 1000 rows per call (klines allow 1500), and they page by the
+# same exclusive ``endTime`` walk.
+DERIVATIVE_PAGE_LIMIT = 1000
+DERIVATIVE_MAX_PAGES = 60
+
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
 # stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
@@ -93,6 +165,17 @@ TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, 
 # not collected, and a timeframe with no entry here simply has no HTF features —
 # they stay indeterminate, so an htf_* spec can never match there.
 HIGHER_TIMEFRAME: dict[str, str] = {"15m": "1h", "1h": "4h", "4h": "1d"}
+
+# The market proxy every other symbol's relative strength is measured against. BTC rather
+# than an index because it is the one series this runtime already collects that the rest of
+# the universe actually co-moves with, and because a real index would be a new vendor.
+#
+# It is a CONFIGURED constant rather than a per-cycle choice on purpose: relative strength is
+# only comparable across candidates if every candidate measured it against the same thing, and
+# a reference that moved between generations would make two lineages' `rel_strength_roc_4`
+# thresholds mean different things while looking identical.
+REFERENCE_SYMBOL = "BTCUSDT"
+REFERENCE_DEGRADED = "REFERENCE_DEGRADED"
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
 MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
@@ -254,6 +337,64 @@ class MockMarketDataCollector:
             is_synthetic=True,
             latency_ms=0,
         )
+
+    def derivative_price_klines(
+        self, symbol: str, timeframe: str, *, kind: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Deterministic mark / index / premium series on the SAME grid as ``collect``.
+
+        Derived from ``collect``'s own candles rather than from a second walk, so the grid
+        cannot drift from the OHLCV grid — which is the property the real endpoints have by
+        construction and the one a mock most easily breaks. A mock whose derivative bars
+        landed on different open times would make the join look wrong in tests that are
+        actually testing the join.
+
+        The mark sits a hair off the close and the index a hair off the mark, so
+        ``mark_index_basis_bps`` is small, signed and non-constant — a mock that returned
+        mark == index would leave the basis a fabricated zero, which is the exact defect
+        this whole series exists to remove.
+        """
+        if kind not in DERIVATIVE_KLINE_PATHS:
+            raise ToolError("INVALID_DERIVATIVE_KIND", f"kind must be one of {sorted(DERIVATIVE_KINDS)}")
+        candles = self.collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds).candles
+        rows: list[dict[str, Any]] = []
+        for i, candle in enumerate(candles):
+            # Basis in the low single-digit bps, both signs, stable per (symbol, tf, bar).
+            offset = (_frac(f"{symbol}|{timeframe}|basis{i}") - 0.5) * 0.0004
+            if kind == "mark":
+                value = round(candle.close * (1.0 + offset), 6)
+            elif kind == "index":
+                value = round(candle.close, 6)
+            else:  # premium — a signed fraction, the funding basis at bar resolution
+                value = round(offset, 8)
+            rows.append({"timestamp": candle.open_time, "value": value})
+        return rows
+
+    def positioning_history(
+        self, symbol: str, *, series: str, period: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Deterministic positioning ratios on the anchor grid (mock accumulation feed).
+
+        The three series are given DIFFERENT walks on purpose. The whole reason the store
+        collects more than one is that large capital and account headcount can disagree, so a
+        mock whose series moved together would make the only interesting case untestable.
+        """
+        if series not in POSITIONING_PATHS:
+            raise ToolError("INVALID_POSITIONING_SERIES", f"series must be one of {sorted(POSITIONING_SERIES)}")
+        if period not in POSITIONING_PERIOD_SECONDS:
+            raise ToolError("INVALID_POSITIONING_PERIOD", f"period must be one of {sorted(POSITIONING_PERIOD_SECONDS)}")
+        step = timedelta(seconds=POSITIONING_PERIOD_SECONDS[period])
+        rows: list[dict[str, Any]] = []
+        for i in range(max(0, int(limit))):
+            moment = self._ANCHOR + i * step
+            # Centred near a balanced book, bounded well inside (0, 1) so no row is degenerate.
+            long_ratio = round(0.5 + (_frac(f"{symbol}|{series}|{i}") - 0.5) * 0.4, 6)
+            rows.append({
+                "timestamp": timeutil.format_iso(moment),
+                "long_ratio": long_ratio,
+                "short_ratio": round(1.0 - long_ratio, 6),
+            })
+        return rows
 
     def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
         """Deterministic 8h funding events on the same anchor grid (C9 mock feed)."""
@@ -647,6 +788,213 @@ class BinanceFuturesCollector:
         rows = sorted(collected, key=lambda r: r["funding_time_ms"])[-records:]
         return [{"timestamp": r["timestamp"], "funding_rate": r["funding_rate"]} for r in rows]
 
+    def derivative_price_klines(
+        self, symbol: str, timeframe: str, *, kind: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """One derivative price series on the OHLCV time grid, oldest first.
+
+        ``kind`` selects the endpoint (:data:`DERIVATIVE_KLINE_PATHS`): the mark price, the
+        index price, or the premium index. Returns
+        ``[{"timestamp": <bar open, ISO>, "value": <bar close>}, ...]`` — only the close,
+        because the close is the value that is known at the moment the row's own ``close``
+        is known, and carrying a high/low no caller reads would invite someone to use one.
+
+        **Keyed by bar OPEN time, and that is the whole alignment contract.** These series
+        share the klines' interval and grid, so the bar opening at T here is the same bar as
+        the OHLCV bar opening at T; joining on the open time and taking the close pairs two
+        values that are both first known at the bar's close. That is simultaneous, not
+        look-ahead — unlike the HTF leg, which spans a different grid and must therefore key
+        on the higher candle's CLOSE. Two different rules because the two are different
+        situations; see ``features._same_grid_column``.
+
+        Pages backward exactly like ``collect`` and ``funding_history``: walk ``endTime`` to
+        just before the oldest bar seen, stop when the venue runs out, refuse to spin without
+        backward progress. Same grant as candles — a public endpoint of the already
+        authorized provider.
+        """
+        if kind not in DERIVATIVE_KLINE_PATHS:
+            raise ToolError("INVALID_DERIVATIVE_KIND", f"kind must be one of {sorted(DERIVATIVE_KINDS)}")
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        path = DERIVATIVE_KLINE_PATHS[kind]
+        now_ms = int(time.time() * 1000)
+        collected: dict[int, float] = {}
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < limit and pages < DERIVATIVE_MAX_PAGES:
+            pages += 1
+            params: dict[str, Any] = {
+                # The index series is keyed on the PAIR, the other two on the symbol, and the
+                # venue enforces it: `indexPriceKlines` with `symbol=` returns 400 `-1102
+                # Mandatory parameter 'pair' was not sent`. Sending `symbol` to all three left
+                # index degraded on every cycle while mark and premium reported ok — a partial
+                # failure, which is why it read as a feed blip rather than as a wrong request.
+                # The cost was not an outage: `index_price` and `mark_index_basis_bps` stayed
+                # indeterminate, so the constant-0.0 basis C13 exists to remove was replaced by
+                # a permanently absent one instead of a real measurement.
+                DERIVATIVE_KLINE_SYMBOL_PARAMS[kind]: symbol,
+                "interval": timeframe,
+                # One extra row for the still-forming bar this drops, so dropping it does
+                # not shrink the caller's window (the ``collect`` rule).
+                "limit": min(DERIVATIVE_PAGE_LIMIT, limit - len(collected) + 1),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"https://fapi.binance.com/fapi/v1/{path}?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                # Never echo the URL (the R3 transport-error posture).
+                raise ToolError("TOOL_TRANSPORT", f"{kind} price request failed or timed out") from None
+            page = self._parse_derivative_page(raw, kind=kind, now_ms=now_ms)
+            if not page:
+                break
+            oldest = min(page)
+            collected.update(page)
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
+
+        ordered = sorted(collected)[-limit:]
+        return [{"timestamp": self._iso(open_ms), "value": collected[open_ms]} for open_ms in ordered]
+
+    def _parse_derivative_page(self, raw: str, *, kind: str, now_ms: int) -> dict[int, float]:
+        """One derivative-kline page as ``{open_time_ms: close}``, still-forming bar dropped.
+
+        These rows reuse the twelve-slot kline shape but the venue fills the volume-ish slots
+        with placeholder zeros, so only indices 0 (open time), 4 (close) and 6 (close time)
+        are read. The premium index is legitimately **negative** when the perpetual trades
+        below its index, so no sign constraint is applied here — a caller that needs
+        positivity (the basis divisor) checks it where it needs it.
+        """
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response") from None
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response")
+
+        parsed: dict[int, float] = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 7:
+                raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response")
+            try:
+                open_ms, close_ms, value = int(row[0]), int(row[6]), float(row[4])
+            except (TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response") from None
+            if close_ms >= now_ms:
+                continue  # still forming — its close is still moving
+            parsed[open_ms] = value
+        return parsed
+
+    def positioning_history(
+        self, symbol: str, *, series: str, period: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """One positioning-ratio series, oldest first. Same grant as candles and funding.
+
+        ``series`` selects the endpoint (:data:`POSITIONING_PATHS`). Returns
+        ``[{"timestamp": <period start, ISO>, "long_ratio": float, "short_ratio": float}, ...]``.
+
+        **The trailing incomplete period is dropped**, the still-forming-candle rule applied to a
+        different shape and for a sharper reason than usual: the store that consumes this
+        de-duplicates on ``(symbol, series, timestamp)`` and is append-only, so a partial
+        period written now would be the value kept forever and the venue's later corrected
+        reading for that same timestamp would be discarded as a duplicate. Dropping it is what
+        makes the accumulation converge on the venue's own numbers.
+
+        ``longShortRatio`` is not returned even though the venue sends it: it is exactly
+        ``longAccount / shortAccount``, so storing it alongside both legs creates a third field
+        that can disagree with the other two after rounding. The legs are what the venue
+        measured; the ratio is arithmetic any reader can redo.
+
+        Pages backward by the same exclusive ``endTime`` walk as ``funding_history`` — the
+        30-day retention window at 1h is 720 rows against a 500-row cap, so a seed needs two.
+        """
+        if series not in POSITIONING_PATHS:
+            raise ToolError("INVALID_POSITIONING_SERIES", f"series must be one of {sorted(POSITIONING_SERIES)}")
+        if period not in POSITIONING_PERIOD_SECONDS:
+            raise ToolError("INVALID_POSITIONING_PERIOD", f"period must be one of {sorted(POSITIONING_PERIOD_SECONDS)}")
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        path = POSITIONING_PATHS[series]
+        period_ms = POSITIONING_PERIOD_SECONDS[period] * 1000
+        now_ms = int(time.time() * 1000)
+        collected: dict[int, dict[str, float]] = {}
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < limit and pages < POSITIONING_MAX_PAGES:
+            pages += 1
+            params: dict[str, Any] = {
+                "symbol": symbol, "period": period,
+                "limit": min(POSITIONING_PAGE_LIMIT, limit - len(collected)),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"https://fapi.binance.com/futures/data/{path}?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                # Never echo the URL (the R3 transport-error posture).
+                raise ToolError("TOOL_TRANSPORT", f"{series} positioning request failed or timed out") from None
+            page = self._parse_positioning_page(raw, series=series, now_ms=now_ms, period_ms=period_ms)
+            if not page:
+                break
+            oldest = min(page)
+            collected.update(page)
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
+
+        ordered = sorted(collected)[-limit:]
+        return [
+            {"timestamp": self._iso(stamp), **collected[stamp]}
+            for stamp in ordered
+        ]
+
+    def _parse_positioning_page(
+        self, raw: str, *, series: str, now_ms: int, period_ms: int
+    ) -> dict[int, dict[str, float]]:
+        """One positioning page as ``{period_start_ms: {"long_ratio", "short_ratio"}}``.
+
+        ``longAccount``/``shortAccount`` are the field names on every one of these endpoints,
+        including the POSITION-ratio one where they carry position proportions rather than
+        account counts — a venue naming quirk, not a mistake here. The rows are renamed on the
+        way in so the store never stores a name that means something else.
+        """
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response") from None
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response")
+
+        parsed: dict[int, dict[str, float]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response")
+            try:
+                stamp = int(row["timestamp"])
+                long_ratio = float(row["longAccount"])
+                short_ratio = float(row["shortAccount"])
+            except (KeyError, TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response") from None
+            if stamp + period_ms > now_ms:
+                continue  # the period has not closed — its ratio is still moving
+            parsed[stamp] = {"long_ratio": long_ratio, "short_ratio": short_ratio}
+        return parsed
+
     def exchange_info(self, *, timeout_seconds: int) -> dict[str, Any]:
         """The venue's own trading rules (public ``/fapi/v1/exchangeInfo``), raw.
 
@@ -769,6 +1117,49 @@ class PerSymbolFeedCache:
             lambda: self._feed.open_interest_history(
                 symbol, days=days, timeout_seconds=timeout_seconds, interval=interval),
         )
+
+
+class ReferenceCandleCache:
+    """One reference-symbol read per (timeframe, depth) for the life of one fan-out.
+
+    The same redundancy :class:`PerSymbolFeedCache` was built for, arriving by a different
+    door. The reference series is always :data:`REFERENCE_SYMBOL`, so the only thing that
+    varies across a fan-out is the timeframe — but ``attach_reference`` runs per
+    (symbol, timeframe), so a 5-symbol × 4-timeframe fan-out asks for **four** distinct BTC
+    series sixteen times: once for every non-proxy symbol at every timeframe. Four reads
+    would answer all sixteen questions identically, because within one fire "what were BTC's
+    hourly candles" cannot legitimately differ depending on which altcoin is asking.
+
+    Same contract as the feed cache, for the same reasons: constructed per fan-out and
+    thrown away, so it can never serve a stale bar to a later fire; **failures cached too**,
+    because a venue that just refused this series will refuse it again in the same second and
+    re-asking three more times per fire is how a rate cap gets reached; and the refusal is
+    re-raised unchanged, so every context still records its own reason code.
+    """
+
+    def __init__(self, collector: Any):
+        self._collector = collector
+        self._results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._errors: dict[tuple[str, str], BaseException] = {}
+        self.calls = 0
+
+    def candles(self, timeframe: str, *, limit: int, now: str) -> list[dict[str, Any]]:
+        key = (str(timeframe), str(limit))
+        if key in self._errors:
+            raise self._errors[key]
+        if key in self._results:
+            return self._results[key]
+        self.calls += 1
+        try:
+            snapshot, _record = collect_market_data(
+                REFERENCE_SYMBOL, timeframe, collector=self._collector, now=now, limit=limit
+            )
+        except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._errors[key] = exc
+            raise
+        rows = list(snapshot.get("candles") or [])
+        self._results[key] = rows
+        return rows
 
 
 class NoLiquidationFeed:

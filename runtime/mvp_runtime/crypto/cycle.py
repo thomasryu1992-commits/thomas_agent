@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, oi_store, pool
+from . import feedback, oi_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -44,12 +44,18 @@ from .guards import (
 from .market_data import (
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
+    INDEX_PRICE_DEGRADED,
     LIQUIDATION_DEGRADED,
+    MARK_PRICE_DEGRADED,
     OPEN_INTEREST_DEGRADED,
+    PREMIUM_INDEX_DEGRADED,
     MARKET_DATA_DEGRADED,
+    REFERENCE_DEGRADED,
+    REFERENCE_SYMBOL,
     TIMEFRAMES,
     MarketDataCollector,
     PerSymbolFeedCache,
+    ReferenceCandleCache,
     collect_market_data,
     degraded_market_data_record,
 )
@@ -97,8 +103,20 @@ def attach_feeds(
     liquidation_feed: Any | None,
     now: str,
     root: Path | None = None,
+    accumulate: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Fetch the C9 derivative feeds onto ``snapshot`` (mutating it). Degrade-only.
+
+    ``accumulate`` opts this call into the durable long-horizon stores that feed nothing today
+    (currently ``positioning_store``). It defaults to **off** because everything else here only
+    mutates ``snapshot``, so a caller that has not asked for durable state should not get any —
+    the ``routing_marks`` rule in ``paper.run_paper_update``, where a dry run keeps no marks
+    because it keeps no state. The live cycle turns it on; the factory fire does not, since one
+    accumulator on the 15-minute cadence is enough and two would only exercise the throttle.
+    The failure direction of the default is quiet rather than dangerous: a production caller that
+    forgot it would show as flat ``positioning_store.coverage``, which is what that function is
+    for. ``oi_store`` needs no such flag — its own accumulation is already gated behind a
+    liquidation feed that a caller must supply.
 
     Funding comes from the market-data collector when it has the capability (the
     same grant); liquidations from the separately-gated feed. Semantics per feed:
@@ -120,6 +138,55 @@ def attach_feeds(
             reason_codes.append(FUNDING_DEGRADED)
     else:
         status["funding"] = "absent"
+
+    # Derivative PRICE series (mark, index, premium index). Same collector, same grant, same
+    # time grid as the candles — so the depth is not a tunable constant like funding's records
+    # or liquidations' days: it is exactly the candle count. Deriving it that way is what keeps
+    # the factory's 12,000-bar replay and the live cycle's short window on ONE code path, so a
+    # premium_* family cannot be scored against a depth the router will not reproduce.
+    bars = len(snapshot.get("candles") or [])
+    timeframe = str(snapshot.get("timeframe") or "")
+    # A grid to join onto is a precondition, not an error. These series are requested AT the
+    # candle interval and matched on the candle open times, so with no candles or no known
+    # interval there is nothing to request them against — the keys stay absent, the columns
+    # stay None, and a spec reading them does not trade. That is the same outcome as a
+    # collector without the capability, which is why it reports the same status; the case
+    # arises on the degraded-collection path, where the cycle was not going to trade anyway.
+    if hasattr(collector, "derivative_price_klines") and bars and timeframe in TIMEFRAMES:
+        for kind, key, code in (
+            ("mark", "mark_prices", MARK_PRICE_DEGRADED),
+            ("index", "index_prices", INDEX_PRICE_DEGRADED),
+            ("premium", "premium_index", PREMIUM_INDEX_DEGRADED),
+        ):
+            try:
+                snapshot[key] = collector.derivative_price_klines(
+                    symbol, timeframe, kind=kind, limit=max(1, bars), timeout_seconds=10
+                )
+                status[key] = "ok"
+            except (ToolError, ToolBlocked):
+                # Series semantics, as with funding: key PRESENT and empty, so the columns are
+                # indeterminate rather than falling back to the pre-C13 fabricated constants.
+                snapshot[key] = []
+                status[key] = "degraded"
+                reason_codes.append(code)
+    else:
+        status["mark_prices"] = status["index_prices"] = status["premium_index"] = "absent"
+
+    # Positioning ratios, accumulated into a store the runtime retains itself. Like `oi_store`
+    # above, this feeds NOTHING — `snapshot` is untouched, so the features, the backtest and the
+    # live router are byte-identical to what they were without it. The reason it runs anyway is
+    # that the vendor keeps 30 days and the factory replays 500, so a day not recorded today can
+    # never be recovered; wiring a feature to it now would mint families over a window that is
+    # 94% indeterminate. Accumulate now, decide later — `positioning_store.coverage` reports
+    # progress and the flip stays an explicit change. Throttled to one request per series per
+    # symbol per hour inside the store, so twenty contexts do not become sixty requests.
+    if accumulate:
+        positioning = positioning_store.record_positioning(
+            symbol=symbol, collector=collector, now=now, root=root,
+        )
+        status["positioning"] = str(positioning["status"])
+    else:
+        status["positioning"] = "not_accumulating"
 
     if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
         try:
@@ -196,6 +263,55 @@ def attach_htf(
     return None
 
 
+def attach_reference(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    limit: int | None = None,
+    cache: Any | None = None,
+) -> str | None:
+    """Fetch the market-proxy candles onto ``snapshot`` (mutating it). Degrade-only.
+
+    One extra candle read per cycle, at THIS frame's own timeframe, so the reference series
+    lands on the same grid the features join it on. Skipped entirely when the cycle's symbol
+    IS the proxy: relative strength against oneself is undefined, and fetching a series only
+    to compute a column of zeros would spend a request to manufacture a constant.
+
+    Never raises, for the ``attach_htf`` reason: the reference leg is context, and context
+    that cannot be read must not take down a cycle that would have traded without it. A
+    failed fetch leaves the key ABSENT, so every ``ref_*`` column is indeterminate and a
+    relative-strength spec does not trade this cycle. Returns a reason code on degrade.
+
+    ``cache`` is a :class:`~.market_data.ReferenceCandleCache` for one fan-out. Without it
+    every context fetches the proxy again, and since the proxy is a constant that is sixteen
+    reads for four distinct series across a 5×4 fan-out — the redundancy
+    :class:`~.market_data.PerSymbolFeedCache` exists to stop, arriving by another door.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    timeframe = str(snapshot.get("timeframe") or "")
+    if not symbol or timeframe not in TIMEFRAMES or symbol == REFERENCE_SYMBOL:
+        return None
+    # The correlation window is the deepest reference consumer (REFERENCE_CORR_WINDOW bars),
+    # so the live default covers it with room to spare; the factory passes its replay depth.
+    want = limit if limit is not None else 240
+    try:
+        if cache is not None:
+            candles = cache.candles(timeframe, limit=want, now=now)
+        else:
+            reference, _ = collect_market_data(
+                REFERENCE_SYMBOL, timeframe, collector=collector, now=now, limit=want
+            )
+            candles = reference.get("candles") or []
+    except (ToolError, ToolBlocked):
+        return REFERENCE_DEGRADED
+    if not candles:
+        return REFERENCE_DEGRADED
+    snapshot["reference_candles"] = candles
+    snapshot["reference_symbol"] = REFERENCE_SYMBOL
+    return None
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -208,6 +324,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    reference_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -236,6 +353,9 @@ def run_crypto_cycle(
     # 1b) derivative feeds (C9) — enrichment; degrade-only, never block.
     feed_reasons, feed_status = attach_feeds(
         snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now, root=root,
+        # The live cycle is the accumulator: it runs on the 15-minute cadence the positioning
+        # store's hourly throttle is sized for, and it is the one path that always has a root.
+        accumulate=True,
     )
     reason_codes.extend(feed_reasons)
 
@@ -243,6 +363,14 @@ def run_crypto_cycle(
     htf_reason = attach_htf(snapshot, collector=collector, now=now)
     if htf_reason:
         reason_codes.append(htf_reason)
+
+    # 1d) cross-asset context — the market proxy rel_strength_* specs measure against.
+    # Degrade-only, and a no-op when this cycle's symbol IS the proxy.
+    reference_reason = attach_reference(
+        snapshot, collector=collector, now=now, cache=reference_cache
+    )
+    if reference_reason:
+        reason_codes.append(reference_reason)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -422,6 +550,15 @@ def run_crypto_cycle(
         # the 24KB record the lifecycle trim above was worth doing for.
         "risk_limits": verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
+        # Which strategies fired and were declined by the regime filter. The ids rather than the
+        # whole route, because this record is deliberately trimmed (the lifecycle note below is
+        # the same discipline) — but not merely a count, because "which one" is the actionable
+        # part: a strategy excluded on every cycle for a week is a demotion candidate, and a
+        # count cannot say that. Empty on almost every cycle, which is why it is a list and not
+        # a status.
+        "regime_excluded": list(
+            (paper_summary.get("route") or {}).get("regime_excluded_strategy_ids") or []
+        ),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
@@ -545,6 +682,11 @@ def run_pool_cycle(
     # for THIS fan-out only, so it cannot serve a stale day to a later fire.
     if liquidation_feed is not None:
         liquidation_feed = PerSymbolFeedCache(liquidation_feed)
+    # The reference leg has the same shape of redundancy: the proxy symbol is a CONSTANT, so
+    # across this fan-out the only distinct reads are one per timeframe, while
+    # `attach_reference` runs once per (symbol, timeframe) — sixteen asks for four answers on a
+    # 5x4 grid. Same lifetime rule as above: one fan-out, then discarded.
+    reference_cache = ReferenceCandleCache(collector)
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -559,7 +701,7 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks,
+                routing_marks=routing_marks, reference_cache=reference_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -602,6 +744,14 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A route that entered nothing because every match was regime-excluded otherwise reads
+    # exactly like one where nothing matched, and those want different responses: the first says
+    # a strategy fired in a regime its own backtest lost money in, the second says the market did
+    # not offer a setup. Printed only when it happened, for the reason the live leg is — a field
+    # that is empty on almost every line teaches the reader to skip it.
+    excluded = record.get("regime_excluded") or []
+    if excluded:
+        parts.append(f"regime_excluded={','.join(str(s) for s in excluded)}")
     # Only when the live leg actually did something. A DISABLED leg is every machine that has
     # not been through the operator checklist, and printing it on every line would train the
     # reader to skip exactly the field that matters on the machine where it is not DISABLED.

@@ -32,7 +32,7 @@ from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
-from . import account, counterfactual, digest, feedback, oi_store, paper, pool
+from . import account, counterfactual, digest, feedback, oi_store, paper, pool, positioning_store
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -123,12 +123,41 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     try:
         active = pool.load_active_pool(root)
         status_counts: dict[str, int] = {}
+        # Why the non-trading members stopped trading, which the status count cannot say: an
+        # operator retiring a duplicate and the metrics condemning a decaying edge both land on
+        # SUSPENDED with `lifecycle_consecutive_failures: 0`, because a retirement carries that
+        # count forward untouched. Entries transitioned before the reason was recorded report
+        # `unrecorded` — a different answer from "no reason", and an honest one.
+        demotions_by_reason: dict[str, int] = {}
         for entry in active.get("active_strategies") or []:
             status = str(entry.get("status") or "?")
             status_counts[status] = status_counts.get(status, 0) + 1
+            # Only the ones that stopped trading. WARNING/PROBATION are degraded but still
+            # occupy a routing slot, so counting them here would answer a question nobody asked.
+            if status in pool.OCCUPYING_STATUSES:
+                continue
+            reasons = entry.get("lifecycle_reasons")
+            if not isinstance(reasons, list):
+                key = "unrecorded"
+            else:
+                key = ", ".join(str(r) for r in reasons) or "unrecorded"
+            demotions_by_reason[key] = demotions_by_reason.get(key, 0) + 1
     except MvpRuntimeError as exc:
-        active, status_counts = {"active_strategies": []}, {}
+        active, status_counts, demotions_by_reason = {"active_strategies": []}, {}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
+
+    # The same question as the demotion reasons above — why is this not trading — arriving by a
+    # path that is not a status. A regime-excluded entry stays PAPER_ACTIVE and keeps its routing
+    # slot, so **nothing in the pool says it is inert**: its rules fire, and the router declines
+    # them because the strategy's own backtest lost money in the regime the market is in. Counted
+    # over the cycles this board already read, because the interesting case is not one exclusion
+    # but a strategy excluded on most of them, which is a demotion candidate the status count
+    # would report as healthy.
+    regime_excluded_cycles: dict[str, int] = {}
+    for row in cycle_rows:
+        for strategy_id in row.get("regime_excluded") or []:
+            key = str(strategy_id)
+            regime_excluded_cycles[key] = regime_excluded_cycles.get(key, 0) + 1
 
     # Two things the board could always have said and did not, both about work waiting on a
     # human rather than on the runtime. They are warnings rather than rows because a queue
@@ -165,6 +194,16 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         oi_1h = None
         warnings.append(f"hourly OI store unreadable ({exc.reason_code})")
+
+    # The positioning store's ONLY consumer is this number: it feeds no feature, so progress
+    # toward eligibility is the entire visible output of the accumulation. Reported without a
+    # warning for the reason the OI line above carries — a shortfall that will be true every
+    # morning for over a year is how a board teaches its reader to skip the warning block.
+    try:
+        positioning = positioning_store.coverage_summary(root, symbols=pool_symbols)
+    except MvpRuntimeError as exc:
+        positioning = None
+        warnings.append(f"positioning store unreadable ({exc.reason_code})")
 
     inbound = operator_mod.last_inbound_at(root)
     silent_days = _days_since(inbound["at"], now) if inbound else None
@@ -228,6 +267,9 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_position": open_position,
         "open_positions": open_positions,
         "pool_status_counts": status_counts,
+        "demotions_by_reason": demotions_by_reason,
+        "regime_excluded_cycles": regime_excluded_cycles,
+        "cycles_read": len(cycle_rows),
         "pool_size": len(active.get("active_strategies") or []),
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
@@ -235,6 +277,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
+        "positioning": positioning,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
             "last_inbound_source": inbound["source"] if inbound else None,
@@ -487,15 +530,47 @@ def render_status_text(status: dict[str, Any]) -> str:
     counts = status.get("pool_status_counts") or {}
     breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
     lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    # Why the demoted ones are demoted. A status count alone reads a duplicate an operator
+    # removed on purpose and a strategy the metrics condemned as the same number.
+    demotions = status.get("demotions_by_reason") or {}
+    if demotions:
+        lines.append("       강등 사유 " + " · ".join(
+            f"{reason} {count}" for reason, count in sorted(demotions.items())))
+    # Regime exclusions, beside the demotion reasons and for the same reason they are there: a
+    # strategy whose rules keep firing into a regime its own backtest lost money in is not
+    # trading, and its PAPER_ACTIVE status says the opposite. Rendered as a share of the cycles
+    # read so "3 of 12" and "12 of 12" are different statements — the first is the filter doing
+    # its job, the second is a strategy that has stopped working here.
+    regime_excluded = status.get("regime_excluded_cycles") or {}
+    if regime_excluded:
+        read = status.get("cycles_read") or 0
+        lines.append("       regime 배제 " + " · ".join(
+            f"{sid} {count}/{read}" for sid, count in sorted(regime_excluded.items())))
     backlog = status.get("promotion_backlog") or {}
     if backlog.get("count"):
         lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")
+    # Named on its own line: these are not waiting on an operator, they are waiting on a
+    # timeframe that trades often enough for the lifecycle to reach a verdict. Folding them into
+    # the backlog count is what made a pool of 89 look like 89 judged strategies.
+    deferred = backlog.get("deferred_unjudgeable") or []
+    if deferred:
+        lines.append(
+            f"       판정 불가 보류 {len(deferred)} "
+            f"({backlog.get('max_days_to_lifecycle_window')}일 내 lifecycle 창 미달)"
+        )
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"
         lines.append(
             f"       1h OI {oi_1h.get('min_covered_days')}/{oi_1h.get('required_days')}일 "
             f"({state}, 최소 커버 심볼 기준)"
+        )
+    positioning = status.get("positioning") or {}
+    if positioning.get("cells"):
+        state = "적격" if positioning.get("eligible") else "축적 중"
+        lines.append(
+            f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
+            f"({state}, 최소 커버 셀 기준 · 피처 미연결)"
         )
     lines.append("")
 
