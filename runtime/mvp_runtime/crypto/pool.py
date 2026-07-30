@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -611,6 +611,106 @@ def assert_no_semantic_duplicates(
         f"these are the same strategy under a different rule hash: {listed}. "
         f"Promote one of each group, or pass the explicit --allow-duplicates escape.",
     )
+
+
+# --- pool sizing -------------------------------------------------------------------
+#
+# The caps the promotion door enforces, and why these numbers.
+#
+# The duplicate guard above already states the mechanism for its own case: *the router
+# picks ONE strategy per context*, so a surplus entry takes a slot and then never trades.
+# That is not special to duplicates. Measured 2026-07-30, with 67 routable strategies over
+# 20 contexts: 86 own outcomes had scattered across 29 lineages, the largest holding 13.
+# The lifecycle's cheapest rule needs a FULL rolling window of 20 before it evaluates at
+# all (`lifecycle._full_window`), so **not one strategy in the pool was eligible for any
+# demotion rule**, and `run_lifecycle` returned PAPER_ACTIVE for all 67 with empty reasons.
+# Auto-demotion was not mis-tuned; it was unreachable. A -13.25R family sat in the pool for
+# a week because nothing could ever accumulate the evidence to demote it.
+#
+# So the pool is capped on the ROUTABLE set, not on membership: a SUSPENDED entry neither
+# routes nor splits the evidence, and after a retirement the pool file legitimately holds
+# far more rows than these numbers (89 rows, 5 routable, the day this landed).
+#
+# MAX_ROUTABLE_PER_CONTEXT = 1 because the router's own behaviour makes a second entry
+# strictly negative: it cannot add routing capacity (`route_entries` returns `ranked[0]`),
+# it wins the slot on `champion_score` — which on this machine was ANTI-correlated with
+# realized R, the top scorers having never traded — it halves the rate at which either
+# lineage reaches a judgeable window, and if the two disagree on direction the context
+# fails closed on BLOCK_DIRECTION_CONFLICT and neither trades.
+#
+# MAX_ROUTABLE_STRATEGIES = 20 is one per context on today's 5-symbol x 4-timeframe grid.
+# It is not implied by the per-context cap: it is what still binds when the symbol set
+# grows, so widening coverage becomes a deliberate change to this number rather than a
+# silent return to a pool nothing can judge.
+#
+# What these caps deliberately do NOT fix: a 1d lineage produced 0.16 outcomes/day per
+# context, so even at an exclusive slot it needs ~122 days to fill a 20-trade window (1h
+# needs ~29, 4h ~33, 15m ~10). That is a property of the timeframe, not of the pool size,
+# and no cap here can reach it — a 1d strategy is un-demotable by arithmetic. Naming it
+# here so the next reader does not mistake this guard for a complete answer.
+MAX_ROUTABLE_STRATEGIES = 20
+MAX_ROUTABLE_PER_CONTEXT = 1
+
+
+def routable_context_map(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[str]]:
+    """``(symbol, timeframe)`` → the routable strategy ids competing for that slot.
+
+    A multi-symbol strategy occupies each of its symbols, matching what
+    :func:`routable_contexts` enumerates and what ``paper.route_entries`` actually judges.
+    Non-occupying or spec-less entries contribute nothing."""
+    contexts: dict[tuple[str, str], list[str]] = {}
+    for entry in entries:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        for scoped_symbol in spec.symbol_scope:
+            contexts.setdefault((str(scoped_symbol), str(spec.timeframe)), []).append(
+                str(entry.get("strategy_id"))
+            )
+    return contexts
+
+
+def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a pool whose ROUTABLE set is too large to be judged. Fail-closed.
+
+    ``entries`` is the pool as it WOULD be after the change — the caller merges first, so
+    an add-mode promotion is judged on incumbents plus the batch rather than on the batch
+    alone. Refused, never truncated: silently dropping the overflow would install a pool
+    nobody chose, and which of the entries got dropped would be an accident of ordering.
+
+    Raises ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED``, each naming what is
+    over and by how much. Both name the escape, because an operator who has read the
+    reasoning above may still have a reason this once."""
+    occupying = [
+        e for e in entries
+        if e.get("status") in OCCUPYING_STATUSES and e.get("strategy_spec")
+    ]
+    if len(occupying) > MAX_ROUTABLE_STRATEGIES:
+        raise ToolError(
+            "POOL_SIZE_CAP_EXCEEDED",
+            f"this promotion would leave {len(occupying)} routable strategies, above the cap of "
+            f"{MAX_ROUTABLE_STRATEGIES}. A pool this size splits its outcomes across more "
+            f"lineages than any of them can fill a {LIFECYCLE_MIN_WINDOW_TRADES}-trade lifecycle "
+            "window with, so nothing in it can be auto-demoted. Retire first "
+            "(scripts/retire_strategies.py), or pass "
+            "the explicit --allow-oversized-pool escape.",
+        )
+
+    over = {ctx: ids for ctx, ids in routable_context_map(occupying).items()
+            if len(ids) > MAX_ROUTABLE_PER_CONTEXT}
+    if over:
+        listed = "; ".join(
+            f"{sym} {tf}: {len(ids)} ({', '.join(sorted(ids))})"
+            for (sym, tf), ids in sorted(over.items())
+        )
+        raise ToolError(
+            "POOL_CONTEXT_CAP_EXCEEDED",
+            f"more than {MAX_ROUTABLE_PER_CONTEXT} routable strategy per context — {listed}. "
+            "The router picks one per context, so the surplus cannot trade; it only halves the "
+            "rate at which either lineage reaches a judgeable window, and a direction "
+            "disagreement blocks the context outright. Retire the incumbent first, or pass the "
+            "explicit --allow-oversized-pool escape.",
+        )
 
 
 def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
