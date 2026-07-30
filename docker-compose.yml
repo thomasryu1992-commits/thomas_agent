@@ -181,3 +181,48 @@ services:
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
+
+  # The halt-only door. Thomas talks to a conversational assistant beside this deployment and
+  # wants to stop trading by saying so; `runtime/mvp_runtime/halt_bridge.py` is that path and
+  # carries exactly two verbs (`kill`, `pause`) with `resume` refused by construction.
+  #
+  # Its own service, and the reason is the same one that put `console_cli` outside the loop:
+  # the operator and scheduler are what a halt is meant to stop, so a door living inside one
+  # of them stops answering exactly when it is needed.
+  #
+  # Note what is NOT here. No provider keys, no venue keys, no MVP_LIVE_* — this process
+  # cannot call a model, reach an exchange, or place an order even if something inside it
+  # wanted to. It mounts the state directory (the control state it flips and the ledger it
+  # records to) and nothing else; the Core activation/approval mounts the other two services
+  # carry are absent because this one runs no task.
+  #
+  # The socket lives in a subdirectory of the state volume so the assistant's container can
+  # bind-mount `bridge/` alone without seeing governance state. It is mode 0660 owned by uid
+  # 10001, so the assistant's container needs `group_add: ["10001"]` to reach it — the shared
+  # group IS the access control, which is the same "can already open a path on this host"
+  # authentication the local console rests on.
+  halt-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-halt-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+    # Liveness is the socket itself: the door is up exactly when something can knock on it.
+    # A process that is running but has lost its listener is not a door.
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/halt.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.halt_bridge_cli
