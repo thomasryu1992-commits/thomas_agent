@@ -172,19 +172,23 @@ class _FeedWhoseOIFails(_FeedWithOI):
         raise ToolError("TOOL_TRANSPORT", "open-interest request failed or timed out")
 
 
-def test_attach_feeds_collects_open_interest_through_the_same_feed():
+def test_attach_feeds_collects_open_interest_through_the_same_feed(tmp_path):
+    # `root` because the feed step also accumulates the hourly series (`oi_store`), and a
+    # helper called without one resolves to the REPO's state directory — which on the live
+    # server is the volume the containers own. CI's state-dir guard catches it; the test
+    # supplying a root is the fix it names.
     snapshot = _snapshot()
     reasons, status = attach_feeds(snapshot, collector=MockMarketDataCollector(),
-                                   liquidation_feed=_FeedWithOI(), now=NOW)
+                                   liquidation_feed=_FeedWithOI(), now=NOW, root=tmp_path)
     assert status["open_interest"] == "ok"
     assert snapshot["open_interest"] and OPEN_INTEREST_DEGRADED not in reasons
 
 
-def test_a_failed_open_interest_fetch_degrades_only_itself():
+def test_a_failed_open_interest_fetch_degrades_only_itself(tmp_path):
     """Liquidations can be fine while OI is not — separate key, separate reason code."""
     snapshot = _snapshot()
     reasons, status = attach_feeds(snapshot, collector=MockMarketDataCollector(),
-                                   liquidation_feed=_FeedWhoseOIFails(), now=NOW)
+                                   liquidation_feed=_FeedWhoseOIFails(), now=NOW, root=tmp_path)
     assert status["liquidations"] == "ok" and status["open_interest"] == "degraded"
     assert OPEN_INTEREST_DEGRADED in reasons
     assert snapshot["open_interest"] == []          # series semantics: present, empty
