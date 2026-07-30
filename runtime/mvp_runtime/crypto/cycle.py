@@ -549,12 +549,38 @@ def run_crypto_cycle(
     # race), and the fallback is the honest one: no shadow rather than a re-derived route.
     shared_route = paper_summary.get("route")
     blocked_plan = None
-    if not bool(verdict.get("allow_new_position")) and paper_summary.get("opened") is None:
-        blocked_plan = build_entry_plan(shared_route, feature_row, now=now) if shared_route else None
+    block_reasons: list[str] = list(verdict.get("problems") or [])
+    # The ``opened is None`` clause is **redundant by construction and kept deliberately**: a
+    # cycle that opened had an allowing verdict (so the first branch is false) and no refusal (so
+    # the second is), which is why removing it alone changes no behaviour and no test. It is here
+    # because the invariant it states — a trade that HAPPENED is never also shadowed, or it would
+    # be double-counted into every per-reason bucket — is the property a future third branch
+    # would break silently. Do not "simplify" the inner guards on the strength of this one.
+    if shared_route and paper_summary.get("opened") is None:
+        if not bool(verdict.get("allow_new_position")):
+            blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+        else:
+            # A POSITION CAP refused a plan the router had already built — the portfolio count,
+            # the per-symbol count, or the directional lean. Shadowed for the same reason a
+            # guard block is: a refusal nobody can price is a refusal nobody can tune. These
+            # three have existed without that, so "what did the caps cost" has only ever been
+            # answerable by simulation — including in the PR that added the directional one,
+            # whose benefit numbers came from mock candles rather than from this machine.
+            #
+            # Mutually exclusive with the branch above by construction: `run_paper_update` only
+            # reaches its cap checks when the verdict allows a new position, so a refusal cannot
+            # coexist with a guard block. And `open_refused` is set only INSIDE the freshness
+            # gate, so this opens one shadow per refused candle rather than one per tick — the
+            # guard-blocked branch above has no such property, because a tripped breaker
+            # persists across every tick of a coarse timeframe.
+            refusal = paper_summary.get("open_refused")
+            if refusal:
+                blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+                block_reasons = [str(refusal["reason_code"])]
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
-        block_reasons=list(verdict.get("problems") or []),
+        block_reasons=block_reasons,
         last_candle=candles_for_cf[-1] if candles_for_cf else None,
         last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
         symbol=symbol,
