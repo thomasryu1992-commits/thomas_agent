@@ -41,10 +41,10 @@ evidence, and ``score_basis`` names the meaning on every candidate.
 
 C12: the replay backtest is costed. Every simulated trade's gross (intended-price) R
 is decomposed into net R after fees + slippage via ``cost.apply_cost_model`` (the
-source's S4b cost model, ported in R-space — see ``cost.py``), matching the source's
-own boundary exactly: costs apply to backtest/factory scoring only, never to live
-paper trading (``paper.settle_trade_plan`` stays cost-free, unchanged — the source's
-live paper kernel never imports the cost model either). ``champion_score`` and
+source's S4b cost model, ported in R-space — see ``cost.py``). This was once the ONLY
+costed path, matching the source's boundary; since 2026-07-30 the paper kernel charges the
+same model in ``paper.build_outcome_record``, so a paper expectancy and the one below are
+finally the same kind of number (``cost.py`` records why the boundary moved). ``champion_score`` and
 ``expectancy`` are computed over the costed (net) R, so a strategy that only looks
 good gross now scores accordingly; ``robustness.cost_robustness`` is measured for
 real instead of always zero.
