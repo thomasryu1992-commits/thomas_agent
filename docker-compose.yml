@@ -291,6 +291,11 @@ services:
         max-file: "3"
     volumes:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      # Unlike halt/read-bridge this door RUNS the pipeline, which will not bind a task
+      # without an active approved Core — so it needs the Core activation/approval records
+      # read-only, exactly as the operator and scheduler do.
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
       interval: 60s
