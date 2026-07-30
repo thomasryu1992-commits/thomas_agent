@@ -12,7 +12,7 @@ import pytest
 
 from runtime.mvp_runtime import control, safety_gate
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import paper
+from runtime.mvp_runtime.crypto import paper, pool as pool_mod
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.paper import (
     BLOCK_DIRECTION_CONFLICT,
@@ -742,6 +742,27 @@ def test_the_skew_cap_still_admits_the_short_that_rebalances_a_real_book(tmp_pat
     )
     assert summary.get("open_refused") is None
     assert summary["opened"]["direction"] == "SHORT"
+
+
+def test_a_binding_cap_spends_its_last_slot_on_evidence_not_the_alphabet(tmp_path):
+    """**A property of the composition, which neither change owns alone.** The cap is evaluated
+    per context as the fan-out reaches it, so the room under it goes to whoever asks first — and
+    "first" used to mean alphabetically, which would have made the last directional slot an
+    accident of spelling. `cycle.pool_cycle_contexts` now orders by urgency then evidence, so
+    this pins that the weakly-evidenced context does not take the slot from the champion just by
+    sorting earlier. Sorting is tested there; that it *decides directional allocation* is here.
+    """
+    from runtime.mvp_runtime.crypto.cycle import pool_cycle_contexts
+
+    pool_mod.install_active_pool({"active_strategies": [
+        {"strategy_id": "S_weak", "status": "PAPER_ACTIVE", "champion_score": 0.10,
+         "strategy_spec": _spec_dict(strategy_id="S_weak", symbol_scope=["AAAUSDT"])},
+        {"strategy_id": "S_strong", "status": "PAPER_ACTIVE", "champion_score": 0.95,
+         "strategy_spec": _spec_dict(strategy_id="S_strong", symbol_scope=["ZZZUSDT"])},
+    ]}, root=tmp_path)
+    order = pool_cycle_contexts(tmp_path)
+    assert order[0][0] == "ZZZUSDT", "the alphabet took the slot the evidence should have"
+    assert order[-1][0] == "AAAUSDT"
 
 
 def test_the_live_book_is_deliberately_untouched():

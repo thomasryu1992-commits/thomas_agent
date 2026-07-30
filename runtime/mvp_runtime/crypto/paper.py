@@ -284,6 +284,22 @@ def directional_skew_admits(
     positions the strategies did not close — a new authority over exits, and one that would
     falsify the outcome record this book exists to produce.
 
+    **Which context gets a scarce directional slot is not decided here, and the answer is worth
+    knowing before trusting this.** Like the two caps beside it, this is evaluated per context as
+    the fan-out reaches it, so the room under the cap goes to whoever asks first — and until
+    ``cycle.pool_cycle_contexts`` started ordering by urgency and evidence, "first" meant
+    *alphabetically*, which would have made the last directional slot an accident of spelling
+    (the tiebreak-by-alphabet hazard this codebase rejects in the cross-sectional rank). It is
+    now: live-holding contexts, then paper-holding ones, then best ``champion_score``
+    descending. So a binding cap spends its remaining room on the best-evidenced context rather
+    than the alphabetically luckiest. Neither change owns that property on its own, so a test
+    pins the composition.
+
+    What it still does not promise — and the ordering change says so itself — is the *globally
+    best* entry: a score is not a signal, so the top-scoring context may propose nothing this
+    bar. Arbitrating properly means evaluating every context before executing any, which is a
+    second pass over the whole fan-out and a decision of its own.
+
     One-directional: it can only ever decline. It never opens a position, never flips one, and
     never admits an entry the existing caps would have refused — which is why, like
     :func:`regime_admits`, it needs no gate of its own.
