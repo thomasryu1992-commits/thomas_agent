@@ -321,9 +321,20 @@ def test_opted_in_accumulation_writes_and_feeds_nothing(tmp_path):
     assert set(snapshot) - before == {"funding"}, "the positioning store must feed no feature"
 
 
-def test_no_feature_column_reads_the_store(tmp_path):
-    """Stated as a test rather than a comment, because the day someone wires it is the day this
-    should turn red and make them read `positioning_store`'s docstring first."""
+# The predecessor of the two tests below asserted that NO feature column read this store — a
+# tripwire whose stated job was to turn red the day someone wired it and make them read this
+# module's docstring first. It did exactly that, and reading it changed the shape of the wiring
+# rather than the decision to do it: the columns are honest at any coverage (absent = None, the
+# `open_interest` posture), so attaching them is safe today. What is NOT safe is MINTING a family
+# against a window the store cannot cover — that family would be un-scoreable, retired as FRAGILE,
+# and blamed for missing data. So the tripwire moved rather than being deleted: it now guards the
+# minting gate, which is where the hazard actually lives.
+
+def test_the_columns_are_present_and_indeterminate_without_coverage(tmp_path):
+    """Wired, and honest about having nothing to say. A fabricated 0.0 divergence would be the
+    `liquidation_spike_ratio` hazard: in range, plausible, and matched by half of all mineable
+    conditions."""
+    from runtime.mvp_runtime.crypto import features
     from runtime.mvp_runtime.crypto.features import build_feature_rows
 
     row = build_feature_rows({
@@ -331,7 +342,178 @@ def test_no_feature_column_reads_the_store(tmp_path):
         "candles": [{"open_time": "2026-07-20T00:00:00Z", "close_time": "2026-07-20T01:00:00Z",
                      "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}],
     })[0]
-    assert not [key for key in row if "long_ratio" in key or key.startswith("positioning")]
+    for column in features.POSITIONING_COLUMNS:
+        assert column in row, column
+        assert row[column] is None, column
+
+
+def test_the_families_are_not_mintable_until_the_store_covers_the_window():
+    """**The tripwire's successor, and the load-bearing guard of this increment.** The vendor
+    keeps 30 days and the factory replays 500, so a family minted now would put every trade in the
+    newest walk-forward slice and none in the older ones — `temporal_consistency` 0 by
+    construction, un-scoreable however real the edge. Fail closed, and the DEFAULT is the closed
+    one: a caller who did not measure gets no positioning families."""
+    from runtime.mvp_runtime.crypto import factory
+
+    assert factory.POSITIONING_FAMILIES, "the families must exist to be gated"
+    for timeframe in ("15m", "1h", "4h", "1d"):
+        minted = {t.family for t in factory.templates_for_timeframe(timeframe)}
+        assert not (factory.POSITIONING_FAMILIES & minted), timeframe
+        eligible = {t.family for t in factory.templates_for_timeframe(
+            timeframe, positioning_eligible=True)}
+        assert factory.POSITIONING_FAMILIES <= eligible, timeframe
+
+
+def test_eligibility_is_the_stores_own_measurement_not_a_new_number():
+    """`REQUIRED_COVERAGE_DAYS` is the factory's replay span, so "eligible" means exactly "can
+    answer every bar the factory will ask about". A smaller threshold here would be a second
+    authority on how much history a feature needs."""
+    from runtime.mvp_runtime.crypto.market_data import FACTORY_DEPTH_DAYS
+
+    assert positioning_store.REQUIRED_COVERAGE_DAYS == FACTORY_DEPTH_DAYS
+
+
+def test_a_store_with_only_the_vendor_window_is_not_eligible(tmp_path):
+    """The situation on every machine today: the seed takes the vendor's 30 days, which is 6% of
+    the replay window. Measured rather than asserted, so this stays true if either number moves."""
+    for series in sorted(POSITIONING_SERIES):
+        positioning_store.append_rows(
+            [{"timestamp": f"2026-07-{day:02d}T00:00:00Z", "long_ratio": 0.5, "short_ratio": 0.5}
+             for day in (1, 30)],
+            root=tmp_path, symbol="BTCUSDT", series=series,
+        )
+    summary = positioning_store.coverage_summary(tmp_path, symbols=["BTCUSDT"])
+    assert summary["min_covered_days"] < summary["required_days"]
+    assert summary["eligible"] is False
+
+
+# --- the feature columns --------------------------------------------------------
+
+def _seed(root, *, symbol="ETHUSDT", hours=48, top=0.60, crowd=0.50, top_account=0.55):
+    for hour in range(hours):
+        stamp = f"2026-07-{1 + hour // 24:02d}T{hour % 24:02d}:00:00Z"
+        for series, value in (("top_position", top), ("global_account", crowd),
+                              ("top_account", top_account)):
+            positioning_store.append_rows(
+                [{"timestamp": stamp, "long_ratio": value, "short_ratio": 1.0 - value}],
+                root=root, symbol=symbol, series=series,
+            )
+
+
+def _hourly_candles(hours=48):
+    return [{"open_time": f"2026-07-{1 + h // 24:02d}T{h % 24:02d}:00:00Z",
+             "close_time": f"2026-07-{1 + (h + 1) // 24:02d}T{(h + 1) % 24:02d}:00:00Z",
+             "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}
+            for h in range(hours)]
+
+
+def test_the_divergence_is_top_positions_against_the_whole_account_population(tmp_path):
+    """The research record's specific pair — large capital's POSITIONS against every ACCOUNT.
+    `top_account` is collected too and is deliberately not either leg: it counts heads inside the
+    same cohort, so pairing it with `global_account` would compare headcount to headcount and
+    measure nothing about capital."""
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    _seed(tmp_path, top=0.62, crowd=0.47, top_account=0.99)
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles()}
+    attach_positioning(snapshot, root=tmp_path)
+    row = build_feature_rows(snapshot)[-1]
+    assert row["positioning_divergence"] == pytest.approx(0.62 - 0.47)
+    assert row["positioning_top_account_long"] == 0.99, "collected, on the row, and not a leg"
+
+
+def test_a_missing_leg_makes_the_divergence_indeterminate_not_zero(tmp_path):
+    """A gap against an unknown is not zero. Only `top_position` arrives here, so there is nothing
+    to measure it against — and a 0.0 divergence would be matched by half of all mineable
+    conditions while meaning "we could not tell"."""
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    for hour in range(24):
+        positioning_store.append_rows(
+            [{"timestamp": f"2026-07-01T{hour:02d}:00:00Z", "long_ratio": 0.6, "short_ratio": 0.4}],
+            root=tmp_path, symbol="ETHUSDT", series="top_position",
+        )
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(24)}
+    attach_positioning(snapshot, root=tmp_path)
+    row = build_feature_rows(snapshot)[-1]
+    assert row["positioning_divergence"] is None
+    assert row["positioning_divergence_zscore"] is None
+
+
+def test_a_bar_between_two_readings_carries_the_EARLIER_one(tmp_path):
+    """**Backward as-of, the funding and open-interest rule — not the exact open-time join the
+    derivative-price and cross-section legs use.** The store keeps an hourly series on its own
+    cadence, so a 15m bar at :15 must carry the reading at :00. An exact join would blank three
+    bars in four; a FORWARD fill would leak a reading the bar could not have known."""
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    for hour, top in ((0, 0.60), (1, 0.90)):
+        for series, value in (("top_position", top), ("global_account", 0.50)):
+            positioning_store.append_rows(
+                [{"timestamp": f"2026-07-01T{hour:02d}:00:00Z",
+                  "long_ratio": value, "short_ratio": 1.0 - value}],
+                root=tmp_path, symbol="ETHUSDT", series=series,
+            )
+    quarter = [{"open_time": f"2026-07-01T00:{m:02d}:00Z", "close_time": f"2026-07-01T00:{m + 15:02d}:00Z",
+                "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}
+               for m in (0, 15, 30, 45)]
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "15m", "candles": quarter}
+    attach_positioning(snapshot, root=tmp_path)
+    rows = build_feature_rows(snapshot)
+    assert [r["positioning_divergence"] for r in rows] == [pytest.approx(0.10)] * 4, (
+        "every bar in the hour must carry that hour's reading, and none the next hour's"
+    )
+
+
+def test_the_change_is_measured_over_READINGS_not_over_bars(tmp_path):
+    """The `open_interest` lesson, not rediscovered: a diff of the ALIGNED column is zero on every
+    bar between two hourly readings — three in four on a 15m frame — so the derived values are
+    computed in the series' own time base and aligned afterwards."""
+    from runtime.mvp_runtime.crypto import features
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    hours = features.POSITIONING_CHANGE_PERIODS + 1
+    for hour in range(hours):
+        top = 0.50 if hour < features.POSITIONING_CHANGE_PERIODS else 0.70
+        for series, value in (("top_position", top), ("global_account", 0.50)):
+            positioning_store.append_rows(
+                [{"timestamp": f"2026-07-{1 + hour // 24:02d}T{hour % 24:02d}:00:00Z",
+                  "long_ratio": value, "short_ratio": 1.0 - value}],
+                root=tmp_path, symbol="ETHUSDT", series=series,
+            )
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(hours)}
+    attach_positioning(snapshot, root=tmp_path)
+    rows = build_feature_rows(snapshot)
+    # The newest reading is 0.20 above the one POSITIONING_CHANGE_PERIODS readings earlier.
+    assert rows[-1]["positioning_divergence_change"] == pytest.approx(0.20)
+    # And a bar that far back has no earlier reading to difference against — None, not 0.0.
+    assert rows[0]["positioning_divergence_change"] is None
+
+
+def test_the_attach_reads_only_this_symbols_rows(tmp_path):
+    """The store holds every traded symbol. A frame enriched with another symbol's positioning
+    would be silently wrong rather than empty, which is the worst of the two."""
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+
+    _seed(tmp_path, symbol="ETHUSDT", hours=4, top=0.60)
+    _seed(tmp_path, symbol="BTCUSDT", hours=4, top=0.20)
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(4)}
+    attach_positioning(snapshot, root=tmp_path)
+    assert {r["symbol"] for r in snapshot["positioning"]} == {"ETHUSDT"}
+
+
+def test_an_empty_store_leaves_the_key_absent(tmp_path):
+    """No rows is the ordinary case until coverage accumulates, and it must look exactly like
+    "not configured": key absent, every column None, no spec trading on it."""
+    from runtime.mvp_runtime.crypto.cycle import attach_positioning
+
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(4)}
+    attach_positioning(snapshot, root=tmp_path)
+    assert "positioning" not in snapshot
 
 
 # --- the attempt marker ---------------------------------------------------------

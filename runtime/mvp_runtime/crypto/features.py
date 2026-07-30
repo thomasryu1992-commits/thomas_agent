@@ -153,6 +153,37 @@ XS_NUMERIC_COLUMNS = ("xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio")
 XS_EVIDENCE_COLUMNS = ("xs_dispersion", "xs_members")
 XS_COLUMNS = (*XS_NUMERIC_COLUMNS, *XS_EVIDENCE_COLUMNS)
 
+# --- positioning (who is HOLDING, not who is trading) ---------------------------
+# `positioning_store` has accumulated three hourly series per symbol since it shipped:
+# `top_position` (the long share of the top cohort's POSITIONS), `top_account` (the same cohort
+# counted by ACCOUNTS) and `global_account` (every account). The one the research record singled
+# out is the DIVERGENCE between the first and the last — large capital against the crowd — because
+# it is the one measurement here that cannot be derived from OHLCV at any resolution.
+#
+# Windows match the funding z-score deliberately: both describe a crowding pressure on its own
+# cadence, so a threshold mined on one means the same span as one mined on the other.
+POSITIONING_Z_WINDOW = 100
+POSITIONING_Z_MIN_PERIODS = 10
+# Periods a change is measured over, in the SERIES' own time base (hourly readings, not bars) —
+# the `open_interest` rule, and for its reason: a bar-over-bar diff of the ALIGNED column is zero
+# on every bar between two hourly readings, which on a 15m frame is three bars in four.
+POSITIONING_CHANGE_PERIODS = 24
+
+# Mintable: a standardisation and a change. Both cancel a symbol's own structural baseline — a top
+# cohort that habitually runs 5 points longer than the crowd on one symbol and 15 on another reads
+# the same in both.
+POSITIONING_NUMERIC_COLUMNS = ("positioning_divergence_zscore", "positioning_divergence_change")
+# Evidence only, never mintable. `positioning_divergence` is a LEVEL: dimensionless and bounded,
+# which is not the same as comparable — whether +0.05 means the same on BTC as on DOGE is an
+# empirical question nobody has answered, so minting a threshold on it would assert the answer.
+# The three raw shares are levels for the same reason. Exactly the `xs_dispersion` split: keep the
+# level as evidence, mint only what is standardised.
+POSITIONING_EVIDENCE_COLUMNS = (
+    "positioning_divergence", "positioning_top_long", "positioning_top_account_long",
+    "positioning_global_long",
+)
+POSITIONING_COLUMNS = (*POSITIONING_NUMERIC_COLUMNS, *POSITIONING_EVIDENCE_COLUMNS)
+
 # --- session context ----------------------------------------------------------
 # UTC hour blocks. Crypto trades continuously but its PARTICIPANTS do not: venue activity
 # concentrates in regional working hours, and the composition differs (retail-heavy vs
@@ -502,6 +533,78 @@ def _cross_section_columns(
         ],
         "xs_members": members,
     }
+
+
+def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict[str, list]:
+    """Where large capital sits relative to the crowd — the positioning leg.
+
+    **The one measurement in this module that OHLCV cannot reproduce at any resolution.** Every
+    other column describes what traded; these describe what is *held*, and by whom. `top_position`
+    is the long share of the top cohort's positions, `global_account` the long share of every
+    account, and the gap between them separates informed capital from headcount.
+
+    **Alignment is backward as-of** (:func:`_asof_align`), the funding and open-interest rule —
+    not the exact open-time join the derivative-price and cross-section legs use. The store keeps
+    an HOURLY series on its own cadence, independent of the bar grid, so a bar carries the last
+    reading at or before its open. Substituting the exact join here would blank every bar that is
+    not on an hour boundary; substituting as-of over THERE would fabricate a basis for a bar the
+    venue skipped. Three grids, three rules, each named where it applies.
+
+    **The derived values are computed in the SERIES' own time base and then aligned**, which is
+    the `open_interest` lesson repeated rather than rediscovered: a change or a z-score computed
+    over the ALIGNED column would be measuring 24 repeats of one hourly reading on a 15m frame,
+    and the z-score's window would mean 100 bars rather than 100 observations.
+
+    Key ABSENT (no store rows supplied) → every column None, so a `positioning_*` spec is
+    indeterminate and does not trade. The `open_interest` posture, never the
+    `liquidation_spike_ratio` one.
+    """
+    empty = {col: [None] * len(bar_times) for col in POSITIONING_COLUMNS}
+    rows = snapshot.get("positioning") or []
+    if not isinstance(rows, list) or not rows:
+        return empty
+
+    # One reading per (series, timestamp), so the three series can be paired by time.
+    by_series: dict[str, dict[str, float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        series, stamp = row.get("series"), row.get("timestamp")
+        value = row.get("long_ratio")
+        if not isinstance(series, str) or not isinstance(stamp, str):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        by_series.setdefault(series, {})[stamp] = float(value)
+
+    top_position = by_series.get("top_position") or {}
+    global_account = by_series.get("global_account") or {}
+    top_account = by_series.get("top_account") or {}
+    # The divergence needs BOTH legs at the same reading; a gap against an unknown is not zero.
+    stamps = sorted(set(top_position) & set(global_account))
+    if not stamps:
+        return empty
+
+    divergence = [top_position[s] - global_account[s] for s in stamps]
+    zscore = indicators.zscore(divergence, POSITIONING_Z_WINDOW, POSITIONING_Z_MIN_PERIODS)
+    change: list[float | None] = []
+    for index in range(len(divergence)):
+        previous = index - POSITIONING_CHANGE_PERIODS
+        change.append(divergence[index] - divergence[previous] if previous >= 0 else None)
+
+    events = [
+        {
+            "timestamp": stamp,
+            "positioning_divergence": divergence[i],
+            "positioning_divergence_zscore": zscore[i],
+            "positioning_divergence_change": change[i],
+            "positioning_top_long": top_position[stamp],
+            "positioning_global_long": global_account[stamp],
+            "positioning_top_account_long": top_account.get(stamp),
+        }
+        for i, stamp in enumerate(stamps)
+    ]
+    return _asof_align(bar_times, events, POSITIONING_COLUMNS)
 
 
 def _median(values: list[float]) -> float:
@@ -879,6 +982,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # sub-snapshot never carries — so the recursion cannot reach this and there is no second
     # level of peer fetching to worry about.
     cross_section = _cross_section_columns(bar_times, roc_4, snapshot)
+    positioning = _positioning_columns(bar_times, snapshot)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -966,6 +1070,9 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # first columns whose value depends on symbols this cycle is not trading — see
             # `_cross_section_columns`.
             **{col: cross_section[col][i] for col in XS_COLUMNS},
+            # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
+            # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
+            **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (
