@@ -1,7 +1,7 @@
 # 오토 트레이딩 전략 검토 기록 — 개선 필요 지점
 
 **Status:** Record / notes only · **Normative authority:** None · **Owner:** Thomas
-**검토일:** 2026-07-29 · **검토 범위:** `runtime/mvp_runtime/crypto/` (38 modules, ~17.7k lines)
+**검토일:** 2026-07-30 · **검토 범위:** `runtime/mvp_runtime/crypto/` (38 modules, ~17.7k lines)
 
 이 문서는 런타임 권한을 부여하지 않는다. 거버넌스/실행 경로가 아니라 **전략 자체의 통계적·
 경제적 타당성**을 본 기록이다. 이미 `docs/REMAINING_WORK.md`에 적힌 항목은 중복 제외했고,
