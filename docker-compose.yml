@@ -261,3 +261,43 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.read_bridge_cli
+
+  # The dispatch door. The assistant's third lane: halt-bridge stops the runtime, read-bridge
+  # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
+  # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`
+  # caps this in code: a closed set of non-trading request kinds, no `write_path`, the kill
+  # switch checked before every run, every task attributed to `assistant_bridge`. A test
+  # asserts the kind set stays those four and that none of them reaches the money path.
+  #
+  # Unlike halt-bridge and read-bridge this service RUNS the pipeline, so it is the one door
+  # that *could* invoke a model. It deliberately carries no provider key here: with none, the
+  # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
+  # pipeline. Enabling real model execution means forwarding the model provider env
+  # (GOOGLE_AI_STUDIO_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / MVP_HOSTED_PROVIDER) — a
+  # deliberate step, because it stands up a second model-key-bearing container and OPENROUTER
+  # is shared with the operator's assistant. Absent regardless of that choice: every money
+  # variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key. The kinds it runs never
+  # touch them.
+  dispatch-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-dispatch-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.dispatch_bridge_cli
