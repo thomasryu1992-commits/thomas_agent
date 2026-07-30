@@ -174,6 +174,27 @@ def test_the_doors_verbs_stay_within_the_policy_grant():
 
 
 # --- the socket ---------------------------------------------------------------
+#
+# Everything above runs everywhere: the permission surface is the part worth guarding and it
+# has nothing to do with the transport. Only what follows needs AF_UNIX, which Windows does
+# not have — and CI runs Windows. Skipping the listener there is honest (the door only ever
+# ships in a Linux container); skipping the rules would not be.
+
+unix_only = pytest.mark.skipif(
+    not halt_bridge.UNIX_SOCKETS_AVAILABLE, reason="the halt door listens on AF_UNIX"
+)
+
+
+def test_listening_without_af_unix_is_a_typed_refusal(tmp_path, monkeypatch):
+    """On a platform with no unix sockets the door refuses to open rather than importing
+    badly — the failure belongs at the moment someone tries to listen."""
+    monkeypatch.setattr(halt_bridge, "UNIX_SOCKETS_AVAILABLE", False)
+    with pytest.raises(ControlBlocked) as exc:
+        halt_bridge.HaltBridgeServer(
+            tmp_path / "h.sock", control_store=ControlStore(tmp_path), ledger=FakeLedger(),
+        )
+    assert exc.value.reason_code == "UNIX_SOCKETS_UNAVAILABLE"
+
 
 def _serve(server):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -189,6 +210,7 @@ def _ask(path, payload):
         return json.loads(client.recv(8192).decode("utf-8").strip())
 
 
+@unix_only
 def test_end_to_end_over_the_socket(tmp_path):
     store = ControlStore(tmp_path)
     sock = tmp_path / "h.sock"
@@ -208,6 +230,7 @@ def test_end_to_end_over_the_socket(tmp_path):
         server.server_close()
 
 
+@unix_only
 def test_the_socket_is_not_world_accessible(tmp_path):
     """The shared group is the access control. World-writable would make "any process on
     this host" the authorization, which is wider than the host-console precedent."""
@@ -224,6 +247,7 @@ def test_the_socket_is_not_world_accessible(tmp_path):
         server.server_close()
 
 
+@unix_only
 def test_a_malformed_frame_gets_an_answer_and_the_door_stays_up(tmp_path):
     """A door that dies on a bad frame is a denial-of-service on the halt path."""
     store = ControlStore(tmp_path)

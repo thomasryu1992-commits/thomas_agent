@@ -201,7 +201,18 @@ class _Handler(socketserver.BaseRequestHandler):
         return b"".join(chunks).split(b"\n", 1)[0]
 
 
-class HaltBridgeServer(socketserver.ThreadingUnixStreamServer):
+# Windows has no ``AF_UNIX``, so ``socketserver.ThreadingUnixStreamServer`` does not exist
+# there — and naming it at class-definition time made this whole module unimportable on that
+# platform, which took the permission-surface tests down with it. The door is deployment-only
+# (Linux containers); the *rules* it enforces are not, and the rules are what the tests are
+# for. So the base is resolved at import and an absent one becomes a typed refusal at the
+# moment someone tries to listen, rather than an ImportError for everyone who only wanted to
+# ask whether `resume` gets through.
+_UNIX_STREAM_SERVER = getattr(socketserver, "ThreadingUnixStreamServer", None)
+UNIX_SOCKETS_AVAILABLE = _UNIX_STREAM_SERVER is not None
+
+
+class HaltBridgeServer(_UNIX_STREAM_SERVER or object):  # type: ignore[misc]
     """The listener. Threading so one stalled peer cannot wedge the door."""
 
     daemon_threads = True
@@ -214,6 +225,11 @@ class HaltBridgeServer(socketserver.ThreadingUnixStreamServer):
         control_store: ControlStore,
         ledger: LedgerStore,
     ) -> None:
+        if not UNIX_SOCKETS_AVAILABLE:
+            raise ControlBlocked(
+                "UNIX_SOCKETS_UNAVAILABLE",
+                "this platform has no AF_UNIX; the halt door listens on a unix socket only",
+            )
         self.control_store = control_store
         self.ledger = ledger
         path.parent.mkdir(parents=True, exist_ok=True)
