@@ -348,3 +348,58 @@ def test_the_new_families_mint_and_backtest_on_a_reference_enriched_frame():
     for family in sorted(wanted):
         evidence = factory.backtest_spec(StrategySpec.from_dict(minted[family]), snapshot)
         assert evidence["bars_replayed"] > 0
+
+
+# --- fan-out cost: the reference read must not multiply by symbol ---------------
+
+def test_reference_cache_serves_one_read_per_timeframe_across_a_fan_out():
+    """The `PerSymbolFeedCache` redundancy arriving by another door.
+
+    The proxy symbol is a constant, so across a fan-out the only distinct reference reads are
+    one per timeframe — while `attach_reference` runs once per (symbol, timeframe). Without a
+    cache a 4-non-proxy-symbol × 2-timeframe grid asks eight times for two answers."""
+    from runtime.mvp_runtime.crypto.market_data import ReferenceCandleCache
+
+    class _CountingCollector(MockMarketDataCollector):
+        def __init__(self):
+            self.collects = 0
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.collects += 1
+            return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    collector = _CountingCollector()
+    cache = ReferenceCandleCache(collector)
+    for symbol in ("ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"):
+        for timeframe in ("1h", "4h"):
+            snapshot = {"symbol": symbol, "timeframe": timeframe, "candles": [_candle(0)]}
+            assert attach_reference(
+                snapshot, collector=collector, now=NOW, limit=50, cache=cache
+            ) is None
+            assert snapshot["reference_candles"], "the cached series must still be attached"
+    assert cache.calls == 2, "one read per timeframe, not one per (symbol, timeframe)"
+    assert collector.collects == 2
+
+
+def test_reference_cache_caches_the_refusal_too():
+    """A venue that just refused will refuse again in the same second, and re-asking once per
+    remaining context is how a rate cap gets reached. Every context still gets its own code."""
+    from runtime.mvp_runtime.errors import ToolError
+    from runtime.mvp_runtime.crypto.market_data import ReferenceCandleCache
+
+    class _BrokenCollector(MockMarketDataCollector):
+        def __init__(self):
+            self.collects = 0
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.collects += 1
+            raise ToolError("TOOL_TRANSPORT", "boom")
+
+    collector = _BrokenCollector()
+    cache = ReferenceCandleCache(collector)
+    for symbol in ("ETHUSDT", "SOLUSDT", "BNBUSDT"):
+        snapshot = {"symbol": symbol, "timeframe": "1h", "candles": [_candle(0)]}
+        assert attach_reference(
+            snapshot, collector=collector, now=NOW, limit=50, cache=cache
+        ) == "REFERENCE_DEGRADED"
+    assert collector.collects == 1, "the refusal was re-asked instead of remembered"

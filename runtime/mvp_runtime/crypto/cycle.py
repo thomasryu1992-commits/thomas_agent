@@ -48,6 +48,7 @@ from .market_data import (
     TIMEFRAMES,
     MarketDataCollector,
     PerSymbolFeedCache,
+    ReferenceCandleCache,
     collect_market_data,
     degraded_market_data_record,
 )
@@ -232,6 +233,7 @@ def attach_reference(
     collector: MarketDataCollector,
     now: str,
     limit: int | None = None,
+    cache: Any | None = None,
 ) -> str | None:
     """Fetch the market-proxy candles onto ``snapshot`` (mutating it). Degrade-only.
 
@@ -244,6 +246,11 @@ def attach_reference(
     that cannot be read must not take down a cycle that would have traded without it. A
     failed fetch leaves the key ABSENT, so every ``ref_*`` column is indeterminate and a
     relative-strength spec does not trade this cycle. Returns a reason code on degrade.
+
+    ``cache`` is a :class:`~.market_data.ReferenceCandleCache` for one fan-out. Without it
+    every context fetches the proxy again, and since the proxy is a constant that is sixteen
+    reads for four distinct series across a 5×4 fan-out — the redundancy
+    :class:`~.market_data.PerSymbolFeedCache` exists to stop, arriving by another door.
     """
     symbol = str(snapshot.get("symbol") or "")
     timeframe = str(snapshot.get("timeframe") or "")
@@ -253,12 +260,15 @@ def attach_reference(
     # so the live default covers it with room to spare; the factory passes its replay depth.
     want = limit if limit is not None else 240
     try:
-        reference, _ = collect_market_data(
-            REFERENCE_SYMBOL, timeframe, collector=collector, now=now, limit=want
-        )
+        if cache is not None:
+            candles = cache.candles(timeframe, limit=want, now=now)
+        else:
+            reference, _ = collect_market_data(
+                REFERENCE_SYMBOL, timeframe, collector=collector, now=now, limit=want
+            )
+            candles = reference.get("candles") or []
     except (ToolError, ToolBlocked):
         return REFERENCE_DEGRADED
-    candles = reference.get("candles") or []
     if not candles:
         return REFERENCE_DEGRADED
     snapshot["reference_candles"] = candles
@@ -278,6 +288,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    reference_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -316,7 +327,9 @@ def run_crypto_cycle(
 
     # 1d) cross-asset context — the market proxy rel_strength_* specs measure against.
     # Degrade-only, and a no-op when this cycle's symbol IS the proxy.
-    reference_reason = attach_reference(snapshot, collector=collector, now=now)
+    reference_reason = attach_reference(
+        snapshot, collector=collector, now=now, cache=reference_cache
+    )
     if reference_reason:
         reason_codes.append(reference_reason)
 
@@ -598,6 +611,11 @@ def run_pool_cycle(
     # for THIS fan-out only, so it cannot serve a stale day to a later fire.
     if liquidation_feed is not None:
         liquidation_feed = PerSymbolFeedCache(liquidation_feed)
+    # The reference leg has the same shape of redundancy: the proxy symbol is a CONSTANT, so
+    # across this fan-out the only distinct reads are one per timeframe, while
+    # `attach_reference` runs once per (symbol, timeframe) — sixteen asks for four answers on a
+    # 5x4 grid. Same lifetime rule as above: one fan-out, then discarded.
+    reference_cache = ReferenceCandleCache(collector)
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -612,7 +630,7 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks,
+                routing_marks=routing_marks, reference_cache=reference_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:

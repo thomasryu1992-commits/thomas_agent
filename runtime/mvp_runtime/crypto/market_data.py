@@ -941,6 +941,49 @@ class PerSymbolFeedCache:
         )
 
 
+class ReferenceCandleCache:
+    """One reference-symbol read per (timeframe, depth) for the life of one fan-out.
+
+    The same redundancy :class:`PerSymbolFeedCache` was built for, arriving by a different
+    door. The reference series is always :data:`REFERENCE_SYMBOL`, so the only thing that
+    varies across a fan-out is the timeframe — but ``attach_reference`` runs per
+    (symbol, timeframe), so a 5-symbol × 4-timeframe fan-out asks for **four** distinct BTC
+    series sixteen times: once for every non-proxy symbol at every timeframe. Four reads
+    would answer all sixteen questions identically, because within one fire "what were BTC's
+    hourly candles" cannot legitimately differ depending on which altcoin is asking.
+
+    Same contract as the feed cache, for the same reasons: constructed per fan-out and
+    thrown away, so it can never serve a stale bar to a later fire; **failures cached too**,
+    because a venue that just refused this series will refuse it again in the same second and
+    re-asking three more times per fire is how a rate cap gets reached; and the refusal is
+    re-raised unchanged, so every context still records its own reason code.
+    """
+
+    def __init__(self, collector: Any):
+        self._collector = collector
+        self._results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._errors: dict[tuple[str, str], BaseException] = {}
+        self.calls = 0
+
+    def candles(self, timeframe: str, *, limit: int, now: str) -> list[dict[str, Any]]:
+        key = (str(timeframe), str(limit))
+        if key in self._errors:
+            raise self._errors[key]
+        if key in self._results:
+            return self._results[key]
+        self.calls += 1
+        try:
+            snapshot, _record = collect_market_data(
+                REFERENCE_SYMBOL, timeframe, collector=self._collector, now=now, limit=limit
+            )
+        except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._errors[key] = exc
+            raise
+        rows = list(snapshot.get("candles") or [])
+        self._results[key] = rows
+        return rows
+
+
 class NoLiquidationFeed:
     """Default: the feed is ABSENT (not degraded) — features keep the source's
     legacy no-series constants, exactly the pre-C9 behavior."""
