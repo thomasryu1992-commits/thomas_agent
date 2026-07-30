@@ -861,13 +861,20 @@ def update_statuses(
 ) -> int:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
 
-    The narrowest possible pool mutation: only ``status`` and the running
-    ``lifecycle_consecutive_failures`` of named strategies change — specs, hashes,
-    scores and membership are untouched, so this can never smuggle a promotion.
-    Guards, each fail-closed: unknown strategy id refused; a CURRENTLY terminal
-    entry is immutable (reactivation is the approval door, never this); and a
-    transition record that isn't an evaluate_lifecycle decision shape is refused.
-    Returns the number of entries whose status actually changed."""
+    The narrowest possible pool mutation: only ``status``, the running
+    ``lifecycle_consecutive_failures``, and the ``lifecycle_*`` provenance of named
+    strategies change — specs, hashes, scores and membership are untouched, so this can
+    never smuggle a promotion. Guards, each fail-closed: unknown strategy id refused; a
+    CURRENTLY terminal entry is immutable (reactivation is the approval door, never
+    this); and a transition record that isn't an evaluate_lifecycle decision shape is
+    refused. Returns the number of entries whose status actually changed.
+
+    The provenance fields are written only on a status CHANGE, alongside
+    ``lifecycle_updated_at`` and ``lifecycle_decision_id``, so they always describe the
+    transition that produced the status the entry is currently in. Entries transitioned
+    before these fields existed carry none: absent means "written by an older runtime",
+    which is a different answer from an empty list and is why the reader treats it as
+    unknown rather than as no reason."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
     if not decisions:
@@ -895,6 +902,25 @@ def update_statuses(
                 entry["status"] = new_status
                 entry["lifecycle_updated_at"] = decision.get("created_at_utc")
                 entry["lifecycle_decision_id"] = decision.get("strategy_lifecycle_decision_id")
+                # WHY, on the entry, because the entry is what anyone reads first. Without it a
+                # SUSPENDED row shows `lifecycle_consecutive_failures: 0` and nothing else, and
+                # 0 means two opposite things: a performance suspension always carries a streak
+                # of at least `suspend_consecutive`, while an operator retirement carries the
+                # count **forward untouched** — so a strategy retired for being a duplicate
+                # looks exactly like one the metrics condemned, and the difference lives only
+                # in the control ledger. Measured here: five 1d entries read as demoted on zero
+                # failures, and only `reasons: ["operator_retired"]` in the ledger said they
+                # were duplicate rules an operator removed on purpose.
+                reasons = decision.get("reasons")
+                entry["lifecycle_reasons"] = (
+                    [str(r) for r in reasons] if isinstance(reasons, list) else []
+                )
+                # Attribution when there is one. `retired_by` exists only on an operator
+                # retirement, so its presence is itself the discriminator — and "who" is the
+                # question a reader asks immediately after "why".
+                retired_by = decision.get("retired_by")
+                if isinstance(retired_by, str) and retired_by:
+                    entry["lifecycle_retired_by"] = retired_by
                 changed += 1
         pool["updated_by"] = updated_by
         tmp = path.with_suffix(".tmp")
