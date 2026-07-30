@@ -642,7 +642,7 @@ def _execute(
         # data would be evidence-free noise.
         from .crypto import market_data
         from .crypto import pool as crypto_pool
-        from .crypto.cycle import attach_feeds, attach_htf
+        from .crypto.cycle import attach_feeds, attach_htf, attach_reference
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
@@ -676,6 +676,12 @@ def _execute(
         higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
         attach_htf(snapshot, collector=collector, now=now,
                    limit=factory_candle_target(higher) if higher else None)
+        # The same rule once more for the cross-asset leg: a rel_strength_* family mined over
+        # a frame with no reference series would score as a no-trade spec, so the reference
+        # window has to cover the replay span rather than the live default. Same timeframe as
+        # the frame being mined, so the same depth.
+        attach_reference(snapshot, collector=collector, now=now,
+                         limit=factory_candle_target(timeframe))
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),

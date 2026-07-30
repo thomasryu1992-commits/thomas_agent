@@ -72,15 +72,32 @@ def test_warmup_rows_marked_and_final_rows_ok():
 
 
 def test_no_feed_fallbacks_match_source_absent_feed_semantics():
-    # Feeds NOT configured (keys absent): the source's legacy constants — and the
-    # mark/index fallback matches the source's runtime ROUTER too, which never
-    # passes mark/index frames (runtime_feature_adapter).
+    # Feeds NOT configured (keys absent): the source's legacy constants, for the two
+    # columns that still have them.
     last = features.build_feature_rows({"candles": CANDLES})[-1]
-    assert last["mark_price"] == last["close"]  # ffill().fillna(close)
-    assert last["index_price"] == last["close"]
-    assert last["mark_index_basis_bps"] == 0.0
     assert last["liquidation_spike_ratio"] == 0.0  # legacy 0-fill without a series
     assert last["funding_rate"] == 0.0 and last["funding_zscore"] == 0.0
+
+
+def test_absent_derivative_prices_are_indeterminate_not_the_old_constants():
+    """The mark/index/basis fallbacks are gone, deliberately.
+
+    This test previously asserted the source's no-feed behaviour — ``mark == index ==
+    close`` and ``mark_index_basis_bps == 0.0`` — which was the right port while no mark or
+    index series was collected. It was also a live hazard, because ``mark_index_basis_bps``
+    is in ``factory.NUMERIC_FEATURES``: a literal condition on a value that is always
+    exactly zero does not select, it decides, so every minted ``basis > x`` could only ever
+    be false and every ``basis <= x`` only ever true.
+
+    Now that the series are collected (`market_data.derivative_price_klines`), absence means
+    the venue did not answer, and the honest reading of that is None — no basis, no entry.
+    The ``liquidation_spike_ratio`` 0-fill above is the same class of hazard and survives
+    only because changing it is a separate decision about a separate feed."""
+    last = features.build_feature_rows({"candles": CANDLES})[-1]
+    assert last["mark_price"] is None
+    assert last["index_price"] is None
+    assert last["mark_index_basis_bps"] is None
+    assert last["premium_index"] is None and last["premium_index_zscore"] is None
 
 
 def test_feed_present_but_empty_is_indeterminate_never_constant():

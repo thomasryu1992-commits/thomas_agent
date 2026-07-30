@@ -204,9 +204,19 @@ def test_attach_feeds_ok_and_absent():
     )
     assert reasons == []
     # Open interest rides the same feed object, so the null feed reports it absent too.
-    assert status == {"funding": "ok", "liquidations": "absent", "open_interest": "absent"}
+    # The derivative price series report absent for a different reason: this snapshot has no
+    # candles and no timeframe, so there is no grid to request them at or join them onto.
+    # `positioning` reports not_accumulating rather than a status, because this call did not opt
+    # into durable accumulation — the routing-marks rule: a caller that keeps no state keeps no
+    # store either. See test_mvp_runtime_crypto_positioning_store.py for the opted-in path.
+    assert status == {
+        "funding": "ok", "liquidations": "absent", "open_interest": "absent",
+        "mark_prices": "absent", "index_prices": "absent", "premium_index": "absent",
+        "positioning": "not_accumulating",
+    }
     assert "funding" in snapshot
     assert "liquidations" not in snapshot and "open_interest" not in snapshot
+    assert not {"mark_prices", "index_prices", "premium_index"} & set(snapshot)
 
 
 def test_attach_feeds_failure_is_present_and_empty():

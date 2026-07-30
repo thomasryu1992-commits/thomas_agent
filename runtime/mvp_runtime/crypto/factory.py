@@ -158,6 +158,20 @@ NUMERIC_FEATURES = frozenset({
     # interest posture, never the spike-ratio one.
     "taker_buy_ratio", "taker_flow_imbalance", "taker_flow_zscore", "taker_flow_ma",
     "avg_trade_size_zscore", "trade_count_zscore",
+    # The premium index — the basis funding is computed from, at BAR resolution rather than
+    # the 8h event cadence `funding_rate` carries. Both normalized (a fraction of the index
+    # price, and its z-score), so a mined threshold means the same thing on every symbol.
+    #
+    # `mark_price`, `index_price` and `mark_index_basis_bps` were already in this set and
+    # stay; what changed is that they now carry measured values instead of close/close/0.0,
+    # so a literal condition on the basis finally selects on something.
+    "premium_index", "premium_index_zscore",
+    # Cross-asset context (see features.REFERENCE_NUMERIC_COLUMNS). The first columns in this
+    # vocabulary that describe a relationship BETWEEN symbols rather than one symbol's own
+    # history — which is what makes them the only available handle on the shared market beta
+    # every pool strategy currently carries. All normalized: two rates of change, their
+    # difference, and a correlation.
+    *features.REFERENCE_NUMERIC_COLUMNS,
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -171,6 +185,8 @@ CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
     # noise. Three labels with only ==/!= available bounds that to a choice among three.
     "session": features.SESSION_VALUES,
     "day_type": features.DAY_TYPE_VALUES,
+    # The market proxy's regime, from the same classifier — so the same closed vocabulary.
+    "ref_market_regime": _REGIME_VALUES,
 }
 _NUMERIC_COMPARISONS = frozenset({">", ">=", "<", "<=", "==", "!="})
 _CATEGORICAL_COMPARISONS = frozenset({"==", "!="})
@@ -363,6 +379,46 @@ def _bollinger_breakdown_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _rel_strength_long_entry(p: dict) -> list[dict]:
+    # Cross-sectional momentum in the single-symbol form this router can express: buy what is
+    # outperforming the benchmark, while it is also in its own uptrend. The excess is what
+    # matters — a symbol up 2% on a day the benchmark is up 3% is not strong, and no column
+    # before `rel_strength_roc_4` could say so.
+    return [
+        {"feature": "rel_strength_roc_4", "comparison": ">=", "value": p["rel_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _rel_strength_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "rel_strength_roc_4", "comparison": "<=", "value": -p["rel_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+    ]
+
+
+def _premium_fade_short_entry(p: dict) -> list[dict]:
+    # The funding_fade premise, timed properly. `funding_fade_short` reads `funding_zscore`,
+    # which is an 8h event carried forward, so on a 1h frame it decides an entry on a value
+    # that last moved up to eight hours ago. `premium_index_zscore` is the same crowding
+    # pressure measured on the bar being traded.
+    #
+    # Both families are kept rather than one replacing the other: they encode the same
+    # premise at different resolutions, and which resolution actually pays is the question
+    # the evidence should answer, not something to settle by assertion.
+    return [
+        {"feature": "premium_index_zscore", "comparison": ">=", "value": p["premium_z_min"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
+def _premium_fade_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "premium_index_zscore", "comparison": "<=", "value": -p["premium_z_min"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
 def _taker_flow_long_entry(p: dict) -> list[dict]:
     # Flow-confirmed trend: price above its mean AND the aggressor side has been the buy
     # side for a sustained stretch. The rolling mean rather than the single bar's print is
@@ -523,6 +579,21 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("taker_absorption_short", "short", "1h",
                      {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
                      {"flow_z_min": 1.3, "rsi_min": 62.0, **_EXIT_BASE}, _taker_absorption_short_entry),
+    # Premium index — the funding_fade premise at bar resolution instead of 8h steps.
+    StrategyTemplate("premium_fade_long", "long", "1h",
+                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
+                     {"premium_z_min": 1.5, "rsi_max": 38.0, **_EXIT_BASE}, _premium_fade_long_entry),
+    StrategyTemplate("premium_fade_short", "short", "1h",
+                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
+                     {"premium_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _premium_fade_short_entry),
+    # Cross-asset relative strength. Not minted for the reference symbol itself — see
+    # REFERENCE_FAMILIES and `templates_for_timeframe`.
+    StrategyTemplate("rel_strength_long", "long", "1h",
+                     {"rel_min": ParamSpec(0.005, 0.05), **_EXIT_PARAMS},
+                     {"rel_min": 0.015, **_EXIT_BASE}, _rel_strength_long_entry),
+    StrategyTemplate("rel_strength_short", "short", "1h",
+                     {"rel_min": ParamSpec(0.005, 0.05), **_EXIT_PARAMS},
+                     {"rel_min": 0.015, **_EXIT_BASE}, _rel_strength_short_entry),
     # Session context. `session_index` is mutated like any other parameter, so WHICH session
     # a spec claims is part of the seeded search and is charged as a free parameter.
     StrategyTemplate("session_trend_long", "long", "1h",
@@ -551,30 +622,46 @@ HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
 # `features.MAX_SESSION_BAR_MINUTES` owns that rule; this is the minting side of it.
 SESSION_FAMILIES = frozenset({"session_trend_long", "session_trend_short"})
 
+# Families whose entry rules read the cross-asset columns — mintable for every symbol EXCEPT
+# the market proxy itself, whose relative strength against itself is a constant zero. The
+# gate is on the symbol rather than the timeframe, which is why `templates_for_timeframe`
+# takes one.
+REFERENCE_FAMILIES = frozenset({"rel_strength_long", "rel_strength_short"})
 
-def templates_for_timeframe(timeframe: str) -> tuple[StrategyTemplate, ...]:
-    """The rotation retimed to ``timeframe``.
 
-    Every price/feed family is retimeable. Two groups need more than a retiming:
+def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tuple[StrategyTemplate, ...]:
+    """The rotation retimed to ``timeframe`` (and narrowed for ``symbol``).
 
-    - the htf_* families need a higher timeframe to read, so they drop out at the top of
-      the ladder (``1d``) — minting one there would produce a spec whose HTF conditions
-      can never be determined, permanently no-entry rather than merely selective;
-    - the session_* families need a bar shorter than one session block, for the same
-      class of reason: at ``1d`` every bar opens at 00:00 UTC, so ``features`` reports
-      no session at all and the condition could never be determined either.
+    Every price/feed family is retimeable. Three groups need more than a retiming, and all
+    three drop out for the same reason — a spec whose conditions can never be *determined* is
+    permanently no-entry, which is noise pretending to be diversity:
 
-    The taker_* families need neither — their legs ride the same klines call as the OHLCV
-    at every timeframe."""
+    - the htf_* families need a higher timeframe to read, so they drop at the top of the
+      ladder (``1d``);
+    - the session_* families need a bar shorter than one session block, so they drop at ``1d``
+      too, where every bar opens at 00:00 UTC and ``features`` reports no session at all;
+    - the rel_strength_* families need a reference symbol that is not this one, so they drop
+      when mining the market proxy — ``features`` returns None for every ``ref_*`` column
+      there rather than a correlation of 1.0 against itself.
+
+    ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
+    is mining is asking for the library, not for a mintable set, and narrowing on a guess
+    would silently hide families from whoever asked.
+
+    The taker_* and premium_* families need no gate — their legs ride the same klines call as
+    the OHLCV, at every timeframe and for every symbol."""
     timeframe = str(timeframe)
     has_htf = timeframe in market_data.HIGHER_TIMEFRAME
     bar_minutes = market_data.TIMEFRAMES.get(timeframe)
     has_session = bar_minutes is not None and bar_minutes <= features.MAX_SESSION_BAR_MINUTES
+    has_reference = symbol is None or str(symbol) != market_data.REFERENCE_SYMBOL
 
     def _minted(template: StrategyTemplate) -> bool:
         if template.family in HTF_FAMILIES and not has_htf:
             return False
         if template.family in SESSION_FAMILIES and not has_session:
+            return False
+        if template.family in REFERENCE_FAMILIES and not has_reference:
             return False
         return True
 
@@ -692,7 +779,7 @@ def generate_batch(
     ``known_rule_hashes`` extends the duplicate guard across the existing pool and
     candidate store, so a batch never re-mints a strategy that already exists."""
     rng = random.Random(seed)
-    templates = templates_for_timeframe(timeframe)
+    templates = templates_for_timeframe(timeframe, symbol=symbol)
     # Which slice of the family list THIS run mints. Without it the picker was
     # ``templates[len(accepted) % len(templates)]``, and since a batch is four specs
     # that selected templates[0..3] on every run ever: 228 of 228 factory candidates
