@@ -390,6 +390,32 @@ def attach_cross_section(
     return CROSS_SECTION_DEGRADED if degraded else None
 
 
+def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) -> None:
+    """Put the accumulated positioning readings on ``snapshot`` (mutating it). Never raises.
+
+    A LOCAL read, unlike every other attach in this module: the rows come from the store this
+    runtime has been filling since `positioning_store` shipped, not from a vendor. So there is no
+    request, no grant, and no degrade code — `positioning_store.read_rows` answers with less
+    rather than refusing (damaged lines are skipped), which is the posture that module chose for
+    exactly this consumer.
+
+    Reads only THIS symbol's rows. The store holds every traded symbol, and a frame enriched with
+    another symbol's positioning would be silently wrong rather than empty.
+
+    No rows (the ordinary case until coverage accumulates) leaves the key ABSENT, so every
+    ``positioning_*`` column is None and a spec reading one does not trade — which is why
+    :data:`~.factory.POSITIONING_FAMILIES` are not minted until
+    :func:`positioning_store.coverage_summary` says the window is covered. Attaching is safe
+    before that; MINTING against it is not.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    if not symbol:
+        return
+    rows = positioning_store.read_rows(root, symbol=symbol)
+    if rows:
+        snapshot["positioning"] = rows
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -459,6 +485,11 @@ def run_crypto_cycle(
     )
     if cross_section_reason:
         reason_codes.append(cross_section_reason)
+
+    # 1f) positioning — the store's own accumulated readings. A local read, so no request and no
+    # degrade code. The ROUTER must see the same columns the backtest scored, which is the whole
+    # reason this is here and not only on the factory path.
+    attach_positioning(snapshot, root=root)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -962,6 +993,7 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
 
 __all__ = [
     "attach_cross_section",
+    "attach_positioning",
     "cycle_status_line",
     "pool_cycle_contexts",
     "pool_cycle_status_line",
