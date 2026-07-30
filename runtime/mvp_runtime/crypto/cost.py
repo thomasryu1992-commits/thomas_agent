@@ -18,16 +18,26 @@ while a stop, a time exit and a manual exit all still leave at market. ``apply_c
 therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
 so ``pool.expectancy_at`` can still rescale the taker portion exactly.
 
-**Scope, matching the source exactly**: cost application is confined to backtest/
-factory scoring. The source's live paper kernel (``paper_position_kernel.py`` / this
-port's ``paper.py``) never imports ``cost_model`` — grep confirms every caller of the
-source cost model lives under ``backtesting/`` or ``strategy_factory/`` (the factory's
-robustness-scoring path), never the live paper route. Paper trading measures pure
-signal quality on intended fills; costs are what the factory's robustness scorer
-needs to judge whether an edge survives realistic frictions. This port keeps that
-boundary: **live paper R stays cost-free by design, unchanged** — only
-``factory.backtest_spec`` (C8) applies costs, and only to feed C8b's
-``cost_robustness`` component (previously always zero for lack of these inputs).
+**Scope — the paper kernel now charges costs too (2026-07-30, PM2's fee half).** It did not
+until then, matching the source exactly: there, cost application was confined to backtest and
+factory scoring, and the live paper kernel (``paper_position_kernel.py`` / this port's
+``paper.py``) never imported ``cost_model``. The stated reason was sound for what paper R was
+then — *paper trading measures pure signal quality on intended fills; costs are what the
+robustness scorer needs to judge whether an edge survives friction*.
+
+What broke it is that paper R stopped being only a measurement. This port feeds it to the C4
+risk guard's loss breakers and to the C10 lifecycle ladder — money-safety decisions, not
+signal-quality ones — and both then read a number with the frictions removed. Measured on this
+machine the day it was found: the weekly breaker tripped at a recorded **-5.53R** over 43
+trades whose costs came to roughly **7.8R**, so the loss it was reacting to was about
+**-13.4R**. A breaker cannot be calibrated against a statistic that omits a term this large,
+and the same gross figure had been compared against the backtest's NET expectancy to choose
+which strategies to keep. ``docs/REMAINING_WORK.md``'s PM2 item already planned this move;
+this is its first half (fees + slippage), not the fill model.
+
+``factory.backtest_spec`` (C8) is unchanged and still feeds C8b's ``cost_robustness``
+component. What changed is that ``paper.build_outcome_record`` now applies the same model, so
+a paper expectancy and a backtest expectancy are finally the same kind of number.
 """
 
 from __future__ import annotations

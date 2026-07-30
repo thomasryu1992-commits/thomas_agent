@@ -41,10 +41,10 @@ evidence, and ``score_basis`` names the meaning on every candidate.
 
 C12: the replay backtest is costed. Every simulated trade's gross (intended-price) R
 is decomposed into net R after fees + slippage via ``cost.apply_cost_model`` (the
-source's S4b cost model, ported in R-space — see ``cost.py``), matching the source's
-own boundary exactly: costs apply to backtest/factory scoring only, never to live
-paper trading (``paper.settle_trade_plan`` stays cost-free, unchanged — the source's
-live paper kernel never imports the cost model either). ``champion_score`` and
+source's S4b cost model, ported in R-space — see ``cost.py``). This was once the ONLY
+costed path, matching the source's boundary; since 2026-07-30 the paper kernel charges the
+same model in ``paper.build_outcome_record``, so a paper expectancy and the one below are
+finally the same kind of number (``cost.py`` records why the boundary moved). ``champion_score`` and
 ``expectancy`` are computed over the costed (net) R, so a strategy that only looks
 good gross now scores accordingly; ``robustness.cost_robustness`` is measured for
 real instead of always zero.
@@ -172,6 +172,19 @@ NUMERIC_FEATURES = frozenset({
     # every pool strategy currently carries. All normalized: two rates of change, their
     # difference, and a correlation.
     *features.REFERENCE_NUMERIC_COLUMNS,
+    # Cross-sectional context (see features.XS_NUMERIC_COLUMNS). The reference columns above
+    # describe a relationship between this symbol and ONE proxy; these describe its place among
+    # a whole cohort, which is a different statement and the one a cross-sectional strategy
+    # needs — every altcoin can beat BTC in the same hour, and that says nothing about which of
+    # them to buy or which to sell.
+    #
+    # All three normalized, and one of them self-calibrating: a rank fraction in [0, 1], an
+    # excess rate of change, and a dispersion measured as a ratio to its own recent normal
+    # rather than as a level. `xs_dispersion` and `xs_members` are on the row as evidence and
+    # deliberately NOT here — a dispersion LEVEL means something different at 1h than at 4h,
+    # and `xs_members` is a count of how many peers answered, so a condition on it would mine
+    # feed availability rather than the market. The raw-`open_interest` rule.
+    *features.XS_NUMERIC_COLUMNS,
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -397,6 +410,32 @@ def _rel_strength_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _xs_momentum_long_entry(p: dict) -> list[dict]:
+    # Cross-sectional momentum: buy the cohort's strongest, and only while being strongest is
+    # worth something. The second condition is the part `rel_strength_long` cannot express —
+    # when every member moves together, the leader leads by nothing and the rank is noise; the
+    # dispersion ratio says whether there is a spread to rank across at all.
+    #
+    # `xs_rank_edge` is one parameter used by BOTH directions rather than an independent floor
+    # and ceiling, and that is a safety property, not a tidiness one: the long leg requires
+    # rank >= 1 - edge and the short leg rank <= edge, so with edge capped at 0.4 the two
+    # conditions are DISJOINT by construction. Independent params could be mined into an
+    # overlap (long >= 0.4 while short <= 0.6), and a long and a short matching on the same
+    # feature row is `paper.BLOCK_DIRECTION_CONFLICT` — the whole pair failing closed on
+    # exactly the bars the families were minted for.
+    return [
+        {"feature": "xs_rank_pct", "comparison": ">=", "value": 1.0 - p["xs_rank_edge"]},
+        {"feature": "xs_dispersion_ratio", "comparison": ">=", "value": p["xs_dispersion_min"]},
+    ]
+
+
+def _xs_momentum_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "xs_rank_pct", "comparison": "<=", "value": p["xs_rank_edge"]},
+        {"feature": "xs_dispersion_ratio", "comparison": ">=", "value": p["xs_dispersion_min"]},
+    ]
+
+
 def _premium_fade_short_entry(p: dict) -> list[dict]:
     # The funding_fade premise, timed properly. `funding_fade_short` reads `funding_zscore`,
     # which is an 8h event carried forward, so on a 1h frame it decides an entry on a value
@@ -594,6 +633,22 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("rel_strength_short", "short", "1h",
                      {"rel_min": ParamSpec(0.005, 0.05), **_EXIT_PARAMS},
                      {"rel_min": 0.015, **_EXIT_BASE}, _rel_strength_short_entry),
+    # Cross-sectional momentum — the first families whose entry depends on symbols the cycle
+    # is not trading. Both param ranges are bounded by construction rather than by a guess:
+    # `xs_rank_edge` at 0.4 is the widest value that keeps the long and short legs disjoint
+    # (see `_xs_momentum_long_entry`), and `xs_dispersion_min` is a ratio against the cohort's
+    # own recent dispersion, so 1.0 means "normal" on every symbol and every timeframe and
+    # there is no level anybody had to authorize.
+    StrategyTemplate("xs_momentum_long", "long", "1h",
+                     {"xs_rank_edge": ParamSpec(0.0, 0.4),
+                      "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
+                     {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
+                     _xs_momentum_long_entry),
+    StrategyTemplate("xs_momentum_short", "short", "1h",
+                     {"xs_rank_edge": ParamSpec(0.0, 0.4),
+                      "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
+                     {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
+                     _xs_momentum_short_entry),
     # Session context. `session_index` is mutated like any other parameter, so WHICH session
     # a spec claims is part of the seeded search and is charged as a free parameter.
     StrategyTemplate("session_trend_long", "long", "1h",
@@ -628,12 +683,22 @@ SESSION_FAMILIES = frozenset({"session_trend_long", "session_trend_short"})
 # takes one.
 REFERENCE_FAMILIES = frozenset({"rel_strength_long", "rel_strength_short"})
 
+# Families whose entry rules read the cross-sectional columns — mintable only where the
+# declared cohort, minus the symbol being mined, still reaches
+# `features.MIN_CROSS_SECTION_MEMBERS`. Currently that holds for every symbol, so the gate
+# does not bind today; it exists because the cohort is a constant somebody may edit, and the
+# failure it prevents is silent. Shrink `CROSS_SECTION_UNIVERSE` below the floor and every
+# `xs_*` column becomes permanently None, so these families would still mint, still backtest,
+# still take zero trades, and be retired as FRAGILE — the family blamed for a cohort that was
+# too small to rank.
+CROSS_SECTION_FAMILIES = frozenset({"xs_momentum_long", "xs_momentum_short"})
+
 
 def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tuple[StrategyTemplate, ...]:
     """The rotation retimed to ``timeframe`` (and narrowed for ``symbol``).
 
-    Every price/feed family is retimeable. Three groups need more than a retiming, and all
-    three drop out for the same reason — a spec whose conditions can never be *determined* is
+    Every price/feed family is retimeable. Four groups need more than a retiming, and all
+    four drop out for the same reason — a spec whose conditions can never be *determined* is
     permanently no-entry, which is noise pretending to be diversity:
 
     - the htf_* families need a higher timeframe to read, so they drop at the top of the
@@ -642,11 +707,16 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
       too, where every bar opens at 00:00 UTC and ``features`` reports no session at all;
     - the rel_strength_* families need a reference symbol that is not this one, so they drop
       when mining the market proxy — ``features`` returns None for every ``ref_*`` column
-      there rather than a correlation of 1.0 against itself.
+      there rather than a correlation of 1.0 against itself;
+    - the xs_* families need a cohort that still reaches
+      ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it.
 
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
-    would silently hide families from whoever asked.
+    would silently hide families from whoever asked. The cross-sectional gate needs no such
+    carve-out — its cohort is a declared constant, so ``symbol=None`` only ever removes one
+    fewer member than a named symbol would, which cannot turn a passing cohort into a failing
+    one.
 
     The taker_* and premium_* families need no gate — their legs ride the same klines call as
     the OHLCV, at every timeframe and for every symbol."""
@@ -655,6 +725,12 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
     bar_minutes = market_data.TIMEFRAMES.get(timeframe)
     has_session = bar_minutes is not None and bar_minutes <= features.MAX_SESSION_BAR_MINUTES
     has_reference = symbol is None or str(symbol) != market_data.REFERENCE_SYMBOL
+    # +1 for the symbol being mined: it is a cohort member (the one being ranked) whether or
+    # not it is a declared universe member.
+    cohort_size = 1 + sum(
+        1 for member in market_data.CROSS_SECTION_UNIVERSE if member != str(symbol)
+    )
+    has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
 
     def _minted(template: StrategyTemplate) -> bool:
         if template.family in HTF_FAMILIES and not has_htf:
@@ -662,6 +738,8 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
         if template.family in SESSION_FAMILIES and not has_session:
             return False
         if template.family in REFERENCE_FAMILIES and not has_reference:
+            return False
+        if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
             return False
         return True
 
@@ -1140,9 +1218,23 @@ def backtest_spec(
     for outcome in outcomes:
         regime = str(outcome.get("entry_regime") or "UNCLEAR")
         regime_r[regime] = regime_r.get(regime, 0.0) + outcome["result_R"]
+    regime_trades: dict[str, int] = {}
+    for outcome in outcomes:
+        regime = str(outcome.get("entry_regime") or "UNCLEAR")
+        regime_trades[regime] = regime_trades.get(regime, 0) + 1
     regime_breakdown = {
         "regimes_traded": sorted(regime_r),
         "profitable_regime_count": sum(1 for total in regime_r.values() if total > 0),
+        # Which regime produced what, kept rather than collapsed. The two fields above are
+        # what `robustness` needs (a count, for its breadth term) and for a long time they
+        # were all this block recorded — so the loop computed a per-regime R and then threw
+        # away the only thing that says WHERE the edge was. That is the input a router needs
+        # to decline a regime a strategy has already demonstrated it loses in, which is what
+        # `paper.regime_admits` now reads through the pool entry.
+        "per_regime": {
+            regime: {"trades": regime_trades[regime], "total_r": round(total, 8)}
+            for regime, total in sorted(regime_r.items())
+        },
     }
 
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only

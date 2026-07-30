@@ -141,7 +141,10 @@ def test_full_cycle_opens_then_settles_with_real_store(tmp_path):
     record2 = _cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
                      now="2026-07-23T12:00:00Z")
     assert record2["settled"]["close_reason"] == "stop_loss"
-    assert record2["settled"]["result_R"] == -1.0
+    # Costed since 2026-07-30: a stop-out now settles WORSE than the -1R it risked, because
+    # the two legs' fees and slippage come off it. (The gross-stays--1R invariant is pinned in
+    # test_mvp_runtime_crypto_paper.py, on the outcome record that carries both numbers.)
+    assert record2["settled"]["result_R"] < -1.0
     # Settle-then-reopen within one cycle is the source trading-cycle order: the
     # stopped position closed AND the still-matching strategy opened a fresh one.
     assert record2["opened"] is not None

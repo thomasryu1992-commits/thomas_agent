@@ -642,7 +642,12 @@ def _execute(
         # data would be evidence-free noise.
         from .crypto import market_data
         from .crypto import pool as crypto_pool
-        from .crypto.cycle import attach_feeds, attach_htf, attach_reference
+        from .crypto.cycle import (
+            attach_cross_section,
+            attach_feeds,
+            attach_htf,
+            attach_reference,
+        )
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
@@ -682,6 +687,14 @@ def _execute(
         # the frame being mined, so the same depth.
         attach_reference(snapshot, collector=collector, now=now,
                          limit=factory_candle_target(timeframe))
+        # And once more for the cross-sectional leg, at the same depth and for the same
+        # reason. This is the most expensive of the four: the cohort is five peers at the
+        # replay span, so it pages roughly five times what the frame itself did. Paid on the
+        # factory's own schedule rather than the 15-minute one, and the alternative is
+        # scoring xs_* families over a frame where every rank is None — which does not
+        # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
+        attach_cross_section(snapshot, collector=collector, now=now,
+                             limit=factory_candle_target(timeframe))
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),
