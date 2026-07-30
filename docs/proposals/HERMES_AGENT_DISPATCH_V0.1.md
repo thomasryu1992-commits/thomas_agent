@@ -1,7 +1,7 @@
 # 제안: Hermes 에이전트 구동 문 — 어시스턴트가 무엇을 *시작*시킬 수 있는가 (DRAFT v0.1)
 
-**상태:** DRAFT — 설계 선행(구현 아님). **결정됨: 모드 A(자율), 하드 캡 없음, 통화 임계 알림
-$50 USD/일**; 나머지 결정(§6: 정식 승인·allowlist·P3·거버넌스 위치) 대기.
+**상태:** DRAFT — 설계 선행(구현 아님). **§6 결정 확정**(모드 A, 캡 없음, $50 USD/일 알림,
+allowlist, P3, 거버넌스 위치) + **§7 정책 diff 초안**. 남은 것: §12–16 정식 승인(PR #373).
 **근거:** 아키텍처 §12–16, `governance/GOVERNANCE_POLICY.yaml`(authority P0–P6, control_channel),
 `runtime/mvp_runtime/halt_bridge.py`·`read_bridge.py` 선례.
 **선행 관계:** 관측 문(read_bridge)은 완료·라이브. 이 문서는 그 다음 단계인 "구동"을 다룬다.
@@ -106,15 +106,14 @@ dispatch 행위 자체는 어떤 ceiling도 올리지 않는다.
 >
 > **승격 경로:** 특정 템플릿이 반복 안전으로 증명되면(§12) 이후 자동화 확대 — 감사된 결정.
 
-## 6. 요구되는 Thomas 결정
+## 6. Thomas 결정 — 확정 현황 (2026-07-30)
 
-1. **dispatch 문을 만드는가?** (§12–16 Expansion 승인 여부) — A 선택은 방향 동의로 읽히나,
-   정식 Expansion 승인 + 버전드 거버넌스 + 감사는 별도 절차로 남는다.
-2. ~~시작 모드~~ — **결정됨: A (예산 내 자율).** §4.3·§4.6·§5의 조건 (a)~(c)를 안전 정의로 동반.
-3. **롤 allowlist 초기 집합.** — 권고: `general`/`research`/`translation`/`content`.specialist,
-   **crypto/trading 제외** (테스트로 부재 고정).
-4. **P3 ceiling 확정.** — 권고: 예. A에서는 더 중요 (사람 게이트가 없으니 P5 도달 불가가
-   유일하게 머니 패스를 막는 불변식).
+1. **dispatch 문 생성:** 방향 확정(①→② 진행). **정식 §12–16 Expansion 승인 + 버전드 거버넌스
+   + 감사**는 PR #373 리뷰/병합으로 별도 완결.
+2. **시작 모드:** ✅ **A (예산 내 자율).** §5의 남는 안전장치(구조적 벽 + 임계 알림)를 동반.
+3. **롤 allowlist:** ✅ `general.specialist`·`research.general`·`translation.general`·
+   `content.general`. **crypto/trading 제외**(부재를 테스트로 고정).
+4. **P3 ceiling:** ✅ 예. 사람 게이트가 없으니 P5 도달 불가가 머니 패스를 막는 유일 불변식.
 5. ~~예산/레이트 상한~~ — **결정됨 (Thomas 2026-07-30): 하드 캡 없음, 통화 기준 임계 알림만.**
    어시스턴트-발 dispatch 누적 비용이 **하루 50 USD**를 넘으면 operator 알림
    (`execution_budget` 누적 비용, `cost_currency=USD`). 자동 정지 없음.
@@ -124,10 +123,61 @@ dispatch 행위 자체는 어떤 ceiling도 올리지 않는다.
    $50/일은 *비용이 실재하게 되는 날*을 위한 잠복 머니가드다. 무료 티어의 실제 제약인
    요청-건수 storm(공유 쿼터 ~200/일)을 잡으려면 건수 기준 알림을 병행해야 하지만, Thomas는
    통화 단일 기준을 선택 — 이 커버리지 공백은 알고 남긴 것이다.
-6. **버전드 거버넌스 업데이트 위치:** 권고 — `control_channel`에 `assistant_dispatch` 블록
-   신설 + dispatch 전용 게이트(`thomas.dispatch.assistant_gate`)를 P5 게이트와 동형으로 정의
-   (조건: P3 ceiling, 롤 allowlist 소속, 예산 잔여, 레이트 캡 이내, actor=assistant_bridge,
-   post-dispatch 감사). policy_version bump.
+6. **거버넌스 위치:** ✅ `control_channel.assistant_dispatch` 블록 + `authority`의
+   `assistant_dispatch_gate`(`thomas.dispatch.assistant_gate`). 게이트 조건: P3 ceiling,
+   allowlist 소속, 머니 패스 없음, reason 기록, post-dispatch 감사. `policy_version`
+   1.2.0 → 1.3.0 (승인 시). 초안 → §7.
+
+## 7. 제안 거버넌스 정책 diff (초안 — `GOVERNANCE_POLICY.yaml`에 아직 **미적용**)
+
+> 아래는 **제안**이다. 승인 전까지 `governance/GOVERNANCE_POLICY.yaml`(활성 정책 원본)을
+> 건드리지 않는다 — 활성 정책 수정 자체가 §12–16 승인 사안이다. 승인 시 두 블록을 추가하고
+> `policy_version`을 `1.2.0` → `1.3.0`으로 올린다. 조건 이름은 §4의 구조적 상한에 매핑되며,
+> P5 게이트의 조건들이 "코드로 강제된다"고 명시하는 것과 같은 방식으로 코드에서 강제된다.
+
+**`authority:` 아래 추가 — P5 게이트와 동형:**
+```yaml
+  # PROPOSED — Hermes 구동 문 (DRAFT v0.1, 미활성). 어시스턴트가 시작하는 모든 dispatch가
+  # 통과할 게이트. 정의한다고 열리지 않는다 — 어시스턴트 dispatch를 암시가 아니라 정책
+  # 게이트에 대해 감사 가능하게 만들 뿐. gate_grants_authority: false — dispatch된 태스크는
+  # 자신의 P<=3 ceiling으로 실행되고, 이 게이트가 그 ceiling을 올리지 않는다.
+  assistant_dispatch_gate:
+    gate_id: thomas.dispatch.assistant_gate
+    applies_to_actor: assistant_bridge
+    requires:
+      - effective_permission_ceiling_p3   # dispatch된 태스크는 P3 상한 — P5/P6 도달 불가
+      - role_in_dispatch_allowlist        # allowlist 소속 롤만
+      - no_money_path_capability          # trading/venue/live-order 롤·툴 없음
+      - reason_recorded                   # 모든 dispatch는 사유를 명시·기록
+      - post_dispatch_audit               # actor=assistant_bridge, dispatch당 원장 1건
+    gate_grants_authority: false
+```
+
+**`control_channel:` 아래 추가 — operator 콘솔과 병렬:**
+```yaml
+  # PROPOSED — Hermes 구동 문 (DRAFT v0.1, 미활성). 어시스턴트의 dispatch 레인. operator
+  # 콘솔(=Thomas 인증)과도, halt 문(=fail-safe 정지)과도 다르다: 이 레인은 일을 *시작*시키므로
+  # 신뢰가 아니라 효과 등급으로 제한된다.
+  assistant_dispatch:
+    actor: assistant_bridge
+    mode: AUTONOMOUS_WITHIN_ALLOWLIST     # Thomas 결정 2026-07-30 (옵션 A); dispatch별 operator 확인 없음
+    permission_ceiling: P3
+    role_allowlist:
+      - general.specialist
+      - research.general
+      - translation.general
+      - content.general
+    trading_role_absent: structural_and_test_locked   # crypto/trading 롤은 목록에 구조적으로 부재
+    hard_rate_cap: none                   # Thomas 결정 2026-07-30: fail-closed 캡 없음
+    self_halt_on_spike: false             # Thomas 결정: 알림만, 서킷브레이커 없음
+    spend_alert:
+      meter: execution_budget_cumulative_cost
+      threshold_amount: 50
+      threshold_currency: USD             # 3-letter; provider가 무료 티어인 동안 휴면(기록된 caveat)
+      period: per_day
+      action: notify_operator             # 자동 정지 없음 — halt 문으로 사람이 정지
+    new_high_risk_approval_creation_allowed: false
+```
 
 ---
 
