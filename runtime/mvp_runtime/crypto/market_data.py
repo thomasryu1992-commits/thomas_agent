@@ -95,6 +95,16 @@ DERIVATIVE_KLINE_PATHS: dict[str, str] = {
 }
 DERIVATIVE_KINDS = frozenset(DERIVATIVE_KLINE_PATHS)
 
+# Which query parameter each endpoint names the instrument with. Not cosmetic: the index series
+# is quoted per PAIR (one index for BTCUSDT however many contracts settle against it) while mark
+# and premium are per contract, and the venue rejects the wrong key with 400 `-1102`. Kept as a
+# table beside the paths so the two cannot drift — a new kind has to answer both questions.
+DERIVATIVE_KLINE_SYMBOL_PARAMS: dict[str, str] = {
+    "mark": "symbol",
+    "index": "pair",
+    "premium": "symbol",
+}
+
 # Positioning statistics — WHO is holding what, which is the one thing neither price nor flow
 # reports. Three public `/futures/data/` endpoints of the same authorized provider.
 #
@@ -166,6 +176,32 @@ HIGHER_TIMEFRAME: dict[str, str] = {"15m": "1h", "1h": "4h", "4h": "1d"}
 # thresholds mean different things while looking identical.
 REFERENCE_SYMBOL = "BTCUSDT"
 REFERENCE_DEGRADED = "REFERENCE_DEGRADED"
+
+# The cohort every symbol's momentum is RANKED against — the cross-sectional universe.
+#
+# A declared constant, not "whichever symbols the pool happens to route today", and the
+# reason is the same one that pins ``REFERENCE_SYMBOL`` one notch harder. A rank is a
+# statement *about a cohort*: ``xs_rank_pct >= 0.8`` means "in the strongest fifth of THESE
+# symbols". If the cohort followed the pool, a spec mined when six symbols were routable
+# would be evaluated against three after two demotions — same threshold, different claim,
+# and nothing in the record would show the substitution. Worse, the cohort would then depend
+# on the pool, which depends on the backtests, which were scored against the cohort.
+#
+# **Changing this tuple invalidates every ``xs_*`` backtest mined under the old cohort**, in
+# the ordinary way that changing ``features.ROC_FAST`` or ``PERCENTILE_WINDOW`` invalidates
+# every spec mined under the old window. It is not a new hazard class, but it is a louder
+# instance of one, which is why ``xs_members`` rides on the feature row: a record then shows
+# how many members its rank was actually computed over rather than leaving a reader to assume
+# the constant that happens to be in the file today.
+#
+# Six large-cap USD-M perps. Six rather than three because ``xs_rank_pct`` has only
+# ``members - 1`` distinct values, so a three-symbol cohort offers {0, 0.5, 1.0} and a mined
+# threshold is a choice among three buckets; and six rather than twenty because every member
+# is one more candle series per timeframe per fan-out, paid on every fire.
+CROSS_SECTION_UNIVERSE: tuple[str, ...] = (
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
+)
+CROSS_SECTION_DEGRADED = "CROSS_SECTION_DEGRADED"
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
 MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
@@ -816,7 +852,16 @@ class BinanceFuturesCollector:
         while len(collected) < limit and pages < DERIVATIVE_MAX_PAGES:
             pages += 1
             params: dict[str, Any] = {
-                "symbol": symbol, "interval": timeframe,
+                # The index series is keyed on the PAIR, the other two on the symbol, and the
+                # venue enforces it: `indexPriceKlines` with `symbol=` returns 400 `-1102
+                # Mandatory parameter 'pair' was not sent`. Sending `symbol` to all three left
+                # index degraded on every cycle while mark and premium reported ok — a partial
+                # failure, which is why it read as a feed blip rather than as a wrong request.
+                # The cost was not an outage: `index_price` and `mark_index_basis_bps` stayed
+                # indeterminate, so the constant-0.0 basis C13 exists to remove was replaced by
+                # a permanently absent one instead of a real measurement.
+                DERIVATIVE_KLINE_SYMBOL_PARAMS[kind]: symbol,
+                "interval": timeframe,
                 # One extra row for the still-forming bar this drops, so dropping it does
                 # not shrink the caller's window (the ``collect`` rule).
                 "limit": min(DERIVATIVE_PAGE_LIMIT, limit - len(collected) + 1),
@@ -1100,32 +1145,47 @@ class PerSymbolFeedCache:
         )
 
 
-class ReferenceCandleCache:
-    """One reference-symbol read per (timeframe, depth) for the life of one fan-out.
+class PeerCandleCache:
+    """One candle read per (symbol, timeframe, depth) for the life of one fan-out.
 
     The same redundancy :class:`PerSymbolFeedCache` was built for, arriving by a different
-    door. The reference series is always :data:`REFERENCE_SYMBOL`, so the only thing that
-    varies across a fan-out is the timeframe — but ``attach_reference`` runs per
-    (symbol, timeframe), so a 5-symbol × 4-timeframe fan-out asks for **four** distinct BTC
-    series sixteen times: once for every non-proxy symbol at every timeframe. Four reads
-    would answer all sixteen questions identically, because within one fire "what were BTC's
-    hourly candles" cannot legitimately differ depending on which altcoin is asking.
+    door — the **context legs**, which read *other symbols'* candles alongside the one the
+    cycle is trading. Two legs need that today and they overlap heavily:
+
+    - the reference leg (``cycle.attach_reference``) always reads :data:`REFERENCE_SYMBOL`,
+      so across a fan-out the only thing that varies is the timeframe — yet it runs per
+      (symbol, timeframe), asking for **four** distinct BTC series sixteen times on a
+      5×4 grid;
+    - the cross-sectional leg (``cycle.attach_cross_section``) reads every member of
+      :data:`CROSS_SECTION_UNIVERSE` except the traded symbol, which is the same overlap
+      multiplied: without a cache, six members × four timeframes × five contexts is 120 asks
+      for 24 answers.
+
+    In both cases the redundant reads are redundant for the same reason: within one fire,
+    "what were ETH's hourly candles" cannot legitimately differ depending on which symbol is
+    asking. So one cache serves both legs rather than one per leg — the object is a cache of
+    *candle reads*, and which leg wanted them is not a property of the answer.
 
     Same contract as the feed cache, for the same reasons: constructed per fan-out and
     thrown away, so it can never serve a stale bar to a later fire; **failures cached too**,
     because a venue that just refused this series will refuse it again in the same second and
-    re-asking three more times per fire is how a rate cap gets reached; and the refusal is
+    re-asking once per remaining context is how a rate cap gets reached; and the refusal is
     re-raised unchanged, so every context still records its own reason code.
+
+    ``symbol`` defaults to the reference symbol, so the reference leg reads exactly as it did
+    before the cross-sectional one existed.
     """
 
     def __init__(self, collector: Any):
         self._collector = collector
-        self._results: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        self._errors: dict[tuple[str, str], BaseException] = {}
+        self._results: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self._errors: dict[tuple[str, str, str], BaseException] = {}
         self.calls = 0
 
-    def candles(self, timeframe: str, *, limit: int, now: str) -> list[dict[str, Any]]:
-        key = (str(timeframe), str(limit))
+    def candles(
+        self, timeframe: str, *, limit: int, now: str, symbol: str = REFERENCE_SYMBOL
+    ) -> list[dict[str, Any]]:
+        key = (str(symbol), str(timeframe), str(limit))
         if key in self._errors:
             raise self._errors[key]
         if key in self._results:
@@ -1133,7 +1193,7 @@ class ReferenceCandleCache:
         self.calls += 1
         try:
             snapshot, _record = collect_market_data(
-                REFERENCE_SYMBOL, timeframe, collector=self._collector, now=now, limit=limit
+                symbol, timeframe, collector=self._collector, now=now, limit=limit
             )
         except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
             self._errors[key] = exc

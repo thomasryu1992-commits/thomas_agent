@@ -42,6 +42,8 @@ from .guards import (
     run_risk_guard,
 )
 from .market_data import (
+    CROSS_SECTION_DEGRADED,
+    CROSS_SECTION_UNIVERSE,
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
     INDEX_PRICE_DEGRADED,
@@ -54,8 +56,8 @@ from .market_data import (
     REFERENCE_SYMBOL,
     TIMEFRAMES,
     MarketDataCollector,
+    PeerCandleCache,
     PerSymbolFeedCache,
-    ReferenceCandleCache,
     collect_market_data,
     degraded_market_data_record,
 )
@@ -283,7 +285,7 @@ def attach_reference(
     failed fetch leaves the key ABSENT, so every ``ref_*`` column is indeterminate and a
     relative-strength spec does not trade this cycle. Returns a reason code on degrade.
 
-    ``cache`` is a :class:`~.market_data.ReferenceCandleCache` for one fan-out. Without it
+    ``cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out. Without it
     every context fetches the proxy again, and since the proxy is a constant that is sixteen
     reads for four distinct series across a 5×4 fan-out — the redundancy
     :class:`~.market_data.PerSymbolFeedCache` exists to stop, arriving by another door.
@@ -312,6 +314,76 @@ def attach_reference(
     return None
 
 
+def attach_cross_section(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    limit: int | None = None,
+    cache: Any | None = None,
+) -> str | None:
+    """Fetch the cohort's candles onto ``snapshot`` (mutating it). Degrade-only.
+
+    The peers of :data:`~.market_data.CROSS_SECTION_UNIVERSE` minus the traded symbol, each at
+    THIS frame's own timeframe so the features can join them on bar open time. The traded
+    symbol needs no fetch — its own momentum is already in the row, and it is the thing being
+    ranked.
+
+    **Degradation is per peer, not all-or-nothing**, which is the one place this differs in
+    posture from :func:`attach_reference`. There, one series either arrived or the whole leg
+    was indeterminate; here five peers arriving out of six is a perfectly usable cohort, and
+    refusing to rank because the sixth timed out would throw away a measurement the runtime
+    has. So a failed peer is simply absent from the cohort, ``features.xs_members`` records
+    how many answered, and :data:`~.features.MIN_CROSS_SECTION_MEMBERS` is the floor below
+    which no rank is reported at all. The reason code fires when **any** peer failed, so a
+    thinned cohort is visible in the record rather than only in a column nobody reads.
+
+    Never raises, for the :func:`attach_htf` reason. With no peer answering, the key stays
+    ABSENT, every ``xs_*`` column is None, and an ``xs_*`` spec does not trade this cycle.
+
+    ``cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out, and here it is
+    doing considerably more work than for the reference leg: six members × four timeframes ×
+    five contexts is 120 asks for 24 answers. Without one this leg would be the largest source
+    of redundant vendor reads in the runtime.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    timeframe = str(snapshot.get("timeframe") or "")
+    if not symbol or timeframe not in TIMEFRAMES:
+        return None
+    peers = [member for member in CROSS_SECTION_UNIVERSE if member != symbol]
+    if not peers:
+        return None
+    # The SAME default as `attach_reference`, and that is load-bearing rather than tidy: both
+    # legs read peer candles through one cache keyed on (symbol, timeframe, depth), so a
+    # different default here would make the proxy's series a cache MISS between the two legs —
+    # two reads of one answer, which is the redundancy the cache exists to remove. The deepest
+    # consumer is the dispersion reference (XS_DISPERSION_WINDOW bars), and 240 covers it with
+    # the same room to spare the reference correlation gets.
+    want = limit if limit is not None else 240
+    collected: dict[str, list[dict[str, Any]]] = {}
+    degraded = False
+    for peer in peers:
+        try:
+            if cache is not None:
+                candles = cache.candles(timeframe, limit=want, now=now, symbol=peer)
+            else:
+                peer_snapshot, _ = collect_market_data(
+                    peer, timeframe, collector=collector, now=now, limit=want
+                )
+                candles = peer_snapshot.get("candles") or []
+        except (ToolError, ToolBlocked):
+            degraded = True
+            continue
+        if candles:
+            collected[peer] = list(candles)
+        else:
+            degraded = True
+    if collected:
+        snapshot["peer_candles"] = collected
+        snapshot["cross_section_universe"] = list(CROSS_SECTION_UNIVERSE)
+    return CROSS_SECTION_DEGRADED if degraded else None
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -324,7 +396,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
-    reference_cache: Any | None = None,
+    candle_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -367,10 +439,20 @@ def run_crypto_cycle(
     # 1d) cross-asset context — the market proxy rel_strength_* specs measure against.
     # Degrade-only, and a no-op when this cycle's symbol IS the proxy.
     reference_reason = attach_reference(
-        snapshot, collector=collector, now=now, cache=reference_cache
+        snapshot, collector=collector, now=now, cache=candle_cache
     )
     if reference_reason:
         reason_codes.append(reference_reason)
+
+    # 1e) cross-sectional context — the cohort xs_* specs rank this symbol within. Degrade-only
+    # and PER PEER: five of six members arriving is a usable cohort, so the leg thins rather
+    # than failing. Same cache as the reference leg above, because both read other symbols'
+    # candles and the answers do not depend on which leg asked.
+    cross_section_reason = attach_cross_section(
+        snapshot, collector=collector, now=now, cache=candle_cache
+    )
+    if cross_section_reason:
+        reason_codes.append(cross_section_reason)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -550,6 +632,15 @@ def run_crypto_cycle(
         # the 24KB record the lifecycle trim above was worth doing for.
         "risk_limits": verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
+        # Which strategies fired and were declined by the regime filter. The ids rather than the
+        # whole route, because this record is deliberately trimmed (the lifecycle note below is
+        # the same discipline) — but not merely a count, because "which one" is the actionable
+        # part: a strategy excluded on every cycle for a week is a demotion candidate, and a
+        # count cannot say that. Empty on almost every cycle, which is why it is a list and not
+        # a status.
+        "regime_excluded": list(
+            (paper_summary.get("route") or {}).get("regime_excluded_strategy_ids") or []
+        ),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
@@ -673,11 +764,15 @@ def run_pool_cycle(
     # for THIS fan-out only, so it cannot serve a stale day to a later fire.
     if liquidation_feed is not None:
         liquidation_feed = PerSymbolFeedCache(liquidation_feed)
-    # The reference leg has the same shape of redundancy: the proxy symbol is a CONSTANT, so
-    # across this fan-out the only distinct reads are one per timeframe, while
-    # `attach_reference` runs once per (symbol, timeframe) — sixteen asks for four answers on a
-    # 5x4 grid. Same lifetime rule as above: one fan-out, then discarded.
-    reference_cache = ReferenceCandleCache(collector)
+    # The context legs have the same shape of redundancy, by another door: they read OTHER
+    # symbols' candles, and which symbol is asking cannot change the answer within one fire.
+    # The reference leg reads a CONSTANT proxy, so its only distinct reads are one per
+    # timeframe while `attach_reference` runs once per (symbol, timeframe) — sixteen asks for
+    # four answers on a 5x4 grid. The cross-sectional leg is that multiplied: six cohort
+    # members × four timeframes × five contexts is 120 asks for 24 answers. ONE cache serves
+    # both, because a cached candle read has no opinion about which leg wanted it. Same
+    # lifetime rule as above: one fan-out, then discarded.
+    candle_cache = PeerCandleCache(collector)
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -692,7 +787,7 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks, reference_cache=reference_cache,
+                routing_marks=routing_marks, candle_cache=candle_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -735,6 +830,14 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A route that entered nothing because every match was regime-excluded otherwise reads
+    # exactly like one where nothing matched, and those want different responses: the first says
+    # a strategy fired in a regime its own backtest lost money in, the second says the market did
+    # not offer a setup. Printed only when it happened, for the reason the live leg is — a field
+    # that is empty on almost every line teaches the reader to skip it.
+    excluded = record.get("regime_excluded") or []
+    if excluded:
+        parts.append(f"regime_excluded={','.join(str(s) for s in excluded)}")
     # Only when the live leg actually did something. A DISABLED leg is every machine that has
     # not been through the operator checklist, and printing it on every line would train the
     # reader to skip exactly the field that matters on the machine where it is not DISABLED.
@@ -767,6 +870,7 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "attach_cross_section",
     "cycle_status_line",
     "pool_cycle_contexts",
     "pool_cycle_status_line",
