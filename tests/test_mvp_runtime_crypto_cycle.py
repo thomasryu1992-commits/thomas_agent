@@ -604,3 +604,70 @@ def test_no_live_history_changes_nothing(tmp_path):
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert record["verdict_status"] == "ALLOW"
     assert "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD" not in record["reason_codes"]
+
+
+# --- the registered breaker limits (crypto_risk_limits.v0.1) -------------------
+
+def test_no_registered_limits_judges_on_the_defaults(tmp_path):
+    """The unconfigured machine, which is every machine until an operator registers a record."""
+    from runtime.mvp_runtime.crypto import guards
+
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "ALLOW"
+    assert record["risk_limits"]["source"] == guards.SOURCE_DEFAULT
+
+
+def test_a_registered_limit_reaches_the_cycle_verdict(tmp_path):
+    """The wiring under test: a record on disk is what the cycle's breaker actually judges on."""
+    from runtime.mvp_runtime.crypto import risk_limits
+
+    _install_pool(tmp_path, _always_spec())
+    built = risk_limits.build_risk_limits_record(
+        limits={"risk_per_trade": 0.01, "daily_max_loss_r": -1.0, "weekly_max_loss_r": -5.0,
+                "max_consecutive_losses": 5, "max_drawdown_pct": -10.0},
+        valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
+        registered_by="thomas", registered_at="2026-07-01T00:00:00Z")
+    risk_limits.write_registered_limits(built, root=tmp_path)
+
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    limits = record["risk_limits"]
+    assert limits["source"] == "registered" and limits["limits_id"] == built["limits_id"]
+    assert limits["daily_max_loss_r"] == -1.0 and limits["max_consecutive_losses"] == 5
+
+
+def test_a_tampered_limits_record_fails_the_cycle_guard_closed(tmp_path):
+    """A record that cannot prove itself must not fall back to the defaults.
+
+    The fallback is the fail-open direction: an operator who tightened a breaker would have it
+    silently loosened back to the default by the very failure meant to be conservative."""
+    from runtime.mvp_runtime.crypto import risk_limits
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+
+    _install_pool(tmp_path, _always_spec())
+    target = state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "crypto_risk_limits.json").write_text('{"limits":{"daily_max_loss_r":-6.0}}\n',
+                                                    encoding="utf-8")
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert risk_limits.LIMITS_TAMPERED in record["reason_codes"]
+    assert record["opened"] is None
+
+
+def test_a_lapsed_limits_record_fails_the_cycle_guard_closed(tmp_path):
+    """Relaxations expire; a lapsed one refuses rather than reverting to the defaults."""
+    from runtime.mvp_runtime.crypto import risk_limits
+
+    _install_pool(tmp_path, _always_spec())
+    built = risk_limits.build_risk_limits_record(
+        limits={"risk_per_trade": 0.01, "daily_max_loss_r": -1.0, "weekly_max_loss_r": -5.0,
+                "max_consecutive_losses": 3, "max_drawdown_pct": -10.0},
+        valid_from="2026-01-01T00:00:00Z", valid_until="2026-02-01T00:00:00Z",
+        registered_by="thomas", registered_at="2026-01-01T00:00:00Z")
+    risk_limits.write_registered_limits(built, root=tmp_path)
+
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert risk_limits.LIMITS_EXPIRED in record["reason_codes"]
+    assert "risk_limits_unusable" in record["verdict_problems"]
