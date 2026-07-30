@@ -304,7 +304,12 @@ def test_short_settlement_mirrors():
 
 def test_outcome_record_feeds_the_risk_guard():
     outcome = build_outcome_record(_position(), "stop_loss", 102.0, -1.0, now=NOW)
-    assert outcome["outcome_closed"] is True and outcome["result_R"] == -1.0
+    assert outcome["outcome_closed"] is True
+    # The gross number is still the stop's exact -1R; result_R is that MINUS the two legs'
+    # costs, so a stopped-out trade loses more than the risk it planned — which is the point.
+    assert outcome["gross_result_R"] == -1.0
+    assert outcome["result_R"] < -1.0
+    assert outcome["result_R"] == round(-1.0 - outcome["fee_cost_r"] - outcome["slippage_cost_r"], 8)
     assert outcome["win_loss"] == "LOSS" and outcome["record_sha256"].startswith("sha256:")
     verdict = run_risk_guard([outcome], now=NOW)  # C4 reads C5 records natively
     assert verdict["consecutive_losses"] == 1
@@ -481,7 +486,8 @@ def test_real_open_then_settle_cycle(tmp_path):
     assert summary2["settled"]["close_reason"] == "stop_loss"
     assert load_open_position(CTX, tmp_path) is None
     outcomes = read_outcomes(tmp_path)
-    assert len(outcomes) == 1 and outcomes[0]["result_R"] == -1.0
+    assert len(outcomes) == 1
+    assert outcomes[0]["gross_result_R"] == -1.0 and outcomes[0]["result_R"] < -1.0
     assert records2[0]["filesystem_write"] is True
 
 
@@ -965,3 +971,74 @@ def test_outcome_record_carries_the_resolution_basis():
     # An imported/legacy position carries no basis; it must not read as assumed.
     assert paper.build_outcome_record(_position(), "time_exit", 106.0, 0.3, now=NOW)[
         "exit_resolution"] == "unambiguous"
+
+
+# --- settlement charges fees and slippage (PM2, fee half) ----------------------
+
+def _costed(reason, exit_price, gross):
+    return build_outcome_record(_position(), reason, exit_price, gross, now=NOW)
+
+
+def test_the_recorded_r_is_net_and_the_gross_is_kept_beside_it():
+    """Both numbers on the row, so nothing downstream has to re-derive one from prices."""
+    out = _costed("time_exit", 106.0, 1 / 3)
+    assert out["r_basis"] == "intent_net_of_costs"
+    assert out["gross_result_R"] == round(1 / 3, 8)
+    assert out["fee_cost_r"] > 0 and out["slippage_cost_r"] > 0
+    assert out["result_R"] == round(out["gross_result_R"] - out["fee_cost_r"] - out["slippage_cost_r"], 8)
+    assert out["result_R"] < out["gross_result_R"]
+
+
+def test_settle_trade_plan_stays_the_authority_on_gross():
+    """The stop's exactly--1R convention lives in settle_trade_plan and must survive costing.
+
+    `apply_cost_model` can re-derive gross from the prices, and today it would agree — `risk`
+    is `|entry - stop|` by construction. The record deliberately does NOT ask it to: one
+    authority for the gross number means there is no second derivation to keep agreeing."""
+    reason, exit_price, gross = settle_trade_plan(
+        _position(), _candle(104.0, 101.0, 103.0), 103.0, 48, False)
+    assert (reason, exit_price, gross) == ("stop_loss", 102.0, -1.0)
+    assert _costed(reason, exit_price, gross)["gross_result_R"] == -1.0
+
+
+def test_a_stop_out_now_loses_more_than_the_r_it_risked():
+    """The headline consequence: -1R was never the true cost of being stopped out."""
+    out = _costed("stop_loss", 102.0, -1.0)
+    assert out["result_R"] < -1.0 and out["win_loss"] == "LOSS"
+
+
+def test_a_target_exit_is_charged_the_maker_rate_and_no_slippage():
+    """A resting limit fills AT the target: it does not cross the spread (see cost.py)."""
+    target = _costed("take_profit", 109.0, 4 / 3)
+    market = _costed("time_exit", 109.0, 4 / 3)
+    assert target["maker_fee_cost_r"] > 0 and market["maker_fee_cost_r"] == 0.0
+    assert target["slippage_cost_r"] < market["slippage_cost_r"]
+    assert target["result_R"] > market["result_R"]      # cheaper exit, same prices
+
+
+def test_win_loss_is_judged_on_the_net_number():
+    """A trade that cleared its stop but not its costs is not a win.
+
+    Calling it one is how a losing book reports a healthy win rate — and win rate feeds the
+    lifecycle's live-vs-backtest drop check."""
+    out = _costed("time_exit", 105.05, 0.05 / 3)          # +0.017R gross, under the costs
+    assert out["gross_result_R"] > 0
+    assert out["result_R"] < 0 and out["win_loss"] == "LOSS"
+
+
+def test_a_zero_risk_position_is_not_charged_rather_than_dividing_by_zero():
+    """cost.apply_cost_model's own guard, reached through the record builder."""
+    out = build_outcome_record(_position(risk=0.0), "time_exit", 106.0, 0.0, now=NOW)
+    assert out["fee_cost_r"] == 0.0 and out["slippage_cost_r"] == 0.0
+    assert out["result_R"] == out["gross_result_R"] == 0.0
+
+
+def test_the_costed_r_reaches_the_risk_guard():
+    """The reason this change exists: the breaker reads result_R, and it was reading gross.
+
+    Three stop-outs are -3R gross; the breaker's daily limit is -2R, so it tripped either way
+    here — what changes is that the number it reports is now the honest one."""
+    outs = [_costed("stop_loss", 102.0, -1.0) for _ in range(3)]
+    verdict = run_risk_guard(outs, now=NOW)
+    assert verdict["daily_pnl_r"] < -3.0                  # worse than the gross -3.0
+    assert verdict["allow_new_position"] is False
