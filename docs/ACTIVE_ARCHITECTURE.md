@@ -129,9 +129,10 @@ The live executor. Same authority chain, one process, no kernel modification.
 
 ```text
 Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
-                     socket_door.py (shared unix-socket transport for the two bridge doors)
+                     socket_door.py (shared unix-socket transport for the three bridge doors)
                      halt_bridge.py (halt-only door; kill/pause, never resume)
                      read_bridge.py (read-only door; console renders, never a mutating verb)
+                     dispatch_bridge.py (dispatch door; bounded P3 analysis kinds, never the money path)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
 Governance surface   permission.py · authority.py · safety_gate.py · budgets.py
 Work                 worker.py · providers.py · tools.py
