@@ -40,7 +40,8 @@ def _candidate(
     *,
     family="trend_pullback",
     symbol="BTCUSDT",
-    timeframe="4h",
+    timeframe="15m",
+    closed=1500,
     taker=DEFAULT_TAKER_FEE_BPS,
     maker=DEFAULT_MAKER_FEE_BPS,
     verdict="ROBUST",
@@ -54,6 +55,12 @@ def _candidate(
     No ``robustness_score``/``trades_per_parameter``: with the components absent
     ``candidate_quality`` keeps the stored verdict, which is what lets a fixture state the
     verdict it means to test instead of reverse-engineering a score that produces it.
+
+    15m and 1,500 closed trades because the backlog now also asks whether the LIFECYCLE could
+    ever judge the lineage, and these fixtures exist to exercise the other filters. Measured on
+    the real store 2026-07-30, the median 15m lineage closes ~3 trades a day and reaches the
+    20-trade window in a week; a 4h one takes 110 days. A 4h default would have made every case
+    below silently fail on a filter it was not written to test.
     """
     cost_summary = {
         "cost_model": {
@@ -82,11 +89,11 @@ def _candidate(
         "champion_score": 0.8,
         "backtest_evidence": {
             "robustness": {"verdict": verdict, "holdout_status": holdout},
-            "closed_count": 40,
-            "win_count": 18,
+            "closed_count": closed,
+            "win_count": int(closed * 0.45),
             "avg_win_R": 2.0,
             "avg_loss_R": 1.0,
-            "expectancy": round(net_r / 40, 8),
+            "expectancy": round(net_r / closed, 8) if closed else 0.0,
             "cost_summary": cost_summary,
             # Read from the factory's live target rather than written down, so these fixtures
             # follow the window when it moves — the same shape the promotion fixtures use.
@@ -331,3 +338,78 @@ def test_a_shallow_row_is_still_backlog_because_the_door_still_promotes_it():
     the door in the other direction, hiding work an operator could actually do."""
     result = _backlog([_candidate("cand_shallow", bars_replayed=12)])
     assert result["count"] == 1
+
+
+# --- can the lifecycle ever judge it? ------------------------------------------
+#
+# Every filter above asks whether the BACKTEST is believable. None asked whether a forward
+# verdict is reachable, and on 2026-07-30 that gap emptied the pool: an operator retired 63 of
+# 89 strategies — including all eleven promoted that day and the day before — because "at
+# current rates a 1d lineage needs 122d and a 1h lineage 29d to reach the 20-trade WARNING
+# window, so neither can ever be auto-demoted; today no own lineage exceeds 13 trades and zero
+# strategies are eligible for any lifecycle rule". `route_entries` picks ONE strategy per
+# context, so promoting a slow lineage does not add trades — it splits the same trades across
+# more lineages, diluting the very stream the lifecycle needs.
+
+def test_the_smallest_lifecycle_window_is_the_one_this_measures_against():
+    """Restated rather than imported (module cycle). Pinned so a ladder change cannot leave
+    the backlog measuring against a window no rule uses."""
+    from runtime.mvp_runtime.crypto.lifecycle import DEFAULT_WINDOWS
+
+    assert pool.LIFECYCLE_MIN_WINDOW_TRADES == min(DEFAULT_WINDOWS)
+
+
+def test_days_to_the_window_comes_from_the_candidates_own_evidence():
+    """1,500 trades over the 15m replay window is ~4 a day — under a week to twenty. Close to
+    the measured median for 15m on the real store, which is why the fixture uses it."""
+    fast = _candidate("cand_fast", timeframe="15m", closed=1500)
+    assert pool.days_to_lifecycle_window(fast) == pytest.approx(4.7, abs=0.2)
+
+    # 69 trades over a 350-day 4h replay is 0.2 a day: 101 days, the real BTC 4h lineage.
+    slow = _candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100)
+    assert pool.days_to_lifecycle_window(slow) == pytest.approx(101.0, abs=1.0)
+
+
+def test_a_lineage_the_runtime_could_not_grade_is_deferred_not_counted():
+    result = _backlog([_candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100)])
+    assert result["count"] == 0
+    assert [d["candidate_id"] for d in result["deferred_unjudgeable"]] == ["cand_slow"]
+    assert result["deferred_unjudgeable"][0]["days_to_lifecycle_window"] > result["max_days_to_lifecycle_window"]
+
+
+def test_deferred_is_named_never_silently_dropped():
+    """A count that hid them would read as "nothing is waiting" when what is true is
+    "nothing the runtime could grade is waiting"."""
+    result = _backlog([
+        _candidate("cand_fast"),
+        _candidate("cand_slow", family="breakout", timeframe="4h", closed=69, bars_replayed=2100),
+    ])
+    assert result["candidate_ids"] == ["cand_fast"]
+    assert len(result["deferred_unjudgeable"]) == 1
+
+
+def test_evidence_that_cannot_state_a_rate_is_deferred_rather_than_assumed_fast():
+    """A lineage that closed nothing over its replay window is the clearest case of one the
+    lifecycle will never evaluate, so an unknowable rate must not read as fast enough."""
+    result = _backlog([_candidate("cand_no_trades", closed=0)])
+    assert result["count"] == 0
+
+    no_window = _candidate("cand_no_window", bars_replayed=None)
+    assert pool.days_to_lifecycle_window(no_window) is None
+
+
+def test_an_unknown_timeframe_cannot_be_converted_and_is_deferred():
+    weird = _candidate("cand_weird", timeframe="3h", bars_replayed=3000)
+    assert pool.days_to_lifecycle_window(weird) is None
+
+
+def test_the_board_says_how_many_are_waiting_on_a_faster_timeframe(tmp_path):
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        _candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100),
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["promotion_backlog"]["count"] == 0
+    assert len(status["promotion_backlog"]["deferred_unjudgeable"]) == 1
