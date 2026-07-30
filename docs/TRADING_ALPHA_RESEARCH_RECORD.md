@@ -3,9 +3,12 @@
 **Status:** Record / notes only · **Normative authority:** None · **Owner:** Thomas
 **작성일:** 2026-07-30 · **범위:** 통계·구조 문제 제외, **기대 수익 자체를 올리는 방향**만
 
-> **구현 상태 (2026-07-30):** 아래 권장 순서의 **1~4번(Tier 0 + Tier 1)이 반영됐다** —
-> taker order flow, 세션 라벨, mark/index/premiumIndex klines, BTC 상대강도. 5번 이하
-> (positioning store, regime 조건부 라우팅, 변동성 타깃 사이징, 횡단면 롱숏)는 미구현.
+> **구현 상태 (2026-07-30):** 아래 권장 순서의 **1~5번(Tier 0 + Tier 1 + Tier 2)이 반영됐다** —
+> taker order flow, 세션 라벨, mark/index/premiumIndex klines, BTC 상대강도, positioning store.
+> 단 5번은 **수집만** 시작했고 **피처는 연결하지 않았다** — 30일 retention 대 500일 리플레이라
+> 지금 연결하면 리플레이 창의 94%가 indeterminate이 된다. 진행 상황은 일일 보드의 "포지셔닝
+> N/500일" 줄에 나오고, 실제 연결은 별도 결정이다. 6번 이하(regime 조건부 라우팅, 변동성 타깃
+> 사이징, 횡단면 롱숏)는 미구현.
 > 근거·설계 이유는 `docs/BUILD_HISTORY.md`의 해당 항목에 있다. **이 문서 본문은 리서치 시점
 > 그대로 두었다** — 무엇을 근거로 그 순서를 골랐는지가 기록의 값이고, 결과로 덮어쓰면 그게
 > 사라진다.

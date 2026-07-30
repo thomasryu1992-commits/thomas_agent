@@ -32,7 +32,7 @@ from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
-from . import account, counterfactual, digest, feedback, oi_store, paper, pool
+from . import account, counterfactual, digest, feedback, oi_store, paper, pool, positioning_store
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -166,6 +166,16 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         oi_1h = None
         warnings.append(f"hourly OI store unreadable ({exc.reason_code})")
 
+    # The positioning store's ONLY consumer is this number: it feeds no feature, so progress
+    # toward eligibility is the entire visible output of the accumulation. Reported without a
+    # warning for the reason the OI line above carries — a shortfall that will be true every
+    # morning for over a year is how a board teaches its reader to skip the warning block.
+    try:
+        positioning = positioning_store.coverage_summary(root, symbols=pool_symbols)
+    except MvpRuntimeError as exc:
+        positioning = None
+        warnings.append(f"positioning store unreadable ({exc.reason_code})")
+
     inbound = operator_mod.last_inbound_at(root)
     silent_days = _days_since(inbound["at"], now) if inbound else None
     if inbound is None:
@@ -235,6 +245,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
+        "positioning": positioning,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
             "last_inbound_source": inbound["source"] if inbound else None,
@@ -496,6 +507,13 @@ def render_status_text(status: dict[str, Any]) -> str:
         lines.append(
             f"       1h OI {oi_1h.get('min_covered_days')}/{oi_1h.get('required_days')}일 "
             f"({state}, 최소 커버 심볼 기준)"
+        )
+    positioning = status.get("positioning") or {}
+    if positioning.get("cells"):
+        state = "적격" if positioning.get("eligible") else "축적 중"
+        lines.append(
+            f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
+            f"({state}, 최소 커버 셀 기준 · 피처 미연결)"
         )
     lines.append("")
 
