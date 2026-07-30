@@ -4,7 +4,14 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-29** (`main` = `01854b3`), after the front-desk prompt started naming the
+Last updated: **2026-07-30** (`main` = `c45d99b`), after **PM1 started running** — 66 confirmed
+groups, 48,754 readings, 2.82 of the 14 days required — which rewrote section A from "built, not
+yet run" to a window with numbers in it, and closed four defects the run itself exposed: Gamma
+pagination was skipping two thirds of the head it claimed to read (#318), a touch nobody could
+trade counted as an opportunity (#321), a quoted Polymarket read returned a market missing five of
+its fields (#348), and the rule behind `is_opportunity` had changed three times under one version
+string (#350).
+Previously the same day (`main` = `01854b3`), after the front-desk prompt started naming the
 fields its parser requires (#336) — which opened a new line in section B, because establishing
 that took the production front desk down for a quota reset — and the `NO_SIZE` gate's provenance
 was corrected to say it closes a hole rather than repairs damage (#334).
@@ -106,26 +113,48 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 built, not yet run
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 2.8 of 14 days
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
-**PM1's code is essentially complete** — three venue adapters, screening, the deterministic matcher
-with operator confirmation, the fee-adjusted detector, the observation store, both scheduler
-cadences (watch and discovery), the proposal record, and the exit report all live under
-`runtime/mvp_runtime/predmarket/`. **What is missing is the run**: nothing has been confirmed and
-observed for long enough to answer the three questions the phase exists for. PM2 and PM3 are
-untouched.
+**PM1's code is complete and the window is open.** Three venue adapters, screening, the
+deterministic matcher with operator confirmation, the fee-adjusted detector, the observation store,
+both scheduler cadences (watch and discovery), the proposal record and the exit report all live
+under `runtime/mvp_runtime/predmarket/`. PM2 and PM3 are untouched.
+
+**Measured 2026-07-30T05:35Z** (`pairs_cli report`; ask the machine rather than trusting these —
+they go stale by the hour):
+
+```
+verdict   INSUFFICIENT_WINDOW      window 2.8232 of 14 days required
+groups    66 confirmed, 1 retired  71 pairing(s)
+readings  48,241 / 48,754 priced   coverage 0.9895
+totals    17,093 opportunity readings, 68 episodes
+incidents MARKET_NOT_LISTED=252
+```
+
+Confirmed groups by venue pair: **binance×polymarket 37, kalshi×polymarket 32, binance×kalshi 2,
+all three 1.** That distribution is itself an open decision — see the Binance box below.
+
+**What the run has cost so far is four defects, none of which a green test suite showed.** Each was
+found by reading what the deployed thing actually produced: Gamma was paginating past 400 rows it
+claimed to include (#318), a zero-depth touch counted toward frequency (#321), a quoted Polymarket
+read dropped five fields (#348), and three separate changes to what counts as an opportunity all
+shipped under `predmarket_opportunity.v0.1` (#350). The fourth is the one worth generalising: two
+of those bugs existed because a rebuild or a version had to be maintained **by hand**, so the fixes
+made the code state its own shape rather than restate it.
 
 Trust the boxes below over this paragraph — a prose summary of a moving track is how the previous
 version came to say "no code exists yet" above a list of shipped modules.
+
 Phasing: observe (no money) → paper (no external effect) → approval-gated live (per-order approval).
 
 - [ ] **PM0 — venue access** (operator-only, no code): Kalshi international signup (KYC), Polymarket
       Polygon/USDC wallet, and the **Korean regulatory judgment call** (grey area). Blocks PM3 only,
       not PM1/PM2.
 - [~] **PM1 — observe-only pipeline** (no money; no account except Binance's key): **code complete
-      2026-07-27, unrun.** Every box below is ticked except the operator steps and two deliberate
-      deferrals. The remaining work is a confirmation session and a calendar, not a build.
+      2026-07-27, running since 2026-07-27T09:49Z.** Every box below is ticked except the operator
+      steps and two deliberate deferrals. What remains is calendar time — the window cannot be
+      shortened, only waited out — plus the confirmation sessions that keep feeding it.
   - [x] Read-only venue adapters (Kalshi REST; Polymarket Gamma + CLOB) behind
         `kalshi_market_data` / `polymarket_market_data` safety flags, DEGRADED semantics —
         done 2026-07-26 (`runtime/mvp_runtime/predmarket/market_data.py`). One normalized
@@ -166,28 +195,58 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         pessimistic reading) and every leg records `fee_model` saying so.
   - [ ] Confirm the Binance prediction fee formula (flat vs `P x (1-P)`), then drop the
         assumption. Until then costs are over-estimated, which skips observations rather than
-        inventing them.
+        inventing them. **Since 2026-07-28 there is a schedule row** rather than a hole: a flat
+        `BINANCE_OBSERVED_TAKER_RATE = 0.02` with `flat: True, verified: False`, so a Binance leg
+        prices pessimistically and every record says the schedule is unverified. The box stays open
+        because "unverified" is a caveat, not a rate.
   - [ ] ⚠️ **Decide whether Binance belongs in a multi-week observation at all** — a venue
         question, not a bug, and the reason it is written down is that the alternative is
         rediscovering it in three weeks with an empty report.
-        Its **listing returns 40 markets regardless of `limit`, and rotates.** Two consequences,
-        both measured on 2026-07-27:
-        (a) `feeRateBps` rides on the listing and nowhere else — the watch scan re-reads a
-        confirmed leg by id, and that response is a price alone — so a leg captures its rate at
-        confirmation (#287) or never. **A market that has since left the listing cannot be
-        repaired**: re-confirming captures nothing, and the group returns `net_edge: null`
-        forever. One group was retired for exactly this after producing `readable 0/1` from
-        confirmation onward.
-        (b) The same rotation means a **confirmed Binance leg silently ages out of the corpus**
-        the pipeline can describe, which is a broader problem than the fee: a two-to-four week
-        window assumes the legs stay knowable for its duration.
-        Kalshi and Polymarket are unaffected — their fees come from a verified schedule rather
-        than the market row, and their listings are not the only source of anything the scan
-        needs. So the observation window can proceed on those two while this is decided.
-        **The options are venue-shaped, and Thomas's:** treat Binance as discovery-only (propose
-        from it, never confirm it), confirm Binance legs only for short-dated events that resolve
-        inside the window, or drop it from PM1 and revisit at PM2. Whichever, record it here —
-        "we tried Binance and the report was empty" is not a finding about prediction markets.
+        **⚠️ This box has been overtaken by events, and is corrected rather than rewritten,
+        because how it was overtaken is the finding.** 40 of the 66 confirmed groups now contain a
+        Binance leg (binance×polymarket 37, binance×kalshi 2, all-three 1). Nobody decided that:
+        the sheet proposed them, they passed verification, and they were confirmed — by Claude,
+        on 2026-07-28/29, at the operator's instruction to work the candidate queue down. **The
+        decision below is still formally open and is still Thomas's, but it is being answered by
+        default, in the direction of "keep Binance", by a window that already depends on it.**
+        Retiring those 40 groups later would not recover their history; the readings are already in
+        the denominator.
+        Two of the concerns that motivated this box were re-measured on 2026-07-30 and one of them
+        is simply wrong as written:
+        (a) **`feeRateBps` still rides on the listing and nowhere else.** A confirmed leg captures
+        its rate at confirmation (#287) or never, because the by-id path is Binance's order-book
+        endpoint and that response carries **no market metadata at all** — no title, no close time,
+        no rules, no volume, and no fee rate. That is structural to the endpoint, not an adapter
+        gap. So a Binance leg that has since left the listing cannot be repaired: re-confirming
+        captures nothing. One group was retired for exactly this after producing `readable 0/1`
+        from confirmation onward.
+        (b) **The predicted aging-out has not happened.** Over 48,754 readings across ~3 days,
+        **zero** carry a missing Binance leg. Every `MARKET_NOT_LISTED` incident in the window is
+        **Polymarket** (252 of them, and 248 are one dead token — see the box below). The
+        corollary is that the old "listing returns 40 markets regardless of `limit`" claim was
+        wrong: discovery reads `DISCOVERY_MARKET_LIMIT = 300` from Binance and screens it (300 →
+        ~186 observable on a recent run). The 40 is `BINANCE_DISCOVERY_DETAIL_LIMIT`, a budget on
+        per-topic **detail** calls inside one discovery run, not a ceiling on the listing.
+        Aging-out remains plausible over 14 days; it is now a thing to watch rather than a
+        measured problem, and the watch is `MARKET_NOT_LISTED` by venue in `pairs_cli report`.
+        **The options are venue-shaped, and Thomas's:** ratify the status quo (Binance stays, and
+        the 40 groups stand), treat it as discovery-only from here (propose from it, never confirm
+        it again) and let the existing groups run out, or retire the Binance groups and rebuild the
+        window on Kalshi×Polymarket alone — which costs the ~3 days already banked on those 40.
+        Whichever, record it here — "we tried Binance and the report was empty" is not a finding
+        about prediction markets.
+  - [ ] ⚠️ **One confirmed Polymarket leg is dead and the group should probably be retired.**
+        `predmarket_event_group_b18136e1e77430110726` has produced `MARKET_NOT_LISTED` on **248
+        consecutive readings** — every scan since 2026-07-27. Checked directly against Gamma on
+        2026-07-30: the CLOB token returns **zero rows even with the `active`/`closed` filters
+        removed**, so it is not a filter artifact and not an outage; the token is gone from the
+        venue. The group can never price again, and each scan adds another unreadable row to the
+        denominator that coverage is computed from (currently 0.9895, and this group is most of the
+        shortfall). Retiring it is the established treatment — a group was retired for the
+        analogous Binance case — but it is a write to the window an operator is curating, so it is
+        recorded here rather than done. **Not to be confused with the second affected group**
+        (`...6a68084e6504`, Puffpaw FDV): that token is live, `active: true, closed: false`,
+        expiring 2027-01-01, with only 4 incidents — transient, leave it alone.
   - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
         (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
         the venues a confirmed group needs**, prices every pairing inside every group, and
@@ -215,11 +274,23 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         not be stitched across an outage, and one still running has not ended. **The
         denominator is readings, not scans** — dividing by attempts would let an outage read as
         a quiet market.
-  - [ ] **Run it.** The 2–4 week observation window, on the machine that will host it: confirm
-        event groups (`pairs_cli confirm`, per event, each with its resolution-criteria note),
-        register the `pm_scan watch` and `discovery` schedules, then leave it alone and read
-        `pairs_cli report`. **This is the whole of what PM1 still owes** — calendar time and an
-        operator session, not code.
+  - [~] **Run it.** Started **2026-07-27T09:49Z** on this Docker host. Both `pm_scan` schedules are
+        registered and firing, 66 groups are confirmed, and the report reads
+        `INSUFFICIENT_WINDOW` at 2.82 of 14 days — which is the verdict working, not a problem.
+        **This is still the whole of what PM1 owes, and it is now waiting rather than building.**
+        Two things learned from running it that the plan did not anticipate:
+        (a) **The candidate queue empties, and refills only on rotation.** Discovery samples a head
+        plus a tail that rotates every 6 hours (00/06/12/18 UTC), so working the sheet to zero is
+        normal and means "come back after the next flip", not "no pairings exist". A confirmation
+        session is therefore ~4 short passes a day, not one long one.
+        (b) **Automating those passes failed, and the failure was silent.** A scheduled task fired
+        on time (`lastRunAt` advanced, `nextRunAt` moved on) and did no work at all — the sheet was
+        never regenerated, nothing in the repo was touched. Both a cron entry and a one-off
+        `fireAt` behaved this way. What makes it worth writing down is that **the scheduler's
+        bookkeeping advances identically whether the run did anything or not**, so an unattended
+        pass has no failure signal: it would read as "candidates are being confirmed" while nothing
+        happened. The task is disabled and the passes are manual. Anything that automates this
+        later needs an external check — the sheet's mtime is the cheap one.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
