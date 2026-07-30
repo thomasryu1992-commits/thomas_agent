@@ -358,7 +358,7 @@ def test_reference_cache_serves_one_read_per_timeframe_across_a_fan_out():
     The proxy symbol is a constant, so across a fan-out the only distinct reference reads are
     one per timeframe — while `attach_reference` runs once per (symbol, timeframe). Without a
     cache a 4-non-proxy-symbol × 2-timeframe grid asks eight times for two answers."""
-    from runtime.mvp_runtime.crypto.market_data import ReferenceCandleCache
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
 
     class _CountingCollector(MockMarketDataCollector):
         def __init__(self):
@@ -369,7 +369,7 @@ def test_reference_cache_serves_one_read_per_timeframe_across_a_fan_out():
             return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
 
     collector = _CountingCollector()
-    cache = ReferenceCandleCache(collector)
+    cache = PeerCandleCache(collector)
     for symbol in ("ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"):
         for timeframe in ("1h", "4h"):
             snapshot = {"symbol": symbol, "timeframe": timeframe, "candles": [_candle(0)]}
@@ -385,7 +385,7 @@ def test_reference_cache_caches_the_refusal_too():
     """A venue that just refused will refuse again in the same second, and re-asking once per
     remaining context is how a rate cap gets reached. Every context still gets its own code."""
     from runtime.mvp_runtime.errors import ToolError
-    from runtime.mvp_runtime.crypto.market_data import ReferenceCandleCache
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
 
     class _BrokenCollector(MockMarketDataCollector):
         def __init__(self):
@@ -396,7 +396,7 @@ def test_reference_cache_caches_the_refusal_too():
             raise ToolError("TOOL_TRANSPORT", "boom")
 
     collector = _BrokenCollector()
-    cache = ReferenceCandleCache(collector)
+    cache = PeerCandleCache(collector)
     for symbol in ("ETHUSDT", "SOLUSDT", "BNBUSDT"):
         snapshot = {"symbol": symbol, "timeframe": "1h", "candles": [_candle(0)]}
         assert attach_reference(
