@@ -42,6 +42,7 @@ from .market_data import (
     MARKET_DATA_DEGRADED,
     TIMEFRAMES,
     MarketDataCollector,
+    PerSymbolFeedCache,
     collect_market_data,
     degraded_market_data_record,
 )
@@ -550,6 +551,15 @@ def run_pool_cycle(
     contexts = pool_cycle_contexts(root, default_timeframe=default_timeframe) or [
         (default_symbol, default_timeframe)
     ]
+
+    # Both Coinalyze series are per-SYMBOL, but `attach_feeds` runs per (symbol, timeframe) —
+    # so this fan-out asked for each symbol's series four times, 40 requests to read 10. The
+    # redundancy was invisible until the hourly store added five more per fire and the vendor
+    # started refusing whoever came last: ETH and SOL degraded on every Coinalyze series,
+    # including the daily open interest and liquidations the router depends on. The cache lives
+    # for THIS fan-out only, so it cannot serve a stale day to a later fire.
+    if liquidation_feed is not None:
+        liquidation_feed = PerSymbolFeedCache(liquidation_feed)
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []

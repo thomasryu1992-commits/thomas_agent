@@ -14,6 +14,22 @@ indeterminate → no entry (fail-closed, the source's own rule).
 Warm-up rows carry ``data_quality_status="WARMUP"`` when any of close/atr/rsi/adx is
 still None (the source's definition), so downstream health checks can refuse to trade
 on an unwarmed row without re-deriving the rule.
+
+**Beyond the source port: order flow and session.** Almost everything above is a
+transformation of one series — the OHLCV history — so twenty template families built on
+it recombine information the pool already holds. Two column groups here are not:
+
+- ``taker_*`` reads the kline legs the collector already downloads and used to discard
+  (see ``market_data.Candle``). Who crossed the spread is not recoverable from OHLC: two
+  bars with identical open/high/low/close differ entirely depending on whether the move
+  was bought into or sold into. It costs no request, no vendor and no grant.
+- ``session`` / ``day_type`` come from the timestamp already on every row. The market is
+  continuous but its participants are not, and the composition of who is trading is a
+  property no price transformation encodes.
+
+Both follow the open-interest absence rule rather than the ``liquidation_spike_ratio``
+one: missing input yields None (indeterminate → no entry), never a constant a mined
+condition could match on.
 """
 
 from __future__ import annotations
@@ -46,6 +62,35 @@ OI_Z_WINDOW = 30            # OI readings the z-score judges the current level a
 OI_Z_MIN_PERIODS = 10
 LIQ_MA_WINDOW = 50          # liquidation spike baseline window
 LIQ_MA_MIN_PERIODS = 10
+
+# --- taker order flow ---------------------------------------------------------
+# Windows for the flow derivatives. 20 matches VOLUME_Z_WINDOW deliberately: the two
+# describe the same bars from different sides (how much traded vs who was the aggressor),
+# and a threshold mined on one should mean the same span as one mined on the other.
+TAKER_FLOW_Z_WINDOW = 20
+TAKER_FLOW_MA_WINDOW = 20
+TAKER_FLOW_MA_MIN_PERIODS = 10
+TRADE_SIZE_Z_WINDOW = 20
+TRADE_SIZE_Z_MIN_PERIODS = 10
+
+# --- session context ----------------------------------------------------------
+# UTC hour blocks. Crypto trades continuously but its PARTICIPANTS do not: venue activity
+# concentrates in regional working hours, and the composition differs (retail-heavy vs
+# desk-heavy), which is what a session label is actually a proxy for.
+SESSION_BOUNDS: tuple[tuple[str, int, int], ...] = (
+    ("ASIA", 0, 8),      # 00:00-07:59 UTC
+    ("EUROPE", 8, 16),   # 08:00-15:59 UTC
+    ("US", 16, 24),      # 16:00-23:59 UTC
+)
+SESSION_VALUES = frozenset(name for name, _lo, _hi in SESSION_BOUNDS)
+DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
+
+# The longest bar a session label can describe. A bar longer than one session block spans
+# several of them, so the label would be a property of the bar's OPEN hour rather than of
+# the market during the bar — and at 1d every bar opens at 00:00, making it the CONSTANT
+# "ASIA". A constant that a mined condition can match on is the `liquidation_spike_ratio`
+# hazard, so the column goes None instead: no session, no session-conditioned entry.
+MAX_SESSION_BAR_MINUTES = 4 * 60
 
 
 def _asof_align(
@@ -145,6 +190,120 @@ def classify_market_regime(row: dict[str, Any], adx_threshold: float = ADX_TREND
 # The minimum candle count for a fully-warmed row: bb_width_percentile needs
 # BB_PERIOD - 1 warm-up plus max(10, PERCENTILE_WINDOW // 5) observations.
 MIN_WARM_CANDLES = BB_PERIOD - 1 + max(10, PERCENTILE_WINDOW // 5)
+
+
+# --- taker order flow ---------------------------------------------------------
+
+def _taker_flow_columns(candles: list[dict[str, Any]]) -> dict[str, list]:
+    """Order-flow columns from the kline legs the venue already sent.
+
+    ``taker_buy_base`` is the volume bought by the side that CROSSED the spread. Over the
+    bar's total volume it says who was the aggressor — the one thing in this module that
+    price history cannot reconstruct, since a bar's OHLC is identical whether the move was
+    bought into or sold into.
+
+    Every column is indeterminate rather than constant when its input is missing (the
+    open-interest posture, not the ``liquidation_spike_ratio`` one): a snapshot collected
+    before these legs existed, or a venue that stops sending them, must make a flow spec
+    stop trading — never let it match on a fabricated balance of 0.5.
+
+    A reported buy volume outside ``[0, volume]`` is impossible, so it reads as unknown
+    rather than being clamped into range: clamping would convert a broken payload into a
+    confident extreme reading, which is the direction that trades."""
+    volumes = [c.get("volume") for c in candles]
+    taker_base = [c.get("taker_buy_base") for c in candles]
+    trade_counts = [c.get("trade_count") for c in candles]
+
+    ratio: list[float | None] = []
+    for volume, bought in zip(volumes, taker_base):
+        if not _is_positive(volume) or not isinstance(bought, (int, float)) or isinstance(bought, bool):
+            ratio.append(None)
+            continue
+        share = float(bought) / float(volume)
+        ratio.append(share if 0.0 <= share <= 1.0 else None)
+
+    # Signed form, so a threshold reads the same on both sides of balance and a mined
+    # `>= 0.2` means "buyers 60% of volume" rather than an offset from an implicit 0.5.
+    imbalance = [2.0 * r - 1.0 if r is not None else None for r in ratio]
+
+    # Trade SIZE, not trade count: the count is venue-scale (BTC prints far more trades
+    # than SOL), but volume-per-trade normalizes it into "how big is the average
+    # participant right now" — which is what separates a retail tape from a desk one.
+    avg_trade_size: list[float | None] = []
+    for volume, count in zip(volumes, trade_counts):
+        if not _is_positive(volume) or not _is_positive(count):
+            avg_trade_size.append(None)
+        else:
+            avg_trade_size.append(float(volume) / float(count))
+
+    return {
+        "taker_buy_ratio": ratio,
+        "taker_flow_imbalance": imbalance,
+        "taker_flow_zscore": indicators.zscore(imbalance, TAKER_FLOW_Z_WINDOW),
+        # Persistent pressure rather than one bar's print: a single bar's imbalance is
+        # mostly that bar's own move, while its rolling mean is the part that survived
+        # several bars — the closest this row gets to a cumulative-delta slope.
+        "taker_flow_ma": indicators.rolling_mean(
+            imbalance, TAKER_FLOW_MA_WINDOW, TAKER_FLOW_MA_MIN_PERIODS
+        ),
+        "avg_trade_size": avg_trade_size,
+        "avg_trade_size_zscore": indicators.zscore(
+            avg_trade_size, TRADE_SIZE_Z_WINDOW, TRADE_SIZE_Z_MIN_PERIODS
+        ),
+        "trade_count_zscore": indicators.zscore(
+            [float(c) if _is_positive(c) else None for c in trade_counts],
+            TRADE_SIZE_Z_WINDOW, TRADE_SIZE_Z_MIN_PERIODS,
+        ),
+    }
+
+
+def _is_positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+# --- session context ----------------------------------------------------------
+
+def classify_session(hour_utc: int) -> str:
+    """The UTC hour's session block. Total over 0-23 by construction."""
+    for name, low, high in SESSION_BOUNDS:
+        if low <= hour_utc < high:
+            return name
+    return SESSION_BOUNDS[-1][0]
+
+
+def _session_columns(candles: list[dict[str, Any]]) -> dict[str, list]:
+    """``session`` and ``day_type`` per bar, or None where the label cannot mean anything.
+
+    The bar's duration is read from the series itself (first candle open→close) rather
+    than from a ``timeframe`` key, so the rule holds identically in the HTF recursion,
+    which passes candles alone. Bars longer than one session block get ``session=None``
+    (see :data:`MAX_SESSION_BAR_MINUTES`); ``day_type`` stays available at every duration
+    up to a day, because a daily bar genuinely IS one weekday or one weekend day."""
+    from .. import timeutil as _timeutil
+
+    minutes: float | None = None
+    if candles:
+        try:
+            opened = _timeutil.parse_iso(str(candles[0]["open_time"]))
+            closed = _timeutil.parse_iso(str(candles[0]["close_time"]))
+            span = (closed - opened).total_seconds() / 60.0
+            minutes = span if span > 0 else None
+        except (KeyError, TypeError, ValueError):
+            minutes = None
+    session_applies = minutes is not None and minutes <= MAX_SESSION_BAR_MINUTES
+
+    sessions: list[str | None] = []
+    day_types: list[str | None] = []
+    for candle in candles:
+        try:
+            opened = _timeutil.parse_iso(str(candle["open_time"]))
+        except (KeyError, TypeError, ValueError):
+            sessions.append(None)
+            day_types.append(None)
+            continue
+        sessions.append(classify_session(opened.hour) if session_applies else None)
+        day_types.append("WEEKEND" if opened.weekday() >= 5 else "WEEKDAY")
+    return {"session": sessions, "day_type": day_types}
 
 # --- higher-timeframe (HTF) context -------------------------------------------
 
@@ -304,6 +463,12 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         open_interest = open_interest_change_pct = open_interest_zscore = [None] * len(candles)
 
+    # Order flow and session context. Both are pure functions of the candle list — no feed,
+    # no extra request — so they are computed unconditionally; their own absence rules
+    # (missing legs → None, over-long bars → None) live inside the helpers.
+    flow = _taker_flow_columns(candles)
+    session = _session_columns(candles)
+
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
         close = closes[i]
@@ -353,6 +518,26 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "mark_price": close,
             "index_price": close,
             "mark_index_basis_bps": 0.0,
+            # Raw flow legs as the venue reported them — evidence only, never mintable, for
+            # the reason raw open_interest is not mintable: they are venue-scale quantities,
+            # so a threshold on one would mean a different thing on every symbol and a
+            # different thing again after the venue grows.
+            "quote_volume": candle.get("quote_volume"),
+            "trade_count": candle.get("trade_count"),
+            "taker_buy_base": candle.get("taker_buy_base"),
+            "taker_buy_quote": candle.get("taker_buy_quote"),
+            "avg_trade_size": flow["avg_trade_size"][i],
+            # ...and the normalized derivatives, which are the mintable ones.
+            "taker_buy_ratio": flow["taker_buy_ratio"][i],
+            "taker_flow_imbalance": flow["taker_flow_imbalance"][i],
+            "taker_flow_zscore": flow["taker_flow_zscore"][i],
+            "taker_flow_ma": flow["taker_flow_ma"][i],
+            "avg_trade_size_zscore": flow["avg_trade_size_zscore"][i],
+            "trade_count_zscore": flow["trade_count_zscore"][i],
+            # Who is at the desk. Categorical, so the validator admits only ==/!= and the
+            # factory cannot mine a threshold across a label that has no ordering.
+            "session": session["session"][i],
+            "day_type": session["day_type"][i],
             # HTF context: the last CLOSED higher-timeframe candle's read, or None.
             **{col: htf[col][i] for col in HTF_COLUMNS},
         }

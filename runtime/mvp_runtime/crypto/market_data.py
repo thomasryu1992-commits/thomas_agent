@@ -177,6 +177,19 @@ class Candle:
     close: float
     volume: float
     close_time: str  # UTC ISO-8601, candle close
+    # The venue sends these in the SAME kline row as the OHLCV above — they cost no extra
+    # request, no extra vendor and no extra grant, and the collector discarded them for the
+    # whole life of the port. `taker_buy_base` is the load-bearing one: over `volume` it is
+    # the bar's order-flow imbalance, which is the only field here that price history cannot
+    # reconstruct. See `features` for what is derived and why only the normalized forms are
+    # mintable.
+    #
+    # Default None, never 0.0: a bar whose venue did not report them is *unknown*, and the
+    # fail-closed evaluator must treat it as indeterminate rather than as balanced flow.
+    quote_volume: float | None = None    # notional turnover — comparable across symbols
+    trade_count: float | None = None     # number of trades in the bar
+    taker_buy_base: float | None = None  # base-asset volume bought by the AGGRESSOR side
+    taker_buy_quote: float | None = None # the same in quote terms
 
 
 @dataclass
@@ -197,6 +210,24 @@ class MarketDataCollector(Protocol):
     def collect(
         self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int
     ) -> MarketSnapshot: ...
+
+
+def _optional_float(row: list, index: int) -> float | None:
+    """``row[index]`` as a float, or None when absent/unparseable.
+
+    The counterpart of the required OHLCV coercion: these fields must never turn a venue
+    payload change into a raised error (the cycle would stop trading everything, not just
+    the specs that read them), and must never turn one into a fabricated number either.
+    None is the one answer that is both."""
+    if index >= len(row):
+        return None
+    value = row[index]
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _frac(seed: str) -> float:
@@ -233,6 +264,14 @@ class MockMarketDataCollector:
             high = round(max(open_price, close) * 1.005, 6)
             low = round(min(open_price, close) * 0.995, 6)
             volume = round(1000.0 * (0.5 + _frac(f"{symbol}|{timeframe}|v{i}")), 3)
+            # Flow legs, synthesized on the same hash walk so a mock run exercises the
+            # taker_* columns instead of leaving them permanently indeterminate. The buy
+            # share is deliberately correlated with the bar's own drift (a rising bar was
+            # bought), because a mock whose flow is independent of its price would make the
+            # divergence families untestable — they exist precisely to catch the case where
+            # the two DISAGREE, and a mock that never agrees cannot show the difference.
+            buy_share = min(0.9, max(0.1, 0.5 + drift * 8.0 + (_frac(f"{symbol}|{timeframe}|t{i}") - 0.5) * 0.2))
+            trade_count = round(20.0 + 180.0 * _frac(f"{symbol}|{timeframe}|n{i}"))
             opened = self._ANCHOR + i * step
             candles.append(Candle(
                 open_time=timeutil.format_iso(opened),
@@ -242,6 +281,10 @@ class MockMarketDataCollector:
                 close=close,
                 volume=volume,
                 close_time=timeutil.format_iso(opened + step),
+                quote_volume=round(volume * close, 6),
+                trade_count=float(trade_count),
+                taker_buy_base=round(volume * buy_share, 6),
+                taker_buy_quote=round(volume * buy_share * close, 6),
             ))
         return MarketSnapshot(
             symbol=symbol,
@@ -327,6 +370,15 @@ def collect_market_data(
             "close": c.close,
             "volume": c.volume,
             "close_time": c.close_time,
+            # Present but possibly None — the snapshot states what the venue reported,
+            # including that it reported nothing. Dropping the keys when they are None
+            # would make "the venue stopped sending flow" indistinguishable from "this
+            # snapshot predates the flow legs", and the two deserve the same downstream
+            # treatment only by accident.
+            "quote_volume": c.quote_volume,
+            "trade_count": c.trade_count,
+            "taker_buy_base": c.taker_buy_base,
+            "taker_buy_quote": c.taker_buy_quote,
         }
         for c in result.candles
         if isinstance(c, Candle)
@@ -544,7 +596,11 @@ class BinanceFuturesCollector:
 
         parsed: list[tuple[int, Candle]] = []
         for row in rows:
-            # Kline row: [open_time_ms, open, high, low, close, volume, close_time_ms, ...]
+            # The venue's kline row is TWELVE fields, not seven:
+            #   [0] open_time_ms  [1] open  [2] high  [3] low  [4] close  [5] volume
+            #   [6] close_time_ms [7] quote_volume [8] trade_count
+            #   [9] taker_buy_base [10] taker_buy_quote [11] unused
+            # Fields 7-10 arrive in every response the collector already makes.
             if not isinstance(row, list) or len(row) < 7:
                 raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response")
             try:
@@ -557,6 +613,14 @@ class BinanceFuturesCollector:
                     close=float(row[4]),
                     volume=float(row[5]),
                     close_time=self._iso(close_ms),
+                    # Optional, deliberately: the OHLCV legs above are the contract and a row
+                    # missing them is malformed, but a row missing the flow legs is a venue
+                    # that changed its payload — and the honest response to that is columns
+                    # that go indeterminate (so flow specs stop trading), not a dead cycle.
+                    quote_volume=_optional_float(row, 7),
+                    trade_count=_optional_float(row, 8),
+                    taker_buy_base=_optional_float(row, 9),
+                    taker_buy_quote=_optional_float(row, 10),
                 )
             except (TypeError, ValueError):
                 raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response") from None
@@ -670,6 +734,80 @@ class LiquidationFeed(Protocol):
 
     def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
                               interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]: ...
+
+
+class PerSymbolFeedCache:
+    """One vendor read per (symbol, series) for the life of one fan-out.
+
+    Both Coinalyze series are **per-symbol**: `liquidation_history` and
+    `open_interest_history` take a symbol and a day count and nothing else. But
+    `cycle.attach_feeds` runs once per (symbol, TIMEFRAME), so the shipped 20-context
+    fan-out asked for each symbol's series **four times** — 40 requests to read 10.
+    Downstream that redundancy was invisible: the series is aligned onto each timeframe's
+    candles after the fetch, so four identical responses produced four correct frames.
+
+    It stopped being invisible when the hourly store added five more requests per fire.
+    Measured on the first fire after that deployed: BNB/BTC/DOGE returned `ok` and
+    ETH/SOL came back `degraded` on **every** Coinalyze series — including the daily
+    open interest and the liquidations the router already depended on. Contexts are
+    visited in a fixed order, so a per-window request cap always lands on whoever is
+    last, and the first symbols look healthy while the last ones silently lose features.
+
+    Caching is behaviour-preserving rather than a trade-off, and that is the reason to
+    prefer it over raising the cap or slowing the loop: within one fire the answer to
+    "what was this symbol's daily series" cannot legitimately differ between the 15m
+    context and the 4h one. The cache lives for **one fan-out** — it is constructed per
+    call in `run_pool_cycle` and thrown away — so it can never serve a stale day to a
+    later fire.
+
+    Failures are cached too, deliberately. A vendor that just refused this symbol will
+    refuse it again in the same second, and re-asking three more times per fire is how
+    the cap was reached in the first place; the refusal is re-raised identically so every
+    context still records its own reason code.
+    """
+
+    def __init__(self, feed: Any):
+        self._feed = feed
+        self._results: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        self._errors: dict[tuple[str, ...], BaseException] = {}
+        self.calls = 0
+
+    @property
+    def feed_id(self) -> str:
+        return getattr(self._feed, "feed_id", "none")
+
+    @property
+    def network_egress(self) -> bool:
+        return bool(getattr(self._feed, "network_egress", False))
+
+    def _cached(self, key: tuple[str, ...], fetch: Any) -> list[dict[str, Any]]:
+        if key in self._errors:
+            raise self._errors[key]
+        if key in self._results:
+            return self._results[key]
+        self.calls += 1
+        try:
+            rows = fetch()
+        except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._errors[key] = exc
+            raise
+        self._results[key] = rows
+        return rows
+
+    def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        return self._cached(
+            ("liquidations", str(symbol), str(days)),
+            lambda: self._feed.liquidation_history(
+                symbol, days=days, timeout_seconds=timeout_seconds),
+        )
+
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
+                              interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
+        return self._cached(
+            ("open_interest", str(symbol), str(days), str(interval)),
+            lambda: self._feed.open_interest_history(
+                symbol, days=days, timeout_seconds=timeout_seconds, interval=interval),
+        )
 
 
 class NoLiquidationFeed:
