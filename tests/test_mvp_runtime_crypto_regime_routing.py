@@ -366,3 +366,51 @@ def test_a_cycle_with_no_regime_evidence_is_unchanged(tmp_path):
     record = _cycle(tmp_path, None)
     assert record["route_status"] == STATUS_ENTRY_CANDIDATE
     assert record["regime_excluded"] == []
+
+
+# --- the board ------------------------------------------------------------------
+
+def test_the_board_counts_regime_exclusions_as_a_share_of_cycles_read(tmp_path):
+    """The same question the demotion reasons answer — why is this not trading — arriving by a
+    path that is not a status. A regime-excluded entry stays PAPER_ACTIVE and keeps its routing
+    slot, so nothing in the pool says it is inert."""
+    import json
+
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = tmp_path / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for i in range(4):
+        rows.append(json.dumps({
+            "kind": "crypto_cycle",
+            "record": {"symbol": "ETHUSDT", "timeframe": "1h", "route_status": STATUS_NO_ENTRY,
+                       "regime_excluded": ["S001"] if i < 3 else []},
+        }))
+    (ledger / RECORDS_FILE).write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["regime_excluded_cycles"] == {"S001": 3}
+    assert status["cycles_read"] == 4
+    assert "S001 3/4" in render_status_text(status)
+
+
+def test_the_board_says_nothing_when_no_strategy_was_excluded(tmp_path):
+    """A line that is empty on almost every board teaches its reader to skip it."""
+    import json
+
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = tmp_path / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / RECORDS_FILE).write_text(json.dumps({
+        "kind": "crypto_cycle",
+        "record": {"symbol": "ETHUSDT", "timeframe": "1h",
+                   "route_status": STATUS_ENTRY_CANDIDATE, "regime_excluded": []},
+    }) + "\n", encoding="utf-8")
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["regime_excluded_cycles"] == {}
+    assert "regime 배제" not in render_status_text(status)
