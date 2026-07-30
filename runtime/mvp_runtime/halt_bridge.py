@@ -50,17 +50,12 @@ Failure directions, each chosen once:
 
 from __future__ import annotations
 
-import json
-import os
-import socket
-import socketserver
-import stat
 from pathlib import Path
 from typing import Any
 
-from . import control
+from . import control, socket_door
 from .control import ControlStore
-from .errors import ControlBlocked, MvpRuntimeError
+from .errors import ControlBlocked
 from .store import LedgerStore
 
 # The actor recorded on every control event this door produces. Deliberately NOT
@@ -76,31 +71,12 @@ _ALLOWED: frozenset[str] = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 # in its own subdirectory so the socket's permissions can be set without touching the
 # permissions of governance state.
 SOCKET_REL = ".runtime_governance_state/bridge/halt.sock"
-
-# The socket is group-readable/writable and nothing else: the assistant's container runs
-# under a different uid than this runtime, so the shared group IS the access control. World
-# access would make "any process on this host" the authorization, which is wider than the
-# host-console precedent this module rests on.
-SOCKET_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP  # 0o660
-
-# One request per connection, and a short deadline: a client that opens the socket and then
-# says nothing must not be able to hold the door. Halting is a small synchronous action, so
-# a generous-but-bounded window is right.
-_REQUEST_TIMEOUT_SECONDS = 10.0
-
-# A halt request is a handful of bytes. Anything larger is not one, and reading it would
-# only give a malformed frame a bigger buffer to arrive in.
-_MAX_FRAME_BYTES = 8192
+SOCKET_ENV = "MVP_HALT_BRIDGE_SOCKET"
 
 
 def socket_path(root: Path | None = None) -> Path:
     """The socket path, overridable per-deployment via ``MVP_HALT_BRIDGE_SOCKET``."""
-    override = os.environ.get("MVP_HALT_BRIDGE_SOCKET", "").strip()
-    if override:
-        return Path(override)
-    from .paths import repo_root
-
-    return (root if root is not None else repo_root()) / SOCKET_REL
+    return socket_door.resolve_socket_path(SOCKET_ENV, SOCKET_REL, root)
 
 
 def apply_halt(
@@ -155,89 +131,20 @@ def apply_halt(
     }
 
 
-class _Handler(socketserver.BaseRequestHandler):
-    """One JSON object in, one JSON object out, connection closed."""
+def open_door(
+    path: Path,
+    *,
+    control_store: ControlStore,
+    ledger: LedgerStore,
+) -> socket_door.SocketDoor:
+    """Listen on ``path`` and serve halts from it.
 
-    def handle(self) -> None:
-        self.request.settimeout(_REQUEST_TIMEOUT_SECONDS)
-        try:
-            raw = self._read_frame()
-        except (OSError, socket.timeout):
-            return  # The peer went away or stalled; there is nobody to answer.
-
-        try:
-            try:
-                request = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise ControlBlocked("MALFORMED_REQUEST", f"request is not valid JSON: {exc}") from exc
-            payload = apply_halt(
-                request,
-                control_store=self.server.control_store,   # type: ignore[attr-defined]
-                ledger=self.server.ledger,                 # type: ignore[attr-defined]
-            )
-        except MvpRuntimeError as exc:
-            payload = {"ok": False, "reason_code": exc.reason_code, "reason": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — a door must answer, then keep standing
-            payload = {"ok": False, "reason_code": "BRIDGE_ERROR", "reason": str(exc)}
-
-        try:
-            self.request.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
-        except OSError:
-            return
-
-    def _read_frame(self) -> bytes:
-        chunks: list[bytes] = []
-        size = 0
-        while True:
-            chunk = self.request.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > _MAX_FRAME_BYTES:
-                raise OSError("frame too large")
-            if b"\n" in chunk:
-                break
-        return b"".join(chunks).split(b"\n", 1)[0]
-
-
-# Windows has no ``AF_UNIX``, so ``socketserver.ThreadingUnixStreamServer`` does not exist
-# there — and naming it at class-definition time made this whole module unimportable on that
-# platform, which took the permission-surface tests down with it. The door is deployment-only
-# (Linux containers); the *rules* it enforces are not, and the rules are what the tests are
-# for. So the base is resolved at import and an absent one becomes a typed refusal at the
-# moment someone tries to listen, rather than an ImportError for everyone who only wanted to
-# ask whether `resume` gets through.
-_UNIX_STREAM_SERVER = getattr(socketserver, "ThreadingUnixStreamServer", None)
-UNIX_SOCKETS_AVAILABLE = _UNIX_STREAM_SERVER is not None
-
-
-class HaltBridgeServer(_UNIX_STREAM_SERVER or object):  # type: ignore[misc]
-    """The listener. Threading so one stalled peer cannot wedge the door."""
-
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(
-        self,
-        path: Path,
-        *,
-        control_store: ControlStore,
-        ledger: LedgerStore,
-    ) -> None:
-        if not UNIX_SOCKETS_AVAILABLE:
-            raise ControlBlocked(
-                "UNIX_SOCKETS_UNAVAILABLE",
-                "this platform has no AF_UNIX; the halt door listens on a unix socket only",
-            )
-        self.control_store = control_store
-        self.ledger = ledger
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # A stale socket file from an unclean shutdown would make bind() fail. Removing it
-        # is safe precisely because a live server holds no lock on the path — if another
-        # server is actually running, its own bind already owns the inode and this
-        # deployment contract is one bridge per state directory.
-        if path.exists() and path.is_socket():
-            path.unlink()
-        super().__init__(str(path), _Handler)
-        os.chmod(path, SOCKET_MODE)
+    The framing, the deadline, the size cap and the error envelope come from
+    ``socket_door`` — shared with the read door so a malformed frame cannot be answered two
+    different ways. What is specific to *this* door is the one thing handed over: the apply
+    function, and therefore the verb set.
+    """
+    return socket_door.SocketDoor(
+        path,
+        lambda request: apply_halt(request, control_store=control_store, ledger=ledger),
+    )
