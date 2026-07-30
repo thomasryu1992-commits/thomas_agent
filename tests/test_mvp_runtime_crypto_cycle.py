@@ -223,6 +223,30 @@ def test_status_line_summarizes(tmp_path):
                     RealPaperStore(root=tmp_path, authorization=_AUTH))
     line = cycle_status_line(record)
     assert "verdict=ALLOW" in line and "opened=LONG:S_ALWAYS" in line
+    assert "refused=" not in line, "a field empty on almost every line must stay off it"
+
+
+def test_status_line_shows_a_cap_refusal_with_the_books_shape():
+    """A refusal an operator cannot see is a refusal they cannot act on (the #359 lesson).
+    Previously the two count caps reached only `paper_records`' event stream, which was
+    tolerable while they fired at twenty positions and is not now that a third cap can decline
+    a half-full book. The numbers ride along because the book's SHAPE is the actionable part."""
+    record = {
+        "verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE",
+        "open_refused": {
+            "reason_code": "POSITION_LIMIT_DIRECTIONAL_SKEW", "direction": "LONG",
+            "aligned": 4, "opposing": 0, "lean_after": 5, "limit": 4,
+        },
+    }
+    line = cycle_status_line(record)
+    assert "refused=POSITION_LIMIT_DIRECTIONAL_SKEW(LONG 4v0 lean=5>4)" in line
+
+    # The two count caps surface too, without inventing numbers they do not carry.
+    counted = cycle_status_line({
+        "verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE",
+        "open_refused": {"reason_code": "POSITION_LIMIT_PORTFOLIO", "open_positions": 20, "limit": 20},
+    })
+    assert "refused=POSITION_LIMIT_PORTFOLIO" in counted and "lean=" not in counted
 
 
 # --- the scheduler template ---------------------------------------------------

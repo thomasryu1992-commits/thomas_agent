@@ -594,6 +594,164 @@ def test_per_symbol_cap_refuses_a_third_timeframe_on_one_symbol(tmp_path, monkey
     assert summary["open_refused"]["symbol"] == "BTCUSDT"
 
 
+# --- the third cap: the book's directional SHAPE, not its size ------------------
+#
+# The two caps above bound how many positions exist and how many share a symbol. Neither
+# bounds how many point the same way, so twenty simultaneous longs were permitted — the F1
+# hazard in docs/TRADING_STRATEGY_REVIEW_RECORD.md, where one market move becomes twenty
+# correlated verdicts about twenty different strategies.
+
+def _book(longs, shorts, *, unknown=0):
+    """An `open_positions`-shaped list — only `direction` is read."""
+    return [
+        (None, {"direction": d})
+        for d in (["LONG"] * longs + ["SHORT"] * shorts + [None] * unknown)
+    ]
+
+
+def test_the_skew_cap_is_derived_from_the_per_symbol_cap():
+    """Not a chosen number: the rule is "the net directional bet may never exceed one symbol's
+    full allocation", which is why it has an English statement with no constant in it."""
+    assert paper.MAX_DIRECTIONAL_SKEW == paper.MAX_POSITIONS_PER_SYMBOL
+
+
+def test_the_skew_cap_is_not_a_concurrency_cap_in_disguise():
+    """The property that makes the derived value the right one. A full book is still reachable —
+    12 long + 8 short is net 4 at the cap — so what is forbidden is a full book that is ONE-WAY,
+    not a full book. If this ever failed, the cap would be silently shrinking the portfolio."""
+    longs = (paper.MAX_CONCURRENT_POSITIONS + paper.MAX_DIRECTIONAL_SKEW) // 2
+    shorts = paper.MAX_CONCURRENT_POSITIONS - longs
+    admitted, refusal = paper.directional_skew_admits(_book(longs - 1, shorts), "LONG")
+    assert admitted and refusal is None
+    assert longs + shorts == paper.MAX_CONCURRENT_POSITIONS
+
+
+def test_an_empty_book_admits_up_to_the_cap_then_declines():
+    for aligned in range(paper.MAX_DIRECTIONAL_SKEW):
+        admitted, _ = paper.directional_skew_admits(_book(aligned, 0), "LONG")
+        assert admitted, aligned
+    admitted, refusal = paper.directional_skew_admits(_book(paper.MAX_DIRECTIONAL_SKEW, 0), "LONG")
+    assert not admitted
+    assert refusal["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW"
+    assert refusal["lean_after"] == paper.MAX_DIRECTIONAL_SKEW + 1
+    assert refusal["limit"] == paper.MAX_DIRECTIONAL_SKEW
+
+
+def test_an_opposing_position_buys_back_a_slot():
+    """The mechanism by which a book grows past the cap at all: the lean is what is bounded, so
+    a hedged pair costs nothing. Without this the cap WOULD be a concurrency cap."""
+    at_cap = _book(paper.MAX_DIRECTIONAL_SKEW, 0)
+    assert paper.directional_skew_admits(at_cap, "LONG")[0] is False
+    assert paper.directional_skew_admits(at_cap + _book(0, 1), "LONG")[0] is True
+
+
+def test_the_corrective_side_is_never_declined_even_past_the_cap():
+    """**The pathology the sign convention exists to prevent.** Exits are not synchronised, so a
+    balanced book becomes one-way on its own when the opposing side times out. Written as
+    `abs(new_skew) > cap` the rule then refuses the very trades that would rebalance it — and it
+    looks equivalent. A book leaning twice the cap must still accept the opposite direction."""
+    lopsided = _book(2 * paper.MAX_DIRECTIONAL_SKEW, 0)
+    assert paper.directional_skew_admits(lopsided, "LONG")[0] is False
+    admitted, refusal = paper.directional_skew_admits(lopsided, "SHORT")
+    assert admitted and refusal is None
+
+
+def test_the_cap_is_symmetric_between_the_two_directions():
+    at_cap_short = _book(0, paper.MAX_DIRECTIONAL_SKEW)
+    assert paper.directional_skew_admits(at_cap_short, "SHORT")[0] is False
+    assert paper.directional_skew_admits(at_cap_short, "LONG")[0] is True
+
+
+def test_an_unreadable_direction_makes_the_cap_bind_sooner_not_later():
+    """`opposing` is what is measured, so anything not provably opposite counts as aligned — no
+    special case, and the failure direction is the conservative one. `list_open_positions` fails
+    the same way when it cannot attribute a position at all."""
+    admitted, refusal = paper.directional_skew_admits(
+        _book(paper.MAX_DIRECTIONAL_SKEW - 1, 0, unknown=1), "LONG"
+    )
+    assert not admitted
+    assert refusal["aligned"] == paper.MAX_DIRECTIONAL_SKEW
+    assert refusal["opposing"] == 0
+
+
+def test_a_proposal_with_no_usable_direction_is_not_declined_on_a_guess():
+    """There is nothing to count toward, so inventing a lean would decline on a guess. The plan
+    builder cannot produce this; a caller passing None can."""
+    assert paper.directional_skew_admits(_book(9, 0), None)[0] is True
+    assert paper.directional_skew_admits(_book(9, 0), "")[0] is True
+
+
+def test_the_skew_cap_refuses_a_real_open_and_writes_nothing(tmp_path, monkeypatch):
+    """End to end through the portfolio lock, with the other two caps raised out of the way so
+    this is the binding one."""
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    monkeypatch.setattr(paper, "MAX_POSITIONS_PER_SYMBOL", 9)
+    monkeypatch.setattr(paper, "MAX_DIRECTIONAL_SKEW", 2)
+    control_store = ControlStore(tmp_path)
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    pool = _pool(*[
+        _pool_entry(_spec_dict(strategy_id=f"S{i}", symbol_scope=[s]), strategy_id=f"S{i}")
+        for i, s in enumerate(symbols, start=1)
+    ])
+    for symbol in symbols[:2]:
+        run_paper_update(_snapshot(symbol=symbol), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    assert len(paper.list_open_positions(tmp_path)) == 2
+    summary, records = run_paper_update(
+        _snapshot(symbol=symbols[2]), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary["opened"] is None
+    assert summary["open_refused"]["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW"
+    assert summary["open_refused"]["direction"] == "LONG"
+    assert summary["open_refused"]["aligned"] == 2 and summary["open_refused"]["opposing"] == 0
+    assert records[-1]["operation"] == "open_refused" and records[-1]["read_only"] is True
+    assert len(paper.list_open_positions(tmp_path)) == 2, "a refused open must write nothing"
+
+
+def test_the_skew_cap_still_admits_the_short_that_rebalances_a_real_book(tmp_path, monkeypatch):
+    """The corrective case through the real store, not just the pure function: a book at the cap
+    must still be able to hedge, or the cap becomes a hard stop on the whole fan-out."""
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    monkeypatch.setattr(paper, "MAX_POSITIONS_PER_SYMBOL", 9)
+    monkeypatch.setattr(paper, "MAX_DIRECTIONAL_SKEW", 2)
+    control_store = ControlStore(tmp_path)
+    short_spec = _spec_dict(
+        strategy_id="S_short", symbol_scope=["SOLUSDT"], direction="short",
+        entry_rules={"operator": "AND", "conditions": [
+            {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        ]},
+    )
+    pool = _pool(
+        _pool_entry(_spec_dict(strategy_id="S1", symbol_scope=["BTCUSDT"]), strategy_id="S1"),
+        _pool_entry(_spec_dict(strategy_id="S2", symbol_scope=["ETHUSDT"]), strategy_id="S2"),
+        _pool_entry(short_spec, strategy_id="S_short"),
+    )
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        run_paper_update(_snapshot(symbol=symbol), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    summary, _ = run_paper_update(
+        _snapshot(symbol="SOLUSDT"), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary.get("open_refused") is None
+    assert summary["opened"]["direction"] == "SHORT"
+
+
+def test_the_live_book_is_deliberately_untouched():
+    """Scoped to paper on purpose, and the reason is that the authority already exists there:
+    live holds at most `MAX_LIVE_CONCURRENT_POSITIONS` positions, so its largest possible skew
+    is that number — a cap is either inert or halves an already-tiny capacity — and live one-way
+    risk is governed by the operator-registered `max_open_notional_usdt`."""
+    from runtime.mvp_runtime.crypto import live_position
+
+    # A tripwire, not a tautology: while live concurrency stays at or under the paper cap, the
+    # largest lean live can reach is one this cap would have admitted anyway — so leaving live
+    # alone costs nothing. Raise live concurrency past it and this fails, which is exactly when
+    # somebody has to decide whether the live book needs its own directional answer.
+    assert live_position.MAX_LIVE_CONCURRENT_POSITIONS <= paper.MAX_DIRECTIONAL_SKEW
+
+
 def test_context_parts_cannot_escape_the_positions_directory(tmp_path):
     with pytest.raises(ToolError) as exc:
         paper.PositionContext(venue="binance_futures", symbol="../../etc", timeframe="1d")

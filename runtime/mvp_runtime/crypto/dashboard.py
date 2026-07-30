@@ -251,6 +251,24 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         warnings.append(f"position state unreadable ({exc.reason_code})")
     open_position = open_positions[0] if open_positions else None
+    # How far the book leans, and how far it is allowed to. Derived at read time from the
+    # positions above — never stored — for the `pool.candidate_quality` reason: a lean written
+    # once would outlive the cap that produced it, and `paper.MAX_DIRECTIONAL_SKEW` is derived
+    # from a constant that has already moved once. Belongs on the BOARD and not only on the
+    # per-fire status line, because the gate declines on STANDING book state: an operator who
+    # missed the one fire that printed a refusal still needs to see that the book is one-way.
+    longs = sum(1 for entry in open_positions if str(entry.get("direction") or "").upper() == "LONG")
+    shorts = sum(1 for entry in open_positions if str(entry.get("direction") or "").upper() == "SHORT")
+    directional_lean = {
+        "long": longs,
+        "short": shorts,
+        # Positions whose direction is neither, counted rather than dropped: the gate treats
+        # them as aligned with whatever is proposed, so they are not decoration.
+        "unattributed": len(open_positions) - longs - shorts,
+        "lean": longs - shorts,
+        "limit": paper.MAX_DIRECTIONAL_SKEW,
+        "at_limit": abs(longs - shorts) >= paper.MAX_DIRECTIONAL_SKEW,
+    }
 
     last_cycle = cycle_rows[-1] if cycle_rows else None
     return {
@@ -266,6 +284,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         } if last_cycle else None,
         "open_position": open_position,
         "open_positions": open_positions,
+        "directional_lean": directional_lean,
         "pool_status_counts": status_counts,
         "demotions_by_reason": demotions_by_reason,
         "regime_excluded_cycles": regime_excluded_cycles,
@@ -517,6 +536,21 @@ def render_status_text(status: dict[str, Any]) -> str:
     where = (f"{position['direction']} {position['strategy_id']} @ {position['entry_price']}"
              + (f" (외 {len(positions) - 1}건)" if len(positions) > 1 else "")) if position else "포지션 없음"
     lines.append(f"지금   {where}")
+    # The book's SHAPE, under the book itself. Printed only while something is open, because a
+    # lean of 0 over an empty book is the field teaching a reader to skip the line — and this is
+    # the line that matters on the day the book is one-way.
+    # Gated on the FIELD, not on `positions`: this renderer is also handed status dicts built by
+    # an older build (and by callers that assemble one by hand), where the key is simply absent.
+    # A renderer that assumed its own newest field would crash on exactly the history an
+    # operator opens the board to read.
+    lean = status.get("directional_lean")
+    if positions and isinstance(lean, dict) and isinstance(lean.get("lean"), int):
+        mark = " ⚠ 한 방향 한도" if lean.get("at_limit") else ""
+        note = f" · 방향불명 {lean['unattributed']}" if lean.get("unattributed") else ""
+        lines.append(
+            f"       방향 롱 {lean.get('long')} / 숏 {lean.get('short')}"
+            f" · 편중 {lean['lean']:+d} (한도 ±{lean.get('limit')}){note}{mark}"
+        )
     if last:
         feeds = last.get("feeds") or {}
         ok = sum(1 for state in feeds.values() if state == "ok")
