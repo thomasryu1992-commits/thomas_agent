@@ -33,7 +33,14 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, oi_store, pool
 from .features import latest_feature_row
-from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_check, run_risk_guard
+from .guards import (
+    RISK_LIMITS_UNUSABLE_PROBLEM,
+    merge_trade_verdict,
+    risk_guard_unavailable,
+    risk_guard_unreadable,
+    run_data_health_check,
+    run_risk_guard,
+)
 from .market_data import (
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
@@ -64,6 +71,7 @@ from .paper import (
     run_paper_update,
     split_by_provenance,
 )
+from .risk_limits import resolve_risk_limits
 
 CYCLE_VERSION = "crypto_cycle.v0.1"
 POOL_CYCLE_VERSION = "crypto_pool_cycle.v0.1"
@@ -339,36 +347,53 @@ def run_crypto_cycle(
     # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
     outcomes: list[dict[str, Any]] | None = None
+
+    # The breaker limits themselves: the registered per-machine record when one is registered
+    # and current, the `guards` defaults otherwise. A record that cannot be used — tampered,
+    # unparseable, outside the code bounds, or past its validity window — fails the guard closed
+    # rather than falling back to the defaults. The fallback is the tempting branch and the wrong
+    # one: an operator who *tightened* a breaker would have it silently loosened back to the
+    # default by the very failure that was supposed to be conservative.
     try:
-        outcomes = read_outcomes(root)
-        # The risk guard judges **this runtime's own** trading only. The store also holds
-        # history imported from the frozen crypto_AI_System, which is real but was produced by
-        # different code — so it cannot answer "is THIS system losing right now", which is the
-        # only question a breaker asks. Measured 2026-07-25: 112 imported rows worth +266.8R sat
-        # inside the rolling week, so the weekly-loss breaker could not trip however this runtime
-        # performed. A breaker that cannot trip is not a breaker.
-        #
-        # Deliberately scoped to the guard. `run_lifecycle` below keeps the full history on
-        # purpose: imported outcomes carry strategy lineage, and promotion/demotion is a
-        # performance judgement about a strategy, not a safety brake on this runtime.
-        own_outcomes, _imported = split_by_provenance(outcomes)
-        # LP5.3: live results are this runtime's own trading too — and the only kind that costs
-        # real money — so the breaker must see them. They live in their own store, so the paper
-        # split above never sees them; without this the guard would ignore live losses entirely.
-        #
-        # Routed through LP5.4's bridge rather than concatenated raw: `guards._closed_rows` reads
-        # a missing `result_R` as 0.0, i.e. a BREAKEVEN, so an R-less live loss would SHORTEN a
-        # loss streak. The bridge drops those rows (they stay visible to the daily-loss breaker,
-        # which needs no R). An unreadable or tampered live history raises, and fails the guard
-        # closed exactly like an unreadable paper history — a history that cannot prove itself
-        # must not be allowed to argue the breaker is clear.
-        live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
-        if live_excluded:
-            reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
-        risk = run_risk_guard(own_outcomes + live_readable, now=now)
+        risk_limits = resolve_risk_limits(root, now=now)
     except ToolError as exc:
-        risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
+        risk_limits = None
         reason_codes.append(exc.reason_code)
+        risk = risk_guard_unavailable(RISK_LIMITS_UNUSABLE_PROBLEM, f"{exc.reason_code}: {exc}", now=now)
+
+    # Guarded rather than folded into the try below: with no usable limits there is nothing to
+    # judge the history against, so reading it would produce numbers no breaker can rule on.
+    if risk_limits is not None:
+        try:
+            outcomes = read_outcomes(root)
+            # The risk guard judges **this runtime's own** trading only. The store also holds
+            # history imported from the frozen crypto_AI_System, which is real but was produced by
+            # different code — so it cannot answer "is THIS system losing right now", which is the
+            # only question a breaker asks. Measured 2026-07-25: 112 imported rows worth +266.8R sat
+            # inside the rolling week, so the weekly-loss breaker could not trip however this runtime
+            # performed. A breaker that cannot trip is not a breaker.
+            #
+            # Deliberately scoped to the guard. `run_lifecycle` below keeps the full history on
+            # purpose: imported outcomes carry strategy lineage, and promotion/demotion is a
+            # performance judgement about a strategy, not a safety brake on this runtime.
+            own_outcomes, _imported = split_by_provenance(outcomes)
+            # LP5.3: live results are this runtime's own trading too — and the only kind that costs
+            # real money — so the breaker must see them. They live in their own store, so the paper
+            # split above never sees them; without this the guard would ignore live losses entirely.
+            #
+            # Routed through LP5.4's bridge rather than concatenated raw: `guards._closed_rows` reads
+            # a missing `result_R` as 0.0, i.e. a BREAKEVEN, so an R-less live loss would SHORTEN a
+            # loss streak. The bridge drops those rows (they stay visible to the daily-loss breaker,
+            # which needs no R). An unreadable or tampered live history raises, and fails the guard
+            # closed exactly like an unreadable paper history — a history that cannot prove itself
+            # must not be allowed to argue the breaker is clear.
+            live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+            if live_excluded:
+                reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
+            risk = run_risk_guard(own_outcomes + live_readable, now=now, limits=risk_limits)
+        except ToolError as exc:
+            risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
+            reason_codes.append(exc.reason_code)
     verdict = merge_trade_verdict(health, risk)
 
     # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
@@ -487,6 +512,12 @@ def run_crypto_cycle(
         "collection": collection_record,
         "verdict_status": verdict["status"],
         "verdict_problems": verdict["problems"],
+        # The breaker limits this cycle was judged against, and the record they came from. Kept
+        # even though the rest of the verdict is not: the limits are configurable now, so
+        # "ALLOW" no longer states what was allowed, and a ledger row nobody can re-check
+        # against the numbers in force at the time is not an audit trail. ~150 bytes against
+        # the 24KB record the lifecycle trim above was worth doing for.
+        "risk_limits": verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),

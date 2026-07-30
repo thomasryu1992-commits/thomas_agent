@@ -262,9 +262,10 @@ def test_fresh_machine_is_not_ready(tmp_path, clean_env):
 def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
-        "live_trading_opt_in", "confirmation_phrase", "registered_budget", "manual_kill_switch",
-        "runtime_active", "daily_loss_breaker", "canary_evidence", "account_visibility",
-        "market_data_visibility", "order_path_implemented", "autonomous_routing_wired",
+        "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
+        "manual_kill_switch", "runtime_active", "daily_loss_breaker", "canary_evidence",
+        "account_visibility", "market_data_visibility", "order_path_implemented",
+        "autonomous_routing_wired",
     }
 
 

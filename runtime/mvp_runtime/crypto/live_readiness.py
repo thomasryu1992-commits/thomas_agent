@@ -66,6 +66,7 @@ from .live_pnl import (
     venue_daily_realized_net,
 )
 from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
+from .risk_limits import limits_status as risk_limits_status
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
@@ -138,6 +139,36 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
                    "(register with scripts/register_live_trading_budget.py)")
     )
     checks.append(_check("registered_budget", bool(budget.get("valid")), budget_detail))
+
+    # 3b. The C4 breaker limits. Unlike every other row this one is GREEN when nothing is
+    #     registered: the guards.py defaults are the supported steady state, not a gap, so a
+    #     fresh machine must not read as unready over a record it is not expected to have. It
+    #     goes red only for a record that exists and cannot be used — tampered, out of bounds,
+    #     or lapsed — which is exactly the state in which the C4 guard refuses every entry, live
+    #     and paper alike. Without this row that refusal would be invisible here and the operator
+    #     would find it in a cycle record instead.
+    risk_status = risk_limits_status(root, now=now)
+    effective = risk_status.get("effective") or {}
+    # ASCII only, like every other row: this text is rendered to a terminal board.
+    risk_numbers = (
+        f"daily {effective.get('daily_max_loss_r')}R, weekly {effective.get('weekly_max_loss_r')}R, "
+        f"consecutive {effective.get('max_consecutive_losses')}, "
+        f"drawdown {effective.get('max_drawdown_pct')}%"
+    )
+    if not risk_status["registered"]:
+        risk_detail = f"none registered - guard uses the defaults ({risk_numbers})"
+    elif risk_status["valid"]:
+        risk_detail = (
+            f"registered {risk_status['limits_id']} ({risk_numbers}), "
+            f"valid until {risk_status.get('valid_until')}"
+        )
+    else:
+        risk_detail = (
+            f"registered but unusable: {risk_status['error']} - the C4 guard REFUSES new "
+            "positions until it is re-registered or deleted "
+            "(scripts/register_crypto_risk_limits.py --show)"
+        )
+    checks.append(_check("risk_limits_record", bool(risk_status["valid"]), risk_detail))
 
     # 4. The manual halt.
     manual_halt = limits.manual_kill_switch
