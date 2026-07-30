@@ -69,6 +69,11 @@ MACD_SIGNAL = 9
 BB_PERIOD = 20
 BB_STD = 2.0
 PERCENTILE_WINDOW = 100
+# Observations the volatility reference needs before it will answer. The same looser floor the
+# funding z-score uses, and for the same reason: a live sizing decision should not wait 100 bars
+# to become possible when 20 observations already locate a typical level. Below it the reference
+# is None and the multiplier is 1.0 — unscaled, never a guessed reference.
+ATR_REFERENCE_MIN_PERIODS = 20
 ROC_FAST = 4
 VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
@@ -602,6 +607,15 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         for a, c in zip(atr, closes)
     ]
     atr_percentile = indicators.rolling_percentile(atr_pct_of_price, PERCENTILE_WINDOW)
+    # What "normal volatility" is for this symbol right now, in the same units as
+    # `atr_pct_of_price` — so the live size multiplier is a RATIO of two measured quantities
+    # rather than a constant somebody chose. Self-calibrating on purpose: a target volatility
+    # written into the code would be a number nobody authorized (the #356 lesson) and would
+    # mean something different on BTC than on DOGE. Median, not mean — see
+    # `indicators.rolling_median` for why the mean's bias here is the unsafe direction.
+    atr_pct_reference = indicators.rolling_median(
+        atr_pct_of_price, PERCENTILE_WINDOW, ATR_REFERENCE_MIN_PERIODS
+    )
 
     # C9 derivative feeds. Key PRESENT in the snapshot = series semantics (even when
     # the fetch failed and the list is empty): values are NaN-honest — indeterminate,
@@ -705,6 +719,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "atr": atr[i],
             "atr_pct_of_price": atr_pct_of_price[i],
             "atr_percentile": atr_percentile[i],
+            # The typical volatility this bar's is measured against (live sizing).
+            "atr_pct_reference": atr_pct_reference[i],
             "rsi": rsi[i],
             "adx": adx[i],
             "macd": macd_line[i],

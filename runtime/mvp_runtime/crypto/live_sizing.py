@@ -183,7 +183,25 @@ def size_live_order(
     budget_quantity = cap / entry_price
     bound_by = "risk" if risk_quantity <= budget_quantity else "budget"
 
-    raw_quantity = min(risk_quantity, budget_quantity)
+    # Volatility scaling, applied to the WINNER of the two candidates rather than to the risk
+    # fraction — which is the whole reason it works. On any realistic equity the budget cap is
+    # what binds (at a 60 USDT cap the risk leg only wins below roughly 30 USDT of equity), and
+    # while the cap binds the notional is fixed, so the risk actually taken is
+    # `cap × stop_distance / price` and therefore RISES with volatility. Scaling `risk_fraction`
+    # would leave that untouched; scaling the final quantity does not. See
+    # `paper.volatility_size_multiplier` for the measurement and for why the multiplier is
+    # capped at 1.0 (it may shrink an order, never widen one past what was registered).
+    #
+    # Read off the plan rather than recomputed here: the plan is what the execution step is
+    # given, and a number this module derived for itself is a number the two could disagree
+    # about. A plan without the field — anything built before this existed — scales by 1.0.
+    vol_multiplier = _f(plan.get("vol_size_multiplier")) if "vol_size_multiplier" in plan else 1.0
+    if not (0.0 < vol_multiplier <= 1.0):
+        # Out of range means the plan is not one this module can trust to shrink safely, and the
+        # safe reading of an untrustworthy multiplier is "do not scale" rather than "guess".
+        vol_multiplier = 1.0
+
+    raw_quantity = min(risk_quantity, budget_quantity) * vol_multiplier
     quantity = floor_to_step(raw_quantity, filters.step_size)
     notional = round(quantity * entry_price, 8)
 
@@ -196,6 +214,11 @@ def size_live_order(
         "budget_quantity": round(budget_quantity, 12),
         "max_order_notional_usdt": cap,
         "bound_by": bound_by,
+        # Recorded even when it is 1.0. The refusal and success records are what an operator
+        # reads to understand a size, and "the volatility scaler did nothing" is a different
+        # statement from "there was no volatility scaler" — the second is what every record
+        # before this said, and it is what a record with the field missing still means.
+        "vol_size_multiplier": vol_multiplier,
         "step_size": filters.step_size,
         "entry_price": entry_price,
     }
