@@ -123,11 +123,27 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     try:
         active = pool.load_active_pool(root)
         status_counts: dict[str, int] = {}
+        # Why the non-trading members stopped trading, which the status count cannot say: an
+        # operator retiring a duplicate and the metrics condemning a decaying edge both land on
+        # SUSPENDED with `lifecycle_consecutive_failures: 0`, because a retirement carries that
+        # count forward untouched. Entries transitioned before the reason was recorded report
+        # `unrecorded` — a different answer from "no reason", and an honest one.
+        demotions_by_reason: dict[str, int] = {}
         for entry in active.get("active_strategies") or []:
             status = str(entry.get("status") or "?")
             status_counts[status] = status_counts.get(status, 0) + 1
+            # Only the ones that stopped trading. WARNING/PROBATION are degraded but still
+            # occupy a routing slot, so counting them here would answer a question nobody asked.
+            if status in pool.OCCUPYING_STATUSES:
+                continue
+            reasons = entry.get("lifecycle_reasons")
+            if not isinstance(reasons, list):
+                key = "unrecorded"
+            else:
+                key = ", ".join(str(r) for r in reasons) or "unrecorded"
+            demotions_by_reason[key] = demotions_by_reason.get(key, 0) + 1
     except MvpRuntimeError as exc:
-        active, status_counts = {"active_strategies": []}, {}
+        active, status_counts, demotions_by_reason = {"active_strategies": []}, {}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
 
     # Two things the board could always have said and did not, both about work waiting on a
@@ -238,6 +254,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_position": open_position,
         "open_positions": open_positions,
         "pool_status_counts": status_counts,
+        "demotions_by_reason": demotions_by_reason,
         "pool_size": len(active.get("active_strategies") or []),
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
@@ -498,6 +515,12 @@ def render_status_text(status: dict[str, Any]) -> str:
     counts = status.get("pool_status_counts") or {}
     breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
     lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    # Why the demoted ones are demoted. A status count alone reads a duplicate an operator
+    # removed on purpose and a strategy the metrics condemned as the same number.
+    demotions = status.get("demotions_by_reason") or {}
+    if demotions:
+        lines.append("       강등 사유 " + " · ".join(
+            f"{reason} {count}" for reason, count in sorted(demotions.items())))
     backlog = status.get("promotion_backlog") or {}
     if backlog.get("count"):
         lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")
