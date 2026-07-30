@@ -95,6 +95,16 @@ DERIVATIVE_KLINE_PATHS: dict[str, str] = {
 }
 DERIVATIVE_KINDS = frozenset(DERIVATIVE_KLINE_PATHS)
 
+# Which query parameter each endpoint names the instrument with. Not cosmetic: the index series
+# is quoted per PAIR (one index for BTCUSDT however many contracts settle against it) while mark
+# and premium are per contract, and the venue rejects the wrong key with 400 `-1102`. Kept as a
+# table beside the paths so the two cannot drift — a new kind has to answer both questions.
+DERIVATIVE_KLINE_SYMBOL_PARAMS: dict[str, str] = {
+    "mark": "symbol",
+    "index": "pair",
+    "premium": "symbol",
+}
+
 # Positioning statistics — WHO is holding what, which is the one thing neither price nor flow
 # reports. Three public `/futures/data/` endpoints of the same authorized provider.
 #
@@ -816,7 +826,16 @@ class BinanceFuturesCollector:
         while len(collected) < limit and pages < DERIVATIVE_MAX_PAGES:
             pages += 1
             params: dict[str, Any] = {
-                "symbol": symbol, "interval": timeframe,
+                # The index series is keyed on the PAIR, the other two on the symbol, and the
+                # venue enforces it: `indexPriceKlines` with `symbol=` returns 400 `-1102
+                # Mandatory parameter 'pair' was not sent`. Sending `symbol` to all three left
+                # index degraded on every cycle while mark and premium reported ok — a partial
+                # failure, which is why it read as a feed blip rather than as a wrong request.
+                # The cost was not an outage: `index_price` and `mark_index_basis_bps` stayed
+                # indeterminate, so the constant-0.0 basis C13 exists to remove was replaced by
+                # a permanently absent one instead of a real measurement.
+                DERIVATIVE_KLINE_SYMBOL_PARAMS[kind]: symbol,
+                "interval": timeframe,
                 # One extra row for the still-forming bar this drops, so dropping it does
                 # not shrink the caller's window (the ``collect`` rule).
                 "limit": min(DERIVATIVE_PAGE_LIMIT, limit - len(collected) + 1),
