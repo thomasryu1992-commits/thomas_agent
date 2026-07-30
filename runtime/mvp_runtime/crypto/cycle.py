@@ -550,6 +550,15 @@ def run_crypto_cycle(
         # the 24KB record the lifecycle trim above was worth doing for.
         "risk_limits": verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
+        # Which strategies fired and were declined by the regime filter. The ids rather than the
+        # whole route, because this record is deliberately trimmed (the lifecycle note below is
+        # the same discipline) — but not merely a count, because "which one" is the actionable
+        # part: a strategy excluded on every cycle for a week is a demotion candidate, and a
+        # count cannot say that. Empty on almost every cycle, which is why it is a list and not
+        # a status.
+        "regime_excluded": list(
+            (paper_summary.get("route") or {}).get("regime_excluded_strategy_ids") or []
+        ),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
@@ -735,6 +744,14 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A route that entered nothing because every match was regime-excluded otherwise reads
+    # exactly like one where nothing matched, and those want different responses: the first says
+    # a strategy fired in a regime its own backtest lost money in, the second says the market did
+    # not offer a setup. Printed only when it happened, for the reason the live leg is — a field
+    # that is empty on almost every line teaches the reader to skip it.
+    excluded = record.get("regime_excluded") or []
+    if excluded:
+        parts.append(f"regime_excluded={','.join(str(s) for s in excluded)}")
     # Only when the live leg actually did something. A DISABLED leg is every machine that has
     # not been through the operator checklist, and printing it on every line would train the
     # reader to skip exactly the field that matters on the machine where it is not DISABLED.
