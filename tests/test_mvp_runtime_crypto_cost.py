@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import math
 
-from runtime.mvp_runtime.crypto.cost import CostModel, apply_cost_model
+from runtime.mvp_runtime.crypto.cost import (
+    DEFAULT_FUNDING_BPS_PER_INTERVAL,
+    FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_VENUE,
+    CostModel,
+    apply_cost_model,
+)
 from runtime.mvp_runtime.crypto.factory import backtest_spec
 from runtime.mvp_runtime.crypto.paper import settle_trade_plan
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
@@ -198,3 +204,253 @@ def test_net_is_still_gross_minus_fees_and_slippage_on_a_maker_exit():
     """The decomposition invariant the whole module rests on, re-checked on the new branch."""
     b = apply_cost_model("SHORT", 100.0, 92.0, 4.0, close_reason="take_profit")
     assert math.isclose(b.net_r, b.gross_r - b.fee_cost_r - b.slippage_cost_r, abs_tol=1e-8)
+
+
+# --- funding: the cost a perpetual charges for TIME (2026-07-29) ------------------------------
+#
+# Until this section existed the model charged fees and slippage and nothing else, which prices
+# a perpetual as though holding it were free. `_EXIT_PARAMS` lets a 1d spec hold 12-48 days —
+# 36 to 144 settlements at ~1 bp each against a modelled ~10 bps of fees. These pin the three
+# properties that make the term trustworthy: it is signed, it is linear in the rates, and it is
+# the only cost here that can pay the trader.
+
+def test_funding_is_a_cost_to_a_long_and_a_credit_to_a_short():
+    """The asymmetry fees do not have, and the reason the factory could not rank long and short
+    specs on one scale before this. A positive rate means longs pay shorts."""
+    rates = 0.0001 * 30  # thirty settlements at the venue's 1 bp base rate
+    long = apply_cost_model("LONG", 100.0, 108.0, 4.0, funding_rate_sum=rates)
+    short = apply_cost_model("SHORT", 100.0, 92.0, 4.0, funding_rate_sum=rates)
+    assert long.funding_cost_r > 0.0
+    assert short.funding_cost_r < 0.0
+    # Equal and opposite to within the slippage the two entries paid — NOT exactly, because the
+    # carry is charged on the ENTRY FILL and a long buys above the mid while a short sells below.
+    # The notional actually opened differs by twice the slippage, so the carry does too. Pinned
+    # loosely on purpose: exact antisymmetry here would mean the model had gone back to costing
+    # a mid it never traded at.
+    assert math.isclose(long.funding_cost_r, -short.funding_cost_r, rel_tol=1e-3)
+    assert long.funding_cost_r > -short.funding_cost_r, "a long's entry fill is the higher one"
+
+
+def test_the_carry_is_charged_on_the_fill_not_the_mid():
+    """Stated as its own case because the asymmetry above is easy to read as a sign bug."""
+    free = CostModel(taker_fee_bps=0.0, slippage_bps=0.0, maker_fee_bps=0.0)
+    long = apply_cost_model("LONG", 100.0, 108.0, 4.0, cost=free, funding_rate_sum=0.003)
+    short = apply_cost_model("SHORT", 100.0, 92.0, 4.0, cost=free, funding_rate_sum=0.003)
+    # With no slippage both entries fill at the mid, and the two are exactly opposite.
+    assert math.isclose(long.funding_cost_r, -short.funding_cost_r, abs_tol=1e-9)
+
+
+def test_a_negative_funding_regime_reverses_it():
+    """Funding rates go negative in a bearish basis, and a model that could only ever charge
+    would be describing a different instrument."""
+    assert apply_cost_model("LONG", 100.0, 108.0, 4.0, funding_rate_sum=-0.001).funding_cost_r < 0
+    assert apply_cost_model("SHORT", 100.0, 92.0, 4.0, funding_rate_sum=-0.001).funding_cost_r > 0
+
+
+def test_net_is_gross_minus_fees_slippage_and_funding():
+    """The decomposition invariant, extended. Funding subtracts like every other term — the
+    only difference is that its sign is not fixed."""
+    for direction, exit_price, rates in (("LONG", 108.0, 0.002), ("SHORT", 92.0, 0.002),
+                                         ("LONG", 108.0, -0.002)):
+        b = apply_cost_model(direction, 100.0, exit_price, 4.0, funding_rate_sum=rates)
+        assert math.isclose(
+            b.net_r, b.gross_r - b.fee_cost_r - b.slippage_cost_r - b.funding_cost_r, abs_tol=1e-8
+        )
+
+
+def test_funding_scales_with_the_holding_window():
+    """Linear in the summed rates, which is what makes summing the settlements first exact
+    rather than an approximation."""
+    one = apply_cost_model("LONG", 100.0, 108.0, 4.0, funding_rate_sum=0.0001).funding_cost_r
+    ten = apply_cost_model("LONG", 100.0, 108.0, 4.0, funding_rate_sum=0.001).funding_cost_r
+    assert math.isclose(ten, one * 10, rel_tol=1e-6)
+
+
+def test_a_trade_that_crosses_no_settlement_is_charged_nothing():
+    assert apply_cost_model("LONG", 100.0, 108.0, 4.0, funding_rate_sum=0.0).funding_cost_r == 0.0
+
+
+def test_the_carry_dominates_the_fee_legs_on_a_multi_week_hold():
+    """The measurement that motivated the whole change, as an assertion rather than a comment.
+
+    A 24-day hold at the venue's base rate is 72 bps of carry against ~10 bps of fees and
+    slippage. Against a book measured at +0.08R with a 95% interval of [-0.32, +0.48], that is
+    not a refinement — so if this ever stops being true, the sizing of the omission should be
+    re-argued rather than quietly inherited."""
+    entry, risk = 60000.0, 60000.0 * 0.03      # stop at ~3% of price, the 1d ATR case
+    carry = 24 * 3 * 0.0001                    # 24 days x 3 settlements x 1 bp
+    b = apply_cost_model("LONG", entry, entry * 1.05, risk, close_reason="take_profit",
+                         funding_rate_sum=carry)
+    assert b.funding_cost_r > 5 * (b.fee_cost_r + b.slippage_cost_r)
+    assert b.funding_cost_r > 0.2, "the omitted term is R-material, not a rounding difference"
+
+
+def test_a_zero_risk_position_is_still_all_zeros():
+    """The source's division guard, on the new branch too."""
+    b = apply_cost_model("LONG", 100.0, 108.0, 0.0, funding_rate_sum=0.01)
+    assert b.funding_cost_r == 0.0 and b.net_r == 0.0
+
+
+# --- the per-bar carry series -----------------------------------------------------------------
+#
+# `funding_charges_per_bar` is where the venue's real settlements meet the replay's bars. It sums
+# rather than carries-forward, which is the one place it differs from `features._asof_align`: a
+# feature asks "what is the rate now", a cost asks "what was charged while I held".
+
+def _bars(opens: list[str]) -> list[dict]:
+    return [{"open_time": t, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+             "volume": 1.0, "close_time": t} for t in opens]
+
+
+def _events(pairs) -> list[dict]:
+    return [{"timestamp": t, "funding_rate": r} for t, r in pairs]
+
+
+def test_a_bar_sums_every_settlement_inside_it():
+    """Three 8h settlements land in one 1d bar. Carrying the LAST one forward — the feature
+    rule — would charge a third of the day."""
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    charges, source = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]),
+        _events([("2026-07-01T00:00:00Z", 0.0001), ("2026-07-01T08:00:00Z", 0.0002),
+                 ("2026-07-01T16:00:00Z", 0.0003), ("2026-07-02T00:00:00Z", 0.0004)]),
+        timeframe="1d", cost=CostModel(),
+    )
+    assert source == FUNDING_SOURCE_VENUE
+    assert math.isclose(charges[0], 0.0006)   # the three inside 07-01
+    assert math.isclose(charges[1], 0.0004)   # the one at the 07-02 open
+
+
+def test_a_settlement_at_a_bar_open_belongs_to_that_bar():
+    """Half-open bars, so `charges[entry+1:exit+1]` bills exactly the intervals a position
+    opened at bar `entry`'s CLOSE actually sat through — no double count at a boundary."""
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    charges, _ = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
+        _events([("2026-07-02T00:00:00Z", 0.0005)]),
+        timeframe="1d", cost=CostModel(),
+    )
+    assert charges == [0.0, 0.0005, 0.0]
+    assert math.isclose(sum(charges), 0.0005), "a settlement is billed once, to one bar"
+
+
+def test_bars_before_the_first_settlement_are_free():
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    charges, _ = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]),
+        _events([("2026-07-02T08:00:00Z", 0.0005)]),
+        timeframe="1d", cost=CostModel(),
+    )
+    assert charges[0] == 0.0
+
+
+def test_a_missing_series_falls_back_to_the_base_rate_not_to_zero():
+    """The direction that matters. A missing series means UNMEASURED, and charging nothing for
+    it is exactly the omission this whole change closes."""
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    charges, source = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]), None,
+        timeframe="1d", cost=CostModel(),
+    )
+    assert source == FUNDING_SOURCE_FALLBACK
+    assert all(c > 0.0 for c in charges)
+    # One day is three settlements at the base rate.
+    assert math.isclose(charges[0], 3 * DEFAULT_FUNDING_BPS_PER_INTERVAL / 10000.0)
+
+
+def test_the_fallback_prices_a_fast_timeframe_as_a_fraction_of_an_interval():
+    """A 15m bar sits through 1/32 of an 8h interval. Charging a whole one per bar would price
+    a scalper like a swing trader — and 15m is the deepest factory window (48k bars)."""
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    fast, _ = funding_charges_per_bar(_bars(["2026-07-01T00:00:00Z"]), [],
+                                      timeframe="15m", cost=CostModel())
+    slow, _ = funding_charges_per_bar(_bars(["2026-07-01T00:00:00Z"]), [],
+                                      timeframe="1d", cost=CostModel())
+    assert fast[0] < slow[0]
+    assert math.isclose(slow[0] / fast[0], 96.0)   # 1440 minutes / 15
+
+
+# --- the carry reaching the evidence ----------------------------------------------------------
+
+def _funded_snapshot(rate=0.0001):
+    """The trending snapshot with the venue's own settlements attached — three per day, which is
+    the cadence `/fapi/v1/fundingRate` actually returns and the cycle already collects."""
+    from datetime import timedelta
+
+    from runtime.mvp_runtime import timeutil
+
+    snapshot = dict(_trending_snapshot())
+    candles = snapshot["candles"]
+    first = timeutil.parse_iso(candles[0]["open_time"])
+    last = timeutil.parse_iso(candles[-1]["open_time"])
+    events, at = [], first
+    while at <= last:
+        events.append({"timestamp": timeutil.format_iso(at), "funding_rate": rate})
+        at += timedelta(hours=8)
+    snapshot["funding"] = events
+    return snapshot
+
+
+def test_the_backtest_charges_the_venues_own_settlements_when_it_has_them():
+    """The whole point of charging real history rather than a constant: the series is already
+    fetched every cycle for `funding_rate`/`funding_zscore`, so inventing a number would mean
+    ignoring one the repo has."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    evidence = backtest_spec(spec, _funded_snapshot())
+    model = evidence["cost_summary"]["cost_model"]
+    assert model["funding_source"] == FUNDING_SOURCE_VENUE
+    assert evidence["cost_summary"]["total_funding_cost_r"] > 0.0
+
+
+def test_a_long_book_scores_lower_once_the_carry_is_charged():
+    """The measurement that motivates the change, end to end: the SAME spec on the SAME bars,
+    with and without the carry the venue actually charges."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    free = CostModel(funding_bps_per_interval=0.0)
+    charged = backtest_spec(spec, _funded_snapshot())
+    uncharged = backtest_spec(spec, {**_trending_snapshot(), "funding": []}, cost=free)
+    assert charged["closed_count"] == uncharged["closed_count"], "same trades, different costing"
+    assert charged["expectancy"] < uncharged["expectancy"]
+
+
+def test_a_short_book_is_paid_to_hold_in_a_positive_regime():
+    """The direction fees cannot express. If this ever reads as a cost, the sign is wrong and
+    the factory is ranking shorts as though they paid what longs pay."""
+    spec = StrategySpec.from_dict(_spec_dict(direction="short"))
+    evidence = backtest_spec(spec, _funded_snapshot())
+    if evidence["closed_count"]:
+        assert evidence["cost_summary"]["total_funding_cost_r"] < 0.0
+
+
+def test_the_holdout_is_costed_on_the_same_basis_as_the_scored_window():
+    """A holdout charged differently from the window it confirms proves nothing about it —
+    the same reason `_replay` is shared rather than reimplemented."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    evidence = backtest_spec(spec, _funded_snapshot())
+    assert "funding_cost_r" in evidence["holdout"]
+    assert evidence["holdout"]["cost_model"]["funding_source"] == (
+        evidence["cost_summary"]["cost_model"]["funding_source"]
+    )
+    assert evidence["holdout"]["cost_model"]["funding_bps_per_interval"] == (
+        evidence["cost_summary"]["cost_model"]["funding_bps_per_interval"]
+    )
+
+
+def test_a_backtest_over_a_snapshot_with_no_funding_says_it_fell_back():
+    """Evidence has to state which quality it is. "Charged the venue's settlements" and
+    "charged a constant because there were none" are not the same claim."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    evidence = backtest_spec(spec, _trending_snapshot())
+    assert evidence["cost_summary"]["cost_model"]["funding_source"] == FUNDING_SOURCE_FALLBACK
+    assert evidence["cost_summary"]["total_funding_cost_r"] > 0.0, "never silently free"
+
+
+def test_charging_the_carry_is_still_deterministic():
+    spec = StrategySpec.from_dict(_spec_dict())
+    snapshot = _funded_snapshot()
+    assert backtest_spec(spec, snapshot) == backtest_spec(spec, snapshot)

@@ -59,8 +59,9 @@ _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 STATE_REL = ".runtime_governance_state/crypto"
 PAPER_PROVENANCE = "mvp_paper_kernel"
-# See live_pnl.R_BASIS_* — paper R is measured on intended fills and is cost-free by design.
-from .live_pnl import R_BASIS_INTENT  # noqa: E402  (constant only; no I/O at import)
+# See live_pnl.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
+from .cost import apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
+from .live_pnl import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
 # THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
@@ -637,14 +638,40 @@ def build_outcome_record(
 ) -> dict[str, Any]:
     """The CLOSED outcome — source-registry field names (``result_R``,
     ``outcome_closed``, ``created_at_utc``), so the C4 risk guard and C6 feedback read
-    native and C7-imported outcomes identically. Self-hashed for tamper evidence."""
+    native and C7-imported outcomes identically. Self-hashed for tamper evidence.
+
+    ``result_R`` is NET of fees and slippage (2026-07-30). ``result_r`` from
+    :func:`settle_trade_plan` remains the authority on the GROSS number — including its
+    deliberate exactly-``-1.0`` stop convention — and this function only subtracts what
+    ``cost.apply_cost_model`` says the two legs cost. Deriving gross a second time from the
+    prices would agree today (``risk`` is ``|entry - stop|`` by construction) and would be a
+    second thing to keep agreeing tomorrow.
+    """
+    costs = apply_cost_model(
+        str(position.get("direction") or ""),
+        float(position.get("entry_price") or 0.0),
+        float(exit_price),
+        float(position.get("risk") or 0.0),
+        close_reason=close_reason,
+    )
+    gross_r = float(result_r)
+    net_r = gross_r - costs.fee_cost_r - costs.slippage_cost_r
     record = {
         "outcome_id": integrity.short_id(
             "out", {"position_id": position.get("position_id"), "reason": close_reason, "closed_at": now}
         ),
         "outcome_closed": True,
-        "result_R": round(float(result_r), 8),
-        "win_loss": "WIN" if result_r > 0 else ("LOSS" if result_r < 0 else "FLAT"),
+        "result_R": round(net_r, 8),
+        # The gross figure and what came off it, so the row explains its own number and a
+        # reader can recover the pre-cost statistic without re-deriving it from prices. Mirrors
+        # what `factory.backtest_spec` has always recorded in `cost_summary`.
+        "gross_result_R": round(gross_r, 8),
+        "fee_cost_r": costs.fee_cost_r,
+        "slippage_cost_r": costs.slippage_cost_r,
+        "maker_fee_cost_r": costs.maker_fee_cost_r,
+        # Judged on the NET number: a trade that cleared its stop but not its costs is not a
+        # win, and calling it one is how a losing book reports a healthy win rate.
+        "win_loss": "WIN" if net_r > 0 else ("LOSS" if net_r < 0 else "FLAT"),
         "close_reason": close_reason,
         "created_at_utc": now,
         "venue": str(position.get("venue") or DEFAULT_VENUE),
@@ -653,6 +680,12 @@ def build_outcome_record(
         "direction": position.get("direction"),
         "entry_price": position.get("entry_price"),
         "exit_price": float(exit_price),
+        # Risk per unit (|entry - stop|) — the denominator `result_R` was divided by. Recorded
+        # since 2026-07-29 because without it a row cannot be re-costed: `feedback` re-derives
+        # this outcome NET of fees, slippage and carry, and that conversion needs the same
+        # denominator the gross figure used. Deriving it back from `result_R` divides by zero on
+        # a break-even trade, which is exactly the row a cost model would turn negative.
+        "risk": position.get("risk"),
         "holding_candles": position.get("holding_candles"),
         "position_id": position.get("position_id"),
         "opened_at_utc": position.get("opened_at_utc"),
@@ -668,10 +701,12 @@ def build_outcome_record(
         # observed ones instead of treating every outcome as equally measured.
         "exit_resolution": position.get("exit_resolution") or "unambiguous",
         "provenance": PAPER_PROVENANCE,
-        # Paper R is measured on INTENDED fills and carries no costs by design (see cost.py).
-        # Stated on the row so a consumer pooling it with live R — which is measured on actual
-        # fills — can see that the two statistics differ.
-        "r_basis": R_BASIS_INTENT,
+        # Intended fills, NET of costs. The value changed on 2026-07-30 and the label changed
+        # with it, so a window spanning that day can SEE that it mixes two bases rather than
+        # silently averaging them (see live_pnl.R_BASIS_*). Rows written before keep `intent`
+        # and cannot be re-priced: the stored row has no `risk`, and the cost model is
+        # denominated in risk-per-unit.
+        "r_basis": R_BASIS_INTENT_NET,
     }
     # Idempotency key: one position settles exactly once, so the settlement's
     # identity derives from the position alone — a retried settlement of the same

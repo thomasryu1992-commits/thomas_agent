@@ -41,10 +41,10 @@ evidence, and ``score_basis`` names the meaning on every candidate.
 
 C12: the replay backtest is costed. Every simulated trade's gross (intended-price) R
 is decomposed into net R after fees + slippage via ``cost.apply_cost_model`` (the
-source's S4b cost model, ported in R-space — see ``cost.py``), matching the source's
-own boundary exactly: costs apply to backtest/factory scoring only, never to live
-paper trading (``paper.settle_trade_plan`` stays cost-free, unchanged — the source's
-live paper kernel never imports the cost model either). ``champion_score`` and
+source's S4b cost model, ported in R-space — see ``cost.py``). This was once the ONLY
+costed path, matching the source's boundary; since 2026-07-30 the paper kernel charges the
+same model in ``paper.build_outcome_record``, so a paper expectancy and the one below are
+finally the same kind of number (``cost.py`` records why the boundary moved). ``champion_score`` and
 ``expectancy`` are computed over the costed (net) R, so a strategy that only looks
 good gross now scores accordingly; ``robustness.cost_robustness`` is measured for
 real instead of always zero.
@@ -60,7 +60,13 @@ from typing import Any, Callable, Mapping
 from runtime.read_only_kernel import integrity
 
 from . import features, market_data
-from .cost import CostModel, apply_cost_model
+from .cost import (
+    FUNDING_INTERVALS_PER_DAY,
+    FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_VENUE,
+    CostModel,
+    apply_cost_model,
+)
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
@@ -918,9 +924,83 @@ def holdout_split_index(total_bars: int) -> int:
     return max(1, int(total_bars * (1.0 - HOLDOUT_FRACTION)))
 
 
+def funding_charges_per_bar(
+    candles: list[Mapping[str, Any]], funding: list[Mapping[str, Any]] | None,
+    *, timeframe: str, cost: CostModel,
+) -> tuple[list[float], str]:
+    """Per-bar funding rates, parallel to ``candles`` → ``(charges, source)``.
+
+    ``charges[i]`` is the sum of the settlement rates that landed **inside** bar ``i`` — i.e.
+    in ``[open_time[i], open_time[i+1])`` — as fractions, the shape ``/fapi/v1/fundingRate``
+    returns. A *sum*, not a level: two settlements can fall in one 1d bar-and-a-bit, and three
+    always do. That is the difference from ``features._asof_align``, which carries the last
+    rate at or before each bar open because a feature asks "what is the rate now" while a cost
+    asks "what was charged while I held".
+
+    Bars are half-open on purpose. A settlement exactly at a bar's open belongs to that bar, so
+    summing ``charges[entry+1 : exit+1]`` charges every settlement strictly after the entry bar
+    opened and up to the exit — the intervals a position opened at bar ``entry``'s close and
+    closed at bar ``exit``'s actually sat through.
+
+    With no usable series the venue's BASE rate is spread over the bar's own span
+    (``cost.funding_bps_per_interval`` x settlements-per-bar), and the returned source says so.
+    Never silently zero: a missing series means "unmeasured", and charging nothing for it would
+    be the one direction this whole change exists to close.
+    """
+    from .. import timeutil as _timeutil
+
+    charges = [0.0] * len(candles)
+    if not candles:
+        return charges, FUNDING_SOURCE_VENUE if funding else FUNDING_SOURCE_FALLBACK
+
+    events: list[tuple[Any, float]] = []
+    for event in funding or []:
+        raw, rate = event.get("timestamp"), event.get("funding_rate")
+        if not isinstance(raw, str) or not isinstance(rate, (int, float)) or isinstance(rate, bool):
+            continue
+        try:
+            events.append((_timeutil.parse_iso(raw), float(rate)))
+        except (ValueError, TypeError):
+            continue
+
+    if not events:
+        # Settlements per bar, from the bar's own span. Sub-8h timeframes get a fraction, which
+        # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
+        # one per bar would price a scalper like a swing trader.
+        minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
+        per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+        return [cost.funding_bps_per_interval / 10000.0 * per_bar] * len(candles), FUNDING_SOURCE_FALLBACK
+
+    events.sort(key=lambda pair: pair[0])
+    bar_opens: list[Any] = []
+    for candle in candles:
+        try:
+            bar_opens.append(_timeutil.parse_iso(str(candle.get("open_time"))))
+        except (ValueError, TypeError):
+            bar_opens.append(None)
+
+    cursor = 0
+    for i, opened in enumerate(bar_opens):
+        if opened is None:
+            continue
+        # The next parseable bar open bounds this bar; the last bar is bounded by nothing, so it
+        # takes every remaining settlement. A trade cannot close after the last bar anyway.
+        upper = next((b for b in bar_opens[i + 1:] if b is not None), None)
+        while cursor < len(events) and events[cursor][0] < opened:
+            cursor += 1  # before this bar (only reachable for leading events)
+        total = 0.0
+        scan = cursor
+        while scan < len(events) and (upper is None or events[scan][0] < upper):
+            total += events[scan][1]
+            scan += 1
+        charges[i] = total
+        cursor = scan
+    return charges, FUNDING_SOURCE_VENUE
+
+
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
-    *, cost: CostModel, offset: int = 0,
+    *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
 ) -> tuple[list[dict[str, Any]], float, float]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
@@ -934,6 +1014,8 @@ def _replay(
     total_fee_cost_r = 0.0
     total_maker_fee_cost_r = 0.0
     total_slippage_cost_r = 0.0
+    total_funding_cost_r = 0.0
+    charges = funding if funding is not None else [0.0] * len(rows)
 
     for i, row in enumerate(rows):
         candle = candles[i]
@@ -942,13 +1024,19 @@ def _replay(
                 position, candle, row.get("close"), spec.exit_rules.max_holding_bars, False
             )
             if reason is not None:
+                # Every settlement strictly after the entry bar opened, through the exit bar.
+                # The entry bar itself is excluded: the position opens at that bar's CLOSE, so
+                # a settlement inside it happened before the trade existed.
+                carry = sum(charges[position["entry_index"] + 1 : i + 1])
                 breakdown = apply_cost_model(
                     position["direction"], position["entry_price"], float(exit_price),
                     position["risk"], cost=cost, close_reason=reason,
+                    funding_rate_sum=carry,
                 )
                 total_fee_cost_r += breakdown.fee_cost_r
                 total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
+                total_funding_cost_r += breakdown.funding_cost_r
                 outcomes.append({
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
@@ -956,6 +1044,7 @@ def _replay(
                     "fee_cost_R": breakdown.fee_cost_r,
                     "maker_fee_cost_R": breakdown.maker_fee_cost_r,
                     "slippage_cost_R": breakdown.slippage_cost_r,
+                    "funding_cost_R": breakdown.funding_cost_r,
                     "close_reason": reason,
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
@@ -980,21 +1069,29 @@ def _replay(
                 "take_profit": close + target_distance if long else close - target_distance,
                 "risk": abs(stop_distance),
                 "holding_candles": 0,
+                # Where the carry starts. Kept on the position rather than in a parallel
+                # variable so a settlement can only ever bill the window of the trade that is
+                # actually open — the two cannot drift apart.
+                "entry_index": i,
             }
             entry_regime = row.get("market_regime")
-    return outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r
+    return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
+            total_funding_cost_r)
 
 
 def _holdout_evidence(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
-    *, cost: CostModel, offset: int,
+    *, cost: CostModel, offset: int, funding: list[float] | None = None,
+    funding_source: str = FUNDING_SOURCE_VENUE,
 ) -> dict[str, Any]:
     """What the spec did on bars that never touched its score. Compact by design.
 
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
     that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, maker_fees, slippage = _replay(spec, rows, candles, cost=cost, offset=offset)
+    outcomes, fees, maker_fees, slippage, carry = _replay(
+        spec, rows, candles, cost=cost, funding=funding, offset=offset
+    )
     total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
     closed = len(outcomes)
     return {
@@ -1014,16 +1111,69 @@ def _holdout_evidence(
         # by it would report a rate this candidate never faced on that leg.
         "maker_fee_cost_r": round(maker_fees, 8),
         "slippage_cost_r": round(slippage, 8),
+        # Signed, and on the same footing as the fee legs for the same reason: a holdout whose
+        # carry is invisible cannot be compared against a scored window whose carry is not.
+        "funding_cost_r": round(carry, 8),
         "cost_model": {
             "taker_fee_bps": cost.taker_fee_bps,
             "maker_fee_bps": cost.maker_fee_bps,
             "slippage_bps": cost.slippage_bps,
+            "funding_bps_per_interval": cost.funding_bps_per_interval,
+            "funding_source": funding_source,
         },
     }
 
 
+@dataclass(frozen=True)
+class ReplayFrame:
+    """The spec-INDEPENDENT half of a backtest, computed once and replayed many times.
+
+    Features, candles and the carry series are properties of the market and the calendar. The
+    spec decides only which bars it enters on. `backtest_spec` nevertheless rebuilt all three
+    per spec, and `build_feature_rows` is the expensive one: **6.0 seconds at 48,000 bars**,
+    which is the 15m factory window (500 calendar days). A batch of four plus fusion children
+    therefore spent ~30 seconds per fire recomputing an identical frame — on a scheduler that
+    runs schedules sequentially, and shares that tick with the live leg.
+
+    ``cost`` is carried because the carry series depends on it: with no venue funding history
+    `funding_charges_per_bar` spreads ``cost.funding_bps_per_interval`` over each bar. A frame
+    built under one cost model and replayed under another would silently score trades against
+    rates they never faced, which is the failure `pool.cost_basis_rank` exists to catch after
+    the fact — so `backtest_spec` refuses the mismatch at the door instead.
+    """
+
+    rows: list[dict[str, Any]]
+    candles: list[Mapping[str, Any]]
+    funding: list[float]
+    funding_source: str
+    split: int
+    cost: CostModel
+
+
+def build_replay_frame(
+    snapshot: Mapping[str, Any], *, cost: CostModel | None = None
+) -> ReplayFrame:
+    """Everything a replay needs that does not depend on the spec. Pure.
+
+    The train/holdout split is computed here too (see HOLDOUT_FRACTION): features are built over
+    the FULL series and only then sliced, so the holdout starts with warm indicators instead of
+    re-warming — the split is about what the SCORE may see, not about the data itself."""
+    cost = cost or CostModel()
+    rows = build_feature_rows(dict(snapshot))
+    candles = list(snapshot.get("candles") or [])
+    funding, funding_source = funding_charges_per_bar(
+        candles, snapshot.get("funding"),
+        timeframe=str(snapshot.get("timeframe") or "1d"), cost=cost,
+    )
+    return ReplayFrame(
+        rows=rows, candles=candles, funding=funding, funding_source=funding_source,
+        split=holdout_split_index(len(rows)), cost=cost,
+    )
+
+
 def backtest_spec(
     spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
+    frame: ReplayFrame | None = None,
 ) -> dict[str, Any]:
     """Replay ``spec`` over the snapshot's history. Deterministic, pure.
 
@@ -1038,17 +1188,27 @@ def backtest_spec(
     outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
     NET R after costs; ``gross_R`` rides alongside for transparency."""
     cost = cost or CostModel()
-    all_rows = build_feature_rows(dict(snapshot))
-    all_candles = snapshot.get("candles") or []
-    # Train / holdout split (see HOLDOUT_FRACTION). Features are computed over the FULL
-    # series and only then sliced, so the holdout starts with warm indicators instead of
-    # re-warming — the split is about what the SCORE may see, not about the data itself.
-    split = holdout_split_index(len(all_rows))
+    # Reused when the caller already built it (`run_factory` builds one per fire and replays
+    # every spec and fusion child through it), rebuilt when it did not. A frame from a different
+    # cost model is refused rather than used: see `ReplayFrame`.
+    if frame is None:
+        frame = build_replay_frame(snapshot, cost=cost)
+    elif frame.cost != cost:
+        raise ValueError(
+            "replay frame was built under a different cost model than this backtest charges; "
+            "the carry series would price trades at rates they never faced"
+        )
+    all_rows, all_candles = frame.rows, frame.candles
+    all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
     rows, candles = all_rows[:split], all_candles[:split]
-    outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r = _replay(
-        spec, rows, candles, cost=cost
+    (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
+     total_funding_cost_r) = _replay(
+        spec, rows, candles, cost=cost, funding=all_funding[:split]
     )
-    holdout = _holdout_evidence(spec, all_rows[split:], all_candles[split:], cost=cost, offset=split)
+    holdout = _holdout_evidence(
+        spec, all_rows[split:], all_candles[split:], cost=cost, offset=split,
+        funding=all_funding[split:], funding_source=funding_source,
+    )
 
     summary = summarize_outcomes(outcomes)
 
@@ -1105,6 +1265,11 @@ def backtest_spec(
         "total_net_r": total_net_r,
         "fee_cost_r": round(total_fee_cost_r, 8),
         "slippage_cost_r": round(total_slippage_cost_r, 8),
+        # Included so `cost_robustness` measures what fraction of the edge survives the costs
+        # this book ACTUALLY pays. On a 1d spec holding 12-48 days the carry is several times
+        # the fee legs, so a robustness score computed without it was answering a question
+        # about a cheaper instrument than the one being traded.
+        "funding_cost_r": round(total_funding_cost_r, 8),
     }
     robustness = score_robustness(spec, cost_metrics, walk_forward, regime_breakdown, holdout=holdout)
     return {
@@ -1129,10 +1294,20 @@ def backtest_spec(
             # is exactly how `expectancy_at` reads a missing value.
             "total_maker_fee_cost_r": round(total_maker_fee_cost_r, 8),
             "total_slippage_cost_r": round(total_slippage_cost_r, 8),
+            # SIGNED, unlike the two above: a short book in a positive-funding regime is paid to
+            # hold, so a negative figure here is a real credit and not a sign error. It is
+            # deliberately NOT folded into `total_fee_cost_r`, which `expectancy_at` rescales by
+            # a taker ratio — carry does not scale with the fee rate, and mixing them would make
+            # every future rate change silently wrong.
+            "total_funding_cost_r": round(total_funding_cost_r, 8),
             "cost_model": {
                 "taker_fee_bps": cost.taker_fee_bps,
                 "maker_fee_bps": cost.maker_fee_bps,
                 "slippage_bps": cost.slippage_bps,
+                "funding_bps_per_interval": cost.funding_bps_per_interval,
+                # Which quality of evidence the carry is: the venue's own settlements over this
+                # window, or the modelled base rate because the series was missing.
+                "funding_source": funding_source,
             },
         },
         "regime_breakdown": regime_breakdown,
@@ -1338,6 +1513,7 @@ def fusion_parent_buckets(
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
+    frame: ReplayFrame | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
 
@@ -1372,7 +1548,7 @@ def _fuse_batch(
         if child.strategy_rule_hash in seen_hashes:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
             continue
-        evidence = backtest_spec(child, snapshot)
+        evidence = backtest_spec(child, snapshot, frame=frame)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
             continue
@@ -1450,10 +1626,15 @@ def run_factory(
         known_rule_hashes=known_hashes,
     )
 
+    # Built once for the whole run. Features, candles and carry are properties of the market and
+    # the calendar, not of any spec, and `build_feature_rows` alone is 6.0s at the 48,000-bar 15m
+    # window — so rebuilding it per candidate cost ~30s a fire on a sequential scheduler.
+    frame = build_replay_frame(snapshot)
+
     candidates: list[dict[str, Any]] = []
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = backtest_spec(spec, snapshot)
+        evidence = backtest_spec(spec, snapshot, frame=frame)
         record = {
             "strategy_id": spec.strategy_id,
             "strategy_rule_hash": spec.strategy_rule_hash,
@@ -1488,6 +1669,7 @@ def run_factory(
             pairs=fusion_pairs,
             seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
             evidence_sha=candles_sha,
+            frame=frame,
             now=now,
         )
 

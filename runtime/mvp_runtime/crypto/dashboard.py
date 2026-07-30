@@ -287,13 +287,25 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "performance": {
             "closed_count": report.get("sample_size") if report else 0,
             "expectancy": (report.get("summary") or {}).get("expectancy") if report else None,
+            # The same trades at the venue's rates. Paper R is measured on intended fills and
+            # carries no costs by design (`cost.py`), which is right for the risk guard and
+            # wrong for the question this board's headline asks — "is there an edge worth
+            # expanding". Both are carried so the board can show the gap rather than pick.
+            "expectancy_net": (report.get("net_summary") or {}).get("expectancy") if report else None,
+            "uncostable_count": (report.get("net_summary") or {}).get("uncostable_count") if report else 0,
             "max_drawdown": (report.get("summary") or {}).get("max_drawdown") if report else None,
             "recommendation": report.get("recommendation") if report else None,
             # Computed here from the R values rather than added to the performance report:
             # that report is a versioned, persisted record, and this is a reading of it.
+            #
+            # Over the NET series, so the interval and the point estimate describe the same
+            # quantity. An interval around gross R beside a net expectancy would be two
+            # statistics about two different venues printed as one verdict. Rows that cannot be
+            # priced are absent from the series rather than counted at gross — `uncostable_count`
+            # above is what says so.
             "sample_verdict": sample_verdict([
-                float(o["result_R"]) for o in own_outcomes
-                if isinstance(o.get("result_R"), (int, float))
+                net for net in (feedback.net_result_r(o) for o in own_outcomes)
+                if net is not None
             ]),
         },
         # Imported crypto_AI_System history, reported separately and never merged above: it is
@@ -455,7 +467,14 @@ def _headline(status: dict[str, Any]) -> list[str]:
     """The two or three lines that answer "so what", before any evidence."""
     perf = status.get("performance") or {}
     closed = perf.get("closed_count") or 0
-    expectancy = perf.get("expectancy")
+    # The costed figure decides the headline, because the headline is a claim about whether this
+    # is worth real money and real money pays fees, spread and carry. Falls back to gross only
+    # when nothing could be priced — an older status document, or a history with no fills on it —
+    # so a caller that predates the net figure keeps the verdict it always got.
+    expectancy = perf.get("expectancy_net")
+    net_basis = expectancy is not None
+    if not net_basis:
+        expectancy = perf.get("expectancy")
     lines: list[str] = []
 
     if not closed:
@@ -490,6 +509,10 @@ def _headline(status: dict[str, Any]) -> list[str]:
         else:
             verdict = (f"자체 성과 {_r(expectancy)}R × {closed}건"
                        + (", 0과 구별됨" if measured else "") + " — 검토 가능")
+        # Which venue the number describes, stated on the line rather than inferred. The gross
+        # figure is the one every earlier board printed, so a reader comparing against a
+        # screenshot from last week has to be told the basis changed.
+        verdict += " (비용 차감 후)" if net_basis else " (총액, 비용 미차감)"
         lines.append(f"판단: {verdict}")
 
     costing = [row for row in _gate_rows(status) if row[0] == _GATE_COSTING]
@@ -577,8 +600,16 @@ def render_status_text(status: dict[str, Any]) -> str:
     # --- performance -------------------------------------------------------------
     perf = status.get("performance") or {}
     closed = perf.get("closed_count") or 0
-    lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 · "
+    lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 (총액) · "
                  f"dd {_r(perf.get('max_drawdown'), signed=False)}R → {perf.get('recommendation')}")
+    if perf.get("expectancy_net") is not None:
+        # Directly under the gross line: the two answer the same question about different
+        # venues, and the gap between them IS the reading when an edge is thin.
+        net_line = f"       비용 차감 후: {_r(perf.get('expectancy_net'))}R × {closed}건"
+        uncostable = perf.get("uncostable_count") or 0
+        if uncostable:
+            net_line += f" (가격 없는 {uncostable}건 제외)"
+        lines.append(net_line)
     if closed and closed < MIN_MEANINGFUL_SAMPLE:
         # Attached to the number it qualifies, not stranded in a trends section below.
         lines.append(f"       ⚠ {closed}건은 판단 불가 표본 ({MIN_MEANINGFUL_SAMPLE}건 이상 필요)")
