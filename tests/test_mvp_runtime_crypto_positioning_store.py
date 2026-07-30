@@ -178,11 +178,15 @@ def test_damaged_lines_are_skipped_not_raised(tmp_path):
     assert len(positioning_store.read_rows(tmp_path)) == 1  # the good row survives
 
 
-def test_throttle_holds_within_a_period_and_releases_after(tmp_path):
-    assert positioning_store.is_due(None, NOW) is True  # empty store seeds
+def test_throttle_measures_from_the_last_attempt(tmp_path):
+    """Not from the newest stored reading. That version is what ``oi_store`` shipped first and had
+    to fix: the venue's newest COMPLETE period is always at least one period behind the clock, so
+    "the newest row is over an hour old" is true for almost every minute of every hour and the
+    throttle could never skip."""
+    assert positioning_store.is_due(None, NOW) is True  # never asked
     assert positioning_store.is_due("2026-07-30T11:30:00Z", NOW) is False  # 30 min — too soon
     assert positioning_store.is_due("2026-07-30T11:00:00Z", NOW) is True   # a full period
-    assert positioning_store.is_due("nonsense", NOW) is True  # cannot say → collect
+    assert positioning_store.is_due("nonsense", NOW) is True  # cannot say → ask
 
 
 def test_refresh_reports_per_series_and_degrades_independently(tmp_path):
@@ -216,14 +220,13 @@ def test_refresh_without_the_capability_is_a_skip_not_an_error(tmp_path):
 
 
 def test_second_call_in_the_same_period_opens_no_socket(tmp_path):
-    """The throttle is what makes a twenty-context fan-out safe: only the first context of a new
-    period reaches the venue.
+    """The throttle is what makes a twenty-context fan-out safe: only the first context after the
+    period turns reaches the venue.
 
-    ``now`` sits half an hour after the mock's newest synthesized period rather than at the
-    module's ``NOW``, because the throttle keys on the age of the newest **reading** (see
-    ``is_due``) and the mock's grid is anchored in January. With the module ``NOW`` in July every
-    stored row reads as six months stale and the store correctly judges itself due — which is the
-    vendor-is-behind case, not the case this test is about."""
+    Runs at the module ``NOW`` with no regard for where the mock's synthesized grid sits, and that
+    independence is the point of measuring from the attempt: under the reading-age throttle this
+    same test needed a ``now`` hand-aligned to the mock's January anchor, because every stored row
+    read as months stale and the store judged itself due."""
     class _CountingCollector(MockMarketDataCollector):
         def __init__(self):
             self.calls = 0
@@ -234,16 +237,13 @@ def test_second_call_in_the_same_period_opens_no_socket(tmp_path):
                 symbol, series=series, period=period, limit=limit, timeout_seconds=timeout_seconds
             )
 
-    # The mock seeds SEED_ROWS hourly bars from its 2026-01-01 anchor, so its newest closed
-    # period is 719 hours later; half an hour past that is inside one period.
-    mock_now = "2026-01-30T23:30:00Z"
     collector = _CountingCollector()
     positioning_store.record_positioning(
-        symbol="BTCUSDT", collector=collector, now=mock_now, root=tmp_path
+        symbol="BTCUSDT", collector=collector, now=NOW, root=tmp_path
     )
     after_seed = collector.calls
     result = positioning_store.record_positioning(
-        symbol="BTCUSDT", collector=collector, now=mock_now, root=tmp_path
+        symbol="BTCUSDT", collector=collector, now=NOW, root=tmp_path
     )
     assert collector.calls == after_seed, "the throttle let a redundant request through"
     assert result["status"] == "skipped_fresh"
@@ -332,3 +332,75 @@ def test_no_feature_column_reads_the_store(tmp_path):
                      "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}],
     })[0]
     assert not [key for key in row if "long_ratio" in key or key.startswith("positioning")]
+
+
+# --- the attempt marker ---------------------------------------------------------
+
+def test_the_attempt_is_marked_even_when_the_venue_refuses(tmp_path):
+    """A marker written only on success turns a refusing endpoint into one ask per context per
+    fire — 240 an hour across three series and twenty contexts, to record nothing."""
+    class _Broken(MockMarketDataCollector):
+        def __init__(self):
+            self.calls = 0
+
+        def positioning_history(self, symbol, *, series, period, limit, timeout_seconds):
+            self.calls += 1
+            raise ToolError("TOOL_TRANSPORT", "boom")
+
+    collector = _Broken()
+    first = positioning_store.record_positioning(
+        symbol="BTCUSDT", collector=collector, now=NOW, root=tmp_path
+    )
+    assert first["status"] == "degraded"
+    after_failure = collector.calls
+    assert after_failure == len(POSITIONING_SERIES)
+
+    second = positioning_store.record_positioning(
+        symbol="BTCUSDT", collector=collector, now=NOW, root=tmp_path
+    )
+    assert collector.calls == after_failure, "a failed attempt was not marked"
+    assert second["status"] == "skipped_fresh"
+
+
+def test_damaged_marks_read_as_ask_again(tmp_path):
+    """Fail-OPEN toward asking, the opposite direction from this store's row reads. A corrupt
+    marks file that read as "recently attempted" would silently stop a 500-day accumulation while
+    the board went on reporting whatever coverage it had."""
+    positioning_store.record_refresh_attempt("BTCUSDT", "top_position", now=NOW, root=tmp_path)
+    assert positioning_store.read_refresh_marks(tmp_path)
+
+    positioning_store.refresh_marks_path(tmp_path).write_text("{not json", encoding="utf-8")
+    assert positioning_store.read_refresh_marks(tmp_path) == {}
+
+
+def test_marks_are_per_series_not_per_symbol(tmp_path):
+    """Three series are asked independently, so one being fresh must not silence the others."""
+    positioning_store.record_refresh_attempt("BTCUSDT", "top_position", now=NOW, root=tmp_path)
+    marks = positioning_store.read_refresh_marks(tmp_path)
+    assert set(marks) == {"BTCUSDT|top_position"}
+
+
+def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
+    """Whether a call is a seed is a property of the STORE, not of the marks: a machine whose
+    marks file was deleted must not re-request 30 days it already holds."""
+    asked: list[int] = []
+
+    class _RecordingCollector(MockMarketDataCollector):
+        def positioning_history(self, symbol, *, series, period, limit, timeout_seconds):
+            asked.append(limit)
+            return super().positioning_history(
+                symbol, series=series, period=period, limit=limit, timeout_seconds=timeout_seconds
+            )
+
+    collector = _RecordingCollector()
+    positioning_store.record_positioning(
+        symbol="BTCUSDT", collector=collector, now=NOW, root=tmp_path
+    )
+    assert asked and set(asked) == {positioning_store.SEED_ROWS}
+
+    positioning_store.refresh_marks_path(tmp_path).unlink()
+    asked.clear()
+    positioning_store.record_positioning(
+        symbol="BTCUSDT", collector=collector, now="2026-07-30T14:00:00Z", root=tmp_path
+    )
+    assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that already had rows"

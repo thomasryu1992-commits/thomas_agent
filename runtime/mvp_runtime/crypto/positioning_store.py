@@ -28,9 +28,12 @@ Shape and its reasons, all inherited from ``oi_store`` because the problem is th
 - Append-only JSONL, one row per ``(symbol, series, period start)``, **latest-wins on read**, so
   a re-fetch is idempotent and a gap shorter than the retention window self-heals on the next
   refresh instead of needing a repair path.
-- Writes are **throttled to once per period per symbol**, not once per fire. The pool cycle fans
-  out over 20 contexts at a 15-minute cadence; unthrottled that would be 240 vendor requests an
-  hour (twenty contexts × three series × four fires) to record fifteen new readings.
+- Requests are **throttled to once per period per (symbol, series)** on a last-ATTEMPT marker,
+  not once per fire and not on the age of the newest stored row. The pool cycle fans out over 20
+  contexts at a 15-minute cadence; unthrottled that is 240 vendor requests an hour (twenty
+  contexts × three series × four fires) to record fifteen new readings. Measuring from the stored
+  row instead is the version ``oi_store`` shipped first and had to fix — the newest complete
+  period is always a period behind the clock, so it read as due every time.
 - Rows carry ``record_sha256`` so tamper evidence starts when a row becomes durable.
 - Reads never raise on damage. A corrupt line is skipped and counted: the only consumer is a
   coverage number, under-reporting coverage is the safe direction, and a store that refused to
@@ -78,9 +81,22 @@ REFRESH_ROWS = 3 * 24
 # constant was written. 720 rows is two pages at the 500-row cap.
 SEED_ROWS = 30 * 24
 
-# A symbol is refreshed when its newest stored period is older than this — the series' own
-# cadence, since asking sooner can only return a row already held.
+# A (symbol, series) is refreshed when its last refresh ATTEMPT is older than this — the series'
+# own cadence, since asking sooner can only return a row already held.
+#
+# From the last ATTEMPT, not from the newest stored reading, and that distinction is not
+# theoretical: ``oi_store`` shipped the reading-age version first and it never skipped. The
+# vendor's newest complete period is always at least one period behind the clock (the forming one
+# is dropped), so "newest reading is over an hour old" is true for almost every minute of every
+# hour, and all four contexts of a symbol re-asked inside one fire — the exact thing the throttle
+# exists to prevent, reported as four ``appended`` statuses with nothing appended. This store
+# would have reproduced it exactly, three times over for three series.
 REFRESH_AFTER_SECONDS = POSITIONING_PERIOD_SECONDS[POSITIONING_PERIOD]
+
+# Where the attempt marks live: a small JSON map, one entry per (symbol, series), rewritten whole
+# — the ``oi_store`` / ``routing_marks`` idiom, for the reason it was chosen there (a handful of
+# short values read together and never grown).
+REFRESH_MARKS_FILENAME = "positioning_refresh.json"
 
 # Coverage a series needs before a feature could read it: the factory's own replay span. Not a new
 # number — eligibility means "the store can answer every bar the factory asks about", and any
@@ -90,6 +106,56 @@ REQUIRED_COVERAGE_DAYS = FACTORY_DEPTH_DAYS
 
 def positioning_path(root: Path | None = None) -> Path:
     return state_dir(root) / POSITIONING_FILENAME
+
+
+def refresh_marks_path(root: Path | None = None) -> Path:
+    return state_dir(root) / REFRESH_MARKS_FILENAME
+
+
+def _mark_key(symbol: str, series: str) -> str:
+    return f"{str(symbol).strip().upper()}|{series}"
+
+
+def read_refresh_marks(root: Path | None = None) -> dict[str, str]:
+    """``{"SYMBOL|series": last attempt}``. Damage reads as no marks, which means "ask again".
+
+    Fail-open toward asking rather than toward skipping — the opposite direction from this
+    store's row *reads*, and deliberately so. A corrupt marks file that read as "recently
+    attempted" would silently stop a 500-day accumulation while the board went on reporting
+    whatever coverage it already had, and a store that quietly stops growing is worse than one
+    that asks the vendor once too often.
+    """
+    path = refresh_marks_path(root)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def record_refresh_attempt(symbol: str, series: str, *, now: str, root: Path | None = None) -> None:
+    """Mark that the venue was asked about this (symbol, series), whatever the answer was.
+
+    Recorded on failure too. A marker written only on success turns a refusing endpoint into one
+    ask per context per fire — with three series and twenty contexts that is 240 asks an hour to
+    record nothing. A persistent failure now costs three asks an hour, and a transient one delays
+    the self-heal by at most that long, which the 30-day retention window absorbs easily.
+    """
+    name = str(symbol).strip().upper()
+    if not name or series not in POSITIONING_SERIES:
+        return
+    directory = state_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = refresh_marks_path(root)
+    with locked(path.with_suffix(".lock"), code="POSITIONING_MARKS_LOCKED",
+                label="positioning refresh marks"):
+        marks = read_refresh_marks(root)
+        marks[_mark_key(name, series)] = now
+        path.write_text(json.dumps(marks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -205,26 +271,18 @@ def _is_proportion(value: Any) -> bool:
     )
 
 
-def is_due(newest: str | None, now: str) -> bool:
-    """Whether this (symbol, series) should be refreshed.
+def is_due(last_attempt: str | None, now: str) -> bool:
+    """Whether this (symbol, series) should be asked about again, given when it was last ASKED.
 
-    Empty store → due (the seed). Unparseable mark → due, because a store that cannot say when it
-    last wrote should collect rather than wait: the append is idempotent, so being wrong here
-    costs one redundant request.
-
-    The mark is the newest **reading's** period, not the last time a request was made — the
-    ``oi_store.is_due`` design, kept rather than improved on so there is one throttle shape for
-    one problem. The consequence is worth knowing: if the venue itself falls hours behind, every
-    context in a fan-out sees stale data, judges itself due, and asks again. That is arguably the
-    right behaviour (a store that is behind should try to catch up) but it does mean the request
-    floor is a property of the vendor's freshness rather than of this code. These endpoints
-    publish the last closed period, so in practice the mark is ~one period old and the throttle
-    holds; a vendor that changed that would show up as a request-rate problem, not a data problem.
+    Not when it was last successfully written — see :data:`REFRESH_AFTER_SECONDS` for why
+    measuring from the newest stored reading could never skip. Never attempted → due.
+    Unparseable mark → due, because a marker that cannot be read must not be able to stop
+    accumulation; the append is idempotent, so being wrong costs one redundant request.
     """
-    if not newest:
+    if not last_attempt:
         return True
     try:
-        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(newest)).total_seconds()
+        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(last_attempt)).total_seconds()
     except (ValueError, TypeError):
         return True
     return elapsed >= REFRESH_AFTER_SECONDS
@@ -241,8 +299,10 @@ def record_positioning(
     """One throttled refresh of all three series for one symbol. Never raises.
 
     Called from the cycle's feed step, which runs once per context — twenty times per fire on the
-    shipped fan-out. The throttle is what makes that safe: only the first context of a new period
-    reaches the venue, and the other nineteen return ``skipped_fresh`` having opened no socket.
+    shipped fan-out. The throttle is what makes that safe: only the first context after the period
+    turns reaches the venue, and the rest return ``skipped_fresh`` having opened no socket. It
+    measures from the last ATTEMPT, recorded whatever the answer was, because measuring from the
+    newest stored reading could never skip (see :data:`REFRESH_AFTER_SECONDS`).
 
     Per-series status, because a partial outage is the normal case and must stay legible: one
     endpoint refusing does not cost the other two their readings. ``status`` for the call as a
@@ -253,13 +313,20 @@ def record_positioning(
     if collector is None or not hasattr(collector, "positioning_history"):
         return {"symbol": name, "status": "skipped_no_feed", "written": 0, "series": {}}
 
+    marks = read_refresh_marks(root)
     per_series: dict[str, dict[str, Any]] = {}
     for series in sorted(POSITIONING_SERIES):
-        newest = newest_timestamp(root, symbol=name, series=series)
-        if not is_due(newest, now):
-            per_series[series] = {"status": "skipped_fresh", "written": 0, "newest": newest}
+        last_attempt = marks.get(_mark_key(name, series))
+        if not is_due(last_attempt, now):
+            per_series[series] = {
+                "status": "skipped_fresh", "written": 0, "last_attempt": last_attempt,
+            }
             continue
-        seeding = newest is None
+        # Whether this is a seed is a property of the STORE, not of the marks: a machine whose
+        # marks file was deleted must still refresh rather than re-seed 30 days it already holds.
+        seeding = newest_timestamp(root, symbol=name, series=series) is None
+        # Stamped BEFORE the request, so a fetch that hangs or raises still counts as an attempt.
+        record_refresh_attempt(name, series, now=now, root=root)
         try:
             rows = collector.positioning_history(
                 name, series=series, period=POSITIONING_PERIOD,
@@ -364,7 +431,8 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
 
 
 __all__ = [
-    "POSITIONING_FILENAME", "POSITIONING_PERIOD", "RECORD_TYPE", "REQUIRED_COVERAGE_DAYS",
-    "append_rows", "coverage", "coverage_summary", "is_due", "newest_timestamp",
-    "positioning_path", "read_rows", "record_positioning",
+    "POSITIONING_FILENAME", "POSITIONING_PERIOD", "RECORD_TYPE", "REFRESH_MARKS_FILENAME",
+    "REQUIRED_COVERAGE_DAYS", "append_rows", "coverage", "coverage_summary", "is_due",
+    "newest_timestamp", "positioning_path", "read_refresh_marks", "read_rows",
+    "record_positioning", "record_refresh_attempt", "refresh_marks_path",
 ]
