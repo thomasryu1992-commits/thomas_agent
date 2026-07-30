@@ -676,10 +676,12 @@ def _execute(
         # data would be evidence-free noise.
         from .crypto import market_data
         from .crypto import pool as crypto_pool
+        from .crypto import positioning_store
         from .crypto.cycle import (
             attach_cross_section,
             attach_feeds,
             attach_htf,
+            attach_positioning,
             attach_reference,
         )
         from .crypto.factory import run_factory
@@ -729,12 +731,24 @@ def _execute(
         # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
         attach_cross_section(snapshot, collector=collector, now=now,
                              limit=factory_candle_target(timeframe))
+        # Positioning: a LOCAL read of what this runtime has accumulated — no request, no grant.
+        # Attached unconditionally because the columns are honest at any coverage (absent = None);
+        # the eligibility measured below is what decides whether a family may be MINTED against
+        # them, which is a different question and the one that can go wrong silently.
+        attach_positioning(snapshot, root=repo_root)
+        # The store's own answer to "can you cover the window the factory replays". Read here
+        # rather than inside the factory because `run_factory` is pure. A store that cannot be
+        # read at all reports not-eligible, which is the safe direction: no data, no family.
+        positioning_eligible = bool(positioning_store.coverage_summary(
+            repo_root, symbols=[symbol],
+        )["eligible"])
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),
             existing_candidates=crypto_pool.read_candidates(repo_root),
             now=now,
             fusion_pairs=FACTORY_FUSION_PAIRS,
+            positioning_eligible=positioning_eligible,
         )
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:

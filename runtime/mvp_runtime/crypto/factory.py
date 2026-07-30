@@ -185,6 +185,20 @@ NUMERIC_FEATURES = frozenset({
     # and `xs_members` is a count of how many peers answered, so a condition on it would mine
     # feed availability rather than the market. The raw-`open_interest` rule.
     *features.XS_NUMERIC_COLUMNS,
+    # Positioning (see features.POSITIONING_NUMERIC_COLUMNS). The first columns in this vocabulary
+    # describing what is HELD rather than what traded — every other source here, including the
+    # taker flow, is a property of transactions. Large capital's long share against the whole
+    # account population cannot be recovered from OHLCV at any resolution.
+    #
+    # Only the standardised pair is here. `positioning_divergence` and the three raw shares are on
+    # the row as evidence and deliberately NOT mintable: a level that is dimensionless is not the
+    # same as a level that is comparable, and whether +0.05 of divergence means the same on BTC as
+    # on DOGE is a question nobody has answered. The `xs_dispersion` split.
+    #
+    # Admitting them here does not make them reachable — `POSITIONING_FAMILIES` stay unminted
+    # until the store's coverage says so. Membership gates what a spec MAY reference; the family
+    # gate decides what gets built.
+    *features.POSITIONING_NUMERIC_COLUMNS,
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -429,6 +443,25 @@ def _xs_momentum_long_entry(p: dict) -> list[dict]:
     ]
 
 
+def _positioning_divergence_long_entry(p: dict) -> list[dict]:
+    # The research record's own thesis, and the only premise in this library that reads what is
+    # HELD: the top cohort's positions have swung long relative to the whole account population by
+    # an unusual amount. Confirmed by trend, like `rel_strength_long`, because a divergence says
+    # who is positioned and not when — and a positioning reading is hourly, so it moves far more
+    # slowly than the bar being entered on.
+    return [
+        {"feature": "positioning_divergence_zscore", "comparison": ">=", "value": p["divergence_z_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _positioning_divergence_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "positioning_divergence_zscore", "comparison": "<=", "value": -p["divergence_z_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+    ]
+
+
 def _xs_momentum_short_entry(p: dict) -> list[dict]:
     return [
         {"feature": "xs_rank_pct", "comparison": "<=", "value": p["xs_rank_edge"]},
@@ -639,6 +672,15 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # (see `_xs_momentum_long_entry`), and `xs_dispersion_min` is a ratio against the cohort's
     # own recent dispersion, so 1.0 means "normal" on every symbol and every timeframe and
     # there is no level anybody had to authorize.
+    # Positioning divergence — minted only where the store's coverage reaches the replay span
+    # (see POSITIONING_FAMILIES). The z threshold matches the funding and premium fade families,
+    # because all three mine "how unusual is this crowding reading" over the same window.
+    StrategyTemplate("positioning_divergence_long", "long", "1h",
+                     {"divergence_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"divergence_z_min": 1.5, **_EXIT_BASE}, _positioning_divergence_long_entry),
+    StrategyTemplate("positioning_divergence_short", "short", "1h",
+                     {"divergence_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"divergence_z_min": 1.5, **_EXIT_BASE}, _positioning_divergence_short_entry),
     StrategyTemplate("xs_momentum_long", "long", "1h",
                      {"xs_rank_edge": ParamSpec(0.0, 0.4),
                       "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
@@ -693,8 +735,29 @@ REFERENCE_FAMILIES = frozenset({"rel_strength_long", "rel_strength_short"})
 # too small to rank.
 CROSS_SECTION_FAMILIES = frozenset({"xs_momentum_long", "xs_momentum_short"})
 
+# Families whose entry rules read the positioning columns — mintable only where the store has
+# accumulated enough history to answer the whole replay window
+# (`positioning_store.coverage_summary(...)["eligible"]`, which requires
+# `REQUIRED_COVERAGE_DAYS = FACTORY_DEPTH_DAYS`).
+#
+# **This is the gate that turns "decide later" into "the data decides", and it is the reason the
+# feature could be wired today at all.** The vendor keeps 30 days; the factory replays 500. Minted
+# against a 6%-covered window these families would not merely be thin — they would be
+# *un-scoreable*: the walk-forward split would put every trade in the newest slice and none in the
+# older ones, so `temporal_consistency` is 0 by construction and no amount of real edge could
+# clear the robustness bar. The family would then be retired as FRAGILE, blamed for a window that
+# had no data in it. That is the `liquidation_spike_ratio` failure in a different costume, and it
+# is why the note in the research record said "collect now, decide later".
+#
+# What changes here is only WHO decides. The columns, the alignment, the vocabulary and the
+# families are built and tested now; the store's own measured coverage flips them on, so nobody
+# has to remember a paragraph in a document sixteen months from now.
+POSITIONING_FAMILIES = frozenset({"positioning_divergence_long", "positioning_divergence_short"})
 
-def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tuple[StrategyTemplate, ...]:
+
+def templates_for_timeframe(
+    timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
+) -> tuple[StrategyTemplate, ...]:
     """The rotation retimed to ``timeframe`` (and narrowed for ``symbol``).
 
     Every price/feed family is retimeable. Four groups need more than a retiming, and all
@@ -709,7 +772,9 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
       when mining the market proxy — ``features`` returns None for every ``ref_*`` column
       there rather than a correlation of 1.0 against itself;
     - the xs_* families need a cohort that still reaches
-      ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it.
+      ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it;
+    - the positioning_* families need a store whose accumulated coverage spans the replay
+      window, which the caller measures and passes as ``positioning_eligible``.
 
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
@@ -717,6 +782,13 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
     carve-out — its cohort is a declared constant, so ``symbol=None`` only ever removes one
     fewer member than a named symbol would, which cannot turn a passing cohort into a failing
     one.
+
+    ``positioning_eligible`` takes the OPPOSITE default to that, and the asymmetry is the point:
+    an unstated symbol is a question about the library, but unstated coverage is a caller who did
+    not measure — and the cost of guessing wrong is a family mined over a window that is 94%
+    indeterminate, scored as FRAGILE, and retired for it. Fail closed. It is a parameter rather
+    than a read because this function is pure and the coverage lives on disk; the scheduler's
+    factory path is where the store is read.
 
     The taker_* and premium_* families need no gate — their legs ride the same klines call as
     the OHLCV, at every timeframe and for every symbol."""
@@ -740,6 +812,8 @@ def templates_for_timeframe(timeframe: str, *, symbol: str | None = None) -> tup
         if template.family in REFERENCE_FAMILIES and not has_reference:
             return False
         if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
+            return False
+        if template.family in POSITIONING_FAMILIES and not positioning_eligible:
             return False
         return True
 
@@ -851,13 +925,20 @@ def generate_batch(
     generation_id: str, *, seed: int, start_index: int = 1, count: int = DEFAULT_BATCH_SIZE,
     symbol: str = "BTCUSDT", timeframe: str = "1d",
     known_rule_hashes: frozenset[str] = frozenset(),
+    positioning_eligible: bool = False,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
     ``known_rule_hashes`` extends the duplicate guard across the existing pool and
-    candidate store, so a batch never re-mints a strategy that already exists."""
+    candidate store, so a batch never re-mints a strategy that already exists.
+
+    ``positioning_eligible`` is passed straight through to :func:`templates_for_timeframe` and
+    defaults to False for the reason stated there — unmeasured coverage must not mint a family
+    over a window that cannot score it."""
     rng = random.Random(seed)
-    templates = templates_for_timeframe(timeframe, symbol=symbol)
+    templates = templates_for_timeframe(
+        timeframe, symbol=symbol, positioning_eligible=positioning_eligible
+    )
     # Which slice of the family list THIS run mints. Without it the picker was
     # ``templates[len(accepted) % len(templates)]``, and since a batch is four specs
     # that selected templates[0..3] on every run ever: 228 of 228 factory candidates
@@ -1595,8 +1676,13 @@ def run_factory(
     now: str,
     count: int = DEFAULT_BATCH_SIZE,
     fusion_pairs: int = 0,
+    positioning_eligible: bool = False,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
+
+    ``positioning_eligible`` is the caller's measurement of whether the positioning store covers
+    the replay window; it reaches :func:`templates_for_timeframe` unchanged. Kept as a parameter
+    rather than read here because this function is pure — the scheduler reads the store.
 
     The seed derives from the candle window's content hash — reproducible from the
     recorded inputs, no wall-clock randomness. Candidate records carry the spec, its
@@ -1624,6 +1710,7 @@ def run_factory(
         symbol=str(snapshot.get("symbol") or "BTCUSDT"),
         timeframe=str(snapshot.get("timeframe") or "1d"),
         known_rule_hashes=known_hashes,
+        positioning_eligible=positioning_eligible,
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
