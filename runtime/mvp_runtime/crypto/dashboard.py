@@ -549,6 +549,15 @@ def render_status_text(status: dict[str, Any]) -> str:
     backlog = status.get("promotion_backlog") or {}
     if backlog.get("count"):
         lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")
+    # Named on its own line: these are not waiting on an operator, they are waiting on a
+    # timeframe that trades often enough for the lifecycle to reach a verdict. Folding them into
+    # the backlog count is what made a pool of 89 look like 89 judged strategies.
+    deferred = backlog.get("deferred_unjudgeable") or []
+    if deferred:
+        lines.append(
+            f"       판정 불가 보류 {len(deferred)} "
+            f"({backlog.get('max_days_to_lifecycle_window')}일 내 lifecycle 창 미달)"
+        )
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"

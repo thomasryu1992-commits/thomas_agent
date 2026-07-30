@@ -1170,6 +1170,54 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # stays exactly as manual as it was.
 PROMOTION_BACKLOG_ALERT_THRESHOLD = 5
 
+# The smallest rolling window any lifecycle rule can act on (`lifecycle.DEFAULT_WINDOWS[0]`).
+# Restated rather than imported because `lifecycle` reaches back into this module and the
+# existing precedent here is a local import inside the one function that needs it; a test pins
+# the two equal so a change to the ladder cannot leave this stale.
+LIFECYCLE_MIN_WINDOW_TRADES = 20
+
+# How long a lineage may take to reach that window before the backlog stops advertising it.
+#
+# **This is a recorded judgement, not a derivation.** Measured across the candidate store
+# 2026-07-30, median days for a lineage to close 20 trades at its own backtest rate: 15m 7,
+# 1h 25, 4h 110, 1d 371. The operator's retirement that day (`approval_c1b8eeb7681c08579648`,
+# 63 strategies) kept **one 15m lineage per symbol** and retired everything slower, on exactly
+# this argument — *"at current rates a 1d lineage needs 122d and a 1h lineage 29d to reach the
+# 20-trade WARNING window, so neither can ever be auto-demoted; today no own lineage exceeds
+# 13 trades and zero strategies are eligible for any lifecycle rule."* Fourteen days is the
+# line that reproduces that decision. Change it by deciding again, not by re-deriving it.
+#
+# Why the backlog is the right place: `route_entries` picks ONE strategy per context, so adding
+# a lineage to a context does not add trades — it splits the same trades across more lineages.
+# A backlog that counted un-judgeable candidates was therefore advertising work whose only
+# effect would be to dilute the outcome stream the lifecycle needs, which is how a pool of 89
+# ended up with nothing in it the runtime could evaluate.
+MAX_DAYS_TO_LIFECYCLE_WINDOW = 14
+
+
+def days_to_lifecycle_window(record: Mapping[str, Any], *, window: int = LIFECYCLE_MIN_WINDOW_TRADES) -> float | None:
+    """Calendar days before this lineage could close ``window`` trades, or None if unknowable.
+
+    Read from the candidate's **own** evidence — ``closed_count`` over ``bars_replayed`` is its
+    trades-per-bar, and the timeframe converts that to trades per day. No cross-store join and
+    no live rate, so the number a reader sees is derived from the same row they are judging.
+
+    None when the evidence cannot say (no bars recorded, no closed trades, an unknown
+    timeframe). None is **not** "fast enough": the caller treats an unknowable rate as
+    un-judgeable, because a lineage that closed nothing over its replay window is the clearest
+    case of one the lifecycle will never get to evaluate."""
+    evidence = record.get("backtest_evidence") or {}
+    spec = record.get("strategy_spec") or {}
+    timeframe = str(spec.get("timeframe") or "")
+    minutes = market_data.TIMEFRAMES.get(timeframe)
+    bars, closed = evidence.get("bars_replayed"), evidence.get("closed_count")
+    if not minutes or not _is_number(bars) or not _is_number(closed) or bars <= 0 or closed <= 0:
+        return None
+    trades_per_day = (float(closed) / float(bars)) * (1440.0 / float(minutes))
+    if trades_per_day <= 0:
+        return None
+    return round(window / trades_per_day, 1)
+
 
 def _lineage_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     """What makes two strategies the SAME promotion decision: one family on one context.
@@ -1231,6 +1279,7 @@ def promotable_backlog(
     }
 
     candidate_ids: list[str] = []
+    deferred: list[dict[str, Any]] = []
     for record in rank_candidates(list(records)):
         if record.get("strategy_rule_hash") in active_hashes:
             continue
@@ -1255,10 +1304,27 @@ def promotable_backlog(
         if lineage in seen_lineages:
             continue
         seen_lineages.add(lineage)
+        # Last, and only after everything the door itself checks: can the runtime ever JUDGE
+        # this? Every filter above asks whether the backtest is believable; none asked whether
+        # a forward verdict is reachable. `route_entries` picks one strategy per context, so
+        # promoting a slow lineage does not add trades — it splits the same trades across more
+        # lineages, which is how a pool of 89 reached a state where no lineage had 13 trades and
+        # nothing was eligible for any lifecycle rule. Deferred rather than dropped: the ids
+        # come back so the board can say how many are waiting on a faster timeframe rather than
+        # on an operator.
+        days = days_to_lifecycle_window(record)
+        if days is None or days > MAX_DAYS_TO_LIFECYCLE_WINDOW:
+            deferred.append({"candidate_id": candidate_id(record),
+                             "days_to_lifecycle_window": days})
+            continue
         candidate_ids.append(candidate_id(record))
 
     return {
         "count": len(candidate_ids),
         "threshold": PROMOTION_BACKLOG_ALERT_THRESHOLD,
         "candidate_ids": candidate_ids,
+        # Named, never silently dropped — a count that hid them would read as "nothing is
+        # waiting" when what is true is "nothing the runtime could grade is waiting".
+        "deferred_unjudgeable": deferred,
+        "max_days_to_lifecycle_window": MAX_DAYS_TO_LIFECYCLE_WINDOW,
     }
