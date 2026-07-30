@@ -22,9 +22,11 @@ import pytest
 from runtime.mvp_runtime import operator, timeutil
 from runtime.mvp_runtime.crypto import paper, pool
 from runtime.mvp_runtime.crypto.cost import (
+    DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
+    FUNDING_SOURCE_VENUE,
 )
 from runtime.mvp_runtime.crypto.dashboard import build_status
 
@@ -67,6 +69,8 @@ def _candidate(
             "taker_fee_bps": taker,
             "maker_fee_bps": maker,
             "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+            "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
+            "funding_source": FUNDING_SOURCE_VENUE,
         },
         "total_net_r": net_r,
         "total_fee_cost_r": 2.0,

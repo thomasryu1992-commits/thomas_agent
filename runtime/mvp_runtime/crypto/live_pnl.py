@@ -60,11 +60,28 @@ STATE_REL = ".runtime_governance_state/crypto"
 LIVE_OUTCOMES_FILENAME = "live_outcomes.jsonl"
 LIVE_PROVENANCE = "mvp_live_kernel"
 
-# How an outcome's `result_R` was measured. Paper: intended fills, no costs. Live: actual fills,
-# slippage included (fees still excluded — see `live_leg`). Recorded on every row so a consumer
-# pooling both populations can see it is doing so.
+# How an outcome's `result_R` was measured. Recorded on every row so a consumer pooling
+# populations can see it is doing so — and, since 2026-07-30, so it can tell a paper row that
+# paid costs from one that did not.
+#
+# - `intent`             intended fills, NO costs. Every paper row written before 2026-07-30.
+# - `intent_net_of_costs` intended fills, fees + slippage charged (`cost.apply_cost_model`).
+#                        Paper rows written since. This is the basis the factory backtest has
+#                        always used, so a paper expectancy is finally comparable to the
+#                        backtest expectancy that scored the same strategy.
+# - `filled`             actual venue fills, slippage included, fees still excluded (`live_leg`).
+#
+# A window spanning the 2026-07-30 boundary mixes `intent` and `intent_net_of_costs`, and
+# therefore UNDER-states its losses by the legacy rows' unpaid costs. There is no backfill: the
+# stored outcome keeps `entry_price`/`exit_price`/`direction` but not `risk`, and the cost model
+# is denominated in risk-per-unit — so an old row cannot be re-priced, only labelled.
 R_BASIS_INTENT = "intent"
+R_BASIS_INTENT_NET = "intent_net_of_costs"
 R_BASIS_FILLED = "filled"
+
+# The bases that already carry costs. `filled` is deliberately absent: live R includes venue
+# slippage but not fees, so it is neither of the two paper bases and must not be read as one.
+R_BASES_NET_OF_COSTS = frozenset({R_BASIS_INTENT_NET})
 
 LIVE_HISTORY_UNREADABLE = "LIVE_HISTORY_UNREADABLE"
 LIVE_HISTORY_TAMPERED = "LIVE_HISTORY_TAMPERED"
@@ -152,10 +169,10 @@ def build_live_outcome_record(
         "outcome_closed": True,
         "stage": "live",
         "provenance": LIVE_PROVENANCE,
-        # What this R is measured against. Paper R is computed on INTENDED fills and is
-        # deliberately cost-free (`cost.py`: costs are confined to the factory backtest, and the
-        # live paper kernel never imports the cost model). Live R is computed on ACTUAL fills, so
-        # slippage is already inside it. The two are therefore not the same statistic, and the
+        # What this R is measured against. Paper R is computed on INTENDED fills and, since
+        # 2026-07-30, NET of modelled fees and slippage (`R_BASIS_INTENT_NET`). Live R is computed
+        # on ACTUAL fills, so real slippage is already inside it but fees are NOT charged here.
+        # The three bases are therefore still not the same statistic, and the
         # consumers that pool them — the risk guard, the lifecycle demoter, the C6 report — can
         # only be read honestly if the difference is visible in the row rather than known by
         # whoever remembers it. Live R is the more pessimistic of the two, so the breaker trips

@@ -64,7 +64,13 @@ from .market_data import (
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
-from .live_route import ROUTE_DISABLED, live_position_symbols, live_route_status_line, run_live_leg
+from .live_route import (
+    DEFAULT_TIMING_CONTEXT,
+    ROUTE_DISABLED,
+    live_position_contexts,
+    live_route_status_line,
+    run_live_leg,
+)
 from .paper import (
     PaperStore,
     build_entry_plan,
@@ -574,6 +580,10 @@ def run_crypto_cycle(
         symbol=symbol,
         collector=collector,
         now=now,
+        # This cycle's own context. Only the timeframe a position was opened at may advance its
+        # holding counter — every other one still settles and protects it. See
+        # `live_route.position_timing_context`.
+        timeframe=timeframe,
         root=root,
         control_store=control_store,
     )
@@ -581,8 +591,15 @@ def run_crypto_cycle(
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
+    # Handed the history this cycle already read and verified at step 3, rather than paying for
+    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
+    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
+    # and the except below records it — a report over a history nobody could verify is exactly
+    # what must not be produced.
     try:
-        report, report_text = feedback.run_paper_performance_report(now=now, root=root)
+        report, report_text = feedback.run_paper_performance_report(
+            now=now, root=root, outcomes=outcomes,
+        )
     except ToolError as exc:
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"
         if exc.reason_code not in reason_codes:
@@ -682,7 +699,7 @@ def run_crypto_cycle(
 
 
 def pool_cycle_contexts(
-    root: Path | None = None, *, default_timeframe: str = "1d"
+    root: Path | None = None, *, default_timeframe: str = DEFAULT_TIMING_CONTEXT
 ) -> list[tuple[str, str]]:
     """Every ``(symbol, timeframe)`` one pool pass must visit, sorted.
 
@@ -694,32 +711,61 @@ def pool_cycle_contexts(
     - the contexts of every currently OPEN paper position — so a position whose
       strategy has since been demoted out of the routable set is still visited by
       its own symbol's cycle and can settle, never stranded; and
-    - the symbol of every open **live** position (LP5.3). Same rule, higher stakes:
-      a live position whose strategy has been demoted would otherwise have no cycle
-      that could settle it, and it holds real money. Live positions are keyed by
-      symbol alone, so one is paired with ``default_timeframe`` when the symbol is
-      not already being visited — the timeframe governs which candles are collected
-      and which strategies route, neither of which the settlement reads.
+    - the ``(symbol, timeframe)`` of every open **live** position (LP5.3). Same rule,
+      higher stakes: a live position whose strategy has been demoted would otherwise
+      have no cycle that could settle it, and it holds real money.
+
+      The timeframe here is the position's **own** — the one its ``max_holding_bars``
+      was backtested against — and it is added even when the symbol is already being
+      visited at some other one. That is the counterpart to
+      ``live_route.position_timing_context``: only the owning context may advance a
+      position's holding counter, so the owning context has to be guaranteed to run.
+      This used to pair the symbol with ``default_timeframe`` and only when it was
+      otherwise unvisited, which meant a 4h position on a symbol still routed at 15m
+      was serviced by a cycle counting 15m bars.
 
     A tampered/unreadable pool or position book contributes nothing rather than
     raising: each per-context cycle re-reads and records its own fail-closed reason,
     so one corrupt book cannot starve the rest. An empty union is returned as-is;
-    the caller decides the fallback."""
+    the caller decides the fallback.
+
+    **Order is part of the answer, not presentation.** The fan-out runs sequentially and its
+    scarce resources are consumed in order — two live slots, twenty paper ones — and a live
+    incident stops it outright, leaving the remaining contexts unvisited. Sorting alphabetically
+    made both of those alphabetical. The order is now, in tiers:
+
+    1. contexts holding an open **live** position — real money, and settling or protecting it is
+       the most urgent thing a fire does. First also means a halt cannot strand them;
+    2. contexts holding an open **paper** position, for the same reason at lower stakes;
+    3. everything else by the best ``champion_score`` routable there, descending — the evidence
+       the pool was promoted on, standing in for an arbitration the fan-out cannot do without a
+       second pass (see :func:`pool.context_scores`);
+    4. ``(symbol, timeframe)`` as the tiebreak, so the order stays deterministic."""
     contexts: set[tuple[str, str]] = set()
+    scores: dict[tuple[str, str], float] = {}
     try:
-        contexts.update(pool.routable_contexts(pool.load_active_pool(root)))
+        active = pool.load_active_pool(root)
+        scores = pool.context_scores(active)
+        contexts.update(scores)
     except MvpRuntimeError:
         pass  # per-context cycles below still re-read and record the pool's state
+
+    holding_paper: set[tuple[str, str]] = set()
     try:
         for context, _position in list_open_positions(root):
-            contexts.add((context.symbol, context.timeframe))
+            holding_paper.add((context.symbol, context.timeframe))
     except MvpRuntimeError:
         pass
-    visited = {symbol for symbol, _timeframe in contexts}
-    for symbol in live_position_symbols(root):
-        if symbol not in visited:
-            contexts.add((symbol, default_timeframe))
-    return sorted(contexts)
+    contexts.update(holding_paper)
+
+    holding_live = set(live_position_contexts(root, default_timeframe=default_timeframe))
+    contexts.update(holding_live)
+
+    def rank(context: tuple[str, str]) -> tuple[int, float, str, str]:
+        tier = 0 if context in holding_live else (1 if context in holding_paper else 2)
+        return (tier, -scores.get(context, 0.0), context[0], context[1])
+
+    return sorted(contexts, key=rank)
 
 
 def run_pool_cycle(
@@ -728,7 +774,7 @@ def run_pool_cycle(
     store: PaperStore,
     now: str,
     default_symbol: str = "BTCUSDT",
-    default_timeframe: str = "1d",
+    default_timeframe: str = DEFAULT_TIMING_CONTEXT,
     limit: int = 120,
     root: Path | None = None,
     control_store: ControlStore | None = None,

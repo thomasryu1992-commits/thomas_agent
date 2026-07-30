@@ -64,6 +64,8 @@ def _current_cost_summary():
                 "taker_fee_bps": cost.DEFAULT_TAKER_FEE_BPS,
                 "maker_fee_bps": cost.DEFAULT_MAKER_FEE_BPS,
                 "slippage_bps": cost.DEFAULT_SLIPPAGE_BPS,
+                "funding_bps_per_interval": cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                "funding_source": cost.FUNDING_SOURCE_VENUE,
             }}
 
 
@@ -299,7 +301,11 @@ def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
                             keep_active=False, root=tmp_path, now=NOW, without_approval=True,
                             allow_stale_cost_basis=True)
     assert summary["stale_cost_basis_escape"] is True
-    assert summary["cost_bases"] == ["net_of_fees_and_slippage:taker_2.5bps+slip_3.0bps"]
+    # The recorded basis names every axis the evidence is stale on, not just the one this test
+    # set: a 2.5 bps model also predates the funding term, and the ledger has to say so.
+    assert summary["cost_bases"] == [
+        "net_of_fees_and_slippage:taker_2.5bps+slip_3.0bps+funding_uncharged"
+    ]
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
 
 

@@ -11,6 +11,17 @@ pagination was skipping two thirds of the head it claimed to read (#318), a touc
 trade counted as an opportunity (#321), a quoted Polymarket read returned a market missing five of
 its fields (#348), and the rule behind `is_opportunity` had changed three times under one version
 string (#350).
+Previously **2026-07-29**, after an architecture review of the crypto stack and the seven
+fixes it produced (branch `claude/auto-trading-system-review-x9p6d5`). Two changed what the
+evidence *means* and are written up in section C: the backtest now charges **funding**, and
+Gate 0's `live_candidate_eligible` now reads the paper record **net of costs** rather than
+gross. Three were defects the review found rather than performance work — a live position's
+holding clock advanced once per timeframe instead of once per bar (4x too fast on a
+four-timeframe symbol), a 429 was reported as a timeout while the fan-out kept knocking toward
+the 418 ban, and the fan-out's scarce live slots were arbitrated alphabetically. Two were pure
+cost: the fan-out asked each symbol-scoped question once instead of four times (115 venue calls
+-> 45) and the factory builds its replay frame once instead of once per spec (20.5s -> 5.5s at
+the 15m window).
 Previously the same day (`main` = `01854b3`), after the front-desk prompt started naming the
 fields its parser requires (#336) — which opened a new line in section B, because establishing
 that took the production front desk down for a quota reset — and the `NO_SIZE` gate's provenance
@@ -472,6 +483,39 @@ re-minting without rewriting a byte of durable history. **What a rate change can
 worth stating once** — `expectancy` re-derives exactly, but win-rate, realized reward:risk and
 the robustness verdict all need per-trade signs the store does not keep. That is why the answer
 is a gate at the door rather than a backfill.
+
+**A fourth axis landed 2026-07-29, and it invalidates the table above rather than extending it:
+the cost model now charges FUNDING.** These are perpetual futures — there is no expiry, and the
+mechanism holding the contract near spot is a payment between longs and shorts every 8 hours,
+charged on notional. The model had never charged it. `_EXIT_PARAMS` allows `max_holding_bars` up
+to 48, so a 1d spec holds 12–48 **days**: 36 to 144 settlements at the venue's 1 bp base rate,
+against a modelled ~10 bps of fees and slippage per trade. Measured on a 400-bar replay of the
+same spec with and only with the carry, the per-trade carry (0.061R) exceeded fees and slippage
+combined (0.052R) and expectancy fell 20%; on the real 1d book, whose holds are 14–39 bars rather
+than the fixture's, the ratio is larger.
+
+Two properties make this different from a rate change:
+
+- **It is directional.** A long pays and a short receives, so the factory had been ranking long
+  and short lineages on one scale when their real carry differs by twice the figure above. Fees
+  are direction-blind; carry is not.
+- **It was never missing data.** The cycle already fetches `DEFAULT_FUNDING_RECORDS` real
+  settlements per symbol for the `funding_rate`/`funding_zscore` features, so `backtest_spec`
+  charges the venue's own history over the replay window. `cost_model.funding_source` records
+  `venue_history` or `modelled_constant` per candidate, because those are different qualities of
+  evidence.
+
+**Every candidate minted before this is `OPTIMISTIC`** — including the 180 rows the table above
+calls promotable. A missing cost cannot read as a cost of zero on an instrument that charges
+every 8 hours, and the basis string says `+funding_uncharged` rather than dropping the term, so
+the listing distinguishes "older model" from "priced a perpetual as free to hold". Shorts are
+refused too, where the omission ran in their favour; that is a cost accepted deliberately,
+because a tier whose meaning depended on the spec's direction would be a property of the trade
+rather than of the cost model the tier ranks. The convergence path is unchanged: re-mint.
+
+The judgement this hands back to the operator is the same one #260 did, one axis over: the
+board's verdict on this runtime's record was already `판단 불가` at +0.08R over 60 trades with a
+95% interval of `[−0.32, +0.48]`, and the omitted carry is R-material against that interval.
 
 So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
 existing (it now does) does not change that — it is why the routing row is deliberately not part
