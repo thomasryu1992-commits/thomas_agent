@@ -3,6 +3,13 @@
 **Status:** Record / notes only · **Normative authority:** None · **Owner:** Thomas
 **작성일:** 2026-07-30 · **범위:** 통계·구조 문제 제외, **기대 수익 자체를 올리는 방향**만
 
+> **구현 상태 (2026-07-30):** 아래 권장 순서의 **1~4번(Tier 0 + Tier 1)이 반영됐다** —
+> taker order flow, 세션 라벨, mark/index/premiumIndex klines, BTC 상대강도. 5번 이하
+> (positioning store, regime 조건부 라우팅, 변동성 타깃 사이징, 횡단면 롱숏)는 미구현.
+> 근거·설계 이유는 `docs/BUILD_HISTORY.md`의 해당 항목에 있다. **이 문서 본문은 리서치 시점
+> 그대로 두었다** — 무엇을 근거로 그 순서를 골랐는지가 기록의 값이고, 결과로 덮어쓰면 그게
+> 사라진다.
+
 `TRADING_STRATEGY_REVIEW_RECORD.md`가 "지금 측정하는 숫자가 믿을 만한가"를 다뤘다면, 이 문서는
 "측정 대상 자체를 무엇으로 바꿔야 하는가"를 다룬다. 두 문서는 독립적이며, 여기 제안은 통계 층
 수정과 무관하게 병렬로 진행할 수 있다.

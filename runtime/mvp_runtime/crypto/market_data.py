@@ -68,6 +68,37 @@ LIQUIDATION_DEGRADED = "LIQUIDATION_DEGRADED"
 OPEN_INTEREST_DEGRADED = "OPEN_INTEREST_DEGRADED"
 LIQUIDATION_FEED_ENV = "MVP_LIQUIDATION_FEED"
 
+# Derivative PRICE series — mark, index, and the premium index that funding is computed
+# from. All three are kline-shaped public endpoints of the already-authorized
+# ``binance_futures`` provider, on the SAME time grid and interval as the OHLCV klines,
+# so they need no new provider, key or grant.
+#
+# Why they matter enough to spend three requests on. The feature row has carried
+# ``mark_price``/``index_price``/``mark_index_basis_bps`` since C3 as documented no-feed
+# fallbacks — close, close, and a hardcoded ``0.0`` — while the factory's mintable
+# vocabulary admitted all three. A literal condition on a basis that is always exactly
+# zero can only ever be true or only ever false, so the column was worse than absent.
+# And the premium index is the same information funding carries, at BAR resolution
+# instead of one 8h event: ``funding_zscore`` is a step function that changes three times
+# a day, which is what a 1h ``funding_fade_*`` spec has been timing itself on.
+MARK_PRICE_DEGRADED = "MARK_PRICE_DEGRADED"
+INDEX_PRICE_DEGRADED = "INDEX_PRICE_DEGRADED"
+PREMIUM_INDEX_DEGRADED = "PREMIUM_INDEX_DEGRADED"
+
+# Endpoint path per series kind. A closed mapping rather than an interpolated string: an
+# unknown kind would otherwise become a 404 at egress, or worse a different series
+# answered on the same shape.
+DERIVATIVE_KLINE_PATHS: dict[str, str] = {
+    "mark": "markPriceKlines",
+    "index": "indexPriceKlines",
+    "premium": "premiumIndexKlines",
+}
+DERIVATIVE_KINDS = frozenset(DERIVATIVE_KLINE_PATHS)
+# The venue caps these at 1000 rows per call (klines allow 1500), and they page by the
+# same exclusive ``endTime`` walk.
+DERIVATIVE_PAGE_LIMIT = 1000
+DERIVATIVE_MAX_PAGES = 60
+
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
 # stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
@@ -93,6 +124,17 @@ TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, 
 # not collected, and a timeframe with no entry here simply has no HTF features —
 # they stay indeterminate, so an htf_* spec can never match there.
 HIGHER_TIMEFRAME: dict[str, str] = {"15m": "1h", "1h": "4h", "4h": "1d"}
+
+# The market proxy every other symbol's relative strength is measured against. BTC rather
+# than an index because it is the one series this runtime already collects that the rest of
+# the universe actually co-moves with, and because a real index would be a new vendor.
+#
+# It is a CONFIGURED constant rather than a per-cycle choice on purpose: relative strength is
+# only comparable across candidates if every candidate measured it against the same thing, and
+# a reference that moved between generations would make two lineages' `rel_strength_roc_4`
+# thresholds mean different things while looking identical.
+REFERENCE_SYMBOL = "BTCUSDT"
+REFERENCE_DEGRADED = "REFERENCE_DEGRADED"
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
 MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
@@ -254,6 +296,38 @@ class MockMarketDataCollector:
             is_synthetic=True,
             latency_ms=0,
         )
+
+    def derivative_price_klines(
+        self, symbol: str, timeframe: str, *, kind: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Deterministic mark / index / premium series on the SAME grid as ``collect``.
+
+        Derived from ``collect``'s own candles rather than from a second walk, so the grid
+        cannot drift from the OHLCV grid — which is the property the real endpoints have by
+        construction and the one a mock most easily breaks. A mock whose derivative bars
+        landed on different open times would make the join look wrong in tests that are
+        actually testing the join.
+
+        The mark sits a hair off the close and the index a hair off the mark, so
+        ``mark_index_basis_bps`` is small, signed and non-constant — a mock that returned
+        mark == index would leave the basis a fabricated zero, which is the exact defect
+        this whole series exists to remove.
+        """
+        if kind not in DERIVATIVE_KLINE_PATHS:
+            raise ToolError("INVALID_DERIVATIVE_KIND", f"kind must be one of {sorted(DERIVATIVE_KINDS)}")
+        candles = self.collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds).candles
+        rows: list[dict[str, Any]] = []
+        for i, candle in enumerate(candles):
+            # Basis in the low single-digit bps, both signs, stable per (symbol, tf, bar).
+            offset = (_frac(f"{symbol}|{timeframe}|basis{i}") - 0.5) * 0.0004
+            if kind == "mark":
+                value = round(candle.close * (1.0 + offset), 6)
+            elif kind == "index":
+                value = round(candle.close, 6)
+            else:  # premium — a signed fraction, the funding basis at bar resolution
+                value = round(offset, 8)
+            rows.append({"timestamp": candle.open_time, "value": value})
+        return rows
 
     def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
         """Deterministic 8h funding events on the same anchor grid (C9 mock feed)."""
@@ -646,6 +720,102 @@ class BinanceFuturesCollector:
             end_time = oldest - 1
         rows = sorted(collected, key=lambda r: r["funding_time_ms"])[-records:]
         return [{"timestamp": r["timestamp"], "funding_rate": r["funding_rate"]} for r in rows]
+
+    def derivative_price_klines(
+        self, symbol: str, timeframe: str, *, kind: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """One derivative price series on the OHLCV time grid, oldest first.
+
+        ``kind`` selects the endpoint (:data:`DERIVATIVE_KLINE_PATHS`): the mark price, the
+        index price, or the premium index. Returns
+        ``[{"timestamp": <bar open, ISO>, "value": <bar close>}, ...]`` — only the close,
+        because the close is the value that is known at the moment the row's own ``close``
+        is known, and carrying a high/low no caller reads would invite someone to use one.
+
+        **Keyed by bar OPEN time, and that is the whole alignment contract.** These series
+        share the klines' interval and grid, so the bar opening at T here is the same bar as
+        the OHLCV bar opening at T; joining on the open time and taking the close pairs two
+        values that are both first known at the bar's close. That is simultaneous, not
+        look-ahead — unlike the HTF leg, which spans a different grid and must therefore key
+        on the higher candle's CLOSE. Two different rules because the two are different
+        situations; see ``features._same_grid_column``.
+
+        Pages backward exactly like ``collect`` and ``funding_history``: walk ``endTime`` to
+        just before the oldest bar seen, stop when the venue runs out, refuse to spin without
+        backward progress. Same grant as candles — a public endpoint of the already
+        authorized provider.
+        """
+        if kind not in DERIVATIVE_KLINE_PATHS:
+            raise ToolError("INVALID_DERIVATIVE_KIND", f"kind must be one of {sorted(DERIVATIVE_KINDS)}")
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        path = DERIVATIVE_KLINE_PATHS[kind]
+        now_ms = int(time.time() * 1000)
+        collected: dict[int, float] = {}
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < limit and pages < DERIVATIVE_MAX_PAGES:
+            pages += 1
+            params: dict[str, Any] = {
+                "symbol": symbol, "interval": timeframe,
+                # One extra row for the still-forming bar this drops, so dropping it does
+                # not shrink the caller's window (the ``collect`` rule).
+                "limit": min(DERIVATIVE_PAGE_LIMIT, limit - len(collected) + 1),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"https://fapi.binance.com/fapi/v1/{path}?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                # Never echo the URL (the R3 transport-error posture).
+                raise ToolError("TOOL_TRANSPORT", f"{kind} price request failed or timed out") from None
+            page = self._parse_derivative_page(raw, kind=kind, now_ms=now_ms)
+            if not page:
+                break
+            oldest = min(page)
+            collected.update(page)
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
+
+        ordered = sorted(collected)[-limit:]
+        return [{"timestamp": self._iso(open_ms), "value": collected[open_ms]} for open_ms in ordered]
+
+    def _parse_derivative_page(self, raw: str, *, kind: str, now_ms: int) -> dict[int, float]:
+        """One derivative-kline page as ``{open_time_ms: close}``, still-forming bar dropped.
+
+        These rows reuse the twelve-slot kline shape but the venue fills the volume-ish slots
+        with placeholder zeros, so only indices 0 (open time), 4 (close) and 6 (close time)
+        are read. The premium index is legitimately **negative** when the perpetual trades
+        below its index, so no sign constraint is applied here — a caller that needs
+        positivity (the basis divisor) checks it where it needs it.
+        """
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response") from None
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response")
+
+        parsed: dict[int, float] = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 7:
+                raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response")
+            try:
+                open_ms, close_ms, value = int(row[0]), int(row[6]), float(row[4])
+            except (TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", f"{kind} price backend returned an unparseable response") from None
+            if close_ms >= now_ms:
+                continue  # still forming — its close is still moving
+            parsed[open_ms] = value
+        return parsed
 
     def exchange_info(self, *, timeout_seconds: int) -> dict[str, Any]:
         """The venue's own trading rules (public ``/fapi/v1/exchangeInfo``), raw.

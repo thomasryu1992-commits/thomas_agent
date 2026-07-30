@@ -37,9 +37,14 @@ from .guards import merge_trade_verdict, risk_guard_unreadable, run_data_health_
 from .market_data import (
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
+    INDEX_PRICE_DEGRADED,
     LIQUIDATION_DEGRADED,
+    MARK_PRICE_DEGRADED,
     OPEN_INTEREST_DEGRADED,
+    PREMIUM_INDEX_DEGRADED,
     MARKET_DATA_DEGRADED,
+    REFERENCE_DEGRADED,
+    REFERENCE_SYMBOL,
     TIMEFRAMES,
     MarketDataCollector,
     collect_market_data,
@@ -111,6 +116,39 @@ def attach_feeds(
             reason_codes.append(FUNDING_DEGRADED)
     else:
         status["funding"] = "absent"
+
+    # Derivative PRICE series (mark, index, premium index). Same collector, same grant, same
+    # time grid as the candles — so the depth is not a tunable constant like funding's records
+    # or liquidations' days: it is exactly the candle count. Deriving it that way is what keeps
+    # the factory's 12,000-bar replay and the live cycle's short window on ONE code path, so a
+    # premium_* family cannot be scored against a depth the router will not reproduce.
+    bars = len(snapshot.get("candles") or [])
+    timeframe = str(snapshot.get("timeframe") or "")
+    # A grid to join onto is a precondition, not an error. These series are requested AT the
+    # candle interval and matched on the candle open times, so with no candles or no known
+    # interval there is nothing to request them against — the keys stay absent, the columns
+    # stay None, and a spec reading them does not trade. That is the same outcome as a
+    # collector without the capability, which is why it reports the same status; the case
+    # arises on the degraded-collection path, where the cycle was not going to trade anyway.
+    if hasattr(collector, "derivative_price_klines") and bars and timeframe in TIMEFRAMES:
+        for kind, key, code in (
+            ("mark", "mark_prices", MARK_PRICE_DEGRADED),
+            ("index", "index_prices", INDEX_PRICE_DEGRADED),
+            ("premium", "premium_index", PREMIUM_INDEX_DEGRADED),
+        ):
+            try:
+                snapshot[key] = collector.derivative_price_klines(
+                    symbol, timeframe, kind=kind, limit=max(1, bars), timeout_seconds=10
+                )
+                status[key] = "ok"
+            except (ToolError, ToolBlocked):
+                # Series semantics, as with funding: key PRESENT and empty, so the columns are
+                # indeterminate rather than falling back to the pre-C13 fabricated constants.
+                snapshot[key] = []
+                status[key] = "degraded"
+                reason_codes.append(code)
+    else:
+        status["mark_prices"] = status["index_prices"] = status["premium_index"] = "absent"
 
     if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
         try:
@@ -187,6 +225,46 @@ def attach_htf(
     return None
 
 
+def attach_reference(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    limit: int | None = None,
+) -> str | None:
+    """Fetch the market-proxy candles onto ``snapshot`` (mutating it). Degrade-only.
+
+    One extra candle read per cycle, at THIS frame's own timeframe, so the reference series
+    lands on the same grid the features join it on. Skipped entirely when the cycle's symbol
+    IS the proxy: relative strength against oneself is undefined, and fetching a series only
+    to compute a column of zeros would spend a request to manufacture a constant.
+
+    Never raises, for the ``attach_htf`` reason: the reference leg is context, and context
+    that cannot be read must not take down a cycle that would have traded without it. A
+    failed fetch leaves the key ABSENT, so every ``ref_*`` column is indeterminate and a
+    relative-strength spec does not trade this cycle. Returns a reason code on degrade.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    timeframe = str(snapshot.get("timeframe") or "")
+    if not symbol or timeframe not in TIMEFRAMES or symbol == REFERENCE_SYMBOL:
+        return None
+    # The correlation window is the deepest reference consumer (REFERENCE_CORR_WINDOW bars),
+    # so the live default covers it with room to spare; the factory passes its replay depth.
+    want = limit if limit is not None else 240
+    try:
+        reference, _ = collect_market_data(
+            REFERENCE_SYMBOL, timeframe, collector=collector, now=now, limit=want
+        )
+    except (ToolError, ToolBlocked):
+        return REFERENCE_DEGRADED
+    candles = reference.get("candles") or []
+    if not candles:
+        return REFERENCE_DEGRADED
+    snapshot["reference_candles"] = candles
+    snapshot["reference_symbol"] = REFERENCE_SYMBOL
+    return None
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -234,6 +312,12 @@ def run_crypto_cycle(
     htf_reason = attach_htf(snapshot, collector=collector, now=now)
     if htf_reason:
         reason_codes.append(htf_reason)
+
+    # 1d) cross-asset context — the market proxy rel_strength_* specs measure against.
+    # Degrade-only, and a no-op when this cycle's symbol IS the proxy.
+    reference_reason = attach_reference(snapshot, collector=collector, now=now)
+    if reference_reason:
+        reason_codes.append(reference_reason)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
