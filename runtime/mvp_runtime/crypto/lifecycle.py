@@ -15,6 +15,11 @@ asymmetry:
   rolling window carry the decision (a young strategy is never degraded on thin data),
   and suspension needs 2 consecutive failing evaluations, archive 3 — one bad window
   never suspends outright.
+- **Judged on NET R.** The thresholds are stated in R and have always been read as "below
+  this the strategy loses money", but their input — paper ``result_R`` — is cost-free by
+  construction, so before 2026-07-30 nothing here could see a strategy whose gross edge was
+  smaller than its fees. ``compute_metrics`` now converts through ``cost.outcome_net_r``; the
+  threshold numbers are unchanged because it is their meaning that was broken, not their value.
 - Only outcomes ATTRIBUTED to a strategy feed its windows, and attribution is by
   LINEAGE (``candidate_id``, else the generation+rule-hash pair) rather than the
   display ``strategy_id`` — which the factory restarts at S001 every generation, so
@@ -37,6 +42,7 @@ from typing import Any, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
+from . import cost
 
 DEFAULT_WINDOWS = (20, 30, 50, 100)
 
@@ -44,21 +50,49 @@ _RANK = {"PAPER_ACTIVE": 0, "WARNING": 1, "PROBATION": 2, "SUSPENDED": 3, "ARCHI
 TERMINAL_STATUSES = frozenset({"SUSPENDED", "ARCHIVED"})
 
 
+def outcome_judged_r(outcome: Mapping[str, Any]) -> tuple[float, bool]:
+    """The R this outcome is judged on, and whether costs are in it.
+
+    The thresholds below are written as if their input were net of fees and slippage —
+    ``warn_expectancy_r = 0.0`` only means "losing money" if the number it compares has paid
+    for the round trip. Paper R has not (``cost.py``), so until 2026-07-30 the whole ladder
+    graded a gross figure against net rungs and a strategy at +0.02R gross / −0.30R net could
+    never be demoted at all. ``cost.outcome_net_r`` supplies the conversion.
+
+    A row it cannot price keeps ``result_R`` rather than being dropped: excluding it would
+    shrink the rolling window, and a window that never fills escalates nothing — the same
+    "no verdict is reachable" failure `pool.days_to_lifecycle_window` exists to surface.
+    The second element of the tuple is what makes the compromise legible instead of silent;
+    :func:`compute_metrics` counts both populations onto the metrics.
+    """
+    net = cost.outcome_net_r(outcome)
+    if net is None:
+        return float(outcome.get("result_R") or 0.0), False
+    return float(net), True
+
+
 def compute_metrics(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """R-based metrics for one attributed-outcome ledger (source S4d subset —
-    the fields S9/S10 and the report consume). Empty ledger → Nones, never zeros."""
-    r = [float(o.get("result_R") or 0.0) for o in outcomes]
+    the fields S9/S10 and the report consume). Empty ledger → Nones, never zeros.
+
+    R is **net of costs wherever the row can price them** (:func:`outcome_judged_r`), and
+    ``r_basis_gross_rows`` says how many could not — a non-zero count means this window mixes
+    two statistics, which is the C2 gap made visible rather than closed.
+    """
+    judged = [outcome_judged_r(o) for o in outcomes]
+    r = [value for value, _ in judged]
     trade_count = len(r)
     if trade_count == 0:
         return {
             "trade_count": 0, "win_rate": None, "expectancy_r": None,
             "profit_factor": None, "gross_profit_r": 0.0, "gross_loss_r": 0.0,
-            "total_net_r": 0.0,
+            "total_net_r": 0.0, "r_basis_net_rows": 0, "r_basis_gross_rows": 0,
         }
     wins = [x for x in r if x > 0]
     losses = [x for x in r if x < 0]
     gross_profit = sum(wins)
     gross_loss = abs(sum(losses))
+    net_rows = sum(1 for _, costed in judged if costed)
     return {
         "trade_count": trade_count,
         "win_rate": len(wins) / trade_count,
@@ -67,6 +101,12 @@ def compute_metrics(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "gross_profit_r": round(gross_profit, 8),
         "gross_loss_r": round(gross_loss, 8),
         "total_net_r": round(sum(r), 8),
+        # How many rows in this window had their costs charged, and how many kept a gross
+        # `result_R` because they could not be priced. Reported rather than reconciled: the
+        # decision above is only as honest as its inputs, and a reader has to be able to see
+        # when it was made on a mix.
+        "r_basis_net_rows": net_rows,
+        "r_basis_gross_rows": trade_count - net_rows,
     }
 
 

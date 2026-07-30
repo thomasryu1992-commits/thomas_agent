@@ -64,6 +64,7 @@ from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .live_route import ROUTE_DISABLED, live_position_symbols, live_route_status_line, run_live_leg
 from .paper import (
+    ENTRY_COST_UNECONOMIC,
     PaperStore,
     build_entry_plan,
     list_open_positions,
@@ -460,13 +461,22 @@ def run_crypto_cycle(
     # rather than merely tidy. `None` when the paper step returned before routing (a settlement
     # race), and the fallback is the honest one: no shadow rather than a re-derived route.
     shared_route = paper_summary.get("route")
+    # The economics gate refuses inside the paper step, where the guard verdict allowed the
+    # entry — so the condition below has to name it, or the one refusal whose calibration is
+    # genuinely unknown would be the one refusal nothing shadows. It is the only `open_refused`
+    # reason added here: the concurrency caps refuse because a slot is taken, and shadowing
+    # those would fill the book with plans the runtime had no room for either way.
+    cost_refused = (paper_summary.get("open_refused") or {}).get("reason_code") == ENTRY_COST_UNECONOMIC
+    block_reasons = list(verdict.get("problems") or [])
+    if cost_refused:
+        block_reasons.append(ENTRY_COST_UNECONOMIC)
     blocked_plan = None
-    if not bool(verdict.get("allow_new_position")) and paper_summary.get("opened") is None:
+    if (not bool(verdict.get("allow_new_position")) or cost_refused) and paper_summary.get("opened") is None:
         blocked_plan = build_entry_plan(shared_route, feature_row, now=now) if shared_route else None
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
-        block_reasons=list(verdict.get("problems") or []),
+        block_reasons=block_reasons,
         last_candle=candles_for_cf[-1] if candles_for_cf else None,
         last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
         symbol=symbol,

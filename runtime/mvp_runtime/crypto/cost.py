@@ -18,21 +18,43 @@ while a stop, a time exit and a manual exit all still leave at market. ``apply_c
 therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
 so ``pool.expectancy_at`` can still rescale the taker portion exactly.
 
-**Scope, matching the source exactly**: cost application is confined to backtest/
-factory scoring. The source's live paper kernel (``paper_position_kernel.py`` / this
-port's ``paper.py``) never imports ``cost_model`` — grep confirms every caller of the
-source cost model lives under ``backtesting/`` or ``strategy_factory/`` (the factory's
-robustness-scoring path), never the live paper route. Paper trading measures pure
-signal quality on intended fills; costs are what the factory's robustness scorer
-needs to judge whether an edge survives realistic frictions. This port keeps that
-boundary: **live paper R stays cost-free by design, unchanged** — only
-``factory.backtest_spec`` (C8) applies costs, and only to feed C8b's
-``cost_robustness`` component (previously always zero for lack of these inputs).
+**Scope was "the backtest only", and that boundary was wrong** (2026-07-30). The source
+confined cost application to backtest/factory scoring: paper trading measured pure signal
+quality on intended fills, and costs were what the robustness scorer needed. The port kept
+it. What neither noticed is that ``lifecycle.LifecycleThresholds`` judges paper outcomes at
+``warn_expectancy_r = 0.0`` and ``guards`` meters daily loss in the same units — thresholds
+written as if the number were net, reading a number that never had a cost subtracted. On
+this store the gap is not marginal: 86 native paper outcomes are +0.041R gross and −0.506R
+once this module is applied to them, so every strategy the ladder was built to demote sat
+comfortably above every rung.
+
+So the boundary now runs a different way, and the distinction is worth stating precisely:
+
+- **What is STORED stays cost-free.** ``paper.build_outcome_record`` keeps ``result_R`` as
+  the intended-fill move over the entry risk, byte-identical to before, because a stored
+  outcome is durable evidence and rewriting what past rows mean is how two populations end
+  up sharing a field name.
+- **What is JUDGED is net.** :func:`outcome_net_r` converts at read time, at the rates the
+  venue charges *now* — the same choice ``pool.expectancy_at`` already makes for backtest
+  expectancy.
+
+:func:`round_trip_cost_r` is the pre-trade half of the same arithmetic: what a round trip
+costs before the market moves, which ``paper``/``live_entry`` refuse an entry on.
+``factory.backtest_spec`` (C8) still applies costs the way it did, feeding C8b's
+``cost_robustness`` component.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Any, Mapping
+
+# The R basis whose costs are ALREADY inside the number (live R is computed on actual fills,
+# so slippage is in it). Imported from its owner rather than respelled here: `live_pnl` defines
+# what each basis means, and two spellings of one label is how the two drift. Constant only —
+# no I/O at import, the same reason `paper.py` takes `R_BASIS_INTENT` from there.
+from .live_pnl import R_BASIS_FILLED
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -74,6 +96,35 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
+
+# How much of one R a round trip may cost before the entry is refused (`round_trip_cost_r`).
+#
+# Measured, not chosen for roundness. Of the candidates in this store scored at the current cost
+# model, those with POSITIVE net expectancy have a median of +0.172R and a 75th percentile of
+# +0.369R (2026-07-30, n=102). A plan whose friction alone is 0.25R therefore needs an edge in
+# the top quartile of everything this factory has ever produced merely to break even — and
+# `round_trip_cost_r` prices friction pessimistically, so a real trade pays at least it.
+#
+# What it refuses, measured against the 86 native paper outcomes this runtime has settled:
+# 59 of them (69%) — 48 of 50 on 15m, 11 of 17 on 1h, none at 4h or 1d. That distribution is the
+# finding rather than a side effect. The five strategies routing on 2026-07-30 were all 15m, all
+# carried NEGATIVE backtest expectancy at the rates this venue charges, and between them turned
+# +0.041R/trade gross into −0.506R.
+#
+# It lives HERE, not beside `paper`'s other entry caps, because two doors enforce it: the paper
+# book and `live_entry`. One number, so the simulated book and the money path cannot disagree
+# about what is economic.
+#
+# Two properties keep an unregistered constant acceptable, the same two `paper`'s concurrency
+# caps rest on. It can only ever make the runtime trade LESS — no value of it admits an entry the
+# existing checks refuse, so it cannot widen risk and needs no gate of its own. And a wrong
+# refusal is otherwise SILENT, since nothing records the trades that did not happen: that is why
+# `cycle` shadows this refusal into the counterfactual registry, the mechanism that exists to
+# tell a gate that saves money from one that is merely too tight. Registering it through
+# `risk_limits` (a sixth key, a schema version) is a separate decision — that mechanism exists
+# so an operator can RELAX a realized-loss breaker within code bounds, and this is neither a
+# breaker nor relaxable.
+MAX_ENTRY_COST_R = 0.25
 
 
 @dataclass(frozen=True)
@@ -154,3 +205,95 @@ def apply_cost_model(
         slippage_cost_r=round(slippage_cost_r, 8),
         maker_fee_cost_r=round(maker_fee_cost_r, 8),
     )
+
+
+def round_trip_cost_r(
+    direction: str, entry_price: float, risk: float, *, cost: CostModel | None = None
+) -> float:
+    """What one round trip costs in R before the market moves at all. Positive.
+
+    ``apply_cost_model`` evaluated at ``exit_price == entry_price``: the gross move is zero,
+    so what remains is pure friction — taker in, taker plus adverse slippage out. Expressed
+    as a positive number, so 0.25 reads as "a quarter of one R".
+
+    This is the quantity that decides whether a trade can be profitable at all, and it is
+    not a property of the strategy but of the **stop distance**: ``risk`` is
+    ``stop_atr × ATR``, so a short timeframe's tight stop divides the same fixed bps by a
+    smaller number. Measured on this store 2026-07-30, per closed backtest trade:
+    15m 0.341R, 1h 0.168R, 4h 0.077R, 1d 0.029R — a twelvefold spread on the same rates,
+    against gross expectancies that ranged only +0.01R to +0.23R.
+
+    The **taker** exit is charged deliberately. A trade that reaches its target pays the
+    cheaper maker leg, but nothing at entry time knows whether this one will, and pricing
+    the cheaper exit would let a plan clear a cost floor on the assumption that it wins.
+    This is what a losing trade actually pays.
+
+    Unpriceable input returns ``inf`` rather than ``apply_cost_model``'s zeros. That
+    divergence is the point: zero cost is the fail-OPEN answer for a gate, and the gate
+    below is the only caller. A non-positive risk or an unknown direction means the friction
+    is unknown, and unknown must not read as free.
+    """
+    if direction not in ("LONG", "SHORT") or not (entry_price > 0) or not (risk > 0):
+        return math.inf
+    return -apply_cost_model(
+        direction, entry_price, entry_price, risk, cost=cost, close_reason=None
+    ).net_r
+
+
+def outcome_net_r(record: Mapping[str, Any], *, cost: CostModel | None = None) -> float | None:
+    """A settled outcome's R after the costs its own basis leaves out. ``None`` when unknown.
+
+    Paper R is cost-free by construction (see the module docstring): it is the intended-fill
+    move over the entry risk, and no fee or slippage has ever been subtracted from it. So the
+    demoter and the risk breaker have been reading a gross number against thresholds written
+    as if it were net — a strategy at +0.02R gross and −0.30R net stays PAPER_ACTIVE forever.
+    This is the conversion, applied at READ time at the CURRENT rates, the same choice
+    ``pool.expectancy_at`` makes and for the same reason: the question a demotion answers is
+    "does this lose money at what the venue charges *now*", not at whatever it charged when
+    the row was written.
+
+    Two rules make the fallbacks safe:
+
+    - **Only an explicit ``filled`` basis opts out.** Live R is measured on actual fills, so
+      slippage is already inside it and charging the full model would double-count; that row
+      keeps its own number (its missing fees are a separate, still-open gap). Every other
+      value — ``intent``, absent, unrecognised — gets the costs charged. The default has to be
+      the pessimistic branch, or a row could buy itself the cheaper treatment by omitting a
+      field.
+    - **A row that cannot price itself returns ``None``, never a guess.** The caller keeps
+      ``result_R`` and reports the mix rather than inventing a net figure. Imported history
+      carries no prices at all and lands here.
+
+    ``risk`` (per-unit, ``|entry - stop|``) is read from the record when present. Rows written
+    before it was recorded reconstruct it from the identity paper settlement already
+    guarantees — ``result_R = ±(exit - entry) / risk`` — which is exact to the stored
+    rounding, and undefined only at ``result_R == 0``.
+    """
+    if record.get("r_basis") == R_BASIS_FILLED:
+        return None
+    result_r = record.get("result_R")
+    entry = record.get("entry_price")
+    exit_price = record.get("exit_price")
+    direction = record.get("direction")
+    if (
+        isinstance(result_r, bool) or not isinstance(result_r, (int, float))
+        or not isinstance(entry, (int, float)) or isinstance(entry, bool)
+        or not isinstance(exit_price, (int, float)) or isinstance(exit_price, bool)
+        or direction not in ("LONG", "SHORT")
+        or entry <= 0 or exit_price <= 0
+    ):
+        return None
+
+    risk = record.get("risk")
+    if not (isinstance(risk, (int, float)) and not isinstance(risk, bool) and risk > 0):
+        if not result_r:
+            return None
+        signed = (exit_price - entry) if direction == "LONG" else (entry - exit_price)
+        risk = signed / float(result_r)
+        if not (risk > 0):
+            return None
+
+    return apply_cost_model(
+        str(direction), float(entry), float(exit_price), float(risk),
+        cost=cost, close_reason=record.get("close_reason"),
+    ).net_r

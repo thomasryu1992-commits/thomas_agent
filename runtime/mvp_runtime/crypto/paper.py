@@ -46,6 +46,7 @@ from ..errors import ToolBlocked, ToolError
 from ..filelock import locked
 from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
+from . import cost as costs
 from .strategy import StrategySpec, evaluate_spec
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
@@ -134,6 +135,13 @@ SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
 # current closed candle, so a coarser-timeframe strategy is not re-entered every tick.
 CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
+
+# The friction this plan would pay is too large a share of the one R it is risking, so the
+# trade cannot be profitable at any win rate this system has ever produced. The limit itself
+# is `cost.MAX_ENTRY_COST_R` — the live leg refuses on the same number, and two spellings of
+# one threshold is how the paper book and the money path come to disagree about what is
+# economic.
+ENTRY_COST_UNECONOMIC = "ENTRY_COST_UNECONOMIC"
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
 # table — e.g. 1d — use the default, the source runtime's own behavior). Since the
@@ -286,6 +294,39 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "strategy_generation_id": route.get("primary_strategy_generation_id"),
         "supporting_strategy_ids": list(route.get("supporting_strategy_ids") or []),
         "created_at_utc": now,
+    }
+
+
+def entry_cost_refusal(
+    plan: Mapping[str, Any], *, max_cost_r: float = costs.MAX_ENTRY_COST_R
+) -> dict[str, Any] | None:
+    """Refuse a plan whose round-trip friction exceeds ``cost.MAX_ENTRY_COST_R``. Pure.
+
+    The one pre-trade check that is arithmetic rather than statistics. Everything else about a
+    strategy's edge is estimated from a sample and can be wrong; this is ``|entry − stop|``
+    against a published fee schedule, and it says whether the trade has room to be profitable
+    before asking whether it will be.
+
+    Returns the refusal dict (``reason_code`` plus the numbers that produced it, so an operator
+    reads *why* and not just *that*) or ``None`` to admit. Deliberately not folded into
+    :func:`build_entry_plan`: that function returns ``None`` for unpriceable data, and a refusal
+    that arrives as an absent plan is a refusal nothing can attribute, count, or shadow.
+    """
+    cost_r = costs.round_trip_cost_r(
+        str(plan.get("direction") or ""), float(plan.get("entry_price") or 0.0), float(plan.get("risk") or 0.0)
+    )
+    if cost_r <= max_cost_r:
+        return None
+    return {
+        "reason_code": ENTRY_COST_UNECONOMIC,
+        # `inf` is what an unpriceable plan costs (see round_trip_cost_r) and is not JSON, so it
+        # rides as a string. A refusal record that cannot be serialised is a crash on the refusal
+        # path, which is the one path that must not crash.
+        "round_trip_cost_r": round(cost_r, 6) if math.isfinite(cost_r) else "inf",
+        "limit_r": max_cost_r,
+        "symbol": plan.get("symbol"),
+        "timeframe": plan.get("timeframe"),
+        "strategy_id": plan.get("strategy_id"),
     }
 
 
@@ -516,6 +557,11 @@ def build_outcome_record(
         "direction": position.get("direction"),
         "entry_price": position.get("entry_price"),
         "exit_price": float(exit_price),
+        # The per-unit risk this R is denominated in (|entry − stop|). It was always on the
+        # position and never on the outcome, which left the row unable to convert its own R
+        # into money or into a cost — `cost.outcome_net_r` had to reconstruct it by dividing.
+        # Recorded so a settled trade carries every primitive its own arithmetic needs.
+        "risk": position.get("risk"),
         "holding_candles": position.get("holding_candles"),
         "position_id": position.get("position_id"),
         "opened_at_utc": position.get("opened_at_utc"),
@@ -535,6 +581,21 @@ def build_outcome_record(
         # Stated on the row so a consumer pooling it with live R — which is measured on actual
         # fills — can see that the two statistics differ.
         "r_basis": R_BASIS_INTENT,
+    }
+    # The same trade after fees and slippage, at the rates in force when it settled, plus the
+    # rates themselves. `result_R` above is unchanged and stays the intended-fill figure: this
+    # is an ADDITIONAL field, because rewriting what a stored outcome means is how one field
+    # name comes to hold two populations (the defect `cost_basis_rank` exists to sort out in the
+    # candidate store). Consumers judge on `cost.outcome_net_r`, which re-derives at CURRENT
+    # rates; this is the audit trail of what the runtime believed on the day, and the answer
+    # when a later reader wants the number as-settled rather than as-charged-today.
+    net = costs.outcome_net_r(record)
+    record["result_R_net"] = round(float(net), 8) if net is not None else None
+    default_model = costs.CostModel()
+    record["cost_model"] = {
+        "taker_fee_bps": default_model.taker_fee_bps,
+        "maker_fee_bps": default_model.maker_fee_bps,
+        "slippage_bps": default_model.slippage_bps,
     }
     # Idempotency key: one position settles exactly once, so the settlement's
     # identity derives from the position alone — a retried settlement of the same
@@ -1209,7 +1270,15 @@ def run_paper_update(
             records.append(_event("open_skipped", {**skip, "read_only": True}))
         else:
             plan = build_entry_plan(route, feature_row, now=now)
-            if plan is not None:
+            # The economics door, before the portfolio lock: it is pure arithmetic on the plan
+            # and takes no state, so making every cycle contend for the lock to learn the trade
+            # was uneconomic would serialise cycles on a question none of them needed shared
+            # state to answer.
+            cost_refusal = entry_cost_refusal(plan) if plan is not None else None
+            if cost_refusal is not None:
+                summary["open_refused"] = cost_refusal
+                records.append(_event("open_refused", {**cost_refusal, "read_only": True}))
+            elif plan is not None:
                 portfolio_lock = positions_dir(root) / "portfolio.lock"
                 with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):
                     open_books = list_open_positions(root)

@@ -97,11 +97,18 @@ POOL = {
     }],
 }
 
-# The ATR is deliberately not a multiple of the price tick: 1.5 * 133.33 = 199.995 puts the
-# strategy's stop at 59800.005, which no venue would accept. Rounding therefore actually bites
+# The ATR is deliberately not a multiple of the price tick: 1.5 * 333.33 = 499.995 puts the
+# strategy's stop at 59500.005, which no venue would accept. Rounding therefore actually bites
 # in this fixture, so the assertions about it are not vacuous — an earlier draft used an ATR
 # that landed exactly on the tick and proved nothing.
-ROW = {"timestamp": "2026-07-26T00:00:00Z", "close": 60000.0, "ma20": 59000.0, "adx": 25.0, "atr": 133.33}
+#
+# It was 133.33 until 2026-07-30, and the change is worth recording rather than tidying away.
+# A 1.5 x 133.33 stop is 0.33% of a 60000 entry, so a round trip costs 0.48R in fees and
+# slippage — `cost.MAX_ENTRY_COST_R` refuses it, and correctly: the rehearsal had been proving
+# the seams join on a trade that cannot make money. The seams are the subject here, so the
+# fixture now describes an economic trade (0.19R of friction) and
+# `test_a_tight_stop_is_refused_on_economics` keeps the old geometry as the refusal case.
+ROW = {"timestamp": "2026-07-26T00:00:00Z", "close": 60000.0, "ma20": 59000.0, "adx": 25.0, "atr": 333.33}
 
 # What the venue answers for BTCUSDT. Parsed by the real LP5.3 reader, so the filters the
 # decision uses come out of venue-shaped data rather than a hand-built SymbolFilters.
@@ -205,9 +212,10 @@ class ScriptedVenue:
 
 # --- the walk ------------------------------------------------------------------
 
-def _routed_plan():
-    route = route_entries(POOL, ROW, symbol=SYMBOL, timeframe="1d", now=NOW)
-    plan = build_entry_plan(route, ROW, now=NOW)
+def _routed_plan(row=None):
+    row = ROW if row is None else row
+    route = route_entries(POOL, row, symbol=SYMBOL, timeframe="1d", now=NOW)
+    plan = build_entry_plan(route, row, now=NOW)
     assert plan is not None, "the fixture must produce an entry candidate"
     return plan
 
@@ -274,6 +282,26 @@ def test_a_routed_strategy_reaches_a_ready_live_decision():
     assert decision["status"] == live_entry.STATUS_READY
     assert decision["ready"] is True
     assert decision["guard"]["approved"] is True
+
+
+def test_a_tight_stop_is_refused_on_economics():
+    """The geometry this fixture used until 2026-07-30, kept as the refusal it now is.
+
+    A 1.5 x 133.33 ATR stop on a 60000 entry risks 0.33% of the notional, so 16 bps of taker
+    and slippage is 0.48R of friction — nearly half the risk, gone before the market moves.
+    The refusal comes from the same door the paper book uses, and it comes AFTER the bracket
+    so the number judged is the tick-rounded risk that would really apply.
+    """
+    plan = _routed_plan({**ROW, "atr": 133.33})
+    decision = _decision(plan)
+
+    assert decision["status"] == live_entry.STATUS_REFUSED
+    assert decision["reasons"] == [live_entry.COST_REFUSED]
+    assert decision["round_trip_cost_r"] > live_entry.MAX_ENTRY_COST_R
+    # Refused on economics, not on any of the doors before it: the bracket priced fine.
+    assert decision["bracket"]["risk_per_unit"] > 0
+    # And nothing downstream ran — a refused decision carries no size and no intent to send.
+    assert decision.get("sizing") is None and decision.get("intent") is None
 
 
 def test_the_venue_request_carries_the_decided_numbers_and_no_others():

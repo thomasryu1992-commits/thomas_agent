@@ -20,13 +20,17 @@ Order of checks, and why:
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
 5. **filters** — the venue's real lot step / minimums / tick (LP5.3's reader);
 6. **bracket** — the protective stop and target, rounded to the venue's tick **first**;
-7. **sizing** — LP5.2, against the *rounded* stop, so the size matches the stop that
+7. **economics** — what a round trip costs as a share of the rounded risk
+   (``cost.MAX_ENTRY_COST_R``): a stop tight enough that fees and slippage eat a quarter of
+   the 1R being risked cannot be profitable at any win rate, and that is arithmetic rather
+   than an estimate;
+8. **sizing** — LP5.2, against the *rounded* stop, so the size matches the stop that
    would actually be placed;
-8. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
+9. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
    truthful venue exposure.
 
 Steps 1-5 accumulate: an operator sees every reason at once, the guard's own posture.
-Steps 6-8 are sequential because each consumes the previous one's output, and a step that
+Steps 6-9 are sequential because each consumes the previous one's output, and a step that
 cannot run is reported as the refusal it is rather than skipped.
 
 **Rounding both bracket legs toward the entry** is the one arithmetic decision worth
@@ -39,9 +43,11 @@ After rounding, a stop that no longer sits strictly on its own side of the entry
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
+from .cost import MAX_ENTRY_COST_R, round_trip_cost_r
 from .live_order import build_live_order_intent, evaluate_live_order_guard
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
@@ -60,6 +66,7 @@ RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
 BRACKET_UNPRICEABLE = "LIVE_ENTRY_BRACKET_UNPRICEABLE"
+COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
@@ -216,6 +223,24 @@ def plan_live_entry(
         )
     detail["bracket"] = bracket
 
+    # 5b. The economics door, and it belongs HERE rather than beside the cheap checks above:
+    #     the friction is a share of the risk, and the risk that will actually apply is the
+    #     tick-rounded one this bracket just produced. Rounding moves the stop TOWARD the entry
+    #     (see the module docstring), so it can only shrink the risk and therefore only raise
+    #     the cost share — checking the unrounded plan would clear trades the venue's own
+    #     granularity had made worse.
+    #
+    #     `run_paper_update` refuses the same plan on the same rule. This is not a duplicate
+    #     check: the live leg is handed the shared ROUTE, not the paper step's refusal, so a
+    #     paper entry declined here for cost would otherwise still reach a real order.
+    cost_r = round_trip_cost_r(
+        str(plan.get("direction") or "").upper(), _f(plan.get("entry_price")), _f(bracket["risk_per_unit"])
+    )
+    detail["round_trip_cost_r"] = round(cost_r, 6) if math.isfinite(cost_r) else "inf"
+    if cost_r > MAX_ENTRY_COST_R:
+        detail["cost_limit_r"] = MAX_ENTRY_COST_R
+        return _decision(STATUS_REFUSED, [COST_REFUSED], symbol=symbol, now=now, **detail)
+
     # 6. Sizing, against the ROUNDED stop distance.
     sizing = size_live_order(
         {**dict(plan), "stop_loss": bracket["stop_loss"], "risk": bracket["risk_per_unit"]},
@@ -299,6 +324,7 @@ __all__ = [
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",
     "CAPACITY_REFUSED",
+    "COST_REFUSED",
     "GUARD_REFUSED",
     "INTENT_REFUSED",
     "LIVE_ENTRY_VERSION",
