@@ -325,6 +325,53 @@ def route_entries(
     }
 
 
+# How far the live size may be scaled DOWN when volatility is above its own normal. A floor
+# rather than an open-ended divisor: below it the venue's minimum quantity and minimum notional
+# refuse the entry anyway, and a refusal on a chaotic tape is a defensible outcome — but it
+# should come from the venue's own limits rather than from an arithmetic slide to zero.
+MIN_VOL_SIZE_MULTIPLIER = 0.25
+
+
+def volatility_size_multiplier(feature_row: Mapping[str, Any]) -> float:
+    """How much of the otherwise-permitted live size this bar's volatility allows, in (0, 1].
+
+    **Why this is needed, measured rather than assumed.** ``live_sizing.size_live_order`` takes
+    ``min(risk-based, budget cap)``, and on any realistic equity the *budget cap* binds: at a 60
+    USDT per-order cap, the risk leg only wins below roughly 30 USDT of equity. When the cap
+    binds the notional is fixed, so the risk actually taken is ``cap × (stop distance / price)``
+    — which **rises with volatility**. Measured across plausible stop distances at a fixed cap,
+    the risk taken swings 0.18 → 1.20 USDT, a factor of 6.7, in the direction nobody wants:
+    biggest bets on the most chaotic tape. That is the opposite of volatility targeting, and it
+    is why the multiplier is applied to the FINAL quantity rather than to the risk fraction —
+    scaling the risk fraction changes nothing at all while the cap is what binds.
+
+    ``atr_pct_reference / atr_pct_of_price``, clamped. Both legs are measured from the same
+    series (see ``features.atr_pct_reference``), so there is no target-volatility constant for
+    anybody to have failed to authorize and no number that means one thing on BTC and another on
+    DOGE.
+
+    **One-directional, and the name is chosen to say so.** The ratio is capped at 1.0, so this
+    can only ever make an order smaller. Letting it exceed 1.0 would size *above* the operator's
+    registered per-order cap in quiet markets — widening an authorization from inside the
+    runtime, which is a Thomas decision and not a multiplier's business. So this is a
+    volatility-scaled ceiling, not a two-sided target: in unusually quiet conditions it leaves
+    size where the cap already put it rather than reaching for a risk target.
+
+    Returns ``1.0`` — unscaled — whenever the inputs cannot support a ratio: a missing or
+    non-positive current ATR%, or a reference that has not warmed up
+    (``features.ATR_REFERENCE_MIN_PERIODS``). Unscaled rather than refused, because the entry
+    is already authorized by every other door and this function's only job is to shrink it; a
+    missing reference is not grounds to invent one, and it is not grounds to block either.
+    """
+    current = feature_row.get("atr_pct_of_price")
+    reference = feature_row.get("atr_pct_reference")
+    for value in (current, reference):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return 1.0
+    ratio = float(reference) / float(current)
+    return max(MIN_VOL_SIZE_MULTIPLIER, min(1.0, ratio))
+
+
 def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *, now: str) -> dict[str, Any] | None:
     """Turn an ENTRY_CANDIDATE route into a concrete trade plan — pure, no I/O.
 
@@ -357,6 +404,12 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "stop_loss": float(stop),
         "take_profit": float(target),
         "risk": abs(float(entry) - float(stop)),
+        # Volatility scaling for the LIVE size, computed here for the reason `max_holding_bars`
+        # is: the plan is what the execution step reads, and a fact it could re-derive from a
+        # feature row it fetched itself is a fact the two can disagree about. Paper is
+        # unaffected by construction — its accounting is R-based, and R is already normalized
+        # by risk, so no quantity exists there for a multiplier to scale.
+        "vol_size_multiplier": volatility_size_multiplier(feature_row),
         # Backtest/runtime exit parity: the spec's own time-exit limit rides into the
         # plan so the live settlement uses the SAME rule the backtest evidence was
         # built on — a strategy promoted on max_holding_bars=12 must not hold 48.

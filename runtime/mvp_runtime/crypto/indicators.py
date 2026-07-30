@@ -227,6 +227,32 @@ def zscore(series: Series, window: int, min_periods: int | None = None) -> Serie
     return out
 
 
+def rolling_median(series: Series, window: int, min_periods: int) -> Series:
+    """Rolling median over the window's non-None values, or None.
+
+    **Not a port**, like :func:`rolling_correlation` — no source counterpart exists — but it
+    follows the same conventions so it cannot be told apart downstream.
+
+    Median rather than :func:`rolling_mean` where a *typical* level is wanted, and the reason
+    is the direction of the error. Its one consumer is the volatility reference the live size
+    multiplier divides by, and a mean is pulled upward by exactly the volatility spikes that
+    reference exists to react to — a higher reference means a larger multiplier means **less**
+    de-risking, which is the unsafe direction. The median is not moved by how extreme the
+    spike is, only by how much of the window it occupies.
+    """
+    out: Series = []
+    for i in range(len(series)):
+        values = sorted(_window_values(series, i, window))
+        if len(values) < min_periods:
+            out.append(None)
+            continue
+        middle = len(values) // 2
+        out.append(
+            values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2.0
+        )
+    return out
+
+
 def rolling_correlation(left: Series, right: Series, window: int, min_periods: int) -> Series:
     """Rolling Pearson correlation of two aligned series, in [-1, 1] or None.
 
