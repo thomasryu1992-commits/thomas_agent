@@ -16,7 +16,7 @@ import threading
 
 import pytest
 
-from runtime.mvp_runtime import control, halt_bridge
+from runtime.mvp_runtime import control, halt_bridge, socket_door
 from runtime.mvp_runtime.control import ACTIVE, KILLED, PAUSED, ControlStore
 from runtime.mvp_runtime.errors import ControlBlocked
 
@@ -181,16 +181,16 @@ def test_the_doors_verbs_stay_within_the_policy_grant():
 # ships in a Linux container); skipping the rules would not be.
 
 unix_only = pytest.mark.skipif(
-    not halt_bridge.UNIX_SOCKETS_AVAILABLE, reason="the halt door listens on AF_UNIX"
+    not socket_door.UNIX_SOCKETS_AVAILABLE, reason="the halt door listens on AF_UNIX"
 )
 
 
 def test_listening_without_af_unix_is_a_typed_refusal(tmp_path, monkeypatch):
     """On a platform with no unix sockets the door refuses to open rather than importing
     badly — the failure belongs at the moment someone tries to listen."""
-    monkeypatch.setattr(halt_bridge, "UNIX_SOCKETS_AVAILABLE", False)
+    monkeypatch.setattr(socket_door, "UNIX_SOCKETS_AVAILABLE", False)
     with pytest.raises(ControlBlocked) as exc:
-        halt_bridge.HaltBridgeServer(
+        halt_bridge.open_door(
             tmp_path / "h.sock", control_store=ControlStore(tmp_path), ledger=FakeLedger(),
         )
     assert exc.value.reason_code == "UNIX_SOCKETS_UNAVAILABLE"
@@ -214,7 +214,7 @@ def _ask(path, payload):
 def test_end_to_end_over_the_socket(tmp_path):
     store = ControlStore(tmp_path)
     sock = tmp_path / "h.sock"
-    server = halt_bridge.HaltBridgeServer(sock, control_store=store, ledger=FakeLedger())
+    server = halt_bridge.open_door(sock, control_store=store, ledger=FakeLedger())
     _serve(server)
     try:
         out = _ask(sock, {"command": "kill", "reason": "assistant: stop"})
@@ -236,7 +236,7 @@ def test_the_socket_is_not_world_accessible(tmp_path):
     this host" the authorization, which is wider than the host-console precedent."""
     import stat as stat_mod
 
-    server = halt_bridge.HaltBridgeServer(
+    server = halt_bridge.open_door(
         tmp_path / "h.sock", control_store=ControlStore(tmp_path), ledger=FakeLedger(),
     )
     try:
@@ -252,7 +252,7 @@ def test_a_malformed_frame_gets_an_answer_and_the_door_stays_up(tmp_path):
     """A door that dies on a bad frame is a denial-of-service on the halt path."""
     store = ControlStore(tmp_path)
     sock = tmp_path / "h.sock"
-    server = halt_bridge.HaltBridgeServer(sock, control_store=store, ledger=FakeLedger())
+    server = halt_bridge.open_door(sock, control_store=store, ledger=FakeLedger())
     _serve(server)
     try:
         bad = _ask(sock, "not-an-object")

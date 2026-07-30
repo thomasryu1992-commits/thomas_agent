@@ -226,3 +226,38 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.halt_bridge_cli
+
+  # The read-only door. Same shape as `halt-bridge` and deliberately a second service:
+  # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
+  # grant), and a read that wedges must not be able to wedge the halt path — which is the
+  # one that matters when something is going wrong.
+  #
+  # `runtime/mvp_runtime/read_bridge.py` dispatches every verb to the SAME applier the
+  # Telegram channel uses, so an answer here cannot disagree with `/crypto status`. Nothing
+  # it serves can mutate: registry CANCEL and memory PROMOTE are absent from its table and a
+  # test asserts they stay absent.
+  #
+  # Same absent env as the halt door — no provider keys, no venue keys, no MVP_LIVE_*.
+  read-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-read-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/read.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.read_bridge_cli

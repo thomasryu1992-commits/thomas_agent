@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     path = Path(args.socket) if args.socket else halt_bridge.socket_path()
 
     try:
-        server = halt_bridge.HaltBridgeServer(
+        server = halt_bridge.open_door(
             path, control_store=ControlStore.default(), ledger=LedgerStore.default(),
         )
     except MvpRuntimeError as exc:
