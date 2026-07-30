@@ -129,7 +129,17 @@ def test_every_family_in_the_library_is_reachable_across_generations():
         minted.extend(got)
         seen.update(got)
     assert seen == families, f"unreachable families: {sorted(families - seen)}"
-    assert len(minted) == len(set(minted)), "a rotation must not repeat within one pass"
+    # No family repeats until every one has been minted once. Stated over the first
+    # ``len(templates)`` mints rather than over all of them, because the final batch
+    # overshoots whenever the library size is not a multiple of the batch size — with 26
+    # families and batches of 4, seven runs mint 28 specs and two families are necessarily
+    # seen twice. That overshoot is arithmetic, not a rotation defect; what the rotation
+    # actually owes is that the overshoot is the ONLY source of repeats.
+    pass_one = minted[: len(templates)]
+    assert len(set(pass_one)) == len(templates), (
+        "a family repeated before the rotation had covered the library: "
+        f"{sorted({f for f in pass_one if pass_one.count(f) > 1})}"
+    )
 
 
 def test_the_rotation_is_deterministic():
