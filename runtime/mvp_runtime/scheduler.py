@@ -92,8 +92,16 @@ KIND_PM_SCAN = "pm_scan"
 PM_SCAN_WATCH = "watch"
 PM_SCAN_DISCOVERY = "discovery"
 PM_SCAN_MODES = frozenset({PM_SCAN_WATCH, PM_SCAN_DISCOVERY})
+# The C4 breaker's transition watch. Distinct from KIND_REPORT rather than folded into it
+# because the two answer different questions: the report renders the current LEVEL every day,
+# this fires on the EDGE. "Is it blocked right now" is one line in a daily digest; "it released
+# at 04:00 on Monday" is the fact an operator is actually waiting for, and a level reported
+# daily buries the day it flipped among the days it did not. It speaks only on a change, so a
+# quiet run is the normal run — see `crypto/breaker_watch.py`.
+KIND_BREAKER_WATCH = "crypto_breaker_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
-                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN})
+                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN,
+                   KIND_BREAKER_WATCH})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -555,6 +563,32 @@ def _execute(
             return pm_proposals.proposal_status_line(record, new_count=fresh)
         scan = pm_observations.run_watch_scan(now=now, root=repo_root)
         return pm_observations.scan_status_line(scan)
+    if schedule.kind == KIND_BREAKER_WATCH:
+        # Read the C4 breaker the way the cycle reads it and speak only when the verdict
+        # changed. Same delivery posture as KIND_REPORT below — channel selected at fire time,
+        # transport failure reported never raised — with one addition: an undelivered
+        # announcement does NOT persist its marker, so the next fire retries it instead of
+        # going quiet about a transition nobody was told about.
+        from . import operator as operator_mod
+        from .crypto import breaker_watch
+
+        try:
+            result = breaker_watch.run_breaker_watch(repo_root, now=now, persist=False)
+        except MvpRuntimeError as exc:
+            # An unusable risk-limits record is exactly the state the cycle refuses entries in,
+            # so it is reported rather than swallowed into a comfortable "unchanged".
+            return f"breaker_watch_unavailable:{exc.reason_code}"
+        if not result["changed"]:
+            return breaker_watch.status_line(result)
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"breaker_changed_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"breaker_changed_not_sent:{type(exc).__name__}"
+        breaker_watch.write_mark(result["state"], root=repo_root)
+        return breaker_watch.status_line(result)
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the

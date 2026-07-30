@@ -4,8 +4,11 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-30** (`main` = `c45d99b`), after **PM1 started running** — 66 confirmed
-groups, 48,754 readings, 2.82 of the 14 days required — which rewrote section A from "built, not
+Last updated: **2026-07-30** (`main` = `0dc36f3`), after the sheet was caught offering one market
+four partners of which three were impossible (#371) — an order-dependent trap rather than mere
+noise, because confirming an impostor first refuses the correct pairing forever.
+Earlier the same day (`main` = `c45d99b`), after **PM1 started running** — now 74 confirmed
+groups, 62,039 readings, 3.16 of the 14 days required — which rewrote section A from "built, not
 yet run" to a window with numbers in it, and closed four defects the run itself exposed: Gamma
 pagination was skipping two thirds of the head it claimed to read (#318), a touch nobody could
 trade counted as an opportunity (#321), a quoted Polymarket read returned a market missing five of
@@ -124,7 +127,7 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 2.8 of 14 days
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 3.2 of 14 days
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
 **PM1's code is complete and the window is open.** Three venue adapters, screening, the
@@ -132,27 +135,34 @@ deterministic matcher with operator confirmation, the fee-adjusted detector, the
 both scheduler cadences (watch and discovery), the proposal record and the exit report all live
 under `runtime/mvp_runtime/predmarket/`. PM2 and PM3 are untouched.
 
-**Measured 2026-07-30T05:35Z** (`pairs_cli report`; ask the machine rather than trusting these —
+**Measured 2026-07-30T13:46Z** (`pairs_cli report`; ask the machine rather than trusting these —
 they go stale by the hour):
 
 ```
-verdict   INSUFFICIENT_WINDOW      window 2.8232 of 14 days required
-groups    66 confirmed, 1 retired  71 pairing(s)
-readings  48,241 / 48,754 priced   coverage 0.9895
-totals    17,093 opportunity readings, 68 episodes
-incidents MARKET_NOT_LISTED=252
+verdict   INSUFFICIENT_WINDOW      window 3.1642 of 14 days required
+groups    74 confirmed, 1 retired  80 pairing(s)
+readings  61,510 / 62,039 priced   coverage 0.9915
+totals    21,854 opportunity readings, 94 episodes
+incidents MARKET_NOT_LISTED=268   (frozen — the dead group was retired, see below)
 ```
 
-Confirmed groups by venue pair: **binance×polymarket 37, kalshi×polymarket 32, binance×kalshi 2,
-all three 1.** That distribution is itself an open decision — see the Binance box below.
+Most confirmed groups pair **binance×polymarket**, with kalshi×polymarket next and a handful
+involving kalshi×binance or all three. That distribution is itself an open decision — see the
+Binance box below.
 
-**What the run has cost so far is four defects, none of which a green test suite showed.** Each was
+**What the run has cost so far is five defects, none of which a green test suite showed.** Each was
 found by reading what the deployed thing actually produced: Gamma was paginating past 400 rows it
 claimed to include (#318), a zero-depth touch counted toward frequency (#321), a quoted Polymarket
-read dropped five fields (#348), and three separate changes to what counts as an opportunity all
-shipped under `predmarket_opportunity.v0.1` (#350). The fourth is the one worth generalising: two
-of those bugs existed because a rebuild or a version had to be maintained **by hand**, so the fixes
-made the code state its own shape rather than restate it.
+read dropped five fields (#348), three separate changes to what counts as an opportunity all
+shipped under `predmarket_opportunity.v0.1` (#350), and the sheet offered one market four partners
+of which three were impossible (#371).
+
+Two threads run through them and both are worth carrying into PM2. **Anything a person has to
+keep up to date drifts** — a hand-listed field rebuild and a hand-bumped version constant were
+two of the five, and both fixes made the code state its own shape rather than restate it.
+**A guard downstream is not a guard**: #371 was proposing pairings that `pairs.py` would refuse
+anyway, which sounds harmless until you notice the refusal is first-come — confirm the impostor
+and the correct pairing is refused instead, silently and permanently.
 
 Trust the boxes below over this paragraph — a prose summary of a moving track is how the previous
 version came to say "no code exists yet" above a list of shipped modules.
@@ -185,7 +195,14 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         question). Unknown is never mismatch: a Kalshi market has no category, so a missing
         one is excluded from the decision rather than counted against it. Confirmation
         **requires a note comparing how both venues resolve the event** — the risk no text
-        comparison can see — and one market belongs to at most one pair. Every judgement,
+        comparison can see — and one market belongs to at most one **group** (`pairs.py`,
+        `MARKET_ALREADY_GROUPED`). Since #371 the *candidate list* honours that too, greedily
+        and per venue pair: proposing one market against several counterparts from the same
+        venue offers options of which at most one can ever exist, and because the refusal is
+        first-come, confirming an impostor refuses the right pairing permanently. Scoped to the
+        venue pair rather than globally, because a group spanning three venues is three pairings
+        over three legs and a global claim set keeps one — the first attempt did exactly that
+        and an existing test caught it. Every judgement,
         including near-misses, records which gate failed and by how much: that record is what
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
   - [x] Third venue **Binance prediction markets** (markets are Predict.fun's on BNB Chain) —
@@ -246,18 +263,22 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         window on Kalshi×Polymarket alone — which costs the ~3 days already banked on those 40.
         Whichever, record it here — "we tried Binance and the report was empty" is not a finding
         about prediction markets.
-  - [ ] ⚠️ **One confirmed Polymarket leg is dead and the group should probably be retired.**
-        `predmarket_event_group_b18136e1e77430110726` has produced `MARKET_NOT_LISTED` on **248
-        consecutive readings** — every scan since 2026-07-27. Checked directly against Gamma on
-        2026-07-30: the CLOB token returns **zero rows even with the `active`/`closed` filters
-        removed**, so it is not a filter artifact and not an outage; the token is gone from the
-        venue. The group can never price again, and each scan adds another unreadable row to the
-        denominator that coverage is computed from (currently 0.9895, and this group is most of the
-        shortfall). Retiring it is the established treatment — a group was retired for the
-        analogous Binance case — but it is a write to the window an operator is curating, so it is
-        recorded here rather than done. **Not to be confused with the second affected group**
-        (`...6a68084e6504`, Puffpaw FDV): that token is live, `active: true, closed: false`,
-        expiring 2027-01-01, with only 4 incidents — transient, leave it alone.
+  - [x] **A dead Polymarket leg was retired** — done 2026-07-30.
+        `predmarket_event_group_b18136e1e77430110726` had produced `MARKET_NOT_LISTED` on **248
+        consecutive readings**, every scan since 2026-07-27. Checked directly against Gamma: the
+        CLOB token returned **zero rows even with the `active`/`closed` filters removed**, so it
+        was neither a filter artifact nor an outage — the token was gone from the venue and the
+        group could never price again. Retired with that evidence in the reason, on Thomas's
+        instruction.
+        **What retiring does and does not do:** it stops further unreadable rows entering the
+        denominator; it does not remove the 248 already banked, because the window is cumulative.
+        So coverage did not jump on retirement (0.9895 → 0.9915 came from new readings) and
+        `MARKET_NOT_LISTED=268` is now a frozen historical count rather than a growing one. The
+        Binance leg of that group was readable throughout and is not implicated.
+        The second affected group (`...6a68084e6504`, Puffpaw FDV) was **left alone** on purpose:
+        its token is live, `active: true, closed: false`, expiring 2027-01-01, with only 4
+        incidents — transient, and retiring the wrong one is the mistake that note existed to
+        prevent.
   - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
         (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
         the venues a confirmed group needs**, prices every pairing inside every group, and
@@ -304,6 +325,18 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         later needs an external check — the sheet's mtime is the cheap one.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
+  - [ ] **The wording gates are blind to single-character distinctions.** Measured 2026-07-30 on
+        "2026 Balance of Power: D Senate, R House" against "… D Senate, D House": `opposing_terms`
+        and `subject_mismatch` both return `False`, and the pair scores **0.857**. The whole
+        question is carried by the tokens `d` and `r`, six tokens of shared template outvote them,
+        and `subject_mismatch`'s rarity test fails because both letters are *common* across a
+        political corpus rather than rare — the exact inversion of what that gate looks for.
+        #371 bounds the damage (one market gets one candidate per venue pair, so the impostors
+        cannot displace the correct pairing) but does not close it: **when the right counterpart
+        is absent from the sample, the best remaining pairing still wins its legs**, and only the
+        operator reading both settlement texts stands between that and a confirmation. Adding
+        `d`/`r` to the party sets is the obvious move and is *not* obviously safe — single letters
+        appear innocently — so this is written down rather than guessed at.
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
         `opportunity.py`). Both fee models verified against the venues' own docs, which
         **corrected the roadmap**: Polymarket charges a taker fee of the same

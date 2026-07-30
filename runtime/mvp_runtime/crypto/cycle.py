@@ -549,12 +549,38 @@ def run_crypto_cycle(
     # race), and the fallback is the honest one: no shadow rather than a re-derived route.
     shared_route = paper_summary.get("route")
     blocked_plan = None
-    if not bool(verdict.get("allow_new_position")) and paper_summary.get("opened") is None:
-        blocked_plan = build_entry_plan(shared_route, feature_row, now=now) if shared_route else None
+    block_reasons: list[str] = list(verdict.get("problems") or [])
+    # The ``opened is None`` clause is **redundant by construction and kept deliberately**: a
+    # cycle that opened had an allowing verdict (so the first branch is false) and no refusal (so
+    # the second is), which is why removing it alone changes no behaviour and no test. It is here
+    # because the invariant it states — a trade that HAPPENED is never also shadowed, or it would
+    # be double-counted into every per-reason bucket — is the property a future third branch
+    # would break silently. Do not "simplify" the inner guards on the strength of this one.
+    if shared_route and paper_summary.get("opened") is None:
+        if not bool(verdict.get("allow_new_position")):
+            blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+        else:
+            # A POSITION CAP refused a plan the router had already built — the portfolio count,
+            # the per-symbol count, or the directional lean. Shadowed for the same reason a
+            # guard block is: a refusal nobody can price is a refusal nobody can tune. These
+            # three have existed without that, so "what did the caps cost" has only ever been
+            # answerable by simulation — including in the PR that added the directional one,
+            # whose benefit numbers came from mock candles rather than from this machine.
+            #
+            # Mutually exclusive with the branch above by construction: `run_paper_update` only
+            # reaches its cap checks when the verdict allows a new position, so a refusal cannot
+            # coexist with a guard block. And `open_refused` is set only INSIDE the freshness
+            # gate, so this opens one shadow per refused candle rather than one per tick — the
+            # guard-blocked branch above has no such property, because a tripped breaker
+            # persists across every tick of a coarse timeframe.
+            refusal = paper_summary.get("open_refused")
+            if refusal:
+                blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+                block_reasons = [str(refusal["reason_code"])]
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
-        block_reasons=list(verdict.get("problems") or []),
+        block_reasons=block_reasons,
         last_candle=candles_for_cf[-1] if candles_for_cf else None,
         last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
         symbol=symbol,
@@ -661,6 +687,13 @@ def run_crypto_cycle(
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
+        # A cap declined a plan the router had already built. Previously this reached the ledger
+        # only inside `paper_records`' event stream and never the status line, so the two count
+        # caps have been invisible to anyone reading a fire's output — which was tolerable while
+        # they only fired at 20 positions, and is not now that a THIRD cap reads the book's
+        # directional shape and can decline a half-full book. Same argument as
+        # `regime_excluded`: a refusal an operator cannot see is a refusal they cannot act on.
+        "open_refused": paper_summary.get("open_refused"),
         "paper_records": paper_records,
         # The live leg, reported distinctly from paper on purpose: a ledger where the two are
         # indistinguishable is one where nobody can answer "did this system trade real money
@@ -876,6 +909,18 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A built plan a cap declined. The directional one carries the numbers because they are the
+    # actionable part — "the book leans 5 long against the limit of 4" tells an operator the
+    # book's shape, where a bare reason code would only say a trade did not happen.
+    refused = record.get("open_refused")
+    if refused:
+        detail = f"refused={refused['reason_code']}"
+        if refused["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW":
+            detail += (
+                f"({refused['direction']} {refused['aligned']}v{refused['opposing']}"
+                f" lean={refused['lean_after']}>{refused['limit']})"
+            )
+        parts.append(detail)
     # A route that entered nothing because every match was regime-excluded otherwise reads
     # exactly like one where nothing matched, and those want different responses: the first says
     # a strategy fired in a regime its own backtest lost money in, the second says the market did

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import cost, pool
+from runtime.mvp_runtime.crypto import cost, paper, pool
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.promotion import (
     promotion_content_sha256,
@@ -562,6 +562,71 @@ def test_a_multi_symbol_strategy_occupies_every_symbol_it_is_scoped_to():
         pool.assert_pool_within_size_cap(entries)
     assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
     assert "ETHUSDT 15m" in exc.value.reason
+
+
+# --- what the sizing cap and the directional cap do to each other ----------------
+#
+# An interaction, not a standalone idea, and it exists because MAX_ROUTABLE_PER_CONTEXT is 1:
+# every context holds exactly one strategy, and a spec's `direction` is fixed at promotion
+# time — so WHICH directions the book can ever hold became a property of the POOL, where it
+# used to be a property of the template library (balanced 16 long / 16 short). Neither cap
+# says so on its own, which is the whole reason this is reported.
+
+def _directional(longs, shorts):
+    """`longs + shorts` routable entries, one per context, with the given composition."""
+    entries = _one_per_context(longs + shorts)
+    for entry in entries[longs:]:
+        entry["strategy_spec"] = {**entry["strategy_spec"], "direction": "short"}
+    return entries
+
+
+def test_a_balanced_pool_can_fill_every_slot_it_routes():
+    """The claim the directional cap is sold on — "not a concurrency cap in disguise" — and
+    under the per-context cap it is CONDITIONAL, so it needs pinning at the composition where
+    it holds rather than being assumed everywhere."""
+    total = pool.MAX_ROUTABLE_STRATEGIES
+    shorts = (total - paper.MAX_DIRECTIONAL_SKEW) // 2
+    capacity = pool.routable_directional_capacity(_directional(total - shorts, shorts))
+    assert capacity["routable_contexts"] == total
+    assert capacity["reachable_book"] == total
+    assert capacity["cap_binds"] is False
+
+
+def test_an_all_one_way_pool_can_fill_only_the_cap_and_says_so():
+    """The failure this reports: twenty long strategies fill four of twenty slots. Nothing in
+    the size cap or the directional cap surfaces that on its own — the book would simply stop
+    growing, and an operator would read it as "no signals"."""
+    capacity = pool.routable_directional_capacity(_directional(pool.MAX_ROUTABLE_STRATEGIES, 0))
+    assert capacity["routable_contexts"] == pool.MAX_ROUTABLE_STRATEGIES
+    assert capacity["reachable_book"] == paper.MAX_DIRECTIONAL_SKEW
+    assert capacity["cap_binds"] is True
+
+
+def test_each_opposing_strategy_buys_back_two_slots():
+    """The arithmetic is the cap's own — an opposing position offsets an aligned one — so this
+    pins that no second number crept in."""
+    for shorts in range(0, 5):
+        capacity = pool.routable_directional_capacity(
+            _directional(pool.MAX_ROUTABLE_STRATEGIES - shorts, shorts)
+        )
+        expected = min(pool.MAX_ROUTABLE_STRATEGIES, 2 * shorts + paper.MAX_DIRECTIONAL_SKEW)
+        assert capacity["reachable_book"] == expected, shorts
+
+
+def test_a_pool_no_larger_than_the_cap_is_never_reported_as_bound():
+    """Small pools must not raise the note: four one-way strategies fill four slots, which is
+    the cap exactly. A line that fired on every young pool would train the reader to skip it."""
+    capacity = pool.routable_directional_capacity(_directional(paper.MAX_DIRECTIONAL_SKEW, 0))
+    assert capacity["cap_binds"] is False
+
+
+def test_the_capacity_report_refuses_nothing():
+    """Deliberately a report and not a fifth guard. The directional cap can only DECLINE, so a
+    lopsided pool trades less rather than unsafely — and refusing here would forbid assembling
+    a pool in any order but alternating, since five longs before the first short is ordinary."""
+    lopsided = _directional(pool.MAX_ROUTABLE_STRATEGIES, 0)
+    assert pool.routable_directional_capacity(lopsided)["cap_binds"] is True
+    pool.assert_pool_within_size_cap(lopsided)  # the door still admits it
 
 
 def test_suspended_entries_are_not_counted():

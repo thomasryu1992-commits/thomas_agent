@@ -220,12 +220,139 @@ def test_foreign_symbol_cycle_leaves_the_other_book_untouched(tmp_path):
     assert untouched["holding_candles"] == opened["holding_candles"]
 
 
+# --- what a POSITION CAP costs, made measurable ---------------------------------
+#
+# The counterfactual book has always shadowed entries the C4 guards refused, so
+# "what did the daily-loss breaker cost" is answerable from the ledger. The three POSITION
+# caps — portfolio count, per-symbol count, directional lean — had no such record, so what they
+# cost has only ever been answerable by simulation. That is not an academic gap: the PR that
+# added the directional cap justified it with numbers measured on mock candles, because there
+# was no other source. These shadow the refused plan under the cap's own reason code, which is
+# what lets `counterfactual_by_reason` price each cap on the machine that actually ran it.
+
+def _cap_refused_cycle(tmp_path, monkeypatch):
+    """Fill the portfolio to a pinned cap on BTC, then run an ETH cycle that must be refused."""
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 1)
+    _install_pool(tmp_path, _always_spec(), _always_spec("S_ETH", symbol="ETHUSDT"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    _cycle(tmp_path, FakeExchangeCollector(), store)
+    assert load_open_position(CTX, tmp_path) is not None
+    return _cycle(tmp_path, FakeExchangeCollector(), store,
+                  now="2026-07-23T12:00:00Z", symbol="ETHUSDT"), store
+
+
+def test_a_cap_refusal_is_shadowed_under_its_own_reason_code(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import counterfactual
+
+    record, _store = _cap_refused_cycle(tmp_path, monkeypatch)
+    assert record["opened"] is None
+    assert record["open_refused"]["reason_code"] == "POSITION_LIMIT_PORTFOLIO"
+    assert record["counterfactual"]["opened"] is not None, "the refused plan left no shadow"
+
+    shadows = counterfactual.load_open_counterfactuals(tmp_path)
+    eth = [s for s in shadows if s.get("symbol") == "ETHUSDT"]
+    assert len(eth) == 1
+    # The CAP's reason, not the verdict's — the verdict allowed this entry, which is precisely
+    # why the cap is the thing that needs pricing.
+    assert eth[0]["block_reasons"] == ["POSITION_LIMIT_PORTFOLIO"]
+
+
+def test_a_guard_block_still_shadows_the_verdicts_problems(tmp_path):
+    """No regression: the branch that existed keeps its own reasons, and a cap reason must not
+    leak into it. The two are mutually exclusive by construction — `run_paper_update` only
+    reaches its cap checks when the verdict already allows a new position."""
+    from runtime.mvp_runtime.crypto import counterfactual
+
+    _install_pool(tmp_path, _always_spec())
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    # A tripped breaker: an outcome history the risk guard refuses to trade on. Written through
+    # the same gated store the runtime uses, so the guard reads it exactly as it would in life.
+    for i in range(6):
+        store.append_outcome({
+            "position_id": f"p{i}", "strategy_id": "S_ALWAYS", "symbol": "BTCUSDT",
+            "timeframe": "1d", "direction": "LONG", "result_R": -1.0,
+            "close_reason": "stop_loss", "closed_at_utc": "2026-07-21T00:00:00Z",
+            # The runtime's OWN provenance, not a literal: the risk guard reads only its own
+            # trading (imported history is split off), so a hand-written marker here would make
+            # this test pass while the breaker it claims to trip stayed clear.
+            "provenance": paper.PAPER_PROVENANCE,
+        })
+    record = _cycle(tmp_path, FakeExchangeCollector(), store)
+    assert record["verdict_status"] != "ALLOW", "the fixture must actually trip a breaker"
+    assert record["opened"] is None
+    shadows = counterfactual.load_open_counterfactuals(tmp_path)
+    assert shadows, "a guard-blocked actionable signal must still be shadowed"
+    assert "POSITION_LIMIT_PORTFOLIO" not in shadows[-1]["block_reasons"]
+    assert shadows[-1]["block_reasons"] == record["verdict_problems"]
+
+
+def test_an_opened_position_is_never_also_shadowed(tmp_path):
+    """A shadow is the trade that did NOT happen. Shadowing one that did would double-count it
+    into every per-reason bucket the dashboard prices.
+
+    Pins the BEHAVIOUR, which two independent conditions currently enforce — so removing either
+    one alone leaves this green, and removing both turns it red. That is deliberate: the
+    invariant is what matters, not which line happens to be carrying it today."""
+    from runtime.mvp_runtime.crypto import counterfactual
+
+    _install_pool(tmp_path, _always_spec())
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    record = _cycle(tmp_path, FakeExchangeCollector(), store)
+    assert record["opened"] is not None
+    assert counterfactual.load_open_counterfactuals(tmp_path) == []
+
+
+def test_the_cap_shadow_opens_once_per_refused_candle_not_once_per_tick(tmp_path, monkeypatch):
+    """The property that makes this cheap, and it is not shared by the guard-blocked branch: a
+    tripped breaker persists across every tick of a coarse timeframe, but `open_refused` is only
+    set INSIDE the freshness gate — so re-running the same candle refuses nothing new and
+    shadows nothing new."""
+    from runtime.mvp_runtime.crypto import counterfactual
+    from runtime.mvp_runtime.crypto.routing_marks import RoutingMarkStore
+
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 1)
+    _install_pool(tmp_path, _always_spec(), _always_spec("S_ETH", symbol="ETHUSDT"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    marks = RoutingMarkStore(tmp_path)
+    _cycle(tmp_path, FakeExchangeCollector(), store, routing_marks=marks)
+    for _tick in range(3):
+        _cycle(tmp_path, FakeExchangeCollector(), store, now="2026-07-23T12:00:00Z",
+               symbol="ETHUSDT", routing_marks=marks)
+    eth = [s for s in counterfactual.load_open_counterfactuals(tmp_path)
+           if s.get("symbol") == "ETHUSDT"]
+    assert len(eth) == 1, f"three ticks on one candle left {len(eth)} shadows"
+
+
 def test_status_line_summarizes(tmp_path):
     _install_pool(tmp_path, _always_spec())
     record = _cycle(tmp_path, FakeExchangeCollector(),
                     RealPaperStore(root=tmp_path, authorization=_AUTH))
     line = cycle_status_line(record)
     assert "verdict=ALLOW" in line and "opened=LONG:S_ALWAYS" in line
+    assert "refused=" not in line, "a field empty on almost every line must stay off it"
+
+
+def test_status_line_shows_a_cap_refusal_with_the_books_shape():
+    """A refusal an operator cannot see is a refusal they cannot act on (the #359 lesson).
+    Previously the two count caps reached only `paper_records`' event stream, which was
+    tolerable while they fired at twenty positions and is not now that a third cap can decline
+    a half-full book. The numbers ride along because the book's SHAPE is the actionable part."""
+    record = {
+        "verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE",
+        "open_refused": {
+            "reason_code": "POSITION_LIMIT_DIRECTIONAL_SKEW", "direction": "LONG",
+            "aligned": 4, "opposing": 0, "lean_after": 5, "limit": 4,
+        },
+    }
+    line = cycle_status_line(record)
+    assert "refused=POSITION_LIMIT_DIRECTIONAL_SKEW(LONG 4v0 lean=5>4)" in line
+
+    # The two count caps surface too, without inventing numbers they do not carry.
+    counted = cycle_status_line({
+        "verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE",
+        "open_refused": {"reason_code": "POSITION_LIMIT_PORTFOLIO", "open_positions": 20, "limit": 20},
+    })
+    assert "refused=POSITION_LIMIT_PORTFOLIO" in counted and "lean=" not in counted
 
 
 # --- the scheduler template ---------------------------------------------------

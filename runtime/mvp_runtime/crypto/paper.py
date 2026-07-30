@@ -128,6 +128,7 @@ INTRABAR_TIMEFRAME = "1m"
 INTRABAR_RESOLUTION_DEGRADED = "INTRABAR_RESOLUTION_DEGRADED"
 POSITION_LIMIT_PORTFOLIO = "POSITION_LIMIT_PORTFOLIO"
 POSITION_LIMIT_SYMBOL = "POSITION_LIMIT_SYMBOL"
+POSITION_LIMIT_DIRECTIONAL = "POSITION_LIMIT_DIRECTIONAL_SKEW"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
 SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
@@ -211,6 +212,120 @@ def regime_admits(entry: Mapping[str, Any], regime: Any) -> tuple[bool, str | No
     if float(total_r) > 0:
         return True, None
     return False, REGIME_EXCLUDED
+
+
+# --- the portfolio's net directional bet --------------------------------------
+
+# How far the whole book may lean one way, counted in positions.
+#
+# **Derived, not chosen**: it is `MAX_POSITIONS_PER_SYMBOL`, so the rule has an English
+# statement that does not mention a number — *the portfolio's net directional bet may never
+# exceed one symbol's full allocation.* However many symbols the book holds, the part of it
+# that is not hedged by an opposing position is never larger than what a single symbol could
+# have contributed alone.
+#
+# **It is not a concurrency cap in disguise**, and that is what makes the derived value the
+# right one rather than merely a tidy one: at 20 slots a book of 12 long + 8 short is net 4,
+# so the full portfolio limit stays reachable. What the cap forbids is a *full book that is
+# one-way*, not a full book.
+MAX_DIRECTIONAL_SKEW = MAX_POSITIONS_PER_SYMBOL
+
+
+def directional_skew_admits(
+    open_positions: Sequence[tuple[Any, Mapping[str, Any]]],
+    direction: Any,
+) -> tuple[bool, dict[str, Any] | None]:
+    """May the book take on one more position in ``direction``? ``(admitted, refusal)``.
+
+    **The limit is read from the module global at call time and is deliberately not a
+    parameter**, which is how its two sibling caps in ``run_paper_update`` already work. A
+    ``cap=MAX_DIRECTIONAL_SKEW`` default argument would bind the number at import, so the
+    constant and the enforced value could disagree — which is not hypothetical: it is what the
+    first version of this function did, and the end-to-end test caught it opening a position the
+    cap was set to refuse. One limit, one way to express it.
+
+    **The gap this closes.** `MAX_CONCURRENT_POSITIONS` and `MAX_POSITIONS_PER_SYMBOL` bound
+    how *many* positions exist and how many share a symbol. Neither bounds how many point the
+    same way, so twenty simultaneous longs were permitted — and that is the F1 hazard
+    `docs/TRADING_STRATEGY_REVIEW_RECORD.md` names: when the market drops, every open long
+    loses at once, and no existing check could say so.
+
+    **Why it matters here more than for money.** This is the PAPER book, which risks nothing —
+    its product is *strategy evidence*. An all-long book turns one market move into twenty
+    correlated verdicts about twenty different strategies, and promotion/demotion then reads
+    those as twenty independent judgements. The cap protects what paper is for. (Live is
+    deliberately untouched: at `live_position.MAX_LIVE_CONCURRENT_POSITIONS = 2` the live book's
+    largest possible skew is 2, so a cap there is either inert or halves an already-tiny
+    capacity — and live one-way risk is governed by the operator-registered
+    `max_open_notional_usdt`, an authority that already exists and is Thomas's number.)
+
+    **The sign convention is load-bearing — do not "simplify" it back to an absolute value.**
+    Everything is counted *toward the proposal*: ``aligned`` positions push the same way this
+    entry would, ``opposing`` push against it, and the lean is ``aligned - opposing``. The rule
+    is then one comparison, and the corrective-safe property falls out of it for free: a lean
+    that would exceed the cap after this entry can only be reached from a book that *already*
+    leans this way, so a corrective entry — one that reduces an imbalance — is never declined.
+    Writing the same rule as ``abs(new_skew) > cap`` looks equivalent and is not: once
+    unsynchronised exits have pushed the book past the cap on its own, that form refuses the
+    very trades that would bring it back. Measured on a 1,200-bar five-symbol simulation, the
+    absolute form blocked corrective entries while gaining nothing (identical opened count,
+    identical worst-case skew).
+
+    **A direction that is not provably opposite counts as aligned**, which needs no special
+    case because ``opposing`` is what is measured. A corrupted record therefore makes the cap
+    bind *sooner*, never later — the same direction `list_open_positions` fails in when it
+    cannot attribute a position at all.
+
+    **What this cannot do, stated because the alternative is worse.** It is an entry-time gate,
+    so it bounds the skew the runtime deliberately *takes on*, not the skew the market leaves
+    it holding: positions expire on their own schedules, so a balanced 12/8 book becomes 12/0
+    when the shorts time out. Measured, the cap still cut the worst observed lean from 8 to 6
+    and the book sat over the cap 2.3% of the time. Bounding it *thereafter* would mean closing
+    positions the strategies did not close — a new authority over exits, and one that would
+    falsify the outcome record this book exists to produce.
+
+    **Which context gets a scarce directional slot is not decided here, and the answer is worth
+    knowing before trusting this.** Like the two caps beside it, this is evaluated per context as
+    the fan-out reaches it, so the room under the cap goes to whoever asks first — and until
+    ``cycle.pool_cycle_contexts`` started ordering by urgency and evidence, "first" meant
+    *alphabetically*, which would have made the last directional slot an accident of spelling
+    (the tiebreak-by-alphabet hazard this codebase rejects in the cross-sectional rank). It is
+    now: live-holding contexts, then paper-holding ones, then best ``champion_score``
+    descending. So a binding cap spends its remaining room on the best-evidenced context rather
+    than the alphabetically luckiest. Neither change owns that property on its own, so a test
+    pins the composition.
+
+    What it still does not promise — and the ordering change says so itself — is the *globally
+    best* entry: a score is not a signal, so the top-scoring context may propose nothing this
+    bar. Arbitrating properly means evaluating every context before executing any, which is a
+    second pass over the whole fan-out and a decision of its own.
+
+    One-directional: it can only ever decline. It never opens a position, never flips one, and
+    never admits an entry the existing caps would have refused — which is why, like
+    :func:`regime_admits`, it needs no gate of its own.
+    """
+    proposed = str(direction or "").upper()
+    if proposed not in ("LONG", "SHORT"):
+        # Nothing to count toward. The caller has no entry to judge, and inventing a lean for
+        # an unknown direction would decline on a guess.
+        return True, None
+    opposite = "SHORT" if proposed == "LONG" else "LONG"
+    opposing = sum(
+        1 for _context, position in open_positions
+        if str((position or {}).get("direction") or "").upper() == opposite
+    )
+    aligned = len(open_positions) - opposing
+    lean_after = aligned + 1 - opposing
+    if lean_after <= MAX_DIRECTIONAL_SKEW:
+        return True, None
+    return False, {
+        "reason_code": POSITION_LIMIT_DIRECTIONAL,
+        "direction": proposed,
+        "aligned": aligned,
+        "opposing": opposing,
+        "lean_after": lean_after,
+        "limit": MAX_DIRECTIONAL_SKEW,
+    }
 
 
 def route_entries(
@@ -1400,6 +1515,17 @@ def run_paper_update(
                             "open_positions": same_symbol,
                             "limit": MAX_POSITIONS_PER_SYMBOL,
                         }
+                    else:
+                        # The third cap, and the first that reads the book's SHAPE rather than
+                        # its size: the two above permit twenty simultaneous longs. Counted
+                        # from the `open_books` already in hand, under the same lock and for
+                        # the same reason — a lean is a property of every book together, so two
+                        # cycles that each counted before either wrote would both see room only
+                        # one of them had.
+                        _admitted, skew_refusal = directional_skew_admits(
+                            open_books, plan.get("direction")
+                        )
+                        refusal = skew_refusal
                     if refusal is not None:
                         summary["open_refused"] = refusal
                         records.append(_event("open_refused", {**refusal, "read_only": True}))

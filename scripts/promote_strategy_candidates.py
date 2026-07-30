@@ -258,6 +258,12 @@ def run_promotion(
         "evidence_hashes": [c.get("evidence_input_sha256") for c in candidates],
         "kept_active": keep_active,
         "pool_size": installed,
+        # How large a book the pool it just installed can actually fill under the directional
+        # cap. On the LEDGER, not only on stdout: with one routable strategy per context a
+        # spec's direction is fixed here, so this promotion is the moment the book's achievable
+        # composition was decided — and a record that cannot answer "why did the book stop at
+        # eight" is one an operator has to reconstruct from the pool file by hand.
+        "directional_capacity": pool_store.routable_directional_capacity(entries),
         "promoted_by": promoted_by,
         "reason": reason,
         # C8b: which door authorized this — a verified approval, or the explicit escape.
@@ -548,6 +554,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
           f"({summary['promoted_strategy_ids']}) -> active pool "
           f"({summary['pool_size']} strategies) [door: {door}]")
+    # Said here because this is the moment the pool's directional composition changes, and
+    # because the consequence is invisible everywhere else until positions fail to open: with
+    # one routable strategy per context, a spec's direction is fixed at promotion time, so a
+    # lopsided pool cannot fill its own slots under the directional cap. NOT a refusal — the cap
+    # only ever declines, so the outcome is under-utilisation rather than risk, and blocking the
+    # promotion would forbid assembling a pool in any order but alternating.
+    capacity = summary.get("directional_capacity")
+    if isinstance(capacity, dict) and capacity.get("cap_binds"):
+        print(f"NOTE: this pool routes {capacity['routable_contexts']} contexts "
+              f"({capacity['long_contexts']} long / {capacity['short_contexts']} short) but the "
+              f"directional cap (±{capacity['skew_cap']}) lets at most "
+              f"{capacity['reachable_book']} positions be open at once. Promote the other "
+              f"direction to use the rest.")
     return EXIT_OK
 
 
