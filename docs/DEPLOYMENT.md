@@ -264,6 +264,22 @@ daily-count, exposure and loss limits come from the registered `live_trading_bud
 (`scripts/register_live_trading_budget.py`). There is deliberately no cap an operator can set
 outside that record.
 
+**The C4 breaker limits are a second, separate record.** Daily/weekly R loss, consecutive losses,
+drawdown and risk-per-trade are *not* budget caps — they gate paper and live alike — so they live
+in `crypto_risk_limits.v0.1` (`scripts/register_crypto_risk_limits.py`). **Registering one is
+optional and usually unnecessary:** with nothing registered the guard judges on the `guards.py`
+defaults, which is the supported steady state. Two things to know before registering one:
+
+- It carries a validity window, and **a lapsed record refuses new positions rather than reverting
+  to the defaults** — reverting would silently loosen a breaker an operator had tightened. To go
+  back to the defaults, delete the file; do not let it lapse.
+- A limit outside the bounds in `guards.py` is refused, never clamped, and tightening is
+  unbounded. Widening a breaker past those bounds is a code change and a Thomas decision.
+
+```bash
+python -m scripts.register_crypto_risk_limits --show   # read-only: what the guard judges on now
+```
+
 **One grant is still required** — the read-only account feed. The `live_trading` grant that used
 to sit beside it was removed on 2026-07-28 (Thomas); `MVP_LIVE_TRADING=real` above replaces it
 entirely. If you have an old `live_trading` activation file on a machine, it is now inert: it
