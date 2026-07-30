@@ -357,6 +357,40 @@ def test_pool_cycle_settles_open_position_even_after_its_strategy_leaves(tmp_pat
     assert load_open_position(ETH_CTX, tmp_path) is None
 
 
+def _book_live_position(tmp_path, symbol: str, **fields):
+    """Write an OPEN live position straight to the book — no gate, no venue, no order."""
+    from runtime.mvp_runtime.crypto.live_position import live_position_path
+
+    path = live_position_path(symbol, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    position = {"stage": "live", "status": "OPEN", "symbol": symbol, "direction": "LONG",
+                "quantity": 0.002, "entry_price": 100.0, "notional_usdt": 0.2,
+                "opened_at_utc": "2026-07-27T00:00:00Z", "position_id": f"live-{symbol}"}
+    position.update(fields)
+    path.write_text(json.dumps(position), encoding="utf-8")
+    return position
+
+
+def test_a_live_position_pulls_in_its_own_timeframe_not_the_default(tmp_path):
+    """The context that owns a live position's clock is its own timeframe, so that context has to
+    be guaranteed to run. This used to add the symbol only when it was otherwise unvisited, and
+    then at the DEFAULT timeframe — so a 4h position on a symbol still routed at 15m was serviced
+    by a cycle counting 15m bars against a 4h rule."""
+    _install_pool(tmp_path, _always_spec("S_ETH_15m", "ETHUSDT", timeframe="15m"))
+    _book_live_position(tmp_path, "ETHUSDT", timeframe="4h", max_holding_bars=12)
+
+    contexts = pool_cycle_contexts(tmp_path)
+    assert ("ETHUSDT", "4h") in contexts, "the position's own timeframe never got a cycle"
+    assert ("ETHUSDT", "15m") in contexts, "the routable context was dropped"
+
+
+def test_a_legacy_live_position_pulls_in_the_default_timeframe(tmp_path):
+    """No stored timeframe means no owner to name, so `position_timing_context` hands it to the
+    default — and this is what makes that default a context that actually runs."""
+    _book_live_position(tmp_path, "ETHUSDT")  # no `timeframe` field: pre-exit-terms record
+    assert pool_cycle_contexts(tmp_path, default_timeframe="1d") == [("ETHUSDT", "1d")]
+
+
 def test_pool_cycle_skips_a_bad_symbol_without_starving_the_rest(tmp_path):
     # A pool symbol that parses as a spec but cannot be collected (INVALID_SYMBOL)
     # must not abort the batch — the other symbol still runs.
@@ -607,6 +641,201 @@ def test_no_live_history_changes_nothing(tmp_path):
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert record["verdict_status"] == "ALLOW"
     assert "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD" not in record["reason_codes"]
+
+
+# --- what a fan-out actually asks the venue (2026-07-29) ---------------------------------------
+
+class _FeedCountingCollector(FakeExchangeCollector):
+    """FakeExchangeCollector plus the symbol-scoped feeds, counting every real call."""
+
+    def __init__(self, extra_candle: dict | None = None):
+        super().__init__(extra_candle)
+        self.calls: list[tuple] = []
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self.calls.append(("collect", symbol, timeframe, limit))
+        return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        self.calls.append(("funding_history", symbol))
+        return [{"timestamp": "2026-07-01T00:00:00Z", "funding_rate": 0.0001}]
+
+
+class _CountingLiquidationFeed:
+    feed_id = "counting"
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def liquidation_history(self, symbol, *, days, timeout_seconds):
+        self.calls.append(("liquidation_history", symbol))
+        return []
+
+    def open_interest_history(self, symbol, *, days, timeout_seconds, **kwargs):
+        self.calls.append(("open_interest_history", symbol))
+        return []
+
+
+def test_a_fan_out_asks_each_symbol_scoped_question_once(tmp_path):
+    """Funding, liquidations and open interest are keyed by SYMBOL at the venue while a cycle is
+    keyed by (symbol, timeframe). Two symbols across four timeframes used to be eight requests
+    each where two answer — 4x, every fire, on a scheduler that runs everything sequentially."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(
+        tmp_path,
+        *[_always_spec(f"S_{sym}_{tf}", sym, tf)
+          for sym in ("BTCUSDT", "ETHUSDT") for tf in ("15m", "1h", "4h", "1d")],
+    )
+    inner_collector, inner_feed = _FeedCountingCollector(), _CountingLiquidationFeed()
+    _pool_cycle(tmp_path, PerRunFeedCache(inner_collector),
+                liquidation_feed=PerRunFeedCache(inner_feed))
+
+    def per_symbol(calls, name):
+        return [c[1] for c in calls if c[0] == name]
+
+    assert len(per_symbol(inner_collector.calls, "funding_history")) == 2
+    assert sorted(per_symbol(inner_collector.calls, "funding_history")) == ["BTCUSDT", "ETHUSDT"]
+    assert len(per_symbol(inner_feed.calls, "liquidation_history")) == 2
+    # Two per symbol, not one, and that is correct: `attach_feeds` reads the DAILY open-interest
+    # series (memoized here, 4 -> 1) while `oi_store.record_intraday_oi` reads the HOURLY one
+    # (`interval="1hour"`) into the store the runtime keeps for itself. Different intervals are
+    # different questions, so the memo must not collapse them — and `oi_store` has always had its
+    # own once-per-hour-per-symbol throttle for exactly the fan-out this memo now covers for the
+    # other three feeds.
+    assert len(per_symbol(inner_feed.calls, "open_interest_history")) == 4
+    assert sorted(per_symbol(inner_feed.calls, "open_interest_history")) == [
+        "BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT"
+    ]
+
+
+def test_the_candle_windows_a_fan_out_shares_are_fetched_once(tmp_path):
+    """`attach_htf` fetches one step up the ladder, and that step is itself a routed context — so
+    a pool routing 15m/1h/4h collects 1h and 4h twice per fire. Both windows end at the same last
+    closed candle, so the deeper one answers both."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(tmp_path, *[_always_spec(f"S_{tf}", "BTCUSDT", tf)
+                              for tf in ("15m", "1h", "4h")])
+    inner = _FeedCountingCollector()
+    _pool_cycle(tmp_path, PerRunFeedCache(inner))
+
+    fetched = [(c[1], c[2]) for c in inner.calls if c[0] == "collect"]
+    assert len(fetched) == len(set(fetched)), f"the same window was fetched twice: {fetched}"
+
+
+def test_the_memo_does_not_let_one_context_read_anothers_symbol(tmp_path):
+    """The memo keys on the symbol, so this is arithmetic rather than an assumption — but it is
+    the failure that would be silent and expensive, so it is pinned."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT", "1d"),
+                  _always_spec("S_ETH", "ETHUSDT", "1d"))
+    inner = _FeedCountingCollector()
+    summary = _pool_cycle(tmp_path, PerRunFeedCache(inner))
+    assert {r["symbol"] for r in summary["cycles"]} == {"BTCUSDT", "ETHUSDT"}
+    for record in summary["cycles"]:
+        assert record["collection"]["symbol"] == record["symbol"]
+
+
+# --- the fan-out's order is part of its behaviour (2026-07-29) ---------------------------------
+#
+# The fan-out runs sequentially and its scarce resources are consumed in order: two live slots,
+# twenty paper ones, and a live incident that stops it outright. Sorting alphabetically made all
+# three alphabetical — BNBUSDT took the live slot before BTCUSDT every fire, whatever either of
+# them signalled, and a halt stranded whatever sorted late.
+
+def _scored_pool(root, *entries):
+    """Install a pool whose entries carry distinct champion scores."""
+    pool.install_active_pool(
+        {"active_strategies": [
+            {"strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE",
+             "champion_score": score, "strategy_spec": spec}
+            for spec, score in entries
+        ]},
+        root=root,
+    )
+
+
+def test_contexts_are_visited_best_evidence_first_not_alphabetically(tmp_path):
+    """The slot arbitration. A score is not a signal, so this does not promise the best entry
+    wins — it replaces an ordering that correlates with nothing by one that correlates with the
+    evidence the pool was promoted on."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_AAA", "AAAUSDT", "1d"), 0.20),
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.90),
+        (_always_spec("S_ZZZ", "ZZZUSDT", "1d"), 0.55),
+    )
+    assert pool_cycle_contexts(tmp_path) == [
+        ("BTCUSDT", "1d"), ("ZZZUSDT", "1d"), ("AAAUSDT", "1d"),
+    ]
+
+
+def test_a_context_holding_a_live_position_is_visited_before_any_new_entry(tmp_path):
+    """Real money first. Settling or protecting an open live position is the most urgent thing a
+    fire does, and a live incident halts the fan-out — so a live context that sorted late used to
+    be the one a halt stranded."""
+    _scored_pool(tmp_path, (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.99))
+    _book_live_position(tmp_path, "ZZZUSDT", timeframe="1d", max_holding_bars=12)
+
+    contexts = pool_cycle_contexts(tmp_path)
+    assert contexts[0] == ("ZZZUSDT", "1d"), f"the live position was not visited first: {contexts}"
+
+
+def test_a_context_holding_a_paper_position_outranks_an_empty_one(tmp_path):
+    """Same rule, lower stakes: a book that can settle goes before a book that can only open."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.99),
+        (_always_spec("S_ETH", "ETHUSDT", "1d"), 0.10),
+    )
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    _pool_cycle(tmp_path, FakeExchangeCollector(), store)   # opens both books
+    assert load_open_position(ETH_CTX, tmp_path) is not None
+
+    # Now demote BTC's book away by emptying it, leaving ETH holding and BTC merely routable.
+    paper.RealPaperStore(root=tmp_path, authorization=_AUTH).clear_position(CTX)
+    contexts = pool_cycle_contexts(tmp_path)
+    assert contexts[0] == ("ETHUSDT", "1d"), f"the open book was not visited first: {contexts}"
+
+
+def test_the_order_is_deterministic_when_scores_tie(tmp_path):
+    """A fan-out that reorders itself between fires would make every ledger comparison useless."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_B", "BBBUSDT", "1d"), 0.5),
+        (_always_spec("S_A", "AAAUSDT", "1d"), 0.5),
+        (_always_spec("S_C", "CCCUSDT", "1d"), 0.5),
+    )
+    first = pool_cycle_contexts(tmp_path)
+    assert first == [("AAAUSDT", "1d"), ("BBBUSDT", "1d"), ("CCCUSDT", "1d")]
+    assert first == pool_cycle_contexts(tmp_path)
+
+
+def test_a_scoreless_entry_is_visited_last_never_dropped(tmp_path):
+    """Nothing to argue for going first is not a reason to be skipped."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_NONE", "AAAUSDT", "1d"), None),
+        (_always_spec("S_BTC", "BTCUSDT", "1d"), 0.4),
+    )
+    contexts = pool_cycle_contexts(tmp_path)
+    assert ("AAAUSDT", "1d") in contexts
+    assert contexts.index(("BTCUSDT", "1d")) < contexts.index(("AAAUSDT", "1d"))
+
+
+def test_every_context_still_runs_whatever_the_order(tmp_path):
+    """Ordering must never become filtering — a demoted strategy's book still has to settle."""
+    _scored_pool(
+        tmp_path,
+        (_always_spec("S_A", "AAAUSDT", "1d"), 0.1),
+        (_always_spec("S_B", "BBBUSDT", "1d"), 0.9),
+    )
+    _book_live_position(tmp_path, "ZZZUSDT", timeframe="4h")
+    assert set(pool_cycle_contexts(tmp_path)) == {
+        ("AAAUSDT", "1d"), ("BBBUSDT", "1d"), ("ZZZUSDT", "4h"),
+    }
 
 
 # --- the registered breaker limits (crypto_risk_limits.v0.1) -------------------

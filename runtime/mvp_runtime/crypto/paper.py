@@ -680,6 +680,12 @@ def build_outcome_record(
         "direction": position.get("direction"),
         "entry_price": position.get("entry_price"),
         "exit_price": float(exit_price),
+        # Risk per unit (|entry - stop|) — the denominator `result_R` was divided by. Recorded
+        # since 2026-07-29 because without it a row cannot be re-costed: `feedback` re-derives
+        # this outcome NET of fees, slippage and carry, and that conversion needs the same
+        # denominator the gross figure used. Deriving it back from `result_R` divides by zero on
+        # a break-even trade, which is exactly the row a cost model would turn negative.
+        "risk": position.get("risk"),
         "holding_candles": position.get("holding_candles"),
         "position_id": position.get("position_id"),
         "opened_at_utc": position.get("opened_at_utc"),

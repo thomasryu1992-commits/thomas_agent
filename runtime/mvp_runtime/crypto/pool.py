@@ -24,7 +24,14 @@ from runtime.read_only_kernel import integrity
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
-from .cost import DEFAULT_MAKER_FEE_BPS, DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_BPS
+from .cost import (
+    DEFAULT_FUNDING_BPS_PER_INTERVAL,
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
+    FUNDING_SOURCE_UNCHARGED,
+    FUNDING_SOURCE_VENUE,
+)
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import HOLDOUT_CONFIRMED, ROBUST, classify_verdict, verdict_rank
 from .strategy import SpecParseError, StrategySpec, load_strategy_pool
@@ -143,6 +150,12 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
     candidate scored before the maker take-profit exit (2026-07-28) keeps the exact basis
     string it has always reported, so the split in the store stays legible as two bases rather
     than every old candidate silently acquiring a third term it was never scored under.
+
+    The funding term follows the same rule and is the sharper case: a record with no
+    ``funding_source`` was scored on a PERPETUAL with no carry at all, and the string says
+    ``+funding_uncharged`` rather than omitting it. An omitted term reads as "this basis has
+    one fewer axis"; a named one reads as "this basis is missing the cost that dominates a
+    multi-week hold", which is what it is.
     """
     summary = (record.get("backtest_evidence") or {}).get("cost_summary") or {}
     model = summary.get("cost_model") or {}
@@ -151,7 +164,13 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps"
+    funding = model.get("funding_bps_per_interval")
+    if isinstance(funding, (int, float)) and not isinstance(funding, bool):
+        source = model.get("funding_source") or FUNDING_SOURCE_VENUE
+        funding_term = f"+funding_{funding}bps/8h({source})"
+    else:
+        funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -164,6 +183,8 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
+        "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
 
 
@@ -198,15 +219,31 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
     taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
     if not _is_number(taker) or not _is_number(slip):
         return COST_BASIS_RANK_UNRECORDED
+    funding = model.get("funding_bps_per_interval")
+    if not _is_number(funding):
+        # No carry charged at all, on a PERPETUAL. Unlike the maker case below there is no
+        # "what it actually paid" to fall back on — the model simply had no such axis, and a
+        # missing cost cannot be read as a cost of zero on an instrument that charges every 8
+        # hours. `_EXIT_PARAMS` allows a 1d spec to hold 12-48 days, so what is missing is 36
+        # to 144 settlements: several times the fee legs this basis does record.
+        #
+        # OPTIMISTIC rather than UNRECORDED, and the distinction is the honest one. The
+        # direction IS knowable here for the case that matters: the venue's base rate is
+        # positive and the historical mean is positive, so an omitted carry overstates every
+        # LONG lineage. It understates shorts, and refusing those too is a cost accepted with
+        # open eyes — the alternative is a tier whose meaning depends on the spec's direction,
+        # which is a property of the trade and not of the cost model this function ranks.
+        return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
-    if taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS and slip == DEFAULT_SLIPPAGE_BPS:
+    if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
+            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS):
+            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 
@@ -928,14 +965,36 @@ def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     multi-symbol strategy contributes each of its symbols) and none where it never
     could. Non-occupying or spec-less entries contribute nothing. Deduplicated and
     sorted for a stable, deterministic cycle order."""
-    contexts: set[tuple[str, str]] = set()
+    return sorted(context_scores(pool))
+
+
+def context_scores(pool: Mapping[str, Any]) -> dict[tuple[str, str], float]:
+    """``(symbol, timeframe)`` → the best ``champion_score`` any routable strategy there carries.
+
+    The same set :func:`routable_contexts` returns, with the evidence attached. It exists because
+    the live leg's slots are scarce — two open positions, one per symbol — while a fan-out visits
+    twenty contexts, so the FIRST context to produce a route takes a slot and the rest are refused
+    on capacity. Visiting in sorted order made that arbitration alphabetical: `BNBUSDT` before
+    `BTCUSDT` before `ETHUSDT`, every fire, whatever any of them actually signalled.
+
+    A score is not a signal — the strategy that scored best may propose nothing this bar — so this
+    does not pick the winner, and nothing here promises the globally best entry wins. What it does
+    is replace an ordering that correlates with nothing by one that correlates with the evidence
+    the pool was promoted on. Picking the true best would mean evaluating every context before
+    executing any of them, which is a second pass over the whole fan-out and its own decision.
+
+    A missing or unreadable score reads as 0.0 rather than being dropped: the context must still
+    be visited, it simply has nothing to argue for going first."""
+    scores: dict[tuple[str, str], float] = {}
     for entry in pool.get("active_strategies") or []:
         if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
             continue
         spec = StrategySpec.from_dict(entry["strategy_spec"])
+        score = _as_float(entry.get("champion_score"))
         for scoped_symbol in spec.symbol_scope:
-            contexts.add((str(scoped_symbol), str(spec.timeframe)))
-    return sorted(contexts)
+            key = (str(scoped_symbol), str(spec.timeframe))
+            scores[key] = max(scores.get(key, 0.0), score)
+    return scores
 
 
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:

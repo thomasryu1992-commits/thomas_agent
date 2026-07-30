@@ -12,6 +12,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import paper
+from runtime.mvp_runtime.crypto import feedback
 from runtime.mvp_runtime.crypto.feedback import (
     RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT,
     RECOMMEND_DROP_CANDIDATE_PROFILE,
@@ -32,14 +33,30 @@ from runtime.mvp_runtime.errors import ToolError
 NOW = "2026-07-22T12:00:00Z"
 
 
-def _outcome(result_r, closed_at, *, strategy_id="S1", closed=True, outcome_id=None):
-    return {
+def _outcome(result_r, closed_at, *, strategy_id="S1", closed=True, outcome_id=None,
+             priced=True, holding_candles=4, timeframe="1d"):
+    """One settled paper outcome.
+
+    ``priced`` controls whether the row carries the fills a cost model needs. Real records have
+    carried them since C5 and the risk denominator since 2026-07-29; ``priced=False`` stands in
+    for the imported crypto_AI_System history and for pre-`risk` rows, which the net figure
+    reports as uncostable rather than pricing on a guess."""
+    record = {
         "outcome_id": outcome_id or f"out_{strategy_id}_{closed_at}",
         "result_R": result_r,
         "outcome_closed": closed,
         "created_at_utc": closed_at,
         "strategy_id": strategy_id,
     }
+    if priced:
+        risk = 4.0
+        record.update({
+            "direction": "LONG", "entry_price": 100.0, "risk": risk,
+            "exit_price": 100.0 + result_r * risk,
+            "close_reason": "take_profit" if result_r > 0 else "stop_loss",
+            "holding_candles": holding_candles, "timeframe": timeframe,
+        })
+    return record
 
 
 # Hours apart -> each is an independent event.
@@ -197,3 +214,142 @@ def test_run_paper_performance_report_fails_closed_on_corrupt_store(tmp_path):
     with pytest.raises(ToolError) as exc:
         run_paper_performance_report(now=NOW, root=tmp_path)
     assert exc.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
+
+
+# --- Gate 0 reads the costed figure (2026-07-29) -----------------------------------------------
+#
+# `live_candidate_eligible` is the machine-readable half of the operator checklist's first line
+# — "paper trading by this runtime shows positive expectancy over a sustained window" — and it
+# turned on GROSS expectancy. Paper R is measured on intended fills and carries no costs by
+# design; that design is intact, and it was never the problem. The problem was the gate that
+# authorized real money reading a venue with no fee, no spread and no carry.
+
+def _priced(result_r, closed_at, **kw):
+    return _outcome(result_r, closed_at, **kw)
+
+
+def test_the_net_figure_is_strictly_below_the_gross_one():
+    """Costs only ever subtract, so every disagreement between the two runs one way."""
+    gross = summarize_outcomes(SPREAD)
+    net = feedback.summarize_net_of_costs(SPREAD)
+    assert net["costed_count"] == gross["closed_count"]
+    assert net["expectancy"] < gross["expectancy"]
+    assert net["basis"] == feedback.NET_BASIS
+
+
+def test_a_book_positive_before_costs_and_negative_after_is_not_eligible():
+    """The case the flag existed to catch and could not: an edge smaller than its own frictions.
+    Diagnosed distinctly from "no edge" — the entry rule works, the holding period does not."""
+    thin = [
+        _priced(0.02, "2026-07-18T00:00:00Z", holding_candles=30),
+        _priced(0.02, "2026-07-19T00:00:00Z", holding_candles=30),
+        _priced(0.03, "2026-07-20T00:00:00Z", holding_candles=30),
+        _priced(0.02, "2026-07-21T00:00:00Z", holding_candles=30),
+    ]
+    report = build_performance_report(thin, now=NOW)
+    assert summarize_outcomes(thin)["expectancy"] > 0, "gross is positive — that is the premise"
+    assert report["net_summary"]["expectancy"] < 0
+    assert report["live_candidate_eligible"] is False
+    assert "NEGATIVE_EXPECTANCY_NET_OF_COSTS" in report["failure_modes"]
+    assert "NEGATIVE_EXPECTANCY" not in report["failure_modes"], "the gross book was positive"
+
+
+def test_a_long_hold_costs_more_than_a_short_one():
+    """Carry scales with time held, which is what the fee legs alone could never express."""
+    brief = feedback.net_result_r(_priced(1.0, NOW, holding_candles=1))
+    long_hold = feedback.net_result_r(_priced(1.0, NOW, holding_candles=40))
+    assert long_hold < brief
+
+
+def test_rows_that_cannot_be_priced_are_named_never_assumed_free():
+    """The imported crypto_AI_System history and every pre-`risk` row. An outcome the cost model
+    cannot judge must not be counted as evidence for a live decision."""
+    mixed = [*SPREAD, _priced(1.0, "2026-07-22T00:00:00Z", priced=False)]
+    net = feedback.summarize_net_of_costs(mixed)
+    assert net["uncostable_count"] == 1
+    assert net["costed_count"] == 4
+    report = build_performance_report(mixed, now=NOW)
+    assert feedback.UNCOSTABLE in report["failure_modes"]
+    assert report["live_candidate_eligible"] is False
+
+
+def test_an_entirely_unpriceable_history_certifies_nothing():
+    """Fail-closed: a report that cannot price a single row must not certify eligibility on the
+    gross figure alone, however good that figure looks."""
+    unpriced = [_priced(r, at, priced=False) for r, at in (
+        (2.0, "2026-07-18T00:00:00Z"), (1.5, "2026-07-19T00:00:00Z"),
+        (2.0, "2026-07-20T00:00:00Z"), (1.5, "2026-07-21T00:00:00Z"))]
+    report = build_performance_report(unpriced, now=NOW)
+    assert report["summary"]["expectancy"] > 1.0
+    assert report["net_summary"]["costed_count"] == 0
+    assert report["live_candidate_eligible"] is False
+
+
+def test_the_break_even_row_is_uncostable_rather_than_derived_wrong():
+    """`risk` is recorded now, but an older row is recovered from `result_R = move / risk` —
+    which divides by zero exactly on a flat trade, the row a cost model would push negative."""
+    flat = _priced(0.0, NOW, priced=False)
+    flat.update({"direction": "LONG", "entry_price": 100.0, "exit_price": 100.0})
+    assert feedback.net_result_r(flat) is None
+
+
+def test_a_recorded_risk_prices_a_break_even_row():
+    """Which is why the field is recorded rather than always derived."""
+    flat = _priced(0.0, NOW)
+    assert flat["risk"] == 4.0
+    net = feedback.net_result_r(flat)
+    assert net is not None and net < 0.0, "a flat trade still pays its costs"
+
+
+def test_the_report_text_puts_the_two_figures_next_to_each_other():
+    """They answer the same question about different venues. A reader who stops after the first
+    line must at least have seen them adjacent, and must know which one the flag was judged on."""
+    text = render_report_text(build_performance_report(SPREAD, now=NOW))
+    gross_at, net_at = text.index("expectancy      :"), text.index("expectancy (net):")
+    assert net_at - gross_at < 120, "the costed line is not directly under the gross one"
+    assert "GROSS" in text and "fees + slippage + funding" in text
+    assert "judged on the NET figure" in text
+
+
+def test_the_gross_summary_keeps_its_meaning_and_its_consumers():
+    """`paper.settle_trade_plan` is the same code the factory replays, `guards` thresholds are
+    calibrated on gross R, and the imported history is gross. The net figure is a derivation at
+    the door, never a rewrite of an append-only store."""
+    report = build_performance_report(SPREAD, now=NOW)
+    assert report["summary"] == summarize_outcomes(SPREAD)
+    assert all("net" not in key for key in report["summary"])
+
+
+# --- the history is read once per cycle, not twice (2026-07-29) --------------------------------
+#
+# `read_outcomes` re-parses every row and recomputes every native record's sha256 — 98 ms over
+# 3,000 rows, and it ran twice per cycle (the risk guard's read, then the report's) times twenty
+# contexts in a pool fan-out. The verification is not the waste; doing it twice on an unchanged
+# file is.
+
+def test_the_report_uses_a_history_the_caller_already_verified(tmp_path, monkeypatch):
+    reads = []
+    real = paper.read_outcomes
+    monkeypatch.setattr(paper, "read_outcomes", lambda root=None: (reads.append(1), real(root))[1])
+
+    report, _text = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
+    assert not reads, "the store was read despite being handed the rows"
+    assert report["sample_size"] == 4
+
+
+def test_a_handed_history_produces_the_identical_report(tmp_path):
+    """Reuse must change nothing about the answer — the same property the replay frame owes."""
+    a, text_a = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
+    b, text_b = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=list(SPREAD))
+    assert a == b and text_a == text_b
+
+
+def test_passing_none_still_reads_and_still_raises(tmp_path):
+    """The cycle passes None precisely when its own read failed, and the report must then fail
+    the same way — a report over a history nobody could verify is what must not be produced."""
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / paper.OUTCOMES_FILENAME).write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(ToolError) as excinfo:
+        run_paper_performance_report(now=NOW, root=tmp_path, outcomes=None)
+    assert excinfo.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"

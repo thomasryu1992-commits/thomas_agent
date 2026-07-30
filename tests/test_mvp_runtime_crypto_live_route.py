@@ -344,7 +344,16 @@ _LIMITS = LiveOrderLimits(
 )
 
 
-def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=None, ledger=None):
+def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=None, ledger=None,
+            context_timeframe=None):
+    """One context's pass over one open position.
+
+    ``context_timeframe`` defaults to the position's OWN timeframe — i.e. the context that owns
+    its clock — so the tests below read as "the cycle that opened this position visits it".
+    Passing a different one stands in for a sibling timeframe of the same symbol, which is the
+    case the ownership rule exists for."""
+    if context_timeframe is None:
+        context_timeframe = str(position.get("timeframe") or live_route.DEFAULT_TIMING_CONTEXT)
     record = {"live_reason_codes": [], "live_settled": None, "halt": False,
               "live_protection": None}
     live_route._settle_or_protect(
@@ -352,7 +361,8 @@ def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=N
         adapter=adapter or _protected_adapter(),
         position_store=store or _Store(), ledger=ledger or _Ledger(),
         reconciliation={"status": "RECONCILED", "books": {}},
-        limits=_LIMITS, candle_ts=candle_ts, now=NOW, root=None, timeout_seconds=10,
+        limits=_LIMITS, candle_ts=candle_ts, context_timeframe=context_timeframe,
+        now=NOW, root=None, timeout_seconds=10,
     )
     return record
 
@@ -428,6 +438,75 @@ def test_the_counter_survives_a_close_that_did_not_confirm():
     store = _Store()
     _settle(_timed(holding_candles=9), adapter=adapter, store=store)
     assert store.saved[0]["holding_candles"] == 10
+
+
+# --- one context owns the clock ---------------------------------------------------------------
+#
+# The live book is keyed by SYMBOL (the venue nets per symbol in one-way mode) while a cycle runs
+# per (symbol, timeframe). A symbol routed at four timeframes therefore sends four cycles past the
+# same position in one fan-out, each carrying a DIFFERENT bar timestamp — so `advance_holding`'s
+# dedup, which asks "have I counted this bar?", answered honestly four times and the counter moved
+# four bars. A 24-bar position time-exited in six fan-outs. Paper never had this because its book
+# is keyed by (symbol, timeframe), so exactly one context can ever reach a given position.
+
+def test_a_sibling_timeframe_does_not_advance_the_clock():
+    """The 15m cycle of a symbol whose live position was opened at 1d still settles and protects
+    it — both are urgent at any resolution — but must not count a 15m bar against a 1d rule."""
+    store = _Store()
+    record = _settle(_timed(holding_candles=1), context_timeframe="15m", store=store)
+    assert not store.saved, "a non-owning context wrote the counter"
+    assert live_route.LIVE_HOLD_NOT_TIMED_HERE in record["live_reason_codes"]
+    assert record["live_holding"]["timed_here"] is False
+    assert record["live_holding"]["timed_by"] == "1d"
+    assert record["live_holding"]["holding_candles"] == 1  # reported, just not advanced
+
+
+def test_one_fanout_over_four_timeframes_advances_the_clock_once():
+    """The regression, at the resolution it actually bit: five symbols x four timeframes is the
+    live pool shape, and one pass of it used to age a position by four bars."""
+    position = _timed(max_holding_bars=24, holding_candles=0)
+    # Each context passes ITS OWN bar close, which is what made four distinct dedup keys.
+    for timeframe, candle_ts in (("15m", "2026-07-28T00:15:00Z"), ("1h", "2026-07-28T01:00:00Z"),
+                                 ("4h", "2026-07-28T04:00:00Z"), ("1d", "2026-07-29T00:00:00Z")):
+        store = _Store()
+        _settle(position, context_timeframe=timeframe, candle_ts=candle_ts, store=store)
+        if store.saved:
+            position = store.saved[-1]
+    assert position["holding_candles"] == 1
+
+
+def test_the_owning_context_still_times_it_out():
+    """The ownership rule must not become a way for a position to never time out at all."""
+    store, ledger = _Store(), _Ledger()
+    record = _settle(_timed(holding_candles=2), context_timeframe="1d", store=store, ledger=ledger)
+    assert record["live_settled"] is not None
+    assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
+
+
+def test_a_legacy_position_is_owned_by_the_default_context():
+    """A position opened before the record carried a timeframe has no owner to name, so it gets
+    the fan-out's default — arbitrary, but SINGLE, which is the whole property. `cycle` adds that
+    context for every open live position, so the owner is always a context that runs."""
+    legacy = _position(holding_candles=0, last_counted_candle_ts=None)
+    assert "timeframe" not in legacy
+    store = _Store()
+    record = _settle(legacy, context_timeframe=live_route.DEFAULT_TIMING_CONTEXT, store=store)
+    assert store.saved[-1]["holding_candles"] == 1
+    assert record["live_holding"]["timed_here"] is True
+    # ...and every other context leaves it alone.
+    store = _Store()
+    _settle(legacy, context_timeframe="15m", store=store)
+    assert not store.saved
+
+
+def test_a_caller_that_names_no_context_times_nothing():
+    """The fail-closed direction. An unknown context must not become "time everything", which is
+    the behaviour that produced the bug — every unknown in this stack fails toward doing less."""
+    store = _Store()
+    record = _settle(_timed(holding_candles=2), context_timeframe="", store=store)
+    assert not store.saved
+    assert record["live_settled"] is None
+    assert live_route.LIVE_HOLD_NOT_TIMED_HERE in record["live_reason_codes"]
 
 
 # --- the operator hears about real money ----------------------------------------

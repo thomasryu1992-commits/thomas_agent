@@ -25,8 +25,10 @@ from runtime.mvp_runtime.crypto.market_data import (
     MIN_FACTORY_BARS,
     TIMEFRAMES,
     BinanceFuturesCollector,
+    Candle,
     MarketSnapshot,
     MockMarketDataCollector,
+    PerRunFeedCache,
     collect_market_data,
     degraded_market_data_record,
     factory_candle_target,
@@ -524,3 +526,276 @@ class TestReferencePrice:
         _, error = market_data.read_reference_price(
             "BTCUSDT", collector=market_data.MockMarketDataCollector(), now=NOW_PRICE)
         assert error == market_data.PRICE_SYNTHETIC
+
+
+# --- one fan-out, one request per distinct question (2026-07-29) -------------------------------
+#
+# A cycle is keyed by (symbol, timeframe); funding, liquidations, open interest and exchangeInfo
+# are keyed by SYMBOL. So a pool over 5 symbols x 4 timeframes asked the venue each symbol-scoped
+# question four times a fire with identical arguments. `oi_store` had already solved this for the
+# hourly OI series and named the arithmetic in its own docstring; the other three kept fanning out.
+
+class _CountingCollector:
+    """A collector that records every call it is actually asked to make."""
+
+    tool_id, tool_version = "counting", "0"
+    provider_id, source = "binance_futures", "counting"
+    network_egress = True
+
+    def __init__(self, *, fail: set[str] | None = None):
+        self.calls: list[tuple] = []
+        self.fail = fail or set()
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self.calls.append(("collect", symbol, timeframe, limit))
+        candles = [
+            Candle(open_time=f"2026-07-{(i % 28) + 1:02d}T00:00:00Z", open=1.0, high=2.0,
+                   low=0.5, close=1.5, volume=1.0,
+                   close_time=f"2026-07-{(i % 28) + 1:02d}T23:59:59Z")
+            for i in range(limit)
+        ]
+        return MarketSnapshot(symbol=symbol, timeframe=timeframe, candles=candles,
+                              source=self.source, is_synthetic=False,
+                              collector_version=self.tool_version, latency_ms=1)
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        self.calls.append(("funding_history", symbol, records))
+        if "funding_history" in self.fail:
+            raise ToolError("TOOL_TRANSPORT", "scripted")
+        return [{"timestamp": "2026-07-01T00:00:00Z", "funding_rate": 0.0001}]
+
+    def exchange_info(self, *, timeout_seconds):
+        self.calls.append(("exchange_info",))
+        return {"symbols": []}
+
+
+def _counts(collector, name):
+    return sum(1 for c in collector.calls if c[0] == name)
+
+
+def test_a_symbol_scoped_read_is_made_once_per_fan_out():
+    """The headline: four timeframes of one symbol, one funding request."""
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    for _ in range(4):
+        cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    assert _counts(inner, "funding_history") == 1
+    assert cache.requests == 1 and cache.hits == 3
+
+
+def test_a_different_symbol_is_a_different_question():
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    cache.funding_history("ETHUSDT", records=1600, timeout_seconds=10)
+    assert _counts(inner, "funding_history") == 2
+
+
+def test_different_arguments_are_a_different_question():
+    """The memo keys on the arguments, so a deeper window is never served from a shallower one."""
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    cache.funding_history("BTCUSDT", records=200, timeout_seconds=10)
+    assert _counts(inner, "funding_history") == 2
+
+
+def test_a_failure_is_memoized_and_re_raised_to_every_context():
+    """Funding that fails at 15m fails at 1h. Retrying is three more timeouts on a scheduler that
+    runs everything sequentially — but each context must still see the raise, because each records
+    its own reason code."""
+    inner = _CountingCollector(fail={"funding_history"})
+    cache = PerRunFeedCache(inner)
+    for _ in range(4):
+        with pytest.raises(ToolError) as excinfo:
+            cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+        assert excinfo.value.reason_code == "TOOL_TRANSPORT"
+    assert _counts(inner, "funding_history") == 1, "a known-failing read was retried"
+
+
+def test_a_deeper_candle_window_serves_a_shallower_request():
+    """`attach_htf` fetches one step up at 240 bars and that timeframe's own context fetches 120.
+    Both end at the same last closed candle, so the tail of the deeper window IS the shallower
+    answer."""
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    deep = cache.collect("BTCUSDT", "1h", limit=240, timeout_seconds=10)
+    shallow = cache.collect("BTCUSDT", "1h", limit=120, timeout_seconds=10)
+    assert _counts(inner, "collect") == 1
+    assert len(shallow.candles) == 120
+    assert shallow.candles == deep.candles[-120:], "the shallower answer is the deeper one's tail"
+
+
+def test_a_shallower_window_never_serves_a_deeper_request():
+    """Serving 120 bars to a 240-bar request would silently shorten an indicator's warm-up."""
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    cache.collect("BTCUSDT", "1h", limit=120, timeout_seconds=10)
+    deep = cache.collect("BTCUSDT", "1h", limit=240, timeout_seconds=10)
+    assert _counts(inner, "collect") == 2
+    assert len(deep.candles) == 240
+
+
+def test_the_memo_cannot_answer_for_a_capability_the_collector_lacks():
+    """`attach_feeds` asks hasattr() to decide whether a collector HAS a feed, and `exchange_info`
+    is deliberately absent from the mock so a mock run refuses to size rather than sizing on
+    invented lot steps. A wrapper that declared these methods would answer yes for a collector
+    that cannot — the one thing it must never do."""
+    class _Bare:
+        tool_id, tool_version, network_egress = "bare", "0", False
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            raise AssertionError("not called")
+
+    cache = PerRunFeedCache(_Bare())
+    assert not hasattr(cache, "funding_history")
+    assert not hasattr(cache, "exchange_info")
+    assert not hasattr(cache, "liquidation_history")
+    assert hasattr(PerRunFeedCache(_CountingCollector()), "funding_history")
+
+
+def test_the_memo_forwards_the_gate_attributes_unchanged():
+    """It wraps an already-gated collector and can make no call the wrapped object could not, so
+    every attribute the gate and the audit read has to arrive intact."""
+    inner = _CountingCollector()
+    cache = PerRunFeedCache(inner)
+    assert cache.network_egress is inner.network_egress
+    assert cache.provider_id == inner.provider_id
+    assert cache.tool_id == inner.tool_id and cache.tool_version == inner.tool_version
+
+
+def test_a_new_fire_asks_again():
+    """The memo lives for ONE fire. Nothing here makes a 15-minute cadence stale — it makes one
+    cadence cost one request."""
+    inner = _CountingCollector()
+    PerRunFeedCache(inner).funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    PerRunFeedCache(inner).funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    assert _counts(inner, "funding_history") == 2
+
+
+# --- a rate limit is not a timeout (2026-07-29) ------------------------------------------------
+#
+# `urllib.error.HTTPError` is a SUBCLASS of `URLError`, so every read here caught a 429 and
+# reported it as "failed or timed out". A timeout says "try again"; a 429 at this venue says
+# "stop, and if you do not, this becomes a 418 ban". The runtime was reporting the second as the
+# first, and then doing the thing that escalates it.
+
+def _http_error(status, *, retry_after=None):
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    return urllib.error.HTTPError("https://redacted", status, "rate limited", headers, None)
+
+
+def test_a_429_is_classified_as_a_rate_limit_not_a_transport_failure():
+    err = market_data.classify_transport_error(_http_error(429), "market-data")
+    assert err.reason_code == market_data.TOOL_RATE_LIMITED
+    assert "429" in str(err)
+
+
+def test_a_418_ban_is_a_rate_limit_too():
+    """418 is where this venue escalates a 429 that kept knocking. Reading it as anything softer
+    than a full stop is what turns minutes of throttling into days of ban."""
+    assert market_data.classify_transport_error(_http_error(418), "market-data").reason_code == (
+        market_data.TOOL_RATE_LIMITED)
+
+
+def test_the_retry_after_the_venue_asked_for_is_reported():
+    """"Rate limited" and "rate limited, come back in 120 seconds" are different operational
+    facts, and only one of them tells an operator when the next fire can succeed."""
+    assert "120" in str(market_data.classify_transport_error(_http_error(429, retry_after="120"),
+                                                             "market-data"))
+
+
+def test_an_ordinary_timeout_is_still_a_transport_failure():
+    assert market_data.classify_transport_error(TimeoutError(), "market-data").reason_code == (
+        "TOOL_TRANSPORT")
+    assert market_data.classify_transport_error(
+        urllib.error.URLError("unreachable"), "market-data").reason_code == "TOOL_TRANSPORT"
+
+
+def test_a_transport_error_never_echoes_the_url():
+    """A signed request carries its signature in the query string, and this classifier is shared
+    with paths that sign."""
+    for exc in (_http_error(429), _http_error(500), TimeoutError()):
+        assert "redacted" not in str(market_data.classify_transport_error(exc, "market-data"))
+
+
+class _RateLimitedCollector:
+    tool_id, tool_version = "limited", "0"
+    provider_id, source, network_egress = "binance_futures", "limited", True
+
+    def __init__(self, *, status=429):
+        self.attempts = 0
+        self.status = status
+
+    def _raise(self):
+        self.attempts += 1
+        raise market_data.classify_transport_error(_http_error(self.status), "market-data")
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self._raise()
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        self._raise()
+
+
+def test_the_memo_stops_knocking_once_the_venue_says_stop():
+    """The response that does not escalate. A fan-out that keeps going after the first refusal
+    makes twenty more requests, which is exactly how a throttle becomes a ban."""
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+        with pytest.raises(ToolError) as excinfo:
+            cache.collect(symbol, "1d", limit=120, timeout_seconds=10)
+        assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert inner.attempts == 1, f"kept knocking after a 429 ({inner.attempts} attempts)"
+    assert cache.rate_limited is not None
+
+
+def test_the_latch_covers_every_feed_not_just_the_one_that_tripped_it():
+    """Being rate limited is a property of the IP, not of the endpoint that reported it."""
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError):
+        cache.funding_history("BTCUSDT", records=1600, timeout_seconds=10)
+    with pytest.raises(ToolError) as excinfo:
+        cache.collect("ETHUSDT", "1d", limit=120, timeout_seconds=10)
+    assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert inner.attempts == 1
+
+
+def test_an_ordinary_failure_does_not_latch_the_whole_fire():
+    """Only a rate limit means "stop asking". A symbol that times out must not silence the rest —
+    that would turn one bad symbol into a blind fan-out."""
+    class _OneBadSymbol(_RateLimitedCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.attempts += 1
+            raise ToolError("TOOL_TRANSPORT", "timed out")
+
+    inner = _OneBadSymbol()
+    cache = PerRunFeedCache(inner)
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        with pytest.raises(ToolError):
+            cache.collect(symbol, "1d", limit=120, timeout_seconds=10)
+    assert inner.attempts == 2
+    assert cache.rate_limited is None
+
+
+def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():
+    """The scope that matters most. A rate-limited fire must still settle, protect and CLOSE an
+    open live position — those run on separate objects and separate endpoints, and neither is
+    wrapped here. What the latch stops is opening new positions, which is the right posture for
+    a runtime that cannot currently see the market."""
+    from runtime.mvp_runtime.crypto import account, live_execution, live_route
+
+    inner = _RateLimitedCollector()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError):
+        cache.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+
+    # Neither the adapter nor the account feed is reachable from the wrapper: they are not
+    # attributes of a collector, so a latched cache cannot answer for them at all.
+    for name in ("submit", "fetch_order", "cancel_order", "read_account"):
+        assert not hasattr(cache, name)
+    assert live_execution.select_order_adapter is not None      # separate selector
+    assert account.read_account is not None                     # separate endpoint
+    assert live_route.run_live_leg is not None
