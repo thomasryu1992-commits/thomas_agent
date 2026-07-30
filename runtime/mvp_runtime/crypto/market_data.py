@@ -94,6 +94,37 @@ DERIVATIVE_KLINE_PATHS: dict[str, str] = {
     "premium": "premiumIndexKlines",
 }
 DERIVATIVE_KINDS = frozenset(DERIVATIVE_KLINE_PATHS)
+
+# Positioning statistics — WHO is holding what, which is the one thing neither price nor flow
+# reports. Three public `/futures/data/` endpoints of the same authorized provider.
+#
+# The pair is the point, not any single series: `top_position` is the position bias of the top
+# 20% of accounts by margin balance, `global_account` is the bias of ALL accounts counted one
+# each. Large capital and account headcount disagreeing is a statement no other column here can
+# make — every existing feature would read the two situations identically. `top_account` sits
+# beside `top_position` for the same reason at a smaller scale: the two differ exactly when a few
+# large positions inside the top cohort outweigh the many.
+#
+# `takerlongshortRatio` is deliberately NOT collected. It restates the aggressor split the kline
+# legs already carry (`taker_buy_base`), and those come with 500 days of history for free while
+# this endpoint family keeps 30 — collecting it would be paying a retention wall for a worse copy
+# of something already held.
+POSITIONING_PATHS: dict[str, str] = {
+    "top_position": "topLongShortPositionRatio",
+    "top_account": "topLongShortAccountRatio",
+    "global_account": "globalLongShortAccountRatio",
+}
+POSITIONING_SERIES = frozenset(POSITIONING_PATHS)
+POSITIONING_PAGE_LIMIT = 500   # venue cap per call
+POSITIONING_MAX_PAGES = 4      # 30-day retention at 1h is 720 rows — two pages, with head-room
+# Aggregation periods the venue offers, with their lengths, so a partial trailing period can be
+# recognized and dropped. A closed map rather than a pass-through string: an unknown period would
+# be answered with a series of some other cadence and the store would count it as hours.
+POSITIONING_PERIOD_SECONDS: dict[str, int] = {
+    "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200,
+    "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400,
+}
+POSITIONING_DEGRADED = "POSITIONING_DEGRADED"
 # The venue caps these at 1000 rows per call (klines allow 1500), and they page by the
 # same exclusive ``endTime`` walk.
 DERIVATIVE_PAGE_LIMIT = 1000
@@ -327,6 +358,32 @@ class MockMarketDataCollector:
             else:  # premium — a signed fraction, the funding basis at bar resolution
                 value = round(offset, 8)
             rows.append({"timestamp": candle.open_time, "value": value})
+        return rows
+
+    def positioning_history(
+        self, symbol: str, *, series: str, period: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Deterministic positioning ratios on the anchor grid (mock accumulation feed).
+
+        The three series are given DIFFERENT walks on purpose. The whole reason the store
+        collects more than one is that large capital and account headcount can disagree, so a
+        mock whose series moved together would make the only interesting case untestable.
+        """
+        if series not in POSITIONING_PATHS:
+            raise ToolError("INVALID_POSITIONING_SERIES", f"series must be one of {sorted(POSITIONING_SERIES)}")
+        if period not in POSITIONING_PERIOD_SECONDS:
+            raise ToolError("INVALID_POSITIONING_PERIOD", f"period must be one of {sorted(POSITIONING_PERIOD_SECONDS)}")
+        step = timedelta(seconds=POSITIONING_PERIOD_SECONDS[period])
+        rows: list[dict[str, Any]] = []
+        for i in range(max(0, int(limit))):
+            moment = self._ANCHOR + i * step
+            # Centred near a balanced book, bounded well inside (0, 1) so no row is degenerate.
+            long_ratio = round(0.5 + (_frac(f"{symbol}|{series}|{i}") - 0.5) * 0.4, 6)
+            rows.append({
+                "timestamp": timeutil.format_iso(moment),
+                "long_ratio": long_ratio,
+                "short_ratio": round(1.0 - long_ratio, 6),
+            })
         return rows
 
     def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
@@ -815,6 +872,108 @@ class BinanceFuturesCollector:
             if close_ms >= now_ms:
                 continue  # still forming — its close is still moving
             parsed[open_ms] = value
+        return parsed
+
+    def positioning_history(
+        self, symbol: str, *, series: str, period: str, limit: int, timeout_seconds: int
+    ) -> list[dict[str, Any]]:
+        """One positioning-ratio series, oldest first. Same grant as candles and funding.
+
+        ``series`` selects the endpoint (:data:`POSITIONING_PATHS`). Returns
+        ``[{"timestamp": <period start, ISO>, "long_ratio": float, "short_ratio": float}, ...]``.
+
+        **The trailing incomplete period is dropped**, the still-forming-candle rule applied to a
+        different shape and for a sharper reason than usual: the store that consumes this
+        de-duplicates on ``(symbol, series, timestamp)`` and is append-only, so a partial
+        period written now would be the value kept forever and the venue's later corrected
+        reading for that same timestamp would be discarded as a duplicate. Dropping it is what
+        makes the accumulation converge on the venue's own numbers.
+
+        ``longShortRatio`` is not returned even though the venue sends it: it is exactly
+        ``longAccount / shortAccount``, so storing it alongside both legs creates a third field
+        that can disagree with the other two after rounding. The legs are what the venue
+        measured; the ratio is arithmetic any reader can redo.
+
+        Pages backward by the same exclusive ``endTime`` walk as ``funding_history`` — the
+        30-day retention window at 1h is 720 rows against a 500-row cap, so a seed needs two.
+        """
+        if series not in POSITIONING_PATHS:
+            raise ToolError("INVALID_POSITIONING_SERIES", f"series must be one of {sorted(POSITIONING_SERIES)}")
+        if period not in POSITIONING_PERIOD_SECONDS:
+            raise ToolError("INVALID_POSITIONING_PERIOD", f"period must be one of {sorted(POSITIONING_PERIOD_SECONDS)}")
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        path = POSITIONING_PATHS[series]
+        period_ms = POSITIONING_PERIOD_SECONDS[period] * 1000
+        now_ms = int(time.time() * 1000)
+        collected: dict[int, dict[str, float]] = {}
+        end_time: int | None = None
+        pages = 0
+        while len(collected) < limit and pages < POSITIONING_MAX_PAGES:
+            pages += 1
+            params: dict[str, Any] = {
+                "symbol": symbol, "period": period,
+                "limit": min(POSITIONING_PAGE_LIMIT, limit - len(collected)),
+            }
+            if end_time is not None:
+                params["endTime"] = end_time
+            request = urllib.request.Request(
+                f"https://fapi.binance.com/futures/data/{path}?{urllib.parse.urlencode(params)}",
+                method="GET", headers={"Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                    raw = response.read().decode("utf-8")
+            except (TimeoutError, urllib.error.URLError):
+                # Never echo the URL (the R3 transport-error posture).
+                raise ToolError("TOOL_TRANSPORT", f"{series} positioning request failed or timed out") from None
+            page = self._parse_positioning_page(raw, series=series, now_ms=now_ms, period_ms=period_ms)
+            if not page:
+                break
+            oldest = min(page)
+            collected.update(page)
+            if end_time is not None and oldest >= end_time:
+                break  # no backward progress — refuse to spin
+            end_time = oldest - 1
+
+        ordered = sorted(collected)[-limit:]
+        return [
+            {"timestamp": self._iso(stamp), **collected[stamp]}
+            for stamp in ordered
+        ]
+
+    def _parse_positioning_page(
+        self, raw: str, *, series: str, now_ms: int, period_ms: int
+    ) -> dict[int, dict[str, float]]:
+        """One positioning page as ``{period_start_ms: {"long_ratio", "short_ratio"}}``.
+
+        ``longAccount``/``shortAccount`` are the field names on every one of these endpoints,
+        including the POSITION-ratio one where they carry position proportions rather than
+        account counts — a venue naming quirk, not a mistake here. The rows are renamed on the
+        way in so the store never stores a name that means something else.
+        """
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response") from None
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response")
+
+        parsed: dict[int, dict[str, float]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response")
+            try:
+                stamp = int(row["timestamp"])
+                long_ratio = float(row["longAccount"])
+                short_ratio = float(row["shortAccount"])
+            except (KeyError, TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", f"{series} positioning backend returned an unparseable response") from None
+            if stamp + period_ms > now_ms:
+                continue  # the period has not closed — its ratio is still moving
+            parsed[stamp] = {"long_ratio": long_ratio, "short_ratio": short_ratio}
         return parsed
 
     def exchange_info(self, *, timeout_seconds: int) -> dict[str, Any]:

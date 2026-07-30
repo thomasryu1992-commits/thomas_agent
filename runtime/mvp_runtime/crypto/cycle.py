@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, oi_store, pool
+from . import feedback, oi_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -103,8 +103,20 @@ def attach_feeds(
     liquidation_feed: Any | None,
     now: str,
     root: Path | None = None,
+    accumulate: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Fetch the C9 derivative feeds onto ``snapshot`` (mutating it). Degrade-only.
+
+    ``accumulate`` opts this call into the durable long-horizon stores that feed nothing today
+    (currently ``positioning_store``). It defaults to **off** because everything else here only
+    mutates ``snapshot``, so a caller that has not asked for durable state should not get any —
+    the ``routing_marks`` rule in ``paper.run_paper_update``, where a dry run keeps no marks
+    because it keeps no state. The live cycle turns it on; the factory fire does not, since one
+    accumulator on the 15-minute cadence is enough and two would only exercise the throttle.
+    The failure direction of the default is quiet rather than dangerous: a production caller that
+    forgot it would show as flat ``positioning_store.coverage``, which is what that function is
+    for. ``oi_store`` needs no such flag — its own accumulation is already gated behind a
+    liquidation feed that a caller must supply.
 
     Funding comes from the market-data collector when it has the capability (the
     same grant); liquidations from the separately-gated feed. Semantics per feed:
@@ -159,6 +171,22 @@ def attach_feeds(
                 reason_codes.append(code)
     else:
         status["mark_prices"] = status["index_prices"] = status["premium_index"] = "absent"
+
+    # Positioning ratios, accumulated into a store the runtime retains itself. Like `oi_store`
+    # above, this feeds NOTHING — `snapshot` is untouched, so the features, the backtest and the
+    # live router are byte-identical to what they were without it. The reason it runs anyway is
+    # that the vendor keeps 30 days and the factory replays 500, so a day not recorded today can
+    # never be recovered; wiring a feature to it now would mint families over a window that is
+    # 94% indeterminate. Accumulate now, decide later — `positioning_store.coverage` reports
+    # progress and the flip stays an explicit change. Throttled to one request per series per
+    # symbol per hour inside the store, so twenty contexts do not become sixty requests.
+    if accumulate:
+        positioning = positioning_store.record_positioning(
+            symbol=symbol, collector=collector, now=now, root=root,
+        )
+        status["positioning"] = str(positioning["status"])
+    else:
+        status["positioning"] = "not_accumulating"
 
     if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
         try:
@@ -325,6 +353,9 @@ def run_crypto_cycle(
     # 1b) derivative feeds (C9) — enrichment; degrade-only, never block.
     feed_reasons, feed_status = attach_feeds(
         snapshot, collector=collector, liquidation_feed=liquidation_feed, now=now, root=root,
+        # The live cycle is the accumulator: it runs on the 15-minute cadence the positioning
+        # store's hourly throttle is sized for, and it is the one path that always has a root.
+        accumulate=True,
     )
     reason_codes.extend(feed_reasons)
 
