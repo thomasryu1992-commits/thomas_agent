@@ -765,6 +765,35 @@ def test_a_binding_cap_spends_its_last_slot_on_evidence_not_the_alphabet(tmp_pat
     assert order[-1][0] == "AAAUSDT"
 
 
+def test_enforced_neutrality_is_not_reachable_by_declining(monkeypatch):
+    """**Why "enforced market neutrality" needs an authority this runtime does not have, stated
+    as arithmetic rather than as a scope judgement.**
+
+    The obvious cheap form is to tighten this cap until the book cannot lean at all — neutrality
+    by refusal, which would be one-directional and would therefore need no new gate. It does not
+    work, and not for a reason of degree: **the first leg of any pair is itself an imbalance**, so
+    at a limit of 0 an EMPTY book refuses every entry and the book never opens at all. Every path
+    to a paired book passes through an unpaired state.
+
+    So refusal can bound the SIZE of an imbalance — which is what this cap does, and its limit is
+    the only dial there is — but it can never produce a pair. Neutrality requires opening both
+    legs *at once*, i.e. the runtime authoring a trade no strategy proposed: its symbol,
+    direction, size, stop, target, holding period and exit condition all invented by the gate.
+    That is the new authority, and this test is why the answer cannot be "just set the limit
+    lower".
+
+    Measured alongside this on a 1,200-bar twenty-context simulation: limit 4 (shipped) and 2 both
+    open 59 positions, limit 1 opens 51, and limit 0 opens **zero** against 334 declines.
+    """
+    monkeypatch.setattr(paper, "MAX_DIRECTIONAL_SKEW", 0)
+    admitted, refusal = paper.directional_skew_admits([], "LONG")
+    assert admitted is False, "a limit of 0 must refuse even the first entry — that is the point"
+    assert refusal["aligned"] == 0 and refusal["opposing"] == 0
+    assert refusal["lean_after"] == 1, "one position IS a lean of one; there is no smaller step"
+    # ...and the same from the other side, so this is not an artifact of the proposal's direction.
+    assert paper.directional_skew_admits([], "SHORT")[0] is False
+
+
 def test_the_live_book_is_deliberately_untouched():
     """Scoped to paper on purpose, and the reason is that the authority already exists there:
     live holds at most `MAX_LIVE_CONCURRENT_POSITIONS` positions, so its largest possible skew
