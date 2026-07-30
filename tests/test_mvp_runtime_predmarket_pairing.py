@@ -897,3 +897,88 @@ def test_the_rarity_rule_needs_a_margin_not_just_an_inequality():
         matching.normalize_tokens("Puffpaw FDV above $200M one day after launch?"),
         standx,
     ) is True
+
+
+# --- within one venue pair, one market gets one candidate ------------------------
+
+_BOP_COMBOS = ("D Senate, D House", "D Senate, R House", "R Senate, D House", "R Senate, R House")
+
+
+def _bop(venue, market_id, combo):
+    return PredMarket(
+        venue=venue, market_id=market_id, group_id=None,
+        title=f"2026 Balance of Power: {combo}",
+        close_time="2027-01-05T00:00:00Z", status="active",
+    )
+
+
+def test_one_market_is_not_offered_four_mutually_exclusive_partners():
+    """Observed on the live sheet 2026-07-30: four Binance markets proposed against the single
+    Polymarket market "2026 Balance of Power: D Senate, D House" — its own counterpart plus
+    three flatly different questions, while all five combinations sat in the corpus with
+    distinct titles.
+
+    At most one of those four could ever be confirmed; `pairs.py` refuses the rest with
+    MARKET_ALREADY_GROUPED. So the list was not merely verbose, it was order-dependent: an
+    operator working top-down could confirm an impostor first and thereby refuse the correct
+    pairing forever.
+
+    No wording gate can catch this and none is asked to: the distinguishing tokens are the
+    single characters `d` and `r`, six tokens of shared template outvote them, and
+    `subject_mismatch`'s rarity test fails because both letters are common in a political
+    corpus. What catches it is that two markets on one venue are never the same event.
+    """
+    left = [_bop(BINANCE, f"285{i}:tok{i}", c) for i, c in enumerate(_BOP_COMBOS)]
+    right = [_bop(POLYMARKET, f"ptok{i}", c) for i, c in enumerate(_BOP_COMBOS)]
+
+    result = matching.generate_candidates({BINANCE: left, POLYMARKET: right})
+
+    titles = {m.market_id: m.title for m in left + right}
+    paired = [(titles[c["left_market_id"]], titles[c["right_market_id"]])
+              for c in result["candidates"]]
+    assert len(paired) == 4, "each combination keeps its own counterpart"
+    assert all(a == b for a, b in paired), f"mispaired: {[x for x in paired if x[0] != x[1]]}"
+    assert result["candidates_displaced"] == 12
+
+
+def test_the_exact_match_claims_the_leg_rather_than_whichever_was_judged_first():
+    """Greedy assignment is only correct because it runs over the sorted list. The impostor is
+    placed first in input order, so a version that skipped the sort would keep it."""
+    left = [_bop(BINANCE, "b-dr", "D Senate, R House")]
+    right = [_bop(POLYMARKET, "p-dd", "D Senate, D House"),
+             _bop(POLYMARKET, "p-dr", "D Senate, R House")]
+
+    result = matching.generate_candidates({BINANCE: left, POLYMARKET: right})
+
+    assert [c["right_market_id"] for c in result["candidates"]] == ["p-dr"]
+
+
+def test_a_three_venue_group_keeps_all_three_pairings():
+    """The claim set is scoped to the venue PAIR, and this is why. One event with one leg per
+    venue is three pairings over three legs; a global claim set would keep one and silently
+    destroy multi-leg groups — which is what the first attempt at this fix did."""
+    title = "Will the Fed cut rates in December?"
+    markets = {
+        venue: [PredMarket(venue=venue, market_id=f"{venue}-1", group_id=None, title=title,
+                           close_time="2026-12-31T23:59:00Z", status="active")]
+        for venue in (BINANCE, KALSHI, POLYMARKET)
+    }
+
+    result = matching.generate_candidates(markets)
+
+    assert {tuple(sorted((c["left_venue"], c["right_venue"]))) for c in result["candidates"]} == {
+        (BINANCE, KALSHI), (BINANCE, POLYMARKET), (KALSHI, POLYMARKET),
+    }
+    assert result["candidates_displaced"] == 0
+
+
+def test_displaced_candidates_are_counted_not_silently_dropped():
+    """Same doctrine as the near-miss cap: a number that silently shrank reads as "this is
+    everything that matched"."""
+    left = [_bop(BINANCE, f"b{i}", c) for i, c in enumerate(_BOP_COMBOS)]
+    right = [_bop(POLYMARKET, "p-one", "D Senate, D House")]
+
+    result = matching.generate_candidates({BINANCE: left, POLYMARKET: right})
+
+    assert len(result["candidates"]) == 1, "the one Polymarket market can serve one pairing"
+    assert result["candidates_displaced"] == 3
