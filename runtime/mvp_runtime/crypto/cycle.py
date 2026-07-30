@@ -661,6 +661,13 @@ def run_crypto_cycle(
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
+        # A cap declined a plan the router had already built. Previously this reached the ledger
+        # only inside `paper_records`' event stream and never the status line, so the two count
+        # caps have been invisible to anyone reading a fire's output — which was tolerable while
+        # they only fired at 20 positions, and is not now that a THIRD cap reads the book's
+        # directional shape and can decline a half-full book. Same argument as
+        # `regime_excluded`: a refusal an operator cannot see is a refusal they cannot act on.
+        "open_refused": paper_summary.get("open_refused"),
         "paper_records": paper_records,
         # The live leg, reported distinctly from paper on purpose: a ledger where the two are
         # indistinguishable is one where nobody can answer "did this system trade real money
@@ -876,6 +883,18 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A built plan a cap declined. The directional one carries the numbers because they are the
+    # actionable part — "the book leans 5 long against the limit of 4" tells an operator the
+    # book's shape, where a bare reason code would only say a trade did not happen.
+    refused = record.get("open_refused")
+    if refused:
+        detail = f"refused={refused['reason_code']}"
+        if refused["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW":
+            detail += (
+                f"({refused['direction']} {refused['aligned']}v{refused['opposing']}"
+                f" lean={refused['lean_after']}>{refused['limit']})"
+            )
+        parts.append(detail)
     # A route that entered nothing because every match was regime-excluded otherwise reads
     # exactly like one where nothing matched, and those want different responses: the first says
     # a strategy fired in a regime its own backtest lost money in, the second says the market did

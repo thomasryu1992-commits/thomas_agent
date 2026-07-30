@@ -494,6 +494,66 @@ def test_numbers_are_scannable_not_precise_to_eight_places():
     assert "dd 5.67R" in text          # a magnitude carries no + sign
 
 
+def test_the_board_shows_the_books_directional_shape():
+    """The gate that reads the book's lean declines on STANDING state, so the lean belongs on the
+    board and not only on the one status line that happened to print a refusal."""
+    text = render_status_text(_board(
+        open_positions=[{}] * 7,
+        directional_lean={"long": 5, "short": 2, "unattributed": 0,
+                          "lean": 3, "limit": 4, "at_limit": False},
+    ))
+    assert "방향 롱 5 / 숏 2 · 편중 +3 (한도 ±4)" in text
+    assert "한 방향 한도" not in text, "not at the limit, so no warning"
+
+
+def test_the_board_warns_when_the_book_is_at_the_directional_limit():
+    text = render_status_text(_board(
+        open_positions=[{}] * 4,
+        directional_lean={"long": 4, "short": 0, "unattributed": 0,
+                          "lean": 4, "limit": 4, "at_limit": True},
+    ))
+    assert "편중 +4 (한도 ±4)" in text and "⚠ 한 방향 한도" in text
+
+
+def test_a_position_with_no_readable_direction_is_counted_not_dropped():
+    """The gate treats it as aligned with whatever is proposed, so a board that silently omitted
+    it would show a book more balanced than the one the gate is judging."""
+    text = render_status_text(_board(
+        open_positions=[{}] * 3,
+        directional_lean={"long": 2, "short": 0, "unattributed": 1,
+                          "lean": 2, "limit": 4, "at_limit": False},
+    ))
+    assert "방향불명 1" in text
+
+
+def test_the_board_explains_a_book_the_pool_itself_cannot_grow():
+    """The other half of the lean line. That one says the book is one-way; this says whether the
+    POOL is why — which became possible only once the routable set was capped at one strategy
+    per context, fixing each context's direction at promotion time."""
+    text = render_status_text(_board(pool_directional_capacity={
+        "long_contexts": 20, "short_contexts": 0, "routable_contexts": 20,
+        "reachable_book": 4, "skew_cap": 4, "cap_binds": True,
+    }))
+    assert "20개 컨텍스트 중 4개까지만 보유 가능" in text
+    assert "롱 20 / 숏 0" in text
+
+
+def test_a_pool_that_can_fill_its_own_slots_says_nothing():
+    """A line that fired on every healthy pool would train the reader to skip the one above it."""
+    text = render_status_text(_board(pool_directional_capacity={
+        "long_contexts": 12, "short_contexts": 8, "routable_contexts": 20,
+        "reachable_book": 20, "skew_cap": 4, "cap_binds": False,
+    }))
+    assert "보유 가능" not in text
+
+
+def test_the_board_still_renders_a_status_written_before_the_lean_existed():
+    """Records an operator opens the board to read predate this field. A renderer that assumed
+    its own newest key would crash on exactly that history — and did, before this test."""
+    text = render_status_text(_board(open_positions=[{}] * 3))
+    assert "지금" in text and "편중" not in text
+
+
 def test_grants_collapse_to_one_line_until_one_is_near_expiry():
     far = [{"provider_id": "groq", "expires_at": "2026-08-20T01:56:34Z"},
            {"provider_id": "telegram", "expires_at": "2026-08-18T10:13:20Z"}]

@@ -34,7 +34,7 @@ from .cost import (
 )
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import HOLDOUT_CONFIRMED, ROBUST, classify_verdict, verdict_rank
-from .strategy import SpecParseError, StrategySpec, load_strategy_pool
+from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
@@ -705,6 +705,59 @@ def routable_context_map(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[str
                 str(entry.get("strategy_id"))
             )
     return contexts
+
+
+def routable_directional_capacity(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """How large a book this pool can actually fill under ``paper.MAX_DIRECTIONAL_SKEW``.
+
+    **Reported, never refused, and that boundary is the point.** The directional cap is
+    one-directional — it can only decline — so a lopsided pool trades *less*, which is safe
+    but under-utilised. Turning that into a promotion refusal would add a new blocking
+    authority over the operator's pool for a non-safety concern, and it would make an
+    incremental build impossible: promoting five longs before any short is a perfectly
+    ordinary way to assemble a pool, and a refusal would forbid every order but alternating.
+    So this states the consequence and leaves the judgement where it belongs.
+
+    **Why it is needed at all is an interaction, not a standalone idea.** With
+    :data:`MAX_ROUTABLE_PER_CONTEXT` at 1, every context holds exactly one strategy and a
+    spec's ``direction`` is fixed at promotion time — so *which directions the book can ever
+    hold is now a property of the pool*, where it used to be a property of the template
+    library (which is balanced 16/16). A pool of twenty long strategies can fill four of its
+    twenty slots and no more, and nothing in either cap says so on its own.
+
+    The arithmetic is the cap's own, so there is no second number here: ``opposing`` positions
+    buy back a slot each, so the reachable book is ``2 * min(long, short) + cap``, bounded by
+    the context count. Contexts rather than entries, because a position is per context and a
+    multi-symbol strategy occupies one per symbol — matching :func:`routable_context_map`.
+    """
+    from .paper import MAX_DIRECTIONAL_SKEW  # local: pool is imported by paper's callers
+
+    by_direction: dict[str, int] = {"LONG": 0, "SHORT": 0}
+    contexts = 0
+    for entry in entries:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        # `spec.direction` is a Direction ENUM, not a string — `str()` on it yields
+        # "Direction.SHORT", which silently matches neither bucket and reports every pool as
+        # perfectly one-way. `strategy.evaluate_spec` normalises the same way (`is
+        # Direction.SHORT`), so this reads the spec exactly as the router does.
+        direction = "SHORT" if spec.direction is Direction.SHORT else "LONG"
+        for _scoped_symbol in spec.symbol_scope:
+            contexts += 1
+            by_direction[direction] += 1
+    long_contexts, short_contexts = by_direction["LONG"], by_direction["SHORT"]
+    reachable = min(contexts, 2 * min(long_contexts, short_contexts) + MAX_DIRECTIONAL_SKEW)
+    return {
+        "long_contexts": long_contexts,
+        "short_contexts": short_contexts,
+        "routable_contexts": contexts,
+        "reachable_book": reachable,
+        "skew_cap": MAX_DIRECTIONAL_SKEW,
+        # True when the pool's own composition — not the market — is what holds the book below
+        # the number of contexts it routes.
+        "cap_binds": reachable < contexts,
+    }
 
 
 def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
