@@ -980,9 +980,23 @@ def backtest_spec(
     for outcome in outcomes:
         regime = str(outcome.get("entry_regime") or "UNCLEAR")
         regime_r[regime] = regime_r.get(regime, 0.0) + outcome["result_R"]
+    regime_trades: dict[str, int] = {}
+    for outcome in outcomes:
+        regime = str(outcome.get("entry_regime") or "UNCLEAR")
+        regime_trades[regime] = regime_trades.get(regime, 0) + 1
     regime_breakdown = {
         "regimes_traded": sorted(regime_r),
         "profitable_regime_count": sum(1 for total in regime_r.values() if total > 0),
+        # Which regime produced what, kept rather than collapsed. The two fields above are
+        # what `robustness` needs (a count, for its breadth term) and for a long time they
+        # were all this block recorded — so the loop computed a per-regime R and then threw
+        # away the only thing that says WHERE the edge was. That is the input a router needs
+        # to decline a regime a strategy has already demonstrated it loses in, which is what
+        # `paper.regime_admits` now reads through the pool entry.
+        "per_regime": {
+            regime: {"trades": regime_trades[regime], "total_r": round(total, 8)}
+            for regime, total in sorted(regime_r.items())
+        },
     }
 
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only

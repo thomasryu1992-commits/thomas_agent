@@ -202,6 +202,19 @@ def run_promotion(
             "strategy_rule_hash": c.get("strategy_rule_hash"),
             "generation_id": c.get("generation_id"),
             "strategy_spec": c.get("strategy_spec"),
+            # Per-regime backtest figures, copied onto the entry for the same reason
+            # `champion_score` is: the ROUTER must be able to read them, and the router reads the
+            # pool. Making it look candidates up by `candidate_id` instead would put a 359-row
+            # store — one whose reader deliberately RAISES on damage, because it backs a
+            # promotion an operator signs — on the path of every 15-minute cycle, so a corrupt
+            # candidate line would stop routing. The pool is the authority on what trades; this
+            # keeps it self-contained.
+            #
+            # The raw numbers, never a derived exclusion list. `paper.regime_admits` owns the
+            # rule and applies it at read time, so moving its threshold later cannot leave stale
+            # labels behind — the defect `pool.candidate_quality` already had to fix once, where
+            # verdicts written at mint time survived the rule that produced them.
+            "regime_evidence": ((c.get("backtest_evidence") or {}).get("regime_breakdown") or {}).get("per_regime"),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })

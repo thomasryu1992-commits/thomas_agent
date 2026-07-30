@@ -146,6 +146,19 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         active, status_counts, demotions_by_reason = {"active_strategies": []}, {}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
 
+    # The same question as the demotion reasons above — why is this not trading — arriving by a
+    # path that is not a status. A regime-excluded entry stays PAPER_ACTIVE and keeps its routing
+    # slot, so **nothing in the pool says it is inert**: its rules fire, and the router declines
+    # them because the strategy's own backtest lost money in the regime the market is in. Counted
+    # over the cycles this board already read, because the interesting case is not one exclusion
+    # but a strategy excluded on most of them, which is a demotion candidate the status count
+    # would report as healthy.
+    regime_excluded_cycles: dict[str, int] = {}
+    for row in cycle_rows:
+        for strategy_id in row.get("regime_excluded") or []:
+            key = str(strategy_id)
+            regime_excluded_cycles[key] = regime_excluded_cycles.get(key, 0) + 1
+
     # Two things the board could always have said and did not, both about work waiting on a
     # human rather than on the runtime. They are warnings rather than rows because a queue
     # nobody is told about is a queue nobody works: promotion went untouched for three days
@@ -255,6 +268,8 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_positions": open_positions,
         "pool_status_counts": status_counts,
         "demotions_by_reason": demotions_by_reason,
+        "regime_excluded_cycles": regime_excluded_cycles,
+        "cycles_read": len(cycle_rows),
         "pool_size": len(active.get("active_strategies") or []),
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
@@ -521,6 +536,16 @@ def render_status_text(status: dict[str, Any]) -> str:
     if demotions:
         lines.append("       강등 사유 " + " · ".join(
             f"{reason} {count}" for reason, count in sorted(demotions.items())))
+    # Regime exclusions, beside the demotion reasons and for the same reason they are there: a
+    # strategy whose rules keep firing into a regime its own backtest lost money in is not
+    # trading, and its PAPER_ACTIVE status says the opposite. Rendered as a share of the cycles
+    # read so "3 of 12" and "12 of 12" are different statements — the first is the filter doing
+    # its job, the second is a strategy that has stopped working here.
+    regime_excluded = status.get("regime_excluded_cycles") or {}
+    if regime_excluded:
+        read = status.get("cycles_read") or 0
+        lines.append("       regime 배제 " + " · ".join(
+            f"{sid} {count}/{read}" for sid, count in sorted(regime_excluded.items())))
     backlog = status.get("promotion_backlog") or {}
     if backlog.get("count"):
         lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")

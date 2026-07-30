@@ -148,6 +148,70 @@ PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker
 
 # --- entry routing (pure) -----------------------------------------------------
 
+# How many closed trades a regime slice needs before its sign may exclude a strategy from
+# trading there. Ten because that is this repo's own stated line for "enough observations to
+# mean anything" (`robustness.HEALTHY_TRADES_PER_PARAMETER`), reused rather than re-invented.
+#
+# The direction of the two errors is not symmetric, which is what sets the number. Excluding on
+# too little evidence stops a strategy trading where it actually works, and that cost is
+# **silent** — no record shows the trades that did not happen. Requiring too much evidence just
+# leaves today's behaviour in place. Slicing an outcome history by regime also multiplies the
+# comparisons being made on it, which is the overfitting hazard `docs/TRADING_STRATEGY_REVIEW_
+# RECORD.md` raises about this pipeline generally; a per-regime sign read off three trades is
+# exactly that hazard wired into live routing. So the bar is evidence, not suspicion.
+MIN_REGIME_TRADES_TO_EXCLUDE = 10
+
+# Why a regime was declined, on the route record, so an operator sees a filter rather than a
+# strategy that mysteriously stopped matching.
+REGIME_EXCLUDED = "regime_demonstrated_unprofitable"
+
+
+def regime_admits(entry: Mapping[str, Any], regime: Any) -> tuple[bool, str | None]:
+    """May this pool entry trade in ``regime``? Returns ``(admitted, reason)``.
+
+    **Derived from the stored numbers, never from a stored verdict**, and that is the whole
+    reason this is a function rather than a field written at promotion time. `pool.
+    candidate_quality` already carries the scar: robustness verdicts were written once at mint
+    time, the rule that produced them changed, and twelve candidates kept a label the rule could
+    no longer produce — inverting the shortlist on exactly the property the new rule existed to
+    enforce. A baked `excluded: [...]` list would repeat that the first time
+    :data:`MIN_REGIME_TRADES_TO_EXCLUDE` moved.
+
+    The rule, and the direction it fails in:
+
+    - No ``regime_evidence`` on the entry (every strategy promoted before this existed) →
+      **admitted**. Absent evidence is not evidence of failure, and a filter that silenced the
+      whole installed pool on the day it shipped would be a worse error than the one it fixes.
+    - The regime is unknown, or was never traded in the replay → **admitted**. Same reason: the
+      backtest says nothing about it, and this gate only ever *declines* on a demonstration.
+    - Traded, but on fewer than :data:`MIN_REGIME_TRADES_TO_EXCLUDE` closed trades →
+      **admitted**, however bad the sign. This is the clause that keeps the gate from being the
+      overfitting it is meant to guard against.
+    - Traded enough, and the regime's total R is at or below zero → **declined**. The strategy
+      was promoted on an aggregate that blended this regime with the ones that paid for it.
+
+    Deliberately one-directional: this can only ever make the pool trade *less*. It never admits
+    an entry the existing checks would have refused, which is why it needs no gate of its own.
+    """
+    evidence = entry.get("regime_evidence")
+    if not isinstance(evidence, Mapping) or not evidence:
+        return True, None
+    if not isinstance(regime, str) or not regime:
+        return True, None
+    cell = evidence.get(regime)
+    if not isinstance(cell, Mapping):
+        return True, None
+    trades = cell.get("trades")
+    total_r = cell.get("total_r")
+    if not isinstance(trades, int) or isinstance(trades, bool) or trades < MIN_REGIME_TRADES_TO_EXCLUDE:
+        return True, None
+    if isinstance(total_r, bool) or not isinstance(total_r, (int, float)):
+        return True, None
+    if float(total_r) > 0:
+        return True, None
+    return False, REGIME_EXCLUDED
+
+
 def route_entries(
     pool: Mapping[str, Any], feature_row: Mapping[str, Any], *, symbol: str, timeframe: str, now: str
 ) -> dict[str, Any]:
@@ -178,12 +242,23 @@ def route_entries(
             })
             continue
         result = evaluate_spec(spec, feature_row)
-        evaluations.append({
+        # The regime filter runs on a MATCH, not before evaluation, so the record still shows
+        # that the rules fired and says separately that the regime declined it. Filtering
+        # earlier would make an excluded strategy indistinguishable from one whose conditions
+        # simply were not met, and those are different things for an operator to read.
+        admitted, regime_reason = (
+            regime_admits(entry, feature_row.get("market_regime")) if result.matched else (True, None)
+        )
+        evaluation = {
             "strategy_id": entry.get("strategy_id"),
             "matched": result.matched,
             "direction": result.direction,
-        })
-        if result.matched:
+        }
+        if regime_reason is not None:
+            evaluation["regime_excluded"] = regime_reason
+            evaluation["regime"] = feature_row.get("market_regime")
+        evaluations.append(evaluation)
+        if result.matched and admitted:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
                 "candidate_id": entry.get("candidate_id"),
@@ -198,6 +273,15 @@ def route_entries(
         "strategies_evaluated": len(entries),
         "evaluations": evaluations,
         "matched_strategy_ids": sorted(m["strategy_id"] for m in matches if m["strategy_id"] is not None),
+        # Named separately from `matched_strategy_ids` because "the rules fired and the regime
+        # declined it" is the one outcome an operator would otherwise have to infer from an
+        # absence. A route that entered nothing because every match was regime-excluded reads
+        # identically to one where nothing matched, and those want different responses.
+        "regime_excluded_strategy_ids": sorted(
+            str(e["strategy_id"]) for e in evaluations
+            if e.get("regime_excluded") and e.get("strategy_id") is not None
+        ),
+        "regime": feature_row.get("market_regime") if feature_row else None,
         # The traded context, so a plan books under the symbol this cycle actually
         # ran — not the spec's primary symbol_scope[0], which for a multi-symbol
         # strategy on a non-primary symbol would mis-book the position.
