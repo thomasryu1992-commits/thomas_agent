@@ -633,6 +633,80 @@ class LiquidationFeed(Protocol):
                               interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]: ...
 
 
+class PerSymbolFeedCache:
+    """One vendor read per (symbol, series) for the life of one fan-out.
+
+    Both Coinalyze series are **per-symbol**: `liquidation_history` and
+    `open_interest_history` take a symbol and a day count and nothing else. But
+    `cycle.attach_feeds` runs once per (symbol, TIMEFRAME), so the shipped 20-context
+    fan-out asked for each symbol's series **four times** — 40 requests to read 10.
+    Downstream that redundancy was invisible: the series is aligned onto each timeframe's
+    candles after the fetch, so four identical responses produced four correct frames.
+
+    It stopped being invisible when the hourly store added five more requests per fire.
+    Measured on the first fire after that deployed: BNB/BTC/DOGE returned `ok` and
+    ETH/SOL came back `degraded` on **every** Coinalyze series — including the daily
+    open interest and the liquidations the router already depended on. Contexts are
+    visited in a fixed order, so a per-window request cap always lands on whoever is
+    last, and the first symbols look healthy while the last ones silently lose features.
+
+    Caching is behaviour-preserving rather than a trade-off, and that is the reason to
+    prefer it over raising the cap or slowing the loop: within one fire the answer to
+    "what was this symbol's daily series" cannot legitimately differ between the 15m
+    context and the 4h one. The cache lives for **one fan-out** — it is constructed per
+    call in `run_pool_cycle` and thrown away — so it can never serve a stale day to a
+    later fire.
+
+    Failures are cached too, deliberately. A vendor that just refused this symbol will
+    refuse it again in the same second, and re-asking three more times per fire is how
+    the cap was reached in the first place; the refusal is re-raised identically so every
+    context still records its own reason code.
+    """
+
+    def __init__(self, feed: Any):
+        self._feed = feed
+        self._results: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        self._errors: dict[tuple[str, ...], BaseException] = {}
+        self.calls = 0
+
+    @property
+    def feed_id(self) -> str:
+        return getattr(self._feed, "feed_id", "none")
+
+    @property
+    def network_egress(self) -> bool:
+        return bool(getattr(self._feed, "network_egress", False))
+
+    def _cached(self, key: tuple[str, ...], fetch: Any) -> list[dict[str, Any]]:
+        if key in self._errors:
+            raise self._errors[key]
+        if key in self._results:
+            return self._results[key]
+        self.calls += 1
+        try:
+            rows = fetch()
+        except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._errors[key] = exc
+            raise
+        self._results[key] = rows
+        return rows
+
+    def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
+        return self._cached(
+            ("liquidations", str(symbol), str(days)),
+            lambda: self._feed.liquidation_history(
+                symbol, days=days, timeout_seconds=timeout_seconds),
+        )
+
+    def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
+                              interval: str = OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
+        return self._cached(
+            ("open_interest", str(symbol), str(days), str(interval)),
+            lambda: self._feed.open_interest_history(
+                symbol, days=days, timeout_seconds=timeout_seconds, interval=interval),
+        )
+
+
 class NoLiquidationFeed:
     """Default: the feed is ABSENT (not degraded) — features keep the source's
     legacy no-series constants, exactly the pre-C9 behavior."""
