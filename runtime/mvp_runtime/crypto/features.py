@@ -26,10 +26,27 @@ it recombine information the pool already holds. Two column groups here are not:
 - ``session`` / ``day_type`` come from the timestamp already on every row. The market is
   continuous but its participants are not, and the composition of who is trading is a
   property no price transformation encodes.
+- ``mark_price`` / ``index_price`` / ``mark_index_basis_bps`` / ``premium_index`` are the
+  venue's derivative pricing, now measured instead of assumed. The first three carried the
+  source's no-feed fallbacks (close, close, a hardcoded ``0.0``) while the factory could mint
+  literal conditions on them; ``premium_index`` is the basis funding is computed from, at bar
+  resolution rather than the 8h event cadence ``funding_rate`` carries.
+- ``ref_*`` measure this symbol against a market proxy. Every other column describes one
+  symbol alone, which is why every pool strategy carries the same market beta with no feature
+  able to say so; ``rel_strength_roc_4`` subtracts that shared move out and
+  ``ref_correlation`` says how much of it there was.
 
-Both follow the open-interest absence rule rather than the ``liquidation_spike_ratio``
-one: missing input yields None (indeterminate → no entry), never a constant a mined
-condition could match on.
+All of them follow the open-interest absence rule rather than the
+``liquidation_spike_ratio`` one: missing input yields None (indeterminate → no entry), never
+a constant a mined condition could match on. The derivative and reference groups make that
+rule load-bearing rather than merely tidy, because both REPLACED fabricated constants —
+see ``_derivative_price_columns`` and ``_reference_columns``.
+
+**Three alignment rules live here, and choosing wrongly is silent.** An exact open-time join
+for series on this frame's own grid (:func:`_same_grid_column`: derivative prices, the
+reference symbol); backward as-of for series on their own cadence (:func:`_asof_align`:
+funding, liquidations, open interest); close-time keying for the coarser higher timeframe
+(:func:`_htf_columns`). Each is named where it applies and each has its own test.
 """
 
 from __future__ import annotations
@@ -72,6 +89,29 @@ TAKER_FLOW_MA_WINDOW = 20
 TAKER_FLOW_MA_MIN_PERIODS = 10
 TRADE_SIZE_Z_WINDOW = 20
 TRADE_SIZE_Z_MIN_PERIODS = 10
+
+# --- derivative price series --------------------------------------------------
+# The premium index z-score window. 100 bars matches FUNDING_Z_WINDOW so the two describe
+# the same span of the same underlying pressure — one at 8h event cadence, one per bar —
+# and a threshold mined on either means the same thing. The looser min_periods is the
+# funding series' own rule, kept for the same reason: a spec should not wait 100 bars to
+# become evaluable when 10 observations already locate the current reading.
+PREMIUM_Z_WINDOW = 100
+PREMIUM_Z_MIN_PERIODS = 10
+
+# --- reference-symbol (cross-asset) context -----------------------------------
+# The market proxy every other symbol is measured against, and the window its correlation
+# is measured over. 100 bars matches PERCENTILE_WINDOW: long enough that the estimate is
+# not one week's accident, short enough that a regime change eventually shows in it.
+REFERENCE_CORR_WINDOW = 100
+REFERENCE_CORR_MIN_PERIODS = 30
+
+# The reference columns a spec may reference. All four are NORMALIZED — a rate of change, a
+# difference of two rates, a correlation, and a label — so none of them carries a price
+# scale and a mined threshold means the same thing on ETH and on DOGE.
+REFERENCE_NUMERIC_COLUMNS = ("ref_roc_4", "rel_strength_roc_4", "ref_correlation")
+REFERENCE_CATEGORICAL_COLUMNS = ("ref_market_regime",)
+REFERENCE_COLUMNS = (*REFERENCE_NUMERIC_COLUMNS, *REFERENCE_CATEGORICAL_COLUMNS)
 
 # --- session context ----------------------------------------------------------
 # UTC hour blocks. Crypto trades continuously but its PARTICIPANTS do not: venue activity
@@ -139,6 +179,183 @@ def _asof_align(
                 out[col].append(float(value) if value is not None else None)
             except (TypeError, ValueError):
                 out[col].append(None)
+    return out
+
+
+def _same_grid_column(bar_times: list[str], events: list[Any]) -> list[float | None]:
+    """A series that shares this frame's grid, joined on bar OPEN time. Exact, not as-of.
+
+    The derivative price series (mark, index, premium index) are requested at the SAME
+    interval as the candles, so their bar opening at T *is* the bar opening at T here, and
+    its close is first known at exactly the moment this row's own ``close`` is. Pairing them
+    is simultaneous, so an exact key match is both correct and the strongest available
+    statement: a bar with no counterpart stays None rather than silently inheriting an older
+    one, which is what :func:`_asof_align` would do.
+
+    That difference is deliberate and is the reason this is a separate function. As-of
+    alignment is right for a series on its OWN cadence (funding every 8h, open interest
+    daily) — carrying the last known reading forward is the honest read there. It would be
+    wrong here: a gap in the mark series means the venue did not report that bar, and
+    substituting the previous bar's mark would fabricate a basis for a bar that has none.
+    And the HTF leg needs a third rule again (key on the higher candle's CLOSE), because it
+    spans a coarser grid where the simultaneous bar is still forming. Three situations,
+    three rules, each named where it applies.
+    """
+    by_open: dict[str, float] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        stamp, value = event.get("timestamp"), event.get("value")
+        if not isinstance(stamp, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        by_open[stamp] = float(value)
+    return [by_open.get(bar_time) for bar_time in bar_times]
+
+
+def _derivative_price_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict[str, list]:
+    """``mark_price`` / ``index_price`` / ``mark_index_basis_bps`` / premium columns.
+
+    **This replaces a fabricated constant, and that is a behaviour change worth stating.**
+    Before the series existed these three were the source system's documented no-feed
+    fallbacks — ``mark = index = close`` and a basis hardcoded to ``0.0`` — while
+    ``factory.NUMERIC_FEATURES`` admitted all three as mintable. A literal condition on a
+    basis that is always exactly zero is not selective, it is decided: ``basis > 0.5`` could
+    never match and ``basis <= 0.5`` could never fail. The column was worse than absent,
+    because absent columns are indeterminate and this one was confidently wrong.
+
+    So absence now yields **None**, not the old constants: no feed, no basis, no entry for a
+    spec that reads one. That is the ``open_interest`` rule and the opposite of the
+    ``liquidation_spike_ratio`` one, and it means a pool spec referencing the basis stops
+    trading while the series is unavailable rather than matching on a zero. Strictly safer,
+    and the series rides the candles' own grant, so "unavailable" means the venue failed
+    rather than the feed being unconfigured.
+
+    ``premium_index`` is the funding basis at BAR resolution. ``funding_rate`` is an 8h
+    event carried forward by :func:`_asof_align`, so ``funding_zscore`` steps three times a
+    day; a 1h ``funding_fade_*`` spec has therefore been timing its entry on a value that
+    last moved up to eight hours ago. This column moves every bar.
+    """
+    has_mark = "mark_prices" in snapshot
+    has_index = "index_prices" in snapshot
+    has_premium = "premium_index" in snapshot
+
+    mark = (_same_grid_column(bar_times, snapshot.get("mark_prices") or [])
+            if has_mark else [None] * len(bar_times))
+    index = (_same_grid_column(bar_times, snapshot.get("index_prices") or [])
+             if has_index else [None] * len(bar_times))
+    premium = (_same_grid_column(bar_times, snapshot.get("premium_index") or [])
+               if has_premium else [None] * len(bar_times))
+
+    # Basis needs BOTH legs and a non-zero divisor. A zero or negative index price is not a
+    # 100% basis, it is a broken reading.
+    basis_bps: list[float | None] = []
+    for mark_value, index_value in zip(mark, index):
+        if mark_value is None or index_value is None or index_value <= 0:
+            basis_bps.append(None)
+        else:
+            basis_bps.append((mark_value - index_value) / index_value * 10_000.0)
+
+    return {
+        "mark_price": mark,
+        "index_price": index,
+        "mark_index_basis_bps": basis_bps,
+        "premium_index": premium,
+        "premium_index_zscore": indicators.zscore(
+            premium, PREMIUM_Z_WINDOW, PREMIUM_Z_MIN_PERIODS
+        ),
+    }
+
+
+def _reference_columns(
+    bar_times: list[str], roc_own: list[float | None], closes: list[Any], snapshot: dict[str, Any]
+) -> dict[str, list]:
+    """Cross-asset context: how this symbol is behaving *relative to the market*.
+
+    Every other column in this row describes one symbol in isolation, which is why every
+    strategy the pool holds carries the same market beta: when the benchmark drops, every
+    open long is losing at once, and no feature the row provides can tell the runtime that.
+    ``rel_strength_roc_4`` subtracts that shared move out, and ``ref_correlation`` measures
+    how much of it there was to subtract.
+
+    **Alignment is an exact open-time join, like the derivative prices and unlike the HTF
+    leg.** The reference series is collected at this frame's own interval, so its bar opening
+    at T is the same bar as this one, and its close is first known at the same instant. The
+    HTF leg keys on the higher candle's CLOSE because a coarser bar is still forming at this
+    bar's open; here there is nothing still forming, so there is nothing to defer.
+
+    The reference's own derived values come from :func:`build_feature_rows` — one feature
+    pipeline, not a second that could drift — over a sub-snapshot carrying only candles, so
+    the recursion terminates at depth one.
+
+    **Every column is None when this symbol IS the reference.** ``rel_strength_roc_4`` would
+    be exactly 0.0 and ``ref_correlation`` exactly 1.0 for the benchmark against itself:
+    fabricated constants a mined condition could match on, which is the hazard this module
+    refuses everywhere else. "How does the benchmark behave relative to the benchmark" is
+    undefined rather than trivially answered, so the honest column is empty and a
+    relative-strength spec simply never fires on the benchmark.
+    """
+    empty = {col: [None] * len(bar_times) for col in REFERENCE_COLUMNS}
+    reference_candles = snapshot.get("reference_candles") or []
+    symbol = str(snapshot.get("symbol") or "")
+    reference_symbol = str(snapshot.get("reference_symbol") or "")
+    if not reference_candles or (symbol and reference_symbol and symbol == reference_symbol):
+        return empty
+
+    reference_rows = build_feature_rows({"candles": reference_candles})
+    ref_by_open: dict[str, dict[str, Any]] = {}
+    for candle, row in zip(reference_candles, reference_rows):
+        open_time = candle.get("open_time")
+        if isinstance(open_time, str):
+            ref_by_open[open_time] = row
+
+    ref_roc: list[float | None] = []
+    ref_regime: list[Any] = []
+    ref_close: list[float | None] = []
+    for bar_time in bar_times:
+        row = ref_by_open.get(bar_time)
+        if row is None:
+            ref_roc.append(None)
+            ref_regime.append(None)
+            ref_close.append(None)
+            continue
+        value = row.get("roc_4")
+        ref_roc.append(float(value) if isinstance(value, (int, float)) else None)
+        ref_regime.append(row.get("market_regime"))
+        close = row.get("close")
+        ref_close.append(float(close) if isinstance(close, (int, float)) else None)
+
+    # Excess momentum: this symbol's rate of change minus the benchmark's over the same
+    # bars. Both legs must be known — a difference against an unknown is not zero.
+    rel_strength = [
+        (own - ref) if (own is not None and ref is not None) else None
+        for own, ref in zip(roc_own, ref_roc)
+    ]
+
+    # Correlation is measured on bar-over-bar RETURNS, not on prices: two rising price
+    # series correlate near 1.0 whatever they do bar to bar, which would report every pair
+    # as identical and make the column useless for the thing it is for.
+    own_returns = _bar_returns(closes)
+    ref_returns = _bar_returns(ref_close)
+
+    return {
+        "ref_roc_4": ref_roc,
+        "rel_strength_roc_4": rel_strength,
+        "ref_correlation": indicators.rolling_correlation(
+            own_returns, ref_returns, REFERENCE_CORR_WINDOW, REFERENCE_CORR_MIN_PERIODS
+        ),
+        "ref_market_regime": ref_regime,
+    }
+
+
+def _bar_returns(closes: list[Any]) -> list[float | None]:
+    """Simple bar-over-bar returns; None wherever either end is missing or the base is 0."""
+    out: list[float | None] = [None]
+    for i in range(1, len(closes)):
+        previous, current = closes[i - 1], closes[i]
+        if not _is_positive(previous) or not isinstance(current, (int, float)) or isinstance(current, bool):
+            out.append(None)
+        else:
+            out.append(float(current) / float(previous) - 1.0)
     return out
 
 
@@ -468,6 +685,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # (missing legs → None, over-long bars → None) live inside the helpers.
     flow = _taker_flow_columns(candles)
     session = _session_columns(candles)
+    derivative = _derivative_price_columns(bar_times, snapshot)
+    reference = _reference_columns(bar_times, roc_4, closes, snapshot)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -512,12 +731,18 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "open_interest": open_interest[i],
             "open_interest_change_pct": open_interest_change_pct[i],
             "open_interest_zscore": open_interest_zscore[i],
-            # No-feed fallbacks, verbatim from the source's absent-feed behavior —
-            # and verbatim its RUNTIME ROUTER behavior too: runtime_feature_adapter
-            # never passes mark/index frames, so basis is 0 in source live routing.
-            "mark_price": close,
-            "index_price": close,
-            "mark_index_basis_bps": 0.0,
+            # Derivative prices, measured. These carried the source's no-feed fallbacks
+            # (close / close / a hardcoded 0.0 basis) until the series were collected; the
+            # fallbacks are gone because a mintable column that is always exactly zero
+            # decides its own conditions rather than selecting on anything. Absent series
+            # now read None — see `_derivative_price_columns` for why that is the safer
+            # direction and what it changes for a spec that already reads the basis.
+            "mark_price": derivative["mark_price"][i],
+            "index_price": derivative["index_price"][i],
+            "mark_index_basis_bps": derivative["mark_index_basis_bps"][i],
+            # The funding basis at BAR resolution, beside the 8h event series above.
+            "premium_index": derivative["premium_index"][i],
+            "premium_index_zscore": derivative["premium_index_zscore"][i],
             # Raw flow legs as the venue reported them — evidence only, never mintable, for
             # the reason raw open_interest is not mintable: they are venue-scale quantities,
             # so a threshold on one would mean a different thing on every symbol and a
@@ -540,6 +765,9 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "day_type": session["day_type"][i],
             # HTF context: the last CLOSED higher-timeframe candle's read, or None.
             **{col: htf[col][i] for col in HTF_COLUMNS},
+            # Cross-asset context: this symbol measured against the market proxy. All None
+            # for the proxy itself — see `_reference_columns`.
+            **{col: reference[col][i] for col in REFERENCE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (
