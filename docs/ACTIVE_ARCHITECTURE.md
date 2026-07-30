@@ -129,6 +129,7 @@ The live executor. Same authority chain, one process, no kernel modification.
 
 ```text
 Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
+                     halt_bridge.py (halt-only door; kill/pause, never resume)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
 Governance surface   permission.py · authority.py · safety_gate.py · budgets.py
 Work                 worker.py · providers.py · tools.py
