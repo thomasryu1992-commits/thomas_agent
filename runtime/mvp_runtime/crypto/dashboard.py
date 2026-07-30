@@ -146,6 +146,19 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         active, status_counts, demotions_by_reason = {"active_strategies": []}, {}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
 
+    # How large a book this pool can actually fill under the directional cap. The other half of
+    # the lean below: that line says the book is one-way, this one says whether the POOL is why.
+    # Since the routable set is capped at one strategy per context, a spec's direction is fixed
+    # at promotion time — so a pool of twenty long strategies fills four slots and no more, and
+    # neither cap says so alone. Derived here rather than refused at the promotion door: the
+    # directional gate can only decline, so a lopsided pool trades less rather than unsafely,
+    # and blocking a promotion over it would forbid building a pool in any order but alternating.
+    try:
+        pool_capacity = pool.routable_directional_capacity(active.get("active_strategies") or [])
+    except MvpRuntimeError as exc:
+        pool_capacity = None
+        warnings.append(f"pool directional capacity unreadable ({exc.reason_code})")
+
     # The same question as the demotion reasons above — why is this not trading — arriving by a
     # path that is not a status. A regime-excluded entry stays PAPER_ACTIVE and keeps its routing
     # slot, so **nothing in the pool says it is inert**: its rules fire, and the router declines
@@ -285,6 +298,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "open_position": open_position,
         "open_positions": open_positions,
         "directional_lean": directional_lean,
+        "pool_directional_capacity": pool_capacity,
         "pool_status_counts": status_counts,
         "demotions_by_reason": demotions_by_reason,
         "regime_excluded_cycles": regime_excluded_cycles,
@@ -564,6 +578,18 @@ def render_status_text(status: dict[str, Any]) -> str:
     counts = status.get("pool_status_counts") or {}
     breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
     lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    # Printed ONLY when the pool's own composition is what holds the book below the number of
+    # contexts it routes — otherwise it is a line saying nothing happened, which is the field
+    # that teaches a reader to skip the line above it. A capped book is not an error, so this
+    # reads as an explanation rather than a warning.
+    capacity = status.get("pool_directional_capacity")
+    if isinstance(capacity, dict) and capacity.get("cap_binds"):
+        lines.append(
+            f"       └ 방향 편중으로 {capacity['routable_contexts']}개 컨텍스트 중"
+            f" {capacity['reachable_book']}개까지만 보유 가능"
+            f" (롱 {capacity['long_contexts']} / 숏 {capacity['short_contexts']},"
+            f" 한도 ±{capacity['skew_cap']})"
+        )
     # Why the demoted ones are demoted. A status count alone reads a duplicate an operator
     # removed on purpose and a strategy the metrics condemned as the same number.
     demotions = status.get("demotions_by_reason") or {}

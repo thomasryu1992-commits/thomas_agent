@@ -526,6 +526,27 @@ def test_a_position_with_no_readable_direction_is_counted_not_dropped():
     assert "방향불명 1" in text
 
 
+def test_the_board_explains_a_book_the_pool_itself_cannot_grow():
+    """The other half of the lean line. That one says the book is one-way; this says whether the
+    POOL is why — which became possible only once the routable set was capped at one strategy
+    per context, fixing each context's direction at promotion time."""
+    text = render_status_text(_board(pool_directional_capacity={
+        "long_contexts": 20, "short_contexts": 0, "routable_contexts": 20,
+        "reachable_book": 4, "skew_cap": 4, "cap_binds": True,
+    }))
+    assert "20개 컨텍스트 중 4개까지만 보유 가능" in text
+    assert "롱 20 / 숏 0" in text
+
+
+def test_a_pool_that_can_fill_its_own_slots_says_nothing():
+    """A line that fired on every healthy pool would train the reader to skip the one above it."""
+    text = render_status_text(_board(pool_directional_capacity={
+        "long_contexts": 12, "short_contexts": 8, "routable_contexts": 20,
+        "reachable_book": 20, "skew_cap": 4, "cap_binds": False,
+    }))
+    assert "보유 가능" not in text
+
+
 def test_the_board_still_renders_a_status_written_before_the_lean_existed():
     """Records an operator opens the board to read predate this field. A renderer that assumed
     its own newest key would crash on exactly that history — and did, before this test."""
