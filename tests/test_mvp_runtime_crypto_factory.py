@@ -361,9 +361,14 @@ def _seed_candidates(tmp_path):
 
 
 def test_promotion_installs_selected_candidates(tmp_path):
+    # `allow_oversized_pool` because one factory run mines every candidate for the SAME
+    # context, so promoting two of them is exactly what the per-context cap refuses. That
+    # refusal has its own tests (test_mvp_runtime_crypto_promotion.py); the subject here is
+    # that the door installs what was selected, and the escape keeps it that.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            allow_oversized_pool=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -378,7 +383,8 @@ def test_promotion_keep_active_adds(tmp_path):
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
                   keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, root=tmp_path, now=NOW, without_approval=True)
+                  keep_active=True, root=tmp_path, now=NOW, without_approval=True,
+                  allow_oversized_pool=True)   # same context as the incumbent; see above
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
 
