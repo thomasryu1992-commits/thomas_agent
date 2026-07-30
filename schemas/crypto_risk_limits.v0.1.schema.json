@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "crypto_risk_limits.v0.1.schema.json",
+  "$comment": "Bounds here mirror runtime/mvp_runtime/crypto/guards.py — the module that owns the numbers. Both must agree; the builder checks the code bounds first so a refusal names the offending limit instead of emitting a raw schema error.",
+  "title": "Crypto Risk Limits v0.1",
+  "description": "An operator-registered, self-hashed override of the C4 risk-breaker limits (daily/weekly R loss, consecutive losses, drawdown, risk-per-trade). Without one, the runtime judges on the guards.py defaults. Registering one grants nothing and enables no trading: it can only move a breaker inside the code-enforced relaxation bounds, and the live-trading grant, confirmation phrase, canary evidence and registered budget all still stand between here and a live order. The record carries a validity window on purpose — a relaxation expires and reverts to a REFUSAL, never silently back to the defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "limits_id",
+    "limits",
+    "valid_from",
+    "valid_until",
+    "registered_by",
+    "registered_at",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "crypto_risk_limits.v0.1"
+    },
+    "limits_id": {
+      "type": "string",
+      "pattern": "^risklimits_[0-9a-f]{20}$"
+    },
+    "limits": {
+      "description": "All five breakers, every one required. A partial override would leave the unnamed limits implicit, so the record states the whole set — what judged a cycle is then readable from the record alone.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_per_trade",
+        "daily_max_loss_r",
+        "weekly_max_loss_r",
+        "max_consecutive_losses",
+        "max_drawdown_pct"
+      ],
+      "properties": {
+        "risk_per_trade": {
+          "description": "Equity fraction risked per trade, used to map the drawdown percent into R. Ceiling 0.02 (2x the 0.01 default).",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.02
+        },
+        "daily_max_loss_r": {
+          "description": "Daily realized-loss breaker in R. Negative; floor -6.0 (3x the -2.0 default). Must not be looser than weekly_max_loss_r (cross-field, enforced by the builder).",
+          "type": "number",
+          "exclusiveMaximum": 0,
+          "minimum": -6.0
+        },
+        "weekly_max_loss_r": {
+          "description": "Weekly realized-loss breaker in R. Negative; floor -15.0 (3x the -5.0 default).",
+          "type": "number",
+          "exclusiveMaximum": 0,
+          "minimum": -15.0
+        },
+        "max_consecutive_losses": {
+          "description": "Consecutive-loss breaker. At least 1 (0 would read as unconfigured = always breached); ceiling 10.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "max_drawdown_pct": {
+          "description": "Current-drawdown-from-peak breaker, in equity percent. Negative; floor -25.0 (2.5x the -10.0 default).",
+          "type": "number",
+          "exclusiveMaximum": 0,
+          "minimum": -25.0
+        }
+      }
+    },
+    "valid_from": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "valid_until": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "registered_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registered_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "record_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
