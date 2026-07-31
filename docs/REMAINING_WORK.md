@@ -143,7 +143,7 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 3.7 of 14 days
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 1.9 of 14 days
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
 **PM1's code is complete and the window is open.** Three venue adapters, screening, the
@@ -151,15 +151,24 @@ deterministic matcher with operator confirmation, the fee-adjusted detector, the
 both scheduler cadences (watch and discovery), the proposal record and the exit report all live
 under `runtime/mvp_runtime/predmarket/`. PM2 and PM3 are untouched.
 
-**Measured 2026-07-31T03:00Z** (ask the machine rather than trusting these — they go stale by
-the hour):
+**Measured 2026-07-31T08:11Z** (ask the machine rather than trusting these — they go stale by
+the hour). Two windows, because the report answers a different question depending on how it is
+called — the second is the one the exit artifact has to be built from, and see the PM2 box for
+why:
 
 ```
-verdict   INSUFFICIENT_WINDOW      window 3.6987 of 14 days required
-readings  86,598 / 87,127 priced   coverage 0.9939   82 pairing(s)
-totals    29,598 opportunity readings, 100 episodes
-incidents MARKET_NOT_LISTED=268   (frozen — the dead group was retired, see below)
+unbounded                                        --since 2026-07-29T10:15:08Z
+verdict   INSUFFICIENT_WINDOW                    INSUFFICIENT_WINDOW
+window    3.9274 of 14 days required             1.9112 of 14 days   (15,612 rows excluded)
+readings  97,389 / 97,919 priced  cov 0.9946     81,957 / 82,383 priced  cov 0.9948
+totals    82 pairings, 32,809 opps, 106 eps      77 pairings, 26,831 opps, 76 eps
+incidents MARKET_NOT_LISTED=268                  MARKET_NOT_LISTED=264
 ```
+
+**Fourteen days of one rule set ends 2026-08-12T10:15Z, not 2026-08-10.** The unbounded column
+spans three successive definitions of "opportunity"; only the bounded one is a frequency about a
+single instrument. `MARKET_NOT_LISTED` is frozen in both (the dead group was retired, see below)
+— and is also the counter PM2 cannot currently tell apart from a settled market, per its box.
 
 Most confirmed groups pair **binance×polymarket**, with kalshi×polymarket next and a handful
 involving kalshi×binance or all three. That distribution is itself an open decision — see the
@@ -400,7 +409,104 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         **not** fix.
 - [ ] **PM2 — paper trading** (1–2 PRs): pessimistic fill model (taker + book depth + fees), virtual
       portfolio, **hold-to-resolution** (also measures cross-venue resolution mismatch).
-  - [ ] ⚠️ Thomas sets **PM3 entry criteria as numbers** before PM2 ends.
+      **Readiness reviewed 2026-07-31 against the running window.** Four things stand between the
+      window closing and PM2 starting; two are engineering that can be done *during* the window,
+      two are Thomas's and have to precede it. Nothing below was blocking anything yet, which is
+      why none of it had been written down.
+  - [x] **Hold-to-resolution had no read path, and it is PM2's defining mechanic** — built
+        2026-07-31 (#400). Every adapter read *open* markets only: Kalshi pinned `status=open` on
+        both the targeted and the discovery call, Gamma was asked for `active=true&closed=false`,
+        and `parse_prediction_markets` skipped any outcome whose `tradingStatus` was not `OPEN`.
+        A market that settled therefore did not **resolve** in the read, it **disappeared** from
+        it. There is now a third read path — `read_resolutions` per collector, `Resolution` on
+        the leg, `collect_pred_resolutions` for the record — asked through its own call so the
+        two price paths are untouched and a settled market can never reach a scan about
+        tradability. Both parsers were verified against the live venues, and what that caught is
+        the argument for doing it that way:
+    - **Kalshi's `settlement_ts` is an ISO string despite the suffix** (`2026-07-31T08:22:18.605072Z`),
+          while the same venue's `min_close_ts` *request* parameter is epoch seconds. A parser
+          that took the convention from the name would have recorded `None` on every settlement.
+    - **A settlement of exactly 0 or 1 is the normal case**, and `_probability` maps both to
+          `None` because a *quote* there means "nobody is quoting this side". Running settlements
+          through it would have erased every resolved market while leaving the voided ones.
+    - **A market that paid nobody is not a NO.** Gamma's `["0","0"]` gives a YES value of 0,
+          indistinguishable from a real NO read off the YES side alone — and a real NO paid the
+          NO holder a dollar. Left that way, a voided market on one venue reads as *agreement*
+          with a genuine NO on the other, which is the exact disagreement PM2 exists to find.
+          It is now `VOID`, and it does not settle a position.
+  - [ ] **Binance settlements are unreachable, and it is an id format rather than an endpoint.**
+        The stored leg is `marketId:tokenId` — everything the order book needs, which is what it
+        was designed for — while `market/detail` is keyed by `marketTopicId`, which the composite
+        does not carry and the group record never kept. So even a settlement field on that
+        response could not be reached from the leg holding the position. `read_resolutions`
+        refuses with its own `PREDMARKET_RESOLUTION_UNSUPPORTED` rather than reporting every
+        Binance leg as *not settled yet*, because a caller that cannot tell those apart waits
+        forever for an answer that is not coming. **This is load-bearing for PM2, not a corner:
+        most confirmed groups are binance×polymarket**, so today most groups can never become
+        comparable. The fix has a precedent one box down — #287, a confirmed leg keeping the fee
+        rate a by-id re-read cannot carry: `confirm` sees the topic id at proposal time and could
+        capture it the same way. It is a change to the group record **and to every group already
+        confirmed**, so it is written down here rather than guessed at.
+  - [x] **`run_watch_scan` never degraded per venue** — found while building the sweep, fixed in
+        the same PR. `collect_pred_markets` converts an adapter's `ToolError` into a `ToolBlocked`,
+        and those two are **siblings** under `MvpRuntimeError` rather than parent and child, so
+        the scan's `except ToolError` could not fire. One venue failing raised out of the whole
+        scan and discarded the observations of every venue that *had* answered — the rows going
+        missing entirely instead of being recorded as non-readings, which is the omission this
+        module's own header calls out ("how often" is a ratio whose denominator is those
+        attempts) and which biases the number **upward**, because the scans that vanish are the
+        ones where conditions were worst. `VENUE_UNREADABLE` reading 0 across ~98,000 stored
+        readings was the visible symptom, and it looked like good news.
+  - [ ] **The clean exit artifact is not available on 2026-08-10. It is available 2026-08-12T10:15Z.**
+        `build_pm1_report` reads `is_opportunity` off the stored row instead of recomputing it,
+        which is right — the row is the evidence — and means an unbounded report answers "how
+        often" across every rule that has ever been in force. Three have been. Bounding the report
+        to the regime that has held since the last gate change is what `--since` is for, and the
+        window it measures starts there:
+
+        ```
+        docker exec thomas-scheduler python -m runtime.mvp_runtime.predmarket.pairs_cli \
+            report --since 2026-07-29T10:15:08Z
+        ```
+
+        That instant is the first row carrying `predmarket_opportunity.v0.2` and all three gates
+        (`IMPLAUSIBLE_EDGE`, `NOT_QUOTED`, `NO_SIZE_AT_TOUCH`); 15,612 earlier observations fall
+        outside it. **The cost of not passing it is visible today.** The unbounded report's single
+        largest find is a 69.94¢ net edge — Binance quoting 0.723 against Polymarket's 0.0015 on
+        the same "event" — which is not an arbitrage but the broken pairing `MAX_PLAUSIBLE_NET_EDGE`
+        was written to catch. Its four readings say so on their face: the two from before the gate
+        landed carry `is_opportunity: true, reasons: []`, the two after carry
+        `is_opportunity: false, reasons: [IMPLAUSIBLE_EDGE]`. Bounded, that pairing withdraws and
+        **no reading anywhere in the store survives above the threshold**. The exit artifact is
+        what PM3's entry criteria get computed from, so it is the one report that must not be run
+        unbounded.
+  - [ ] ⚠️ Thomas sets **PM3 entry criteria as numbers** — the roadmap says *before PM2 ends*;
+        **set them before it starts.** Criteria written once the paper results are in are fitted
+        to them, which is the failure the register entry exists to prevent, and the window has
+        already produced enough to write against. Measured 2026-07-31T08:11Z, bounded as above
+        (span 1.91 of 14 days, 77 pairings, 26,831 opportunity readings, 76 episodes):
+
+        | | p25 | median | p75 |
+        |---|---|---|---|
+        | opportunity rate, per pairing (40 of 77 had any) | 0.164 | 0.736 | 1.000 |
+        | net edge, per-pairing median | 0.09¢ | 0.23¢ | 0.73¢ |
+        | episode duration, per-pairing median (lower bound) | 4.8h | 15.1h | 22.7h |
+
+        **Persistence is not the constraint; size is.** A mispricing that survives 15 hours is
+        one that minutes of R9 approval latency cannot miss, which was the open question PM1 was
+        built to answer and is now answered in PM3's favour. What it buys is 0.23¢ per contract
+        *after* fees. Read the durations as lower bounds and nothing else — 72 of 76 episodes are
+        censored (23 still open, 24 cut by a gap, 25 already running at the window's start).
+  - [ ] ⚠️ **The roadmap's holding period is the design question these numbers raise.** Hold-to-
+        resolution on the pairings actually confirmed means locking capital until a 2028
+        nomination settles, to collect a sub-1% spread — while the episode data says the same
+        spread converges in hours. Both capture it; they differ by two orders of magnitude in
+        capital efficiency, and PM2's fill model has to be built for one of them. Decide with
+        the PM3 criteria, not after.
+  - [ ] ⚠️ **`pm_paper_trading` grant** — Thomas approval, evidence file, activation record. Its
+        own provider on purpose, so revoking it does not revoke crypto's `paper_trading` and vice
+        versa. Nothing on this machine has one today (`safety_flag_activations/` holds
+        `paper_trading`, which is the crypto track).
 - [ ] **PM3 — approval-gated live orders** ⚠️⚠️ — **triple-blocked**: PM0 done + PM2 criteria met +
       the live-execution governance packet (section C) implemented. Per-order R9 approval +
       single-use consumption behind `kalshi_trade` / `polymarket_trade` grants. Third consumption

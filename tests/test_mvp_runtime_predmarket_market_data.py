@@ -885,3 +885,263 @@ def test_the_mock_drops_only_the_quote_too(monkeypatch):
                 continue
             assert getattr(stripped, f.name) == getattr(original, f.name), \
                 f"unquoted mock read lost {f.name}"
+
+
+# --- how a market ended ---------------------------------------------------------
+#
+# Payload shapes measured against both live endpoints on 2026-07-31, not recalled. The two
+# surprises are pinned as their own tests: Kalshi's `settlement_ts` is an ISO string despite
+# the `_ts` suffix, and its settled rows come back `status: "finalized"` from a
+# `status=settled` query.
+
+def _kalshi_settled(**over):
+    row = {
+        "ticker": "KXMVECROSSCATEGORY-S2026EE0565B0115-D615DF93CA5",
+        "status": "finalized",
+        "result": "yes",
+        "settlement_value_dollars": "1.0000",
+        "settlement_ts": "2026-07-31T08:21:44.551696Z",
+        "close_time": "2026-07-31T08:15:00Z",
+    }
+    row.update(over)
+    return row
+
+
+def _gamma_settled(**over):
+    row = {
+        "question": "Credible FDV above $100M one day after launch?",
+        "conditionId": "0x0c481aa6",
+        "closed": True,
+        "active": True,
+        "umaResolutionStatus": "resolved",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0", "1"]',
+        "clobTokenIds": '["73807527500783050316762504004387976204708672286395072644316833324096965436278", "61928819116045226303328793498076394210833476860535203374962111437729744174791"]',
+    }
+    row.update(over)
+    return row
+
+
+def test_a_settled_kalshi_market_carries_the_side_and_what_it_paid():
+    found = md.parse_kalshi_resolutions({"markets": [_kalshi_settled()]})
+    settlement = found["KXMVECROSSCATEGORY-S2026EE0565B0115-D615DF93CA5"]
+    assert settlement.outcome == md.RESOLVED_YES
+    assert settlement.yes_value == 1.0
+    assert settlement.venue_word == "yes"
+    assert settlement.settled() is True
+
+
+def test_a_settlement_of_exactly_zero_is_an_outcome_not_an_absence():
+    """The trap `_settlement_value` exists for. `_probability` maps 0 and 1 to None because a
+    QUOTE there means "nobody is quoting this side" — run a SETTLEMENT through it and every
+    resolved market in the store reads as never settled, while the voided ones survive."""
+    found = md.parse_kalshi_resolutions(
+        {"markets": [_kalshi_settled(result="no", settlement_value_dollars="0.0000")]})
+    settlement = next(iter(found.values()))
+    assert settlement.outcome == md.RESOLVED_NO
+    assert settlement.yes_value == 0.0
+    assert settlement.settled() is True
+
+
+def test_the_kalshi_settlement_stamp_is_an_iso_string_despite_the_ts_suffix():
+    """Measured, not assumed. The same venue's `min_close_ts` REQUEST parameter is epoch
+    seconds, so the suffix invites exactly the wrong reading — a parser that divided this by
+    anything would have recorded None on every settled market."""
+    settlement = next(iter(md.parse_kalshi_resolutions({"markets": [_kalshi_settled()]}).values()))
+    assert settlement.settled_at == "2026-07-31T08:21:44Z"
+    numeric = md.parse_kalshi_resolutions({"markets": [_kalshi_settled(settlement_ts=1785000000)]})
+    assert next(iter(numeric.values())).settled_at.startswith("20")
+    for junk in (None, "", 0, "not-a-time"):
+        blank = md.parse_kalshi_resolutions({"markets": [_kalshi_settled(settlement_ts=junk)]})
+        assert next(iter(blank.values())).settled_at is None
+
+
+def test_a_word_that_contradicts_its_number_settles_nothing():
+    """`result: yes` against a $0.00 settlement is not a YES with a typo — it is two fields
+    describing different settlements, and paying out on whichever was read first is how a
+    paper ledger books a win it never had. Both are withdrawn; the word survives to be read."""
+    found = md.parse_kalshi_resolutions(
+        {"markets": [_kalshi_settled(result="yes", settlement_value_dollars="0.0000")]})
+    settlement = next(iter(found.values()))
+    assert settlement.outcome == md.RESOLVED_SPLIT
+    assert settlement.yes_value is None
+    assert settlement.venue_word == "yes"
+
+
+def test_a_scalar_settlement_is_not_forced_onto_a_side():
+    """Kalshi settles some markets to a number rather than YES or NO. No binary position in
+    this package can be settled against that, so it lands in SPLIT carrying the venue's word
+    rather than being rounded into an outcome."""
+    found = md.parse_kalshi_resolutions(
+        {"markets": [_kalshi_settled(result="scalar", settlement_value_dollars="0.3700")]})
+    settlement = next(iter(found.values()))
+    assert settlement.outcome == md.RESOLVED_SPLIT
+    assert (settlement.yes_value, settlement.venue_word) == (0.37, "scalar")
+
+
+@pytest.mark.parametrize("payload", [None, [], {"markets": "nope"}])
+def test_a_malformed_settled_payload_raises_rather_than_reporting_no_settlements(payload):
+    with pytest.raises(ToolError) as exc:
+        md.parse_kalshi_resolutions(payload)
+    assert exc.value.reason_code == "MALFORMED_RESULT"
+
+
+def test_a_polymarket_resolution_describes_the_market_not_the_side_asked_for():
+    """THE correctness property here. Both token ids key the SAME resolution, and `yes_value`
+    is always the YES side's payout. Keying each token to its own payout reads as right and is
+    not: a lookup by the NO token of a market that resolved NO returned `yes_value: 1.0`."""
+    found = md.parse_gamma_resolutions([_gamma_settled()])
+    yes_token = "73807527500783050316762504004387976204708672286395072644316833324096965436278"
+    no_token = "61928819116045226303328793498076394210833476860535203374962111437729744174791"
+    assert found[yes_token] == found[no_token]
+    assert found[yes_token].outcome == md.RESOLVED_NO
+    assert found[yes_token].yes_value == 0.0
+    assert found[yes_token].venue_word == "No"
+
+
+def test_the_yes_side_is_located_by_name_not_by_position():
+    """`parse_gamma_markets` takes `clobTokenIds[0]` as YES. A settlement that inherited that
+    assumption would turn a listing-order surprise into a wrong PAYOUT instead of a missing
+    one, so this one reads `outcomes` and finds the side by its name."""
+    flipped = md.parse_gamma_resolutions([_gamma_settled(
+        outcomes='["No", "Yes"]', outcomePrices='["0", "1"]')])
+    settlement = next(iter(flipped.values()))
+    assert settlement.outcome == md.RESOLVED_YES
+    assert settlement.yes_value == 1.0
+    assert settlement.venue_word == "Yes"
+
+
+def test_a_closed_polymarket_market_whose_resolver_has_not_finished_is_not_an_outcome():
+    """Kalshi's "closed is not settled" in Polymarket's vocabulary. A price that has not been
+    arbitrated yet is a wait, and reporting it as a settlement pays out on a number UMA may
+    still overturn."""
+    pending = md.parse_gamma_resolutions([_gamma_settled(umaResolutionStatus="proposed")])
+    settlement = next(iter(pending.values()))
+    assert settlement.outcome == md.RESOLVED_UNDETERMINED
+    assert settlement.settled() is False
+    assert settlement.venue_word == "proposed"
+
+
+def test_an_absent_resolution_status_does_not_veto_the_prices():
+    """Absence is silence, not denial — the module's standing rule. Observed 2026-07-31: a
+    2020 market carried the plural `umaResolutionStatuses: "[]"` and no singular field."""
+    row = _gamma_settled()
+    row.pop("umaResolutionStatus")
+    row["umaResolutionStatuses"] = "[]"
+    settlement = next(iter(md.parse_gamma_resolutions([row]).values()))
+    assert settlement.outcome == md.RESOLVED_NO
+    assert settlement.settled() is True
+
+
+def test_a_split_pays_both_sides_and_is_still_settleable():
+    """UMA can split a market 50/50. That is a definite amount of money — 0.5 a contract — so
+    a position closes against it; it just is not a side."""
+    split = next(iter(md.parse_gamma_resolutions(
+        [_gamma_settled(outcomePrices='["0.5", "0.5"]')]).values()))
+    assert (split.outcome, split.yes_value, split.venue_word) == (md.RESOLVED_SPLIT, 0.5, None)
+    assert split.settled() is True
+
+
+def test_a_market_that_paid_nobody_is_void_and_never_a_no():
+    """Found by this file's own split test. `["0","0"]` gives `yes_value: 0.0`, which read off
+    the YES side alone is indistinguishable from a real NO — and a real NO paid the NO holder
+    a dollar while this paid nobody. Left as NO, a voided market on one venue reads as
+    agreement with a genuine NO on the other, which is the exact disagreement PM2 exists to
+    find. It does not settle: nothing here says what the position was worth."""
+    void = next(iter(md.parse_gamma_resolutions(
+        [_gamma_settled(outcomePrices='["0", "0"]')]).values()))
+    assert (void.outcome, void.yes_value, void.venue_word) == (md.RESOLVED_VOID, 0.0, None)
+    assert void.settled() is False
+
+
+def test_a_settlement_with_no_number_behind_it_does_not_close_a_position():
+    """The other half of `settled()`. A word contradicting its value yields SPLIT with no
+    value — a category that names an outcome over evidence that does not support one — and
+    booking a P&L against it is precisely what the contradiction check was for."""
+    contradicted = next(iter(md.parse_kalshi_resolutions(
+        {"markets": [_kalshi_settled(result="yes", settlement_value_dollars="0.0000")]}).values()))
+    assert contradicted.outcome == md.RESOLVED_SPLIT
+    assert contradicted.settled() is False
+
+
+def test_every_requested_id_gets_a_row_even_the_ones_that_have_not_settled():
+    """The contract that makes waiting distinguishable from failing. A venue lists only what
+    has settled, so the ids it omits are the unsettled ones — dropping them would make "still
+    open" arrive as an absence, which a caller reads as "nothing came back"."""
+    collector = md.MockPredMarketCollector(md.KALSHI)
+    asked = ["KALSHI-MOCK-00", "KALSHI-MOCK-03", "NEVER-HEARD-OF-IT"]
+    snapshot = collector.read_resolutions(asked, timeout_seconds=1)
+    assert [m.market_id for m in snapshot.markets] == asked
+    assert all(m.resolution is not None for m in snapshot.markets)
+    assert [m.resolution.settled() for m in snapshot.markets] == [True, False, False]
+    assert snapshot.quotes_requested is False
+
+
+def test_a_price_read_never_claims_to_know_how_a_market_ended():
+    """`resolution is None` means nobody asked. It is the one field where "did not say" and
+    "settled NO" differ by the whole position, so the price paths must leave it empty."""
+    for market in md.MockPredMarketCollector().list_markets(limit=4, timeout_seconds=1).markets:
+        assert market.resolution is None
+        assert market.as_dict()["resolution"] is None
+
+
+def test_the_two_mock_venues_disagree_about_one_market_on_purpose():
+    """The same reasoning as the mock's price skew. Cross-venue resolution disagreement is the
+    specific risk PM2 exists to measure, and mocks that always agree let a mismatch detector
+    ship broken."""
+    kalshi = md.MockPredMarketCollector(md.KALSHI).read_resolutions(
+        ["KALSHI-MOCK-02"], timeout_seconds=1).markets[0]
+    polymarket = md.MockPredMarketCollector(md.POLYMARKET).read_resolutions(
+        ["POLYMARKET-MOCK-02"], timeout_seconds=1).markets[0]
+    assert kalshi.resolution.settled() and polymarket.resolution.settled()
+    assert kalshi.resolution.outcome != polymarket.resolution.outcome
+
+
+def test_binance_refuses_settlements_and_says_it_is_the_id_format(monkeypatch):
+    """Not an outage and not a wait. A confirmed Binance leg is `marketId:tokenId`, which
+    cannot address `market/detail`'s `marketTopicId` — so no settlement is reachable from the
+    leg holding the position, and UNDETERMINED would leave a caller waiting forever."""
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+    collector = md.BinancePredictionCollector(authorization=_authorized())
+    with pytest.raises(ToolError) as exc:
+        collector.read_resolutions(["6800574:281527791069982019"], timeout_seconds=1)
+    assert exc.value.reason_code == md.RESOLUTION_UNSUPPORTED
+
+
+@pytest.mark.parametrize("venue", [md.KALSHI, md.POLYMARKET])
+def test_the_gate_comes_first_for_a_settlement_read_too(venue):
+    """A third read path is a third place the grant has to be checked. Nothing about asking
+    how a market ended makes the socket less of a socket."""
+    collector = (md.KalshiPublicCollector() if venue == md.KALSHI
+                 else md.PolymarketPublicCollector())
+    with pytest.raises(SafetyGateBlocked):
+        collector.read_resolutions(["ANY-ID"], timeout_seconds=1)
+
+
+def test_the_settlement_record_counts_what_actually_settled(monkeypatch):
+    """`settled_count` next to `market_count` for the reason `quoted_count` sits next to it: a
+    read where everything came back UNDETERMINED is a successful call that answered nothing,
+    and one number cannot say that."""
+    collector = md.MockPredMarketCollector(md.KALSHI)
+    snapshot, record = md.collect_pred_resolutions(
+        md.KALSHI, collector=collector,
+        market_ids=["KALSHI-MOCK-00", "KALSHI-MOCK-01", "KALSHI-MOCK-03"], now=NOW)
+    assert (snapshot["market_count"], snapshot["settled_count"]) == (3, 2)
+    assert (record["market_count"], record["settled_count"]) == (3, 2)
+    assert record["operation"] == "collect_pred_resolutions"
+    assert record["read_only"] is True and record["external_action"] is False
+    assert record["output_sha256"].startswith("sha256:")
+
+
+def test_an_unsupported_venue_blocks_the_read_rather_than_reporting_no_settlements(monkeypatch):
+    """The refusal has to survive the record layer with its own code. Folded into a generic
+    TOOL_ERROR it would be indistinguishable from an outage, and an outage is something you
+    retry."""
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+    collector = md.BinancePredictionCollector(authorization=_authorized())
+    with pytest.raises(ToolBlocked) as exc:
+        md.collect_pred_resolutions(
+            md.BINANCE, collector=collector, market_ids=["1:2"], now=NOW)
+    assert exc.value.reason_code == md.RESOLUTION_UNSUPPORTED

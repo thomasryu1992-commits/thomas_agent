@@ -31,7 +31,7 @@ from typing import Any, Iterable, Iterator, Mapping
 from runtime.read_only_kernel import integrity
 
 from .. import timeutil
-from ..errors import PersistenceError, ToolError
+from ..errors import PersistenceError, ToolBlocked, ToolError
 from ..filelock import locked
 from ..jsonl import append_lines, iter_objects
 from . import opportunity, pairs
@@ -41,6 +41,7 @@ from .market_data import (
     PredMarket,
     VenueQuote,
     collect_pred_markets,
+    collect_pred_resolutions,
     degraded_pred_market_record,
     is_synthetic_snapshot,
     select_pred_market_collector,
@@ -244,8 +245,23 @@ def run_watch_scan(
                 venue, collector=collector, now=now, limit=limit,
                 market_ids=sorted(set(wanted[venue])),
             )
-        except ToolError as exc:
+        except (ToolBlocked, ToolError) as exc:
             # Recorded, never silent — the crypto MARKET_DATA_DEGRADED posture.
+            #
+            # `ToolBlocked` is listed first because it is the one that actually arrives, and
+            # for two years of this file's life it was not caught at all. `collect_pred_markets`
+            # converts an adapter's `ToolError` into a `ToolBlocked`, and the two are SIBLINGS
+            # under `MvpRuntimeError` rather than parent and child — so this clause, written as
+            # `except ToolError`, could never fire. The docstring above promised per-venue
+            # degradation; what happened instead was that one venue failing raised out of the
+            # whole scan, discarding the observations of every venue that had answered.
+            #
+            # The window pays for that twice. The rows are missing rather than recorded as
+            # non-readings, which is exactly the omission this module's header calls out — "how
+            # often" is a ratio whose denominator is those attempts — and it biases the number
+            # upward, because the scans that vanish are the ones where conditions were worst.
+            # `VENUE_UNREADABLE` reading 0 across the whole store was the visible symptom, and
+            # it looked like good news.
             degraded_pred_market_record(collector, venue, PREDMARKET_DEGRADED, now=now)
             venue_errors[venue] = exc.reason_code
             continue
@@ -323,6 +339,127 @@ def run_watch_scan(
         "predmarket_scan", {"at": now, "groups": str(len(groups))}
     )
     return scan
+
+
+def run_resolution_sweep(
+    *, now: str, root: Path | None = None, timeout_seconds: int = 15
+) -> dict[str, Any]:
+    """Ask every venue in every confirmed group how its leg ended, and compare the answers.
+
+    The sibling of :func:`run_watch_scan` and deliberately its shape: read only the venues the
+    confirmed groups name, degrade per venue, never let one venue's silence stand for an
+    answer. What differs is the question and the cadence — a settlement is asked for once,
+    after close, not every two minutes.
+
+    **The comparison is the point.** Two venues that both settled a group are the only place
+    resolution mismatch becomes visible, and it is the risk the whole cross-venue strategy
+    turns on: identical-looking questions that pay out differently. A group whose legs
+    disagree is reported as a ``mismatch`` — never resolved automatically, because which venue
+    was *right* is a reading of two settlement texts and that has been an operator judgement
+    since the group was confirmed.
+
+    Writes nothing. This is a read that reports; PM2's ledger is what will consume it, and
+    giving it a store now would be building PM2's half of the boundary before PM2 exists.
+    """
+    groups = pairs.read_groups(root)
+    wanted: dict[str, list[str]] = {}
+    for group in groups:
+        for leg in group.get("legs") or []:
+            wanted.setdefault(leg["venue"], []).append(leg["market_id"])
+    needed = sorted(wanted)
+
+    settled: dict[str, dict[str, Any]] = {}
+    venue_errors: dict[str, str] = {}
+    for venue in needed:
+        collector = select_pred_market_collector(venue, now=now, root=root)
+        try:
+            snapshot, _record = collect_pred_resolutions(
+                venue, collector=collector, market_ids=sorted(set(wanted[venue])),
+                now=now, timeout_seconds=timeout_seconds,
+            )
+        except (ToolBlocked, ToolError) as exc:
+            # Both, for the reason spelled out in `run_watch_scan`: the one that arrives here
+            # is `ToolBlocked`, and it is not a subclass of `ToolError`. Binance arrives this
+            # way by design — its refusal is permanent rather than an outage, and it keeps its
+            # own `RESOLUTION_UNSUPPORTED` code so the sweep reports a gap and not a bad day.
+            degraded_pred_market_record(collector, venue, exc.reason_code, now=now)
+            venue_errors[venue] = exc.reason_code
+            continue
+        if is_synthetic_snapshot(snapshot):
+            # The same door `run_watch_scan` closes, and it matters more here: a mock answers
+            # successfully, so without this a settlement derived from `(venue, index)` would
+            # be reported as how a real market ended.
+            degraded_pred_market_record(collector, venue, SYNTHETIC_SOURCE, now=now)
+            venue_errors[venue] = SYNTHETIC_SOURCE
+            continue
+        for market in snapshot.get("markets") or []:
+            settled[f"{market['venue']}:{market['market_id']}"] = market.get("resolution") or {}
+
+    results: list[dict[str, Any]] = []
+    for group in groups:
+        legs = []
+        for leg in group.get("legs") or []:
+            resolution = settled.get(f"{leg['venue']}:{leg['market_id']}")
+            legs.append({
+                "venue": leg["venue"],
+                "market_id": leg["market_id"],
+                # `None` where the venue was never reached, which is not the same fact as a
+                # venue that answered UNDETERMINED — one is our outage, the other is its wait.
+                "resolution": resolution,
+                "unreadable": venue_errors.get(leg["venue"]),
+            })
+        outcomes = {
+            leg["resolution"]["outcome"] for leg in legs
+            if leg["resolution"] and leg["resolution"].get("settled")
+        }
+        results.append({
+            "event_id": group.get("event_id"),
+            "legs": legs,
+            "settled_legs": sum(1 for leg in legs
+                                if leg["resolution"] and leg["resolution"].get("settled")),
+            # Only a group where **more than one** venue settled can disagree. A group with
+            # one settled leg is not agreement, it is a group still waiting — and counting it
+            # either way is how a mismatch rate gets quietly diluted by markets nobody has
+            # heard from yet.
+            "comparable": len(outcomes) > 0 and sum(
+                1 for leg in legs
+                if leg["resolution"] and leg["resolution"].get("settled")) > 1,
+            "mismatch": len(outcomes) > 1,
+        })
+
+    comparable = [r for r in results if r["comparable"]]
+    sweep = {
+        "scan_version": SCAN_RECORD_VERSION,
+        "scan_kind": "resolution",
+        "groups_observed": len(groups),
+        "venues_read": [v for v in needed if v not in venue_errors],
+        "venue_errors": venue_errors,
+        "groups": results,
+        "comparable_count": len(comparable),
+        "mismatch_count": sum(1 for r in comparable if r["mismatch"]),
+        "observed_at_utc": now,
+        "authorizes_trading": False,
+    }
+    sweep["scan_id"] = integrity.short_id(
+        "predmarket_resolution_sweep", {"at": now, "groups": str(len(groups))}
+    )
+    return sweep
+
+
+def resolution_status_line(sweep: Mapping[str, Any]) -> str:
+    """One ASCII line for the console (Windows consoles are cp949).
+
+    Leads with what settled rather than what was asked, because on this sweep those numbers
+    diverge for a long time: PM1's groups are mostly 2028 markets, so for most of the window
+    the honest headline is that almost nothing has ended yet.
+    """
+    errors = sweep.get("venue_errors") or {}
+    tail = f" degraded={','.join(sorted(errors))}" if errors else ""
+    return (
+        f"pm_resolution: {sweep.get('mismatch_count')} mismatch(es) from "
+        f"{sweep.get('comparable_count')} comparable of {sweep.get('groups_observed')} "
+        f"group(s){tail}"
+    )
 
 
 def scan_status_line(scan: Mapping[str, Any]) -> str:
