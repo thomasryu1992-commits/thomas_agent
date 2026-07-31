@@ -133,6 +133,58 @@ def immutable_write_text(path: Path, text: str) -> None:
     immutable_write_bytes(path, text.encode("utf-8"))
 
 
+LOCK_DIR_NAME = "thomas_agent_locks"
+
+
+def git_directory(root: Path) -> Path:
+    """The git directory backing the checkout at ``root``.
+
+    ``.git`` is a **directory** in a normal clone and a **file** in a ``git worktree``
+    checkout — one line reading ``gitdir: <path>``, naming that worktree's own git directory
+    under the main repository. Both forms are ordinary git; only the first was ever handled
+    here, and the second is the one the repository's own recovery advice produces.
+
+    Fails closed with :class:`SafeIOError` on anything else. It used to fail *open* into a
+    stack trace: a caller would build ``root / ".git" / ...`` and ``mkdir`` it, which raises a
+    bare ``NotADirectoryError`` from inside ``pathlib`` naming neither git nor the worktree
+    nor what to do about it.
+    """
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker.resolve()
+    if marker.is_file():
+        try:
+            text = marker.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SafeIOError(f"Git worktree marker is unreadable: {marker}") from exc
+        if not text.startswith("gitdir:"):
+            raise SafeIOError(f"Git worktree marker has invalid format: {marker}")
+        value = text.split(":", 1)[1].strip()
+        if not value:
+            raise SafeIOError(f"Git worktree marker names no directory: {marker}")
+        candidate = Path(value)
+        return candidate if candidate.is_absolute() else (root / candidate).resolve()
+    raise SafeIOError(f"Repository has no .git metadata: {root}")
+
+
+def repo_lock_dir(root: Path) -> Path:
+    """Where this checkout's Thomas Agent locks live: inside its own git directory.
+
+    Under ``.git`` rather than in the working tree on purpose — a lock is per-machine state
+    that must never be committable, and ``.git`` is the one place in a checkout that is
+    structurally uncommittable rather than merely ignored. (The repository's other lock
+    convention, ``.runtime_locks/``, sits in the working tree and is *not* in ``.gitignore``;
+    both arrived in the same commit, so neither supersedes the other. This is the one that
+    cannot be swept into a commit by ``git add -A``, which is why the git directory is
+    resolved rather than abandoned.)
+
+    Per checkout, not per repository: a worktree has its own ``THOMAS_CORE/activations/`` and
+    its own ``.runtime_governance_state/``, so two worktrees activating a Core touch disjoint
+    files and must not serialize against each other.
+    """
+    return git_directory(root) / LOCK_DIR_NAME
+
+
 @contextmanager
 def exclusive_lock(
     lock_path: Path,
