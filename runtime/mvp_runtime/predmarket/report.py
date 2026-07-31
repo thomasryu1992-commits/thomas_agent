@@ -178,23 +178,65 @@ def build_pm1_report(
     say so, not to destroy them. A bounded report says on its face that it is bounded, so it
     cannot be mistaken for one over everything.
     """
-    observed = list(rows) if rows is not None else obs.read_observations(root)
-    excluded_before = 0
-    if since:
-        kept = [r for r in observed
-                if isinstance(r, Mapping) and str(r.get("observed_at_utc") or "") >= since]
-        excluded_before = len(observed) - len(kept)
-        observed = kept
+    source: Iterable[Mapping[str, Any]] = rows if rows is not None else obs.iter_observations(root)
 
+    # One pass, and nothing whole is kept. The store is cumulative for the length of the
+    # window, so it is the one input here that grows without bound while the phase runs: at
+    # day four of fourteen it was 290 MB / ~87,000 rows, and holding it as parsed objects cost
+    # over 1.2 GB against roughly 1 GB free on the host that is also running the scan writing
+    # it. Reading the evidence must not be able to kill the collection of it.
+    #
+    # What this loop keeps per row is the three fields the report actually reads
+    # (`observed_at_utc`, `is_opportunity`, `net_edge`); everything else is counted and
+    # dropped. The pairing's identity, legs and event id are kept ONCE, on first sight, which
+    # is the same row `group[0]` used to be. Measured on the real store: 1.2 GB -> 46 MB.
+    #
+    # `episodes()` is untouched and still receives mappings in append order — the projection
+    # is transparent to it, which is the point. A caller that passes `rows` directly (the
+    # tests, and anything holding its own list) is unaffected: the same fields are read off
+    # whatever arrives.
+    stamp_pool: dict[str, str] = {}   # scan timestamps repeat once per group; share the string
     by_pairing: dict[str, list[Mapping[str, Any]]] = {}
-    for row in observed:
-        if isinstance(row, Mapping):
-            by_pairing.setdefault(pairing_key(row), []).append(row)
+    meta: dict[str, tuple[Any, Any]] = {}
+    incidents = {code: 0 for code in (obs.MARKET_NOT_LISTED, obs.VENUE_UNREADABLE, obs.SOURCE_SYNTHETIC)}
+    observation_count = 0
+    readable_count = 0
+    excluded_before = 0
+    first_stamp: str | None = None
+    last_stamp: str | None = None
+    stamped = 0
 
-    stamps = sorted(str(r.get("observed_at_utc") or "") for r in observed if r.get("observed_at_utc"))
-    window_seconds = _seconds(stamps[0], stamps[-1]) if len(stamps) >= 2 else 0.0
-    readable = [r for r in observed if r.get("net_edge") is not None]
-    coverage = len(readable) / len(observed) if observed else 0.0
+    for row in source:
+        if not isinstance(row, Mapping):
+            continue
+        stamp = str(row.get("observed_at_utc") or "")
+        if since and stamp < since:
+            excluded_before += 1
+            continue
+        observation_count += 1
+        net_edge = row.get("net_edge")
+        if net_edge is not None:
+            readable_count += 1
+        for reason in (row.get("reasons") or []):
+            if reason in incidents:
+                incidents[reason] += 1
+        if stamp:
+            stamped += 1
+            if first_stamp is None or stamp < first_stamp:
+                first_stamp = stamp
+            if last_stamp is None or stamp > last_stamp:
+                last_stamp = stamp
+        key = pairing_key(row)
+        if key not in meta:
+            meta[key] = (row.get("event_id"), row.get("legs"))
+        by_pairing.setdefault(key, []).append({
+            "observed_at_utc": stamp_pool.setdefault(stamp, stamp),
+            "is_opportunity": row.get("is_opportunity"),
+            "net_edge": net_edge,
+        })
+
+    window_seconds = _seconds(first_stamp, last_stamp) if stamped >= 2 else 0.0
+    coverage = readable_count / observation_count if observation_count else 0.0
 
     pairings: list[dict[str, Any]] = []
     for key, group in sorted(by_pairing.items()):
@@ -203,10 +245,11 @@ def build_pm1_report(
         eps = episodes(group, max_gap_seconds=max_gap_seconds)
         lowers = [e["duration_lower_seconds"] for e in eps]
         bounded = [e["duration_upper_seconds"] for e in eps if e["duration_upper_seconds"] is not None]
+        event_id, legs = meta.get(key, (None, None))
         pairings.append({
             "pairing_key": key,
-            "event_id": (group[0].get("event_id") if group else None),
-            "legs": (group[0].get("legs") if group else None),
+            "event_id": event_id,
+            "legs": legs,
             "observation_count": len(group),
             "readable_count": len(group_readable),
             # The denominator is readings. Dividing by attempts would let an outage look
@@ -228,21 +271,16 @@ def build_pm1_report(
             "episodes": eps,
         })
 
-    # Pair-mismatch and outage incidents, which the roadmap asks for by name. A group whose
-    # market stopped being listed is a stale or resolved pairing — an operator action, not a
-    # scanner bug — and it must not be filed under "venue was down".
-    #
-    # SOURCE_SYNTHETIC is the third: the gate was closed and the mock answered, so the runtime
-    # never reached the venue at all. It has to be tallied here or a report can show coverage
-    # collapsing to INSUFFICIENT_COVERAGE with both other counts at zero — the number with no
-    # explanation next to it.
-    incidents = {
-        code: sum(1 for r in observed if code in (r.get("reasons") or []))
-        for code in (obs.MARKET_NOT_LISTED, obs.VENUE_UNREADABLE, obs.SOURCE_SYNTHETIC)
-    }
+    # `incidents` — pair-mismatch and outage counts, which the roadmap asks for by name — is
+    # tallied in the pass above rather than here. A group whose market stopped being listed is
+    # a stale or resolved pairing, an operator action rather than a scanner bug, and it must
+    # not be filed under "venue was down". SOURCE_SYNTHETIC is the third: the gate was closed
+    # and the mock answered, so the runtime never reached the venue at all. That one has to be
+    # counted or a report can show coverage collapsing to INSUFFICIENT_COVERAGE with both other
+    # counts at zero — the number with no explanation next to it.
 
     days = (window_seconds or 0.0) / 86400.0
-    if not observed:
+    if not observation_count:
         verdict = NO_OBSERVATIONS
     elif coverage < MIN_COVERAGE:
         verdict = INSUFFICIENT_COVERAGE
@@ -256,8 +294,8 @@ def build_pm1_report(
         "report_version": REPORT_VERSION,
         "generated_at_utc": now,
         "window": {
-            "first_observation_utc": stamps[0] if stamps else None,
-            "last_observation_utc": stamps[-1] if stamps else None,
+            "first_observation_utc": first_stamp,
+            "last_observation_utc": last_stamp,
             "span_days": round(days, 4),
             "required_days": EXIT_ARTIFACT_MIN_DAYS,
             # Stated so a bounded report cannot be mistaken for one over everything. The count
@@ -266,8 +304,8 @@ def build_pm1_report(
             "since": since,
             "excluded_before_since": excluded_before,
         },
-        "observation_count": len(observed),
-        "readable_count": len(readable),
+        "observation_count": observation_count,
+        "readable_count": readable_count,
         # Reported beside every rate, never folded into one: a low-coverage report describes
         # the scanner rather than the market.
         "coverage": round(coverage, 6),

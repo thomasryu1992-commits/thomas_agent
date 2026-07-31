@@ -26,14 +26,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from ..errors import PersistenceError, ToolError
 from ..filelock import locked
-from ..jsonl import append_lines, read_objects
+from ..jsonl import append_lines, iter_objects
 from . import opportunity, pairs
 from .market_data import (
     PREDMARKET_DEGRADED,
@@ -110,15 +110,37 @@ def append_observations(
     return len(rows)
 
 
-def read_observations(root: Path | None = None) -> list[dict[str, Any]]:
-    """Every observation, hash-verified. Fails closed on corruption or tampering."""
+def iter_observations(root: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Every observation, hash-verified, one at a time. Fails closed on corruption/tampering.
+
+    The store is cumulative for the length of the window — deliberately, since the window is
+    cumulative and a reading already banked cannot be un-banked — so it is the one store here
+    that grows without bound while the phase runs. Four days into PM1's fourteen it held
+    290 MB across ~87,000 rows, and materializing that cost over 1.2 GB of process memory,
+    against roughly 1 GB free on the host running the scan that writes it. Reading the evidence
+    must not be able to kill the collection of it.
+
+    So this yields. ``read_observations`` still exists and still returns a list for the callers
+    that want one; what changed is that the report — the only consumer that reads the whole
+    store — no longer has to be one of them.
+    """
     try:
-        rows = read_objects(
+        for row in iter_objects(
             observations_path(root), read_code=OBSERVATIONS_UNREADABLE, label="predmarket observations"
-        )
+        ):
+            if isinstance(row, Mapping):
+                yield _verify(row)
     except PersistenceError as exc:
         raise ToolError(OBSERVATIONS_UNREADABLE, str(exc)) from exc
-    return [_verify(row) for row in rows if isinstance(row, Mapping)]
+
+
+def read_observations(root: Path | None = None) -> list[dict[str, Any]]:
+    """Every observation, hash-verified, as a list. Fails closed on corruption or tampering.
+
+    Holds the whole store in memory; see :func:`iter_observations` for why that is now a
+    choice rather than the only option.
+    """
+    return list(iter_observations(root))
 
 
 # --- the scan -------------------------------------------------------------------
@@ -338,6 +360,7 @@ __all__ = [
     "append_observations",
     "now_iso",
     "observations_path",
+    "iter_observations",
     "read_observations",
     "run_watch_scan",
     "scan_status_line",

@@ -81,6 +81,40 @@ def test_an_empty_store_is_not_an_unreadable_one(state):
     assert exc.value.reason_code == obs.OBSERVATIONS_UNREADABLE
 
 
+def test_the_streaming_reader_verifies_every_row_it_yields(state):
+    """The store outgrew being held in memory (290 MB at day four of a fourteen-day window),
+    so the report streams it. Streaming must not become the door that skips the hash — the
+    report is evidence for a decision about real money, and a row that cannot prove itself is
+    refused rather than averaged in, whichever reader read it."""
+    obs.append_observations(
+        [{"event_id": f"e{i}", "net_edge": 0.01 * i, "observed_at_utc": NOW} for i in range(3)],
+        root=state,
+    )
+    assert [r["event_id"] for r in obs.iter_observations(state)] == ["e0", "e1", "e2"]
+
+    path = obs.observations_path(state)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[2])
+    row["net_edge"] = 0.40                       # the last row, by hand
+    lines[2] = json.dumps(row, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    stream = obs.iter_observations(state)
+    assert next(stream)["event_id"] == "e0"      # a generator cannot judge what it has not read
+    next(stream)
+    with pytest.raises(ToolError) as exc:
+        next(stream)
+    assert exc.value.reason_code == obs.OBSERVATIONS_TAMPERED
+
+
+def test_the_streaming_reader_fails_closed_on_an_unparseable_line(state):
+    obs.observations_path(state).parent.mkdir(parents=True, exist_ok=True)
+    obs.observations_path(state).write_text("{not json\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        list(obs.iter_observations(state))
+    assert exc.value.reason_code == obs.OBSERVATIONS_UNREADABLE
+
+
 # --- the scan -------------------------------------------------------------------
 
 def test_a_scan_with_no_confirmed_groups_reads_nothing(state):
