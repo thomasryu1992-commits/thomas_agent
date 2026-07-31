@@ -236,7 +236,8 @@ def test_canary_registry_shares_the_one_live_grant():
 
 # === the readiness board ============================================================
 
-def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z", **cap_overrides):
+def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
+                     symbol_allowlist=("BTCUSDT",), **cap_overrides):
     """Register a valid live-trading budget under ``root`` (step 6b: the guard's cap source)."""
     from runtime.mvp_runtime.crypto import live_budget
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
@@ -244,10 +245,15 @@ def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="20
                 daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
     caps.update(cap_overrides)
     rec = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from=valid_from, valid_until=valid_until,
-        registered_by="thomas", registered_at=valid_from)
+        caps=caps, symbol_allowlist=list(symbol_allowlist), valid_from=valid_from,
+        valid_until=valid_until, registered_by="thomas", registered_at=valid_from)
     live_budget.write_registered_budget(rec, root=root)
     return rec
+
+
+def _allowlist_blocks(status):
+    """The dry-run's symbol-scope blocks — the ones the board omitted its way into."""
+    return [b for b in (status["guard_dry_run"].get("blocks") or []) if "allowlist" in b]
 
 
 def test_fresh_machine_is_not_ready(tmp_path, clean_env):
@@ -327,6 +333,58 @@ def test_guard_dry_run_is_the_authoritative_answer(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["guard_dry_run"]["approved"] is False
     assert status["guard_dry_run"]["blocks"]
+
+
+def test_an_unbudgeted_machine_blocks_on_the_absent_allowlist(tmp_path, clean_env):
+    """With no budget there IS no scope, and the block naming that is the true answer.
+
+    Pinned beside the tests below because it is the case the old code reported for *every*
+    machine: correct here, and correct nowhere else."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(status) == [
+        b for b in status["guard_dry_run"]["blocks"] if "no symbol allowlist" in b
+    ]
+    assert _allowlist_blocks(status)
+    assert status["guard_dry_run_symbol"] == live_readiness.DEFAULT_PROBE_SYMBOL
+
+
+def test_the_dry_run_reads_the_registered_allowlist(tmp_path, clean_env):
+    """The defect this test exists for: the board called the guard without `allowed_symbols`,
+    whose default is EMPTY and blocks every symbol — so the one line the module calls the
+    authoritative answer reported "no symbol allowlist backs this order" on every machine,
+    however the budget was registered, and told the operator to register the budget they had
+    already registered. Both real doors (`live_route`, `place_canary_order`) read the scope off
+    the same budget the caps come from."""
+    before = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(before)          # no budget: the block is real
+
+    _register_budget(tmp_path, symbol_allowlist=["BTCUSDT"])
+    after = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(after) == []     # a registered scope is not an absent one
+    # It still refuses — on the doors that ARE shut (opt-in, phrase, canaries). The point is
+    # that the board no longer invents a thirteenth.
+    assert after["guard_dry_run"]["approved"] is False
+    assert after["guard_dry_run"]["blocks"]
+
+
+def test_the_probe_symbol_comes_from_the_budget(tmp_path, clean_env):
+    """A machine budgeted for ETHUSDT alone is correctly configured. Probing a hardcoded
+    BTCUSDT would answer a question nobody asked and report a scope block on a machine whose
+    scope is intact — the same false alarm one layer down."""
+    _register_budget(tmp_path, symbol_allowlist=["ETHUSDT", "SOLUSDT"])
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["guard_dry_run_symbol"] == "ETHUSDT"
+    assert _allowlist_blocks(status) == []
+
+
+def test_the_board_names_the_symbol_it_probed(tmp_path, clean_env):
+    """A symbol-scoped verdict is unreadable without its symbol: the operator cannot tell
+    "my budget excludes this one" from "this one is blocked"."""
+    _register_budget(tmp_path, symbol_allowlist=["SOLUSDT"])
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "guard dry-run (SOLUSDT at the configured cap):" in (
+        live_readiness.render_readiness_text(status)
+    )
 
 
 def test_order_path_flag_matches_the_governance_flag():

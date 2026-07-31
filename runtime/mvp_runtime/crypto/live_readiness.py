@@ -88,6 +88,11 @@ ORDER_PATH_IMPLEMENTED = True
 # switches, the loss breaker — is unchanged, and each has its own row above.
 AUTONOMOUS_ROUTING_WIRED = True
 
+# The symbol the guard dry-run probes when no budget names one. Only reached on a machine with
+# no usable budget — where the honest answer is a block either way — so it decides nothing; a
+# registered budget supplies the probe symbol from its own allowlist.
+DEFAULT_PROBE_SYMBOL = "BTCUSDT"
+
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
     return {"check": check_id, "ok": bool(ok), "detail": detail}
@@ -338,6 +343,22 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # A dry-run of the real guard against a representative order at the configured cap.
     # This is the authoritative answer: whatever the rows above say, this is what would
     # actually happen. Nothing is sent — the guard is pure.
+    #
+    # It is only authoritative if it is given what the real doors are given. Until 2026-07-31
+    # this call omitted `allowed_symbols`, whose default is EMPTY — and an empty allowlist
+    # blocks every symbol — so the dry-run reported "no symbol allowlist backs this order" on
+    # every machine, forever, however the budget was registered. Both real callers
+    # (`live_route.plan_live_entry`, `scripts/place_canary_order.py`) read the scope off the
+    # same budget the caps come from; so does this now. The board under-reported what the
+    # machine could do, which is the dangerous direction for a line an operator reads before
+    # deciding whether live trading is stopped.
+    #
+    # The probe symbol comes from that allowlist rather than a hardcoded BTCUSDT: a machine
+    # budgeted for ETHUSDT alone is correctly configured, and probing a symbol its own budget
+    # excludes would answer a question nobody asked. With no allowlist the probe keeps the old
+    # constant — the block it then reports is the true one.
+    allowed_symbols = tuple(budget.get("symbol_allowlist") or ())
+    probe_symbol = allowed_symbols[0] if allowed_symbols else DEFAULT_PROBE_SYMBOL
     try:
         submitted_today, counter_error = count_today(root), None
     except MvpRuntimeError as exc:
@@ -345,12 +366,13 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     guard = evaluate_live_order_guard(
         {
             "status": "ORDER_INTENT_CREATED",
-            "symbol": "BTCUSDT",
+            "symbol": probe_symbol,
             "quantity": 0.001,
             "order_notional_usdt": limits.max_order_notional_usdt,
             "reduce_only": False,
             "connectivity_test": False,
         },
+        allowed_symbols=allowed_symbols,
         gate_open=opted_in,
         runtime_active=runtime_active,
         daily_loss_breached=breached,
@@ -375,6 +397,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "ready": all(c["ok"] for c in checks),
         "checks": checks,
         "guard_dry_run": guard,
+        # Which order the dry-run judged. A symbol-scoped block is unreadable without it: the
+        # operator cannot tell "my budget excludes this symbol" from "this symbol is blocked".
+        "guard_dry_run_symbol": probe_symbol,
         "submitted_today": submitted_today,
         "counter_error": counter_error,
         "order_path_implemented": ORDER_PATH_IMPLEMENTED,
@@ -390,7 +415,8 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append(f"[{mark}] {check['check']:24} {check['detail']}")
     guard = status["guard_dry_run"]
     lines.append("")
-    lines.append(f"guard dry-run (an order at the configured cap): {guard['status']}")
+    probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
+    lines.append(f"guard dry-run ({probe} at the configured cap): {guard['status']}")
     for block in guard.get("blocks") or []:
         lines.append(f"  BLOCK  : {block}")
     for repair in guard.get("repairs") or []:
