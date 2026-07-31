@@ -1,8 +1,10 @@
 """The C4 breaker's transition watch (``crypto_breaker_watch``).
 
-Under test: it reports the same verdict the cycle would act on; it speaks on the EDGE and
-stays quiet otherwise; the first fire always announces; an undelivered announcement is not
-marked as said; and the render names the mixed-basis caveat only when the window has one.
+Under test: it reports the same verdict the LIVE leg acts on and says so — paper answers to no
+loss breaker, so a message claiming "new positions refused" would describe a stopped runtime
+that is in fact trading; it speaks on the EDGE and stays quiet otherwise; the first fire always
+announces; an undelivered announcement is not marked as said; and the render names the
+mixed-basis caveat only when the window has one.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def test_a_clear_book_reports_allowed(tmp_path):
     assert state["limits"]["source"] == guards.SOURCE_DEFAULT
 
 
-def test_it_reports_the_same_verdict_the_cycle_would_act_on(tmp_path):
+def test_it_reports_the_same_verdict_the_live_leg_would_act_on(tmp_path):
     """A watch that assembled its inputs differently would eventually report a state the
     runtime is not in, so it runs the real guard against the real limits."""
     _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))          # -2.4R today, daily limit -2.0
@@ -155,6 +157,49 @@ def test_a_corrupt_marker_costs_one_redundant_announcement_not_the_watch(tmp_pat
 def test_the_render_is_ascii(tmp_path):
     _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))
     breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"].encode("ascii")
+
+
+def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopped(tmp_path):
+    """The regression this guards: `paper_trade_verdict` took the paper leg off the loss
+    breakers, so an unqualified "new positions refused" now announces a stopped runtime that is
+    still opening paper positions — and an operator has no way to catch that from the outside.
+    Asserted across all four transitions, because the wording is per-branch."""
+    _seed(tmp_path, _outcome(0.5))
+    first = breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"]           # first report
+    _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))
+    tripped = breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"]         # TRIPPED
+    _seed(tmp_path, *[_outcome(-1.2) for _ in range(5)])
+    changed = breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"]         # reasons changed
+    _seed(tmp_path, _outcome(-1.2, at="2026-07-29T00:00:00Z"))
+    released = breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"]        # RELEASED
+
+    for text in (first, tripped, changed, released):
+        assert text.splitlines()[0].startswith("CRYPTO LIVE BREAKER")
+        assert "scope    : LIVE entries only" in text
+        assert "new positions refused" not in text and "new positions allowed" not in text
+    assert "TRIPPED - live entries refused" in tripped
+    assert "RELEASED - live entries allowed again" in released
+
+
+def test_the_render_says_how_the_judged_window_splits_between_paper_and_live(tmp_path):
+    """The live gate's numbers are currently 100% paper — intended, and the one thing an
+    operator reading a real-money breaker would otherwise assume the opposite of."""
+    _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert (state["own_closed"], state["live_closed"]) == (2, 0)
+    text = breaker_watch.render_text(state, None)
+    assert "rows     : 2 paper + 0 live closed" in text
+    assert "every figure above is paper-derived" in text
+
+
+def test_the_row_split_does_not_make_the_watch_speak(tmp_path):
+    """Added to the state, so it must not join the change key — settlements move it constantly
+    and a watch that fired on them is the trade feed this was built not to be."""
+    _seed(tmp_path, _outcome(0.5))
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    _seed(tmp_path, _outcome(0.5), _outcome(0.4))              # one more paper row, same verdict
+    again = breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    assert again["state"]["own_closed"] == 2 and again["changed"] is False
 
 
 def test_the_mixed_basis_caveat_appears_only_when_the_window_has_one(tmp_path):

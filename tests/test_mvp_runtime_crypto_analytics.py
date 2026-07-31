@@ -261,11 +261,20 @@ def _always_spec():
     return base()
 
 
-def test_blocked_cycle_opens_shadow_and_allowed_cycle_does_not(tmp_path):
+def test_a_loss_breaker_stops_the_live_gate_and_lets_paper_trade(tmp_path):
+    """The verdict split, seen from outside the cycle.
+
+    This is the fixture that used to prove the opposite: two of this runtime's own losses, enough
+    to trip the daily breaker, which then stopped the PAPER entry and recorded a shadow instead
+    of an outcome. Paper loses no money, so all that brake ever bought was a smaller sample for
+    the ladder that has to judge the strategy.
+
+    Now the paper trade happens — a settled row beats a simulation of one — while the live gate,
+    the merge that still folds in every breaker, refuses. Both verdicts ride on the record so
+    neither reading is lost."""
     from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
 
     _install_pool(tmp_path, _always_spec())
-    # Poison the risk history so the verdict blocks while the route still matches.
     state = paper.state_dir(tmp_path)
     state.mkdir(parents=True, exist_ok=True)
     # This runtime's OWN losses — the risk guard counts only these (imported history cannot
@@ -280,21 +289,33 @@ def test_blocked_cycle_opens_shadow_and_allowed_cycle_does_not(tmp_path):
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
     assert record["verdict_status"] == "NO_NEW_POSITION"
-    assert record["counterfactual"]["opened"] is not None
-    shadows = counterfactual.load_open_counterfactuals(tmp_path)
-    assert shadows and "daily_loss_limit_breached" in shadows[0]["block_reasons"]
+    assert "daily_loss_limit_breached" in record["verdict_problems"]
+    # ...and the paper leg never saw it.
+    assert record["paper_verdict_status"] == "ALLOW"
+    assert "daily_loss_limit_breached" not in record["paper_verdict_problems"]
+    assert record["opened"] is not None, "the loss breaker must no longer stop a paper entry"
+    # Nothing to shadow: a shadow stands in for an outcome that did not happen, and this one did.
+    assert counterfactual.load_open_counterfactuals(tmp_path) == []
 
 
 def test_dry_run_cycle_computes_shadow_without_persisting(tmp_path):
-    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
+    """The refusal is now the economics gate rather than a loss breaker, because after the
+    verdict split a loss breaker no longer refuses the paper leg and so no longer produces a
+    shadow to test. The subject is unchanged: a dry run computes the shadow and writes nothing."""
+    from tests.test_crypto_entry_economics import _NarrowRangeCollector, _spec_dict
 
-    _install_pool(tmp_path, _always_spec())
-    state = paper.state_dir(tmp_path)
-    state.mkdir(parents=True, exist_ok=True)
-    with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(_own_outcome(-3.0, "2026-07-22T01:00:00Z", outcome_id="o1")) + "\n")
+    pool.install_active_pool(
+        {"active_strategies": [{
+            "strategy_id": "S1", "status": "PAPER_ACTIVE", "champion_score": 0.5,
+            "strategy_spec": _spec_dict(entry_rules={
+                "operator": "AND",
+                "conditions": [{"feature": "close", "comparison": ">", "value": 0.0}],
+            }),
+        }]},
+        root=tmp_path,
+    )
     record = run_crypto_cycle(
-        collector=FakeExchangeCollector(), store=DryRunPaperStore(),
+        collector=_NarrowRangeCollector(), store=DryRunPaperStore(),
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
     assert record["counterfactual"]["opened"] is not None
@@ -388,10 +409,12 @@ def test_imported_history_cannot_offset_the_risk_breaker(tmp_path):
         collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
-    # +200R of someone else's history does not clear this runtime's own daily loss.
+    # +200R of someone else's history does not clear this runtime's own daily loss. Asserted on
+    # the LIVE verdict, which is where the breaker now binds: after the paper/live split the
+    # paper leg does not read the loss breakers at all, so "did paper refuse" stopped being a
+    # measurement of whether imported rows diluted them.
     assert record["verdict_status"] == "NO_NEW_POSITION"
-    shadows = counterfactual.load_open_counterfactuals(tmp_path)
-    assert shadows and "daily_loss_limit_breached" in shadows[0]["block_reasons"]
+    assert "daily_loss_limit_breached" in record["verdict_problems"]
 
 
 def test_lifecycle_still_sees_the_full_history(tmp_path):
