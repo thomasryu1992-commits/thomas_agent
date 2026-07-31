@@ -123,10 +123,40 @@ def validate_policy_binding(
     record: dict[str, Any],
     issues: list[str],
 ) -> None:
-    if record.get("operating_policy") != POLICY_BINDING:
+    """The one authority for WHICH policy version a record may bind. Unchanged in what it
+    refuses; changed in what it says when it refuses.
+
+    A record binding an *earlier* canonical policy is not malformed — it is a record written
+    before the bump — and this refusal is the only thing standing between it and being used.
+    Saying so matters: a policy bump silently voided every outstanding approval granted under
+    the previous version, and the operator's only clue was a `oneOf` failure naming neither the
+    bump nor the record's own version. Ten approvals on this host are in exactly that state.
+
+    Whether such a grant *should* survive a bump is a governance decision and is deliberately
+    not taken here — the answer is still no. What this changes is that the refusal now names
+    itself, so the decision can be made by someone who knows it is pending.
+    """
+    binding = record.get("operating_policy")
+    if binding == POLICY_BINDING:
+        return
+    if (
+        isinstance(binding, dict)
+        and binding.get("policy_id") == POLICY_BINDING["policy_id"]
+        and binding.get("policy_ref") == POLICY_BINDING["policy_ref"]
+        and binding.get("policy_version") != POLICY_BINDING["policy_version"]
+    ):
         issues.append(
-            "operating_policy must bind canonical thomas.governance.policy v1.2.0"
+            "operating_policy binds a SUPERSEDED policy version: this record was written under "
+            f"{binding.get('policy_id')} v{binding.get('policy_version')} and the current policy "
+            f"is v{POLICY_BINDING['policy_version']}. The record is well-formed and is refused on "
+            "recency alone; a grant made under the earlier policy cannot be exercised under this "
+            "one without an explicit decision to carry it forward"
         )
+        return
+    issues.append(
+        "operating_policy must bind canonical thomas.governance.policy "
+        f"v{POLICY_BINDING['policy_version']}"
+    )
 
 
 def scope_policy_map(policy: dict[str, Any]) -> dict[str, str]:
