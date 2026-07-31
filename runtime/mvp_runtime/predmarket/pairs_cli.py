@@ -9,6 +9,7 @@
     python -m runtime.mvp_runtime.predmarket.pairs_cli list [--json] [--all]
     python -m runtime.mvp_runtime.predmarket.pairs_cli retire <event_id> --reason "..."
     python -m runtime.mvp_runtime.predmarket.pairs_cli report [--json]
+    python -m runtime.mvp_runtime.predmarket.pairs_cli resolutions [--json]
     python -m runtime.mvp_runtime.predmarket.pairs_cli sheet [--out sheet.md]
 
 ``sheet`` is the one aimed squarely at the bottleneck. The pipeline proposes thirty-odd
@@ -23,6 +24,14 @@ so the reading is made easy and the judgement is left where it belongs.
 entry point: propose -> confirm -> the scheduler observes -> read what it found. It answers
 the three questions PM1 exists for — how often, how large, and **how long** — and says
 plainly whether the window it had is the exit artifact or a progress check.
+
+``resolutions`` asks the fourth question, the one the price path structurally cannot: **how
+did each leg end, and did the two venues agree?** Every read here is an open-market read —
+a settled market does not resolve in it, it disappears from it — so this goes through its own
+call, and a group whose venues settled differently is the finding it exists to surface. That
+is the risk the whole cross-venue strategy turns on, and it is never resolved automatically:
+which venue was *right* is a reading of two settlement texts, the same judgement that
+confirmed the group.
 
 ``propose`` reads both venues (through the gate — the mock by default, so this runs on any
 machine with no grant), **screens out the markets this pipeline cannot use**, judges every
@@ -54,7 +63,7 @@ from typing import Any, Sequence
 
 from ..cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io, report_block
 from ..errors import MvpRuntimeError
-from . import matching, pairs, proposals, report, screening
+from . import matching, observations, pairs, proposals, report, screening
 from .market_data import (
     DEFAULT_MARKET_LIMIT,
     DISCOVERY_MARKET_LIMIT,
@@ -431,6 +440,36 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_resolutions(args: argparse.Namespace) -> int:
+    """Read-only, like `report`. Asks the venues how each confirmed leg ended and prints the
+    groups where they disagree first — that disagreement is the risk the whole cross-venue
+    strategy turns on, and it is the one finding here that needs an operator."""
+    sweep = observations.run_resolution_sweep(now=pairs.now_iso())
+    if args.json:
+        sys.stdout.write(json.dumps(sweep, ensure_ascii=False, indent=1) + "\n")
+        return EXIT_OK
+    sys.stdout.write(observations.resolution_status_line(sweep) + "\n")
+    for venue, code in sorted((sweep.get("venue_errors") or {}).items()):
+        sys.stdout.write(f"  DEGRADED {venue}: {code} (its legs report no settlement)\n")
+    for group in sweep.get("groups") or []:
+        if not group.get("settled_legs"):
+            continue      # nothing has ended here; the sweep's headline already counted it
+        flag = "MISMATCH" if group.get("mismatch") else "agreed" if group.get("comparable") else "partial"
+        sys.stdout.write(f"\n  {group.get('event_id')}  [{flag}]\n")
+        for leg in group.get("legs") or []:
+            settlement = leg.get("resolution") or {}
+            state = leg.get("unreadable") or settlement.get("outcome") or "not read"
+            word = settlement.get("venue_word")
+            paid = settlement.get("yes_value")
+            sys.stdout.write(
+                f"    {leg['venue']:<11} {state:<13} "
+                f"yes paid {'?' if paid is None else paid}"
+                f"{f'  ({word})' if word else ''}\n")
+    sys.stdout.write(
+        "\nObservation only. This report authorizes no position and settles no trade.\n")
+    return EXIT_OK
+
+
 def _cmd_sheet(args: argparse.Namespace) -> int:
     now = pairs.now_iso()
     result = run_discovery(now=now, limit=args.limit, with_rules=True)
@@ -528,6 +567,11 @@ def build_parser() -> argparse.ArgumentParser:
               "seeing an edge at 09:00 and again at 11:00 is not evidence it was there at 10:00."),
     )
     reporting.set_defaults(handler=_cmd_report)
+
+    settlements = sub.add_parser(
+        "resolutions", help="how each confirmed group's legs settled, and where they disagree")
+    settlements.add_argument("--json", action="store_true")
+    settlements.set_defaults(handler=_cmd_resolutions)
 
     sheet = sub.add_parser(
         "sheet", help="candidates with both venues' settlement text, ready to confirm")
