@@ -29,7 +29,7 @@ from runtime.read_only_kernel import integrity
 from .. import timeutil
 from . import paper
 from ..coerce import as_float as _f
-from .cost import FUNDING_INTERVALS_PER_DAY, CostModel, apply_cost_model
+from .cost import FUNDING_INTERVALS_PER_DAY, CostModel, outcome_net_r
 from .market_data import TIMEFRAMES
 
 PERFORMANCE_REPORT_VERSION = "performance_report.v1-mvp"
@@ -170,25 +170,6 @@ def count_independent_trade_events(records: Iterable[Mapping[str, Any]]) -> int:
     return events
 
 
-def _risk_of(outcome: Mapping[str, Any]) -> float | None:
-    """The risk-per-unit ``result_R`` was divided by, from the row or derived from it.
-
-    Recorded directly since 2026-07-29. Older rows (and the imported crypto_AI_System history)
-    predate the field, so it is recovered from the identity `result_R = signed_move / risk` —
-    exact where it works, and it fails precisely on a break-even row, which is the one a cost
-    model would push negative. Those are reported as uncostable rather than assumed."""
-    stored = _f(outcome.get("risk"))
-    if stored > 0:
-        return stored
-    entry, exit_price = _f(outcome.get("entry_price")), _f(outcome.get("exit_price"))
-    result_r = _f(outcome.get("result_R"))
-    if not (entry > 0 and exit_price > 0) or result_r == 0:
-        return None
-    signed = (exit_price - entry) if str(outcome.get("direction")) == "LONG" else (entry - exit_price)
-    risk = signed / result_r
-    return risk if risk > 0 else None
-
-
 def _funding_intervals(outcome: Mapping[str, Any]) -> float:
     """How many 8h settlements this position was open across, from its bars and timeframe.
 
@@ -208,25 +189,22 @@ def net_result_r(
 ) -> float | None:
     """One paper outcome re-read NET of fees, slippage and carry — or None if it cannot be.
 
-    The same `cost.apply_cost_model` the factory scores candidates with, on the row's own
-    recorded fills, so the paper track record and the backtest evidence answer to one cost
-    model rather than two. Deliberately a derivation and not a stored field: `result_R` keeps
-    its meaning, its consumers, and its place in an append-only store.
+    **This adds carry and delegates the rest.** `cost.outcome_net_r` owns the conversion — the
+    basis rule (a row whose costs are already inside it must not be charged again), the risk
+    denominator, and the cost model itself. This function used to re-implement all three, and
+    the two copies had already drifted: only one of them knew about `intent_net_of_costs`, so
+    the ladder and the board would have disagreed about the same row from the first settlement
+    after 2026-08-03. One concept, one owner; what is genuinely this module's is the carry.
 
-    Carry is charged at the model's base rate rather than the venue's realized settlements —
-    unlike the backtest, a settled paper row has no funding series attached, and refetching one
-    per row at report time would put a network read behind a board that must render offline."""
+    Carry belongs here rather than there because deriving it needs `holding_candles × timeframe`
+    and therefore `market_data.TIMEFRAMES`, which `cost` deliberately does not import — it is a
+    constants-and-arithmetic module with no I/O at import. It is charged at the model's base
+    rate rather than the venue's realized settlements: unlike the backtest, a settled paper row
+    has no funding series attached, and refetching one per row at report time would put a
+    network read behind a board that must render offline."""
     cost = cost or CostModel()
-    risk = _risk_of(outcome)
-    entry, exit_price = _f(outcome.get("entry_price")), _f(outcome.get("exit_price"))
-    direction = str(outcome.get("direction") or "")
-    if risk is None or not (entry > 0 and exit_price > 0) or direction not in {"LONG", "SHORT"}:
-        return None
     carry = _funding_intervals(outcome) * cost.funding_bps_per_interval / 10000.0
-    return apply_cost_model(
-        direction, entry, exit_price, risk,
-        cost=cost, close_reason=str(outcome.get("close_reason") or ""), funding_rate_sum=carry,
-    ).net_r
+    return outcome_net_r(outcome, cost=cost, funding_rate_sum=carry)
 
 
 def summarize_net_of_costs(

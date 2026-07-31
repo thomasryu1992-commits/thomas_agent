@@ -32,7 +32,9 @@ from ..cli_common import force_utf8_io
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
-from . import account, counterfactual, digest, feedback, oi_store, paper, pool, positioning_store
+from . import (
+    account, counterfactual, digest, feedback, lifecycle, oi_store, paper, pool, positioning_store,
+)
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -334,12 +336,24 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             # Over the NET series, so the interval and the point estimate describe the same
             # quantity. An interval around gross R beside a net expectancy would be two
             # statistics about two different venues printed as one verdict. Rows that cannot be
-            # priced are absent from the series rather than counted at gross — `uncostable_count`
-            # above is what says so.
+            # priced are absent from the series rather than counted at gross —
+            # `expectancy_gross_rows` below is what says so.
             "sample_verdict": sample_verdict([
                 net for net in (feedback.net_result_r(o) for o in own_outcomes)
                 if net is not None
             ]),
+            # The same trades after fees and slippage — the figure `lifecycle` demotes on and
+            # `guards` meters, which `expectancy` above is NOT: that comes from the persisted
+            # feedback report and is cost-free by construction (`cost.py`).
+            #
+            # Reported alongside rather than replacing it, and this is the awkward-but-honest
+            # option of three. Swapping it would silently change what a number the board has
+            # printed for weeks means; changing `feedback.build_performance_report` would
+            # change what a versioned persisted record means, which is its own increment; and
+            # showing only the gross figure would have the board contradict the ladder it
+            # reports on — an operator would watch strategies get suspended for losing money
+            # next to a headline saying they make it. Two labelled numbers beat one lie.
+            **_net_performance(own_outcomes),
         },
         # Imported crypto_AI_System history, reported separately and never merged above: it is
         # the predecessor's record, useful as context, not as evidence about this runtime.
@@ -382,6 +396,27 @@ MIN_MEANINGFUL_SAMPLE = 30
 # Below this the spread cannot be estimated, so no interval is produced at all. A verdict
 # from two observations is arithmetic, not evidence — see `sample_verdict`.
 MIN_INTERVAL_SAMPLE = 5
+
+
+def _net_performance(own_outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """This runtime's own paper record after costs, and how much of it could be priced.
+
+    ``expectancy_net_rows``/``expectancy_gross_rows`` are the same disclosure
+    ``lifecycle.compute_metrics`` makes: a row with no prices contributes its stored R, so a
+    non-zero gross count means the mean below mixes two statistics. ``None`` for an empty
+    ledger, never 0.0 — the board's own rule everywhere else.
+    """
+    if not own_outcomes:
+        return {"expectancy_net": None, "expectancy_net_rows": 0, "expectancy_gross_rows": 0}
+    judged = [lifecycle.outcome_judged_r(o) for o in own_outcomes]
+    priced = sum(1 for _, costed in judged if costed)
+    return {
+        "expectancy_net": round(statistics.fmean(value for value, _ in judged), 4),
+        "expectancy_net_rows": priced,
+        "expectancy_gross_rows": len(judged) - priced,
+    }
+
+
 CONFIDENCE_Z = 1.96          # two-sided 95%
 POWER_Z = 0.84               # 80% power, the usual pairing
 
@@ -663,13 +698,21 @@ def render_status_text(status: dict[str, Any]) -> str:
     lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 (총액) · "
                  f"dd {_r(perf.get('max_drawdown'), signed=False)}R → {perf.get('recommendation')}")
     if perf.get("expectancy_net") is not None:
-        # Directly under the gross line: the two answer the same question about different
-        # venues, and the gap between them IS the reading when an edge is thin.
-        net_line = f"       비용 차감 후: {_r(perf.get('expectancy_net'))}R × {closed}건"
-        uncostable = perf.get("uncostable_count") or 0
-        if uncostable:
-            net_line += f" (가격 없는 {uncostable}건 제외)"
-        lines.append(net_line)
+        # Directly under the gross line, and both labelled: the two answer the same question
+        # about different venues, the gap between them IS the reading when an edge is thin, and
+        # the board used to print only the first one — which is why a pool of negative-expectancy
+        # strategies looked healthy for weeks. This is the number that decides anything.
+        #
+        # The disclosure counts rows the cost model could not price, which contribute their
+        # stored R and therefore mix two statistics into the mean. It reads `expectancy_gross_rows`
+        # from `_net_performance` rather than the report's `uncostable_count`: same idea, but the
+        # board's own figure comes from `lifecycle.outcome_judged_r`, which is what the ladder
+        # actually demotes on, and quoting the other one would let the two drift.
+        mixed = perf.get("expectancy_gross_rows") or 0
+        lines.append(
+            f"       비용 반영: {_r(perf.get('expectancy_net'))}R — 강등·리스크 판정이 읽는 값"
+            + (f" (그중 {mixed}건은 가격 없어 총액 기준)" if mixed else "")
+        )
     if closed and closed < MIN_MEANINGFUL_SAMPLE:
         # Attached to the number it qualifies, not stranded in a trends section below.
         lines.append(f"       ⚠ {closed}건은 판단 불가 표본 ({MIN_MEANINGFUL_SAMPLE}건 이상 필요)")

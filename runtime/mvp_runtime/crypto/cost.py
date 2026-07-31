@@ -18,31 +18,60 @@ while a stop, a time exit and a manual exit all still leave at market. ``apply_c
 therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
 so ``pool.expectancy_at`` can still rescale the taker portion exactly.
 
-**Scope — the paper kernel now charges costs too (2026-07-30, PM2's fee half).** It did not
-until then, matching the source exactly: there, cost application was confined to backtest and
-factory scoring, and the live paper kernel (``paper_position_kernel.py`` / this port's
-``paper.py``) never imported ``cost_model``. The stated reason was sound for what paper R was
-then — *paper trading measures pure signal quality on intended fills; costs are what the
-robustness scorer needs to judge whether an edge survives friction*.
+**Scope was "the backtest only", and that boundary was wrong.** The source confined cost
+application to backtest/factory scoring: paper trading measured pure signal quality on
+intended fills, and costs were what the robustness scorer needed. The port kept it. What
+neither noticed is that paper R stopped being only a measurement — ``lifecycle`` judges it at
+``warn_expectancy_r = 0.0`` and ``guards`` meters loss in the same units, money-safety
+decisions reading a number with the frictions removed. Measured the day it was found: the
+weekly breaker tripped at a recorded **-5.53R** over 43 trades whose costs came to roughly
+**7.8R**, so the loss it reacted to was about **-13.4R**. A breaker cannot be calibrated
+against a statistic that omits a term that size.
 
-What broke it is that paper R stopped being only a measurement. This port feeds it to the C4
-risk guard's loss breakers and to the C10 lifecycle ladder — money-safety decisions, not
-signal-quality ones — and both then read a number with the frictions removed. Measured on this
-machine the day it was found: the weekly breaker tripped at a recorded **-5.53R** over 43
-trades whose costs came to roughly **7.8R**, so the loss it was reacting to was about
-**-13.4R**. A breaker cannot be calibrated against a statistic that omits a term this large,
-and the same gross figure had been compared against the backtest's NET expectancy to choose
-which strategies to keep. ``docs/REMAINING_WORK.md``'s PM2 item already planned this move;
-this is its first half (fees + slippage), not the fill model.
+**Two changes closed it from opposite ends, and both are load-bearing.** They were authored
+in parallel and read as competing until you notice they cover different rows:
 
-``factory.backtest_spec`` (C8) is unchanged and still feeds C8b's ``cost_robustness``
-component. What changed is that ``paper.build_outcome_record`` now applies the same model, so
-a paper expectancy and a backtest expectancy are finally the same kind of number.
+- **Settlement charges (2026-07-30).** ``paper.build_outcome_record`` applies this model as it
+  writes, so ``result_R`` is net from that day on and says so: ``r_basis:
+  intent_net_of_costs``. A paper expectancy and a backtest expectancy became the same kind of
+  number. It cannot reach backwards — the rows already on disk stay as written, which is the
+  correct property for an append-only store and the reason the second half exists.
+- **Reading converts (:func:`outcome_net_r`).** The rows written BEFORE that day carry
+  ``r_basis: intent`` or no basis at all, and there were 86 of them holding the entire track
+  record the ladder and the breakers were judging. This converts them at read time at the
+  rates the venue charges *now* — the same choice ``pool.expectancy_at`` already makes for
+  backtest expectancy, and the reason a demotion answers "does this lose money today".
+
+**Which means the basis label decides who charges, and double-charging is the failure mode.**
+A row whose costs are already inside it must not be costed again: ``filled`` (live R, measured
+on actual fills) and ``intent_net_of_costs`` (settled after the change above) both opt out,
+and every other basis — including a missing one — gets the model applied. The default runs
+toward charging, so a row cannot buy the cheaper treatment by omitting a field; the opt-out is
+an explicit statement, never an absence. Get this wrong in the other direction and the ladder
+sees a loss twice, demotes a strategy that was merely average, and nothing in the record says
+why.
+
+:func:`round_trip_cost_r` is the pre-trade half of the same arithmetic: what a round trip
+costs before the market moves, which ``paper``/``live_entry`` refuse an entry on.
+``factory.backtest_spec`` (C8) is unchanged either way and still feeds C8b's
+``cost_robustness`` component.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Any, Mapping
+
+# The bases whose costs are ALREADY inside the number, and which `outcome_net_r` must therefore
+# not charge again. Two of them, kept as two because they are different claims: the set holds
+# the paper basis that is fully net (`intent_net_of_costs`), while `filled` is live R on actual
+# fills — slippage inside, fees still missing — and `live_pnl` deliberately keeps it OUT of that
+# set so it cannot be read as one of the paper bases. Imported from their owner rather than
+# respelled here: `live_pnl` defines what each basis means, and two spellings of one label is how
+# the two drift. Constants only — no I/O at import, the same reason `paper.py` takes
+# `R_BASIS_INTENT` from there.
+from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -84,6 +113,36 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
+
+# How much of one R a round trip may cost before the entry is refused (`round_trip_cost_r`).
+#
+# Measured, not chosen for roundness. Of the candidates in this store scored at the current cost
+# model, those with POSITIVE net expectancy have a median of +0.172R and a 75th percentile of
+# +0.369R (2026-07-30, n=102). A plan whose friction alone is 0.25R therefore needs an edge in
+# the top quartile of everything this factory has ever produced merely to break even — and
+# `round_trip_cost_r` prices friction pessimistically, so a real trade pays at least it.
+#
+# What it refuses, measured against the 86 native paper outcomes this runtime has settled:
+# 59 of them (69%) — 48 of 50 on 15m, 11 of 17 on 1h, none at 4h or 1d. That distribution is the
+# finding rather than a side effect. The five strategies routing on 2026-07-30 were all 15m, all
+# carried NEGATIVE backtest expectancy at the rates this venue charges, and between them turned
+# +0.041R/trade gross into −0.506R.
+#
+# It lives HERE, not beside `paper`'s other entry caps, because two doors enforce it: the paper
+# book and `live_entry`. One number, so the simulated book and the money path cannot disagree
+# about what is economic.
+#
+# Two properties keep an unregistered constant acceptable, the same two `paper`'s concurrency
+# caps rest on. It can only ever make the runtime trade LESS — no value of it admits an entry the
+# existing checks refuse, so it cannot widen risk and needs no gate of its own. And a wrong
+# refusal is otherwise SILENT, since nothing records the trades that did not happen: that is why
+# `cycle` shadows this refusal into the counterfactual registry, the mechanism that exists to
+# tell a gate that saves money from one that is merely too tight. Registering it through
+# `risk_limits` (a sixth key, a schema version) is a separate decision — that mechanism exists
+# so an operator can RELAX a realized-loss breaker within code bounds, and this is neither a
+# breaker nor relaxable.
+MAX_ENTRY_COST_R = 0.25
+
 
 # --- funding: the cost this model did not have, and the one that dominates ------------------
 #
@@ -255,3 +314,121 @@ def apply_cost_model(
         maker_fee_cost_r=round(maker_fee_cost_r, 8),
         funding_cost_r=round(carry_r, 8),
     )
+
+
+def round_trip_cost_r(
+    direction: str, entry_price: float, risk: float, *, cost: CostModel | None = None
+) -> float:
+    """What one round trip costs in R before the market moves at all. Positive.
+
+    ``apply_cost_model`` evaluated at ``exit_price == entry_price``: the gross move is zero,
+    so what remains is pure friction — taker in, taker plus adverse slippage out. Expressed
+    as a positive number, so 0.25 reads as "a quarter of one R".
+
+    This is the quantity that decides whether a trade can be profitable at all, and it is
+    not a property of the strategy but of the **stop distance**: ``risk`` is
+    ``stop_atr × ATR``, so a short timeframe's tight stop divides the same fixed bps by a
+    smaller number. Measured on this store 2026-07-30, per closed backtest trade:
+    15m 0.341R, 1h 0.168R, 4h 0.077R, 1d 0.029R — a twelvefold spread on the same rates,
+    against gross expectancies that ranged only +0.01R to +0.23R.
+
+    The **taker** exit is charged deliberately. A trade that reaches its target pays the
+    cheaper maker leg, but nothing at entry time knows whether this one will, and pricing
+    the cheaper exit would let a plan clear a cost floor on the assumption that it wins.
+    This is what a losing trade actually pays.
+
+    Unpriceable input returns ``inf`` rather than ``apply_cost_model``'s zeros. That
+    divergence is the point: zero cost is the fail-OPEN answer for a gate, and the gate
+    below is the only caller. A non-positive risk or an unknown direction means the friction
+    is unknown, and unknown must not read as free.
+    """
+    if direction not in ("LONG", "SHORT") or not (entry_price > 0) or not (risk > 0):
+        return math.inf
+    return -apply_cost_model(
+        direction, entry_price, entry_price, risk, cost=cost, close_reason=None
+    ).net_r
+
+
+def outcome_net_r(
+    record: Mapping[str, Any], *, cost: CostModel | None = None, funding_rate_sum: float = 0.0
+) -> float | None:
+    """A settled outcome's R after the costs its own basis leaves out. ``None`` when unknown.
+
+    Paper R written before 2026-07-30 is cost-free by construction: it is the intended-fill
+    move over the entry risk, and no fee or slippage was ever subtracted from it. So the
+    demoter and the risk breaker read a gross number against thresholds written as if it were
+    net — a strategy at +0.02R gross and −0.30R net stays PAPER_ACTIVE forever. This is the
+    conversion, applied at READ time at the CURRENT rates, the same choice
+    ``pool.expectancy_at`` makes and for the same reason: the question a demotion answers is
+    "does this lose money at what the venue charges *now*", not at whatever it charged when
+    the row was written.
+
+    **It is the backlog's half of the fix, not the whole fix.** ``paper.build_outcome_record``
+    charges the same model at settlement from 2026-07-30 on, so rows minted since then are
+    already net and label themselves ``intent_net_of_costs``. That change could not reach the
+    rows already on disk — which is precisely the population this function exists for. The two
+    meet at the basis label, and the meeting has to be exact in both directions:
+
+    - **A basis that already carries costs opts out**, or the ladder sees one loss twice and
+      demotes a strategy that was merely average, with nothing in the record saying why. Two
+      qualify and they are not the same claim, which is why the membership test is
+      ``live_pnl``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
+      inside, via ``R_BASES_NET_OF_COSTS``) and ``filled`` (live R on actual fills — slippage
+      inside, fees still an open gap, and deliberately excluded from that set for exactly that
+      reason). Skipping is right for both; conflating them is not.
+    - **Every other value gets the costs charged** — ``intent``, absent, unrecognised. The
+      default has to be the pessimistic branch, or a row could buy itself the cheaper treatment
+      by omitting a field. A basis this module does not recognise is treated as gross, so a
+      future basis that is genuinely net must be added to ``R_BASES_NET_OF_COSTS`` deliberately
+      rather than inherited by silence.
+    - **A row that cannot price itself returns ``None``, never a guess.** The caller keeps
+      ``result_R`` and reports the mix rather than inventing a net figure. Imported history
+      carries no prices at all and lands here.
+
+    ``risk`` (per-unit, ``|entry - stop|``) is read from the record when present. Rows written
+    before it was recorded reconstruct it from the identity paper settlement already
+    guarantees — ``result_R = ±(exit - entry) / risk`` — which is exact to the stored
+    rounding, and undefined only at ``result_R == 0``.
+
+    ``funding_rate_sum`` is the carry over the holding window and defaults to **0.0, the
+    optimistic side**, for the reason :func:`apply_cost_model` states: this function cannot see
+    how long the position was open without knowing what a bar of its timeframe is worth, and a
+    default invented here would be a holding period asserted rather than measured. The caller
+    that can measure it passes it — ``feedback.net_result_r`` derives it from
+    ``holding_candles × timeframe`` and does. **``lifecycle`` and ``guards`` currently do not**,
+    so the ladder and the loss breakers read fees and slippage but no carry, while the
+    performance report reads all three. That asymmetry is inherited from both sides of this
+    merge rather than introduced by it, and it is stated here instead of left to be discovered:
+    on a spec holding 12-48 days the omitted carry is the larger term, so closing it is worth
+    its own increment.
+    """
+    basis = record.get("r_basis")
+    if basis in R_BASES_NET_OF_COSTS or basis == R_BASIS_FILLED:
+        return None
+    result_r = record.get("result_R")
+    entry = record.get("entry_price")
+    exit_price = record.get("exit_price")
+    direction = record.get("direction")
+    if (
+        isinstance(result_r, bool) or not isinstance(result_r, (int, float))
+        or not isinstance(entry, (int, float)) or isinstance(entry, bool)
+        or not isinstance(exit_price, (int, float)) or isinstance(exit_price, bool)
+        or direction not in ("LONG", "SHORT")
+        or entry <= 0 or exit_price <= 0
+    ):
+        return None
+
+    risk = record.get("risk")
+    if not (isinstance(risk, (int, float)) and not isinstance(risk, bool) and risk > 0):
+        if not result_r:
+            return None
+        signed = (exit_price - entry) if direction == "LONG" else (entry - exit_price)
+        risk = signed / float(result_r)
+        if not (risk > 0):
+            return None
+
+    return apply_cost_model(
+        str(direction), float(entry), float(exit_price), float(risk),
+        cost=cost, close_reason=record.get("close_reason"),
+        funding_rate_sum=funding_rate_sum,
+    ).net_r

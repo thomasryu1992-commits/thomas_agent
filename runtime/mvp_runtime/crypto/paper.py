@@ -46,6 +46,7 @@ from ..errors import ToolBlocked, ToolError
 from ..filelock import locked
 from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
+from . import cost as costs
 from .strategy import StrategySpec, evaluate_spec
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
@@ -60,7 +61,7 @@ _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 STATE_REL = ".runtime_governance_state/crypto"
 PAPER_PROVENANCE = "mvp_paper_kernel"
 # See live_pnl.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
-from .cost import apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
+from .cost import CostModel, apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
 from .live_pnl import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
@@ -136,6 +137,13 @@ SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
 # current closed candle, so a coarser-timeframe strategy is not re-entered every tick.
 CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
+
+# The friction this plan would pay is too large a share of the one R it is risking, so the
+# trade cannot be profitable at any win rate this system has ever produced. The limit itself
+# is `cost.MAX_ENTRY_COST_R` — the live leg refuses on the same number, and two spellings of
+# one threshold is how the paper book and the money path come to disagree about what is
+# economic.
+ENTRY_COST_UNECONOMIC = "ENTRY_COST_UNECONOMIC"
 
 # Kernel settlement limits (source paper_position_kernel; timeframes outside the
 # table — e.g. 1d — use the default, the source runtime's own behavior). Since the
@@ -542,6 +550,39 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
     }
 
 
+def entry_cost_refusal(
+    plan: Mapping[str, Any], *, max_cost_r: float = costs.MAX_ENTRY_COST_R
+) -> dict[str, Any] | None:
+    """Refuse a plan whose round-trip friction exceeds ``cost.MAX_ENTRY_COST_R``. Pure.
+
+    The one pre-trade check that is arithmetic rather than statistics. Everything else about a
+    strategy's edge is estimated from a sample and can be wrong; this is ``|entry − stop|``
+    against a published fee schedule, and it says whether the trade has room to be profitable
+    before asking whether it will be.
+
+    Returns the refusal dict (``reason_code`` plus the numbers that produced it, so an operator
+    reads *why* and not just *that*) or ``None`` to admit. Deliberately not folded into
+    :func:`build_entry_plan`: that function returns ``None`` for unpriceable data, and a refusal
+    that arrives as an absent plan is a refusal nothing can attribute, count, or shadow.
+    """
+    cost_r = costs.round_trip_cost_r(
+        str(plan.get("direction") or ""), float(plan.get("entry_price") or 0.0), float(plan.get("risk") or 0.0)
+    )
+    if cost_r <= max_cost_r:
+        return None
+    return {
+        "reason_code": ENTRY_COST_UNECONOMIC,
+        # `inf` is what an unpriceable plan costs (see round_trip_cost_r) and is not JSON, so it
+        # rides as a string. A refusal record that cannot be serialised is a crash on the refusal
+        # path, which is the one path that must not crash.
+        "round_trip_cost_r": round(cost_r, 6) if math.isfinite(cost_r) else "inf",
+        "limit_r": max_cost_r,
+        "symbol": plan.get("symbol"),
+        "timeframe": plan.get("timeframe"),
+        "strategy_id": plan.get("strategy_id"),
+    }
+
+
 def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
     """The position dict an entry plan opens — pure (source ``build_position`` shape)."""
     position = {
@@ -795,11 +836,13 @@ def build_outcome_record(
         "direction": position.get("direction"),
         "entry_price": position.get("entry_price"),
         "exit_price": float(exit_price),
-        # Risk per unit (|entry - stop|) — the denominator `result_R` was divided by. Recorded
-        # since 2026-07-29 because without it a row cannot be re-costed: `feedback` re-derives
-        # this outcome NET of fees, slippage and carry, and that conversion needs the same
-        # denominator the gross figure used. Deriving it back from `result_R` divides by zero on
-        # a break-even trade, which is exactly the row a cost model would turn negative.
+        # Risk per unit (|entry - stop|) — the denominator `result_R` was divided by. It was
+        # always on the position and never on the outcome, which left a settled row unable to
+        # convert its own R into money or into a cost. Recorded since 2026-07-29 so the row
+        # carries every primitive its own arithmetic needs: `cost.outcome_net_r` re-prices the
+        # pre-2026-07-30 rows NET of fees, slippage and carry, and that conversion needs the
+        # same denominator the gross figure used. Reconstructing it from `result_R` divides by
+        # zero on a break-even trade, which is exactly the row a cost model would turn negative.
         "risk": position.get("risk"),
         "holding_candles": position.get("holding_candles"),
         "position_id": position.get("position_id"),
@@ -822,6 +865,27 @@ def build_outcome_record(
         # and cannot be re-priced: the stored row has no `risk`, and the cost model is
         # denominated in risk-per-unit.
         "r_basis": R_BASIS_INTENT_NET,
+    }
+    # WHICH RATES charged this row. `result_R` above is already net of them, and
+    # `gross_result_R` / `fee_cost_r` / `slippage_cost_r` beside it say how much came off — so
+    # what is left to record is the rates themselves, without which none of those can be
+    # re-derived when the schedule changes. The same disclosure `factory.backtest_spec` makes
+    # in `cost_summary`, and the audit trail of what the runtime believed on the day.
+    #
+    # This block also wrote a `result_R_net`, from the increment where `result_R` stayed gross
+    # and consumers re-derived net at read time. That field is gone rather than kept: settlement
+    # charges the costs now, so the two would be one fact under two names — and
+    # `cost.outcome_net_r` correctly declines to re-price a row whose own basis already reads
+    # `intent_net_of_costs`, so it would have written a null on every settlement.
+    #
+    # `CostModel` is imported by name rather than reached through the `costs` module alias: the
+    # local `costs` above is a CostBreakdown and shadows it inside this function. That shadowing
+    # is what made the first pass of this merge raise on every settlement.
+    default_model = CostModel()
+    record["cost_model"] = {
+        "taker_fee_bps": default_model.taker_fee_bps,
+        "maker_fee_bps": default_model.maker_fee_bps,
+        "slippage_bps": default_model.slippage_bps,
     }
     # Idempotency key: one position settles exactly once, so the settlement's
     # identity derives from the position alone — a retried settlement of the same
@@ -1496,7 +1560,15 @@ def run_paper_update(
             records.append(_event("open_skipped", {**skip, "read_only": True}))
         else:
             plan = build_entry_plan(route, feature_row, now=now)
-            if plan is not None:
+            # The economics door, before the portfolio lock: it is pure arithmetic on the plan
+            # and takes no state, so making every cycle contend for the lock to learn the trade
+            # was uneconomic would serialise cycles on a question none of them needed shared
+            # state to answer.
+            cost_refusal = entry_cost_refusal(plan) if plan is not None else None
+            if cost_refusal is not None:
+                summary["open_refused"] = cost_refusal
+                records.append(_event("open_refused", {**cost_refusal, "read_only": True}))
+            elif plan is not None:
                 portfolio_lock = positions_dir(root) / "portfolio.lock"
                 with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):
                     open_books = list_open_positions(root)

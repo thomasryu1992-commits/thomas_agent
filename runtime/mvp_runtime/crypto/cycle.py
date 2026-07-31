@@ -72,6 +72,7 @@ from .live_route import (
     run_live_leg,
 )
 from .paper import (
+    ENTRY_COST_UNECONOMIC,
     PaperStore,
     build_entry_plan,
     list_open_positions,
@@ -579,8 +580,16 @@ def run_crypto_cycle(
     # rather than merely tidy. `None` when the paper step returned before routing (a settlement
     # race), and the fallback is the honest one: no shadow rather than a re-derived route.
     shared_route = paper_summary.get("route")
+    # The economics gate refuses inside the paper step, where the guard verdict allowed the
+    # entry — so the condition below has to name it, or the one refusal whose calibration is
+    # genuinely unknown would be the one refusal nothing shadows. It is the only `open_refused`
+    # reason added here: the concurrency caps refuse because a slot is taken, and shadowing
+    # those would fill the book with plans the runtime had no room for either way.
+    cost_refused = (paper_summary.get("open_refused") or {}).get("reason_code") == ENTRY_COST_UNECONOMIC
+    block_reasons = list(verdict.get("problems") or [])
+    if cost_refused:
+        block_reasons.append(ENTRY_COST_UNECONOMIC)
     blocked_plan = None
-    block_reasons: list[str] = list(verdict.get("problems") or [])
     # The ``opened is None`` clause is **redundant by construction and kept deliberately**: a
     # cycle that opened had an allowing verdict (so the first branch is false) and no refusal (so
     # the second is), which is why removing it alone changes no behaviour and no test. It is here
@@ -588,7 +597,12 @@ def run_crypto_cycle(
     # be double-counted into every per-reason bucket — is the property a future third branch
     # would break silently. Do not "simplify" the inner guards on the strength of this one.
     if shared_route and paper_summary.get("opened") is None:
-        if not bool(verdict.get("allow_new_position")):
+        # A cost refusal joins the guard block rather than forming a third branch: both are
+        # "the router had a candidate and something upstream of the caps refused it", and
+        # `block_reasons` already carries ENTRY_COST_UNECONOMIC from above. It also keeps the
+        # branches mutually exclusive — `run_paper_update` refuses on cost BEFORE it reaches
+        # the position caps, so a cost-refused cycle can never also carry `open_refused`.
+        if not bool(verdict.get("allow_new_position")) or cost_refused:
             blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
         else:
             # A POSITION CAP refused a plan the router had already built — the portfolio count,

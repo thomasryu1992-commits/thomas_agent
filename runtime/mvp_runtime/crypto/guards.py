@@ -30,9 +30,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 from .. import timeutil
+from . import cost
 
 # data-health defaults (source config/settings.py; TIMEFRAME_MINUTES there is the
 # cycle timeframe — the caller passes the snapshot's own timeframe minutes instead).
@@ -230,16 +231,38 @@ def run_data_health_check(
 
 
 def _closed_rows(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Closed outcomes in the source registry's shape, sorted by close time."""
+    """Closed outcomes in the source registry's shape, sorted by close time.
+
+    ``pnl_r`` is **net of costs wherever the row can price them** (``cost.outcome_net_r``),
+    falling back to the stored ``result_R``. The breakers below are stated in R against a
+    fixed risk fraction, i.e. they are a claim about equity, and paper ``result_R`` never had
+    fees or slippage taken out of it — so a day of trades that lost real money could read as
+    flat here and leave the daily breaker clear. Netting moves every one of these limits in the
+    conservative direction (a net figure is never larger than its gross), which is why it needs
+    no new threshold and no re-authorization: the numbers are the ones already registered, now
+    measured against what a trade actually costs.
+    """
     rows = [
         {
-            "pnl_r": float(r.get("result_R", 0.0) or 0.0),
+            "pnl_r": _judged_r(r),
             "exit_time": r.get("created_at_utc"),
         }
         for r in outcomes
         if isinstance(r, dict) and r.get("outcome_closed") is True
     ]
     return sorted(rows, key=lambda x: str(x.get("exit_time", "")))
+
+
+def _judged_r(outcome: Mapping[str, Any]) -> float:
+    """One outcome's R after costs, or its stored R when it cannot be priced.
+
+    A missing ``result_R`` still reads as ``0.0`` — a BREAKEVEN — exactly as before. That is
+    load-bearing rather than sloppy: ``cycle`` relies on it and drops R-less live rows upstream
+    (see ``live_outcomes_for_analysis``) precisely because a loss read as breakeven would
+    SHORTEN a loss streak. Changing it here would move that decision into two places.
+    """
+    net = cost.outcome_net_r(outcome)
+    return float(net) if net is not None else float(outcome.get("result_R", 0.0) or 0.0)
 
 
 def _pnl_since(rows: list[dict[str, Any]], start_time: datetime) -> float:
