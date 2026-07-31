@@ -74,14 +74,24 @@ def legs_needing_topic_id(groups: list[Mapping[str, Any]]) -> dict[str, list[str
     return wanted
 
 
+STOP_COMPLETE = "every wanted leg found"
+STOP_EXHAUSTED = "listing exhausted"
+STOP_CAPPED = "stopped at --max-topics"
+
+
 def discover_topic_ids(
     market_ids: set[str], *, max_topics: int, root: Path | None = None
-) -> tuple[dict[str, str], int, bool]:
+) -> tuple[dict[str, str], int, str]:
     """Walk the live listing for the topics holding these legs.
 
-    Returns ``(mapping, topics_read, exhausted)``. ``exhausted`` says the walk ran out of
-    listing rather than out of budget — the difference between "these legs are not on the
-    venue any more" and "we stopped looking", which a caller must not have to guess.
+    Returns ``(mapping, topics_read, stop_reason)``. **Three terminal states, not two**, and
+    the distinction is the whole value of the report: a leg unmapped because the listing ran
+    out is one whose settlement is permanently unreadable, while a leg unmapped because the
+    walk hit its budget is one that needs a bigger ``--max-topics``. Collapsing them tells an
+    operator to write off a group that is merely further down the page.
+
+    The first version returned a bool and reported "topic no longer listed" against every
+    unmapped leg regardless — which on a capped run is a claim the walk had not earned.
 
     Stops early once every wanted leg is found: the remaining pages cost signed calls to
     confirm something already known.
@@ -96,7 +106,7 @@ def discover_topic_ids(
     found: dict[str, str] = {}
     topics_read = 0
     offset = 0
-    exhausted = False
+    stop = STOP_CAPPED
     while topics_read < max_topics and len(found) < len(market_ids):
         listing = collector._signed_get(
             collector.LIST_PATH, {"limit": collector.PAGE_LIMIT, "offset": offset},
@@ -104,7 +114,7 @@ def discover_topic_ids(
         )
         topics = md.parse_prediction_topics(listing)
         if not topics:
-            exhausted = True
+            stop = STOP_EXHAUSTED
             break
         offset += len(topics)
         for topic in topics:
@@ -122,7 +132,9 @@ def discover_topic_ids(
                 key = f"{row['market_id']}:{row['token_id']}"
                 if key in market_ids:
                     found[key] = topic.market_id
-    return found, topics_read, exhausted
+    if len(found) == len(market_ids):
+        stop = STOP_COMPLETE
+    return found, topics_read, stop
 
 
 def apply_topic_ids(
@@ -149,17 +161,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         sys.stdout.write(
             f"{len(flat)} Binance leg(s) across {len(wanted)} group(s) have no topic id\n")
-        found, topics_read, exhausted = discover_topic_ids(flat, max_topics=args.max_topics)
+        found, topics_read, stop = discover_topic_ids(flat, max_topics=args.max_topics)
         missing = sorted(flat - set(found))
         sys.stdout.write(
-            f"read {topics_read} topic(s) "
-            f"({'listing exhausted' if exhausted else 'stopped at --max-topics'}); "
+            f"read {topics_read} topic(s) ({stop}); "
             f"mapped {len(found)}, unmapped {len(missing)}\n")
+        # Named, not counted, and the reason has to match the walk. An unmapped leg after an
+        # exhausted listing is permanently unreadable; after a capped one it is only unread.
+        # The operator acts on those differently, so the line must not say the same thing.
+        why = ("topic no longer listed — permanent" if stop == STOP_EXHAUSTED
+               else f"not in the first {topics_read} topic(s) — raise --max-topics")
         for market_id in missing:
-            # Named, not counted. An unmapped leg is one whose topic has left the listing, and
-            # that is permanent — the operator needs to know which groups can never report a
-            # settlement, not that some number of them cannot.
-            sys.stdout.write(f"  UNMAPPED {market_id}  (topic no longer listed)\n")
+            sys.stdout.write(f"  UNMAPPED {market_id}  ({why})\n")
         if args.dry_run:
             sys.stdout.write("dry run: nothing written\n")
             return 0
