@@ -8,6 +8,17 @@ It answers one question — *what is still standing between this machine and an 
 order* — by asking each gate directly rather than by reasoning about them from documentation,
 so an answer here cannot drift from what the code actually enforces.
 
+**"This machine" is the whole claim, and it is not the whole system.** Most rows are computed
+from ``os.environ``, so this board answers for the process that runs it. That was invisible
+while only the scheduler ran it and became a false statement the moment other surfaces did:
+the operator console and the assistant read door run in containers that deliberately carry no
+``MVP_LIVE_*``, and both rendered "live trading off" while the scheduler held an open gate
+(#382). The env is not forwarded to fix that — keeping the money path out of those containers
+is the point. Instead the board reports what the trading process itself last recorded
+(``recorded_gate``, from the cycle ledger both already mount) and refuses to render a bare
+"off" that its own environment is not entitled to claim. ``ready`` still means "can THIS
+process trade", because the CLI exit code is documented as a script precondition.
+
 It opens **one** socket, and only when the operator has already configured an account feed:
 the daily-loss breaker measures against what the venue realized, because the local outcome
 ledger cannot supply that figure (its only writer is the autonomous leg nothing may import,
@@ -37,6 +48,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +62,9 @@ from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
 )
+from .dashboard import _read_cycle_records
 from .live_position import compute_open_notional_usdt
+from .live_route import ROUTE_DISABLED
 from .live_order import (
     CONFIRMATION_ENV,
     MANUAL_KILL_SWITCH_ENV,
@@ -88,9 +102,71 @@ ORDER_PATH_IMPLEMENTED = True
 # switches, the loss breaker — is unchanged, and each has its own row above.
 AUTONOMOUS_ROUTING_WIRED = True
 
+# The symbol the guard dry-run probes when no budget names one. Only reached on a machine with
+# no usable budget — where the honest answer is a block either way — so it decides nothing; a
+# registered budget supplies the probe symbol from its own allowlist.
+DEFAULT_PROBE_SYMBOL = "BTCUSDT"
+
+# How old the trading process's own record may be before this board stops treating it as a
+# statement about now. Cycles land every few minutes, so two hours is far outside normal and
+# means the scheduler stopped rather than that the gate changed.
+RECORDED_GATE_STALE_AFTER_SECONDS = 2 * 60 * 60
+
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
     return {"check": check_id, "ok": bool(ok), "detail": detail}
+
+
+def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
+    """What the process that CAN trade last recorded about its own live gate.
+
+    Every row this board computes from ``os.environ`` answers "can *this process* place a live
+    order". That is the right question where the scheduler runs and a false one everywhere else:
+    the operator console and the assistant read door run in containers that deliberately carry
+    no ``MVP_LIVE_*``, so the env rows read FAIL there and the board states that live trading is
+    off while the scheduler is placing real orders. Forwarding the env would "fix" it by putting
+    the money path in the containers built to be without it — the wrong direction.
+
+    So the board also reports the trading process's own answer. Every crypto cycle stamps
+    ``live_route_status``, and ``DISABLED`` is written only when the gate refused to open, which
+    makes the newest cycle record an authoritative "was the gate open". It is read from the
+    ledger those containers already mount: no new writer, no new env, no second authority.
+
+    Never raises and never guesses — an absent or unreadable ledger reports ``known: False``
+    rather than an assumption in either direction.
+    """
+    unknown: dict[str, Any] = {
+        "known": False, "open": None, "status": None,
+        "recorded_at": None, "age_seconds": None, "stale": False, "error": None,
+    }
+    try:
+        records, warning = _read_cycle_records(root, 1)
+    except Exception as exc:  # noqa: BLE001 — an observability row must not break the board
+        return {**unknown, "error": type(exc).__name__}
+    if not records:
+        return {**unknown, "error": warning}
+    record = records[-1]
+    status = record.get("live_route_status")
+    recorded_at = record.get("created_at")
+    if not isinstance(status, str) or not isinstance(recorded_at, str):
+        return {**unknown, "error": "cycle record carries no live route status"}
+    try:
+        age = (timeutil.parse_iso(now) - timeutil.parse_iso(recorded_at)).total_seconds()
+    except (MvpRuntimeError, ValueError):
+        age = None
+    return {
+        "known": True,
+        # DISABLED is the one status meaning the gate refused to open. Every other status was
+        # reached through an opened gate, so the reading is positive rather than a guess.
+        "open": status != ROUTE_DISABLED,
+        "status": status,
+        "recorded_at": recorded_at,
+        "age_seconds": age,
+        # An unparsable stamp counts as stale: an age this board cannot compute is not one it
+        # may present as current.
+        "stale": age is None or age > RECORDED_GATE_STALE_AFTER_SECONDS,
+        "error": warning,
+    }
 
 
 def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict[str, Any]:
@@ -338,6 +414,22 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # A dry-run of the real guard against a representative order at the configured cap.
     # This is the authoritative answer: whatever the rows above say, this is what would
     # actually happen. Nothing is sent — the guard is pure.
+    #
+    # It is only authoritative if it is given what the real doors are given. Until 2026-07-31
+    # this call omitted `allowed_symbols`, whose default is EMPTY — and an empty allowlist
+    # blocks every symbol — so the dry-run reported "no symbol allowlist backs this order" on
+    # every machine, forever, however the budget was registered. Both real callers
+    # (`live_route.plan_live_entry`, `scripts/place_canary_order.py`) read the scope off the
+    # same budget the caps come from; so does this now. The board under-reported what the
+    # machine could do, which is the dangerous direction for a line an operator reads before
+    # deciding whether live trading is stopped.
+    #
+    # The probe symbol comes from that allowlist rather than a hardcoded BTCUSDT: a machine
+    # budgeted for ETHUSDT alone is correctly configured, and probing a symbol its own budget
+    # excludes would answer a question nobody asked. With no allowlist the probe keeps the old
+    # constant — the block it then reports is the true one.
+    allowed_symbols = tuple(budget.get("symbol_allowlist") or ())
+    probe_symbol = allowed_symbols[0] if allowed_symbols else DEFAULT_PROBE_SYMBOL
     try:
         submitted_today, counter_error = count_today(root), None
     except MvpRuntimeError as exc:
@@ -345,12 +437,13 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     guard = evaluate_live_order_guard(
         {
             "status": "ORDER_INTENT_CREATED",
-            "symbol": "BTCUSDT",
+            "symbol": probe_symbol,
             "quantity": 0.001,
             "order_notional_usdt": limits.max_order_notional_usdt,
             "reduce_only": False,
             "connectivity_test": False,
         },
+        allowed_symbols=allowed_symbols,
         gate_open=opted_in,
         runtime_active=runtime_active,
         daily_loss_breached=breached,
@@ -372,9 +465,17 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
 
     return {
         "created_at": now,
+        # Deliberately still "can THIS process trade": the CLI's exit code is documented as a
+        # script precondition, and a script asking that question runs where trading runs. The
+        # recorded gate below is reported ALONGSIDE the checks, never folded into them, so a
+        # board read off the scheduler cannot flip this verdict.
         "ready": all(c["ok"] for c in checks),
         "checks": checks,
+        "recorded_gate": _recorded_gate(root, now=now),
         "guard_dry_run": guard,
+        # Which order the dry-run judged. A symbol-scoped block is unreadable without it: the
+        # operator cannot tell "my budget excludes this symbol" from "this symbol is blocked".
+        "guard_dry_run_symbol": probe_symbol,
         "submitted_today": submitted_today,
         "counter_error": counter_error,
         "order_path_implemented": ORDER_PATH_IMPLEMENTED,
@@ -382,15 +483,68 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     }
 
 
+def _opted_in(status: Mapping[str, Any]) -> bool:
+    return any(c["check"] == "live_trading_opt_in" and c["ok"] for c in status.get("checks") or ())
+
+
+def contradicts_recorded_gate(status: Mapping[str, Any]) -> bool:
+    """True when this board's env rows say "off" and the trading process says otherwise.
+
+    The single state this board must never render as a plain "live trading off": the reader is
+    on a console that cannot see the money path, and the process that can was trading when it
+    last wrote. A stale or unknown record does NOT qualify — an old record is not evidence about
+    now, and inventing a contradiction from one would trade this false negative for a false
+    positive.
+    """
+    recorded = status.get("recorded_gate") or {}
+    return (
+        not _opted_in(status)
+        and bool(recorded.get("known"))
+        and bool(recorded.get("open"))
+        and not recorded.get("stale")
+    )
+
+
+def _recorded_gate_line(status: Mapping[str, Any]) -> str:
+    recorded = status.get("recorded_gate") or {}
+    if not recorded.get("known"):
+        detail = recorded.get("error") or "no crypto cycle has been recorded yet"
+        return f"[----] {'live_gate_recorded':24} UNKNOWN - {detail}"
+    state = "OPEN" if recorded.get("open") else "CLOSED"
+    age = recorded.get("age_seconds")
+    when = recorded.get("recorded_at")
+    suffix = " [STALE - not a statement about now]" if recorded.get("stale") else ""
+    minutes = f", {int(age // 60)}m ago" if isinstance(age, (int, float)) else ""
+    return (
+        f"[----] {'live_gate_recorded':24} trading process recorded the gate {state} "
+        f"at {when} ({recorded.get('status')}{minutes}){suffix}"
+    )
+
+
 def render_readiness_text(status: dict[str, Any]) -> str:
     """ASCII-only board. Windows consoles are cp949."""
     lines = ["=== live trading readiness ==="]
+    # Before the rows, not after: the rows are what mislead, so a reader must meet the warning
+    # first. #382 — the operator console and the assistant read door both ran this board in
+    # containers with no MVP_LIVE_*, and both told a reader live trading was off while the
+    # scheduler held an open gate.
+    if contradicts_recorded_gate(status):
+        recorded = status["recorded_gate"]
+        lines.append("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
+        lines.append(f"   the trading process recorded the gate OPEN at {recorded['recorded_at']}")
+        lines.append("   the env rows below describe THIS container, not the system")
+        lines.append("   authoritative board:")
+        lines.append("     docker exec thomas-scheduler python -m runtime.mvp_runtime.crypto"
+                     ".live_readiness")
+        lines.append("")
     for check in status["checks"]:
         mark = "PASS" if check["ok"] else "FAIL"
         lines.append(f"[{mark}] {check['check']:24} {check['detail']}")
+    lines.append(_recorded_gate_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
-    lines.append(f"guard dry-run (an order at the configured cap): {guard['status']}")
+    probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
+    lines.append(f"guard dry-run ({probe} at the configured cap): {guard['status']}")
     for block in guard.get("blocks") or []:
         lines.append(f"  BLOCK  : {block}")
     for repair in guard.get("repairs") or []:
@@ -398,7 +552,15 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     if status.get("counter_error"):
         lines.append(f"WARNING : daily order counter unreadable ({status['counter_error']})")
     lines.append("")
-    lines.append("READY" if status["ready"] else "NOT READY - every FAIL above must clear first")
+    if status["ready"]:
+        lines.append("READY")
+    elif contradicts_recorded_gate(status):
+        # Unqualified "NOT READY" here would be the same false statement the banner exists to
+        # prevent, in the one line a hurried reader keeps.
+        lines.append("NOT READY (THIS PROCESS ONLY) - it carries no live-trading environment;")
+        lines.append("           this says nothing about whether the system is trading")
+    else:
+        lines.append("NOT READY - every FAIL above must clear first")
     if status["order_path_implemented"]:
         # READY is no longer an abstract "configured" — say what it now means.
         lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")

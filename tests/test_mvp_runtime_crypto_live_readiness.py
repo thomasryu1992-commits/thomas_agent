@@ -236,7 +236,8 @@ def test_canary_registry_shares_the_one_live_grant():
 
 # === the readiness board ============================================================
 
-def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z", **cap_overrides):
+def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
+                     symbol_allowlist=("BTCUSDT",), **cap_overrides):
     """Register a valid live-trading budget under ``root`` (step 6b: the guard's cap source)."""
     from runtime.mvp_runtime.crypto import live_budget
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
@@ -244,10 +245,15 @@ def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="20
                 daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
     caps.update(cap_overrides)
     rec = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from=valid_from, valid_until=valid_until,
-        registered_by="thomas", registered_at=valid_from)
+        caps=caps, symbol_allowlist=list(symbol_allowlist), valid_from=valid_from,
+        valid_until=valid_until, registered_by="thomas", registered_at=valid_from)
     live_budget.write_registered_budget(rec, root=root)
     return rec
+
+
+def _allowlist_blocks(status):
+    """The dry-run's symbol-scope blocks — the ones the board omitted its way into."""
+    return [b for b in (status["guard_dry_run"].get("blocks") or []) if "allowlist" in b]
 
 
 def test_fresh_machine_is_not_ready(tmp_path, clean_env):
@@ -327,6 +333,58 @@ def test_guard_dry_run_is_the_authoritative_answer(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["guard_dry_run"]["approved"] is False
     assert status["guard_dry_run"]["blocks"]
+
+
+def test_an_unbudgeted_machine_blocks_on_the_absent_allowlist(tmp_path, clean_env):
+    """With no budget there IS no scope, and the block naming that is the true answer.
+
+    Pinned beside the tests below because it is the case the old code reported for *every*
+    machine: correct here, and correct nowhere else."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(status) == [
+        b for b in status["guard_dry_run"]["blocks"] if "no symbol allowlist" in b
+    ]
+    assert _allowlist_blocks(status)
+    assert status["guard_dry_run_symbol"] == live_readiness.DEFAULT_PROBE_SYMBOL
+
+
+def test_the_dry_run_reads_the_registered_allowlist(tmp_path, clean_env):
+    """The defect this test exists for: the board called the guard without `allowed_symbols`,
+    whose default is EMPTY and blocks every symbol — so the one line the module calls the
+    authoritative answer reported "no symbol allowlist backs this order" on every machine,
+    however the budget was registered, and told the operator to register the budget they had
+    already registered. Both real doors (`live_route`, `place_canary_order`) read the scope off
+    the same budget the caps come from."""
+    before = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(before)          # no budget: the block is real
+
+    _register_budget(tmp_path, symbol_allowlist=["BTCUSDT"])
+    after = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert _allowlist_blocks(after) == []     # a registered scope is not an absent one
+    # It still refuses — on the doors that ARE shut (opt-in, phrase, canaries). The point is
+    # that the board no longer invents a thirteenth.
+    assert after["guard_dry_run"]["approved"] is False
+    assert after["guard_dry_run"]["blocks"]
+
+
+def test_the_probe_symbol_comes_from_the_budget(tmp_path, clean_env):
+    """A machine budgeted for ETHUSDT alone is correctly configured. Probing a hardcoded
+    BTCUSDT would answer a question nobody asked and report a scope block on a machine whose
+    scope is intact — the same false alarm one layer down."""
+    _register_budget(tmp_path, symbol_allowlist=["ETHUSDT", "SOLUSDT"])
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["guard_dry_run_symbol"] == "ETHUSDT"
+    assert _allowlist_blocks(status) == []
+
+
+def test_the_board_names_the_symbol_it_probed(tmp_path, clean_env):
+    """A symbol-scoped verdict is unreadable without its symbol: the operator cannot tell
+    "my budget excludes this one" from "this one is blocked"."""
+    _register_budget(tmp_path, symbol_allowlist=["SOLUSDT"])
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "guard dry-run (SOLUSDT at the configured cap):" in (
+        live_readiness.render_readiness_text(status)
+    )
 
 
 def test_order_path_flag_matches_the_governance_flag():
@@ -689,3 +747,101 @@ def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
     assert status["size_unproven"] == 0
     assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
     assert status["ready"] is True          # surfaced, not judged
+
+
+# === whose environment is this board describing? (#382) ==============================
+# The board computes most rows from `os.environ`, so it answers for the process running it.
+# Once the operator console and the assistant read door started serving it from containers
+# that deliberately carry no MVP_LIVE_*, "live trading off" became a false statement about a
+# system whose scheduler held an open gate. These lock the fix: the board reports what the
+# trading process recorded, and refuses a bare "off" its own env cannot support.
+
+def _write_cycle(root, *, status: str, created_at: str):
+    """One crypto_cycle ledger row — the trading process's own record of its live gate."""
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = root / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    row = {"kind": "crypto_cycle",
+           "record": {"live_route_status": status, "created_at": created_at}}
+    with (ledger / RECORDS_FILE).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
+def test_recorded_gate_is_unknown_without_a_cycle(tmp_path, clean_env):
+    """No record is not evidence of "off" — it is absence, and it says so."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["known"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    assert "UNKNOWN" in live_readiness.render_readiness_text(status)
+
+
+def test_a_blind_process_will_not_claim_live_trading_is_off(tmp_path, clean_env):
+    """The bug itself: no live env here, but the process that CAN trade was gated open."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["open"] is True
+    assert live_readiness.contradicts_recorded_gate(status) is True
+    text = live_readiness.render_readiness_text(status)
+    assert "THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT" in text
+    # The one line a hurried reader keeps must not be an unqualified system claim.
+    assert "NOT READY (THIS PROCESS ONLY)" in text
+    assert "NOT READY - every FAIL above must clear first" not in text
+
+
+def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
+    """Genuinely off must still read as off — the fix must not blur the real negative."""
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["open"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    text = live_readiness.render_readiness_text(status)
+    assert "THIS PROCESS CANNOT SEE" not in text
+    assert "NOT READY - every FAIL above must clear first" in text
+
+
+def test_a_stale_record_is_not_evidence_about_now(tmp_path, clean_env):
+    """An old open gate must not manufacture a warning: that trades one false claim for
+    another, in the more alarming direction."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-20T00:00:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["stale"] is True
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    assert "STALE" in live_readiness.render_readiness_text(status)
+
+
+def test_the_newest_cycle_decides(tmp_path, clean_env):
+    """A gate that closed and reopened reads as open; the board follows the last record."""
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:00:00Z")
+    _write_cycle(tmp_path, status="OPENED", created_at="2026-07-23T11:58:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["status"] == "OPENED"
+    assert live_readiness.contradicts_recorded_gate(status) is True
+
+
+def test_the_recorded_gate_cannot_move_the_ready_verdict(tmp_path, clean_env):
+    """`ready` stays "can THIS process trade" — the CLI exit code is a script precondition,
+    so an observability row must never be able to flip it."""
+    before = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    after = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert before["ready"] == after["ready"]
+    assert [c["check"] for c in before["checks"]] == [c["check"] for c in after["checks"]]
+    assert "live_gate_recorded" not in {c["check"] for c in after["checks"]}
+
+
+def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_env):
+    """Fail-closed: a corrupt ledger must not become a confident answer in either direction."""
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = tmp_path / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / RECORDS_FILE).write_text('{"kind": "crypto_cycle" broken\n', encoding="utf-8")
+
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["known"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
