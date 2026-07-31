@@ -154,6 +154,19 @@ REGISTRATION_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — registry ca
 LIVE_ORDER_PERMISSION_SCOPE = "FINANCIAL_APPROVED_TRADING_USE"
 LIVE_ORDER_REQUIRED_PERMISSION_LEVEL = "P5"  # EXTERNAL_ACTION — reaches a counterparty outside the system
 
+# Governance scope + level for the assistant switch door's `enable` (Thomas decision S1/S3,
+# 2026-07-31, docs/proposals/HERMES_AGENT_SWITCH_V0.1.md). Re-arming the runtime kill switch
+# from the assistant is a RUNTIME_GOVERNANCE ask, the same scope strategy promotion already
+# uses and already APPROVAL_REQUIRED in the policy — **no policy edit, no new scope**.
+#
+# Deliberately NOT P5/FINANCIAL_APPROVED_TRADING_USE. `resume` changes internal control state;
+# it reaches no counterparty. Pricing it P5 would drag in the p5_policy_gate, whose conditions
+# are about sending an order — a gate this action cannot satisfy and should not be judged by.
+# P4 INTERNAL_MODIFY is the honest level: it mutates runtime control state, and the autonomous
+# path it re-arms is gated on its own conditions, each of which still applies afterwards.
+TRADING_SWITCH_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
+TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates runtime control state
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -836,6 +849,64 @@ def build_memory_promotion_permission_decision(
         bound_task,
         permission_scope=MEMORY_PROMOTION_PERMISSION_SCOPE,
         required_permission_level=MEMORY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_trading_switch_permission_decision(
+    bound_task: Mapping[str, Any],
+    domain: str,
+    *,
+    role_permission_ceiling: str = TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+    now: str,
+    approval_id: str | None = None,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for re-arming one domain's trading
+    switch from the assistant door.
+
+    The action is bound to the exact domain: it is the target and it is in the fingerprint, so
+    an approval to re-arm ``crypto`` can never be re-pointed at another domain (any material
+    change invalidates the fingerprint). That binding is what lets the switch door perform the
+    action described by the *snapshot* rather than by the request that presents it.
+
+    Building this record re-arms nothing. The decision is APPROVAL_REQUIRED; only Thomas's
+    verified APPROVED grant, spent once, reaches ``control.CMD_RESUME``.
+    """
+    if not (isinstance(domain, str) and domain.strip()):
+        raise PlannerBlocked("INVALID_DOMAIN", "a trading-switch ask must name its domain")
+    domain = domain.strip().lower()
+
+    action = _ActionSpec(
+        action_type="runtime.trading.enable",
+        target_suffix="trading_switch",
+        tool_id=None,
+        data_scope=("runtime.control_state", "task.evidence"),
+        normalized_parameters={"domain": domain, "switch_action": "enable"},
+        risk_reason=(
+            "Re-arming the trading switch restores an autonomous path that can place real orders."
+        ),
+        authority_reason="Prime may prepare a trading-switch re-arm for Thomas review.",
+        decision_reason=(
+            "Restarting trading requires exact Thomas approval on the verified control channel."
+        ),
+        constraint="Approval is single-use and authorizes this domain's switch only.",
+        target_ref=f"trading_switch:{domain}",
+        content_sha256=integrity.sha256_record({"domain": domain, "switch_action": "enable"}),
+        risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
+        required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
         now=now,
         actor_id=actor_id,

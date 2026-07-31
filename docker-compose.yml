@@ -323,3 +323,48 @@ services:
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+
+  # The trading-switch door. Same shape as the others and deliberately its own service, for
+  # the reason the halt door had: the scheduler is what a stop is meant to stop, so a door
+  # living inside it stops answering exactly when it is needed.
+  #
+  # This is the first door that can START trading, and the asymmetry lives in
+  # `runtime/mvp_runtime/switch_bridge.py`, not here: `disable` applies immediately, `enable`
+  # only creates an APPROVAL_REQUIRED ask and cannot act until Thomas answers it on the
+  # verified control channel. It reaches `control.CMD_RESUME` through exactly one path — a
+  # single-use grant whose approved snapshot names the domain.
+  #
+  # It needs the Core mounts. `enable` binds its ask to a Task + Core Binding like every other
+  # approval request, and a bridge without an active approved Core fails BRIDGE_ERROR on the
+  # missing activation file — the exact way the dispatch door broke when its mounts were
+  # dropped (#380). If this door ever fails on a THOMAS_CORE path, look here first.
+  #
+  # Same absent env as the halt and read doors: no provider keys, no venue keys, no MVP_LIVE_*.
+  # Flipping the control switch reads and writes control state; it reaches no venue and no
+  # model. The live gate (MVP_LIVE_TRADING) is a DEPLOY action and this door never touches it —
+  # clearing it needs a restart and shuts the close path, stranding open positions.
+  switch-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-switch-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/switch.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.switch_bridge_cli
