@@ -14,12 +14,12 @@ rendered board rather than a file, and its answer cannot disagree with ``/crypto
 because it *is* ``/crypto status``. That is the front desk's rule (*"Deterministic data
 beats model narration"*) applied one layer out.
 
-**Why a separate door from ``halt_bridge``.** Different authority. Halting rides
-``control_channel.local_operator_console.emergency_controls_allowed``; these reads ride
+**Why a separate door from ``switch_bridge``.** Different authority. Stopping and starting
+ride ``control_channel.local_operator_console.emergency_controls_allowed``; these reads ride
 ``permission_model`` INTERNAL_READ (ALLOW) plus ``kill_switch.kill_allows:
 read_only_status`` — which is also why they keep answering while the runtime is KILLED, the
-moment a board is most worth reading. Folding reads into the halt door would also destroy
-the one property that door is for: that it carries two verbs and cannot be widened.
+moment a board is most worth reading. Folding reads into the switch door would also destroy
+the one property that door is for: a small verb set that cannot be widened.
 
 **Nothing here can mutate.** ``registry_console`` also implements ``CANCEL`` and
 ``memory_console`` also implements ``PROMOTE``; both are absent from ``_READS`` — not
@@ -44,7 +44,7 @@ from .working_memory import WorkingMemoryStore
 # The identity these reads are attributed to. Reads record nothing, so this only reaches the
 # appliers' `operator_id` parameter — but it is the assistant's name, not the operator's,
 # for the same reason the halt door has its own actor.
-from .halt_bridge import ASSISTANT_ACTOR
+from .socket_door import ASSISTANT_ACTOR
 
 SOCKET_REL = ".runtime_governance_state/bridge/read.sock"
 SOCKET_ENV = "MVP_READ_BRIDGE_SOCKET"

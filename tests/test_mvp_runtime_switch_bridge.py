@@ -356,3 +356,118 @@ def test_the_spend_records_the_approval_on_the_control_event(tmp_path, approved)
     _apply({"command": "enable", "reason": "Thomas approved", "approval_id": "approval_test"},
            store, approvals=approved, ledger=ledger)
     assert any("approval_test" in str(entry.get("reason", "")) for entry in ledger.control)
+
+
+# === the policy grant ================================================================
+# Ported from the retired halt door's tests: the mechanical gate that keeps this door from
+# adding a verb the Governance Policy has not already granted. It was the halt door's most
+# load-bearing assertion, and the door absorbing its verbs has to carry it.
+
+def test_the_stops_this_door_applies_stay_within_the_policy_grant():
+    """This door adds no stop verb the Governance Policy has not already granted under
+    local_operator_console."""
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load(
+        (repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
+    )
+    allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
+    for verb in switch_bridge._DISABLE_MODES.values():
+        assert verb in allowed, (
+            f"switch-bridge stop {verb!r} is not granted by the Governance Policy - "
+            "either drop the verb or extend emergency_controls_allowed explicitly"
+        )
+
+
+def test_the_verb_enable_reaches_is_also_a_granted_control():
+    """`resume` is reached only through an approval, but it is still a control verb and the
+    policy must still name it. It does — an explicit Thomas decision (2026-07-19)."""
+    import yaml
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    policy = yaml.safe_load(
+        (repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
+    )
+    allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
+    assert control.CMD_RESUME in allowed
+
+
+def test_the_assistant_actor_is_not_the_local_console():
+    from runtime.mvp_runtime import console_cli
+
+    assert switch_bridge.ASSISTANT_ACTOR != console_cli.LOCAL_ACTOR
+
+
+# === the socket ======================================================================
+# The permission surface above runs everywhere; only what follows needs AF_UNIX, which
+# Windows does not have. The door only ever ships in a Linux container, so skipping the
+# listener there is honest — skipping the rules would not be.
+
+unix_only = pytest.mark.skipif(
+    not switch_bridge.socket_door.UNIX_SOCKETS_AVAILABLE,
+    reason="the switch door listens on AF_UNIX",
+)
+
+
+def test_listening_without_af_unix_is_a_typed_refusal(tmp_path, monkeypatch):
+    """On a platform with no unix sockets the door refuses to open rather than importing
+    badly — the failure belongs at the moment someone tries to listen."""
+    monkeypatch.setattr(switch_bridge.socket_door, "UNIX_SOCKETS_AVAILABLE", False)
+    with pytest.raises(ControlBlocked) as exc:
+        switch_bridge.open_door(
+            tmp_path / "s.sock", control_store=ControlStore(tmp_path), ledger=FakeLedger(),
+        )
+    assert exc.value.reason_code == "UNIX_SOCKETS_UNAVAILABLE"
+
+
+@unix_only
+def test_the_socket_is_not_world_accessible(tmp_path):
+    """This is the door that can start trading; "any process on this host" must not be the
+    authorization."""
+    import stat
+
+    server = switch_bridge.open_door(
+        tmp_path / "s.sock", control_store=ControlStore(tmp_path), ledger=FakeLedger(),
+    )
+    try:
+        mode = (tmp_path / "s.sock").stat().st_mode
+        assert not mode & stat.S_IROTH
+        assert not mode & stat.S_IWOTH
+    finally:
+        server.server_close()
+
+
+@unix_only
+def test_end_to_end_over_the_socket(tmp_path):
+    """A real frame over a real socket, so the transport and the permission surface are known
+    to agree — the refusal that matters most is the one an actual client gets."""
+    import json
+    import socket as socket_mod
+    import threading
+
+    store = ControlStore(tmp_path)
+    path = tmp_path / "s.sock"
+    server = switch_bridge.open_door(path, control_store=store, ledger=FakeLedger())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        def ask(payload):
+            with socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(path))
+                client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+                return json.loads(client.recv(65536).decode("utf-8").strip())
+
+        assert ask({"command": "disable", "reason": "over the wire"})["ok"] is True
+        assert store.load().mode == KILLED
+
+        # And the one that matters: an enable over the wire changes nothing without a grant.
+        refused = ask({"command": "resume", "reason": "over the wire"})
+        assert refused["ok"] is False and refused["reason_code"] == "VERB_NOT_PERMITTED"
+        assert store.load().mode == KILLED
+    finally:
+        server.shutdown()
+        server.server_close()

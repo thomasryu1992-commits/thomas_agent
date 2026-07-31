@@ -17,7 +17,7 @@ import pytest
 from runtime.mvp_runtime import control, dispatch_bridge, planner
 from runtime.mvp_runtime.control import ACTIVE, ControlStore
 from runtime.mvp_runtime.errors import ControlBlocked
-from runtime.mvp_runtime.halt_bridge import ASSISTANT_ACTOR
+from runtime.mvp_runtime.socket_door import ASSISTANT_ACTOR
 
 NOW = "2026-07-30T09:00:00Z"
 

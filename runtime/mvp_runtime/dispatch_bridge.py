@@ -1,10 +1,11 @@
 """The dispatch door — the assistant asks this runtime to *do* a bounded piece of work.
 
-Two assistant doors already exist: ``halt_bridge`` stops the runtime, ``read_bridge`` looks
-at it. This is the third verb the design always pointed at: it *starts* work. Starting is the
-thing the halt door refuses on principle (``resume`` re-arms an autonomous path, and the
-assistant on the other end reads untrusted text and can be talked into a tool call). Admitting
-a start here is safe only because of what it is bounded to — not trust, but **effect class**.
+Two assistant doors already exist: ``switch_bridge`` stops and starts the runtime,
+``read_bridge`` looks at it. This is the third verb the design always pointed at: it *starts*
+work. Starting is the thing the switch door will not do unprompted (``resume`` re-arms an
+autonomous path, and the assistant on the other end reads untrusted text and can be talked into
+a tool call — which is why that door requires an approval Thomas signs). Admitting a start here
+without one is safe only because of what it is bounded to — not trust, but **effect class**.
 
 Every task dispatched here runs the ordinary intake pipeline (:func:`pipeline.run_task`) as
 one of a fixed, non-trading, REVIEW_ONLY role set, capped at permission P3. The guarantee is
@@ -64,7 +65,7 @@ from .working_memory import WorkingMemoryStore
 
 # The assistant's name on every dispatched task, shared with the other doors so a rename in
 # one place cannot desync attribution.
-from .halt_bridge import ASSISTANT_ACTOR
+from .socket_door import ASSISTANT_ACTOR
 
 # Its own subdirectory sibling of the other doors' sockets, so the assistant's container
 # reaches it through the same group-owned `bridge/` mount.
