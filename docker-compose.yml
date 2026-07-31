@@ -182,54 +182,9 @@ services:
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
 
-  # The halt-only door. Thomas talks to a conversational assistant beside this deployment and
-  # wants to stop trading by saying so; `runtime/mvp_runtime/halt_bridge.py` is that path and
-  # carries exactly two verbs (`kill`, `pause`) with `resume` refused by construction.
-  #
-  # Its own service, and the reason is the same one that put `console_cli` outside the loop:
-  # the operator and scheduler are what a halt is meant to stop, so a door living inside one
-  # of them stops answering exactly when it is needed.
-  #
-  # Note what is NOT here. No provider keys, no venue keys, no MVP_LIVE_* — this process
-  # cannot call a model, reach an exchange, or place an order even if something inside it
-  # wanted to. It mounts the state directory (the control state it flips and the ledger it
-  # records to) and nothing else; the Core activation/approval mounts the other two services
-  # carry are absent because this one runs no task.
-  #
-  # The socket lives in a subdirectory of the state volume so the assistant's container can
-  # bind-mount `bridge/` alone without seeing governance state. It is mode 0660 owned by uid
-  # 10001, so the assistant's container needs `group_add: ["10001"]` to reach it — the shared
-  # group IS the access control, which is the same "can already open a path on this host"
-  # authentication the local console rests on.
-  halt-bridge:
-    image: thomas-agent-runtime
-    build: .
-    container_name: thomas-halt-bridge
-    restart: unless-stopped
-    stop_grace_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    volumes:
-      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
-    # Liveness is the socket itself: the door is up exactly when something can knock on it.
-    # A process that is running but has lost its listener is not a door.
-    healthcheck:
-      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/halt.sock"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    command:
-      - python
-      - -m
-      - runtime.mvp_runtime.halt_bridge_cli
-
-  # The read-only door. Same shape as `halt-bridge` and deliberately a second service:
+  # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
-  # grant), and a read that wedges must not be able to wedge the halt path — which is the
+  # grant), and a read that wedges must not be able to wedge the stop path — which is the
   # one that matters when something is going wrong.
   #
   # `runtime/mvp_runtime/read_bridge.py` dispatches every verb to the SAME applier the
@@ -237,7 +192,7 @@ services:
   # it serves can mutate: registry CANCEL and memory PROMOTE are absent from its table and a
   # test asserts they stay absent.
   #
-  # Same absent env as the halt door — no provider keys, no venue keys, no MVP_LIVE_*.
+  # Same absent env as the switch door — no provider keys, no venue keys, no MVP_LIVE_*.
   read-bridge:
     image: thomas-agent-runtime
     build: .
@@ -262,14 +217,14 @@ services:
       - -m
       - runtime.mvp_runtime.read_bridge_cli
 
-  # The dispatch door. The assistant's third lane: halt-bridge stops the runtime, read-bridge
+  # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
   # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`
   # caps this in code: a closed set of non-trading request kinds, no `write_path`, the kill
   # switch checked before every run, every task attributed to `assistant_bridge`. A test
   # asserts the kind set stays those four and that none of them reaches the money path.
   #
-  # Unlike halt-bridge and read-bridge this service RUNS the pipeline, so it is the one door
+  # Unlike switch-bridge and read-bridge this service RUNS the pipeline, so it is the one door
   # that *could* invoke a model. It deliberately carries no provider key here: with none, the
   # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
   # pipeline. Enabling real model execution means forwarding the model provider env
@@ -291,7 +246,7 @@ services:
         max-file: "3"
     volumes:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
-      # Unlike halt/read-bridge this door RUNS the pipeline, which will not bind a task
+      # Unlike switch/read-bridge this door RUNS the pipeline, which will not bind a task
       # without an active approved Core — so it needs the Core activation/approval records
       # read-only, exactly as the operator and scheduler do.
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
@@ -339,7 +294,7 @@ services:
   # missing activation file — the exact way the dispatch door broke when its mounts were
   # dropped (#380). If this door ever fails on a THOMAS_CORE path, look here first.
   #
-  # Same absent env as the halt and read doors: no provider keys, no venue keys, no MVP_LIVE_*.
+  # Same absent env as the read and dispatch doors: no provider keys, no venue keys, no MVP_LIVE_*.
   # Flipping the control switch reads and writes control state; it reaches no venue and no
   # model. The live gate (MVP_LIVE_TRADING) is a DEPLOY action and this door never touches it —
   # clearing it needs a restart and shuts the close path, stranding open positions.
