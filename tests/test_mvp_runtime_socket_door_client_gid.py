@@ -27,6 +27,15 @@ unix_only = pytest.mark.skipif(
     not socket_door.UNIX_SOCKETS_AVAILABLE, reason="the bridge doors listen on AF_UNIX"
 )
 
+# Ownership is POSIX. Windows has no gid at all, so `os.getgid`/`os.getuid` do not exist there
+# and a test that reads them is an import-time error rather than a skip. Separate from
+# `unix_only` on purpose: chown is POSIX whether or not AF_UNIX exists, and the validation
+# tests above genuinely do run everywhere — the rules are not platform-specific even where the
+# filesystem is.
+posix_only = pytest.mark.skipif(
+    not hasattr(os, "getgid"), reason="file ownership is POSIX; Windows has no gid"
+)
+
 
 # --- reading the configured gid -----------------------------------------------
 
@@ -73,6 +82,7 @@ def test_no_gid_touches_nothing(tmp_path):
     assert (sock.stat().st_gid, sock.parent.stat().st_mode) == before
 
 
+@posix_only
 def test_the_directory_is_granted_too(tmp_path):
     """The half that actually bit: a socket the client may open is unreachable inside a
     directory the client may not traverse."""
@@ -84,6 +94,7 @@ def test_the_directory_is_granted_too(tmp_path):
     assert sock.stat().st_gid == os.getgid()
 
 
+@posix_only
 def test_the_directory_grants_traverse_but_never_world(tmp_path):
     sock = tmp_path / "bridge" / "d.sock"
     sock.parent.mkdir(mode=0o777)
@@ -96,6 +107,7 @@ def test_the_directory_grants_traverse_but_never_world(tmp_path):
     assert not mode & (stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH)
 
 
+@posix_only
 def test_an_unappliable_gid_refuses_to_serve(tmp_path):
     """Fail-closed. A door that comes up unreachable is invisible from both ends; a refusal at
     the moment of listening is not."""
