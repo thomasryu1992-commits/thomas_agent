@@ -3,9 +3,14 @@
   "$id": "current_core_release.v0.2.schema.json",
   "title": "Current Core Release Pointer v0.2",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "schema_version",
-    "runtime_activation_status"
+    "runtime_activation_status",
+    "updated_at_utc",
+    "updated_by",
+    "update_ref",
+    "scope"
   ],
   "properties": {
     "schema_version": {
@@ -16,6 +21,62 @@
         "approved_via_activation_registry",
         "deactivated_fail_closed"
       ]
+    },
+    "activation_id": {
+      "type": "string",
+      "pattern": "^core-activation-[0-9a-f]{24}$"
+    },
+    "activation_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "activation_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "release_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_bundle_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^core-approval-[0-9a-f]{24}$"
+    },
+    "deactivation_id": {
+      "type": "string",
+      "pattern": "^core-deactivation-[0-9a-f]{24}$"
+    },
+    "deactivation_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deactivation_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "updated_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "updated_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "update_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object"
     }
   },
   "allOf": [
@@ -40,7 +101,12 @@
           "updated_by",
           "update_ref",
           "scope"
-        ]
+        ],
+        "properties": {
+          "deactivation_id": false,
+          "deactivation_path": false,
+          "deactivation_sha256": false
+        }
       }
     },
     {
@@ -60,7 +126,16 @@
           "updated_by",
           "update_ref",
           "scope"
-        ]
+        ],
+        "properties": {
+          "activation_id": false,
+          "activation_path": false,
+          "activation_sha256": false,
+          "release_id": false,
+          "core_version": false,
+          "core_bundle_sha256": false,
+          "approval_id": false
+        }
       }
     }
   ]
