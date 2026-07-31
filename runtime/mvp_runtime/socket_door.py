@@ -1,7 +1,8 @@
-"""The transport both bridge doors sit on — one JSON object in, one out, over a unix socket.
+"""The transport every bridge door sits on — one JSON object in, one out, over a unix socket.
 
-Two doors now face the assistant: ``halt_bridge`` (kill/pause) and ``read_bridge`` (the
-console reads). They carry different authorities and must stay separate modules, but they
+Three doors face the assistant: ``switch_bridge`` (the trading switch), ``read_bridge`` (the
+console reads) and ``dispatch_bridge`` (bounded P3 work). They carry different authorities and
+must stay separate modules, but they
 must **not** answer a malformed frame differently. A door that dies on a bad byte is a
 denial of service, and a door that half-applies a truncated request is worse; getting that
 right twice, and keeping it right through two future edits, is the drift this module exists
@@ -34,6 +35,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ControlBlocked, MvpRuntimeError
+
+# The actor every door attributes its effects to. Deliberately NOT ``console_cli.LOCAL_ACTOR``:
+# an operator reading the ledger must be able to tell an action that came from SSH from one
+# that came from the assistant, which matters precisely because the assistant is the less
+# trusted of the two. It lives here, with the transport the doors share, because it is one
+# identity for all of them — it used to live in ``halt_bridge`` and was imported from there by
+# doors that had nothing to do with halting, which made retiring that door a rename.
+ASSISTANT_ACTOR = "assistant_bridge"
 
 # Group-readable/writable and nothing else. The assistant's container runs under a different
 # uid than this runtime, so the shared group IS the access control. World access would make

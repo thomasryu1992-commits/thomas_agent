@@ -3,8 +3,8 @@
     python -m runtime.mvp_runtime.read_bridge_cli
     python -m runtime.mvp_runtime.read_bridge_cli --socket /path/to/read.sock
 
-Separate from ``halt_bridge_cli`` for the reason the modules are separate: different
-authority. It also means a read that wedges cannot wedge the halt path, which is the one
+Separate from ``switch_bridge_cli`` for the reason the modules are separate: different
+authority. It also means a read that wedges cannot wedge the stop path, which is the one
 that matters when something is going wrong.
 
 Holds no schedule, runs no pipeline, makes no outbound call, and writes nothing — it waits
