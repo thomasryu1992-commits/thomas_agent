@@ -284,3 +284,79 @@ def test_since_filters_and_never_deletes():
     rows = [_row(0), _row(2), _row(4)]
     report.build_pm1_report(rows, now=NOW, since="2026-08-01T00:04:00Z")
     assert len(rows) == 3                                    # the caller's list is untouched
+
+
+# --- reading the evidence must not cost more than collecting it ------------------
+
+def test_the_report_streams_the_store_rather_than_holding_it(tmp_path, monkeypatch):
+    """The store is cumulative for the length of the window, so it is the one input here that
+    grows without bound while the phase runs — 290 MB at day four of fourteen. Materializing it
+    cost over 1.2 GB against roughly 1 GB free on the host that is *also* running the scan that
+    writes it, so the exit artifact had become unable to read its own evidence.
+
+    Pinned as "does not call the list reader" rather than as a number, because the number is
+    what varies by machine and the call is what regresses."""
+    from runtime.mvp_runtime.predmarket import pairs
+
+    monkeypatch.setattr(pairs, "_repo_root", lambda: tmp_path)
+    obs.append_observations([_row(0), _row(2)], root=tmp_path)
+
+    def _refuse(*_a, **_k):
+        raise AssertionError("the report must not materialize the whole store")
+
+    monkeypatch.setattr(obs, "read_observations", _refuse)
+    built = report.build_pm1_report(now=NOW, root=tmp_path)
+    assert built["observation_count"] == 2
+
+
+def test_the_report_keeps_a_projection_of_each_row_not_the_row(tmp_path):
+    """The memory property itself, and the one a green output cannot show: grouping the full
+    rows and grouping their three read fields produce byte-identical reports, so only a
+    measurement can tell which one is happening.
+
+    Fed from a generator so the input is never itself in memory — otherwise the test would
+    measure the fixture rather than the report."""
+    import tracemalloc
+
+    width = 4096                 # per row, and read by nothing in the report
+    count = 8_000
+    payload_bytes = count * width
+
+    def source():
+        for index in range(count):
+            row = _row(index % 60, event=f"e{index % 40}")
+            # Unique per row on purpose. One shared string would be one object however many
+            # rows referenced it, so retaining every row would cost nothing and this test
+            # would pass against the very code it exists to refuse — which is what the first
+            # version of it did.
+            row["venue_payload"] = f"{index:08d}".ljust(width, "x")
+            yield row
+
+    tracemalloc.start()
+    built = report.build_pm1_report(source(), now=NOW)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert built["observation_count"] == count
+    # Retaining the rows would hold `payload_bytes` (32 MB) plus the rows themselves. The
+    # projection holds three fields each. A quarter of the payload alone is a wide margin
+    # around that difference — this is a shape test, not a byte budget.
+    assert peak < payload_bytes // 4, (
+        f"peak {peak / 1e6:.1f}MB against {filler_bytes / 1e6:.1f}MB of unread payload — "
+        "the report is holding whole rows again"
+    )
+
+
+def test_streaming_and_materialized_reads_agree(tmp_path, monkeypatch):
+    """The equivalence the change rests on: same store, same report, whichever door read it."""
+    from runtime.mvp_runtime.predmarket import pairs
+
+    monkeypatch.setattr(pairs, "_repo_root", lambda: tmp_path)
+    rows = [_row(m, is_opportunity=(m % 3 != 0), net_edge=None if m % 7 == 0 else 0.01 * m,
+                 event=f"e{m % 3}", reasons=[obs.MARKET_NOT_LISTED] if m % 11 == 0 else [])
+            for m in range(60)]
+    obs.append_observations(rows, root=tmp_path)
+
+    streamed = report.build_pm1_report(now=NOW, root=tmp_path)
+    materialized = report.build_pm1_report(obs.read_observations(tmp_path), now=NOW)
+    assert streamed == materialized

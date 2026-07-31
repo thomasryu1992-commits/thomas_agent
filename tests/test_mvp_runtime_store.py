@@ -130,6 +130,46 @@ def test_corrupt_ledger_tip_fails_closed(tmp_path):
     assert exc.value.reason_code == "LEDGER_UNREADABLE"
 
 
+# --- the shared JSONL primitive --------------------------------------------
+
+def test_the_streaming_reader_and_the_list_reader_agree(tmp_path):
+    """``read_objects`` is now ``list(iter_objects(...))``. It used to ``read_text()`` the whole
+    file into one string and ``splitlines()`` it into a second full copy before parsing a row,
+    so opening a store cost several times its own size. The crypto board OOM-killed on that
+    shape and was repaired with a private streaming reader, which left the shape at the
+    primitive for the next store to grow into — and the PM1 observation store did."""
+    from runtime.mvp_runtime import jsonl
+
+    path = tmp_path / "s.jsonl"
+    rows = [{"i": i, "note": "x"} for i in range(5)]
+    jsonl.append_lines(path, rows, write_code="W", label="s")
+    assert jsonl.read_objects(path, read_code="R", label="s") == rows
+    assert list(jsonl.iter_objects(path, read_code="R", label="s")) == rows
+    # Absent file: empty, not an error — the same answer from both doors.
+    missing = tmp_path / "nope.jsonl"
+    assert jsonl.read_objects(missing, read_code="R", label="s") == []
+    assert list(jsonl.iter_objects(missing, read_code="R", label="s")) == []
+
+
+def test_a_bad_line_fails_the_list_reader_wholesale_and_the_stream_where_it_sits(tmp_path):
+    """The one behavioural difference, stated rather than discovered: a list either completes
+    or raises, so a caller that materializes still gets all-or-nothing. A caller that streams
+    has already seen the rows before the bad one, and must treat a partial read as partial."""
+    from runtime.mvp_runtime import jsonl
+
+    path = tmp_path / "s.jsonl"
+    path.write_text('{"i": 0}\n{"i": 1}\n{not json\n', encoding="utf-8")
+
+    with pytest.raises(PersistenceError) as exc:
+        jsonl.read_objects(path, read_code="R", label="s")
+    assert exc.value.reason_code == "R"
+
+    stream = jsonl.iter_objects(path, read_code="R", label="s")
+    assert [next(stream), next(stream)] == [{"i": 0}, {"i": 1}]
+    with pytest.raises(PersistenceError):
+        next(stream)
+
+
 def test_unwritable_ledger_fails_closed(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")  # a file where a directory parent is expected
