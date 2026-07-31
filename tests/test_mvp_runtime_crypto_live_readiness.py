@@ -747,3 +747,101 @@ def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
     assert status["size_unproven"] == 0
     assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
     assert status["ready"] is True          # surfaced, not judged
+
+
+# === whose environment is this board describing? (#382) ==============================
+# The board computes most rows from `os.environ`, so it answers for the process running it.
+# Once the operator console and the assistant read door started serving it from containers
+# that deliberately carry no MVP_LIVE_*, "live trading off" became a false statement about a
+# system whose scheduler held an open gate. These lock the fix: the board reports what the
+# trading process recorded, and refuses a bare "off" its own env cannot support.
+
+def _write_cycle(root, *, status: str, created_at: str):
+    """One crypto_cycle ledger row — the trading process's own record of its live gate."""
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = root / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    row = {"kind": "crypto_cycle",
+           "record": {"live_route_status": status, "created_at": created_at}}
+    with (ledger / RECORDS_FILE).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
+def test_recorded_gate_is_unknown_without_a_cycle(tmp_path, clean_env):
+    """No record is not evidence of "off" — it is absence, and it says so."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["known"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    assert "UNKNOWN" in live_readiness.render_readiness_text(status)
+
+
+def test_a_blind_process_will_not_claim_live_trading_is_off(tmp_path, clean_env):
+    """The bug itself: no live env here, but the process that CAN trade was gated open."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["open"] is True
+    assert live_readiness.contradicts_recorded_gate(status) is True
+    text = live_readiness.render_readiness_text(status)
+    assert "THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT" in text
+    # The one line a hurried reader keeps must not be an unqualified system claim.
+    assert "NOT READY (THIS PROCESS ONLY)" in text
+    assert "NOT READY - every FAIL above must clear first" not in text
+
+
+def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
+    """Genuinely off must still read as off — the fix must not blur the real negative."""
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["open"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    text = live_readiness.render_readiness_text(status)
+    assert "THIS PROCESS CANNOT SEE" not in text
+    assert "NOT READY - every FAIL above must clear first" in text
+
+
+def test_a_stale_record_is_not_evidence_about_now(tmp_path, clean_env):
+    """An old open gate must not manufacture a warning: that trades one false claim for
+    another, in the more alarming direction."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-20T00:00:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert status["recorded_gate"]["stale"] is True
+    assert live_readiness.contradicts_recorded_gate(status) is False
+    assert "STALE" in live_readiness.render_readiness_text(status)
+
+
+def test_the_newest_cycle_decides(tmp_path, clean_env):
+    """A gate that closed and reopened reads as open; the board follows the last record."""
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:00:00Z")
+    _write_cycle(tmp_path, status="OPENED", created_at="2026-07-23T11:58:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["status"] == "OPENED"
+    assert live_readiness.contradicts_recorded_gate(status) is True
+
+
+def test_the_recorded_gate_cannot_move_the_ready_verdict(tmp_path, clean_env):
+    """`ready` stays "can THIS process trade" — the CLI exit code is a script precondition,
+    so an observability row must never be able to flip it."""
+    before = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    after = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    assert before["ready"] == after["ready"]
+    assert [c["check"] for c in before["checks"]] == [c["check"] for c in after["checks"]]
+    assert "live_gate_recorded" not in {c["check"] for c in after["checks"]}
+
+
+def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_env):
+    """Fail-closed: a corrupt ledger must not become a confident answer in either direction."""
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = tmp_path / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / RECORDS_FILE).write_text('{"kind": "crypto_cycle" broken\n', encoding="utf-8")
+
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["recorded_gate"]["known"] is False
+    assert live_readiness.contradicts_recorded_gate(status) is False
