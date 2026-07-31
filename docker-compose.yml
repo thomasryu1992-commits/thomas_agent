@@ -216,6 +216,19 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.read_bridge_cli
+    # The assistant's gid. The door hands its socket and the bridge directory to this group,
+    # so who may reach a door is stated by the door instead of inherited from whatever gid it
+    # happens to run as. `group_add` is what lets a non-root door chgrp to it: POSIX allows an
+    # owner to set a file's group only to a group it belongs to.
+    #
+    # These services run their server as PID 1 with no in-container privilege drop, so the
+    # supplementary group survives. That is exactly what failed on the assistant's side, where
+    # `s6-setuidgid` recomputed groups from /etc/group and silently discarded `group_add` —
+    # leaving three doors up and unreachable with nothing on either side saying why.
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
 
   # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
@@ -261,7 +274,11 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.dispatch_bridge_cli
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
+      # See read-bridge for why the door states the client gid rather than inheriting it.
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
       # Model providers ONLY. This is the one door that runs the pipeline, so it needs the
       # provider chain to return a real analysis instead of the mock. Each member still needs
       # its own mounted safety-flag grant (via the state volume) — the env var alone fails
@@ -323,3 +340,16 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.switch_bridge_cli
+    # The assistant's gid. The door hands its socket and the bridge directory to this group,
+    # so who may reach a door is stated by the door instead of inherited from whatever gid it
+    # happens to run as. `group_add` is what lets a non-root door chgrp to it: POSIX allows an
+    # owner to set a file's group only to a group it belongs to.
+    #
+    # These services run their server as PID 1 with no in-container privilege drop, so the
+    # supplementary group survives. That is exactly what failed on the assistant's side, where
+    # `s6-setuidgid` recomputed groups from /etc/group and silently discarded `group_add` —
+    # leaving three doors up and unreachable with nothing on either side saying why.
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
