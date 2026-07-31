@@ -113,7 +113,28 @@ MIN_INTERVAL_SECONDS = 60
 # a parent). Children are backtested on their own evidence, refused when they
 # close no trades, and de-duplicated by rule hash — so the steady-state output is
 # small and re-fusing the same top parents is a no-op, not a pile-up.
-FACTORY_FUSION_PAIRS = 2
+#
+# Raised 2 -> 4 on 2026-07-31, on the store's own record. Across the 594 candidates
+# carrying a derivation, crossover beat the seeded rotation on every measure that
+# gates promotion:
+#
+#   seeded_template  n=440  median expectancy -0.133  p90 +0.136  ROBUST  24 (5.5%)
+#   crossover        n=154  median expectancy -0.042  p90 +0.268  ROBUST  21 (13.6%)
+#
+# and the highest-expectancy lineages in the store are all fusions of a price family
+# with a feed family (`htf_pullback_long+oi_squeeze_long` +2.71R,
+# `bollinger_breakout+oi_squeeze_long` +1.15R). Read with the bias stated: parents come
+# from `rank_fusion_parents`, i.e. the top-scoring lineages, so a child starts from
+# better rules than a fresh seed does. That is a reason the mechanism works, not a
+# reason the comparison is fake — children are scored on their own backtest and inherit
+# no parent evidence.
+#
+# 4 rather than higher because a batch is `DEFAULT_BATCH_SIZE` seeded specs and this many
+# fused ones, so 4 makes the fire half-crossover; past that the seeded rotation — the only
+# path by which a NEWLY ADDED family ever enters the store — starts losing its share of
+# each fire. Supply is not the binding constraint: `FUSION_PARENT_POOL` is 6 per bucket,
+# so `combinations` offers 15 distinct pairs per bucket before a second bucket is touched.
+FACTORY_FUSION_PAIRS = 4
 
 # The one timestamp form `next_run_at <= now` is a correct time comparison for —
 # single authority in timeutil (anchor rationale documented there).
