@@ -246,7 +246,15 @@ RESOLVED_VOID = "VOID"
 
 # The venue was asked and could not be asked usefully. Distinct from every code above: those
 # describe a market, this describes the read. See `BinancePredictionCollector.read_resolutions`.
-RESOLUTION_UNSUPPORTED = "PREDMARKET_RESOLUTION_UNSUPPORTED"
+# A leg the runtime can no longer ask about, as opposed to one that has yet to settle. Binance
+# legs confirmed before the topic id was captured have no way back to `market/detail`, and a
+# sweep that reported them as merely undetermined would look like a market still running.
+NO_PARENT_ID = "PREDMARKET_NO_PARENT_ID"
+
+# What Binance calls a settled market, in its own two fields. Both must agree before a row is
+# read as a settlement — see `parse_prediction_resolutions`.
+BINANCE_RESOLVED = "RESOLVED"
+BINANCE_CLOSED = "CLOSED"
 
 
 def classify_resolution(yes_value: float | None) -> str:
@@ -265,6 +273,22 @@ def classify_resolution(yes_value: float | None) -> str:
     if yes_value == 0.0:
         return RESOLVED_NO
     return RESOLVED_SPLIT
+
+
+def outcome_from_prices(yes_value: float | None, values: Sequence[float | None]) -> str:
+    """Classify a settlement from the **whole** price vector, not the YES side alone.
+
+    One authority for a rule both venues need and neither states. ``classify_resolution``
+    answers from a single number and cannot tell *the NO side was paid* from *nobody was
+    paid* — both leave YES at 0. Gamma serves the second as ``["0","0"]`` and Binance as two
+    outcomes at ``"0"``, so the check has to see every side, and it lives here rather than
+    twice because the first copy of it was written for Gamma alone and Binance shipped the
+    same bug three hours later in a test that spelled the rule out and did not apply it.
+    """
+    known = [v for v in values if v is not None]
+    if known and all(v == 0.0 for v in known):
+        return RESOLVED_VOID
+    return classify_resolution(yes_value)
 
 
 @dataclass(frozen=True)
@@ -366,6 +390,13 @@ class PredMarket:
     # market a price read produced, because a price read never asks — and this is the one
     # field where "did not say" and "settled NO" differ by the whole position.
     resolution: Resolution | None = None
+    # The venue's id for the container this market belongs to, where the venue HAS one and it
+    # is not derivable from `market_id`. Only Binance: `market/detail` is keyed by
+    # `marketTopicId`, the leg id is `marketId:tokenId`, and no arithmetic gets from one to
+    # the other — so a settlement is reachable only if this was captured while the topic was
+    # still listed. `group_id` is not this: that is the cross-venue `conditionId`, an axis for
+    # matching, and overloading it would make one field answer to two authorities.
+    parent_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -382,6 +413,7 @@ class PredMarket:
             "resolution_rules": self.resolution_rules,
             "volume": self.volume,
             "resolution": self.resolution.as_dict() if self.resolution is not None else None,
+            "parent_id": self.parent_id,
             "quote": self.quote.as_dict(),
         }
 
@@ -419,7 +451,11 @@ class PredMarketCollector(Protocol):
     ) -> PredMarketSnapshot: ...
 
     def read_resolutions(
-        self, market_ids: Sequence[str], *, timeout_seconds: int
+        self,
+        market_ids: Sequence[str],
+        *,
+        timeout_seconds: int,
+        parent_ids: Mapping[str, str] | None = None,
     ) -> PredMarketSnapshot: ...
 
 
@@ -504,7 +540,11 @@ class MockPredMarketCollector:
     _UNSETTLED_INDEX = 3
 
     def read_resolutions(
-        self, market_ids: Sequence[str], *, timeout_seconds: int
+        self,
+        market_ids: Sequence[str],
+        *,
+        timeout_seconds: int,
+        parent_ids: Mapping[str, str] | None = None,
     ) -> PredMarketSnapshot:
         """Deterministic settlements: even indices pay YES, odd pay NO, with two exceptions.
 
@@ -698,6 +738,7 @@ def collect_pred_resolutions(
     market_ids: Sequence[str],
     now: str,
     timeout_seconds: int = 10,
+    parent_ids: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read how these markets settled. Returns ``(snapshot, tool_use_record)``.
 
@@ -713,7 +754,8 @@ def collect_pred_resolutions(
     venue = require_venue(venue)
     wanted = [str(m) for m in market_ids]
     try:
-        result = collector.read_resolutions(market_ids=wanted, timeout_seconds=timeout_seconds)
+        result = collector.read_resolutions(
+            market_ids=wanted, timeout_seconds=timeout_seconds, parent_ids=parent_ids)
     except (ToolError, TimeoutError) as exc:
         # The adapter's own code survives here, where ``collect_pred_markets`` flattens to
         # ``TOOL_ERROR``. The asymmetry is deliberate and is about what the caller must
@@ -741,7 +783,11 @@ def collect_pred_resolutions(
         "operation": "collect_pred_resolutions",
         "venue": venue,
         "input_sha256": integrity.sha256_record(
-            {"tool_id": collector.tool_id, "venue": venue, "market_ids": sorted(set(wanted))}
+            {"tool_id": collector.tool_id, "venue": venue, "market_ids": sorted(set(wanted)),
+             # In the fingerprint because it changes the answer: the same leg ids read with
+             # and without their topic ids are two different reads, and a record whose hash
+             # could not tell them apart would bind to the wrong one.
+             "parent_ids": dict(sorted((parent_ids or {}).items()))}
         ),
         "market_count": len(markets),
         "settled_count": len(settled),
@@ -1031,7 +1077,11 @@ class KalshiPublicCollector:
         return parse_kalshi_markets(payload)[:limit]
 
     def read_resolutions(
-        self, market_ids: Sequence[str], *, timeout_seconds: int
+        self,
+        market_ids: Sequence[str],
+        *,
+        timeout_seconds: int,
+        parent_ids: Mapping[str, str] | None = None,
     ) -> PredMarketSnapshot:
         """How these markets settled — ``status=settled`` over the same ``tickers`` allowlist.
 
@@ -1527,7 +1577,11 @@ class PolymarketPublicCollector:
         )
 
     def read_resolutions(
-        self, market_ids: Sequence[str], *, timeout_seconds: int
+        self,
+        market_ids: Sequence[str],
+        *,
+        timeout_seconds: int,
+        parent_ids: Mapping[str, str] | None = None,
     ) -> PredMarketSnapshot:
         """How these markets settled — one Gamma call, ``closed=true``, no book.
 
@@ -1678,14 +1732,9 @@ def parse_gamma_resolutions(payload: Any) -> dict[str, Resolution]:
                 0,
             )
             value = _settlement_value(prices[yes_index]) if yes_index < len(prices) else None
-            known = [v for v in (_settlement_value(p) for p in prices) if v is not None]
             resolution = Resolution(
-                # Classified off the WHOLE price vector, not the YES side alone. `["0","0"]`
-                # gives `yes_value: 0.0`, which `classify_resolution` would read as NO — true
-                # of what a YES holder received and false about the market, because the NO
-                # holder received nothing either.
-                outcome=(RESOLVED_VOID if known and not any(v == 1.0 for v in known)
-                         and all(v == 0.0 for v in known) else classify_resolution(value)),
+                outcome=outcome_from_prices(
+                    value, [_settlement_value(p) for p in prices]),
                 yes_value=value,
                 # The name of the side that was paid, when exactly one was. Gamma has no
                 # single "result" field, so this is assembled — and it is assembled from the
@@ -1866,33 +1915,77 @@ class BinancePredictionCollector:
         )
 
     def read_resolutions(
-        self, market_ids: Sequence[str], *, timeout_seconds: int
+        self,
+        market_ids: Sequence[str],
+        *,
+        timeout_seconds: int,
+        parent_ids: Mapping[str, str] | None = None,
     ) -> PredMarketSnapshot:
-        """Refuses, and the reason is an id format rather than a missing endpoint.
+        """How these markets settled — one signed ``market/detail`` per **topic**.
 
-        **A confirmed Binance leg cannot be re-read as a topic.** The id this package stores
-        is ``marketId:tokenId`` — everything the order book needs, which is what it was
-        designed for — while ``market/detail`` is keyed by ``marketTopicId``, an identifier
-        the composite does not carry and that nothing in the group record kept. So even a
-        settlement field on that response would be unreachable from the leg holding the
-        position, and the outage this would report is the id format's, not the venue's.
+        This venue is the one that cannot be asked by market id. The stored leg is
+        ``marketId:tokenId``, everything the order book needs and what it was designed for,
+        while ``market/detail`` is keyed by ``marketTopicId`` — so the caller supplies
+        ``parent_ids`` (``{leg_market_id: topic_id}``), captured at confirmation the way #287
+        captures the fee rate the by-id re-read cannot carry. A leg with no topic id is
+        reported ``UNDETERMINED`` with its own reason rather than raised on: one un-backfilled
+        leg must not cost the sweep the legs that *can* answer.
 
-        Raising is the honest answer rather than ``UNDETERMINED`` on every id: undetermined
-        means *asked and not settled yet*, and a caller that cannot tell that apart from
-        *never askable* will wait forever for an answer that is not coming. A typed refusal
-        with its own code is what the caller records and what the operator acts on.
+        **The topic survives its own listing.** ``market/list`` serves only ``REGISTERED``
+        topics — measured 2026-07-31, none of 400 was past its end date — but ``detail``
+        still answers for a topic that has ended, which is the whole reason capturing the id
+        is worth anything. It also means the id must be captured *before* the topic rotates
+        out of the listing, because that is the only place it is discoverable.
 
-        The fix has a precedent in this package and is the same shape as #287 (a confirmed leg
-        keeping the fee rate a by-id re-read cannot carry): ``confirm`` sees the topic id at
-        proposal time and could capture it on the leg. That is a change to the group record
-        and to every group already confirmed, so it is written down here rather than guessed
-        at — see `docs/REMAINING_WORK.md`, section A.
+        Measured across one market's close on 2026-07-31 (topic 4451653, a five-minute BTC
+        market), the transition is unambiguous and stable over the following six minutes::
+
+            REGISTERED / OPEN     Up 0.87 / Down 0.13
+            RESOLVED   / CLOSED   Up 1    / Down 0
         """
-        raise ToolError(
-            RESOLUTION_UNSUPPORTED,
-            "binance legs carry marketId:tokenId, which cannot address market/detail's "
-            "marketTopicId — no settlement is reachable from a confirmed leg",
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
         )
+        started = time.monotonic()
+        wanted = [str(m) for m in market_ids]
+        parents = {str(k): str(v) for k, v in (parent_ids or {}).items() if v}
+        # One call per distinct TOPIC, not per leg: a topic holds every candidate in its race,
+        # so two legs of one event cost one signed call rather than two.
+        by_topic: dict[str, list[str]] = {}
+        for market_id in wanted:
+            topic = parents.get(market_id)
+            if topic:
+                by_topic.setdefault(topic, []).append(market_id)
+
+        found: dict[str, Resolution] = {}
+        for topic in sorted(by_topic):
+            try:
+                detail = self._signed_get(
+                    self.DETAIL_PATH, {"marketTopicId": topic}, timeout_seconds=timeout_seconds
+                )
+            except ToolError:
+                # One topic failing is not the read failing; its legs stay UNDETERMINED and
+                # the rest of the sweep still gets its answers.
+                continue
+            found.update(parse_prediction_resolutions(detail))
+
+        snapshot = _resolution_snapshot(
+            self, wanted, found, latency_ms=int((time.monotonic() - started) * 1000))
+        missing = [m for m in wanted if m not in parents]
+        if not missing:
+            return snapshot
+        # Say WHY, on the row. A leg confirmed before the topic id was captured is not a
+        # market that has yet to settle — it is one this runtime can no longer ask about, and
+        # the two are only distinguishable if the record says so.
+        unmapped = Resolution(outcome=RESOLVED_UNDETERMINED, venue_word=NO_PARENT_ID)
+        snapshot.markets = [
+            replace(market, resolution=unmapped) if market.market_id in set(missing) else market
+            for market in snapshot.markets
+        ]
+        return snapshot
 
     def _signed_get(self, path: str, params: Mapping[str, Any], *, timeout_seconds: int) -> Any:
         api_key = os.environ.get(BINANCE_API_KEY_ENV, "").strip()
@@ -2068,6 +2161,10 @@ class BinancePredictionCollector:
                     close_time=topic.close_time,
                     status=topic.status,
                     fee_rate_bps=topic.fee_rate_bps,
+                    # The one field only this walk can supply. `market/list` drops a topic the
+                    # moment it stops being REGISTERED, so this is the last point at which the
+                    # id that reaches `market/detail` is knowable for this market at all.
+                    parent_id=topic.market_id,
                     quote=parse_prediction_book(book) if book is not None else VenueQuote(),
                 )
                 markets.append(resolved)
@@ -2234,6 +2331,89 @@ def parse_prediction_topics(payload: Any) -> list[PredMarket]:
     return topics
 
 
+def parse_prediction_resolutions(payload: Any) -> dict[str, Resolution]:
+    """A ``market/detail`` response as ``{"marketId:tokenId": Resolution}``. Pure — no network.
+
+    **Deliberately not built on :func:`parse_prediction_markets`.** That function skips every
+    market whose ``tradingStatus`` is not ``OPEN``, which is correct for its job and is
+    precisely why nobody had ever seen a resolved row: the only parser that reads this payload
+    discards exactly the rows a settlement lives in. Reusing it here would have returned an
+    empty map forever and looked like a venue that never settles anything.
+
+    ``price`` is the settlement; ``chance`` is not, and the difference is the trap. Measured on
+    topic 4451653 the instant it resolved, the winning outcome read ``price: "1", chance:
+    "0.98"`` — ``chance`` is the venue's probability estimate and stays *near* the outcome
+    without ever reaching it. Settling a position on it would book a 2% loss on every win and a
+    2% gain on every loss, on a strategy whose whole edge is a fraction of a cent.
+
+    A market is read only once the venue says both ``status: RESOLVED`` **and**
+    ``tradingStatus: CLOSED``. Requiring both is not belt-and-braces: they moved together in
+    the measurement, so a payload where they disagree is one this parser has not seen, and the
+    fail-closed answer to that is to leave the row unresolved rather than pick a field.
+
+    **Only the ``YES`` outcome is keyed**, which makes this map's keys exactly the ids this
+    package can hold: :func:`parse_prediction_markets` mints a leg only for an outcome named
+    ``YES``, so the two parsers agree about what a Binance market id means. The first version
+    keyed every token with its *own* price and was the Gamma bug reintroduced three hours after
+    it was fixed — a lookup by the losing token returning ``yes_value: 1.0``, true of that
+    token and the opposite of what the field name promises. Keying one side removes the class
+    of mistake rather than restating the rule against it.
+
+    An ``Up``/``Down`` market therefore yields **no key at all**, and that is correct: it has
+    no YES side, it can never be a leg, and there is no position here to settle. Measured on
+    the real payload for topic 4451653, which is one of them.
+    """
+    if not isinstance(payload, Mapping):
+        return {}
+    found: dict[str, Resolution] = {}
+    for market in payload.get("markets") or []:
+        if not isinstance(market, Mapping):
+            continue
+        market_id = market.get("marketId")
+        if not isinstance(market_id, int):
+            continue
+        status = _text(market.get("status"))
+        trading = _text(market.get("tradingStatus"))
+        settled = (status or "").upper() == BINANCE_RESOLVED and (trading or "").upper() == BINANCE_CLOSED
+        outcomes = [o for o in (market.get("outcomes") or []) if isinstance(o, Mapping)]
+        yes = next(
+            (o for o in outcomes
+             if isinstance(o.get("name"), str) and o["name"].strip().upper() == "YES"),
+            None,
+        )
+        token = yes.get("tokenId") if yes is not None else None
+        if not isinstance(token, str) or not token.strip():
+            continue
+        key = f"{market_id}:{token.strip()}"
+        if not settled:
+            found[key] = Resolution(outcome=RESOLVED_UNDETERMINED, venue_word=status)
+            continue
+        value = _settlement_value(yes.get("price"))
+        found[key] = Resolution(
+            outcome=outcome_from_prices(
+                value, [_settlement_value(o.get("price")) for o in outcomes]),
+            yes_value=value,
+            venue_word=_binance_winning_name(outcomes),
+            # The venue states no settlement instant on this payload. None is not a guess.
+            settled_at=None,
+        )
+    return found
+
+
+def _binance_winning_name(outcomes: Sequence[Mapping[str, Any]]) -> str | None:
+    """The outcome paid in full, in the venue's own word, or ``None``. Pure.
+
+    ``None`` unless exactly one outcome settled at 1 — the same rule as Gamma's, for the same
+    reason: a void or split settlement has no winner to name, and inventing one would hide the
+    ambiguity at the row that most needs it seen.
+    """
+    paid = [o for o in outcomes if _settlement_value(o.get("price")) == 1.0]
+    if len(paid) != 1:
+        return None
+    name = paid[0].get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
 def parse_prediction_markets(payload: Any) -> list[dict[str, Any]]:
     """``market/detail`` → one row per tradable outcome market in the topic. Pure.
 
@@ -2343,7 +2523,6 @@ __all__ = [
     "BINANCE_ENV",
     "BINANCE_PROVIDER_ID",
     "PREDMARKET_DEGRADED",
-    "RESOLUTION_UNSUPPORTED",
     "RESOLVED_YES",
     "RESOLVED_NO",
     "RESOLVED_SPLIT",
@@ -2365,6 +2544,7 @@ __all__ = [
     "collect_pred_markets",
     "collect_pred_resolutions",
     "classify_resolution",
+    "outcome_from_prices",
     "is_re_readable",
     "degraded_pred_market_record",
     "is_synthetic_snapshot",

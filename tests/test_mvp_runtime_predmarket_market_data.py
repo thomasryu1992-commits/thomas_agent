@@ -1097,16 +1097,18 @@ def test_the_two_mock_venues_disagree_about_one_market_on_purpose():
     assert kalshi.resolution.outcome != polymarket.resolution.outcome
 
 
-def test_binance_refuses_settlements_and_says_it_is_the_id_format(monkeypatch):
-    """Not an outage and not a wait. A confirmed Binance leg is `marketId:tokenId`, which
-    cannot address `market/detail`'s `marketTopicId` — so no settlement is reachable from the
-    leg holding the position, and UNDETERMINED would leave a caller waiting forever."""
+def test_a_binance_leg_with_no_topic_id_says_so_instead_of_looking_unsettled(monkeypatch):
+    """A leg confirmed before the topic id was captured is not a market that has yet to
+    settle — it is one this runtime can no longer ask about. Reported per leg rather than
+    raised, so one un-backfilled leg does not cost the sweep the legs that CAN answer."""
     monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
     monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
     collector = md.BinancePredictionCollector(authorization=_authorized())
-    with pytest.raises(ToolError) as exc:
-        collector.read_resolutions(["6800574:281527791069982019"], timeout_seconds=1)
-    assert exc.value.reason_code == md.RESOLUTION_UNSUPPORTED
+    snapshot = collector.read_resolutions(["6800574:281527791069982019"], timeout_seconds=1)
+    settlement = snapshot.markets[0].resolution
+    assert settlement.outcome == md.RESOLVED_UNDETERMINED
+    assert settlement.venue_word == md.NO_PARENT_ID
+    assert settlement.settled() is False
 
 
 @pytest.mark.parametrize("venue", [md.KALSHI, md.POLYMARKET])
@@ -1134,14 +1136,168 @@ def test_the_settlement_record_counts_what_actually_settled(monkeypatch):
     assert record["output_sha256"].startswith("sha256:")
 
 
-def test_an_unsupported_venue_blocks_the_read_rather_than_reporting_no_settlements(monkeypatch):
-    """The refusal has to survive the record layer with its own code. Folded into a generic
-    TOOL_ERROR it would be indistinguishable from an outage, and an outage is something you
-    retry."""
+def test_the_topic_ids_are_in_the_reads_fingerprint(monkeypatch):
+    """The same leg ids read with and without their topic ids are two different reads — one
+    can answer and one structurally cannot — so a record whose hash could not tell them apart
+    would bind to the wrong one."""
+    collector = md.MockPredMarketCollector(md.KALSHI)
+    _, bare = md.collect_pred_resolutions(
+        md.KALSHI, collector=collector, market_ids=["KALSHI-MOCK-00"], now=NOW)
+    _, mapped = md.collect_pred_resolutions(
+        md.KALSHI, collector=collector, market_ids=["KALSHI-MOCK-00"], now=NOW,
+        parent_ids={"KALSHI-MOCK-00": "4451653"})
+    assert bare["input_sha256"] != mapped["input_sha256"]
+
+
+# --- how a Binance market ended -------------------------------------------------
+#
+# Payload shape measured across one market's actual close on 2026-07-31 (topic 4451653, a
+# five-minute BTC market), polled every 60s. The transition, and it held for six more minutes:
+#
+#     REGISTERED / OPEN     Up price 0.87  chance 0.865
+#     RESOLVED   / CLOSED   Up price 1     chance 0.98
+
+def _binance_detail(status="RESOLVED", trading="CLOSED", up="1", down="0", **over):
+    market = {
+        "marketId": 4451653001,
+        "conditionId": "0xabc",
+        "status": status,
+        "tradingStatus": trading,
+        "question": "Bitcoin Up or Down - July 31, 5:35AM-5:40AM ET",
+        "outcomes": [
+            {"name": "YES", "price": up, "chance": "0.98", "index": 0, "tokenId": "tok-yes"},
+            {"name": "NO", "price": down, "chance": "0.02", "index": 1, "tokenId": "tok-no"},
+        ],
+    }
+    market.update(over)
+    return {"marketTopicId": 4451653, "markets": [market]}
+
+
+def test_a_resolved_binance_market_reports_what_the_yes_side_paid():
+    found = md.parse_prediction_resolutions(_binance_detail())
+    settlement = found["4451653001:tok-yes"]
+    assert settlement.outcome == md.RESOLVED_YES
+    assert settlement.yes_value == 1.0
+    assert settlement.venue_word == "YES"
+    assert settlement.settled() is True
+
+
+def test_only_the_yes_side_is_keyed_so_a_losing_token_cannot_be_mislabelled():
+    """The Gamma bug, which this parser reintroduced for three hours. Keying every token with
+    its OWN price makes a lookup by the losing token return `yes_value: 1.0` on a market that
+    resolved NO — true of that token, the opposite of what the field name promises. Keying one
+    side removes the class of mistake instead of restating the rule against it, and it makes
+    these keys exactly the ids `parse_prediction_markets` mints legs for."""
+    found = md.parse_prediction_resolutions(_binance_detail())
+    assert list(found) == ["4451653001:tok-yes"]
+    assert "4451653001:tok-no" not in found
+
+
+def test_an_up_down_market_yields_no_key_at_all():
+    """Correct rather than a gap: it has no YES side, can never become a leg, and there is no
+    position here to settle. Measured on the real payload for topic 4451653, which is one."""
+    updown = _binance_detail()
+    updown["markets"][0]["outcomes"] = [
+        {"name": "Up", "price": "1", "chance": "0.98", "index": 0, "tokenId": "t-up"},
+        {"name": "Down", "price": "0", "chance": "0.02", "index": 1, "tokenId": "t-down"},
+    ]
+    assert md.parse_prediction_resolutions(updown) == {}
+
+
+def test_the_settlement_is_price_and_never_chance():
+    """The trap this venue sets. At the instant it resolved, the winning outcome read
+    `price: "1", chance: "0.98"` — `chance` is the venue's probability estimate and stays NEAR
+    the outcome without reaching it. Settling on it books a 2% error on every position, on a
+    strategy whose whole edge is a fraction of a cent."""
+    found = md.parse_prediction_resolutions(_binance_detail())
+    assert found["4451653001:tok-yes"].yes_value == 1.0        # price
+    assert found["4451653001:tok-yes"].yes_value != 0.98       # chance
+
+
+def test_an_open_binance_market_is_undetermined_not_settled_at_its_last_price():
+    """Before resolution the prices are a live quote — 0.87/0.13 on the measured topic. Read as
+    a settlement they would book a position at whatever it was trading at when someone looked."""
+    found = md.parse_prediction_resolutions(
+        _binance_detail(status="REGISTERED", trading="OPEN", up="0.87", down="0.13"))
+    settlement = found["4451653001:tok-yes"]
+    assert settlement.outcome == md.RESOLVED_UNDETERMINED
+    assert settlement.yes_value is None
+    assert settlement.settled() is False
+
+
+@pytest.mark.parametrize("status,trading", [("RESOLVED", "OPEN"), ("REGISTERED", "CLOSED")])
+def test_the_two_status_fields_must_agree_before_anything_settles(status, trading):
+    """They moved together in the measurement, so a payload where they disagree is one this
+    parser has not seen. Fail closed on it rather than picking whichever field is convenient."""
+    found = md.parse_prediction_resolutions(_binance_detail(status=status, trading=trading))
+    assert found["4451653001:tok-yes"].outcome == md.RESOLVED_UNDETERMINED
+
+
+def test_the_resolved_parser_does_not_go_through_the_open_only_one():
+    """Why this parser exists at all. `parse_prediction_markets` skips every market whose
+    tradingStatus is not OPEN — correct for its job, and exactly why nobody had ever seen a
+    resolved row: the only reader of this payload discarded the rows settlements live in."""
+    detail = _binance_detail()
+    assert md.parse_prediction_markets(detail) == []          # the open-only reader sees nothing
+    assert md.parse_prediction_resolutions(detail)            # this one sees the settlement
+
+
+def test_a_binance_market_that_paid_nobody_is_void():
+    void = md.parse_prediction_resolutions(_binance_detail(up="0", down="0"))
+    settlement = void["4451653001:tok-yes"]
+    assert settlement.outcome == md.RESOLVED_VOID
+    assert settlement.venue_word is None
+    assert settlement.settled() is False
+
+
+def test_one_signed_call_per_topic_not_per_leg(monkeypatch):
+    """A topic holds every candidate in its race, so two legs of one event cost one call. These
+    endpoints carry an IP weight of 200 each and share a key with the live window."""
     monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
     monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+    asked: list[Any] = []
+
+    def _fake(self, path, params, *, timeout_seconds):
+        asked.append(params.get("marketTopicId"))
+        return _binance_detail()
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _fake)
     collector = md.BinancePredictionCollector(authorization=_authorized())
-    with pytest.raises(ToolBlocked) as exc:
-        md.collect_pred_resolutions(
-            md.BINANCE, collector=collector, market_ids=["1:2"], now=NOW)
-    assert exc.value.reason_code == md.RESOLUTION_UNSUPPORTED
+    snapshot = collector.read_resolutions(
+        ["4451653001:tok-yes", "77:tok-yes"], timeout_seconds=1,
+        parent_ids={"4451653001:tok-yes": "4451653", "77:tok-yes": "4451653"},
+    )
+    assert asked == ["4451653"]
+    assert snapshot.markets[0].resolution.settled() is True
+
+
+def test_one_topic_failing_leaves_the_other_topics_answers_alone(monkeypatch):
+    monkeypatch.setenv(md.BINANCE_API_KEY_ENV, "k")
+    monkeypatch.setenv(md.BINANCE_API_SECRET_ENV, "s")
+
+    def _fake(self, path, params, *, timeout_seconds):
+        if str(params.get("marketTopicId")) == "999":
+            raise ToolError("TOOL_TRANSPORT", "topic unreachable")
+        return _binance_detail()
+
+    monkeypatch.setattr(md.BinancePredictionCollector, "_signed_get", _fake)
+    collector = md.BinancePredictionCollector(authorization=_authorized())
+    snapshot = collector.read_resolutions(
+        ["4451653001:tok-yes", "77:tok-x"], timeout_seconds=1,
+        parent_ids={"4451653001:tok-yes": "4451653", "77:tok-x": "999"},
+    )
+    by_id = {m.market_id: m.resolution for m in snapshot.markets}
+    assert by_id["4451653001:tok-yes"].settled() is True
+    assert by_id["77:tok-x"].outcome == md.RESOLVED_UNDETERMINED
+
+
+def test_the_discovery_walk_keeps_the_topic_id_it_already_holds():
+    """The capture point. `market/list` drops a topic the moment it stops being REGISTERED, so
+    this walk is the last place the id reaching `market/detail` is knowable for this market."""
+    market = md.PredMarket(
+        venue=md.BINANCE, market_id="5567895:112233", group_id="0xabc",
+        title="t", close_time=None, status=None, parent_id="4229564")
+    assert market.parent_id == "4229564"
+    assert market.as_dict()["parent_id"] == "4229564"
+    # It is NOT the cross-venue conditionId: one field, one authority.
+    assert market.as_dict()["group_id"] == "0xabc"

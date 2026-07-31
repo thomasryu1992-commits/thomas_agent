@@ -982,3 +982,60 @@ def test_displaced_candidates_are_counted_not_silently_dropped():
 
     assert len(result["candidates"]) == 1, "the one Polymarket market can serve one pairing"
     assert result["candidates_displaced"] == 3
+
+
+# --- backfilling the topic id ---------------------------------------------------
+
+def _binance_group(root, market_id="44:tok", topic_id=None):
+    leg = {"venue": "binance", "market_id": market_id}
+    if topic_id:
+        leg["topic_id"] = topic_id
+    record = pairs.build_event_group(
+        legs=[{"venue": "kalshi", "market_id": "K-1"}, leg],
+        criteria_note="both settle on the same official statement for this event",
+        confirmed_by="thomas", now=NOW,
+    )
+    return pairs.confirm_group(record, root=root)
+
+
+def test_a_backfill_fills_an_absent_topic_id_without_re_keying_the_group(tmp_path):
+    """What makes this safe on a live window. `event_id` derives from `venue:market_id` alone,
+    so the group keeps its identity and every observation already recorded against it stays
+    attached — unlike `add_leg`, which has to re-key and carry `superseded_event_ids`."""
+    stored = _binance_group(tmp_path)
+    before = stored["event_id"]
+    assert pairs.set_leg_topic_ids(
+        {"44:tok": "4451653"}, updated_by="thomas", now=NOW, root=tmp_path) == 1
+    after = pairs.read_groups(tmp_path)[0]
+    assert after["event_id"] == before
+    leg = next(l for l in after["legs"] if l["venue"] == "binance")
+    assert leg["topic_id"] == "4451653"
+    assert after["topic_ids_backfilled_by"] == "thomas"
+
+
+def test_a_backfilled_group_still_verifies_against_its_own_hash(tmp_path):
+    """A rewritten record that fails its own hash is refused by every reader here, so
+    re-hashing is the write rather than bookkeeping after it."""
+    _binance_group(tmp_path)
+    pairs.set_leg_topic_ids({"44:tok": "4451653"}, updated_by="thomas", now=NOW, root=tmp_path)
+    assert pairs.read_groups(tmp_path)          # read_groups verifies; a bad hash would raise
+
+
+def test_a_backfill_never_overwrites_an_id_already_captured(tmp_path):
+    """The stored one came from the listing at confirmation, which is the same source a walk
+    reads. A field a later walk can rewrite is one whose value depends on when you ran it."""
+    _binance_group(tmp_path, topic_id="ORIGINAL")
+    assert pairs.set_leg_topic_ids(
+        {"44:tok": "REWRITTEN"}, updated_by="thomas", now=NOW, root=tmp_path) == 0
+    leg = next(l for l in pairs.read_groups(tmp_path)[0]["legs"] if l["venue"] == "binance")
+    assert leg["topic_id"] == "ORIGINAL"
+
+
+def test_a_backfill_leaves_retired_groups_alone(tmp_path):
+    """A retired group is a correction record. Spending signed calls to enrich a pairing an
+    operator withdrew buys nothing, because nothing observes it."""
+    stored = _binance_group(tmp_path)
+    pairs.retire_group(stored["event_id"], reason="wrong pairing", retired_by="thomas", now=NOW,
+                       root=tmp_path)
+    assert pairs.set_leg_topic_ids(
+        {"44:tok": "4451653"}, updated_by="thomas", now=NOW, root=tmp_path) == 0

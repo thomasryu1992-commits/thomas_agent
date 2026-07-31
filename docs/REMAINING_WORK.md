@@ -434,19 +434,42 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
           NO holder a dollar. Left that way, a voided market on one venue reads as *agreement*
           with a genuine NO on the other, which is the exact disagreement PM2 exists to find.
           It is now `VOID`, and it does not settle a position.
-  - [ ] **Binance settlements are unreachable, and it is an id format rather than an endpoint.**
-        The stored leg is `marketId:tokenId` — everything the order book needs, which is what it
-        was designed for — while `market/detail` is keyed by `marketTopicId`, which the composite
-        does not carry and the group record never kept. So even a settlement field on that
-        response could not be reached from the leg holding the position. `read_resolutions`
-        refuses with its own `PREDMARKET_RESOLUTION_UNSUPPORTED` rather than reporting every
-        Binance leg as *not settled yet*, because a caller that cannot tell those apart waits
-        forever for an answer that is not coming. **This is load-bearing for PM2, not a corner:
-        most confirmed groups are binance×polymarket**, so today most groups can never become
-        comparable. The fix has a precedent one box down — #287, a confirmed leg keeping the fee
-        rate a by-id re-read cannot carry: `confirm` sees the topic id at proposal time and could
-        capture it the same way. It is a change to the group record **and to every group already
-        confirmed**, so it is written down here rather than guessed at.
+  - [x] **Binance settlements are reachable, once the leg keeps its topic id** — built
+        2026-07-31. The stored leg is `marketId:tokenId`, everything the order book needs, while
+        `market/detail` is keyed by `marketTopicId`, which the composite does not carry. So
+        `confirm` now captures it the way #287 captures the fee rate, `read_resolutions` takes
+        the map and spends **one signed call per topic** rather than per leg, and a leg without
+        one is reported `PREDMARKET_NO_PARENT_ID` — never *not settled yet*, because a caller
+        that cannot tell those apart waits forever.
+
+        **The premise was verified before any of it was built**, by watching a five-minute BTC
+        market across its own close (topic 4451653, polled every 60s, 2026-07-31). It held for
+        six minutes after:
+
+        ```
+        REGISTERED / OPEN     Up price 0.87  chance 0.865
+        RESOLVED   / CLOSED   Up price 1     chance 0.98
+        ```
+
+        Three things that decides. **`detail` outlives its own listing** — `market/list` serves
+        only `REGISTERED` topics (none of 400 was past its end date), but `detail` still answers
+        afterwards, which is the only reason capturing the id is worth anything. **`price` is
+        the settlement and `chance` is not**: the winner read `chance: 0.98` and stayed there, so
+        settling on it books a 2% error on every position on a strategy whose edge is a fraction
+        of a cent. And **`parse_prediction_markets` skips every non-`OPEN` row**, so the one
+        parser that reads this payload discards exactly the rows a settlement lives in — which
+        is why nobody had ever seen one, and why the resolved parser is separate rather than
+        built on it.
+  - [ ] ⚠️ **Backfill the 44 legs confirmed before the capture, and do it while the window is
+        open.** `scripts/backfill_predmarket_topic_ids.py --dry-run` walks the live listing and
+        maps old legs back to their topics; `--apply` writes them. It is safe on a running
+        window because `event_id` derives from `venue:market_id` alone — the group keeps its
+        identity and every observation already recorded against it stays attached — and it never
+        overwrites an id already captured. **It expires.** A topic that rotates off `market/list`
+        takes its mapping with it permanently, and unmapped legs are named individually in the
+        output rather than counted, because "these can never report a settlement" is a per-group
+        fact an operator has to act on. Most confirmed groups are binance×polymarket, so this is
+        most of PM2's comparability.
   - [x] **`run_watch_scan` never degraded per venue** — found while building the sweep, fixed in
         the same PR. `collect_pred_markets` converts an adapter's `ToolError` into a `ToolBlocked`,
         and those two are **siblings** under `MvpRuntimeError` rather than parent and child, so

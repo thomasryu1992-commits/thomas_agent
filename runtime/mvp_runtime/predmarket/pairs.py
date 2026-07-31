@@ -49,7 +49,7 @@ from ..errors import PersistenceError, ToolError
 from ..filelock import locked
 from ..jsonl import append_lines, read_objects, write_objects
 from ..paths import repo_root as _repo_root
-from .market_data import require_venue
+from .market_data import BINANCE, require_venue
 
 EVENT_GROUP_VERSION = "predmarket_event_group.v0.1"
 
@@ -136,6 +136,19 @@ def normalize_legs(legs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(fee_bps, (int, float)) and not isinstance(fee_bps, bool) and fee_bps >= 0:
             entry["fee_rate_bps"] = float(fee_bps)
             entry["fee_rate_read_at"] = str(leg.get("fee_rate_read_at") or "")
+        # The venue's id for the container this market sits in, where the leg id cannot reach
+        # it. Only Binance has one: `market/detail` is keyed by `marketTopicId` while the leg
+        # is `marketId:tokenId`, so without this the market's settlement is unreadable for the
+        # life of the group — the same shape of gap as the fee rate above, one degree worse.
+        # A fee rate captured late is stale; a topic id captured late does not exist, because
+        # `market/list` only ever serves REGISTERED topics.
+        #
+        # It does NOT enter `event_id`. The id is derived from `venue:market_id` alone, so
+        # capturing this on an existing group leaves its identity and every observation
+        # already recorded against it untouched — which is what makes a backfill possible.
+        topic_id = leg.get("topic_id")
+        if isinstance(topic_id, str) and topic_id.strip():
+            entry["topic_id"] = topic_id.strip()
         cleaned.append(entry)
     if len(cleaned) < MIN_LEGS:
         raise ToolError(TOO_FEW_LEGS, f"a group needs at least {MIN_LEGS} legs, got {len(cleaned)}")
@@ -371,6 +384,64 @@ def add_leg(
             write_objects(path, updated, write_code=EVENTS_WRITE_FAILED, label="predmarket events")
         except PersistenceError as exc:
             raise ToolError(EVENTS_WRITE_FAILED, str(exc)) from exc
+    return body
+
+
+def set_leg_topic_ids(
+    mapping: Mapping[str, str],
+    *,
+    updated_by: str,
+    now: str,
+    root: Path | None = None,
+) -> int:
+    """Attach ``topic_id`` to confirmed Binance legs by market id. Returns legs updated.
+
+    The backfill path for groups confirmed before the id was captured, and the reason it is
+    safe on a live window is that ``event_id`` does not depend on this field — the id derives
+    from ``venue:market_id`` alone, so a group keeps its identity and every observation already
+    recorded against it stays attached. That is the difference between this and
+    :func:`add_leg`, which re-keys the group and carries ``superseded_event_ids`` because it
+    has to.
+
+    **Never overwrites.** A leg that already carries a topic id is left alone: the stored one
+    was captured from the listing at confirmation, which is the same source this reads, and a
+    field that can be rewritten by a later walk is one whose value depends on when you ran it.
+    Only absent ids are filled.
+    """
+    path = events_path(root)
+    updated = 0
+    with locked(path.with_suffix(".lock"), code=EVENTS_LOCKED, label="predmarket events"):
+        rows = read_groups(root, include_retired=True)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            body = {k: v for k, v in row.items() if k != "record_sha256"}
+            touched = False
+            if body.get("status") == CONFIRMED:
+                legs = [dict(leg) for leg in (body.get("legs") or [])]
+                for leg in legs:
+                    topic = mapping.get(str(leg.get("market_id")))
+                    if leg.get("venue") != BINANCE or leg.get("topic_id") or not topic:
+                        continue
+                    leg["topic_id"] = str(topic)
+                    touched = True
+                    updated += 1
+                if touched:
+                    body["legs"] = legs
+                    body["topic_ids_backfilled_by"] = updated_by
+                    body["topic_ids_backfilled_at_utc"] = now
+            out.append(_stamp_group(body) if touched else dict(row))
+        if updated:
+            try:
+                write_objects(path, out, write_code=EVENTS_WRITE_FAILED, label="predmarket events")
+            except PersistenceError as exc:
+                raise ToolError(EVENTS_WRITE_FAILED, str(exc)) from exc
+    return updated
+
+
+def _stamp_group(body: dict[str, Any]) -> dict[str, Any]:
+    """Re-hash a rewritten group. A stored record that fails its own hash is refused by every
+    reader here, so this is the write, not bookkeeping after it."""
+    body["record_sha256"] = integrity.sha256_record(body)
     return body
 
 
