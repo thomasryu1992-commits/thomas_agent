@@ -33,8 +33,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..errors import ToolError
 from ..filelock import locked
-from . import guards
+from . import guards, pool
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .paper import read_outcomes, split_by_provenance, state_dir
 from .risk_limits import resolve_risk_limits
@@ -87,7 +88,16 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
     own, _imported = split_by_provenance(read_outcomes(root))
     live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
     limits = resolve_risk_limits(root, now=now)
-    verdict = guards.run_risk_guard(own + live, now=now, limits=limits)
+    # The routable set the drawdown baseline is re-checked against, read the way the cycle reads
+    # it — including the distinction that carries the fail-closed property: an unreadable pool is
+    # `None` (cannot verify, so no lineage leaves the window), never the empty set (every named
+    # lineage confirmed retired). A watch that collapsed those two would announce a released
+    # breaker on the strength of a failed read.
+    try:
+        routable = pool.routable_strategy_ids(pool.load_active_pool(root))
+    except ToolError:
+        routable = None
+    verdict = guards.run_risk_guard(own + live, now=now, limits=limits, routable_strategy_ids=routable)
 
     closed = [r for r in own if r.get("outcome_closed") is True]
     basis = collections.Counter(str(r.get("r_basis") or "unlabelled") for r in closed)
@@ -103,6 +113,10 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         "drawdown_r": verdict["drawdown_r"],
         "limits": verdict["limits"],
         "r_basis_counts": dict(sorted(basis.items())),
+        # Present on every state, `applied: False` on almost all of them — the drawdown number
+        # above means something different when it was measured over a narrowed population, and an
+        # operator reading a release has to be able to tell which kind of release it was.
+        "drawdown_baseline": verdict["drawdown_baseline"],
         "live_outcomes_excluded": bool(live_excluded),
     }
 

@@ -87,6 +87,32 @@
     "record_sha256": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "drawdown_baseline_rebase": {
+      "description": "OPTIONAL. Narrows the population the DRAWDOWN breaker measures, and nothing else — daily, weekly and consecutive-loss still judge every closed outcome. Absent means today's behaviour exactly: the drawdown is measured over the whole own-paper record. The rule it encodes is closed in both directions and the guard, not this record, applies it: an outcome leaves the baseline only if it NAMES a lineage, that lineage is listed here, AND that lineage is not currently routable in the active pool. A row that cannot name its lineage never leaves; a lineage that is re-promoted silently invalidates its own exclusion and its outcomes return to the drawdown. This record supplies data; the predicate is re-evaluated every cycle against the live pool, so the failure direction is toward putting losses back.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "excluded_strategy_ids",
+        "reason"
+      ],
+      "properties": {
+        "excluded_strategy_ids": {
+          "description": "Strategy ids whose closed outcomes may leave the drawdown baseline, subject to the guard's own re-check that none of them is currently routable. The pool's own key, so 'is this lineage still being routed' is a lookup rather than an inference.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reason": {
+          "description": "Why this set was retired, in the operator's own words. A rebase is a mechanism for forgetting losses; the record has to say whose, and why, or the ledger cannot be re-read later.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

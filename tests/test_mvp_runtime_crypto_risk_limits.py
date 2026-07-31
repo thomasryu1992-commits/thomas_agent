@@ -311,3 +311,67 @@ def test_registering_limits_grants_nothing(tmp_path):
     text = open(source[0], encoding="utf-8").read()
     for forbidden in ("authorize(", "select_gated", "MVP_LIVE_TRADING", "safety_gate"):
         assert forbidden not in text, f"the limits record must not touch {forbidden}"
+
+
+# --- the drawdown baseline rebase block (#405) ---------------------------------
+
+def test_a_record_without_a_rebase_block_carries_no_exclusion(tmp_path):
+    """Backward compatible by construction: every record registered before the mechanism
+    existed resolves to an empty exclusion, which is the pre-rebase behaviour exactly."""
+    _register(tmp_path)
+    resolved = rl.resolve_risk_limits(tmp_path, now=NOW)
+    assert resolved.drawdown_excluded_strategy_ids == ()
+
+
+def test_the_rebase_block_rides_from_the_record_to_the_limits(tmp_path):
+    _register(tmp_path, drawdown_baseline_rebase={
+        "excluded_strategy_ids": ["S9", "S3"], "reason": "15m pool retired 2026-07-31",
+    })
+    resolved = rl.resolve_risk_limits(tmp_path, now=NOW)
+    assert resolved.drawdown_excluded_strategy_ids == ("S3", "S9")   # sorted at build
+    assert resolved.as_record()["drawdown_excluded_strategy_ids"] == ["S3", "S9"]
+
+
+def test_a_rebase_without_a_reason_is_refused():
+    """A rebase is a mechanism for forgetting losses. A record that cannot say whose and why
+    leaves a ledger nobody can re-read."""
+    with pytest.raises(ToolError) as exc:
+        _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["S1"], "reason": "  "})
+    assert exc.value.reason_code == rl.LIMITS_INVALID
+
+
+@pytest.mark.parametrize("block", [
+    {"excluded_strategy_ids": [], "reason": "empty"},
+    {"excluded_strategy_ids": ["S1", "S1"], "reason": "duplicated"},
+    {"excluded_strategy_ids": ["", "S1"], "reason": "blank id"},
+    {"excluded_strategy_ids": "S1", "reason": "not a list"},
+])
+def test_a_malformed_rebase_block_is_refused(block):
+    with pytest.raises(ToolError) as exc:
+        _build(drawdown_baseline_rebase=block)
+    assert exc.value.reason_code == rl.LIMITS_INVALID
+
+
+def test_the_rebase_block_is_covered_by_the_records_self_hash(tmp_path):
+    """Tamper evidence, which is the reason to reuse this record rather than invent one:
+    editing the exclusion list after registration invalidates the hash and fails closed."""
+    record = _register(tmp_path, drawdown_baseline_rebase={
+        "excluded_strategy_ids": ["S3"], "reason": "retired",
+    })
+    tampered = {**record}
+    tampered["drawdown_baseline_rebase"] = {
+        "excluded_strategy_ids": ["S3", "S4"], "reason": "retired",
+    }
+    rl.limits_path(tmp_path).write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ToolError):
+        rl.resolve_risk_limits(tmp_path, now=NOW)
+
+
+def test_the_rebase_block_does_not_rename_the_record():
+    """`limits_id` identifies the NUMBERS. Two records with the same breakers over different
+    retirement sets are the same limits applied to different populations, so the id is stable
+    and the self-hash — which does cover the block — is what distinguishes them."""
+    plain = _build()
+    rebased = _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["S3"], "reason": "r"})
+    assert plain["limits_id"] == rebased["limits_id"]
+    assert plain["record_sha256"] != rebased["record_sha256"]

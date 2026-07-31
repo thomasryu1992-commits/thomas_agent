@@ -403,8 +403,12 @@ def test_lifecycle_still_sees_the_full_history(tmp_path):
     from runtime.mvp_runtime.crypto import cycle as cycle_mod
 
     source = inspect.getsource(cycle_mod.run_crypto_cycle)
-    assert "run_risk_guard(own_outcomes" in source      # guard: own only
-    assert "run_lifecycle(active_pool, outcomes" in source   # lifecycle: full history
+    # Whitespace-insensitive: the guard call wrapped onto three lines when it grew the
+    # drawdown baseline's routable set, and a test that pins formatting rather than the
+    # invariant fails on the next reflow while a real inversion of the two would slip past it.
+    flat = " ".join(source.split())
+    assert "run_risk_guard( own_outcomes + live_readable" in flat   # guard: own only
+    assert "run_lifecycle(active_pool, outcomes" in flat            # lifecycle: full history
 
 
 # --- dashboard readability (the operator could not judge from the old dump) ---------

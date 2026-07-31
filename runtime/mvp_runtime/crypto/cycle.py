@@ -499,6 +499,24 @@ def run_crypto_cycle(
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
     outcomes: list[dict[str, Any]] | None = None
 
+    # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
+    #
+    # Read HERE, above the guard, rather than after the verdict where it used to sit. The
+    # drawdown baseline's re-check needs the routable set (`guards.drawdown_baseline`), and the
+    # ordering carries the whole fail-closed property: `routable_ids` is None when the pool could
+    # not be read, which is deliberately NOT the empty set the degraded `active_pool` produces.
+    # Empty would say "every retired lineage is confirmed retired" and release the entire
+    # exclusion; None says "I cannot tell" and keeps every loss in the window. The one failure
+    # that could clear a breaker is the one that must not.
+    routable_ids: set[str] | None
+    try:
+        active_pool = pool.load_active_pool(root)
+        routable_ids = pool.routable_strategy_ids(active_pool)
+    except ToolError as exc:
+        active_pool = {"active_strategies": []}
+        routable_ids = None
+        reason_codes.append(exc.reason_code)
+
     # The breaker limits themselves: the registered per-machine record when one is registered
     # and current, the `guards` defaults otherwise. A record that cannot be used — tampered,
     # unparseable, outside the code bounds, or past its validity window — fails the guard closed
@@ -541,18 +559,14 @@ def run_crypto_cycle(
             live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
-            risk = run_risk_guard(own_outcomes + live_readable, now=now, limits=risk_limits)
+            risk = run_risk_guard(
+                own_outcomes + live_readable, now=now, limits=risk_limits,
+                routable_strategy_ids=routable_ids,
+            )
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
             reason_codes.append(exc.reason_code)
     verdict = merge_trade_verdict(health, risk)
-
-    # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
-    try:
-        active_pool = pool.load_active_pool(root)
-    except ToolError as exc:
-        active_pool = {"active_strategies": []}
-        reason_codes.append(exc.reason_code)
 
     # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
     # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a

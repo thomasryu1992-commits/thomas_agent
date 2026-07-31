@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.mvp_runtime import timeutil
+from runtime.mvp_runtime.crypto import guards
 from runtime.mvp_runtime.crypto.guards import (
     merge_trade_verdict,
     risk_guard_unreadable,
@@ -237,3 +238,92 @@ def test_merge_collects_both_guards_reasons():
     verdict = merge_trade_verdict(health, risk)
     assert "synthetic_data_source_blocks_trading" in verdict["problems"]
     assert "risk_history_unreadable" in verdict["problems"]
+
+
+# --- the drawdown baseline rebase (#405) ---------------------------------------
+
+def _dd_row(result_r, at, *, strategy_id="S1"):
+    row = {"outcome_closed": True, "result_R": result_r, "created_at_utc": at}
+    if strategy_id is not None:
+        row["strategy_id"] = strategy_id
+    return row
+
+
+DD_ROWS = [
+    _dd_row(-3.0, "2026-07-20T00:00:00Z", strategy_id="RETIRED"),
+    _dd_row(-4.0, "2026-07-21T00:00:00Z", strategy_id="ROUTING"),
+    _dd_row(-1.0, "2026-07-22T00:00:00Z", strategy_id=None),
+]
+DD_NOW = "2026-07-25T00:00:00Z"
+
+
+def test_no_rebase_registered_is_todays_behaviour_exactly():
+    """The default has to be indistinguishable from the mechanism not existing."""
+    plain = guards.run_risk_guard(DD_ROWS, now=DD_NOW)
+    assert plain["drawdown_r"] == -8.0
+    assert plain["drawdown_baseline"]["applied"] is False
+    assert plain["drawdown_baseline"]["named_lineages"] == []
+
+
+def test_a_retired_lineage_leaves_the_drawdown_window():
+    limits = guards.RiskLimits(drawdown_excluded_strategy_ids=("RETIRED",))
+    verdict = guards.run_risk_guard(
+        DD_ROWS, now=DD_NOW, limits=limits, routable_strategy_ids={"ROUTING"}
+    )
+    assert verdict["drawdown_r"] == -5.0
+    assert verdict["drawdown_baseline"]["excluded_lineages"] == ["RETIRED"]
+    assert verdict["drawdown_baseline"]["rows_excluded"] == 1
+
+
+def test_a_lineage_that_is_routable_again_keeps_its_losses():
+    """The auto-invalidation, and the reason the record supplies data rather than the decision:
+    re-promoting an excluded lineage silently voids its own exclusion."""
+    limits = guards.RiskLimits(drawdown_excluded_strategy_ids=("RETIRED",))
+    verdict = guards.run_risk_guard(
+        DD_ROWS, now=DD_NOW, limits=limits, routable_strategy_ids={"RETIRED", "ROUTING"}
+    )
+    assert verdict["drawdown_r"] == -8.0
+    assert verdict["drawdown_baseline"]["excluded_lineages"] == []
+    assert verdict["drawdown_baseline"]["retained_because_routable"] == ["RETIRED"]
+
+
+def test_a_row_that_cannot_name_its_lineage_never_leaves():
+    """Absence of evidence is not evidence of retirement. Named explicitly because the
+    unattributable row is what bounds the rule."""
+    limits = guards.RiskLimits(drawdown_excluded_strategy_ids=("RETIRED", "ROUTING"))
+    verdict = guards.run_risk_guard(DD_ROWS, now=DD_NOW, limits=limits, routable_strategy_ids=set())
+    assert verdict["drawdown_r"] == -1.0                       # only the unattributable row
+    assert verdict["drawdown_baseline"]["retained_because_unattributable"] == 1
+
+
+def test_an_unreadable_pool_keeps_every_loss_and_is_not_an_empty_set():
+    """The one input that could turn a failed read into a cleared breaker. `None` means "I could
+    not check", which must keep every row; the empty set means "every named lineage is confirmed
+    retired", which releases them. Collapsing the two would clear a real-money brake on a
+    filesystem error."""
+    limits = guards.RiskLimits(drawdown_excluded_strategy_ids=("RETIRED",))
+    unknown = guards.run_risk_guard(DD_ROWS, now=DD_NOW, limits=limits, routable_strategy_ids=None)
+    empty = guards.run_risk_guard(DD_ROWS, now=DD_NOW, limits=limits, routable_strategy_ids=set())
+    assert unknown["drawdown_r"] == -8.0
+    assert unknown["drawdown_baseline"]["retained_because_pool_unreadable"] is True
+    assert empty["drawdown_r"] == -5.0
+
+
+def test_the_rebase_narrows_the_drawdown_and_no_other_breaker():
+    """§7's "drawdown only". The daily, weekly and consecutive-loss breakers keep judging every
+    closed outcome — a rebase that quietly cleared the weekly one too would be a different and
+    much larger decision than the one the record authorizes."""
+    rows = [_dd_row(-2.6, DD_NOW, strategy_id="RETIRED"), _dd_row(-0.1, DD_NOW, strategy_id="ROUTING")]
+    limits = guards.RiskLimits(drawdown_excluded_strategy_ids=("RETIRED",))
+    verdict = guards.run_risk_guard(rows, now=DD_NOW, limits=limits, routable_strategy_ids=set())
+    assert verdict["drawdown_r"] == -0.1                       # narrowed
+    assert verdict["daily_pnl_r"] == -2.7                      # not narrowed
+    assert "daily_loss_limit_breached" in verdict["problems"]
+
+
+def test_the_verdict_always_carries_what_the_drawdown_was_measured_over():
+    """Present on every row, applied or not: a verdict that only mentioned the baseline when it
+    narrowed one could not be told from a verdict written before the mechanism existed."""
+    verdict = guards.run_risk_guard(DD_ROWS, now=DD_NOW)
+    assert "drawdown_baseline" in verdict
+    assert verdict["limits"]["drawdown_excluded_strategy_ids"] == []
