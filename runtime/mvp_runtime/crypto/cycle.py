@@ -500,6 +500,24 @@ def run_crypto_cycle(
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
     outcomes: list[dict[str, Any]] | None = None
 
+    # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
+    #
+    # Read HERE, above the guard, rather than after the verdict where it used to sit. The
+    # drawdown baseline's re-check needs the routable set (`guards.drawdown_baseline`), and the
+    # ordering carries the whole fail-closed property: `routable_ids` is None when the pool could
+    # not be read, which is deliberately NOT the empty set the degraded `active_pool` produces.
+    # Empty would say "every retired lineage is confirmed retired" and release the entire
+    # exclusion; None says "I cannot tell" and keeps every loss in the window. The one failure
+    # that could clear a breaker is the one that must not.
+    routable_ids: set[str] | None
+    try:
+        active_pool = pool.load_active_pool(root)
+        routable_ids = pool.routable_strategy_ids(active_pool)
+    except ToolError as exc:
+        active_pool = {"active_strategies": []}
+        routable_ids = None
+        reason_codes.append(exc.reason_code)
+
     # The breaker limits themselves: the registered per-machine record when one is registered
     # and current, the `guards` defaults otherwise. A record that cannot be used — tampered,
     # unparseable, outside the code bounds, or past its validity window — fails the guard closed
@@ -542,7 +560,10 @@ def run_crypto_cycle(
             live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
-            risk = run_risk_guard(own_outcomes + live_readable, now=now, limits=risk_limits)
+            risk = run_risk_guard(
+                own_outcomes + live_readable, now=now, limits=risk_limits,
+                routable_strategy_ids=routable_ids,
+            )
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
             reason_codes.append(exc.reason_code)
@@ -558,13 +579,6 @@ def run_crypto_cycle(
     # describe a braked live one.
     live_verdict = merge_trade_verdict(health, risk)
     paper_verdict = paper_trade_verdict(health)
-
-    # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
-    try:
-        active_pool = pool.load_active_pool(root)
-    except ToolError as exc:
-        active_pool = {"active_strategies": []}
-        reason_codes.append(exc.reason_code)
 
     # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
     # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
@@ -654,6 +668,29 @@ def run_crypto_cycle(
     if counterfactual_summary.get("degraded"):
         reason_codes.append(counterfactual_summary["degraded"])
 
+    # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
+    # store as persisted: in dry-run it honestly reports the durable (empty) truth.
+    # Handed the history this cycle already read and verified at step 3, rather than paying for
+    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
+    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
+    # and the except below records it — a report over a history nobody could verify is exactly
+    # what must not be produced.
+    #
+    # It runs BEFORE the live leg, which is the one ordering change Gate 0 needed. It is a pure
+    # read over the pre-settlement snapshot taken at step 3 — it does not look at what the paper
+    # step just did, so moving it earlier cannot change what it says, and the alternative
+    # (persisting this report and having the live leg read the PREVIOUS cycle's) would have added
+    # a store to avoid a move that costs nothing. Nothing inside `run_paper_update`'s portfolio
+    # lock is touched or re-ordered, which is the restructuring that was actually worth avoiding.
+    try:
+        report, report_text = feedback.run_paper_performance_report(
+            now=now, root=root, outcomes=outcomes,
+        )
+    except ToolError as exc:
+        report, report_text = None, f"performance report unavailable: {exc.reason_code}"
+        if exc.reason_code not in reason_codes:
+            reason_codes.append(exc.reason_code)
+
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
@@ -670,12 +707,22 @@ def run_crypto_cycle(
     #     live now answers to its own, which is stricter than the paper leg's rather than equal
     #     to it, because `merge_trade_verdict` still folds in every breaker the paper leg drops.
     #
+    # `live_candidate` is Gate 0 (#409), computed at step 5 just above. It is what makes the
+    # split above safe rather than merely coherent: an unbraked paper book that recovers would
+    # clear the drawdown breaker on its own, and Gate 0 does not clear with it — measured
+    # 2026-07-31, the drawdown reopens after +34.79R of net paper gain and Gate 0 after +43.43R,
+    # so the door the paper leg no longer answers to is not the last one in front of the venue.
+    # A `None` report — the store could not be read, or could not be verified — arrives as a
+    # non-Mapping and `plan_live_entry` refuses on it, which is the only correct reading: a
+    # runtime that cannot show its paper record has not shown an edge.
+    #
     # Never raises: `run_live_leg` reports, because a traceback here would be indistinguishable
     # from "no live activity".
     live = run_live_leg(
         route=shared_route,
         feature_row=feature_row,
         verdict=live_verdict,
+        live_candidate=report,
         symbol=symbol,
         collector=collector,
         now=now,
@@ -687,22 +734,6 @@ def run_crypto_cycle(
         control_store=control_store,
     )
     reason_codes.extend(live["live_reason_codes"])
-
-    # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
-    # store as persisted: in dry-run it honestly reports the durable (empty) truth.
-    # Handed the history this cycle already read and verified at step 3, rather than paying for
-    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
-    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
-    # and the except below records it — a report over a history nobody could verify is exactly
-    # what must not be produced.
-    try:
-        report, report_text = feedback.run_paper_performance_report(
-            now=now, root=root, outcomes=outcomes,
-        )
-    except ToolError as exc:
-        report, report_text = None, f"performance report unavailable: {exc.reason_code}"
-        if exc.reason_code not in reason_codes:
-            reason_codes.append(exc.reason_code)
 
     # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
     # Evaluated every cycle (pure); APPLIED only through the real gated store, the

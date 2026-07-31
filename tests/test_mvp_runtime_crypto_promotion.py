@@ -661,3 +661,32 @@ def test_the_context_map_reports_who_competes_for_each_slot():
         ("BTCUSDT", "15m"): ["S1", "S2"],
         ("ETHUSDT", "4h"): ["S3"],
     }
+
+
+# --- the routable set the drawdown baseline is checked against (#405) ----------
+
+def test_routable_strategy_ids_is_membership_by_status():
+    entries = [
+        {"strategy_id": "A", "status": "PAPER_ACTIVE"},
+        {"strategy_id": "B", "status": "WARNING"},
+        {"strategy_id": "C", "status": "PROBATION"},
+        {"strategy_id": "D", "status": "SUSPENDED"},
+        {"strategy_id": "E", "status": "RETIRED"},
+    ]
+    assert pool.routable_strategy_ids({"active_strategies": entries}) == {"A", "B", "C"}
+
+
+def test_a_spec_less_entry_still_counts_as_routable():
+    """Unlike `routable_context_map`, which needs the spec to say WHICH slot it competes for.
+    This answers "could this trade again at all", and the safe direction is whichever keeps a
+    loss inside the drawdown window — so a spec-less PAPER_ACTIVE row counts as yes."""
+    assert pool.routable_strategy_ids(
+        {"active_strategies": [{"strategy_id": "A", "status": "PAPER_ACTIVE"}]}
+    ) == {"A"}
+
+
+def test_an_empty_pool_is_an_empty_set_not_a_failure():
+    """And the caller — never this function — is what represents "the pool could not be read":
+    an empty set releases every exclusion, so the two must not be able to arrive as one value."""
+    assert pool.routable_strategy_ids({"active_strategies": []}) == set()
+    assert pool.routable_strategy_ids({}) == set()

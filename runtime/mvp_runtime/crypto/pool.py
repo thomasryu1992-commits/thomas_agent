@@ -1009,6 +1009,29 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
     return pool
 
 
+def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
+    """Every strategy id the pool can still route, by ``OCCUPYING_STATUSES``.
+
+    The set the drawdown baseline's re-check is evaluated against: an outcome may leave the
+    breaker's window only if the lineage that produced it is **not** in here, so re-promoting a
+    retired strategy returns its losses to the drawdown without anyone re-registering anything.
+
+    Deliberately membership-by-status and not by ``strategy_spec``, unlike
+    :func:`routable_context_map` beside it. That one answers "which slot does this compete for",
+    which needs the spec; this one answers "could this trade again at all", and a spec-less entry
+    that is still PAPER_ACTIVE has to count as YES — the safe direction here is whichever one
+    keeps a loss inside the baseline. An empty pool honestly returns an empty set; **"the pool
+    could not be read" is the caller's to represent and must never arrive as this**, because an
+    empty set means every named lineage is retired and would release the whole exclusion."""
+    return {
+        str(entry.get("strategy_id"))
+        for entry in (pool.get("active_strategies") or [])
+        if isinstance(entry, Mapping)
+        and entry.get("status") in OCCUPYING_STATUSES
+        and entry.get("strategy_id")
+    }
+
+
 def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
 
