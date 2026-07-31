@@ -195,13 +195,19 @@ def test_end_to_end_over_the_socket(tmp_path):
 
 
 @unix_only
-def test_the_two_doors_do_not_share_a_socket_path(tmp_path):
+def test_the_doors_do_not_share_a_socket_path(tmp_path):
     """Separate authorities, separate sockets — so a deployment cannot accidentally serve
-    halts from the read door's file permissions or the reverse."""
-    from runtime.mvp_runtime import halt_bridge
+    switch actions from the read door's file permissions or the reverse."""
+    from runtime.mvp_runtime import dispatch_bridge, switch_bridge
 
-    assert read_bridge.SOCKET_REL != halt_bridge.SOCKET_REL
-    assert read_bridge.socket_path(tmp_path) != halt_bridge.socket_path(tmp_path)
+    rels = {read_bridge.SOCKET_REL, switch_bridge.SOCKET_REL, dispatch_bridge.SOCKET_REL}
+    assert len(rels) == 3
+    paths = {
+        read_bridge.socket_path(tmp_path),
+        switch_bridge.socket_path(tmp_path),
+        dispatch_bridge.socket_path(tmp_path),
+    }
+    assert len(paths) == 3
 
 
 @unix_only

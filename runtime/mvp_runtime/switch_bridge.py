@@ -72,12 +72,10 @@ from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path,
 
 from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 
-# The actor recorded on every control event this door produces. Deliberately NOT
-# `console_cli.LOCAL_ACTOR`: an operator reading the ledger must be able to tell a flip that
-# came from SSH from one that came from the assistant, which matters precisely because the
-# assistant is the less trusted of the two. Shared with the halt door's constant so the two
-# read identically in the ledger across the absorption.
-ASSISTANT_ACTOR = "assistant_bridge"
+# Re-exported so this door reads like the others. THE definition lives in `socket_door` beside
+# the transport every door shares — see there for why an assistant action must never be
+# attributed to `local_console`.
+ASSISTANT_ACTOR = socket_door.ASSISTANT_ACTOR
 
 CMD_STATUS = "status"
 CMD_ENABLE = "enable"
