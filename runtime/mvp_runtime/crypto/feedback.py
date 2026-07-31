@@ -407,10 +407,34 @@ def run_paper_performance_report(
     is a weakening of a fail-closed path in exchange for milliseconds. An explicit hand-off from
     the one caller that already read is worth the same and gives up nothing. Passing ``None``
     reads, exactly as before — including the raise, which is why `cycle` passes ``None`` when its
-    own read failed."""
+    own read failed.
+
+    **The report covers this runtime's OWN paper rows only** — the same `split_by_provenance`
+    line the risk guard draws, and the one `dashboard` already drew by calling
+    :func:`build_performance_report` directly. It used to cover the whole store, which was wrong
+    in two ways at once:
+
+    - **The question.** ``live_candidate_eligible`` is Gate 0 — *does THIS runtime's paper record
+      show an edge* — and the history imported from the frozen crypto_AI_System was produced by
+      different code. It is real, and it cannot answer a question about this runtime. `cycle`
+      already makes exactly this argument where it splits the same rows before the breakers see
+      them; the report was the one consumer that had not.
+    - **The arithmetic, which is worse.** Imported rows carry no cost basis, so
+      `summarize_net_of_costs` cannot cost them and `_net_failure_modes` raises
+      ``OUTCOME_NOT_COSTABLE`` — permanently, because those rows never become costable. Gate 0
+      requires ``not failure_modes``, so over the whole store it reads **False however well this
+      runtime trades**: measured 2026-07-31, 114 imported rows against 86 own ones held that mode
+      up on every cycle. A gate that cannot open is not a gate, and wiring one would have been
+      indistinguishable from wiring a working gate right up until the moment it should have
+      opened.
+
+    Net expectancy is unchanged by the split, because uncostable rows never entered it
+    (-0.50498579 R either way on that measurement). What changes is that the failure mode — and
+    therefore the verdict — now describes the runtime being judged."""
     if outcomes is None:
         outcomes = paper.read_outcomes(root)  # raises ToolError when unreadable
-    report = build_performance_report(outcomes, now=now)
+    own, _imported = paper.split_by_provenance(outcomes)
+    report = build_performance_report(own, now=now)
     return report, render_report_text(report)
 
 

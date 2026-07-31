@@ -11,6 +11,8 @@ import json
 
 import pytest
 
+from runtime.read_only_kernel import integrity
+
 from runtime.mvp_runtime.crypto import paper
 from runtime.mvp_runtime.crypto import feedback
 from runtime.mvp_runtime.crypto.feedback import (
@@ -34,8 +36,13 @@ NOW = "2026-07-22T12:00:00Z"
 
 
 def _outcome(result_r, closed_at, *, strategy_id="S1", closed=True, outcome_id=None,
-             priced=True, holding_candles=4, timeframe="1d"):
+             priced=True, holding_candles=4, timeframe="1d",
+             provenance=paper.PAPER_PROVENANCE):
     """One settled paper outcome.
+
+    ``provenance`` defaults to this runtime's own marker because that is what a real row
+    carries, and `run_paper_performance_report` now reports over own rows only — a fixture
+    without it would be silently reporting on the imported population.
 
     ``priced`` controls whether the row carries the fills a cost model needs. Real records have
     carried them since C5 and the risk denominator since 2026-07-29; ``priced=False`` stands in
@@ -47,6 +54,7 @@ def _outcome(result_r, closed_at, *, strategy_id="S1", closed=True, outcome_id=N
         "outcome_closed": closed,
         "created_at_utc": closed_at,
         "strategy_id": strategy_id,
+        "provenance": provenance,
     }
     if priced:
         risk = 4.0
@@ -200,7 +208,11 @@ def test_render_contains_the_decision_inputs():
 def test_run_paper_performance_report_reads_store(tmp_path):
     state = paper.state_dir(tmp_path)
     state.mkdir(parents=True)
-    lines = "".join(json.dumps(o) + "\n" for o in SPREAD)
+    # Self-hashed: these rows carry this runtime's own provenance now, and `read_outcomes`
+    # verifies the per-record hash on exactly those — the tamper evidence that makes the
+    # report's history trustworthy is the same rule that makes this fixture write one.
+    lines = "".join(json.dumps({**o, "record_sha256": integrity.sha256_record(o)}) + "\n"
+                    for o in SPREAD)
     (state / "paper_outcomes.jsonl").write_text(lines, encoding="utf-8")
     report, text = run_paper_performance_report(now=NOW, root=tmp_path)
     assert report["sample_size"] == 4
@@ -353,3 +365,39 @@ def test_passing_none_still_reads_and_still_raises(tmp_path):
     with pytest.raises(ToolError) as excinfo:
         run_paper_performance_report(now=NOW, root=tmp_path, outcomes=None)
     assert excinfo.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
+
+
+# --- Gate 0's population: own rows only ---------------------------------------
+
+def test_the_report_covers_own_paper_rows_and_not_the_imported_history():
+    """`live_candidate_eligible` asks whether THIS runtime has an edge, so history produced by
+    the frozen crypto_AI_System cannot be in the answer — the same split the risk guard draws."""
+    imported = [_outcome(5.0, "2026-07-18T01:00:00Z", outcome_id="imp1",
+                         priced=False, provenance="crypto_ai_system_import")]
+    report, _text = run_paper_performance_report(now=NOW, outcomes=SPREAD + imported)
+    assert report["sample_size"] == len(SPREAD)
+    assert all(oid.startswith("out_") for oid in report["source_outcome_ids"])
+
+
+def test_uncostable_imported_rows_can_no_longer_latch_gate_0_shut():
+    """The reason the split is load-bearing rather than tidy. Imported rows are never costable,
+    `_net_failure_modes` raises OUTCOME_NOT_COSTABLE on them permanently, and Gate 0 requires an
+    empty `failure_modes` — so over the blended store the gate reads False however well the
+    runtime trades. A gate that cannot open is indistinguishable from one that works right up
+    until the moment it should have opened."""
+    winners = [
+        _outcome(2.0, "2026-07-18T00:00:00Z", outcome_id="w1"),
+        _outcome(2.0, "2026-07-19T00:00:00Z", outcome_id="w2"),
+        _outcome(2.0, "2026-07-20T00:00:00Z", outcome_id="w3"),
+        _outcome(2.0, "2026-07-21T00:00:00Z", outcome_id="w4"),
+    ]
+    imported = [_outcome(9.0, "2026-07-17T00:00:00Z", outcome_id="imp1",
+                         priced=False, provenance="crypto_ai_system_import")]
+
+    blended = build_performance_report(winners + imported, now=NOW)
+    assert "OUTCOME_NOT_COSTABLE" in blended["failure_modes"]
+    assert blended["live_candidate_eligible"] is False
+
+    own_only, _text = run_paper_performance_report(now=NOW, outcomes=winners + imported)
+    assert own_only["failure_modes"] == []
+    assert own_only["live_candidate_eligible"] is True
