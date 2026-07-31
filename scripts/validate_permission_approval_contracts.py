@@ -123,10 +123,48 @@ def validate_policy_binding(
     record: dict[str, Any],
     issues: list[str],
 ) -> None:
-    if record.get("operating_policy") != POLICY_BINDING:
+    """The one authority for WHICH policy version a record may bind. Unchanged in what it
+    refuses; changed in what it says when it refuses.
+
+    A record binding an *earlier* canonical policy is not malformed — it is a record written
+    before the bump — and this refusal is what stands between it and being used. Saying which of
+    the two it is matters, because the previous message did not: it was a `oneOf` failure naming
+    neither the bump nor the record's own version, so an operator could not tell a stale record
+    from a broken one.
+
+    **Corrected 2026-07-31.** This docstring claimed a bump had "silently voided every
+    outstanding approval granted under the previous version — ten approvals on this host". It
+    had not. Five of those ten were never decided, and the other five had already expired on
+    their own ~30-minute single-use timers before the bump; `consumption` refuses them with
+    `APPROVAL_EXPIRED` regardless. Left visible rather than swapped out, because the mistake is
+    instructive: a schema error was loud enough to look like the story, and nobody checked
+    whether the approvals behind it were still live.
+
+    Whether a grant *should* survive a bump remains a governance decision and is deliberately not
+    taken here — the answer is still no. No such grant is currently outstanding, so nothing is
+    waiting on that answer today.
+    """
+    binding = record.get("operating_policy")
+    if binding == POLICY_BINDING:
+        return
+    if (
+        isinstance(binding, dict)
+        and binding.get("policy_id") == POLICY_BINDING["policy_id"]
+        and binding.get("policy_ref") == POLICY_BINDING["policy_ref"]
+        and binding.get("policy_version") != POLICY_BINDING["policy_version"]
+    ):
         issues.append(
-            "operating_policy must bind canonical thomas.governance.policy v1.2.0"
+            "operating_policy binds a SUPERSEDED policy version: this record was written under "
+            f"{binding.get('policy_id')} v{binding.get('policy_version')} and the current policy "
+            f"is v{POLICY_BINDING['policy_version']}. The record is well-formed and is refused on "
+            "recency alone; a grant made under the earlier policy cannot be exercised under this "
+            "one without an explicit decision to carry it forward"
         )
+        return
+    issues.append(
+        "operating_policy must bind canonical thomas.governance.policy "
+        f"v{POLICY_BINDING['policy_version']}"
+    )
 
 
 def scope_policy_map(policy: dict[str, Any]) -> dict[str, str]:

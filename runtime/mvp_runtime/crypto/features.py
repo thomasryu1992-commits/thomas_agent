@@ -69,6 +69,11 @@ MACD_SIGNAL = 9
 BB_PERIOD = 20
 BB_STD = 2.0
 PERCENTILE_WINDOW = 100
+# Observations the volatility reference needs before it will answer. The same looser floor the
+# funding z-score uses, and for the same reason: a live sizing decision should not wait 100 bars
+# to become possible when 20 observations already locate a typical level. Below it the reference
+# is None and the multiplier is 1.0 — unscaled, never a guessed reference.
+ATR_REFERENCE_MIN_PERIODS = 20
 ROC_FAST = 4
 VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
@@ -112,6 +117,72 @@ REFERENCE_CORR_MIN_PERIODS = 30
 REFERENCE_NUMERIC_COLUMNS = ("ref_roc_4", "rel_strength_roc_4", "ref_correlation")
 REFERENCE_CATEGORICAL_COLUMNS = ("ref_market_regime",)
 REFERENCE_COLUMNS = (*REFERENCE_NUMERIC_COLUMNS, *REFERENCE_CATEGORICAL_COLUMNS)
+
+# --- cross-sectional (universe) context ----------------------------------------
+# Where this symbol RANKS among its cohort, rather than how it compares to one proxy.
+# `rel_strength_roc_4` answers "is this beating BTC"; these answer "is this the strongest
+# thing available", which is the question a cross-sectional strategy actually asks and the
+# one a single benchmark cannot express: every altcoin can beat BTC at once, and knowing
+# that says nothing about which of them to buy.
+#
+# The cohort is `market_data.CROSS_SECTION_UNIVERSE` — see there for why it is a declared
+# constant and what changing it invalidates.
+
+# The fewest determinate cohort members a rank will be computed from. Below it the columns
+# are None, deliberately: `xs_rank_pct` has only `members - 1` distinct values, so a cohort
+# of two offers {0.0, 1.0} — a rank that is really a coin flip, and a mined threshold on it
+# is a mined coin flip. The floor is what stops a fan-out where four of six peers failed
+# from silently reporting ranks with the same column names and a tenth of the information.
+MIN_CROSS_SECTION_MEMBERS = 4
+
+# The dispersion reference window. PERCENTILE_WINDOW, matching `atr_pct_reference`, because
+# it is the same kind of quantity — "what is normal for this measurement lately" — and a
+# threshold mined against one span should mean the same span as one mined against the other.
+XS_DISPERSION_WINDOW = PERCENTILE_WINDOW
+XS_DISPERSION_MIN_PERIODS = ATR_REFERENCE_MIN_PERIODS
+
+# Mintable: a rank fraction in [0, 1], an excess rate of change, and a dispersion RATIO
+# against its own recent normal. All three are scale-free by construction, so a mined
+# threshold means the same thing on BTC and on DOGE, and — the `atr_pct_reference` argument —
+# the ratio is self-calibrating, so there is no dispersion level anybody had to authorize.
+XS_NUMERIC_COLUMNS = ("xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio")
+# Evidence only, never mintable, for the raw-`open_interest` reason. `xs_dispersion` is a
+# level whose typical size differs by timeframe, so a threshold mined at 1h would mean
+# something else at 4h; `xs_members` is a count of how much data arrived, so a condition on
+# it would mine feed availability rather than the market.
+XS_EVIDENCE_COLUMNS = ("xs_dispersion", "xs_members")
+XS_COLUMNS = (*XS_NUMERIC_COLUMNS, *XS_EVIDENCE_COLUMNS)
+
+# --- positioning (who is HOLDING, not who is trading) ---------------------------
+# `positioning_store` has accumulated three hourly series per symbol since it shipped:
+# `top_position` (the long share of the top cohort's POSITIONS), `top_account` (the same cohort
+# counted by ACCOUNTS) and `global_account` (every account). The one the research record singled
+# out is the DIVERGENCE between the first and the last — large capital against the crowd — because
+# it is the one measurement here that cannot be derived from OHLCV at any resolution.
+#
+# Windows match the funding z-score deliberately: both describe a crowding pressure on its own
+# cadence, so a threshold mined on one means the same span as one mined on the other.
+POSITIONING_Z_WINDOW = 100
+POSITIONING_Z_MIN_PERIODS = 10
+# Periods a change is measured over, in the SERIES' own time base (hourly readings, not bars) —
+# the `open_interest` rule, and for its reason: a bar-over-bar diff of the ALIGNED column is zero
+# on every bar between two hourly readings, which on a 15m frame is three bars in four.
+POSITIONING_CHANGE_PERIODS = 24
+
+# Mintable: a standardisation and a change. Both cancel a symbol's own structural baseline — a top
+# cohort that habitually runs 5 points longer than the crowd on one symbol and 15 on another reads
+# the same in both.
+POSITIONING_NUMERIC_COLUMNS = ("positioning_divergence_zscore", "positioning_divergence_change")
+# Evidence only, never mintable. `positioning_divergence` is a LEVEL: dimensionless and bounded,
+# which is not the same as comparable — whether +0.05 means the same on BTC as on DOGE is an
+# empirical question nobody has answered, so minting a threshold on it would assert the answer.
+# The three raw shares are levels for the same reason. Exactly the `xs_dispersion` split: keep the
+# level as evidence, mint only what is standardised.
+POSITIONING_EVIDENCE_COLUMNS = (
+    "positioning_divergence", "positioning_top_long", "positioning_top_account_long",
+    "positioning_global_long",
+)
+POSITIONING_COLUMNS = (*POSITIONING_NUMERIC_COLUMNS, *POSITIONING_EVIDENCE_COLUMNS)
 
 # --- session context ----------------------------------------------------------
 # UTC hour blocks. Crypto trades continuously but its PARTICIPANTS do not: venue activity
@@ -345,6 +416,217 @@ def _reference_columns(
         ),
         "ref_market_regime": ref_regime,
     }
+
+
+def _cross_section_columns(
+    bar_times: list[str], roc_own: list[float | None], snapshot: dict[str, Any]
+) -> dict[str, list]:
+    """Where this symbol RANKS in its cohort, per bar — the cross-sectional leg.
+
+    ``rel_strength_roc_4`` measures against one proxy, which cannot answer the question a
+    cross-sectional strategy asks. Every altcoin can outperform BTC in the same hour; that
+    tells the runtime nothing about *which* of them to buy, and nothing at all about which to
+    sell. A rank does, and it is the first column in this row whose value depends on symbols
+    the cycle is not trading.
+
+    **Peer momentum comes from ``indicators.roc``, not from the full pipeline** —
+    deliberately, and this is the one place it differs from :func:`_reference_columns`. That
+    function recurses into :func:`build_feature_rows` because it needs ``ref_market_regime``,
+    a classifier over many columns, and reimplementing it would be a second authority that
+    could drift. Here the only peer quantity wanted is the same rate of change
+    ``build_feature_rows`` itself computes as ``roc_4`` — ``indicators.roc(closes,
+    ROC_FAST)`` — so calling that function directly is not a second implementation, it is
+    the same one. Which is what makes a six-member cohort affordable: six ``roc`` calls
+    rather than six 25-indicator pipelines, over a window that is 12,000 bars deep in the
+    factory.
+
+    **Alignment is the exact open-time join**, via :func:`_same_grid_column`, for the reason
+    the reference leg uses it: peers are collected at this frame's own interval, so a peer bar
+    opening at T *is* this bar, and its close is first known at the same instant. A bar with
+    no peer counterpart drops that peer from the cohort rather than carrying its previous
+    value forward, which would rank this symbol against a stale reading.
+
+    Key ABSENT (no peers fetched, or every fetch failed) → every column None, so an ``xs_*``
+    spec is indeterminate and does not trade. Partial arrival is honest rather than fatal:
+    the cohort is whoever answered, ``xs_members`` says how many that was, and
+    :data:`MIN_CROSS_SECTION_MEMBERS` is the floor below which the rank is not reported at
+    all.
+
+    The traded symbol is always a cohort member — it is the thing being ranked — so a cohort
+    of ``n`` peers ranks ``n + 1`` series. Unlike the reference leg there is no
+    self-comparison degeneracy to guard against: a symbol's rank among its peers is perfectly
+    well defined whether or not it is itself a declared universe member, which is why this
+    leg has no equivalent of ``attach_reference``'s skip-the-proxy rule.
+    """
+    empty = {col: [None] * len(bar_times) for col in XS_COLUMNS}
+    peers = snapshot.get("peer_candles")
+    if not isinstance(peers, dict) or not peers:
+        return empty
+
+    # One aligned momentum series per peer, on THIS frame's grid.
+    peer_series: list[list[float | None]] = []
+    for _peer_symbol, candles in sorted(peers.items()):
+        if not isinstance(candles, list) or not candles:
+            continue
+        closes = [c.get("close") if isinstance(c, dict) else None for c in candles]
+        peer_roc = indicators.roc(closes, ROC_FAST)
+        events = [
+            {"timestamp": candle.get("open_time"), "value": value}
+            for candle, value in zip(candles, peer_roc)
+            if isinstance(candle, dict)
+        ]
+        peer_series.append(_same_grid_column(bar_times, events))
+    if not peer_series:
+        return empty
+
+    rank_pct: list[float | None] = []
+    excess: list[float | None] = []
+    dispersion: list[float | None] = []
+    members: list[float | None] = []
+    for index in range(len(bar_times)):
+        own = roc_own[index] if index < len(roc_own) else None
+        # No own momentum, no rank: this symbol's own position in the cohort is the entire
+        # measurement, so an unknown own value makes the cohort's spread interesting to
+        # nobody. Indeterminate, never a middling 0.5.
+        if own is None:
+            rank_pct.append(None)
+            excess.append(None)
+            dispersion.append(None)
+            members.append(None)
+            continue
+        cohort = [own] + [
+            series[index] for series in peer_series
+            if series[index] is not None
+        ]
+        if len(cohort) < MIN_CROSS_SECTION_MEMBERS:
+            rank_pct.append(None)
+            excess.append(None)
+            dispersion.append(None)
+            members.append(float(len(cohort)))
+            continue
+        members.append(float(len(cohort)))
+        # Fraction of the cohort this symbol is strictly above, so the weakest member is
+        # exactly 0.0 and the strongest exactly 1.0. Ties share the LOWER value — no
+        # tiebreak by symbol name, which would make the rank depend on an alphabet.
+        below = sum(1 for value in cohort if value < own)
+        rank_pct.append(below / (len(cohort) - 1))
+        excess.append(own - _median(cohort))
+        dispersion.append(_pstdev(cohort))
+
+    return {
+        "xs_rank_pct": rank_pct,
+        "xs_excess_roc_4": excess,
+        "xs_dispersion": dispersion,
+        # How unusual today's dispersion is against its own recent normal. The RATIO rather
+        # than the level is what a spec may mine, for the `atr_pct_reference` reason: a level
+        # threshold would be a number nobody authorized and would mean one thing at 1h and
+        # another at 4h. Median rather than mean for the same reason as there — a mean is
+        # pulled up by exactly the dispersion spikes this is measuring against.
+        "xs_dispersion_ratio": [
+            (value / reference) if (value is not None and reference not in (None, 0)) else None
+            for value, reference in zip(
+                dispersion,
+                indicators.rolling_median(
+                    dispersion, XS_DISPERSION_WINDOW, XS_DISPERSION_MIN_PERIODS
+                ),
+            )
+        ],
+        "xs_members": members,
+    }
+
+
+def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict[str, list]:
+    """Where large capital sits relative to the crowd — the positioning leg.
+
+    **The one measurement in this module that OHLCV cannot reproduce at any resolution.** Every
+    other column describes what traded; these describe what is *held*, and by whom. `top_position`
+    is the long share of the top cohort's positions, `global_account` the long share of every
+    account, and the gap between them separates informed capital from headcount.
+
+    **Alignment is backward as-of** (:func:`_asof_align`), the funding and open-interest rule —
+    not the exact open-time join the derivative-price and cross-section legs use. The store keeps
+    an HOURLY series on its own cadence, independent of the bar grid, so a bar carries the last
+    reading at or before its open. Substituting the exact join here would blank every bar that is
+    not on an hour boundary; substituting as-of over THERE would fabricate a basis for a bar the
+    venue skipped. Three grids, three rules, each named where it applies.
+
+    **The derived values are computed in the SERIES' own time base and then aligned**, which is
+    the `open_interest` lesson repeated rather than rediscovered: a change or a z-score computed
+    over the ALIGNED column would be measuring 24 repeats of one hourly reading on a 15m frame,
+    and the z-score's window would mean 100 bars rather than 100 observations.
+
+    Key ABSENT (no store rows supplied) → every column None, so a `positioning_*` spec is
+    indeterminate and does not trade. The `open_interest` posture, never the
+    `liquidation_spike_ratio` one.
+    """
+    empty = {col: [None] * len(bar_times) for col in POSITIONING_COLUMNS}
+    rows = snapshot.get("positioning") or []
+    if not isinstance(rows, list) or not rows:
+        return empty
+
+    # One reading per (series, timestamp), so the three series can be paired by time.
+    by_series: dict[str, dict[str, float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        series, stamp = row.get("series"), row.get("timestamp")
+        value = row.get("long_ratio")
+        if not isinstance(series, str) or not isinstance(stamp, str):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        by_series.setdefault(series, {})[stamp] = float(value)
+
+    top_position = by_series.get("top_position") or {}
+    global_account = by_series.get("global_account") or {}
+    top_account = by_series.get("top_account") or {}
+    # The divergence needs BOTH legs at the same reading; a gap against an unknown is not zero.
+    stamps = sorted(set(top_position) & set(global_account))
+    if not stamps:
+        return empty
+
+    divergence = [top_position[s] - global_account[s] for s in stamps]
+    zscore = indicators.zscore(divergence, POSITIONING_Z_WINDOW, POSITIONING_Z_MIN_PERIODS)
+    change: list[float | None] = []
+    for index in range(len(divergence)):
+        previous = index - POSITIONING_CHANGE_PERIODS
+        change.append(divergence[index] - divergence[previous] if previous >= 0 else None)
+
+    events = [
+        {
+            "timestamp": stamp,
+            "positioning_divergence": divergence[i],
+            "positioning_divergence_zscore": zscore[i],
+            "positioning_divergence_change": change[i],
+            "positioning_top_long": top_position[stamp],
+            "positioning_global_long": global_account[stamp],
+            "positioning_top_account_long": top_account.get(stamp),
+        }
+        for i, stamp in enumerate(stamps)
+    ]
+    return _asof_align(bar_times, events, POSITIONING_COLUMNS)
+
+
+def _median(values: list[float]) -> float:
+    """Median of a non-empty list of floats."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _pstdev(values: list[float]) -> float:
+    """Population standard deviation; 0.0 for a single value.
+
+    Population rather than sample: the cohort IS the population — it is the whole declared
+    universe, not a draw from a larger one — so dividing by ``n - 1`` would be correcting for
+    a sampling step that never happened.
+    """
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
 
 
 def _bar_returns(closes: list[Any]) -> list[float | None]:
@@ -602,6 +884,15 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         for a, c in zip(atr, closes)
     ]
     atr_percentile = indicators.rolling_percentile(atr_pct_of_price, PERCENTILE_WINDOW)
+    # What "normal volatility" is for this symbol right now, in the same units as
+    # `atr_pct_of_price` — so the live size multiplier is a RATIO of two measured quantities
+    # rather than a constant somebody chose. Self-calibrating on purpose: a target volatility
+    # written into the code would be a number nobody authorized (the #356 lesson) and would
+    # mean something different on BTC than on DOGE. Median, not mean — see
+    # `indicators.rolling_median` for why the mean's bias here is the unsafe direction.
+    atr_pct_reference = indicators.rolling_median(
+        atr_pct_of_price, PERCENTILE_WINDOW, ATR_REFERENCE_MIN_PERIODS
+    )
 
     # C9 derivative feeds. Key PRESENT in the snapshot = series semantics (even when
     # the fetch failed and the list is empty): values are NaN-honest — indeterminate,
@@ -687,6 +978,11 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     session = _session_columns(candles)
     derivative = _derivative_price_columns(bar_times, snapshot)
     reference = _reference_columns(bar_times, roc_4, closes, snapshot)
+    # The cross-sectional leg reads `peer_candles`, which `_reference_columns`' recursive
+    # sub-snapshot never carries — so the recursion cannot reach this and there is no second
+    # level of peer fetching to worry about.
+    cross_section = _cross_section_columns(bar_times, roc_4, snapshot)
+    positioning = _positioning_columns(bar_times, snapshot)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -705,6 +1001,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "atr": atr[i],
             "atr_pct_of_price": atr_pct_of_price[i],
             "atr_percentile": atr_percentile[i],
+            # The typical volatility this bar's is measured against (live sizing).
+            "atr_pct_reference": atr_pct_reference[i],
             "rsi": rsi[i],
             "adx": adx[i],
             "macd": macd_line[i],
@@ -768,6 +1066,13 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Cross-asset context: this symbol measured against the market proxy. All None
             # for the proxy itself — see `_reference_columns`.
             **{col: reference[col][i] for col in REFERENCE_COLUMNS},
+            # Cross-sectional context: where this symbol RANKS in its declared cohort. The
+            # first columns whose value depends on symbols this cycle is not trading — see
+            # `_cross_section_columns`.
+            **{col: cross_section[col][i] for col in XS_COLUMNS},
+            # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
+            # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
+            **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (

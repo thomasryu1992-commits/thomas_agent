@@ -210,24 +210,40 @@ def _position(**overrides):
     return base
 
 
-def test_the_stored_gross_r_is_untouched_and_the_net_one_is_added():
-    """``result_R`` is durable evidence and keeps meaning exactly what it meant: the
-    intended-fill move over the entry risk. Rewriting it would put two populations under one
-    field name, which is the defect ``cost_basis_rank`` exists to sort out in the candidate
-    store. The net figure arrives alongside it, with the rates it was charged at."""
+def test_the_settled_row_is_net_and_carries_what_it_would_take_to_undo():
+    """Settlement charges the costs (2026-07-30), so ``result_R`` IS the net figure and the
+    label says so. What this increment still adds is the rest of the arithmetic: the gross it
+    came from, the per-unit risk it is denominated in, and the RATES it was charged at —
+    without which none of the three can be re-derived at a later schedule.
+
+    The previous shape of this test asserted the opposite (``result_R`` gross, a
+    ``result_R_net`` beside it). Both increments were solving the same defect from opposite
+    ends and this one landed second; keeping both names would be one fact stored twice."""
     record = build_outcome_record(_position(), "take_profit", 108.0, 2.0, now=NOW)
 
-    assert record["result_R"] == 2.0
-    assert record["result_R_net"] < record["result_R"]
+    assert record["result_R"] < record["gross_result_R"] == 2.0
+    assert record["r_basis"] == "intent_net_of_costs"
+    assert "result_R_net" not in record
     assert record["risk"] == 4.0
     assert record["cost_model"] == {"taker_fee_bps": 5.0, "maker_fee_bps": 2.0, "slippage_bps": 3.0}
+
+
+def test_a_settled_row_is_not_costed_a_second_time_on_read():
+    """The two halves meet at the basis label, and this is the join. A row settled after the
+    change carries its costs inside ``result_R``; ``outcome_net_r`` must decline it rather than
+    subtract them again, or the ladder sees one loss twice and demotes an average strategy."""
+    settled = build_outcome_record(_position(), "stop_loss", 96.0, -1.0, now=NOW)
+
+    assert outcome_net_r(settled) is None
+    # ...while a row from before the change is exactly what it does exist to re-price.
+    assert outcome_net_r({**settled, "r_basis": "intent"}) is not None
 
 
 def test_the_record_hash_covers_the_new_fields():
     """Self-hashing is what makes a tampered outcome detectable, so a field added outside the
     hash would be a field the store cannot defend."""
     record = build_outcome_record(_position(), "stop_loss", 96.0, -1.0, now=NOW)
-    tampered = {**record, "result_R_net": 5.0}
+    tampered = {**record, "cost_model": {"taker_fee_bps": 0.0, "maker_fee_bps": 0.0, "slippage_bps": 0.0}}
     tampered.pop("record_sha256")
 
     from runtime.read_only_kernel import integrity
@@ -240,7 +256,8 @@ def test_a_target_exit_is_charged_maker_and_a_stop_exit_taker():
     target = build_outcome_record(_position(), "take_profit", 108.0, 2.0, now=NOW)
     stop = build_outcome_record(_position(), "stop_loss", 96.0, -1.0, now=NOW)
 
-    assert target["result_R"] - target["result_R_net"] < abs(stop["result_R"] - stop["result_R_net"])
+    charged = lambda r: r["gross_result_R"] - r["result_R"]
+    assert charged(target) < charged(stop)
 
 
 # --- half two: which rows may be netted --------------------------------------
@@ -383,7 +400,10 @@ def test_the_board_prints_both_bases_so_it_cannot_contradict_the_ladder():
         "closed_count": 6, "expectancy": 0.1, "max_drawdown": 1.0,
         "recommendation": "CONTINUE", **perf,
     }})
-    assert "비용 제외" in text and "비용 반영" in text
+    # "총액" is the gross line's label after the merge; it was "비용 제외" on this branch and the
+    # two say the same thing. The property under test is that BOTH bases are printed, so the
+    # board cannot show a healthy headline above a ladder that is suspending strategies.
+    assert "총액" in text and "비용 반영" in text
 
 
 def test_the_board_names_how_many_rows_it_could_not_price():

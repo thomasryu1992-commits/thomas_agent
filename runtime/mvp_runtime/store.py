@@ -39,7 +39,7 @@ written — the records are already metadata-only and secret-scanned upstream.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from . import jsonl
 from .errors import PersistenceError
@@ -193,12 +193,28 @@ class LedgerStore:
                       code="LEDGER_WRITE_FAILED", label="the audit ledger")
 
     def _tip(self) -> str | None:
-        """The current chain tip, caller-locked. Fail-closed on a corrupt ledger."""
-        events = jsonl.read_objects(self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger tip")
-        if not events:
+        """The current chain tip, caller-locked. Fail-closed on a corrupt ledger.
+
+        Streams for one row rather than materializing the chain to take its last element.
+        This is the one ledger file that is **never rotated** — ``retention`` refuses it on
+        purpose, because front truncation makes an honest ledger verify as tampered and tail
+        truncation is the chain's documented blind spot — so it grows for the life of the
+        machine, and every run that appends an audit event reads it to find this one hash.
+        Holding it whole to look at the end was the cost that would grow without a ceiling.
+
+        **Every line is still parsed**, which is the point of not seeking to the end instead:
+        a corrupt line anywhere fails closed rather than letting a new chain start over a
+        damaged one, and that property is this method's, not an accident of how it read.
+        """
+        tip: dict[str, Any] | None = None
+        for event in jsonl.iter_objects(
+            self._root / AUDIT_FILE, read_code="LEDGER_UNREADABLE", label="the audit ledger tip"
+        ):
+            tip = event
+        if tip is None:
             return None
         try:
-            return events[-1]["integrity"]["event_sha256"]
+            return tip["integrity"]["event_sha256"]
         except (KeyError, TypeError) as exc:
             raise PersistenceError("LEDGER_UNREADABLE", f"could not read the audit ledger tip: {exc}") from exc
 
@@ -216,11 +232,30 @@ class LedgerStore:
 
         Read under the appender's own lock, like the block/scheduler readers: a run may be
         appending its records while a reader scans the stream. Fails closed on a corrupt file.
-        The M4b proposer backlog reads this to count unreviewed strategy proposals."""
+
+        Holds the whole ledger. Every caller that scans it to keep a handful of rows should
+        use :meth:`iter_records` instead — on the live host this file is ~23 MB and costs
+        81 MB of process memory to materialize, and it is rotated daily rather than bounded."""
+        return list(self.iter_records())
+
+    def iter_records(self) -> Iterator[dict[str, Any]]:
+        """Record rows one at a time, in append order, under the appender's lock.
+
+        For the readers that scan the ledger to retain almost none of it: the last N rows of
+        one kind, a count, the rows carrying one trace id. `crypto/dashboard.py` already had
+        to be rewritten this way after materializing the same file OOM-killed the board; the
+        three remaining callers were doing the same thing to the same file for the same
+        reason, so the shape now lives here rather than being solved a fourth time locally.
+
+        The lock is held for the whole iteration, exactly as ``read_records`` held it for the
+        whole read — so **consume or close it**. A caller that abandons the generator keeps
+        the record ledger locked until it is collected, which would stall the run trying to
+        append to it. All present callers run the stream to exhaustion.
+        """
         with locked(self._root / (RECORDS_FILE + ".lock"),
                     code="LEDGER_WRITE_FAILED", label="the record ledger"):
-            return jsonl.read_objects(self._root / RECORDS_FILE,
-                                      read_code="LEDGER_UNREADABLE", label="the record ledger")
+            yield from jsonl.iter_objects(self._root / RECORDS_FILE,
+                                          read_code="LEDGER_UNREADABLE", label="the record ledger")
 
     def read_scheduler_events(self) -> list[dict[str, Any]]:
         """Every persisted scheduler event, in append order. Fails closed on a corrupt file.

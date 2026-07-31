@@ -60,8 +60,9 @@ _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 STATE_REL = ".runtime_governance_state/crypto"
 PAPER_PROVENANCE = "mvp_paper_kernel"
-# See live_pnl.R_BASIS_* — paper R is measured on intended fills and is cost-free by design.
-from .live_pnl import R_BASIS_INTENT  # noqa: E402  (constant only; no I/O at import)
+# See live_pnl.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
+from .cost import CostModel, apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
+from .live_pnl import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
 # THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
@@ -128,6 +129,7 @@ INTRABAR_TIMEFRAME = "1m"
 INTRABAR_RESOLUTION_DEGRADED = "INTRABAR_RESOLUTION_DEGRADED"
 POSITION_LIMIT_PORTFOLIO = "POSITION_LIMIT_PORTFOLIO"
 POSITION_LIMIT_SYMBOL = "POSITION_LIMIT_SYMBOL"
+POSITION_LIMIT_DIRECTIONAL = "POSITION_LIMIT_DIRECTIONAL_SKEW"
 SETTLEMENT_ALREADY_RECORDED = "SETTLEMENT_ALREADY_RECORDED"
 SETTLEMENT_UNVERIFIABLE = "SETTLEMENT_UNVERIFIABLE"
 SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
@@ -155,6 +157,184 @@ PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker
 
 
 # --- entry routing (pure) -----------------------------------------------------
+
+# How many closed trades a regime slice needs before its sign may exclude a strategy from
+# trading there. Ten because that is this repo's own stated line for "enough observations to
+# mean anything" (`robustness.HEALTHY_TRADES_PER_PARAMETER`), reused rather than re-invented.
+#
+# The direction of the two errors is not symmetric, which is what sets the number. Excluding on
+# too little evidence stops a strategy trading where it actually works, and that cost is
+# **silent** — no record shows the trades that did not happen. Requiring too much evidence just
+# leaves today's behaviour in place. Slicing an outcome history by regime also multiplies the
+# comparisons being made on it, which is the overfitting hazard `docs/TRADING_STRATEGY_REVIEW_
+# RECORD.md` raises about this pipeline generally; a per-regime sign read off three trades is
+# exactly that hazard wired into live routing. So the bar is evidence, not suspicion.
+MIN_REGIME_TRADES_TO_EXCLUDE = 10
+
+# Why a regime was declined, on the route record, so an operator sees a filter rather than a
+# strategy that mysteriously stopped matching.
+REGIME_EXCLUDED = "regime_demonstrated_unprofitable"
+
+
+def regime_admits(entry: Mapping[str, Any], regime: Any) -> tuple[bool, str | None]:
+    """May this pool entry trade in ``regime``? Returns ``(admitted, reason)``.
+
+    **Derived from the stored numbers, never from a stored verdict**, and that is the whole
+    reason this is a function rather than a field written at promotion time. `pool.
+    candidate_quality` already carries the scar: robustness verdicts were written once at mint
+    time, the rule that produced them changed, and twelve candidates kept a label the rule could
+    no longer produce — inverting the shortlist on exactly the property the new rule existed to
+    enforce. A baked `excluded: [...]` list would repeat that the first time
+    :data:`MIN_REGIME_TRADES_TO_EXCLUDE` moved.
+
+    The rule, and the direction it fails in:
+
+    - No ``regime_evidence`` on the entry (every strategy promoted before this existed) →
+      **admitted**. Absent evidence is not evidence of failure, and a filter that silenced the
+      whole installed pool on the day it shipped would be a worse error than the one it fixes.
+    - The regime is unknown, or was never traded in the replay → **admitted**. Same reason: the
+      backtest says nothing about it, and this gate only ever *declines* on a demonstration.
+    - Traded, but on fewer than :data:`MIN_REGIME_TRADES_TO_EXCLUDE` closed trades →
+      **admitted**, however bad the sign. This is the clause that keeps the gate from being the
+      overfitting it is meant to guard against.
+    - Traded enough, and the regime's total R is at or below zero → **declined**. The strategy
+      was promoted on an aggregate that blended this regime with the ones that paid for it.
+
+    Deliberately one-directional: this can only ever make the pool trade *less*. It never admits
+    an entry the existing checks would have refused, which is why it needs no gate of its own.
+    """
+    evidence = entry.get("regime_evidence")
+    if not isinstance(evidence, Mapping) or not evidence:
+        return True, None
+    if not isinstance(regime, str) or not regime:
+        return True, None
+    cell = evidence.get(regime)
+    if not isinstance(cell, Mapping):
+        return True, None
+    trades = cell.get("trades")
+    total_r = cell.get("total_r")
+    if not isinstance(trades, int) or isinstance(trades, bool) or trades < MIN_REGIME_TRADES_TO_EXCLUDE:
+        return True, None
+    if isinstance(total_r, bool) or not isinstance(total_r, (int, float)):
+        return True, None
+    if float(total_r) > 0:
+        return True, None
+    return False, REGIME_EXCLUDED
+
+
+# --- the portfolio's net directional bet --------------------------------------
+
+# How far the whole book may lean one way, counted in positions.
+#
+# **Derived, not chosen**: it is `MAX_POSITIONS_PER_SYMBOL`, so the rule has an English
+# statement that does not mention a number — *the portfolio's net directional bet may never
+# exceed one symbol's full allocation.* However many symbols the book holds, the part of it
+# that is not hedged by an opposing position is never larger than what a single symbol could
+# have contributed alone.
+#
+# **It is not a concurrency cap in disguise**, and that is what makes the derived value the
+# right one rather than merely a tidy one: at 20 slots a book of 12 long + 8 short is net 4,
+# so the full portfolio limit stays reachable. What the cap forbids is a *full book that is
+# one-way*, not a full book.
+MAX_DIRECTIONAL_SKEW = MAX_POSITIONS_PER_SYMBOL
+
+
+def directional_skew_admits(
+    open_positions: Sequence[tuple[Any, Mapping[str, Any]]],
+    direction: Any,
+) -> tuple[bool, dict[str, Any] | None]:
+    """May the book take on one more position in ``direction``? ``(admitted, refusal)``.
+
+    **The limit is read from the module global at call time and is deliberately not a
+    parameter**, which is how its two sibling caps in ``run_paper_update`` already work. A
+    ``cap=MAX_DIRECTIONAL_SKEW`` default argument would bind the number at import, so the
+    constant and the enforced value could disagree — which is not hypothetical: it is what the
+    first version of this function did, and the end-to-end test caught it opening a position the
+    cap was set to refuse. One limit, one way to express it.
+
+    **The gap this closes.** `MAX_CONCURRENT_POSITIONS` and `MAX_POSITIONS_PER_SYMBOL` bound
+    how *many* positions exist and how many share a symbol. Neither bounds how many point the
+    same way, so twenty simultaneous longs were permitted — and that is the F1 hazard
+    `docs/TRADING_STRATEGY_REVIEW_RECORD.md` names: when the market drops, every open long
+    loses at once, and no existing check could say so.
+
+    **Why it matters here more than for money.** This is the PAPER book, which risks nothing —
+    its product is *strategy evidence*. An all-long book turns one market move into twenty
+    correlated verdicts about twenty different strategies, and promotion/demotion then reads
+    those as twenty independent judgements. The cap protects what paper is for. (Live is
+    deliberately untouched: at `live_position.MAX_LIVE_CONCURRENT_POSITIONS = 2` the live book's
+    largest possible skew is 2, so a cap there is either inert or halves an already-tiny
+    capacity — and live one-way risk is governed by the operator-registered
+    `max_open_notional_usdt`, an authority that already exists and is Thomas's number.)
+
+    **The sign convention is load-bearing — do not "simplify" it back to an absolute value.**
+    Everything is counted *toward the proposal*: ``aligned`` positions push the same way this
+    entry would, ``opposing`` push against it, and the lean is ``aligned - opposing``. The rule
+    is then one comparison, and the corrective-safe property falls out of it for free: a lean
+    that would exceed the cap after this entry can only be reached from a book that *already*
+    leans this way, so a corrective entry — one that reduces an imbalance — is never declined.
+    Writing the same rule as ``abs(new_skew) > cap`` looks equivalent and is not: once
+    unsynchronised exits have pushed the book past the cap on its own, that form refuses the
+    very trades that would bring it back. Measured on a 1,200-bar five-symbol simulation, the
+    absolute form blocked corrective entries while gaining nothing (identical opened count,
+    identical worst-case skew).
+
+    **A direction that is not provably opposite counts as aligned**, which needs no special
+    case because ``opposing`` is what is measured. A corrupted record therefore makes the cap
+    bind *sooner*, never later — the same direction `list_open_positions` fails in when it
+    cannot attribute a position at all.
+
+    **What this cannot do, stated because the alternative is worse.** It is an entry-time gate,
+    so it bounds the skew the runtime deliberately *takes on*, not the skew the market leaves
+    it holding: positions expire on their own schedules, so a balanced 12/8 book becomes 12/0
+    when the shorts time out. Measured, the cap still cut the worst observed lean from 8 to 6
+    and the book sat over the cap 2.3% of the time. Bounding it *thereafter* would mean closing
+    positions the strategies did not close — a new authority over exits, and one that would
+    falsify the outcome record this book exists to produce.
+
+    **Which context gets a scarce directional slot is not decided here, and the answer is worth
+    knowing before trusting this.** Like the two caps beside it, this is evaluated per context as
+    the fan-out reaches it, so the room under the cap goes to whoever asks first — and until
+    ``cycle.pool_cycle_contexts`` started ordering by urgency and evidence, "first" meant
+    *alphabetically*, which would have made the last directional slot an accident of spelling
+    (the tiebreak-by-alphabet hazard this codebase rejects in the cross-sectional rank). It is
+    now: live-holding contexts, then paper-holding ones, then best ``champion_score``
+    descending. So a binding cap spends its remaining room on the best-evidenced context rather
+    than the alphabetically luckiest. Neither change owns that property on its own, so a test
+    pins the composition.
+
+    What it still does not promise — and the ordering change says so itself — is the *globally
+    best* entry: a score is not a signal, so the top-scoring context may propose nothing this
+    bar. Arbitrating properly means evaluating every context before executing any, which is a
+    second pass over the whole fan-out and a decision of its own.
+
+    One-directional: it can only ever decline. It never opens a position, never flips one, and
+    never admits an entry the existing caps would have refused — which is why, like
+    :func:`regime_admits`, it needs no gate of its own.
+    """
+    proposed = str(direction or "").upper()
+    if proposed not in ("LONG", "SHORT"):
+        # Nothing to count toward. The caller has no entry to judge, and inventing a lean for
+        # an unknown direction would decline on a guess.
+        return True, None
+    opposite = "SHORT" if proposed == "LONG" else "LONG"
+    opposing = sum(
+        1 for _context, position in open_positions
+        if str((position or {}).get("direction") or "").upper() == opposite
+    )
+    aligned = len(open_positions) - opposing
+    lean_after = aligned + 1 - opposing
+    if lean_after <= MAX_DIRECTIONAL_SKEW:
+        return True, None
+    return False, {
+        "reason_code": POSITION_LIMIT_DIRECTIONAL,
+        "direction": proposed,
+        "aligned": aligned,
+        "opposing": opposing,
+        "lean_after": lean_after,
+        "limit": MAX_DIRECTIONAL_SKEW,
+    }
+
 
 def route_entries(
     pool: Mapping[str, Any], feature_row: Mapping[str, Any], *, symbol: str, timeframe: str, now: str
@@ -186,12 +366,23 @@ def route_entries(
             })
             continue
         result = evaluate_spec(spec, feature_row)
-        evaluations.append({
+        # The regime filter runs on a MATCH, not before evaluation, so the record still shows
+        # that the rules fired and says separately that the regime declined it. Filtering
+        # earlier would make an excluded strategy indistinguishable from one whose conditions
+        # simply were not met, and those are different things for an operator to read.
+        admitted, regime_reason = (
+            regime_admits(entry, feature_row.get("market_regime")) if result.matched else (True, None)
+        )
+        evaluation = {
             "strategy_id": entry.get("strategy_id"),
             "matched": result.matched,
             "direction": result.direction,
-        })
-        if result.matched:
+        }
+        if regime_reason is not None:
+            evaluation["regime_excluded"] = regime_reason
+            evaluation["regime"] = feature_row.get("market_regime")
+        evaluations.append(evaluation)
+        if result.matched and admitted:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
                 "candidate_id": entry.get("candidate_id"),
@@ -206,6 +397,15 @@ def route_entries(
         "strategies_evaluated": len(entries),
         "evaluations": evaluations,
         "matched_strategy_ids": sorted(m["strategy_id"] for m in matches if m["strategy_id"] is not None),
+        # Named separately from `matched_strategy_ids` because "the rules fired and the regime
+        # declined it" is the one outcome an operator would otherwise have to infer from an
+        # absence. A route that entered nothing because every match was regime-excluded reads
+        # identically to one where nothing matched, and those want different responses.
+        "regime_excluded_strategy_ids": sorted(
+            str(e["strategy_id"]) for e in evaluations
+            if e.get("regime_excluded") and e.get("strategy_id") is not None
+        ),
+        "regime": feature_row.get("market_regime") if feature_row else None,
         # The traded context, so a plan books under the symbol this cycle actually
         # ran — not the spec's primary symbol_scope[0], which for a multi-symbol
         # strategy on a non-primary symbol would mis-book the position.
@@ -249,6 +449,53 @@ def route_entries(
     }
 
 
+# How far the live size may be scaled DOWN when volatility is above its own normal. A floor
+# rather than an open-ended divisor: below it the venue's minimum quantity and minimum notional
+# refuse the entry anyway, and a refusal on a chaotic tape is a defensible outcome — but it
+# should come from the venue's own limits rather than from an arithmetic slide to zero.
+MIN_VOL_SIZE_MULTIPLIER = 0.25
+
+
+def volatility_size_multiplier(feature_row: Mapping[str, Any]) -> float:
+    """How much of the otherwise-permitted live size this bar's volatility allows, in (0, 1].
+
+    **Why this is needed, measured rather than assumed.** ``live_sizing.size_live_order`` takes
+    ``min(risk-based, budget cap)``, and on any realistic equity the *budget cap* binds: at a 60
+    USDT per-order cap, the risk leg only wins below roughly 30 USDT of equity. When the cap
+    binds the notional is fixed, so the risk actually taken is ``cap × (stop distance / price)``
+    — which **rises with volatility**. Measured across plausible stop distances at a fixed cap,
+    the risk taken swings 0.18 → 1.20 USDT, a factor of 6.7, in the direction nobody wants:
+    biggest bets on the most chaotic tape. That is the opposite of volatility targeting, and it
+    is why the multiplier is applied to the FINAL quantity rather than to the risk fraction —
+    scaling the risk fraction changes nothing at all while the cap is what binds.
+
+    ``atr_pct_reference / atr_pct_of_price``, clamped. Both legs are measured from the same
+    series (see ``features.atr_pct_reference``), so there is no target-volatility constant for
+    anybody to have failed to authorize and no number that means one thing on BTC and another on
+    DOGE.
+
+    **One-directional, and the name is chosen to say so.** The ratio is capped at 1.0, so this
+    can only ever make an order smaller. Letting it exceed 1.0 would size *above* the operator's
+    registered per-order cap in quiet markets — widening an authorization from inside the
+    runtime, which is a Thomas decision and not a multiplier's business. So this is a
+    volatility-scaled ceiling, not a two-sided target: in unusually quiet conditions it leaves
+    size where the cap already put it rather than reaching for a risk target.
+
+    Returns ``1.0`` — unscaled — whenever the inputs cannot support a ratio: a missing or
+    non-positive current ATR%, or a reference that has not warmed up
+    (``features.ATR_REFERENCE_MIN_PERIODS``). Unscaled rather than refused, because the entry
+    is already authorized by every other door and this function's only job is to shrink it; a
+    missing reference is not grounds to invent one, and it is not grounds to block either.
+    """
+    current = feature_row.get("atr_pct_of_price")
+    reference = feature_row.get("atr_pct_reference")
+    for value in (current, reference):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return 1.0
+    ratio = float(reference) / float(current)
+    return max(MIN_VOL_SIZE_MULTIPLIER, min(1.0, ratio))
+
+
 def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *, now: str) -> dict[str, Any] | None:
     """Turn an ENTRY_CANDIDATE route into a concrete trade plan — pure, no I/O.
 
@@ -281,6 +528,12 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "stop_loss": float(stop),
         "take_profit": float(target),
         "risk": abs(float(entry) - float(stop)),
+        # Volatility scaling for the LIVE size, computed here for the reason `max_holding_bars`
+        # is: the plan is what the execution step reads, and a fact it could re-derive from a
+        # feature row it fetched itself is a fact the two can disagree about. Paper is
+        # unaffected by construction — its accounting is R-based, and R is already normalized
+        # by risk, so no quantity exists there for a multiplier to scale.
+        "vol_size_multiplier": volatility_size_multiplier(feature_row),
         # Backtest/runtime exit parity: the spec's own time-exit limit rides into the
         # plan so the live settlement uses the SAME rule the backtest evidence was
         # built on — a strategy promoted on max_holding_bars=12 must not hold 48.
@@ -541,14 +794,40 @@ def build_outcome_record(
 ) -> dict[str, Any]:
     """The CLOSED outcome — source-registry field names (``result_R``,
     ``outcome_closed``, ``created_at_utc``), so the C4 risk guard and C6 feedback read
-    native and C7-imported outcomes identically. Self-hashed for tamper evidence."""
+    native and C7-imported outcomes identically. Self-hashed for tamper evidence.
+
+    ``result_R`` is NET of fees and slippage (2026-07-30). ``result_r`` from
+    :func:`settle_trade_plan` remains the authority on the GROSS number — including its
+    deliberate exactly-``-1.0`` stop convention — and this function only subtracts what
+    ``cost.apply_cost_model`` says the two legs cost. Deriving gross a second time from the
+    prices would agree today (``risk`` is ``|entry - stop|`` by construction) and would be a
+    second thing to keep agreeing tomorrow.
+    """
+    costs = apply_cost_model(
+        str(position.get("direction") or ""),
+        float(position.get("entry_price") or 0.0),
+        float(exit_price),
+        float(position.get("risk") or 0.0),
+        close_reason=close_reason,
+    )
+    gross_r = float(result_r)
+    net_r = gross_r - costs.fee_cost_r - costs.slippage_cost_r
     record = {
         "outcome_id": integrity.short_id(
             "out", {"position_id": position.get("position_id"), "reason": close_reason, "closed_at": now}
         ),
         "outcome_closed": True,
-        "result_R": round(float(result_r), 8),
-        "win_loss": "WIN" if result_r > 0 else ("LOSS" if result_r < 0 else "FLAT"),
+        "result_R": round(net_r, 8),
+        # The gross figure and what came off it, so the row explains its own number and a
+        # reader can recover the pre-cost statistic without re-deriving it from prices. Mirrors
+        # what `factory.backtest_spec` has always recorded in `cost_summary`.
+        "gross_result_R": round(gross_r, 8),
+        "fee_cost_r": costs.fee_cost_r,
+        "slippage_cost_r": costs.slippage_cost_r,
+        "maker_fee_cost_r": costs.maker_fee_cost_r,
+        # Judged on the NET number: a trade that cleared its stop but not its costs is not a
+        # win, and calling it one is how a losing book reports a healthy win rate.
+        "win_loss": "WIN" if net_r > 0 else ("LOSS" if net_r < 0 else "FLAT"),
         "close_reason": close_reason,
         "created_at_utc": now,
         "venue": str(position.get("venue") or DEFAULT_VENUE),
@@ -557,10 +836,13 @@ def build_outcome_record(
         "direction": position.get("direction"),
         "entry_price": position.get("entry_price"),
         "exit_price": float(exit_price),
-        # The per-unit risk this R is denominated in (|entry − stop|). It was always on the
-        # position and never on the outcome, which left the row unable to convert its own R
-        # into money or into a cost — `cost.outcome_net_r` had to reconstruct it by dividing.
-        # Recorded so a settled trade carries every primitive its own arithmetic needs.
+        # Risk per unit (|entry - stop|) — the denominator `result_R` was divided by. It was
+        # always on the position and never on the outcome, which left a settled row unable to
+        # convert its own R into money or into a cost. Recorded since 2026-07-29 so the row
+        # carries every primitive its own arithmetic needs: `cost.outcome_net_r` re-prices the
+        # pre-2026-07-30 rows NET of fees, slippage and carry, and that conversion needs the
+        # same denominator the gross figure used. Reconstructing it from `result_R` divides by
+        # zero on a break-even trade, which is exactly the row a cost model would turn negative.
         "risk": position.get("risk"),
         "holding_candles": position.get("holding_candles"),
         "position_id": position.get("position_id"),
@@ -577,21 +859,29 @@ def build_outcome_record(
         # observed ones instead of treating every outcome as equally measured.
         "exit_resolution": position.get("exit_resolution") or "unambiguous",
         "provenance": PAPER_PROVENANCE,
-        # Paper R is measured on INTENDED fills and carries no costs by design (see cost.py).
-        # Stated on the row so a consumer pooling it with live R — which is measured on actual
-        # fills — can see that the two statistics differ.
-        "r_basis": R_BASIS_INTENT,
+        # Intended fills, NET of costs. The value changed on 2026-07-30 and the label changed
+        # with it, so a window spanning that day can SEE that it mixes two bases rather than
+        # silently averaging them (see live_pnl.R_BASIS_*). Rows written before keep `intent`
+        # and cannot be re-priced: the stored row has no `risk`, and the cost model is
+        # denominated in risk-per-unit.
+        "r_basis": R_BASIS_INTENT_NET,
     }
-    # The same trade after fees and slippage, at the rates in force when it settled, plus the
-    # rates themselves. `result_R` above is unchanged and stays the intended-fill figure: this
-    # is an ADDITIONAL field, because rewriting what a stored outcome means is how one field
-    # name comes to hold two populations (the defect `cost_basis_rank` exists to sort out in the
-    # candidate store). Consumers judge on `cost.outcome_net_r`, which re-derives at CURRENT
-    # rates; this is the audit trail of what the runtime believed on the day, and the answer
-    # when a later reader wants the number as-settled rather than as-charged-today.
-    net = costs.outcome_net_r(record)
-    record["result_R_net"] = round(float(net), 8) if net is not None else None
-    default_model = costs.CostModel()
+    # WHICH RATES charged this row. `result_R` above is already net of them, and
+    # `gross_result_R` / `fee_cost_r` / `slippage_cost_r` beside it say how much came off — so
+    # what is left to record is the rates themselves, without which none of those can be
+    # re-derived when the schedule changes. The same disclosure `factory.backtest_spec` makes
+    # in `cost_summary`, and the audit trail of what the runtime believed on the day.
+    #
+    # This block also wrote a `result_R_net`, from the increment where `result_R` stayed gross
+    # and consumers re-derived net at read time. That field is gone rather than kept: settlement
+    # charges the costs now, so the two would be one fact under two names — and
+    # `cost.outcome_net_r` correctly declines to re-price a row whose own basis already reads
+    # `intent_net_of_costs`, so it would have written a null on every settlement.
+    #
+    # `CostModel` is imported by name rather than reached through the `costs` module alias: the
+    # local `costs` above is a CostBreakdown and shadows it inside this function. That shadowing
+    # is what made the first pass of this merge raise on every settlement.
+    default_model = CostModel()
     record["cost_model"] = {
         "taker_fee_bps": default_model.taker_fee_bps,
         "maker_fee_bps": default_model.maker_fee_bps,
@@ -1297,6 +1587,17 @@ def run_paper_update(
                             "open_positions": same_symbol,
                             "limit": MAX_POSITIONS_PER_SYMBOL,
                         }
+                    else:
+                        # The third cap, and the first that reads the book's SHAPE rather than
+                        # its size: the two above permit twenty simultaneous longs. Counted
+                        # from the `open_books` already in hand, under the same lock and for
+                        # the same reason — a lean is a property of every book together, so two
+                        # cycles that each counted before either wrote would both see room only
+                        # one of them had.
+                        _admitted, skew_refusal = directional_skew_admits(
+                            open_books, plan.get("direction")
+                        )
+                        refusal = skew_refusal
                     if refusal is not None:
                         summary["open_refused"] = refusal
                         records.append(_event("open_refused", {**refusal, "read_only": True}))

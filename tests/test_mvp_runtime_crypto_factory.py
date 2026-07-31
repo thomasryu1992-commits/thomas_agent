@@ -30,8 +30,14 @@ from runtime.mvp_runtime.crypto.factory import (
     FusionRefused,
     ParamSpec,
 )
-from runtime.mvp_runtime.crypto.strategy import StrategySpec
-from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
+from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
+from runtime.mvp_runtime.scheduler import (
+    FACTORY_FUSION_PAIRS,
+    KIND_FACTORY,
+    ScheduleStore,
+    build_schedule,
+    run_due,
+)
 from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE, LedgerStore
 
 from scripts.promote_strategy_candidates import run_promotion
@@ -150,6 +156,107 @@ def test_every_family_in_the_library_is_reachable_across_generations():
     )
 
 
+def test_a_context_covers_its_library_when_generation_ids_stride():
+    """The defect the test above cannot see, because it walks GEN-000, GEN-001, GEN-002.
+
+    Production never does. Generation ids are global — `next_generation_id` takes the
+    next one across the whole store — and there are 15 scheduled factory contexts, so
+    ONE context's own generations stride by 15. `_rotation_offset` multiplied that by
+    `count`, and a strided walk over a modulus visits only the multiples of
+    `gcd(stride * count, total)`: with stride 15, count 4 and total 36 that is 12, so
+    three blocks of four out of nine and **24 of 36 families were permanently
+    unreachable for a given context**. Measured on the store 2026-07-31: 440 seeded
+    candidates over ~110 generations, median context had minted 16 distinct families.
+
+    So this walks the way the scheduler does. Asserted on the FAMILIES a context can
+    reach, not on the offsets, because the offset is an implementation detail and the
+    reachable set is the thing that was broken."""
+    symbol, timeframe, contexts = "ETHUSDT", "1h", 15
+    templates = templates_for_timeframe(timeframe, symbol=symbol)
+    runs = -(-len(templates) // 4)  # ceil: fires needed to cover the library once
+
+    def families_over(fires, *, use_rotation_index):
+        seen = set()
+        for fire in range(fires):
+            generation = 695 + fire * contexts  # the global counter, strided
+            batch = generate_batch(
+                f"GEN-{generation:03d}", seed=generation, symbol=symbol, timeframe=timeframe,
+                rotation_index=fire if use_rotation_index else None,
+            )
+            seen.update(spec["strategy_family"] for spec in batch["specs"])
+        return seen
+
+    # The cursor: one context covers its whole library in ceil(total/count) of its own fires.
+    covered = families_over(runs, use_rotation_index=True)
+    assert covered == {t.family for t in templates}, (
+        f"unreachable with the per-context cursor: {sorted({t.family for t in templates} - covered)}"
+    )
+
+    # The generation number: still starved after FOUR full passes' worth of fires. Pinned as
+    # an inequality rather than an exact count — the point is that it plateaus, and the exact
+    # size of the plateau moves whenever a family is added to the library.
+    starved = families_over(runs * 4, use_rotation_index=False)
+    assert len(starved) < len(templates), (
+        "the global generation number reached the whole library — if the rotation arithmetic "
+        "changed so this is now true, this test is measuring nothing and should be rewritten"
+    )
+
+
+def test_the_rotation_cursor_counts_fires_not_candidates():
+    """One fire mints a whole batch under a single generation id, so a batch is one step
+    of the rotation and not `count` steps. Fused children ride the same id and must not
+    advance it either — they are the same fire."""
+    def record(generation_id, symbol="ETHUSDT", timeframe="1h"):
+        return {"generation_id": generation_id,
+                "strategy_spec": {"symbol_scope": [symbol], "timeframe": timeframe,
+                                  "generation_id": generation_id}}
+
+    store = [record("GEN-001"), record("GEN-001"), record("GEN-001"), record("GEN-001"),
+             record("GEN-016"), record("GEN-016")]  # two fires: four seeded + two fused
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="1h") == 2
+
+    # Another context's rows are not this context's fires — the bug in miniature.
+    store += [record("GEN-002", timeframe="4h"), record("GEN-003", symbol="SOLUSDT")]
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="1h") == 2
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="4h") == 1
+    assert factory.context_rotation_index(store, symbol="SOLUSDT", timeframe="1h") == 1
+    # A context that has never fired starts at zero rather than raising.
+    assert factory.context_rotation_index(store, symbol="BNBUSDT", timeframe="1d") == 0
+    # Malformed rows are skipped, never fatal: a factory that refuses to mine because one
+    # legacy row lost its spec is a worse failure than a cursor one short.
+    assert factory.context_rotation_index(
+        [*store, {"generation_id": "GEN-999"}, {"strategy_spec": None}],
+        symbol="ETHUSDT", timeframe="1h") == 2
+
+
+def test_run_factory_steps_the_rotation_on_its_own_context():
+    """The seam: `run_factory` must COUNT the store it is already given and pass the
+    cursor down. Both stages were tested and the join was not — which is how #201 shipped.
+
+    Two runs of the same context over stores differing only in how many times that context
+    has already fired must mint different families; a run whose store belongs to a
+    DIFFERENT context must not be advanced by it."""
+    snapshot = _trending_snapshot()
+
+    def families(existing):
+        result = run_factory(snapshot, active_pool={}, existing_candidates=existing,
+                             now=NOW, count=4)
+        return [c["strategy_spec"]["strategy_family"] for c in result["candidates"]]
+
+    def rows(generation_id, symbol="BTCUSDT", timeframe="1d"):
+        return {"generation_id": generation_id,
+                "strategy_spec": {"symbol_scope": [symbol], "timeframe": timeframe,
+                                  "generation_id": generation_id}}
+
+    first = families([])
+    second = families([rows("GEN-001")])
+    assert first != second, "a second fire of the same context re-minted the same families"
+
+    # Rows from other contexts leave this context's cursor where it was.
+    assert families([rows("GEN-001"), rows("GEN-002", timeframe="4h"),
+                     rows("GEN-003", symbol="SOLUSDT")]) == second
+
+
 def test_the_rotation_is_deterministic():
     a = generate_batch("GEN-042", seed=7, timeframe="1h")
     b = generate_batch("GEN-042", seed=7, timeframe="1h")
@@ -245,6 +352,124 @@ def test_all_ported_templates_validate():
     for template in templates_for_timeframe("1d"):
         batch = generate_batch("GEN-001", seed=3, count=1, timeframe="1d")
         assert batch["accepted_count"] == 1  # every family passes its own validator
+
+
+# --- volatility-regime families -----------------------------------------------
+
+VOLATILITY_FAMILIES = frozenset({"volatility_expansion_long", "volatility_expansion_short",
+                                 "volatility_squeeze_long", "volatility_squeeze_short"})
+
+# The columns these families exist to avoid. Each is a real, mintable member of
+# NUMERIC_FEATURES and each is a LEVEL: `atr` is in price units, the other two are
+# fractions of price that run ~0.2% at 15m and ~3% at 1d. A threshold mined on any of
+# them means a different thing at every rung of the ladder the template is retimed onto.
+_VOLATILITY_LEVEL_COLUMNS = frozenset({"atr", "atr_pct_of_price", "bb_width_pct"})
+
+
+def _volatility_regime_snapshot(n=600):
+    """Alternating calm and violent blocks, one of the violent ones falling.
+
+    ``_trending_snapshot`` cannot serve here: its highs and lows are a constant ±1.5
+    around the close, so ATR is flat, every rolling rank ties at ~0.5, and a family
+    gated on ``atr_percentile >= 0.7`` would take zero trades — which would look
+    exactly like a broken family rather than a fixture with no volatility in it."""
+    step = timedelta(days=1)
+    last_close = NOW_DT - timedelta(hours=1)
+    candles = []
+    price = 100.0
+    for i in range(n):
+        violent = (i // 25) % 2 == 1
+        drift = 2.0 if violent else 0.25
+        span = 4.0 if violent else 0.4
+        if (i // 25) % 4 == 3:  # one falling violent block, so the short legs can enter
+            drift = -drift
+        price = max(10.0, price + drift)
+        close_time = last_close - (n - 1 - i) * step
+        candles.append({
+            "open_time": timeutil.format_iso(close_time - step),
+            "open": price - drift, "high": price + span, "low": price - span,
+            "close": price, "volume": 10.0 + (i % 7),
+            "close_time": timeutil.format_iso(close_time),
+        })
+    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles, "is_synthetic": False}
+
+
+def _template_spec(template, timeframe="1d"):
+    return StrategySpec.from_dict(_spec_dict(
+        strategy_family=template.family, direction=template.direction, timeframe=timeframe,
+        entry_rules={"operator": "AND",
+                     "conditions": template.entry_builder(template.base_params)},
+        exit_rules={"stop_model": "atr", "stop_atr": 1.2, "target_atr": 3.0,
+                    "max_holding_bars": 24},
+    ))
+
+
+def test_volatility_families_close_trades_on_a_market_that_has_regimes():
+    """The hazard these families are most exposed to is the one `POSITIONING_FAMILIES`
+    documents: a family whose conditions are never *determined* mints, backtests, takes
+    zero trades and is retired as FRAGILE — blamed for a window it could not read.
+
+    A percentile column is the sharpest version of that risk, because it is None until
+    `rolling_percentile` has its `min_periods` and then ranks against a window that may
+    have no spread in it at all. So each family has to be shown closing real trades on a
+    market that actually changes volatility, not merely parsing."""
+    snapshot = _volatility_regime_snapshot()
+    for template in factory.TEMPLATES:
+        if template.family not in VOLATILITY_FAMILIES:
+            continue
+        evidence = backtest_spec(_template_spec(template), snapshot)
+        assert evidence["closed_count"] >= factory.MIN_TRADES_PER_WINDOW, (
+            f"{template.family} closed {evidence['closed_count']} trades — a family that "
+            "cannot trade its own premise is noise in the rotation, not diversity"
+        )
+
+
+def test_volatility_families_mine_percentiles_and_never_levels():
+    """The rule that makes these families retimeable at all, pinned structurally.
+
+    `atr`, `atr_pct_of_price` and `bb_width_pct` are all mintable — nothing in the
+    validator refuses them — so the only thing standing between this family and a
+    threshold that silently means something different at every timeframe is a decision.
+    This test is that decision, written down where breaking it fails."""
+    for template in factory.TEMPLATES:
+        if template.family not in VOLATILITY_FAMILIES:
+            continue
+        read = set()
+        for condition in template.entry_builder(template.base_params):
+            read.add(condition["feature"])
+            if condition.get("value_from"):
+                read.add(condition["value_from"])
+        assert not read & _VOLATILITY_LEVEL_COLUMNS, (
+            f"{template.family} mines a volatility LEVEL ({sorted(read & _VOLATILITY_LEVEL_COLUMNS)}); "
+            "a level is not comparable across the ladder this template is retimed onto"
+        )
+        assert read & {"atr_percentile", "bb_width_percentile"}, (
+            f"{template.family} is a volatility family that reads no volatility rank"
+        )
+
+
+def test_the_expansion_filter_actually_excludes_the_quiet_bars():
+    """The families trade (above) and read the right column (above); this pins that the
+    column is doing the work. A row identical but for a calm `atr_percentile` must not
+    enter — otherwise the filter is decoration and the family is `breakout` renamed."""
+    template = next(t for t in factory.TEMPLATES if t.family == "volatility_expansion_long")
+    spec = _template_spec(template)
+    trending = {"close": 110.0, "ma20": 105.0, "ma50": 100.0}
+    assert evaluate_spec(spec, {**trending, "atr_percentile": 0.95}).matched is True
+    assert evaluate_spec(spec, {**trending, "atr_percentile": 0.10}).matched is False
+    # Absent, not merely low: the fail-closed evaluator must leave it indeterminate rather
+    # than treat a missing rank as a passing one.
+    assert evaluate_spec(spec, trending).matched is False
+
+
+def test_scheduled_fusion_never_outgrows_the_seeded_rotation():
+    """`FACTORY_FUSION_PAIRS` was raised to 4 on the store's own evidence (crossover
+    reaches ROBUST at 13.6% against the seeded rotation's 5.5%), and the bound on raising
+    it further is not arithmetic — it is that the seeded rotation is the ONLY path by
+    which a newly added family enters the store at all. Fusion draws exclusively on
+    lineages that are already there. Let it exceed the seeded half of a fire and every
+    family added after today competes for a shrinking remainder."""
+    assert 0 < FACTORY_FUSION_PAIRS <= factory.DEFAULT_BATCH_SIZE
 
 
 # --- backtest -----------------------------------------------------------------
@@ -369,9 +594,14 @@ def _seed_candidates(tmp_path):
 
 
 def test_promotion_installs_selected_candidates(tmp_path):
+    # `allow_oversized_pool` because one factory run mines every candidate for the SAME
+    # context, so promoting two of them is exactly what the per-context cap refuses. That
+    # refusal has its own tests (test_mvp_runtime_crypto_promotion.py); the subject here is
+    # that the door installs what was selected, and the escape keeps it that.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            allow_oversized_pool=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -386,7 +616,8 @@ def test_promotion_keep_active_adds(tmp_path):
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
                   keep_active=False, root=tmp_path, now=NOW, without_approval=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, root=tmp_path, now=NOW, without_approval=True)
+                  keep_active=True, root=tmp_path, now=NOW, without_approval=True,
+                  allow_oversized_pool=True)   # same context as the incumbent; see above
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
 
@@ -744,3 +975,69 @@ def test_rank_candidates_is_deterministic_and_latest_wins():
     # dup now carries the newer (stronger) evidence, so it leads; equal-quality ties
     # fall back to candidate_id ascending (aaa before bbb).
     assert ids == ["dup", "aaa", "bbb"]
+
+
+# --- one frame per fire, not one per spec (2026-07-29) -----------------------------------------
+#
+# Features, candles and the carry series are properties of the market and the calendar; the spec
+# decides only which bars it enters on. `backtest_spec` rebuilt all three per spec anyway, and
+# `build_feature_rows` is 6.0 seconds at the 48,000-bar 15m window — so a batch of four plus
+# fusion children spent ~30s a fire recomputing an identical frame, on a scheduler that runs
+# schedules sequentially and shares that tick with the live leg.
+
+def test_a_shared_frame_scores_a_spec_identically_to_a_rebuilt_one():
+    """The property the whole optimisation rests on: reuse changes nothing about the answer."""
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot = _trending_snapshot()
+    spec = StrategySpec.from_dict(_spec_dict())
+    assert backtest_spec(spec, snapshot) == backtest_spec(
+        spec, snapshot, frame=build_replay_frame(snapshot)
+    )
+
+
+def test_the_factory_builds_the_frame_once_however_many_specs_it_scores():
+    from runtime.mvp_runtime.crypto import factory as factory_mod
+    from runtime.mvp_runtime.crypto.factory import run_factory
+
+    built = []
+    real = factory_mod.build_feature_rows
+
+    def counting(snapshot):
+        built.append(1)
+        return real(snapshot)
+
+    original = factory_mod.build_feature_rows
+    factory_mod.build_feature_rows = counting
+    try:
+        result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                             existing_candidates=[], now=NOW, count=4)
+    finally:
+        factory_mod.build_feature_rows = original
+
+    assert result["accepted_count"] >= 2, "the run has to actually score several specs"
+    assert len(built) == 1, f"the feature frame was rebuilt {len(built)} times"
+
+
+def test_a_frame_from_a_different_cost_model_is_refused():
+    """With no venue funding history the carry series spreads `funding_bps_per_interval` over
+    each bar, so a frame built under one model and replayed under another would price trades at
+    rates they never faced — the failure `pool.cost_basis_rank` catches only after the fact."""
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot = _trending_snapshot()
+    frame = build_replay_frame(snapshot, cost=CostModel(funding_bps_per_interval=0.0))
+    with pytest.raises(ValueError) as excinfo:
+        backtest_spec(StrategySpec.from_dict(_spec_dict()), snapshot, frame=frame)
+    assert "cost model" in str(excinfo.value)
+
+
+def test_a_frame_built_at_a_matching_cost_model_is_accepted():
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
+
+    snapshot, cost = _trending_snapshot(), CostModel(taker_fee_bps=7.5)
+    frame = build_replay_frame(snapshot, cost=cost)
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), snapshot, frame=frame, cost=cost)
+    assert evidence["cost_summary"]["cost_model"]["taker_fee_bps"] == 7.5

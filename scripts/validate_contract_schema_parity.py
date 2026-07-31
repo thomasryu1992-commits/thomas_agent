@@ -93,6 +93,56 @@ def compare_required(
         )
 
 
+SCHEMA_FILE_RE = re.compile(r'"(schemas/[A-Za-z0-9_.]+\.schema\.json)"')
+SCHEMA_VERSION_RE = re.compile(r"\.v[0-9.]+\.schema\.json$")
+
+
+def schema_family(schema_rel: str) -> str:
+    """``schemas/approval.v0.2.schema.json`` -> ``approval``."""
+    return SCHEMA_VERSION_RE.sub("", Path(schema_rel).name)
+
+
+def covered_schemas() -> set[str]:
+    """Every schema this file names, read out of this file.
+
+    Derived rather than restated: a second list of what the list contains is one more thing
+    to keep in step, and this gate exists because things drift out of step.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    return {rel for rel in SCHEMA_FILE_RE.findall(source) if (ROOT / rel).is_file()}
+
+
+def assert_every_covered_family_is_fully_covered() -> None:
+    """If any version of a schema family is checked here, every version present must be.
+
+    The gap this closes is specific and was real: the gate checked
+    ``permission_decision.v0.3`` while ``v0.4`` — the version a live order's PermissionDecision
+    is built at — went unchecked, because coverage was a hand-written list of ``compare_required``
+    calls and nothing compared that list to ``schemas/``. Bumping a schema's version is exactly
+    when a contract is most likely to drift from it, and exactly when the old entry keeps
+    passing and says nothing.
+
+    Scoped to families the gate **already** covers, so it asserts a property of this list rather
+    than inventing an obligation for schemas nobody paired with a contract. That leaves 23
+    schemas checked by neither gate — the Core lifecycle set, ``frontdesk_turn``, the
+    programization pair — and they are outside this rule because they have no contract document
+    with a required-field table to check against. Writing those is doc authorship, not a gate
+    fix, and pretending otherwise here would mean an exemption list: the same hand-maintained
+    thing whose absence of a completeness check is the bug being fixed.
+    """
+    covered = covered_schemas()
+    families = {schema_family(rel) for rel in covered}
+    for path in sorted((ROOT / "schemas").glob("*.schema.json")):
+        rel = f"schemas/{path.name}"
+        if rel in covered:
+            continue
+        if schema_family(rel) in families:
+            ERRORS.append(
+                f"{rel}: this family is checked for contract/schema parity but this version "
+                f"is not — add a compare_required(...) for it, or retire the schema"
+            )
+
+
 def main() -> int:
     # Historical I0.4 parity is owned by the Legacy Gate and Historical index.
     # Deferred contract/schema parity is owned by scripts/validate_deferred_architecture.py.
@@ -113,6 +163,22 @@ def main() -> int:
     compare_required(
         "docs/runtime-contracts/PERMISSION_DECISION_CONTRACT_V0.3.md",
         "schemas/permission_decision.v0.3.schema.json",
+        "## 2. Required Fields",
+        "## 3. Thomas-Approved Operating Policy Binding",
+    )
+
+    # permission_decision.v0.4 (R2/LP: + FINANCIAL_APPROVED_TRADING_USE, the scope the live
+    # order path decides under) keeps v0.3's required set and widens an enum, so the same
+    # contract doc anchors both — exactly the approval v0.1/v0.2 arrangement below.
+    #
+    # It was uncovered until 2026-07-31, which is the wrong way round: the gate was checking
+    # the superseded version while the one a live order is decided under went unchecked. Not
+    # an oversight anybody could have seen — the covered set was a hand-written list of calls
+    # with nothing asserting it was complete. `assert_every_covered_family_is_fully_covered`
+    # below is that assertion, so bumping a covered schema now demands the new version too.
+    compare_required(
+        "docs/runtime-contracts/PERMISSION_DECISION_CONTRACT_V0.3.md",
+        "schemas/permission_decision.v0.4.schema.json",
         "## 2. Required Fields",
         "## 3. Thomas-Approved Operating Policy Binding",
     )
@@ -244,6 +310,8 @@ def main() -> int:
                 "ROLE_DEFINITION_TEMPLATE.yaml "
                 f"missing: {token}"
             )
+
+    assert_every_covered_family_is_fully_covered()
 
     if ERRORS:
         print(

@@ -664,8 +664,10 @@ def generate_candidates(
     judged_count = 0
     boilerplate_only = 0
     subject_mismatches = 0
+    displaced_count = 0
     for index, left_venue in enumerate(venues):
         for right_venue in venues[index + 1:]:
+            per_pair: list[MatchCandidate] = []
             for left in by_venue[left_venue]:
                 for right in by_venue[right_venue]:
                     judged_count += 1
@@ -675,9 +677,42 @@ def generate_candidates(
                     if SUBJECT_MISMATCH in judged.refusals:
                         subject_mismatches += 1
                     if judged.is_candidate:
-                        candidates.append(judged)
+                        per_pair.append(judged)
                     elif keep_near_misses and judged.near_miss():
                         near_misses.append(judged)
+            # **Within one venue pair, one market gets one candidate.** Two markets on the
+            # same venue are never the same event, so proposing market P against four of them
+            # offers four options of which at most ONE can ever be confirmed — `pairs.py`
+            # refuses the rest with MARKET_ALREADY_GROUPED. The sheet was not merely verbose
+            # about that, it was a trap: the impostors carry plausible scores, so an operator
+            # working top-down could confirm a wrong one first and thereby refuse the right
+            # one forever.
+            #
+            # Observed 2026-07-30: four Binance markets proposed against the single Polymarket
+            # market "2026 Balance of Power: D Senate, D House" — its own counterpart plus
+            # "D Senate, R House", "R Senate, D House" and "R Senate, R House", three flatly
+            # different questions, while all five combinations sat in the corpus with distinct
+            # titles. No wording gate can see it: the distinguishing tokens are the single
+            # characters `d` and `r`, six tokens of shared template outvote them (similarity
+            # 0.857 and 0.714), and `subject_mismatch`'s rarity test fails because both letters
+            # are common across a political corpus.
+            #
+            # Scoped to the venue PAIR, not global. A group spanning three venues has one leg
+            # per venue, so each venue pair contributes exactly one pairing per leg and all
+            # three survive; a global claim set would keep one of them and silently destroy
+            # multi-leg groups, which is what the first attempt at this did.
+            #
+            # Greedy over score, so the exact-title pairing claims its legs before any impostor
+            # is considered. Ties break on `legs()`: the same batch always assigns the same way.
+            per_pair.sort(key=lambda c: (-c.title_similarity, c.legs()))
+            claimed: set[tuple[str, str]] = set()
+            for judged in per_pair:
+                legs = judged.legs()
+                if any(leg in claimed for leg in legs):
+                    displaced_count += 1
+                    continue
+                claimed.update(legs)
+                candidates.append(judged)
 
     # Best first, so an operator reviewing a long list sees the strongest proposals first.
     candidates.sort(key=lambda c: (-c.title_similarity, c.legs()))
@@ -696,6 +731,10 @@ def generate_candidates(
         # all the near misses there were".
         "near_miss_total": near_miss_total,
         "near_miss_truncated": near_miss_total - len(kept),
+        # Candidates dropped because a better-scoring pairing in the same venue pair had
+        # already claimed one of their legs. Reported for the same reason the near-miss cap is:
+        # a number that silently shrank reads as "this is everything that matched".
+        "candidates_displaced": displaced_count,
         # How many pairings agreed on nothing but the template. Reported because it is the
         # size of the trap: before this gate existed, most of these were near misses and at
         # least one was a candidate.

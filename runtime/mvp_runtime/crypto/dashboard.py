@@ -148,6 +148,32 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         active, status_counts, demotions_by_reason = {"active_strategies": []}, {}, {}
         warnings.append(f"active pool unreadable ({exc.reason_code})")
 
+    # How large a book this pool can actually fill under the directional cap. The other half of
+    # the lean below: that line says the book is one-way, this one says whether the POOL is why.
+    # Since the routable set is capped at one strategy per context, a spec's direction is fixed
+    # at promotion time — so a pool of twenty long strategies fills four slots and no more, and
+    # neither cap says so alone. Derived here rather than refused at the promotion door: the
+    # directional gate can only decline, so a lopsided pool trades less rather than unsafely,
+    # and blocking a promotion over it would forbid building a pool in any order but alternating.
+    try:
+        pool_capacity = pool.routable_directional_capacity(active.get("active_strategies") or [])
+    except MvpRuntimeError as exc:
+        pool_capacity = None
+        warnings.append(f"pool directional capacity unreadable ({exc.reason_code})")
+
+    # The same question as the demotion reasons above — why is this not trading — arriving by a
+    # path that is not a status. A regime-excluded entry stays PAPER_ACTIVE and keeps its routing
+    # slot, so **nothing in the pool says it is inert**: its rules fire, and the router declines
+    # them because the strategy's own backtest lost money in the regime the market is in. Counted
+    # over the cycles this board already read, because the interesting case is not one exclusion
+    # but a strategy excluded on most of them, which is a demotion candidate the status count
+    # would report as healthy.
+    regime_excluded_cycles: dict[str, int] = {}
+    for row in cycle_rows:
+        for strategy_id in row.get("regime_excluded") or []:
+            key = str(strategy_id)
+            regime_excluded_cycles[key] = regime_excluded_cycles.get(key, 0) + 1
+
     # Two things the board could always have said and did not, both about work waiting on a
     # human rather than on the runtime. They are warnings rather than rows because a queue
     # nobody is told about is a queue nobody works: promotion went untouched for three days
@@ -240,6 +266,24 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         warnings.append(f"position state unreadable ({exc.reason_code})")
     open_position = open_positions[0] if open_positions else None
+    # How far the book leans, and how far it is allowed to. Derived at read time from the
+    # positions above — never stored — for the `pool.candidate_quality` reason: a lean written
+    # once would outlive the cap that produced it, and `paper.MAX_DIRECTIONAL_SKEW` is derived
+    # from a constant that has already moved once. Belongs on the BOARD and not only on the
+    # per-fire status line, because the gate declines on STANDING book state: an operator who
+    # missed the one fire that printed a refusal still needs to see that the book is one-way.
+    longs = sum(1 for entry in open_positions if str(entry.get("direction") or "").upper() == "LONG")
+    shorts = sum(1 for entry in open_positions if str(entry.get("direction") or "").upper() == "SHORT")
+    directional_lean = {
+        "long": longs,
+        "short": shorts,
+        # Positions whose direction is neither, counted rather than dropped: the gate treats
+        # them as aligned with whatever is proposed, so they are not decoration.
+        "unattributed": len(open_positions) - longs - shorts,
+        "lean": longs - shorts,
+        "limit": paper.MAX_DIRECTIONAL_SKEW,
+        "at_limit": abs(longs - shorts) >= paper.MAX_DIRECTIONAL_SKEW,
+    }
 
     last_cycle = cycle_rows[-1] if cycle_rows else None
     return {
@@ -255,8 +299,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         } if last_cycle else None,
         "open_position": open_position,
         "open_positions": open_positions,
+        "directional_lean": directional_lean,
+        "pool_directional_capacity": pool_capacity,
         "pool_status_counts": status_counts,
         "demotions_by_reason": demotions_by_reason,
+        "regime_excluded_cycles": regime_excluded_cycles,
+        "cycles_read": len(cycle_rows),
         "pool_size": len(active.get("active_strategies") or []),
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
@@ -274,13 +322,25 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "performance": {
             "closed_count": report.get("sample_size") if report else 0,
             "expectancy": (report.get("summary") or {}).get("expectancy") if report else None,
+            # The same trades at the venue's rates. Paper R is measured on intended fills and
+            # carries no costs by design (`cost.py`), which is right for the risk guard and
+            # wrong for the question this board's headline asks — "is there an edge worth
+            # expanding". Both are carried so the board can show the gap rather than pick.
+            "expectancy_net": (report.get("net_summary") or {}).get("expectancy") if report else None,
+            "uncostable_count": (report.get("net_summary") or {}).get("uncostable_count") if report else 0,
             "max_drawdown": (report.get("summary") or {}).get("max_drawdown") if report else None,
             "recommendation": report.get("recommendation") if report else None,
             # Computed here from the R values rather than added to the performance report:
             # that report is a versioned, persisted record, and this is a reading of it.
+            #
+            # Over the NET series, so the interval and the point estimate describe the same
+            # quantity. An interval around gross R beside a net expectancy would be two
+            # statistics about two different venues printed as one verdict. Rows that cannot be
+            # priced are absent from the series rather than counted at gross —
+            # `expectancy_gross_rows` below is what says so.
             "sample_verdict": sample_verdict([
-                float(o["result_R"]) for o in own_outcomes
-                if isinstance(o.get("result_R"), (int, float))
+                net for net in (feedback.net_result_r(o) for o in own_outcomes)
+                if net is not None
             ]),
             # The same trades after fees and slippage — the figure `lifecycle` demotes on and
             # `guards` meters, which `expectancy` above is NOT: that comes from the persisted
@@ -355,6 +415,8 @@ def _net_performance(own_outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "expectancy_net_rows": priced,
         "expectancy_gross_rows": len(judged) - priced,
     }
+
+
 CONFIDENCE_Z = 1.96          # two-sided 95%
 POWER_Z = 0.84               # 80% power, the usual pairing
 
@@ -473,7 +535,14 @@ def _headline(status: dict[str, Any]) -> list[str]:
     """The two or three lines that answer "so what", before any evidence."""
     perf = status.get("performance") or {}
     closed = perf.get("closed_count") or 0
-    expectancy = perf.get("expectancy")
+    # The costed figure decides the headline, because the headline is a claim about whether this
+    # is worth real money and real money pays fees, spread and carry. Falls back to gross only
+    # when nothing could be priced — an older status document, or a history with no fills on it —
+    # so a caller that predates the net figure keeps the verdict it always got.
+    expectancy = perf.get("expectancy_net")
+    net_basis = expectancy is not None
+    if not net_basis:
+        expectancy = perf.get("expectancy")
     lines: list[str] = []
 
     if not closed:
@@ -508,6 +577,10 @@ def _headline(status: dict[str, Any]) -> list[str]:
         else:
             verdict = (f"자체 성과 {_r(expectancy)}R × {closed}건"
                        + (", 0과 구별됨" if measured else "") + " — 검토 가능")
+        # Which venue the number describes, stated on the line rather than inferred. The gross
+        # figure is the one every earlier board printed, so a reader comparing against a
+        # screenshot from last week has to be told the basis changed.
+        verdict += " (비용 차감 후)" if net_basis else " (총액, 비용 미차감)"
         lines.append(f"판단: {verdict}")
 
     costing = [row for row in _gate_rows(status) if row[0] == _GATE_COSTING]
@@ -535,6 +608,21 @@ def render_status_text(status: dict[str, Any]) -> str:
     where = (f"{position['direction']} {position['strategy_id']} @ {position['entry_price']}"
              + (f" (외 {len(positions) - 1}건)" if len(positions) > 1 else "")) if position else "포지션 없음"
     lines.append(f"지금   {where}")
+    # The book's SHAPE, under the book itself. Printed only while something is open, because a
+    # lean of 0 over an empty book is the field teaching a reader to skip the line — and this is
+    # the line that matters on the day the book is one-way.
+    # Gated on the FIELD, not on `positions`: this renderer is also handed status dicts built by
+    # an older build (and by callers that assemble one by hand), where the key is simply absent.
+    # A renderer that assumed its own newest field would crash on exactly the history an
+    # operator opens the board to read.
+    lean = status.get("directional_lean")
+    if positions and isinstance(lean, dict) and isinstance(lean.get("lean"), int):
+        mark = " ⚠ 한 방향 한도" if lean.get("at_limit") else ""
+        note = f" · 방향불명 {lean['unattributed']}" if lean.get("unattributed") else ""
+        lines.append(
+            f"       방향 롱 {lean.get('long')} / 숏 {lean.get('short')}"
+            f" · 편중 {lean['lean']:+d} (한도 ±{lean.get('limit')}){note}{mark}"
+        )
     if last:
         feeds = last.get("feeds") or {}
         ok = sum(1 for state in feeds.values() if state == "ok")
@@ -548,12 +636,34 @@ def render_status_text(status: dict[str, Any]) -> str:
     counts = status.get("pool_status_counts") or {}
     breakdown = " · ".join(f"{name} {count}" for name, count in sorted(counts.items()))
     lines.append(f"       풀 {status.get('pool_size')}" + (f" ({breakdown})" if breakdown else ""))
+    # Printed ONLY when the pool's own composition is what holds the book below the number of
+    # contexts it routes — otherwise it is a line saying nothing happened, which is the field
+    # that teaches a reader to skip the line above it. A capped book is not an error, so this
+    # reads as an explanation rather than a warning.
+    capacity = status.get("pool_directional_capacity")
+    if isinstance(capacity, dict) and capacity.get("cap_binds"):
+        lines.append(
+            f"       └ 방향 편중으로 {capacity['routable_contexts']}개 컨텍스트 중"
+            f" {capacity['reachable_book']}개까지만 보유 가능"
+            f" (롱 {capacity['long_contexts']} / 숏 {capacity['short_contexts']},"
+            f" 한도 ±{capacity['skew_cap']})"
+        )
     # Why the demoted ones are demoted. A status count alone reads a duplicate an operator
     # removed on purpose and a strategy the metrics condemned as the same number.
     demotions = status.get("demotions_by_reason") or {}
     if demotions:
         lines.append("       강등 사유 " + " · ".join(
             f"{reason} {count}" for reason, count in sorted(demotions.items())))
+    # Regime exclusions, beside the demotion reasons and for the same reason they are there: a
+    # strategy whose rules keep firing into a regime its own backtest lost money in is not
+    # trading, and its PAPER_ACTIVE status says the opposite. Rendered as a share of the cycles
+    # read so "3 of 12" and "12 of 12" are different statements — the first is the filter doing
+    # its job, the second is a strategy that has stopped working here.
+    regime_excluded = status.get("regime_excluded_cycles") or {}
+    if regime_excluded:
+        read = status.get("cycles_read") or 0
+        lines.append("       regime 배제 " + " · ".join(
+            f"{sid} {count}/{read}" for sid, count in sorted(regime_excluded.items())))
     backlog = status.get("promotion_backlog") or {}
     if backlog.get("count"):
         lines.append(f"       승격 대기 {backlog['count']} (알림 임계 {backlog.get('threshold')})")
@@ -585,12 +695,19 @@ def render_status_text(status: dict[str, Any]) -> str:
     # --- performance -------------------------------------------------------------
     perf = status.get("performance") or {}
     closed = perf.get("closed_count") or 0
-    lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 (비용 제외) · "
+    lines.append(f"성과   자체 페이퍼: {_r(perf.get('expectancy'))}R × {closed}건 (총액) · "
                  f"dd {_r(perf.get('max_drawdown'), signed=False)}R → {perf.get('recommendation')}")
     if perf.get("expectancy_net") is not None:
-        # The line above is gross and always was; this is the number that decides anything.
-        # Both, labelled, because the board used to print only the first one and it was the
-        # reason a pool of negative-expectancy strategies looked healthy for weeks.
+        # Directly under the gross line, and both labelled: the two answer the same question
+        # about different venues, the gap between them IS the reading when an edge is thin, and
+        # the board used to print only the first one — which is why a pool of negative-expectancy
+        # strategies looked healthy for weeks. This is the number that decides anything.
+        #
+        # The disclosure counts rows the cost model could not price, which contribute their
+        # stored R and therefore mix two statistics into the mean. It reads `expectancy_gross_rows`
+        # from `_net_performance` rather than the report's `uncostable_count`: same idea, but the
+        # board's own figure comes from `lifecycle.outcome_judged_r`, which is what the ladder
+        # actually demotes on, and quoting the other one would let the two drift.
         mixed = perf.get("expectancy_gross_rows") or 0
         lines.append(
             f"       비용 반영: {_r(perf.get('expectancy_net'))}R — 강등·리스크 판정이 읽는 값"

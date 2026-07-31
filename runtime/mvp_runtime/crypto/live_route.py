@@ -102,6 +102,11 @@ ROUTE_OPENED = "OPENED"        # a position was opened and bracketed
 ROUTE_INCIDENT = "INCIDENT"    # real money is in a state this runtime cannot account for
 
 # Reason codes.
+# The owner of a LEGACY position's clock — one opened before the record carried a timeframe.
+# It has to match the fan-out's own default (``cycle.run_pool_cycle``'s ``default_timeframe``),
+# because naming an owner is only safe if that context is guaranteed to run; both read this.
+DEFAULT_TIMING_CONTEXT = "1d"
+
 ROUTING_DISABLED = "LIVE_ROUTING_DISABLED"
 ROUTING_PRECONDITION = "LIVE_ROUTING_PRECONDITION_FAILED"
 ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"
@@ -115,6 +120,11 @@ LIVE_MAX_HOLD_FALLBACK = "LIVE_ROUTING_MAX_HOLD_FALLBACK"
 # The time exit was due and the close did not confirm. Not an incident — the bracket is still
 # resting at the venue, so the position is protected, just held past its strategy's window.
 LIVE_TIME_EXIT_DEFERRED = "LIVE_ROUTING_TIME_EXIT_DEFERRED"
+# This context visited an open position it is not the timing authority for, so it settled and
+# protected it (both are urgent at any resolution) and left the holding counter alone. Recorded
+# rather than silent: "the counter did not move this cycle" and "this context may not move it"
+# look identical in a record that says nothing.
+LIVE_HOLD_NOT_TIMED_HERE = "LIVE_ROUTING_HOLD_NOT_TIMED_HERE"
 
 # The leg results that mean real money is in a state this runtime cannot account for. Each one
 # is a fact about the venue, not a local error: an unprotected position that would not close, a
@@ -160,19 +170,50 @@ def select_live_gate(*, now: str, root: Path | None = None) -> tuple[Any | None,
     return adapter, None
 
 
-def live_position_symbols(root: Path | None = None) -> list[str]:
-    """Every symbol holding an open live position. A read; reaches no order path.
+def position_timing_context(position: Mapping[str, Any], *, default_timeframe: str) -> str:
+    """The timeframe whose cycle is allowed to advance this position's holding counter.
+
+    A live position is booked by **symbol** (the venue nets per symbol in one-way mode) while a
+    cycle runs per ``(symbol, timeframe)``, so a symbol routed at four timeframes sends four
+    cycles past the same position in one fan-out. `max_holding_bars` counts *bars*, and each of
+    those cycles carries a different bar — so without an owner, one fan-out advanced the counter
+    four times and a 24-bar position time-exited in six.
+
+    The owner is the position's own timeframe: the one its `max_holding_bars` was backtested
+    against. A **legacy** position that predates the field has no such number either
+    (`paper.position_max_hold` falls back to the timeframe table), so it is owned by the
+    default context — an arbitrary but *single* owner, which is the whole property needed here.
+    """
+    stored = position.get("timeframe")
+    return str(stored) if isinstance(stored, str) and stored else default_timeframe
+
+
+def live_position_contexts(
+    root: Path | None = None, *, default_timeframe: str
+) -> list[tuple[str, str]]:
+    """Every ``(symbol, timeframe)`` that must run so an open live position is fully serviced.
 
     ``cycle.pool_cycle_contexts`` needs this so a live position always gets a cycle that can
     settle it — a strategy demoted out of the routable set would otherwise leave its *real*
     position with no visitor, which is the live twin of the symbol-starved router. Exposed
     here rather than imported from ``live_position`` directly so the cycle keeps exactly one
     door into this stack.
+
+    The **timeframe** is now part of the answer, and returned even when the symbol is already
+    being visited at some other one. That is the counterpart to :func:`position_timing_context`:
+    naming an owner is only safe if the owning context is guaranteed to run, and it is exactly
+    the demoted-strategy case that would otherwise strand it — a 4h position on a symbol still
+    routed at 15m used to be visited (by a 15m cycle counting 15m bars) and would now be visited
+    by one that may not time it at all.
     """
     try:
-        return sorted({position_symbol(p) for p in list_open_live_positions(root)})
+        positions = list_open_live_positions(root)
     except MvpRuntimeError:
         return []  # a per-context cycle re-reads and records its own fail-closed reason
+    return sorted({
+        (position_symbol(p), position_timing_context(p, default_timeframe=default_timeframe))
+        for p in positions
+    })
 
 
 # --- the leg -------------------------------------------------------------------------
@@ -185,6 +226,7 @@ def run_live_leg(
     symbol: str,
     collector: Any,
     now: str,
+    timeframe: str = "",
     root: Path | None = None,
     control_store: ControlStore | None = None,
     timeout_seconds: int = 10,
@@ -196,6 +238,12 @@ def run_live_leg(
     that is the one thing this record exists to make legible.
 
     ``route`` is the paper step's own routing result, shared rather than re-evaluated.
+
+    ``timeframe`` is the calling cycle's own context, and it decides one thing only: whether
+    this cycle may advance an open position's holding counter (:func:`position_timing_context`).
+    Settling and protecting are urgent at every resolution and stay unconditional. It defaults
+    to empty so a caller that does not state a context times nothing rather than timing
+    everything — the same direction every other unknown in this stack fails.
     """
     record: dict[str, Any] = {
         "live_route_version": LIVE_ROUTE_VERSION,
@@ -223,6 +271,7 @@ def run_live_leg(
             symbol=symbol,
             collector=collector,
             now=now,
+            timeframe=timeframe,
             root=root,
             control_store=control_store,
             timeout_seconds=timeout_seconds,
@@ -255,6 +304,7 @@ def _run_gated_live_leg(
     symbol: str,
     collector: Any,
     now: str,
+    timeframe: str,
     root: Path | None,
     control_store: ControlStore | None,
     timeout_seconds: int,
@@ -299,6 +349,7 @@ def _run_gated_live_leg(
             record, position,
             adapter=adapter, position_store=position_store, ledger=ledger,
             reconciliation=reconciliation, limits=limits, candle_ts=candle_ts,
+            context_timeframe=timeframe,
             now=now, root=root, timeout_seconds=timeout_seconds,
         )
 
@@ -429,6 +480,7 @@ def _settle_or_protect(
     reconciliation: Mapping[str, Any],
     limits: Any,
     candle_ts: Any,
+    context_timeframe: str = "",
     now: str,
     root: Path | None,
     timeout_seconds: int,
@@ -463,8 +515,8 @@ def _settle_or_protect(
         _time_exit_or_hold(
             record, position,
             adapter=adapter, position_store=position_store, ledger=ledger,
-            limits=limits, candle_ts=candle_ts, now=now, root=root,
-            timeout_seconds=timeout_seconds,
+            limits=limits, candle_ts=candle_ts, context_timeframe=context_timeframe,
+            now=now, root=root, timeout_seconds=timeout_seconds,
         )
         return
 
@@ -513,6 +565,7 @@ def _time_exit_or_hold(
     ledger: Any,
     limits: Any,
     candle_ts: Any,
+    context_timeframe: str = "",
     now: str,
     root: Path | None,
     timeout_seconds: int,
@@ -525,20 +578,45 @@ def _time_exit_or_hold(
     running the strategy the evidence describes — and the direction is unfavourable, because a
     time exit mostly cuts losers, so live held them longer than the backtest ever did.
 
-    Two properties carried over from paper deliberately, because the counter is the whole rule:
+    Three properties carried over from paper deliberately, because the counter is the whole rule:
 
     * **the count advances even when nothing closes** — that is what makes time pass at all,
       and it is why the store write below is unconditional rather than only on the exit;
     * **one bar counts once**, deduped on the candle timestamp by ``paper.advance_holding``, so
-      a cycle that re-runs inside one interval cannot accelerate the exit.
+      a cycle that re-runs inside one interval cannot accelerate the exit;
+    * **one context owns the clock** — the position's own timeframe
+      (:func:`position_timing_context`). Paper gets this for free because its book is keyed by
+      ``(symbol, timeframe)``, so exactly one context can ever reach a given position. The live
+      book is keyed by symbol alone, so every timeframe a symbol routes at reaches the same
+      position with a *different* bar timestamp — four distinct keys, four increments, one
+      fan-out. That is the shape of the bug this guard closes: the dedup above was never wrong,
+      it was answering "have I counted this bar?" for a bar the position does not trade.
+
+    A non-owning context still settles and protects (above); it just leaves the clock alone and
+    says so with ``LIVE_HOLD_NOT_TIMED_HERE``.
 
     ``max_holding_bars`` comes from ``paper.position_max_hold``, the same authority paper uses,
     which falls back to the timeframe table for a **legacy** position — one opened before this
     record shape existed — and says so, so the fallback is attributable rather than silent.
     """
+    timeframe = str(position.get("timeframe") or "")
+    owner = position_timing_context(position, default_timeframe=DEFAULT_TIMING_CONTEXT)
+    if str(context_timeframe) != owner:
+        # Not this context's clock. Reported with the same shape the timing path writes, so a
+        # reader gets the counter's current value either way and can tell WHY it did not move.
+        held_now = int(position.get("holding_candles") or 0)
+        max_hold_now, legacy_now = paper.position_max_hold(position, timeframe)
+        record["live_holding"] = {
+            "symbol": position_symbol(position), "holding_candles": held_now,
+            "max_holding_bars": max_hold_now, "timeframe": timeframe or None,
+            "legacy_max_hold_fallback": legacy_now,
+            "timed_by": owner, "timed_here": False,
+        }
+        record["live_reason_codes"].append(LIVE_HOLD_NOT_TIMED_HERE)
+        return
+
     updated = dict(position)
     paper.advance_holding(updated, candle_ts)
-    timeframe = str(updated.get("timeframe") or "")
     max_hold, legacy = paper.position_max_hold(updated, timeframe)
     held = int(updated.get("holding_candles") or 0)
 
@@ -550,6 +628,7 @@ def _time_exit_or_hold(
         "symbol": position_symbol(updated), "holding_candles": held,
         "max_holding_bars": max_hold, "timeframe": timeframe or None,
         "legacy_max_hold_fallback": legacy,
+        "timed_by": owner, "timed_here": True,
     }
     if legacy:
         # Named rather than inferred from a divergent R curve later: this position is being
@@ -710,6 +789,8 @@ __all__ = [
     "AUDIT_NOT_RECORDED",
     "BOOK_DRIFT",
     "CANARY_HISTORY",
+    "DEFAULT_TIMING_CONTEXT",
+    "LIVE_HOLD_NOT_TIMED_HERE",
     "LIVE_ROUTE_VERSION",
     "ROUTE_BLOCKED",
     "ROUTE_DISABLED",
@@ -719,8 +800,9 @@ __all__ = [
     "ROUTE_SETTLED",
     "ROUTING_DISABLED",
     "ROUTING_PRECONDITION",
-    "live_position_symbols",
+    "live_position_contexts",
     "live_route_status_line",
+    "position_timing_context",
     "run_live_leg",
     "select_live_gate",
 ]

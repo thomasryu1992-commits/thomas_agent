@@ -10,11 +10,14 @@ import yaml
 
 from lib.core_release_verifier import load_yaml, sha256_file, verify_approval
 from lib.git_provenance import head_commit, require_clean_worktree, require_file_tracked_at_head
-from lib.safe_io import atomic_write_text, exclusive_lock, immutable_write_text, safe_repo_path
+from lib.safe_io import atomic_write_text, exclusive_lock, immutable_write_text, repo_lock_dir, safe_repo_path
 
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_POINTER = ROOT / "THOMAS_CORE/CURRENT_CORE_RELEASE.yaml"
-LOCK_PATH = ROOT / ".git/thomas_agent_locks/core_activation.lock"
+# The lock file's name. Its directory is resolved at use time by `repo_lock_dir`:
+# that reads the filesystem (`.git` is a directory in a clone and a FILE in a git
+# worktree), and a module-level constant would make importing this script do IO.
+LOCK_NAME = "core_activation.lock"
 VERIFIED_STATUSES = {
     "verified_by_control_channel",
     "verified_by_protected_review",
@@ -57,7 +60,7 @@ def main() -> int:
     approval_path = safe_repo_path(ROOT, args.approval, must_exist=True)
     manifest, approval = verify_approval(ROOT, manifest_path, approval_path)
 
-    with exclusive_lock(LOCK_PATH):
+    with exclusive_lock(repo_lock_dir(ROOT) / LOCK_NAME):
         require_clean_worktree(ROOT)
         require_file_tracked_at_head(ROOT, manifest_path)
         require_file_tracked_at_head(ROOT, approval_path)

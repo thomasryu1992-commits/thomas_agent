@@ -4,13 +4,43 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-30** (`main` = `c45d99b`), after **PM1 started running** — 66 confirmed
-groups, 48,754 readings, 2.82 of the 14 days required — which rewrote section A from "built, not
+Last updated: **2026-07-31** (`main` = `128ed20`), adding **section E** — deferrals that were
+measured and then deliberately left alone, so the measurement does not have to be redone by the
+next person who greps.
+
+Earlier the same day (`main` = `6c5999a`), after a QA pass over the whole build found
+three defects that a green suite and a green release gate both showed as fine, because each sat
+in a place neither looks: **the readiness board's own "authoritative" line was wrong** (#381),
+**the PM1 exit report could no longer read its own evidence** (#383), and **Core activation died
+in the worktree this repository tells you to use** (#386/#388). What they have in common is
+worth more than the fixes: none is a computation error, and all three are a *reader* — a status
+line, a report, a recovery path — disagreeing with the system it describes.
+The same pass then found two more of that shape and one correction worth reading: the parity gate
+was checking the **superseded** PermissionDecision schema and not the live one (#393); a policy
+bump had left **314 stored records unable to satisfy their own schema** (#394); and the claim that
+the bump had voided ten outstanding approvals was **wrong** and is corrected in place (#396) —
+five were never decided and five had expired on their own timers before the bump.
+Previously **2026-07-30** (`main` = `0dc36f3`), after the sheet was caught offering one market
+four partners of which three were impossible (#371) — an order-dependent trap rather than mere
+noise, because confirming an impostor first refuses the correct pairing forever.
+Earlier the same day (`main` = `c45d99b`), after **PM1 started running** — now 74 confirmed
+groups, 62,039 readings, 3.16 of the 14 days required — which rewrote section A from "built, not
 yet run" to a window with numbers in it, and closed four defects the run itself exposed: Gamma
 pagination was skipping two thirds of the head it claimed to read (#318), a touch nobody could
 trade counted as an opportunity (#321), a quoted Polymarket read returned a market missing five of
 its fields (#348), and the rule behind `is_opportunity` had changed three times under one version
 string (#350).
+Previously **2026-07-29**, after an architecture review of the crypto stack and the seven
+fixes it produced (branch `claude/auto-trading-system-review-x9p6d5`). Two changed what the
+evidence *means* and are written up in section C: the backtest now charges **funding**, and
+Gate 0's `live_candidate_eligible` now reads the paper record **net of costs** rather than
+gross. Three were defects the review found rather than performance work — a live position's
+holding clock advanced once per timeframe instead of once per bar (4x too fast on a
+four-timeframe symbol), a 429 was reported as a timeout while the fan-out kept knocking toward
+the 418 ban, and the fan-out's scarce live slots were arbitrated alphabetically. Two were pure
+cost: the fan-out asked each symbol-scoped question once instead of four times (115 venue calls
+-> 45) and the factory builds its replay frame once instead of once per spec (20.5s -> 5.5s at
+the 15m window).
 Previously the same day (`main` = `01854b3`), after the front-desk prompt started naming the
 fields its parser requires (#336) — which opened a new line in section B, because establishing
 that took the production front desk down for a quota reset — and the `NO_SIZE` gate's provenance
@@ -113,7 +143,7 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 2.8 of 14 days
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 3.7 of 14 days
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
 **PM1's code is complete and the window is open.** Three venue adapters, screening, the
@@ -121,27 +151,50 @@ deterministic matcher with operator confirmation, the fee-adjusted detector, the
 both scheduler cadences (watch and discovery), the proposal record and the exit report all live
 under `runtime/mvp_runtime/predmarket/`. PM2 and PM3 are untouched.
 
-**Measured 2026-07-30T05:35Z** (`pairs_cli report`; ask the machine rather than trusting these —
-they go stale by the hour):
+**Measured 2026-07-31T03:00Z** (ask the machine rather than trusting these — they go stale by
+the hour):
 
 ```
-verdict   INSUFFICIENT_WINDOW      window 2.8232 of 14 days required
-groups    66 confirmed, 1 retired  71 pairing(s)
-readings  48,241 / 48,754 priced   coverage 0.9895
-totals    17,093 opportunity readings, 68 episodes
-incidents MARKET_NOT_LISTED=252
+verdict   INSUFFICIENT_WINDOW      window 3.6987 of 14 days required
+readings  86,598 / 87,127 priced   coverage 0.9939   82 pairing(s)
+totals    29,598 opportunity readings, 100 episodes
+incidents MARKET_NOT_LISTED=268   (frozen — the dead group was retired, see below)
 ```
 
-Confirmed groups by venue pair: **binance×polymarket 37, kalshi×polymarket 32, binance×kalshi 2,
-all three 1.** That distribution is itself an open decision — see the Binance box below.
+Most confirmed groups pair **binance×polymarket**, with kalshi×polymarket next and a handful
+involving kalshi×binance or all three. That distribution is itself an open decision — see the
+Binance box below.
 
-**What the run has cost so far is four defects, none of which a green test suite showed.** Each was
+**What the run has cost so far is six defects, none of which a green test suite showed.** Each was
 found by reading what the deployed thing actually produced: Gamma was paginating past 400 rows it
 claimed to include (#318), a zero-depth touch counted toward frequency (#321), a quoted Polymarket
-read dropped five fields (#348), and three separate changes to what counts as an opportunity all
-shipped under `predmarket_opportunity.v0.1` (#350). The fourth is the one worth generalising: two
-of those bugs existed because a rebuild or a version had to be maintained **by hand**, so the fixes
-made the code state its own shape rather than restate it.
+read dropped five fields (#348), three separate changes to what counts as an opportunity all
+shipped under `predmarket_opportunity.v0.1` (#350), the sheet offered one market four partners
+of which three were impossible (#371), and **the exit report stopped being able to read its own
+evidence** (#383).
+
+That last one is the phase's own success turning into its failure, so it is worth stating in
+full. The store is cumulative by design — a reading already banked cannot be un-banked — and at
+day four it was **290 MB across ~87,000 rows**. `build_pm1_report` materialized all of it:
+measured, that needed **over 1.2 GB** against roughly 1 GB free on the host *also* running the
+scan that writes it, and the day-14 volume projected to ~5 GB on a 3 GB machine. The artifact the
+whole fourteen days exists to produce was on track to be unreadable before the window closed, and
+nothing would have said so until someone ran it at the end. It now streams and keeps a projection
+of each row rather than the row: **51 MB for the full store**, with output verified byte-identical
+against the old reader on a 30,000-row slice of the real data.
+
+Two things to carry from it. The same whole-file-read shape had already OOM-killed the crypto
+board once and was repaired **at that one caller** (`crypto/dashboard.py`) rather than at the
+shared primitive, which left it in place for the next store to grow into — so the fix this time
+went into `jsonl.read_objects` itself. And **the store growing is not a bug to be trimmed**: the
+window is cumulative, so the thing that had to change was the reader, never the evidence.
+
+Two threads run through them and both are worth carrying into PM2. **Anything a person has to
+keep up to date drifts** — a hand-listed field rebuild and a hand-bumped version constant were
+two of the five, and both fixes made the code state its own shape rather than restate it.
+**A guard downstream is not a guard**: #371 was proposing pairings that `pairs.py` would refuse
+anyway, which sounds harmless until you notice the refusal is first-come — confirm the impostor
+and the correct pairing is refused instead, silently and permanently.
 
 Trust the boxes below over this paragraph — a prose summary of a moving track is how the previous
 version came to say "no code exists yet" above a list of shipped modules.
@@ -174,7 +227,14 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         question). Unknown is never mismatch: a Kalshi market has no category, so a missing
         one is excluded from the decision rather than counted against it. Confirmation
         **requires a note comparing how both venues resolve the event** — the risk no text
-        comparison can see — and one market belongs to at most one pair. Every judgement,
+        comparison can see — and one market belongs to at most one **group** (`pairs.py`,
+        `MARKET_ALREADY_GROUPED`). Since #371 the *candidate list* honours that too, greedily
+        and per venue pair: proposing one market against several counterparts from the same
+        venue offers options of which at most one can ever exist, and because the refusal is
+        first-come, confirming an impostor refuses the right pairing permanently. Scoped to the
+        venue pair rather than globally, because a group spanning three venues is three pairings
+        over three legs and a global claim set keeps one — the first attempt did exactly that
+        and an existing test caught it. Every judgement,
         including near-misses, records which gate failed and by how much: that record is what
         makes decision #2's LLM-gap loop able to *fix* the rules rather than just widen them.
   - [x] Third venue **Binance prediction markets** (markets are Predict.fun's on BNB Chain) —
@@ -235,18 +295,22 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         window on Kalshi×Polymarket alone — which costs the ~3 days already banked on those 40.
         Whichever, record it here — "we tried Binance and the report was empty" is not a finding
         about prediction markets.
-  - [ ] ⚠️ **One confirmed Polymarket leg is dead and the group should probably be retired.**
-        `predmarket_event_group_b18136e1e77430110726` has produced `MARKET_NOT_LISTED` on **248
-        consecutive readings** — every scan since 2026-07-27. Checked directly against Gamma on
-        2026-07-30: the CLOB token returns **zero rows even with the `active`/`closed` filters
-        removed**, so it is not a filter artifact and not an outage; the token is gone from the
-        venue. The group can never price again, and each scan adds another unreadable row to the
-        denominator that coverage is computed from (currently 0.9895, and this group is most of the
-        shortfall). Retiring it is the established treatment — a group was retired for the
-        analogous Binance case — but it is a write to the window an operator is curating, so it is
-        recorded here rather than done. **Not to be confused with the second affected group**
-        (`...6a68084e6504`, Puffpaw FDV): that token is live, `active: true, closed: false`,
-        expiring 2027-01-01, with only 4 incidents — transient, leave it alone.
+  - [x] **A dead Polymarket leg was retired** — done 2026-07-30.
+        `predmarket_event_group_b18136e1e77430110726` had produced `MARKET_NOT_LISTED` on **248
+        consecutive readings**, every scan since 2026-07-27. Checked directly against Gamma: the
+        CLOB token returned **zero rows even with the `active`/`closed` filters removed**, so it
+        was neither a filter artifact nor an outage — the token was gone from the venue and the
+        group could never price again. Retired with that evidence in the reason, on Thomas's
+        instruction.
+        **What retiring does and does not do:** it stops further unreadable rows entering the
+        denominator; it does not remove the 248 already banked, because the window is cumulative.
+        So coverage did not jump on retirement (0.9895 → 0.9915 came from new readings) and
+        `MARKET_NOT_LISTED=268` is now a frozen historical count rather than a growing one. The
+        Binance leg of that group was readable throughout and is not implicated.
+        The second affected group (`...6a68084e6504`, Puffpaw FDV) was **left alone** on purpose:
+        its token is live, `active: true, closed: false`, expiring 2027-01-01, with only 4
+        incidents — transient, and retiring the wrong one is the mistake that note existed to
+        prevent.
   - [x] Observation store + `pm_scan` scheduler — done 2026-07-26
         (`predmarket/observations.py`, scheduler kind `pm_scan`). A watch scan reads **only
         the venues a confirmed group needs**, prices every pairing inside every group, and
@@ -293,6 +357,18 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
         later needs an external check — the sheet's mtime is the cheap one.
   - [ ] LLM-assisted widening pass on a schedule + gap lineage (decision #2's second half;
         needs the deterministic matcher above, or "missed" has no meaning).
+  - [ ] **The wording gates are blind to single-character distinctions.** Measured 2026-07-30 on
+        "2026 Balance of Power: D Senate, R House" against "… D Senate, D House": `opposing_terms`
+        and `subject_mismatch` both return `False`, and the pair scores **0.857**. The whole
+        question is carried by the tokens `d` and `r`, six tokens of shared template outvote them,
+        and `subject_mismatch`'s rarity test fails because both letters are *common* across a
+        political corpus rather than rare — the exact inversion of what that gate looks for.
+        #371 bounds the damage (one market gets one candidate per venue pair, so the impostors
+        cannot displace the correct pairing) but does not close it: **when the right counterpart
+        is absent from the sample, the best remaining pairing still wins its legs**, and only the
+        operator reading both settlement texts stands between that and a confirmation. Adding
+        `d`/`r` to the party sets is the obvious move and is *not* obviously safe — single letters
+        appear innocently — so this is written down rather than guessed at.
   - [x] Fee-adjusted opportunity detector — done 2026-07-26 (`predmarket/fees.py`,
         `opportunity.py`). Both fee models verified against the venues' own docs, which
         **corrected the roadmap**: Polymarket charges a taker fee of the same
@@ -424,6 +500,26 @@ than silently swapped: this file's recurring defect is not being wrong, it is de
 that has since moved, and the banner above already carried the correction while this paragraph
 did not.)*
 
+**Everything above defers to the board, and on 2026-07-31 the board's own most emphatic line was
+found to be wrong** (#381). Beneath the twelve computed rows it prints a dry-run of the real
+guard, which its code calls *"the authoritative answer: whatever the rows above say, this is what
+would actually happen"* — and that call omitted `allowed_symbols`, whose default is EMPTY and
+blocks every symbol. So it reported `no symbol allowlist backs this order` on **every machine,
+forever**, and told the operator to register the budget they had already registered.
+
+The money path was never affected: both write doors (`live_route`, `place_canary_order`) read the
+scope off the same budget the caps come from. Only the reader was omitted — which is the
+dangerous direction here, because on this host, with the opt-in set and routing WIRED, the line
+an operator would read before concluding *live trading is stopped* said it could not place an
+order while it could.
+
+**What that means for how this section is read:** the board is still the authority for what is
+live on a machine, and it is still the only thing that can answer a per-machine question. But
+"the board says so" was load-bearing for a line that no test could contradict — every dry-run
+assertion in the suite ran on an empty `tmp_path`, where a block is correct, so the suite could
+only have failed if the bug were fixed. A computed row is not self-verifying merely by being
+computed.
+
 **The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
 end to end for the first time turned up six defects that had been sitting in code nobody had
 executed — the documented opt-in value the gate never matched (#227), a crash between the venue
@@ -472,6 +568,39 @@ re-minting without rewriting a byte of durable history. **What a rate change can
 worth stating once** — `expectancy` re-derives exactly, but win-rate, realized reward:risk and
 the robustness verdict all need per-trade signs the store does not keep. That is why the answer
 is a gate at the door rather than a backfill.
+
+**A fourth axis landed 2026-07-29, and it invalidates the table above rather than extending it:
+the cost model now charges FUNDING.** These are perpetual futures — there is no expiry, and the
+mechanism holding the contract near spot is a payment between longs and shorts every 8 hours,
+charged on notional. The model had never charged it. `_EXIT_PARAMS` allows `max_holding_bars` up
+to 48, so a 1d spec holds 12–48 **days**: 36 to 144 settlements at the venue's 1 bp base rate,
+against a modelled ~10 bps of fees and slippage per trade. Measured on a 400-bar replay of the
+same spec with and only with the carry, the per-trade carry (0.061R) exceeded fees and slippage
+combined (0.052R) and expectancy fell 20%; on the real 1d book, whose holds are 14–39 bars rather
+than the fixture's, the ratio is larger.
+
+Two properties make this different from a rate change:
+
+- **It is directional.** A long pays and a short receives, so the factory had been ranking long
+  and short lineages on one scale when their real carry differs by twice the figure above. Fees
+  are direction-blind; carry is not.
+- **It was never missing data.** The cycle already fetches `DEFAULT_FUNDING_RECORDS` real
+  settlements per symbol for the `funding_rate`/`funding_zscore` features, so `backtest_spec`
+  charges the venue's own history over the replay window. `cost_model.funding_source` records
+  `venue_history` or `modelled_constant` per candidate, because those are different qualities of
+  evidence.
+
+**Every candidate minted before this is `OPTIMISTIC`** — including the 180 rows the table above
+calls promotable. A missing cost cannot read as a cost of zero on an instrument that charges
+every 8 hours, and the basis string says `+funding_uncharged` rather than dropping the term, so
+the listing distinguishes "older model" from "priced a perpetual as free to hold". Shorts are
+refused too, where the omission ran in their favour; that is a cost accepted deliberately,
+because a tier whose meaning depended on the spec's direction would be a property of the trade
+rather than of the cost model the tier ranks. The convergence path is unchanged: re-mint.
+
+The judgement this hands back to the operator is the same one #260 did, one axis over: the
+board's verdict on this runtime's record was already `판단 불가` at +0.08R over 60 trades with a
+95% interval of `[−0.32, +0.48]`, and the omitted carry is R-material against that interval.
 
 So the sequencing that reads honestly is: the *plumbing* is proven, the *edge* is not. Routing
 existing (it now does) does not change that — it is why the routing row is deliberately not part
@@ -1089,6 +1218,51 @@ I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety S
 implemented-and-gated capabilities as "remain disabled"). Same failure as #200's readiness-board
 prose, one document over. Fixed by splitting Safety State at the seam it was blurring: *does the
 code exist* vs *may this machine act*.
+
+---
+
+## E. Recorded deferrals — measured, decided, and deliberately not done
+
+Not gaps and not work owed. Each entry is something that *looks* like a defect to anyone who
+greps for it, was measured, and was then left alone on purpose. Written down for one reason: the
+measurement is the expensive part, and without it here the next reader repeats it and reaches the
+same answer.
+
+- [ ] **`format: date-time` is declared on 110 fields and enforced nowhere — deferred by Thomas,
+      2026-07-31, after measuring.** 54 schemas carry it (`date-time` is the only format the
+      repository uses). Neither `requirements-validation.lock` nor `requirements-runtime.txt`
+      carries a format-checking dependency, so `jsonschema`'s `FormatChecker` silently skips it.
+      Confirmed inside the running container: its checker list is `date`, `email`, `idn-email`,
+      `ipv4`, `ipv6`, `regex`, `time`, `uuid` — every format the repository does *not* use, and
+      not the one it does. **This is not a CI-only switch**:
+      `schema_cache` builds a `FormatChecker()` too, so enabling it changes what the live runtime
+      accepts, and the two requirement files state they move in lockstep.
+
+      **Measured 2026-07-31 across the live ledger and its archives, the per-machine stores,
+      `examples/`, `generated/`, `THOMAS_CORE/` and `tests/fixtures/`, two independent ways** —
+      each record validated with and without a real format checker and the results diffed, then
+      every value at a `format: date-time` path tested directly against RFC 3339:
+
+      ```
+      262,656 timestamp values      0 invalid      (2026-07-31T04:00Z)
+      268,686 timestamp values      0 invalid      (re-run ~90 minutes later)
+        3,164 schema-bound records  0 that would newly fail
+      ```
+
+      Both rows are here on purpose. PM1 is still scanning, so the denominator moves by the hour
+      and any figure written down is stale before it is read — the **zero** is the finding, and
+      it is the part that did not move.
+
+      **Zero is structural rather than lucky.** `timeutil.utc_now_iso()` is the one authority
+      (its own comment records consolidating two copies, "one of them with the `$` footgun"), it
+      builds the string with `strftime`, and `FIXED_UTC_PATTERN` in the same module pins the
+      shape. No writer in the runtime can emit a value that would fail.
+
+      So enabling it today costs a dependency in two files and buys nothing measurable, and
+      deferring costs nothing either — the cost to enable later is identical. **What reopens
+      this:** a timestamp writer that does not go through `timeutil`, or an externally-supplied
+      or model-supplied time string reaching a record. Then the 110 declarations should become a
+      defence instead of documentation, and the measurement above is the thing to re-run first.
 
 ---
 

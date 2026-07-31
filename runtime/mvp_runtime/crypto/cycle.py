@@ -42,6 +42,8 @@ from .guards import (
     run_risk_guard,
 )
 from .market_data import (
+    CROSS_SECTION_DEGRADED,
+    CROSS_SECTION_UNIVERSE,
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
     INDEX_PRICE_DEGRADED,
@@ -54,15 +56,21 @@ from .market_data import (
     REFERENCE_SYMBOL,
     TIMEFRAMES,
     MarketDataCollector,
+    PeerCandleCache,
     PerSymbolFeedCache,
-    ReferenceCandleCache,
     collect_market_data,
     degraded_market_data_record,
 )
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
-from .live_route import ROUTE_DISABLED, live_position_symbols, live_route_status_line, run_live_leg
+from .live_route import (
+    DEFAULT_TIMING_CONTEXT,
+    ROUTE_DISABLED,
+    live_position_contexts,
+    live_route_status_line,
+    run_live_leg,
+)
 from .paper import (
     ENTRY_COST_UNECONOMIC,
     PaperStore,
@@ -284,7 +292,7 @@ def attach_reference(
     failed fetch leaves the key ABSENT, so every ``ref_*`` column is indeterminate and a
     relative-strength spec does not trade this cycle. Returns a reason code on degrade.
 
-    ``cache`` is a :class:`~.market_data.ReferenceCandleCache` for one fan-out. Without it
+    ``cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out. Without it
     every context fetches the proxy again, and since the proxy is a constant that is sixteen
     reads for four distinct series across a 5×4 fan-out — the redundancy
     :class:`~.market_data.PerSymbolFeedCache` exists to stop, arriving by another door.
@@ -313,6 +321,102 @@ def attach_reference(
     return None
 
 
+def attach_cross_section(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    limit: int | None = None,
+    cache: Any | None = None,
+) -> str | None:
+    """Fetch the cohort's candles onto ``snapshot`` (mutating it). Degrade-only.
+
+    The peers of :data:`~.market_data.CROSS_SECTION_UNIVERSE` minus the traded symbol, each at
+    THIS frame's own timeframe so the features can join them on bar open time. The traded
+    symbol needs no fetch — its own momentum is already in the row, and it is the thing being
+    ranked.
+
+    **Degradation is per peer, not all-or-nothing**, which is the one place this differs in
+    posture from :func:`attach_reference`. There, one series either arrived or the whole leg
+    was indeterminate; here five peers arriving out of six is a perfectly usable cohort, and
+    refusing to rank because the sixth timed out would throw away a measurement the runtime
+    has. So a failed peer is simply absent from the cohort, ``features.xs_members`` records
+    how many answered, and :data:`~.features.MIN_CROSS_SECTION_MEMBERS` is the floor below
+    which no rank is reported at all. The reason code fires when **any** peer failed, so a
+    thinned cohort is visible in the record rather than only in a column nobody reads.
+
+    Never raises, for the :func:`attach_htf` reason. With no peer answering, the key stays
+    ABSENT, every ``xs_*`` column is None, and an ``xs_*`` spec does not trade this cycle.
+
+    ``cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out, and here it is
+    doing considerably more work than for the reference leg: six members × four timeframes ×
+    five contexts is 120 asks for 24 answers. Without one this leg would be the largest source
+    of redundant vendor reads in the runtime.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    timeframe = str(snapshot.get("timeframe") or "")
+    if not symbol or timeframe not in TIMEFRAMES:
+        return None
+    peers = [member for member in CROSS_SECTION_UNIVERSE if member != symbol]
+    if not peers:
+        return None
+    # The SAME default as `attach_reference`, and that is load-bearing rather than tidy: both
+    # legs read peer candles through one cache keyed on (symbol, timeframe, depth), so a
+    # different default here would make the proxy's series a cache MISS between the two legs —
+    # two reads of one answer, which is the redundancy the cache exists to remove. The deepest
+    # consumer is the dispersion reference (XS_DISPERSION_WINDOW bars), and 240 covers it with
+    # the same room to spare the reference correlation gets.
+    want = limit if limit is not None else 240
+    collected: dict[str, list[dict[str, Any]]] = {}
+    degraded = False
+    for peer in peers:
+        try:
+            if cache is not None:
+                candles = cache.candles(timeframe, limit=want, now=now, symbol=peer)
+            else:
+                peer_snapshot, _ = collect_market_data(
+                    peer, timeframe, collector=collector, now=now, limit=want
+                )
+                candles = peer_snapshot.get("candles") or []
+        except (ToolError, ToolBlocked):
+            degraded = True
+            continue
+        if candles:
+            collected[peer] = list(candles)
+        else:
+            degraded = True
+    if collected:
+        snapshot["peer_candles"] = collected
+        snapshot["cross_section_universe"] = list(CROSS_SECTION_UNIVERSE)
+    return CROSS_SECTION_DEGRADED if degraded else None
+
+
+def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) -> None:
+    """Put the accumulated positioning readings on ``snapshot`` (mutating it). Never raises.
+
+    A LOCAL read, unlike every other attach in this module: the rows come from the store this
+    runtime has been filling since `positioning_store` shipped, not from a vendor. So there is no
+    request, no grant, and no degrade code — `positioning_store.read_rows` answers with less
+    rather than refusing (damaged lines are skipped), which is the posture that module chose for
+    exactly this consumer.
+
+    Reads only THIS symbol's rows. The store holds every traded symbol, and a frame enriched with
+    another symbol's positioning would be silently wrong rather than empty.
+
+    No rows (the ordinary case until coverage accumulates) leaves the key ABSENT, so every
+    ``positioning_*`` column is None and a spec reading one does not trade — which is why
+    :data:`~.factory.POSITIONING_FAMILIES` are not minted until
+    :func:`positioning_store.coverage_summary` says the window is covered. Attaching is safe
+    before that; MINTING against it is not.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    if not symbol:
+        return
+    rows = positioning_store.read_rows(root, symbol=symbol)
+    if rows:
+        snapshot["positioning"] = rows
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -325,7 +429,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
-    reference_cache: Any | None = None,
+    candle_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -368,10 +472,25 @@ def run_crypto_cycle(
     # 1d) cross-asset context — the market proxy rel_strength_* specs measure against.
     # Degrade-only, and a no-op when this cycle's symbol IS the proxy.
     reference_reason = attach_reference(
-        snapshot, collector=collector, now=now, cache=reference_cache
+        snapshot, collector=collector, now=now, cache=candle_cache
     )
     if reference_reason:
         reason_codes.append(reference_reason)
+
+    # 1e) cross-sectional context — the cohort xs_* specs rank this symbol within. Degrade-only
+    # and PER PEER: five of six members arriving is a usable cohort, so the leg thins rather
+    # than failing. Same cache as the reference leg above, because both read other symbols'
+    # candles and the answers do not depend on which leg asked.
+    cross_section_reason = attach_cross_section(
+        snapshot, collector=collector, now=now, cache=candle_cache
+    )
+    if cross_section_reason:
+        reason_codes.append(cross_section_reason)
+
+    # 1f) positioning — the store's own accumulated readings. A local read, so no request and no
+    # degrade code. The ROUTER must see the same columns the backtest scored, which is the whole
+    # reason this is here and not only on the factory path.
+    attach_positioning(snapshot, root=root)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -471,8 +590,38 @@ def run_crypto_cycle(
     if cost_refused:
         block_reasons.append(ENTRY_COST_UNECONOMIC)
     blocked_plan = None
-    if (not bool(verdict.get("allow_new_position")) or cost_refused) and paper_summary.get("opened") is None:
-        blocked_plan = build_entry_plan(shared_route, feature_row, now=now) if shared_route else None
+    # The ``opened is None`` clause is **redundant by construction and kept deliberately**: a
+    # cycle that opened had an allowing verdict (so the first branch is false) and no refusal (so
+    # the second is), which is why removing it alone changes no behaviour and no test. It is here
+    # because the invariant it states — a trade that HAPPENED is never also shadowed, or it would
+    # be double-counted into every per-reason bucket — is the property a future third branch
+    # would break silently. Do not "simplify" the inner guards on the strength of this one.
+    if shared_route and paper_summary.get("opened") is None:
+        # A cost refusal joins the guard block rather than forming a third branch: both are
+        # "the router had a candidate and something upstream of the caps refused it", and
+        # `block_reasons` already carries ENTRY_COST_UNECONOMIC from above. It also keeps the
+        # branches mutually exclusive — `run_paper_update` refuses on cost BEFORE it reaches
+        # the position caps, so a cost-refused cycle can never also carry `open_refused`.
+        if not bool(verdict.get("allow_new_position")) or cost_refused:
+            blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+        else:
+            # A POSITION CAP refused a plan the router had already built — the portfolio count,
+            # the per-symbol count, or the directional lean. Shadowed for the same reason a
+            # guard block is: a refusal nobody can price is a refusal nobody can tune. These
+            # three have existed without that, so "what did the caps cost" has only ever been
+            # answerable by simulation — including in the PR that added the directional one,
+            # whose benefit numbers came from mock candles rather than from this machine.
+            #
+            # Mutually exclusive with the branch above by construction: `run_paper_update` only
+            # reaches its cap checks when the verdict allows a new position, so a refusal cannot
+            # coexist with a guard block. And `open_refused` is set only INSIDE the freshness
+            # gate, so this opens one shadow per refused candle rather than one per tick — the
+            # guard-blocked branch above has no such property, because a tripped breaker
+            # persists across every tick of a coarse timeframe.
+            refusal = paper_summary.get("open_refused")
+            if refusal:
+                blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
+                block_reasons = [str(refusal["reason_code"])]
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
@@ -502,6 +651,10 @@ def run_crypto_cycle(
         symbol=symbol,
         collector=collector,
         now=now,
+        # This cycle's own context. Only the timeframe a position was opened at may advance its
+        # holding counter — every other one still settles and protects it. See
+        # `live_route.position_timing_context`.
+        timeframe=timeframe,
         root=root,
         control_store=control_store,
     )
@@ -509,8 +662,15 @@ def run_crypto_cycle(
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
+    # Handed the history this cycle already read and verified at step 3, rather than paying for
+    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
+    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
+    # and the except below records it — a report over a history nobody could verify is exactly
+    # what must not be produced.
     try:
-        report, report_text = feedback.run_paper_performance_report(now=now, root=root)
+        report, report_text = feedback.run_paper_performance_report(
+            now=now, root=root, outcomes=outcomes,
+        )
     except ToolError as exc:
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"
         if exc.reason_code not in reason_codes:
@@ -560,9 +720,25 @@ def run_crypto_cycle(
         # the 24KB record the lifecycle trim above was worth doing for.
         "risk_limits": verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
+        # Which strategies fired and were declined by the regime filter. The ids rather than the
+        # whole route, because this record is deliberately trimmed (the lifecycle note below is
+        # the same discipline) — but not merely a count, because "which one" is the actionable
+        # part: a strategy excluded on every cycle for a week is a demotion candidate, and a
+        # count cannot say that. Empty on almost every cycle, which is why it is a list and not
+        # a status.
+        "regime_excluded": list(
+            (paper_summary.get("route") or {}).get("regime_excluded_strategy_ids") or []
+        ),
         "settled": paper_summary.get("settled"),
         "opened": paper_summary.get("opened"),
         "open_skipped": paper_summary.get("open_skipped"),
+        # A cap declined a plan the router had already built. Previously this reached the ledger
+        # only inside `paper_records`' event stream and never the status line, so the two count
+        # caps have been invisible to anyone reading a fire's output — which was tolerable while
+        # they only fired at 20 positions, and is not now that a THIRD cap reads the book's
+        # directional shape and can decline a half-full book. Same argument as
+        # `regime_excluded`: a refusal an operator cannot see is a refusal they cannot act on.
+        "open_refused": paper_summary.get("open_refused"),
         "paper_records": paper_records,
         # The live leg, reported distinctly from paper on purpose: a ledger where the two are
         # indistinguishable is one where nobody can answer "did this system trade real money
@@ -594,7 +770,7 @@ def run_crypto_cycle(
 
 
 def pool_cycle_contexts(
-    root: Path | None = None, *, default_timeframe: str = "1d"
+    root: Path | None = None, *, default_timeframe: str = DEFAULT_TIMING_CONTEXT
 ) -> list[tuple[str, str]]:
     """Every ``(symbol, timeframe)`` one pool pass must visit, sorted.
 
@@ -606,32 +782,61 @@ def pool_cycle_contexts(
     - the contexts of every currently OPEN paper position — so a position whose
       strategy has since been demoted out of the routable set is still visited by
       its own symbol's cycle and can settle, never stranded; and
-    - the symbol of every open **live** position (LP5.3). Same rule, higher stakes:
-      a live position whose strategy has been demoted would otherwise have no cycle
-      that could settle it, and it holds real money. Live positions are keyed by
-      symbol alone, so one is paired with ``default_timeframe`` when the symbol is
-      not already being visited — the timeframe governs which candles are collected
-      and which strategies route, neither of which the settlement reads.
+    - the ``(symbol, timeframe)`` of every open **live** position (LP5.3). Same rule,
+      higher stakes: a live position whose strategy has been demoted would otherwise
+      have no cycle that could settle it, and it holds real money.
+
+      The timeframe here is the position's **own** — the one its ``max_holding_bars``
+      was backtested against — and it is added even when the symbol is already being
+      visited at some other one. That is the counterpart to
+      ``live_route.position_timing_context``: only the owning context may advance a
+      position's holding counter, so the owning context has to be guaranteed to run.
+      This used to pair the symbol with ``default_timeframe`` and only when it was
+      otherwise unvisited, which meant a 4h position on a symbol still routed at 15m
+      was serviced by a cycle counting 15m bars.
 
     A tampered/unreadable pool or position book contributes nothing rather than
     raising: each per-context cycle re-reads and records its own fail-closed reason,
     so one corrupt book cannot starve the rest. An empty union is returned as-is;
-    the caller decides the fallback."""
+    the caller decides the fallback.
+
+    **Order is part of the answer, not presentation.** The fan-out runs sequentially and its
+    scarce resources are consumed in order — two live slots, twenty paper ones — and a live
+    incident stops it outright, leaving the remaining contexts unvisited. Sorting alphabetically
+    made both of those alphabetical. The order is now, in tiers:
+
+    1. contexts holding an open **live** position — real money, and settling or protecting it is
+       the most urgent thing a fire does. First also means a halt cannot strand them;
+    2. contexts holding an open **paper** position, for the same reason at lower stakes;
+    3. everything else by the best ``champion_score`` routable there, descending — the evidence
+       the pool was promoted on, standing in for an arbitration the fan-out cannot do without a
+       second pass (see :func:`pool.context_scores`);
+    4. ``(symbol, timeframe)`` as the tiebreak, so the order stays deterministic."""
     contexts: set[tuple[str, str]] = set()
+    scores: dict[tuple[str, str], float] = {}
     try:
-        contexts.update(pool.routable_contexts(pool.load_active_pool(root)))
+        active = pool.load_active_pool(root)
+        scores = pool.context_scores(active)
+        contexts.update(scores)
     except MvpRuntimeError:
         pass  # per-context cycles below still re-read and record the pool's state
+
+    holding_paper: set[tuple[str, str]] = set()
     try:
         for context, _position in list_open_positions(root):
-            contexts.add((context.symbol, context.timeframe))
+            holding_paper.add((context.symbol, context.timeframe))
     except MvpRuntimeError:
         pass
-    visited = {symbol for symbol, _timeframe in contexts}
-    for symbol in live_position_symbols(root):
-        if symbol not in visited:
-            contexts.add((symbol, default_timeframe))
-    return sorted(contexts)
+    contexts.update(holding_paper)
+
+    holding_live = set(live_position_contexts(root, default_timeframe=default_timeframe))
+    contexts.update(holding_live)
+
+    def rank(context: tuple[str, str]) -> tuple[int, float, str, str]:
+        tier = 0 if context in holding_live else (1 if context in holding_paper else 2)
+        return (tier, -scores.get(context, 0.0), context[0], context[1])
+
+    return sorted(contexts, key=rank)
 
 
 def run_pool_cycle(
@@ -640,7 +845,7 @@ def run_pool_cycle(
     store: PaperStore,
     now: str,
     default_symbol: str = "BTCUSDT",
-    default_timeframe: str = "1d",
+    default_timeframe: str = DEFAULT_TIMING_CONTEXT,
     limit: int = 120,
     root: Path | None = None,
     control_store: ControlStore | None = None,
@@ -683,11 +888,15 @@ def run_pool_cycle(
     # for THIS fan-out only, so it cannot serve a stale day to a later fire.
     if liquidation_feed is not None:
         liquidation_feed = PerSymbolFeedCache(liquidation_feed)
-    # The reference leg has the same shape of redundancy: the proxy symbol is a CONSTANT, so
-    # across this fan-out the only distinct reads are one per timeframe, while
-    # `attach_reference` runs once per (symbol, timeframe) — sixteen asks for four answers on a
-    # 5x4 grid. Same lifetime rule as above: one fan-out, then discarded.
-    reference_cache = ReferenceCandleCache(collector)
+    # The context legs have the same shape of redundancy, by another door: they read OTHER
+    # symbols' candles, and which symbol is asking cannot change the answer within one fire.
+    # The reference leg reads a CONSTANT proxy, so its only distinct reads are one per
+    # timeframe while `attach_reference` runs once per (symbol, timeframe) — sixteen asks for
+    # four answers on a 5x4 grid. The cross-sectional leg is that multiplied: six cohort
+    # members × four timeframes × five contexts is 120 asks for 24 answers. ONE cache serves
+    # both, because a cached candle read has no opinion about which leg wanted it. Same
+    # lifetime rule as above: one fan-out, then discarded.
+    candle_cache = PeerCandleCache(collector)
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -702,7 +911,7 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks, reference_cache=reference_cache,
+                routing_marks=routing_marks, candle_cache=candle_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -745,6 +954,26 @@ def cycle_status_line(record: dict[str, Any]) -> str:
         parts.append(f"opened={record['opened']['direction']}:{record['opened'].get('strategy_id')}")
     if record.get("open_skipped"):
         parts.append(f"held={record['open_skipped']['reason_code']}")
+    # A built plan a cap declined. The directional one carries the numbers because they are the
+    # actionable part — "the book leans 5 long against the limit of 4" tells an operator the
+    # book's shape, where a bare reason code would only say a trade did not happen.
+    refused = record.get("open_refused")
+    if refused:
+        detail = f"refused={refused['reason_code']}"
+        if refused["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW":
+            detail += (
+                f"({refused['direction']} {refused['aligned']}v{refused['opposing']}"
+                f" lean={refused['lean_after']}>{refused['limit']})"
+            )
+        parts.append(detail)
+    # A route that entered nothing because every match was regime-excluded otherwise reads
+    # exactly like one where nothing matched, and those want different responses: the first says
+    # a strategy fired in a regime its own backtest lost money in, the second says the market did
+    # not offer a setup. Printed only when it happened, for the reason the live leg is — a field
+    # that is empty on almost every line teaches the reader to skip it.
+    excluded = record.get("regime_excluded") or []
+    if excluded:
+        parts.append(f"regime_excluded={','.join(str(s) for s in excluded)}")
     # Only when the live leg actually did something. A DISABLED leg is every machine that has
     # not been through the operator checklist, and printing it on every line would train the
     # reader to skip exactly the field that matters on the machine where it is not DISABLED.
@@ -777,6 +1006,8 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "attach_cross_section",
+    "attach_positioning",
     "cycle_status_line",
     "pool_cycle_contexts",
     "pool_cycle_status_line",

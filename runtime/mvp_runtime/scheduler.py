@@ -31,6 +31,7 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -92,8 +93,16 @@ KIND_PM_SCAN = "pm_scan"
 PM_SCAN_WATCH = "watch"
 PM_SCAN_DISCOVERY = "discovery"
 PM_SCAN_MODES = frozenset({PM_SCAN_WATCH, PM_SCAN_DISCOVERY})
+# The C4 breaker's transition watch. Distinct from KIND_REPORT rather than folded into it
+# because the two answer different questions: the report renders the current LEVEL every day,
+# this fires on the EDGE. "Is it blocked right now" is one line in a daily digest; "it released
+# at 04:00 on Monday" is the fact an operator is actually waiting for, and a level reported
+# daily buries the day it flipped among the days it did not. It speaks only on a change, so a
+# quiet run is the normal run — see `crypto/breaker_watch.py`.
+KIND_BREAKER_WATCH = "crypto_breaker_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
-                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN})
+                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN,
+                   KIND_BREAKER_WATCH})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -105,7 +114,28 @@ MIN_INTERVAL_SECONDS = 60
 # a parent). Children are backtested on their own evidence, refused when they
 # close no trades, and de-duplicated by rule hash — so the steady-state output is
 # small and re-fusing the same top parents is a no-op, not a pile-up.
-FACTORY_FUSION_PAIRS = 2
+#
+# Raised 2 -> 4 on 2026-07-31, on the store's own record. Across the 594 candidates
+# carrying a derivation, crossover beat the seeded rotation on every measure that
+# gates promotion:
+#
+#   seeded_template  n=440  median expectancy -0.133  p90 +0.136  ROBUST  24 (5.5%)
+#   crossover        n=154  median expectancy -0.042  p90 +0.268  ROBUST  21 (13.6%)
+#
+# and the highest-expectancy lineages in the store are all fusions of a price family
+# with a feed family (`htf_pullback_long+oi_squeeze_long` +2.71R,
+# `bollinger_breakout+oi_squeeze_long` +1.15R). Read with the bias stated: parents come
+# from `rank_fusion_parents`, i.e. the top-scoring lineages, so a child starts from
+# better rules than a fresh seed does. That is a reason the mechanism works, not a
+# reason the comparison is fake — children are scored on their own backtest and inherit
+# no parent evidence.
+#
+# 4 rather than higher because a batch is `DEFAULT_BATCH_SIZE` seeded specs and this many
+# fused ones, so 4 makes the fire half-crossover; past that the seeded rotation — the only
+# path by which a NEWLY ADDED family ever enters the store — starts losing its share of
+# each fire. Supply is not the binding constraint: `FUSION_PARENT_POOL` is 6 per bucket,
+# so `combinations` offers 15 distinct pairs per bucket before a second bucket is touched.
+FACTORY_FUSION_PAIRS = 4
 
 # The one timestamp form `next_run_at <= now` is a correct time comparison for —
 # single authority in timeutil (anchor rationale documented there).
@@ -555,6 +585,32 @@ def _execute(
             return pm_proposals.proposal_status_line(record, new_count=fresh)
         scan = pm_observations.run_watch_scan(now=now, root=repo_root)
         return pm_observations.scan_status_line(scan)
+    if schedule.kind == KIND_BREAKER_WATCH:
+        # Read the C4 breaker the way the cycle reads it and speak only when the verdict
+        # changed. Same delivery posture as KIND_REPORT below — channel selected at fire time,
+        # transport failure reported never raised — with one addition: an undelivered
+        # announcement does NOT persist its marker, so the next fire retries it instead of
+        # going quiet about a transition nobody was told about.
+        from . import operator as operator_mod
+        from .crypto import breaker_watch
+
+        try:
+            result = breaker_watch.run_breaker_watch(repo_root, now=now, persist=False)
+        except MvpRuntimeError as exc:
+            # An unusable risk-limits record is exactly the state the cycle refuses entries in,
+            # so it is reported rather than swallowed into a comfortable "unchanged".
+            return f"breaker_watch_unavailable:{exc.reason_code}"
+        if not result["changed"]:
+            return breaker_watch.status_line(result)
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"breaker_changed_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"breaker_changed_not_sent:{type(exc).__name__}"
+        breaker_watch.write_mark(result["state"], root=repo_root)
+        return breaker_watch.status_line(result)
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the
@@ -592,13 +648,20 @@ def _execute(
             run_crypto_cycle,
             run_pool_cycle,
         )
-        from .crypto.market_data import select_liquidation_feed, select_market_data_collector
+        from .crypto.market_data import (
+            PerRunFeedCache,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
         from .crypto.paper import select_paper_store
         from .crypto.routing_marks import RoutingMarkStore
 
-        collector = select_market_data_collector(now=now, root=repo_root)
+        # Wrapped for the length of THIS fire only. A fan-out asks the venue the same
+        # symbol-scoped questions once per timeframe; the memo makes one cadence cost one
+        # request without making any cycle read older data. Dropped when the fire ends.
+        collector = PerRunFeedCache(select_market_data_collector(now=now, root=repo_root))
         store = select_paper_store(now=now, root=repo_root)
-        liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+        liquidation_feed = PerRunFeedCache(select_liquidation_feed(now=now, root=repo_root))
         # Freshness marks — local per-machine bookkeeping (no gate of its own): a new
         # entry is evaluated at most once per closed candle per context, so one 15-min
         # fan-out schedule covers 15m/1h/4h/1d without re-entering coarse timeframes
@@ -635,7 +698,14 @@ def _execute(
         # data would be evidence-free noise.
         from .crypto import market_data
         from .crypto import pool as crypto_pool
-        from .crypto.cycle import attach_feeds, attach_htf, attach_reference
+        from .crypto import positioning_store
+        from .crypto.cycle import (
+            attach_cross_section,
+            attach_feeds,
+            attach_htf,
+            attach_positioning,
+            attach_reference,
+        )
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
@@ -675,12 +745,32 @@ def _execute(
         # the frame being mined, so the same depth.
         attach_reference(snapshot, collector=collector, now=now,
                          limit=factory_candle_target(timeframe))
+        # And once more for the cross-sectional leg, at the same depth and for the same
+        # reason. This is the most expensive of the four: the cohort is five peers at the
+        # replay span, so it pages roughly five times what the frame itself did. Paid on the
+        # factory's own schedule rather than the 15-minute one, and the alternative is
+        # scoring xs_* families over a frame where every rank is None — which does not
+        # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
+        attach_cross_section(snapshot, collector=collector, now=now,
+                             limit=factory_candle_target(timeframe))
+        # Positioning: a LOCAL read of what this runtime has accumulated — no request, no grant.
+        # Attached unconditionally because the columns are honest at any coverage (absent = None);
+        # the eligibility measured below is what decides whether a family may be MINTED against
+        # them, which is a different question and the one that can go wrong silently.
+        attach_positioning(snapshot, root=repo_root)
+        # The store's own answer to "can you cover the window the factory replays". Read here
+        # rather than inside the factory because `run_factory` is pure. A store that cannot be
+        # read at all reports not-eligible, which is the safe direction: no data, no family.
+        positioning_eligible = bool(positioning_store.coverage_summary(
+            repo_root, symbols=[symbol],
+        )["eligible"])
         result = run_factory(
             snapshot,
             active_pool=crypto_pool.load_active_pool(repo_root),
             existing_candidates=crypto_pool.read_candidates(repo_root),
             now=now,
             fusion_pairs=FACTORY_FUSION_PAIRS,
+            positioning_eligible=positioning_eligible,
         )
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:
@@ -708,7 +798,7 @@ def _execute(
         # the backlog cap is a courtesy throttle, not a safety gate.
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.read_records() if ledger is not None else [], installed, now=now,
+                ledger.iter_records() if ledger is not None else [], installed, now=now,
             )
         except MvpRuntimeError:
             backlog = 0
@@ -752,8 +842,14 @@ def _execute(
         from .providers import select_validator_provider
 
         try:
-            cycle_rows = [r for r in (ledger.read_records() if ledger is not None else [])
-                          if r.get("kind") == "crypto_cycle"][-40:]
+            # A bounded window over a stream, not a filtered copy of the whole ledger.
+            # This is the shape `crypto/dashboard.py` was rewritten into after materializing
+            # this same file OOM-killed the board; it needs 40 rows and the ledger is ~23 MB.
+            window: deque[dict[str, Any]] = deque(maxlen=40)
+            for row in (ledger.iter_records() if ledger is not None else []):
+                if row.get("kind") == "crypto_cycle":
+                    window.append(row)
+            cycle_rows = list(window)
         except MvpRuntimeError:
             cycle_rows = []  # a malformed ledger degrades the inventory, never the fire
         try:

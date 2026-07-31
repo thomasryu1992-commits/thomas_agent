@@ -17,17 +17,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
-from .cost import DEFAULT_MAKER_FEE_BPS, DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_BPS
+from .cost import (
+    DEFAULT_FUNDING_BPS_PER_INTERVAL,
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
+    FUNDING_SOURCE_UNCHARGED,
+    FUNDING_SOURCE_VENUE,
+)
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import HOLDOUT_CONFIRMED, ROBUST, classify_verdict, verdict_rank
-from .strategy import SpecParseError, StrategySpec, load_strategy_pool
+from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
@@ -143,6 +150,12 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
     candidate scored before the maker take-profit exit (2026-07-28) keeps the exact basis
     string it has always reported, so the split in the store stays legible as two bases rather
     than every old candidate silently acquiring a third term it was never scored under.
+
+    The funding term follows the same rule and is the sharper case: a record with no
+    ``funding_source`` was scored on a PERPETUAL with no carry at all, and the string says
+    ``+funding_uncharged`` rather than omitting it. An omitted term reads as "this basis has
+    one fewer axis"; a named one reads as "this basis is missing the cost that dominates a
+    multi-week hold", which is what it is.
     """
     summary = (record.get("backtest_evidence") or {}).get("cost_summary") or {}
     model = summary.get("cost_model") or {}
@@ -151,7 +164,13 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps"
+    funding = model.get("funding_bps_per_interval")
+    if isinstance(funding, (int, float)) and not isinstance(funding, bool):
+        source = model.get("funding_source") or FUNDING_SOURCE_VENUE
+        funding_term = f"+funding_{funding}bps/8h({source})"
+    else:
+        funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -164,6 +183,8 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
+        "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
 
 
@@ -198,15 +219,31 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
     taker, slip = model.get("taker_fee_bps"), model.get("slippage_bps")
     if not _is_number(taker) or not _is_number(slip):
         return COST_BASIS_RANK_UNRECORDED
+    funding = model.get("funding_bps_per_interval")
+    if not _is_number(funding):
+        # No carry charged at all, on a PERPETUAL. Unlike the maker case below there is no
+        # "what it actually paid" to fall back on — the model simply had no such axis, and a
+        # missing cost cannot be read as a cost of zero on an instrument that charges every 8
+        # hours. `_EXIT_PARAMS` allows a 1d spec to hold 12-48 days, so what is missing is 36
+        # to 144 settlements: several times the fee legs this basis does record.
+        #
+        # OPTIMISTIC rather than UNRECORDED, and the distinction is the honest one. The
+        # direction IS knowable here for the case that matters: the venue's base rate is
+        # positive and the historical mean is positive, so an omitted carry overstates every
+        # LONG lineage. It understates shorts, and refusing those too is a cost accepted with
+        # open eyes — the alternative is a tier whose meaning depends on the spec's direction,
+        # which is a property of the trade and not of the cost model this function ranks.
+        return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
-    if taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS and slip == DEFAULT_SLIPPAGE_BPS:
+    if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
+            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS):
+            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 
@@ -613,6 +650,159 @@ def assert_no_semantic_duplicates(
     )
 
 
+# --- pool sizing -------------------------------------------------------------------
+#
+# The caps the promotion door enforces, and why these numbers.
+#
+# The duplicate guard above already states the mechanism for its own case: *the router
+# picks ONE strategy per context*, so a surplus entry takes a slot and then never trades.
+# That is not special to duplicates. Measured 2026-07-30, with 67 routable strategies over
+# 20 contexts: 86 own outcomes had scattered across 29 lineages, the largest holding 13.
+# The lifecycle's cheapest rule needs a FULL rolling window of 20 before it evaluates at
+# all (`lifecycle._full_window`), so **not one strategy in the pool was eligible for any
+# demotion rule**, and `run_lifecycle` returned PAPER_ACTIVE for all 67 with empty reasons.
+# Auto-demotion was not mis-tuned; it was unreachable. A -13.25R family sat in the pool for
+# a week because nothing could ever accumulate the evidence to demote it.
+#
+# So the pool is capped on the ROUTABLE set, not on membership: a SUSPENDED entry neither
+# routes nor splits the evidence, and after a retirement the pool file legitimately holds
+# far more rows than these numbers (89 rows, 5 routable, the day this landed).
+#
+# MAX_ROUTABLE_PER_CONTEXT = 1 because the router's own behaviour makes a second entry
+# strictly negative: it cannot add routing capacity (`route_entries` returns `ranked[0]`),
+# it wins the slot on `champion_score` — which on this machine was ANTI-correlated with
+# realized R, the top scorers having never traded — it halves the rate at which either
+# lineage reaches a judgeable window, and if the two disagree on direction the context
+# fails closed on BLOCK_DIRECTION_CONFLICT and neither trades.
+#
+# MAX_ROUTABLE_STRATEGIES = 20 is one per context on today's 5-symbol x 4-timeframe grid.
+# It is not implied by the per-context cap: it is what still binds when the symbol set
+# grows, so widening coverage becomes a deliberate change to this number rather than a
+# silent return to a pool nothing can judge.
+#
+# What these caps deliberately do NOT fix: a 1d lineage produced 0.16 outcomes/day per
+# context, so even at an exclusive slot it needs ~122 days to fill a 20-trade window (1h
+# needs ~29, 4h ~33, 15m ~10). That is a property of the timeframe, not of the pool size,
+# and no cap here can reach it — a 1d strategy is un-demotable by arithmetic. Naming it
+# here so the next reader does not mistake this guard for a complete answer.
+MAX_ROUTABLE_STRATEGIES = 20
+MAX_ROUTABLE_PER_CONTEXT = 1
+
+
+def routable_context_map(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[str]]:
+    """``(symbol, timeframe)`` → the routable strategy ids competing for that slot.
+
+    A multi-symbol strategy occupies each of its symbols, matching what
+    :func:`routable_contexts` enumerates and what ``paper.route_entries`` actually judges.
+    Non-occupying or spec-less entries contribute nothing."""
+    contexts: dict[tuple[str, str], list[str]] = {}
+    for entry in entries:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        for scoped_symbol in spec.symbol_scope:
+            contexts.setdefault((str(scoped_symbol), str(spec.timeframe)), []).append(
+                str(entry.get("strategy_id"))
+            )
+    return contexts
+
+
+def routable_directional_capacity(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """How large a book this pool can actually fill under ``paper.MAX_DIRECTIONAL_SKEW``.
+
+    **Reported, never refused, and that boundary is the point.** The directional cap is
+    one-directional — it can only decline — so a lopsided pool trades *less*, which is safe
+    but under-utilised. Turning that into a promotion refusal would add a new blocking
+    authority over the operator's pool for a non-safety concern, and it would make an
+    incremental build impossible: promoting five longs before any short is a perfectly
+    ordinary way to assemble a pool, and a refusal would forbid every order but alternating.
+    So this states the consequence and leaves the judgement where it belongs.
+
+    **Why it is needed at all is an interaction, not a standalone idea.** With
+    :data:`MAX_ROUTABLE_PER_CONTEXT` at 1, every context holds exactly one strategy and a
+    spec's ``direction`` is fixed at promotion time — so *which directions the book can ever
+    hold is now a property of the pool*, where it used to be a property of the template
+    library (which is balanced 16/16). A pool of twenty long strategies can fill four of its
+    twenty slots and no more, and nothing in either cap says so on its own.
+
+    The arithmetic is the cap's own, so there is no second number here: ``opposing`` positions
+    buy back a slot each, so the reachable book is ``2 * min(long, short) + cap``, bounded by
+    the context count. Contexts rather than entries, because a position is per context and a
+    multi-symbol strategy occupies one per symbol — matching :func:`routable_context_map`.
+    """
+    from .paper import MAX_DIRECTIONAL_SKEW  # local: pool is imported by paper's callers
+
+    by_direction: dict[str, int] = {"LONG": 0, "SHORT": 0}
+    contexts = 0
+    for entry in entries:
+        if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
+            continue
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        # `spec.direction` is a Direction ENUM, not a string — `str()` on it yields
+        # "Direction.SHORT", which silently matches neither bucket and reports every pool as
+        # perfectly one-way. `strategy.evaluate_spec` normalises the same way (`is
+        # Direction.SHORT`), so this reads the spec exactly as the router does.
+        direction = "SHORT" if spec.direction is Direction.SHORT else "LONG"
+        for _scoped_symbol in spec.symbol_scope:
+            contexts += 1
+            by_direction[direction] += 1
+    long_contexts, short_contexts = by_direction["LONG"], by_direction["SHORT"]
+    reachable = min(contexts, 2 * min(long_contexts, short_contexts) + MAX_DIRECTIONAL_SKEW)
+    return {
+        "long_contexts": long_contexts,
+        "short_contexts": short_contexts,
+        "routable_contexts": contexts,
+        "reachable_book": reachable,
+        "skew_cap": MAX_DIRECTIONAL_SKEW,
+        # True when the pool's own composition — not the market — is what holds the book below
+        # the number of contexts it routes.
+        "cap_binds": reachable < contexts,
+    }
+
+
+def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse a pool whose ROUTABLE set is too large to be judged. Fail-closed.
+
+    ``entries`` is the pool as it WOULD be after the change — the caller merges first, so
+    an add-mode promotion is judged on incumbents plus the batch rather than on the batch
+    alone. Refused, never truncated: silently dropping the overflow would install a pool
+    nobody chose, and which of the entries got dropped would be an accident of ordering.
+
+    Raises ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED``, each naming what is
+    over and by how much. Both name the escape, because an operator who has read the
+    reasoning above may still have a reason this once."""
+    occupying = [
+        e for e in entries
+        if e.get("status") in OCCUPYING_STATUSES and e.get("strategy_spec")
+    ]
+    if len(occupying) > MAX_ROUTABLE_STRATEGIES:
+        raise ToolError(
+            "POOL_SIZE_CAP_EXCEEDED",
+            f"this promotion would leave {len(occupying)} routable strategies, above the cap of "
+            f"{MAX_ROUTABLE_STRATEGIES}. A pool this size splits its outcomes across more "
+            f"lineages than any of them can fill a {LIFECYCLE_MIN_WINDOW_TRADES}-trade lifecycle "
+            "window with, so nothing in it can be auto-demoted. Retire first "
+            "(scripts/retire_strategies.py), or pass "
+            "the explicit --allow-oversized-pool escape.",
+        )
+
+    over = {ctx: ids for ctx, ids in routable_context_map(occupying).items()
+            if len(ids) > MAX_ROUTABLE_PER_CONTEXT}
+    if over:
+        listed = "; ".join(
+            f"{sym} {tf}: {len(ids)} ({', '.join(sorted(ids))})"
+            for (sym, tf), ids in sorted(over.items())
+        )
+        raise ToolError(
+            "POOL_CONTEXT_CAP_EXCEEDED",
+            f"more than {MAX_ROUTABLE_PER_CONTEXT} routable strategy per context — {listed}. "
+            "The router picks one per context, so the surplus cannot trade; it only halves the "
+            "rate at which either lineage reaches a judgeable window, and a direction "
+            "disagreement blocks the context outright. Retire the incumbent first, or pass the "
+            "explicit --allow-oversized-pool escape.",
+        )
+
+
 def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
     """The candidate rows behind the entries currently in the pool.
 
@@ -828,14 +1018,36 @@ def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     multi-symbol strategy contributes each of its symbols) and none where it never
     could. Non-occupying or spec-less entries contribute nothing. Deduplicated and
     sorted for a stable, deterministic cycle order."""
-    contexts: set[tuple[str, str]] = set()
+    return sorted(context_scores(pool))
+
+
+def context_scores(pool: Mapping[str, Any]) -> dict[tuple[str, str], float]:
+    """``(symbol, timeframe)`` → the best ``champion_score`` any routable strategy there carries.
+
+    The same set :func:`routable_contexts` returns, with the evidence attached. It exists because
+    the live leg's slots are scarce — two open positions, one per symbol — while a fan-out visits
+    twenty contexts, so the FIRST context to produce a route takes a slot and the rest are refused
+    on capacity. Visiting in sorted order made that arbitration alphabetical: `BNBUSDT` before
+    `BTCUSDT` before `ETHUSDT`, every fire, whatever any of them actually signalled.
+
+    A score is not a signal — the strategy that scored best may propose nothing this bar — so this
+    does not pick the winner, and nothing here promises the globally best entry wins. What it does
+    is replace an ordering that correlates with nothing by one that correlates with the evidence
+    the pool was promoted on. Picking the true best would mean evaluating every context before
+    executing any of them, which is a second pass over the whole fan-out and its own decision.
+
+    A missing or unreadable score reads as 0.0 rather than being dropped: the context must still
+    be visited, it simply has nothing to argue for going first."""
+    scores: dict[tuple[str, str], float] = {}
     for entry in pool.get("active_strategies") or []:
         if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
             continue
         spec = StrategySpec.from_dict(entry["strategy_spec"])
+        score = _as_float(entry.get("champion_score"))
         for scoped_symbol in spec.symbol_scope:
-            contexts.add((str(scoped_symbol), str(spec.timeframe)))
-    return sorted(contexts)
+            key = (str(scoped_symbol), str(spec.timeframe))
+            scores[key] = max(scores.get(key, 0.0), score)
+    return scores
 
 
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:

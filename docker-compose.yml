@@ -181,3 +181,175 @@ services:
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
+
+  # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
+  # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
+  # grant), and a read that wedges must not be able to wedge the stop path — which is the
+  # one that matters when something is going wrong.
+  #
+  # `runtime/mvp_runtime/read_bridge.py` dispatches every verb to the SAME applier the
+  # Telegram channel uses, so an answer here cannot disagree with `/crypto status`. Nothing
+  # it serves can mutate: registry CANCEL and memory PROMOTE are absent from its table and a
+  # test asserts they stay absent.
+  #
+  # Same absent env as the switch door — no provider keys, no venue keys, no MVP_LIVE_*.
+  read-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-read-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/read.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.read_bridge_cli
+    # The assistant's gid. The door hands its socket and the bridge directory to this group,
+    # so who may reach a door is stated by the door instead of inherited from whatever gid it
+    # happens to run as. `group_add` is what lets a non-root door chgrp to it: POSIX allows an
+    # owner to set a file's group only to a group it belongs to.
+    #
+    # These services run their server as PID 1 with no in-container privilege drop, so the
+    # supplementary group survives. That is exactly what failed on the assistant's side, where
+    # `s6-setuidgid` recomputed groups from /etc/group and silently discarded `group_add` —
+    # leaving three doors up and unreachable with nothing on either side saying why.
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+
+  # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
+  # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
+  # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`
+  # caps this in code: a closed set of non-trading request kinds, no `write_path`, the kill
+  # switch checked before every run, every task attributed to `assistant_bridge`. A test
+  # asserts the kind set stays those four and that none of them reaches the money path.
+  #
+  # Unlike switch-bridge and read-bridge this service RUNS the pipeline, so it is the one door
+  # that *could* invoke a model. It deliberately carries no provider key here: with none, the
+  # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
+  # pipeline. Enabling real model execution means forwarding the model provider env
+  # (GOOGLE_AI_STUDIO_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / MVP_HOSTED_PROVIDER) — a
+  # deliberate step, because it stands up a second model-key-bearing container and OPENROUTER
+  # is shared with the operator's assistant. Absent regardless of that choice: every money
+  # variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key. The kinds it runs never
+  # touch them.
+  dispatch-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-dispatch-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      # Unlike switch/read-bridge this door RUNS the pipeline, which will not bind a task
+      # without an active approved Core — so it needs the Core activation/approval records
+      # read-only, exactly as the operator and scheduler do.
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.dispatch_bridge_cli
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      # See read-bridge for why the door states the client gid rather than inheriting it.
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+      # Model providers ONLY. This is the one door that runs the pipeline, so it needs the
+      # provider chain to return a real analysis instead of the mock. Each member still needs
+      # its own mounted safety-flag grant (via the state volume) — the env var alone fails
+      # closed. NOTHING from the money path is here: no BINANCE_*, no MVP_LIVE_*, no venue or
+      # order key. The kinds this door dispatches never reach it. NB: OPENROUTER_API_KEY is
+      # shared with the operator's assistant, so assistant-dispatched spend rides the same
+      # free-tier quota — the assistant_dispatch spend alert ($50/day) is what watches it.
+      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
+      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
+      MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
+      # Read-only web search (optional), same Safety-Flag Gate.
+      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+
+  # The trading-switch door. Same shape as the others and deliberately its own service, for
+  # the reason the halt door had: the scheduler is what a stop is meant to stop, so a door
+  # living inside it stops answering exactly when it is needed.
+  #
+  # This is the first door that can START trading, and the asymmetry lives in
+  # `runtime/mvp_runtime/switch_bridge.py`, not here: `disable` applies immediately, `enable`
+  # only creates an APPROVAL_REQUIRED ask and cannot act until Thomas answers it on the
+  # verified control channel. It reaches `control.CMD_RESUME` through exactly one path — a
+  # single-use grant whose approved snapshot names the domain.
+  #
+  # It needs the Core mounts. `enable` binds its ask to a Task + Core Binding like every other
+  # approval request, and a bridge without an active approved Core fails BRIDGE_ERROR on the
+  # missing activation file — the exact way the dispatch door broke when its mounts were
+  # dropped (#380). If this door ever fails on a THOMAS_CORE path, look here first.
+  #
+  # Same absent env as the read and dispatch doors: no provider keys, no venue keys, no MVP_LIVE_*.
+  # Flipping the control switch reads and writes control state; it reaches no venue and no
+  # model. The live gate (MVP_LIVE_TRADING) is a DEPLOY action and this door never touches it —
+  # clearing it needs a restart and shuts the close path, stranding open positions.
+  switch-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-switch-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/switch.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.switch_bridge_cli
+    # The assistant's gid. The door hands its socket and the bridge directory to this group,
+    # so who may reach a door is stated by the door instead of inherited from whatever gid it
+    # happens to run as. `group_add` is what lets a non-root door chgrp to it: POSIX allows an
+    # owner to set a file's group only to a group it belongs to.
+    #
+    # These services run their server as PID 1 with no in-container privilege drop, so the
+    # supplementary group survives. That is exactly what failed on the assistant's side, where
+    # `s6-setuidgid` recomputed groups from /etc/group and silently discarded `group_add` —
+    # leaving three doors up and unreachable with nothing on either side saying why.
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}

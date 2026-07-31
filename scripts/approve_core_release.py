@@ -10,11 +10,14 @@ import yaml
 
 from lib.core_release_verifier import load_yaml, sha256_file, verify_manifest
 from lib.git_provenance import head_commit, require_clean_worktree, require_tree_tracked_at_head
-from lib.safe_io import exclusive_lock, immutable_write_text, safe_repo_path
+from lib.safe_io import exclusive_lock, immutable_write_text, repo_lock_dir, safe_repo_path
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_POINTER = ROOT / "THOMAS_CORE/REVIEW_CORE_RELEASE.yaml"
-LOCK_PATH = ROOT / ".git/thomas_agent_locks/core_approval.lock"
+# The lock file's name. Its directory is resolved at use time by `repo_lock_dir`:
+# that reads the filesystem (`.git` is a directory in a clone and a FILE in a git
+# worktree), and a module-level constant would make importing this script do IO.
+LOCK_NAME = "core_approval.lock"
 
 VERIFIED_STATUSES = {
     "verified_by_control_channel",
@@ -69,7 +72,7 @@ def main() -> int:
 
     manifest = verify_manifest(ROOT, manifest_path)
 
-    with exclusive_lock(LOCK_PATH):
+    with exclusive_lock(repo_lock_dir(ROOT) / LOCK_NAME):
         require_clean_worktree(ROOT)
         # Verifies every Release snapshot file is tracked and identical to HEAD.
         require_tree_tracked_at_head(ROOT, manifest_path.parent)

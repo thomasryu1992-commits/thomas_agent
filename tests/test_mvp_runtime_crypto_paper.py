@@ -12,7 +12,7 @@ import pytest
 
 from runtime.mvp_runtime import control, safety_gate
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import paper
+from runtime.mvp_runtime.crypto import paper, pool as pool_mod
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.paper import (
     BLOCK_DIRECTION_CONFLICT,
@@ -304,7 +304,12 @@ def test_short_settlement_mirrors():
 
 def test_outcome_record_feeds_the_risk_guard():
     outcome = build_outcome_record(_position(), "stop_loss", 102.0, -1.0, now=NOW)
-    assert outcome["outcome_closed"] is True and outcome["result_R"] == -1.0
+    assert outcome["outcome_closed"] is True
+    # The gross number is still the stop's exact -1R; result_R is that MINUS the two legs'
+    # costs, so a stopped-out trade loses more than the risk it planned — which is the point.
+    assert outcome["gross_result_R"] == -1.0
+    assert outcome["result_R"] < -1.0
+    assert outcome["result_R"] == round(-1.0 - outcome["fee_cost_r"] - outcome["slippage_cost_r"], 8)
     assert outcome["win_loss"] == "LOSS" and outcome["record_sha256"].startswith("sha256:")
     verdict = run_risk_guard([outcome], now=NOW)  # C4 reads C5 records natively
     assert verdict["consecutive_losses"] == 1
@@ -481,7 +486,8 @@ def test_real_open_then_settle_cycle(tmp_path):
     assert summary2["settled"]["close_reason"] == "stop_loss"
     assert load_open_position(CTX, tmp_path) is None
     outcomes = read_outcomes(tmp_path)
-    assert len(outcomes) == 1 and outcomes[0]["result_R"] == -1.0
+    assert len(outcomes) == 1
+    assert outcomes[0]["gross_result_R"] == -1.0 and outcomes[0]["result_R"] < -1.0
     assert records2[0]["filesystem_write"] is True
 
 
@@ -592,6 +598,185 @@ def test_per_symbol_cap_refuses_a_third_timeframe_on_one_symbol(tmp_path, monkey
     assert summary["opened"] is None
     assert summary["open_refused"]["reason_code"] == "POSITION_LIMIT_SYMBOL"
     assert summary["open_refused"]["symbol"] == "BTCUSDT"
+
+
+# --- the third cap: the book's directional SHAPE, not its size ------------------
+#
+# The two caps above bound how many positions exist and how many share a symbol. Neither
+# bounds how many point the same way, so twenty simultaneous longs were permitted — the F1
+# hazard in docs/TRADING_STRATEGY_REVIEW_RECORD.md, where one market move becomes twenty
+# correlated verdicts about twenty different strategies.
+
+def _book(longs, shorts, *, unknown=0):
+    """An `open_positions`-shaped list — only `direction` is read."""
+    return [
+        (None, {"direction": d})
+        for d in (["LONG"] * longs + ["SHORT"] * shorts + [None] * unknown)
+    ]
+
+
+def test_the_skew_cap_is_derived_from_the_per_symbol_cap():
+    """Not a chosen number: the rule is "the net directional bet may never exceed one symbol's
+    full allocation", which is why it has an English statement with no constant in it."""
+    assert paper.MAX_DIRECTIONAL_SKEW == paper.MAX_POSITIONS_PER_SYMBOL
+
+
+def test_the_skew_cap_is_not_a_concurrency_cap_in_disguise():
+    """The property that makes the derived value the right one. A full book is still reachable —
+    12 long + 8 short is net 4 at the cap — so what is forbidden is a full book that is ONE-WAY,
+    not a full book. If this ever failed, the cap would be silently shrinking the portfolio."""
+    longs = (paper.MAX_CONCURRENT_POSITIONS + paper.MAX_DIRECTIONAL_SKEW) // 2
+    shorts = paper.MAX_CONCURRENT_POSITIONS - longs
+    admitted, refusal = paper.directional_skew_admits(_book(longs - 1, shorts), "LONG")
+    assert admitted and refusal is None
+    assert longs + shorts == paper.MAX_CONCURRENT_POSITIONS
+
+
+def test_an_empty_book_admits_up_to_the_cap_then_declines():
+    for aligned in range(paper.MAX_DIRECTIONAL_SKEW):
+        admitted, _ = paper.directional_skew_admits(_book(aligned, 0), "LONG")
+        assert admitted, aligned
+    admitted, refusal = paper.directional_skew_admits(_book(paper.MAX_DIRECTIONAL_SKEW, 0), "LONG")
+    assert not admitted
+    assert refusal["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW"
+    assert refusal["lean_after"] == paper.MAX_DIRECTIONAL_SKEW + 1
+    assert refusal["limit"] == paper.MAX_DIRECTIONAL_SKEW
+
+
+def test_an_opposing_position_buys_back_a_slot():
+    """The mechanism by which a book grows past the cap at all: the lean is what is bounded, so
+    a hedged pair costs nothing. Without this the cap WOULD be a concurrency cap."""
+    at_cap = _book(paper.MAX_DIRECTIONAL_SKEW, 0)
+    assert paper.directional_skew_admits(at_cap, "LONG")[0] is False
+    assert paper.directional_skew_admits(at_cap + _book(0, 1), "LONG")[0] is True
+
+
+def test_the_corrective_side_is_never_declined_even_past_the_cap():
+    """**The pathology the sign convention exists to prevent.** Exits are not synchronised, so a
+    balanced book becomes one-way on its own when the opposing side times out. Written as
+    `abs(new_skew) > cap` the rule then refuses the very trades that would rebalance it — and it
+    looks equivalent. A book leaning twice the cap must still accept the opposite direction."""
+    lopsided = _book(2 * paper.MAX_DIRECTIONAL_SKEW, 0)
+    assert paper.directional_skew_admits(lopsided, "LONG")[0] is False
+    admitted, refusal = paper.directional_skew_admits(lopsided, "SHORT")
+    assert admitted and refusal is None
+
+
+def test_the_cap_is_symmetric_between_the_two_directions():
+    at_cap_short = _book(0, paper.MAX_DIRECTIONAL_SKEW)
+    assert paper.directional_skew_admits(at_cap_short, "SHORT")[0] is False
+    assert paper.directional_skew_admits(at_cap_short, "LONG")[0] is True
+
+
+def test_an_unreadable_direction_makes_the_cap_bind_sooner_not_later():
+    """`opposing` is what is measured, so anything not provably opposite counts as aligned — no
+    special case, and the failure direction is the conservative one. `list_open_positions` fails
+    the same way when it cannot attribute a position at all."""
+    admitted, refusal = paper.directional_skew_admits(
+        _book(paper.MAX_DIRECTIONAL_SKEW - 1, 0, unknown=1), "LONG"
+    )
+    assert not admitted
+    assert refusal["aligned"] == paper.MAX_DIRECTIONAL_SKEW
+    assert refusal["opposing"] == 0
+
+
+def test_a_proposal_with_no_usable_direction_is_not_declined_on_a_guess():
+    """There is nothing to count toward, so inventing a lean would decline on a guess. The plan
+    builder cannot produce this; a caller passing None can."""
+    assert paper.directional_skew_admits(_book(9, 0), None)[0] is True
+    assert paper.directional_skew_admits(_book(9, 0), "")[0] is True
+
+
+def test_the_skew_cap_refuses_a_real_open_and_writes_nothing(tmp_path, monkeypatch):
+    """End to end through the portfolio lock, with the other two caps raised out of the way so
+    this is the binding one."""
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    monkeypatch.setattr(paper, "MAX_POSITIONS_PER_SYMBOL", 9)
+    monkeypatch.setattr(paper, "MAX_DIRECTIONAL_SKEW", 2)
+    control_store = ControlStore(tmp_path)
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    pool = _pool(*[
+        _pool_entry(_spec_dict(strategy_id=f"S{i}", symbol_scope=[s]), strategy_id=f"S{i}")
+        for i, s in enumerate(symbols, start=1)
+    ])
+    for symbol in symbols[:2]:
+        run_paper_update(_snapshot(symbol=symbol), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    assert len(paper.list_open_positions(tmp_path)) == 2
+    summary, records = run_paper_update(
+        _snapshot(symbol=symbols[2]), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary["opened"] is None
+    assert summary["open_refused"]["reason_code"] == "POSITION_LIMIT_DIRECTIONAL_SKEW"
+    assert summary["open_refused"]["direction"] == "LONG"
+    assert summary["open_refused"]["aligned"] == 2 and summary["open_refused"]["opposing"] == 0
+    assert records[-1]["operation"] == "open_refused" and records[-1]["read_only"] is True
+    assert len(paper.list_open_positions(tmp_path)) == 2, "a refused open must write nothing"
+
+
+def test_the_skew_cap_still_admits_the_short_that_rebalances_a_real_book(tmp_path, monkeypatch):
+    """The corrective case through the real store, not just the pure function: a book at the cap
+    must still be able to hedge, or the cap becomes a hard stop on the whole fan-out."""
+    monkeypatch.setattr(paper, "MAX_CONCURRENT_POSITIONS", 9)
+    monkeypatch.setattr(paper, "MAX_POSITIONS_PER_SYMBOL", 9)
+    monkeypatch.setattr(paper, "MAX_DIRECTIONAL_SKEW", 2)
+    control_store = ControlStore(tmp_path)
+    short_spec = _spec_dict(
+        strategy_id="S_short", symbol_scope=["SOLUSDT"], direction="short",
+        entry_rules={"operator": "AND", "conditions": [
+            {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        ]},
+    )
+    pool = _pool(
+        _pool_entry(_spec_dict(strategy_id="S1", symbol_scope=["BTCUSDT"]), strategy_id="S1"),
+        _pool_entry(_spec_dict(strategy_id="S2", symbol_scope=["ETHUSDT"]), strategy_id="S2"),
+        _pool_entry(short_spec, strategy_id="S_short"),
+    )
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        run_paper_update(_snapshot(symbol=symbol), ROW, pool, _verdict(), store=_real_store(tmp_path),
+                         now=NOW, root=tmp_path, control_store=control_store)
+    summary, _ = run_paper_update(
+        _snapshot(symbol="SOLUSDT"), ROW, pool, _verdict(), store=_real_store(tmp_path),
+        now=NOW, root=tmp_path, control_store=control_store,
+    )
+    assert summary.get("open_refused") is None
+    assert summary["opened"]["direction"] == "SHORT"
+
+
+def test_a_binding_cap_spends_its_last_slot_on_evidence_not_the_alphabet(tmp_path):
+    """**A property of the composition, which neither change owns alone.** The cap is evaluated
+    per context as the fan-out reaches it, so the room under it goes to whoever asks first — and
+    "first" used to mean alphabetically, which would have made the last directional slot an
+    accident of spelling. `cycle.pool_cycle_contexts` now orders by urgency then evidence, so
+    this pins that the weakly-evidenced context does not take the slot from the champion just by
+    sorting earlier. Sorting is tested there; that it *decides directional allocation* is here.
+    """
+    from runtime.mvp_runtime.crypto.cycle import pool_cycle_contexts
+
+    pool_mod.install_active_pool({"active_strategies": [
+        {"strategy_id": "S_weak", "status": "PAPER_ACTIVE", "champion_score": 0.10,
+         "strategy_spec": _spec_dict(strategy_id="S_weak", symbol_scope=["AAAUSDT"])},
+        {"strategy_id": "S_strong", "status": "PAPER_ACTIVE", "champion_score": 0.95,
+         "strategy_spec": _spec_dict(strategy_id="S_strong", symbol_scope=["ZZZUSDT"])},
+    ]}, root=tmp_path)
+    order = pool_cycle_contexts(tmp_path)
+    assert order[0][0] == "ZZZUSDT", "the alphabet took the slot the evidence should have"
+    assert order[-1][0] == "AAAUSDT"
+
+
+def test_the_live_book_is_deliberately_untouched():
+    """Scoped to paper on purpose, and the reason is that the authority already exists there:
+    live holds at most `MAX_LIVE_CONCURRENT_POSITIONS` positions, so its largest possible skew
+    is that number — a cap is either inert or halves an already-tiny capacity — and live one-way
+    risk is governed by the operator-registered `max_open_notional_usdt`."""
+    from runtime.mvp_runtime.crypto import live_position
+
+    # A tripwire, not a tautology: while live concurrency stays at or under the paper cap, the
+    # largest lean live can reach is one this cap would have admitted anyway — so leaving live
+    # alone costs nothing. Raise live concurrency past it and this fails, which is exactly when
+    # somebody has to decide whether the live book needs its own directional answer.
+    assert live_position.MAX_LIVE_CONCURRENT_POSITIONS <= paper.MAX_DIRECTIONAL_SKEW
 
 
 def test_context_parts_cannot_escape_the_positions_directory(tmp_path):
@@ -965,3 +1150,74 @@ def test_outcome_record_carries_the_resolution_basis():
     # An imported/legacy position carries no basis; it must not read as assumed.
     assert paper.build_outcome_record(_position(), "time_exit", 106.0, 0.3, now=NOW)[
         "exit_resolution"] == "unambiguous"
+
+
+# --- settlement charges fees and slippage (PM2, fee half) ----------------------
+
+def _costed(reason, exit_price, gross):
+    return build_outcome_record(_position(), reason, exit_price, gross, now=NOW)
+
+
+def test_the_recorded_r_is_net_and_the_gross_is_kept_beside_it():
+    """Both numbers on the row, so nothing downstream has to re-derive one from prices."""
+    out = _costed("time_exit", 106.0, 1 / 3)
+    assert out["r_basis"] == "intent_net_of_costs"
+    assert out["gross_result_R"] == round(1 / 3, 8)
+    assert out["fee_cost_r"] > 0 and out["slippage_cost_r"] > 0
+    assert out["result_R"] == round(out["gross_result_R"] - out["fee_cost_r"] - out["slippage_cost_r"], 8)
+    assert out["result_R"] < out["gross_result_R"]
+
+
+def test_settle_trade_plan_stays_the_authority_on_gross():
+    """The stop's exactly--1R convention lives in settle_trade_plan and must survive costing.
+
+    `apply_cost_model` can re-derive gross from the prices, and today it would agree — `risk`
+    is `|entry - stop|` by construction. The record deliberately does NOT ask it to: one
+    authority for the gross number means there is no second derivation to keep agreeing."""
+    reason, exit_price, gross = settle_trade_plan(
+        _position(), _candle(104.0, 101.0, 103.0), 103.0, 48, False)
+    assert (reason, exit_price, gross) == ("stop_loss", 102.0, -1.0)
+    assert _costed(reason, exit_price, gross)["gross_result_R"] == -1.0
+
+
+def test_a_stop_out_now_loses_more_than_the_r_it_risked():
+    """The headline consequence: -1R was never the true cost of being stopped out."""
+    out = _costed("stop_loss", 102.0, -1.0)
+    assert out["result_R"] < -1.0 and out["win_loss"] == "LOSS"
+
+
+def test_a_target_exit_is_charged_the_maker_rate_and_no_slippage():
+    """A resting limit fills AT the target: it does not cross the spread (see cost.py)."""
+    target = _costed("take_profit", 109.0, 4 / 3)
+    market = _costed("time_exit", 109.0, 4 / 3)
+    assert target["maker_fee_cost_r"] > 0 and market["maker_fee_cost_r"] == 0.0
+    assert target["slippage_cost_r"] < market["slippage_cost_r"]
+    assert target["result_R"] > market["result_R"]      # cheaper exit, same prices
+
+
+def test_win_loss_is_judged_on_the_net_number():
+    """A trade that cleared its stop but not its costs is not a win.
+
+    Calling it one is how a losing book reports a healthy win rate — and win rate feeds the
+    lifecycle's live-vs-backtest drop check."""
+    out = _costed("time_exit", 105.05, 0.05 / 3)          # +0.017R gross, under the costs
+    assert out["gross_result_R"] > 0
+    assert out["result_R"] < 0 and out["win_loss"] == "LOSS"
+
+
+def test_a_zero_risk_position_is_not_charged_rather_than_dividing_by_zero():
+    """cost.apply_cost_model's own guard, reached through the record builder."""
+    out = build_outcome_record(_position(risk=0.0), "time_exit", 106.0, 0.0, now=NOW)
+    assert out["fee_cost_r"] == 0.0 and out["slippage_cost_r"] == 0.0
+    assert out["result_R"] == out["gross_result_R"] == 0.0
+
+
+def test_the_costed_r_reaches_the_risk_guard():
+    """The reason this change exists: the breaker reads result_R, and it was reading gross.
+
+    Three stop-outs are -3R gross; the breaker's daily limit is -2R, so it tripped either way
+    here — what changes is that the number it reports is now the honest one."""
+    outs = [_costed("stop_loss", 102.0, -1.0) for _ in range(3)]
+    verdict = run_risk_guard(outs, now=NOW)
+    assert verdict["daily_pnl_r"] < -3.0                  # worse than the gross -3.0
+    assert verdict["allow_new_position"] is False

@@ -94,7 +94,7 @@ def run_promotion(
     keep_active: bool, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
-    allow_duplicates: bool = False,
+    allow_duplicates: bool = False, allow_oversized_pool: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -112,10 +112,19 @@ def run_promotion(
     never refused (see ``pool.assert_promotable_evidence_depth``). A batch that would put
     the same strategy in the pool twice under different rule hashes refuses with
     ``CANDIDATE_SEMANTIC_DUPLICATE`` unless ``allow_duplicates`` says otherwise — see
-    ``pool.assert_no_semantic_duplicates``. Every escape stays out of
+    ``pool.assert_no_semantic_duplicates``. A promotion that would leave the pool with more
+    routable strategies than the lifecycle can ever judge refuses with
+    ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED`` unless ``allow_oversized_pool``
+    says otherwise — see ``pool.assert_pool_within_size_cap``. Every escape stays out of
     ``promotion_content_sha256``: the candidate ids are already in the hash and each check
     is a pure function of them, so the same approval can never need an escape in one
-    execution and not another."""
+    execution and not another.
+
+    The sizing cap is a pure function of the ids for the same reason the others are, with one
+    wrinkle worth stating: in add mode it also reads the CURRENT pool, so a promotion approved
+    while the pool had room can refuse later if the pool grew in between. That is the check
+    working — the approval authorizes these candidates, never a pool shape measured at ask
+    time — and the fix is to retire first, not to re-ask."""
     now = now or timeutil.utc_now_iso()
 
     # Kill switch first: promotion mutates what the runtime trades.
@@ -202,9 +211,33 @@ def run_promotion(
             "strategy_rule_hash": c.get("strategy_rule_hash"),
             "generation_id": c.get("generation_id"),
             "strategy_spec": c.get("strategy_spec"),
+            # Per-regime backtest figures, copied onto the entry for the same reason
+            # `champion_score` is: the ROUTER must be able to read them, and the router reads the
+            # pool. Making it look candidates up by `candidate_id` instead would put a 359-row
+            # store — one whose reader deliberately RAISES on damage, because it backs a
+            # promotion an operator signs — on the path of every 15-minute cycle, so a corrupt
+            # candidate line would stop routing. The pool is the authority on what trades; this
+            # keeps it self-contained.
+            #
+            # The raw numbers, never a derived exclusion list. `paper.regime_admits` owns the
+            # rule and applies it at read time, so moving its threshold later cannot leave stale
+            # labels behind — the defect `pool.candidate_quality` already had to fix once, where
+            # verdicts written at mint time survived the rule that produced them.
+            "regime_evidence": ((c.get("backtest_evidence") or {}).get("regime_breakdown") or {}).get("per_regime"),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
+
+    # The pool-sizing cap, checked on the MERGED result rather than on the batch: in add
+    # mode the incumbents are what make a two-candidate promotion oversized, so judging the
+    # batch alone would pass every promotion that ever mattered. Last of the four guards
+    # because it is the only one about the pool's SHAPE — the others ask whether a candidate
+    # is believable, this one asks whether the pool it would join can still be judged.
+    if not allow_oversized_pool:
+        try:
+            pool_store.assert_pool_within_size_cap(entries)
+        except MvpRuntimeError as exc:
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     new_pool = {
         "pool_version": "active_strategy_pool.v1",
@@ -225,6 +258,12 @@ def run_promotion(
         "evidence_hashes": [c.get("evidence_input_sha256") for c in candidates],
         "kept_active": keep_active,
         "pool_size": installed,
+        # How large a book the pool it just installed can actually fill under the directional
+        # cap. On the LEDGER, not only on stdout: with one routable strategy per context a
+        # spec's direction is fixed here, so this promotion is the moment the book's achievable
+        # composition was decided — and a record that cannot answer "why did the book stop at
+        # eight" is one an operator has to reconstruct from the pool file by hand.
+        "directional_capacity": pool_store.routable_directional_capacity(entries),
         "promoted_by": promoted_by,
         "reason": reason,
         # C8b: which door authorized this — a verified approval, or the explicit escape.
@@ -237,6 +276,7 @@ def run_promotion(
         # ledger later rather than reconstructed from whoever ran the command.
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
         "duplicate_escape": bool(allow_duplicates),
+        "oversized_pool_escape": bool(allow_oversized_pool),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
         # the basis beside it — and here it carries more weight, because a SHALLOW row is
@@ -270,6 +310,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
+    parser.add_argument("--allow-oversized-pool", action="store_true",
+                        help="explicit escape: install a pool above the routable-strategy or "
+                             "per-context cap (a pool nothing in it can be auto-demoted from)")
     parser.add_argument("--allow-stale-cost-basis", action="store_true",
                         help="explicit escape: promote evidence scored under a cost model cheaper "
                              "than the venue charges (its expectancy is overstated; recorded as such)")
@@ -505,11 +548,25 @@ def main(argv: list[str] | None = None) -> int:
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
         allow_duplicates=args.allow_duplicates,
+        allow_oversized_pool=args.allow_oversized_pool,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
           f"({summary['promoted_strategy_ids']}) -> active pool "
           f"({summary['pool_size']} strategies) [door: {door}]")
+    # Said here because this is the moment the pool's directional composition changes, and
+    # because the consequence is invisible everywhere else until positions fail to open: with
+    # one routable strategy per context, a spec's direction is fixed at promotion time, so a
+    # lopsided pool cannot fill its own slots under the directional cap. NOT a refusal — the cap
+    # only ever declines, so the outcome is under-utilisation rather than risk, and blocking the
+    # promotion would forbid assembling a pool in any order but alternating.
+    capacity = summary.get("directional_capacity")
+    if isinstance(capacity, dict) and capacity.get("cap_binds"):
+        print(f"NOTE: this pool routes {capacity['routable_contexts']} contexts "
+              f"({capacity['long_contexts']} long / {capacity['short_contexts']} short) but the "
+              f"directional cap (±{capacity['skew_cap']}) lets at most "
+              f"{capacity['reachable_book']} positions be open at once. Promote the other "
+              f"direction to use the rest.")
     return EXIT_OK
 
 
