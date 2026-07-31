@@ -5,10 +5,26 @@ binding had their `const` **replaced** rather than added to. Every record writte
 stopped satisfying its own schema at that moment: 314 of them on this host — approvals, permission
 decisions, and archived ledger rows.
 
-Ten of those are approvals that are still PENDING. An approval is re-validated when it is decided
-and again when it is consumed, so those ten cannot be exercised: `APPROVAL_SCHEMA_INVALID`, from a
-`oneOf` failure naming neither the bump nor the record's own version. Grants Thomas made were
-silently voided by a version number.
+**The motivating claim was overstated and is corrected here rather than quietly dropped**, because
+the correction is the more useful half. The original version of this file said ten pending
+approvals had been "silently voided by a version number". Checked afterwards, against the code
+rather than by reading the records:
+
+* five of the ten were **never decided** — still requests awaiting an answer, not grants;
+* the other five were decided by Thomas and every one of them **expired on its own ~30-minute
+  single-use timer**, the last on 2026-07-26T10:51Z — *before* the 2026-07-28 bump.
+  `approval.is_expired` returns `True` for all five, so `consumption` refuses them with
+  `APPROVAL_EXPIRED` whatever the policy question.
+
+So no grant was voided by the bump, and there was never a decision owed to Thomas about carrying
+any forward. The defect this file exists for is the other one, and it is real on its own terms:
+**314 stored records stopped satisfying their own schema**, so evidence written under 1.1.0 could
+no longer be verified. That is what is fixed, and it needed no approval to be at stake.
+
+Kept as a shape worth remembering: the schema error was *loud enough to look like the story* and
+quiet enough that nobody checked whether the approvals behind it were live. An approval that
+cannot validate and an approval that has expired fail at different doors for different reasons,
+and only one of them was ever this change's business.
 
 Two rules were being enforced by one mechanism, and separating them is the whole change:
 
@@ -127,7 +143,7 @@ def test_the_current_binding_is_still_the_only_one_accepted():
 
 def test_a_superseded_binding_is_refused_by_a_name_that_explains_it():
     """The operator's only clue used to be a `oneOf` dump naming neither the bump nor the
-    record's own version. A refusal nobody can act on is how ten grants sat voided and unnoticed."""
+    record's own version — so a stale record and a broken one were indistinguishable."""
     issues: list[str] = []
     validate_policy_binding({"operating_policy": _superseded()}, issues)
     assert len(issues) == 1
