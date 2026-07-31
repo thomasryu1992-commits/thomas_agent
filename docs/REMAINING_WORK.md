@@ -174,6 +174,35 @@ Most confirmed groups pair **binance×polymarket**, with kalshi×polymarket next
 involving kalshi×binance or all three. That distribution is itself an open decision — see the
 Binance box below.
 
+### What of this lives only on the Docker host — read before continuing from another machine
+
+The four PRs of 2026-07-31 (#399 readiness, #402 resolution reads, #403 topic-id capture,
+#404 the backfill's stop reason) are **code, and they travel**. What does not travel is
+everything the window is made of, because `.runtime_governance_state/**` is per-machine and
+gitignored by rule:
+
+- **The 76 confirmed groups, the observation store, and the 44 backfilled Binance `topic_id`s**
+  exist on this host and nowhere else. A checkout elsewhere has the capability and none of the
+  evidence, and its `pairs_cli report` answers `NO_OBSERVATIONS` rather than being wrong.
+- **The backfill has to be re-run per machine, and it expires.** `market/list` serves only
+  `REGISTERED` topics, so a machine that confirms groups later — or replays these ones — can
+  only map a leg while its topic is still listed. On this host it mapped 44 of 44 from 160
+  topics in 20s (`--dry-run` first; it writes nothing and names any leg it could not map).
+- **A merge is not a deploy.** The containers are built from the tree, not mounting it, so
+  merged code is not running until something recreates them. Verified twice on 2026-07-31:
+  `docker compose build` retagged the image while the scheduler kept its old one and its
+  uptime, and `docker compose run --rm --no-deps scheduler …` ran the new script in a
+  throwaway container with the service's env and state mount — which is how the backfill ran
+  against a live 2-minute scan without touching it. The scheduler was then recreated
+  deliberately (`docker compose up -d --no-deps scheduler`) to pick up #402's degrade fix; the
+  watch scan resumed at 10:33:50Z with `76/76 priced`, one scan's gap. **The operator and the
+  three bridges are still on the older image** — harmless, since nothing outside
+  `predmarket/` changed, but it is skew and it is written down rather than assumed away.
+
+Rewrites of that state are safe against the running scan for one reason worth keeping:
+`jsonl.write_objects` is temp-file + `os.replace`, so a concurrent reader sees the old file or
+the new one and never a partial.
+
 **What the run has cost so far is six defects, none of which a green test suite showed.** Each was
 found by reading what the deployed thing actually produced: Gamma was paginating past 400 rows it
 claimed to include (#318), a zero-depth touch counted toward frequency (#321), a quoted Polymarket
