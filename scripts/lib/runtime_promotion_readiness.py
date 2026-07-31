@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from lib.safe_io import SafeIOError, git_directory
+
 REGISTRY_REL = "05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml"
 WORKFLOW_REL = ".github/workflows/thomas-agent-runtime-validation.yml"
 GATE_EVIDENCE_REL = "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml"
@@ -292,19 +294,19 @@ def build_component_attestation(repo_root: Path, *, created_at: str | None = Non
 
 
 def _git_directory(root: Path) -> Path:
-    marker = root / ".git"
-    if marker.is_dir():
-        return marker.resolve()
-    if marker.is_file():
-        text = marker.read_text(encoding="utf-8").strip()
-        if not text.startswith("gitdir:"):
-            raise ReadinessError(".git file has invalid format")
-        value = text.split(":", 1)[1].strip()
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            candidate = (root / candidate).resolve()
-        return candidate
-    raise ReadinessError("repository has no .git metadata")
+    """Delegates to the one resolver, and keeps this module's error type at its edge.
+
+    This logic lived here, privately, and was already worktree-aware — while four
+    Core-lifecycle scripts one directory over built ``root / ".git" / ...`` by hand and broke
+    on the worktree form. One concept, two implementations, and the copy that governed Core
+    activation was the wrong one. Now there is a single owner (``safe_io.git_directory``);
+    what stays here is only the translation, so this module's callers still see
+    ``ReadinessError``.
+    """
+    try:
+        return git_directory(root)
+    except SafeIOError as exc:
+        raise ReadinessError(str(exc)) from exc
 
 
 def _git_common_directory(git_dir: Path) -> Path:

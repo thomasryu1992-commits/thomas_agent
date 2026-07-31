@@ -573,6 +573,67 @@ def _funding_fade_long_entry(p: dict) -> list[dict]:
     ]
 
 
+# --- volatility regime --------------------------------------------------------
+#
+# The first families whose premise is HOW MUCH the market is moving rather than which way.
+# Every other family here reads direction, flow, carry or crowding and is indifferent to the
+# size of the move it is entering; these two pairs make that size the entry condition.
+#
+# Both read PERCENTILES, and that is the whole reason they are mintable at all. The raw
+# volatility columns (`atr`, `atr_pct_of_price`, `bb_width_pct`) are on the row and are in
+# `NUMERIC_FEATURES`, but a mined threshold on any of them is a LEVEL: ~0.2% of price at 15m
+# and ~3% at 1d, so one `ParamSpec` retimed across the ladder would mean a different claim at
+# every rung — the `xs_dispersion` split, in volatility's costume. `atr_percentile` and
+# `bb_width_percentile` are rank fractions in [0, 1] against the symbol's own recent window, so
+# "the top fifth of this symbol's own volatility" is the same claim on BTC at 15m as on DOGE
+# at 1d, and no level had to be authorized.
+#
+# There is a second, narrower reason to mine the expansion side, measured on this runtime's own
+# record 2026-07-31: costs are a FIXED ~10-16 bps round trip while 1R = `stop_atr` x ATR shrinks
+# with the bar, so the median 1R runs 21.6 bps at 15m against 309.8 bps at 1d and the cost eats
+# 46-74% of the risk unit at the fast end. An entry gated on high `atr_percentile` is the one
+# handle in this vocabulary that widens 1R without touching `stop_atr` — it selects the bars
+# where the same multiple of ATR is a bigger move. Stated as motivation, not as a claim: whether
+# it survives is what `backtest_spec` is for, and nothing here assumes the answer.
+
+
+def _volatility_expansion_long_entry(p: dict) -> list[dict]:
+    # Trend, but only where this symbol's own volatility is in the upper part of its
+    # recent range — the same trend rule the breakout family mines, restricted to the
+    # bars where a move large enough to clear its costs is actually on offer.
+    return [
+        {"feature": "atr_percentile", "comparison": ">=", "value": p["vol_pct_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "ma20", "comparison": ">", "value_from": "ma50"},
+    ]
+
+
+def _volatility_expansion_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "atr_percentile", "comparison": ">=", "value": p["vol_pct_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
+    ]
+
+
+def _volatility_squeeze_long_entry(p: dict) -> list[dict]:
+    # The opposite premise, and deliberately kept: bands compressed to the low end of their
+    # own range, price pushing out of the upper one. It is `bollinger_breakout` with the
+    # compression made an explicit precondition rather than left to chance, which is a
+    # different claim about WHEN the breakout is worth taking.
+    return [
+        {"feature": "bb_width_percentile", "comparison": "<=", "value": p["squeeze_max"]},
+        {"feature": "bb_percent_b", "comparison": ">=", "value": p["percent_b_min"]},
+    ]
+
+
+def _volatility_squeeze_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "bb_width_percentile", "comparison": "<=", "value": p["squeeze_max"]},
+        {"feature": "bb_percent_b", "comparison": "<=", "value": p["percent_b_max"]},
+    ]
+
+
 TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("trend_pullback", "long", "1h",
                      {"adx_min": ParamSpec(15.0, 30.0), "rsi_max": ParamSpec(45.0, 65.0), **_EXIT_PARAMS},
@@ -701,6 +762,28 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_short_entry),
+    # Volatility regime. Both param ranges are bounded by what leaves a sample behind rather
+    # than by a preference: a percentile floor above 0.9 (or a squeeze ceiling below 0.1)
+    # selects a tenth of the bars, which is how a family arrives FRAGILE for want of trades
+    # rather than for want of edge. The `percent_b` ranges are the `bollinger_*` families'
+    # verbatim, because the squeeze pair mines the same band crossing under a new precondition
+    # and two different bands would make the comparison between them meaningless.
+    StrategyTemplate("volatility_expansion_long", "long", "1h",
+                     {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
+                     {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_long_entry),
+    StrategyTemplate("volatility_expansion_short", "short", "1h",
+                     {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
+                     {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_short_entry),
+    StrategyTemplate("volatility_squeeze_long", "long", "1h",
+                     {"squeeze_max": ParamSpec(0.1, 0.4), "percent_b_min": ParamSpec(0.9, 1.1),
+                      **_EXIT_PARAMS},
+                     {"squeeze_max": 0.25, "percent_b_min": 1.0, **_EXIT_BASE},
+                     _volatility_squeeze_long_entry),
+    StrategyTemplate("volatility_squeeze_short", "short", "1h",
+                     {"squeeze_max": ParamSpec(0.1, 0.4), "percent_b_max": ParamSpec(-0.1, 0.1),
+                      **_EXIT_PARAMS},
+                     {"squeeze_max": 0.25, "percent_b_max": 0.0, **_EXIT_BASE},
+                     _volatility_squeeze_short_entry),
 )
 
 # Families whose entry rules read the open-interest columns — mintable only where the
