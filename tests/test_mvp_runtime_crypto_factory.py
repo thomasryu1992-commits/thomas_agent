@@ -156,6 +156,107 @@ def test_every_family_in_the_library_is_reachable_across_generations():
     )
 
 
+def test_a_context_covers_its_library_when_generation_ids_stride():
+    """The defect the test above cannot see, because it walks GEN-000, GEN-001, GEN-002.
+
+    Production never does. Generation ids are global — `next_generation_id` takes the
+    next one across the whole store — and there are 15 scheduled factory contexts, so
+    ONE context's own generations stride by 15. `_rotation_offset` multiplied that by
+    `count`, and a strided walk over a modulus visits only the multiples of
+    `gcd(stride * count, total)`: with stride 15, count 4 and total 36 that is 12, so
+    three blocks of four out of nine and **24 of 36 families were permanently
+    unreachable for a given context**. Measured on the store 2026-07-31: 440 seeded
+    candidates over ~110 generations, median context had minted 16 distinct families.
+
+    So this walks the way the scheduler does. Asserted on the FAMILIES a context can
+    reach, not on the offsets, because the offset is an implementation detail and the
+    reachable set is the thing that was broken."""
+    symbol, timeframe, contexts = "ETHUSDT", "1h", 15
+    templates = templates_for_timeframe(timeframe, symbol=symbol)
+    runs = -(-len(templates) // 4)  # ceil: fires needed to cover the library once
+
+    def families_over(fires, *, use_rotation_index):
+        seen = set()
+        for fire in range(fires):
+            generation = 695 + fire * contexts  # the global counter, strided
+            batch = generate_batch(
+                f"GEN-{generation:03d}", seed=generation, symbol=symbol, timeframe=timeframe,
+                rotation_index=fire if use_rotation_index else None,
+            )
+            seen.update(spec["strategy_family"] for spec in batch["specs"])
+        return seen
+
+    # The cursor: one context covers its whole library in ceil(total/count) of its own fires.
+    covered = families_over(runs, use_rotation_index=True)
+    assert covered == {t.family for t in templates}, (
+        f"unreachable with the per-context cursor: {sorted({t.family for t in templates} - covered)}"
+    )
+
+    # The generation number: still starved after FOUR full passes' worth of fires. Pinned as
+    # an inequality rather than an exact count — the point is that it plateaus, and the exact
+    # size of the plateau moves whenever a family is added to the library.
+    starved = families_over(runs * 4, use_rotation_index=False)
+    assert len(starved) < len(templates), (
+        "the global generation number reached the whole library — if the rotation arithmetic "
+        "changed so this is now true, this test is measuring nothing and should be rewritten"
+    )
+
+
+def test_the_rotation_cursor_counts_fires_not_candidates():
+    """One fire mints a whole batch under a single generation id, so a batch is one step
+    of the rotation and not `count` steps. Fused children ride the same id and must not
+    advance it either — they are the same fire."""
+    def record(generation_id, symbol="ETHUSDT", timeframe="1h"):
+        return {"generation_id": generation_id,
+                "strategy_spec": {"symbol_scope": [symbol], "timeframe": timeframe,
+                                  "generation_id": generation_id}}
+
+    store = [record("GEN-001"), record("GEN-001"), record("GEN-001"), record("GEN-001"),
+             record("GEN-016"), record("GEN-016")]  # two fires: four seeded + two fused
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="1h") == 2
+
+    # Another context's rows are not this context's fires — the bug in miniature.
+    store += [record("GEN-002", timeframe="4h"), record("GEN-003", symbol="SOLUSDT")]
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="1h") == 2
+    assert factory.context_rotation_index(store, symbol="ETHUSDT", timeframe="4h") == 1
+    assert factory.context_rotation_index(store, symbol="SOLUSDT", timeframe="1h") == 1
+    # A context that has never fired starts at zero rather than raising.
+    assert factory.context_rotation_index(store, symbol="BNBUSDT", timeframe="1d") == 0
+    # Malformed rows are skipped, never fatal: a factory that refuses to mine because one
+    # legacy row lost its spec is a worse failure than a cursor one short.
+    assert factory.context_rotation_index(
+        [*store, {"generation_id": "GEN-999"}, {"strategy_spec": None}],
+        symbol="ETHUSDT", timeframe="1h") == 2
+
+
+def test_run_factory_steps_the_rotation_on_its_own_context():
+    """The seam: `run_factory` must COUNT the store it is already given and pass the
+    cursor down. Both stages were tested and the join was not — which is how #201 shipped.
+
+    Two runs of the same context over stores differing only in how many times that context
+    has already fired must mint different families; a run whose store belongs to a
+    DIFFERENT context must not be advanced by it."""
+    snapshot = _trending_snapshot()
+
+    def families(existing):
+        result = run_factory(snapshot, active_pool={}, existing_candidates=existing,
+                             now=NOW, count=4)
+        return [c["strategy_spec"]["strategy_family"] for c in result["candidates"]]
+
+    def rows(generation_id, symbol="BTCUSDT", timeframe="1d"):
+        return {"generation_id": generation_id,
+                "strategy_spec": {"symbol_scope": [symbol], "timeframe": timeframe,
+                                  "generation_id": generation_id}}
+
+    first = families([])
+    second = families([rows("GEN-001")])
+    assert first != second, "a second fire of the same context re-minted the same families"
+
+    # Rows from other contexts leave this context's cursor where it was.
+    assert families([rows("GEN-001"), rows("GEN-002", timeframe="4h"),
+                     rows("GEN-003", symbol="SOLUSDT")]) == second
+
+
 def test_the_rotation_is_deterministic():
     a = generate_batch("GEN-042", seed=7, timeframe="1h")
     b = generate_batch("GEN-042", seed=7, timeframe="1h")

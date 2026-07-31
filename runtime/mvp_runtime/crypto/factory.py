@@ -993,14 +993,79 @@ def build_spec_dict(
     }
 
 
-def _rotation_offset(generation_id: str, seed: int, count: int, total: int) -> int:
-    """The first family index this generation mints. Deterministic, marches forward."""
+def context_rotation_index(
+    existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+) -> int:
+    """How many times THIS ``(symbol, timeframe)`` has already been mined.
+
+    The rotation cursor, and the thing the generation number cannot be. Generation ids
+    are global — every scheduled fire takes the next one across every context — so a
+    context's own generation numbers stride by however many factory schedules exist
+    (15 on this machine: 5 symbols x 3 timeframes). ``_rotation_offset`` multiplies
+    that stride by ``count``, and a strided walk over a modulus does not visit every
+    residue: see :func:`_rotation_offset` for the arithmetic and what it cost.
+
+    Counting DISTINCT generation ids rather than candidates, because one fire mints a
+    whole batch (plus any fused children) under a single id and that is one step of the
+    rotation, not four.
+
+    Where it is imprecise it is imprecise in the safe direction. A fire that minted
+    nothing for this context does not advance the cursor, so the context re-mints the
+    same block next time — with a fresh seed (the candle hash moved), so it mints
+    different parameters of the same families rather than stalling. And the absolute
+    value does not matter at all: the imported predecessor rows inflate the starting
+    count for some contexts, which only sets the PHASE. What the rotation owes is that
+    the cursor advances by one per fire, and it does."""
+    seen: set[str] = set()
+    for record in existing_candidates:
+        spec = record.get("strategy_spec")
+        if not isinstance(spec, Mapping):
+            continue
+        if str(spec.get("timeframe")) != str(timeframe):
+            continue
+        scope = spec.get("symbol_scope")
+        if not isinstance(scope, (list, tuple)) or symbol not in scope:
+            continue
+        for value in (record.get("generation_id"), spec.get("generation_id")):
+            if isinstance(value, str) and value:
+                seen.add(value)
+                break
+    return len(seen)
+
+
+def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
+                     rotation_index: int | None = None) -> int:
+    """The first family index this run mints. Deterministic, marches forward.
+
+    ``rotation_index`` is the caller's per-context cursor
+    (:func:`context_rotation_index`) and is the correct step. The generation-number
+    fallback below is kept for callers whose generations really are consecutive — the
+    proposer CLI, and tests that mint GEN-000, GEN-001, ... by hand — where it is
+    equivalent and needs no store to compute.
+
+    **Why the fallback is not enough, measured 2026-07-31.** A step that advances by
+    `s` per fire visits offsets `(k*s*count) % total`, and those form the multiples of
+    `gcd(s*count, total)` — the whole library only when that gcd is `count`. In
+    production `s` is the number of factory schedules (15), `count` is 4 and `total` is
+    36, so the gcd is 12: three blocks of four out of nine, and **24 of the 36 families
+    were unreachable for any given context, permanently**. The candidate store showed it
+    plainly — 440 seeded candidates over ~110 generations, and a median context had
+    minted 16 distinct families, none more than 20.
+
+    This is the SAME defect the docstring in :func:`generate_batch` describes, one layer
+    out: that one selected `templates[0..3]` on every run, this one selects one of three
+    fixed blocks. The fix then made *consecutive* generations rotate, and the test written
+    for it walks GEN-000, GEN-001, ... — a rotation production never performs. A test that
+    strides is in the suite now beside it."""
     if total <= 0:
         return 0
-    try:
-        step = int(str(generation_id).rsplit("-", 1)[1])
-    except (ValueError, IndexError):
-        step = int(seed)
+    if rotation_index is not None:
+        step = int(rotation_index)
+    else:
+        try:
+            step = int(str(generation_id).rsplit("-", 1)[1])
+        except (ValueError, IndexError):
+            step = int(seed)
     return (step * max(count, 1)) % total
 
 
@@ -1009,6 +1074,7 @@ def generate_batch(
     symbol: str = "BTCUSDT", timeframe: str = "1d",
     known_rule_hashes: frozenset[str] = frozenset(),
     positioning_eligible: bool = False,
+    rotation_index: int | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
@@ -1017,7 +1083,13 @@ def generate_batch(
 
     ``positioning_eligible`` is passed straight through to :func:`templates_for_timeframe` and
     defaults to False for the reason stated there — unmeasured coverage must not mint a family
-    over a window that cannot score it."""
+    over a window that cannot score it.
+
+    ``rotation_index`` is this context's own fire count (:func:`context_rotation_index`) and
+    is what the rotation should step on. It defaults to None — the generation-number
+    behaviour — because a caller that does not pass it is a caller with no store to count
+    from, and for those callers the generations really are consecutive. `run_factory` passes
+    it; see :func:`_rotation_offset` for what the global generation number did instead."""
     rng = random.Random(seed)
     templates = templates_for_timeframe(
         timeframe, symbol=symbol, positioning_eligible=positioning_eligible
@@ -1028,10 +1100,13 @@ def generate_batch(
     # came from those four families, while the other sixteen — htf_*, oi_*,
     # funding_fade_*, mean_reversion*, macd_momentum*, bollinger_* — existed in the
     # library and could never be minted at all. Porting a family was therefore
-    # invisible work. Stepping by ``count`` per generation walks the whole list in
-    # ceil(len/count) runs with no overlap, and stays deterministic (generations are
-    # sequential; the seed is the fallback when an id is not parseable).
-    offset = _rotation_offset(generation_id, seed, count, len(templates))
+    # invisible work. Stepping by ``count`` per RUN OF THIS CONTEXT walks the whole list
+    # in ceil(len/count) runs with no overlap, and stays deterministic. "Of this context"
+    # is the correction of 2026-07-31: the step used to be the global generation number,
+    # which advances once per fire across every context and so strides — see
+    # `_rotation_offset` for what that cost.
+    offset = _rotation_offset(generation_id, seed, count, len(templates),
+                              rotation_index=rotation_index)
     accepted: list[StrategySpec] = []
     validations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -1788,12 +1863,19 @@ def run_factory(
     candles_sha = integrity.sha256_record({"candles": snapshot.get("candles") or []})
     seed = int(candles_sha.split(":", 1)[1][:8], 16)
 
+    symbol = str(snapshot.get("symbol") or "BTCUSDT")
+    timeframe = str(snapshot.get("timeframe") or "1d")
     batch = generate_batch(
         generation_id, seed=seed, count=count,
-        symbol=str(snapshot.get("symbol") or "BTCUSDT"),
-        timeframe=str(snapshot.get("timeframe") or "1d"),
+        symbol=symbol,
+        timeframe=timeframe,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
+        # Counted from the store this function was already given — the rotation steps on
+        # THIS context's fire count, not on the global generation number.
+        rotation_index=context_rotation_index(
+            existing_candidates, symbol=symbol, timeframe=timeframe,
+        ),
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
