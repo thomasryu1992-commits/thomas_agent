@@ -121,6 +121,86 @@ def test_read_records_returns_rows_in_append_order(tmp_path):
     assert rows[0]["trace_id"] == "trace-1" and rows[0]["record"] == {"proposals": []}
 
 
+# --- streaming readers: the ledger is scanned, not held -----------------------
+
+def test_iter_records_yields_exactly_what_read_records_returns(tmp_path):
+    """`read_records` is now `list(iter_records())`; they may never disagree."""
+    store = LedgerStore(tmp_path / "ledger")
+    assert list(store.iter_records()) == []
+    for n in range(5):
+        store.append_records(f"trace-{n}", {"task": {"n": n}})
+    assert list(store.iter_records()) == store.read_records()
+
+
+def test_iter_records_fails_closed_where_the_bad_line_sits(tmp_path):
+    """A generator cannot judge what it has not read, so the raise arrives mid-iteration —
+    stated here because `registry_console` guards the *loop* for exactly this reason, and a
+    `try` around the call alone would catch nothing."""
+    store = LedgerStore(tmp_path / "ledger")
+    store.append_records("trace-1", {"task": {"n": 1}})
+    with (store.root / RECORDS_FILE).open("a", encoding="utf-8") as fh:
+        fh.write("{not json\n")
+
+    stream = store.iter_records()
+    assert next(stream)["trace_id"] == "trace-1"       # the good row is delivered first
+    with pytest.raises(PersistenceError) as exc:
+        next(stream)
+    assert exc.value.reason_code == "LEDGER_UNREADABLE"
+
+    with pytest.raises(PersistenceError):              # the list door stays all-or-nothing
+        store.read_records()
+
+
+def test_the_audit_tip_still_refuses_a_ledger_corrupt_ANYWHERE(tmp_path):
+    """The property that decided *how* the tip is read. Streaming every line preserves it;
+    seeking to the end for the last line would have been faster and would have let a new
+    chain start on top of a damaged one — the tip's whole reason for failing closed.
+
+    The corruption here is deliberately NOT in the last line."""
+    store = LedgerStore(tmp_path / "ledger")
+    store.root.mkdir(parents=True)
+    (store.root / AUDIT_FILE).write_text(
+        "{not json\n" + json.dumps({"integrity": {"event_sha256": "sha256:" + "a" * 64}}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PersistenceError) as exc:
+        store.last_audit_hash()
+    assert exc.value.reason_code == "LEDGER_UNREADABLE"
+
+
+def test_a_bounded_reader_does_not_retain_the_ledger(tmp_path):
+    """The memory property, and the one a correct result cannot show: keeping the last N rows
+    of one kind costs the same either way in output and 6x in memory. `crypto/dashboard.py`
+    was rewritten for this after materializing the record ledger OOM-killed the board; the
+    scheduler and the registry console were still doing it to the same file.
+
+    Measured on the live host: 82 MB peak to keep 40 rows, against 14 MB streamed."""
+    import tracemalloc
+    from collections import deque
+
+    store = LedgerStore(tmp_path / "ledger")
+    width, count = 4096, 2_000
+    for n in range(count):
+        # Unique per row on purpose: one shared filler string would be a single object
+        # however many rows referenced it, and the test would pass against the code it
+        # exists to refuse.
+        store.append_records(f"trace-{n}", {"task": {"pad": f"{n:08d}".ljust(width, "x")}})
+    payload = count * width
+
+    tracemalloc.start()
+    window: deque = deque(maxlen=40)
+    for row in store.iter_records():
+        if row.get("kind") == "task":
+            window.append(row)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert len(window) == 40
+    assert peak < payload // 4, (
+        f"peak {peak / 1e6:.1f}MB against {payload / 1e6:.1f}MB of ledger — it is being held"
+    )
+
+
 def test_corrupt_ledger_tip_fails_closed(tmp_path):
     store = LedgerStore(tmp_path / "ledger")
     (store.root).mkdir(parents=True)

@@ -189,16 +189,21 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
         return None
     from .pipeline import render_response
 
+    # Streamed: this scans the whole ledger to keep the handful of rows carrying one trace
+    # id, and the ledger is ~23 MB on the live host.
+    #
+    # The `try` wraps the LOOP, not the call. `iter_records` is a generator, so building it
+    # runs no code and raises nothing; an unreadable ledger surfaces on the first `next`.
+    # Guarding only the call would have caught nothing and turned a degradation into a crash.
+    kinds: dict[str, Any] = {}
     try:
-        rows = ledger.read_records()
+        for row in ledger.iter_records():
+            if isinstance(row, dict) and row.get("trace_id") == entry.trace_id:
+                kind = row.get("kind")
+                if isinstance(kind, str):
+                    kinds[kind] = row.get("record")
     except PersistenceError:
         return None
-    kinds: dict[str, Any] = {}
-    for row in rows:
-        if isinstance(row, dict) and row.get("trace_id") == entry.trace_id:
-            kind = row.get("kind")
-            if isinstance(kind, str):
-                kinds[kind] = row.get("record")
     agent_output = kinds.get("agent_output")
     if not isinstance(agent_output, dict):
         return None

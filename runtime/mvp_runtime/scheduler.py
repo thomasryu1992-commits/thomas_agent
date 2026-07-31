@@ -31,6 +31,7 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -797,7 +798,7 @@ def _execute(
         # the backlog cap is a courtesy throttle, not a safety gate.
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.read_records() if ledger is not None else [], installed, now=now,
+                ledger.iter_records() if ledger is not None else [], installed, now=now,
             )
         except MvpRuntimeError:
             backlog = 0
@@ -841,8 +842,14 @@ def _execute(
         from .providers import select_validator_provider
 
         try:
-            cycle_rows = [r for r in (ledger.read_records() if ledger is not None else [])
-                          if r.get("kind") == "crypto_cycle"][-40:]
+            # A bounded window over a stream, not a filtered copy of the whole ledger.
+            # This is the shape `crypto/dashboard.py` was rewritten into after materializing
+            # this same file OOM-killed the board; it needs 40 rows and the ledger is ~23 MB.
+            window: deque[dict[str, Any]] = deque(maxlen=40)
+            for row in (ledger.iter_records() if ledger is not None else []):
+                if row.get("kind") == "crypto_cycle":
+                    window.append(row)
+            cycle_rows = list(window)
         except MvpRuntimeError:
             cycle_rows = []  # a malformed ledger degrades the inventory, never the fire
         try:
