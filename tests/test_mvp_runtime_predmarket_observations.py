@@ -485,3 +485,121 @@ def test_the_console_line_calls_the_ratio_priced_not_readable():
     })
     assert "64/65 priced" in line
     assert "readable" not in line
+
+
+# --- degrading per venue --------------------------------------------------------
+
+class _BrokenCollector:
+    """A venue that answers every question with an outage."""
+
+    network_egress = True
+
+    def __init__(self, venue: str, code: str = "TOOL_TRANSPORT") -> None:
+        self.venue = venue
+        self.source = f"broken.{venue}"
+        self.tool_id = "predmarket.collector"
+        self.tool_version = "0.1.0-broken"
+        self._code = code
+
+    def list_markets(self, **kwargs):
+        raise ToolError(self._code, "venue unreachable")
+
+    def read_resolutions(self, **kwargs):
+        raise ToolError(self._code, "venue unreachable")
+
+
+def test_one_venue_failing_degrades_that_venue_and_still_produces_a_scan(state, monkeypatch):
+    """The behaviour the docstring has always promised and the code never delivered.
+
+    `collect_pred_markets` converts an adapter's `ToolError` into a `ToolBlocked`, and the two
+    are SIBLINGS under `MvpRuntimeError` — so `except ToolError` here could never fire. One
+    venue failing raised out of the whole scan, discarding every venue that HAD answered, and
+    the rows went missing instead of being recorded as non-readings. `VENUE_UNREADABLE` read 0
+    across ~98,000 stored readings, which looked like a healthy window rather than a dead
+    branch.
+    """
+    _group(state)
+    monkeypatch.setattr(
+        obs, "select_pred_market_collector",
+        lambda venue, **kw: (_BrokenCollector(venue) if venue == KALSHI
+                             else LiveLikePredMarketCollector(venue)),
+    )
+    scan = obs.run_watch_scan(now=NOW, root=state)
+
+    assert scan["venue_errors"] == {KALSHI: "TOOL_ERROR"}
+    assert scan["venues_read"] == [POLYMARKET]
+    # The attempt is a row, with the reason. That is the denominator this window is measured on.
+    assert scan["observation_count"] == 1 and scan["readable_count"] == 0
+    row = obs.read_observations(state)[0]
+    assert obs.VENUE_UNREADABLE in row["reasons"]
+    assert row["is_opportunity"] is False
+
+
+# --- the resolution sweep -------------------------------------------------------
+
+def test_a_sweep_with_nothing_settled_reports_no_comparison_rather_than_agreement(
+        state, monkeypatch):
+    """PM1's groups are mostly 2028 markets, so for most of the window nothing has ended. A
+    group with no settled leg is not agreement and is not a mismatch — it is a wait."""
+    _group(state, {"venue": KALSHI, "market_id": "KALSHI-MOCK-03"},
+           {"venue": POLYMARKET, "market_id": "POLYMARKET-MOCK-03"})
+    monkeypatch.setattr(obs, "select_pred_market_collector",
+                        lambda venue, **kw: LiveLikePredMarketCollector(venue))
+    sweep = obs.run_resolution_sweep(now=NOW, root=state)
+    assert sweep["comparable_count"] == 0 and sweep["mismatch_count"] == 0
+    assert sweep["groups"][0]["settled_legs"] == 0
+
+
+def test_a_sweep_finds_the_group_whose_venues_disagree(state, monkeypatch):
+    """The finding the sweep exists for. Two venues that settled the same event differently is
+    the risk the whole cross-venue strategy turns on, and it is only visible where BOTH have
+    settled — which is why `comparable` counts settled legs rather than groups."""
+    _group(state, {"venue": KALSHI, "market_id": "KALSHI-MOCK-02"},
+           {"venue": POLYMARKET, "market_id": "POLYMARKET-MOCK-02"})
+    monkeypatch.setattr(obs, "select_pred_market_collector",
+                        lambda venue, **kw: LiveLikePredMarketCollector(venue))
+    sweep = obs.run_resolution_sweep(now=NOW, root=state)
+    assert sweep["comparable_count"] == 1
+    assert sweep["mismatch_count"] == 1
+    assert sweep["groups"][0]["mismatch"] is True
+    assert "1 mismatch(es) from 1 comparable" in obs.resolution_status_line(sweep)
+
+
+def test_agreeing_venues_are_comparable_and_not_a_mismatch(state, monkeypatch):
+    _group(state, {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
+           {"venue": POLYMARKET, "market_id": "POLYMARKET-MOCK-00"})
+    monkeypatch.setattr(obs, "select_pred_market_collector",
+                        lambda venue, **kw: LiveLikePredMarketCollector(venue))
+    sweep = obs.run_resolution_sweep(now=NOW, root=state)
+    assert (sweep["comparable_count"], sweep["mismatch_count"]) == (1, 0)
+
+
+def test_a_sweep_degrades_a_venue_it_cannot_read_rather_than_calling_it_unsettled(
+        state, monkeypatch):
+    """A venue we could not reach and a venue that says "not yet" are different facts. Folding
+    the first into the second would report a market as still running on the strength of an
+    outage — and on this sweep that is a position nobody closes."""
+    _group(state)
+    monkeypatch.setattr(
+        obs, "select_pred_market_collector",
+        lambda venue, **kw: (_BrokenCollector(venue, "PREDMARKET_RESOLUTION_UNSUPPORTED")
+                             if venue == KALSHI else LiveLikePredMarketCollector(venue)),
+    )
+    sweep = obs.run_resolution_sweep(now=NOW, root=state)
+    assert sweep["venue_errors"] == {KALSHI: "PREDMARKET_RESOLUTION_UNSUPPORTED"}
+    assert sweep["comparable_count"] == 0
+    legs = {leg["venue"]: leg for leg in sweep["groups"][0]["legs"]}
+    assert legs[KALSHI]["unreadable"] == "PREDMARKET_RESOLUTION_UNSUPPORTED"
+    assert legs[KALSHI]["resolution"] is None
+    assert legs[POLYMARKET]["resolution"]["settled"] is True
+
+
+def test_a_sweep_on_the_mock_is_degraded_not_reported_as_settlements(state, monkeypatch):
+    """The synthetic door, and it matters more here than on the price path: a mock answers
+    successfully, so without it a settlement derived from `(venue, index)` would be reported
+    as how a real market ended."""
+    _group(state)
+    sweep = obs.run_resolution_sweep(now=NOW, root=state)
+    assert set(sweep["venue_errors"]) == {KALSHI, POLYMARKET}
+    assert all(code == SYNTHETIC_SOURCE for code in sweep["venue_errors"].values())
+    assert sweep["comparable_count"] == 0

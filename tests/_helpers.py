@@ -57,3 +57,8 @@ class LiveLikePredMarketCollector:
         snapshot = self._inner.list_markets(**kwargs)
         snapshot.is_synthetic = False
         return snapshot
+
+    def read_resolutions(self, **kwargs):
+        snapshot = self._inner.read_resolutions(**kwargs)
+        snapshot.is_synthetic = False
+        return snapshot
