@@ -1030,3 +1030,49 @@ def test_a_lapsed_limits_record_fails_the_cycle_guard_closed(tmp_path):
     assert record["verdict_status"] == "NO_NEW_POSITION"
     assert risk_limits.LIMITS_EXPIRED in record["reason_codes"]
     assert "risk_limits_unusable" in record["verdict_problems"]
+
+
+# --- the drawdown baseline's routable re-check (#405) --------------------------
+
+def test_an_unreadable_pool_leaves_the_drawdown_baseline_unverified(tmp_path, monkeypatch):
+    """The fail-closed half of the rebase, at the level that actually reads the pool. A tampered
+    pool degrades routing to "trade nothing" — and it must NOT arrive at the guard as an empty
+    routable set, which would read as "every retired lineage is confirmed retired" and release
+    the whole exclusion. A filesystem error must never clear a real-money brake."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod, pool as pool_mod
+
+    seen: dict[str, object] = {"called": False}
+    real_guard = cycle_mod.run_risk_guard
+
+    def _capture(outcomes, **kw):
+        seen["called"] = True
+        seen["routable"] = kw.get("routable_strategy_ids")
+        return real_guard(outcomes, **kw)
+
+    def _explode(root=None):
+        raise ToolError("STRATEGY_POOL_INVALID", "stubbed: unreadable pool")
+
+    monkeypatch.setattr(cycle_mod, "run_risk_guard", _capture)
+    monkeypatch.setattr(pool_mod, "load_active_pool", _explode)
+
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert seen["called"], "the guard never ran"
+    assert seen["routable"] is None, "an unreadable pool must be UNKNOWN, never the empty set"
+    assert "STRATEGY_POOL_INVALID" in record["reason_codes"]
+
+
+def test_a_readable_pool_hands_the_guard_its_routable_ids(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+    real_guard = cycle_mod.run_risk_guard
+
+    def _capture(outcomes, **kw):
+        seen["routable"] = kw.get("routable_strategy_ids")
+        return real_guard(outcomes, **kw)
+
+    monkeypatch.setattr(cycle_mod, "run_risk_guard", _capture)
+    spec = _always_spec()
+    _install_pool(tmp_path, spec)
+    _cycle(tmp_path, FakeExchangeCollector())
+    assert seen["routable"] == {spec["strategy_id"]}

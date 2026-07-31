@@ -85,6 +85,7 @@ def build_risk_limits_record(
     valid_until: str,
     registered_by: str,
     registered_at: str,
+    drawdown_baseline_rebase: Mapping[str, Any] | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build a self-hashed, schema-valid risk-limits record. Fail-closed.
@@ -151,6 +152,37 @@ def build_risk_limits_record(
         "registered_by": registered_by.strip(),
         "registered_at": registered_at,
     }
+    # OPTIONAL, and absent from the id seed on purpose: `limits_id` identifies the NUMBERS this
+    # record sets, and two records with the same breakers but different retirement sets are the
+    # same limits applied to different populations. The self-hash below covers it either way, so
+    # the block is still tamper-evident — it just does not rename the record.
+    if drawdown_baseline_rebase is not None:
+        ids = drawdown_baseline_rebase.get("excluded_strategy_ids")
+        reason = drawdown_baseline_rebase.get("reason")
+        if not isinstance(ids, (list, tuple)) or not ids or not all(
+            isinstance(i, str) and i.strip() for i in ids
+        ):
+            raise ToolError(
+                LIMITS_INVALID,
+                "drawdown_baseline_rebase.excluded_strategy_ids must be a non-empty list of ids",
+            )
+        if not (isinstance(reason, str) and reason.strip()):
+            raise ToolError(
+                LIMITS_INVALID,
+                "drawdown_baseline_rebase.reason is required — a rebase forgets losses, and the "
+                "record has to say whose and why",
+            )
+        deduped = sorted(dict.fromkeys(i.strip() for i in ids))
+        if len(deduped) != len(ids):
+            raise ToolError(
+                LIMITS_INVALID,
+                "drawdown_baseline_rebase.excluded_strategy_ids contains duplicates",
+            )
+        body["drawdown_baseline_rebase"] = {
+            "excluded_strategy_ids": deduped,
+            "reason": reason.strip(),
+        }
+
     body["record_sha256"] = integrity.sha256_record(body)
     _validate(body, repo_root=repo_root)
     return body
@@ -202,6 +234,12 @@ def limits_from_record(record: Mapping[str, Any]) -> RiskLimits:
         source=guards.SOURCE_REGISTERED,
         limits_id=record.get("limits_id"),
         record_sha256=record.get("record_sha256"),
+        # The exclusion list rides with the numbers, because the drawdown limit and the
+        # population it is measured over are one judgement — a verdict that carried the limit
+        # without the baseline could not be re-checked against the history it ruled on.
+        drawdown_excluded_strategy_ids=tuple(
+            (record.get("drawdown_baseline_rebase") or {}).get("excluded_strategy_ids") or ()
+        ),
     )
     problems = resolved.problems()
     if problems:

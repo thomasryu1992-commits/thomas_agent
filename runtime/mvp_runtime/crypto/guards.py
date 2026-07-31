@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .. import timeutil
 from . import cost
@@ -95,6 +95,12 @@ class RiskLimits:
     source: str = SOURCE_DEFAULT
     limits_id: str | None = None
     record_sha256: str | None = None
+    # The DRAWDOWN baseline's exclusion list, and only the drawdown's — daily, weekly and
+    # consecutive-loss keep judging every closed outcome. Empty is today's behaviour exactly.
+    # These ids are a *claim the record makes*, never the decision: :func:`drawdown_baseline`
+    # re-checks every one against the live pool, so a lineage that is routable again keeps its
+    # losses in the window no matter how this record was written.
+    drawdown_excluded_strategy_ids: tuple[str, ...] = ()
 
     def problems(self) -> list[str]:
         """Every bound this set violates, named. Empty means safe to judge trades on.
@@ -139,6 +145,10 @@ class RiskLimits:
             "source": self.source,
             "limits_id": self.limits_id,
             "record_sha256": self.record_sha256,
+            # Sorted and always present: an empty list is the honest statement "no lineage was
+            # set aside", and a verdict that omitted the key when empty would leave a reader
+            # unable to tell it from one written before the mechanism existed.
+            "drawdown_excluded_strategy_ids": sorted(self.drawdown_excluded_strategy_ids),
         }
 
 
@@ -335,8 +345,83 @@ def risk_guard_unreadable(error: str, *, now: str) -> dict[str, Any]:
     return risk_guard_unavailable("risk_history_unreadable", error, now=now)
 
 
+def drawdown_baseline(
+    outcomes: list[dict[str, Any]],
+    *,
+    excluded: Sequence[str] = (),
+    routable: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``(rows the drawdown breaker measures, what was set aside and why)``. Pure.
+
+    The rule, stated once: **an outcome may leave the drawdown baseline only if it can prove it
+    came from a lineage that is not currently routable.** Three conditions, all required, and
+    every one of them fails toward keeping the loss:
+
+    1. the row **names** a lineage (a non-empty ``strategy_id``) — absence of evidence is not
+       evidence of retirement, so an unattributable row never leaves;
+    2. that lineage is **named in the record** — the operator retired it deliberately and said so;
+    3. that lineage is **not routable right now** — re-checked here against the live pool rather
+       than trusted from the record, which is what makes a re-promotion silently invalidate its
+       own exclusion and hand the losses back.
+
+    ``routable=None`` means *the caller could not read the pool*, and it is deliberately not the
+    same as an empty set: empty says "every named lineage is retired" and would release the whole
+    exclusion, while None says "I cannot tell" and keeps every row. The one input that could turn
+    a failed read into a cleared breaker is therefore the one input that cannot.
+
+    ``excluded`` empty — no record, or a record with no rebase block — returns every row and an
+    ``applied: False`` summary, which is the pre-rebase behaviour exactly rather than an
+    approximation of it.
+
+    This is a **narrowing of one breaker's window, not a rewrite of history**: the ledger is
+    untouched, `feedback` and Gate 0 keep reading the full record, and the daily, weekly and
+    consecutive-loss breakers in :func:`run_risk_guard` keep judging every closed outcome.
+    """
+    named = [str(s) for s in excluded if str(s)]
+    summary: dict[str, Any] = {
+        "applied": False,
+        "named_lineages": sorted(dict.fromkeys(named)),
+        "excluded_lineages": [],
+        "retained_because_routable": [],
+        "retained_because_unattributable": 0,
+        "rows_excluded": 0,
+    }
+    if not named:
+        return outcomes, summary
+    if routable is None:
+        # Named, but unverifiable. Reported as its own state rather than folded into "not
+        # applied": an operator who registered a rebase and sees the full drawdown needs to know
+        # the pool read failed, not conclude the record was rejected.
+        summary["retained_because_pool_unreadable"] = True
+        return outcomes, summary
+
+    leaving = {s for s in named if s not in routable}
+    summary["applied"] = True
+    summary["excluded_lineages"] = sorted(leaving)
+    summary["retained_because_routable"] = sorted(s for s in named if s in routable)
+
+    kept: list[dict[str, Any]] = []
+    unattributable = 0
+    for row in outcomes:
+        sid = str(row.get("strategy_id") or "") if isinstance(row, dict) else ""
+        if not sid:
+            unattributable += 1
+            kept.append(row)
+            continue
+        if sid in leaving:
+            continue
+        kept.append(row)
+    summary["retained_because_unattributable"] = unattributable
+    summary["rows_excluded"] = len(outcomes) - len(kept)
+    return kept, summary
+
+
 def run_risk_guard(
-    outcomes: list[dict[str, Any]], *, now: str, limits: RiskLimits | None = None
+    outcomes: list[dict[str, Any]],
+    *,
+    now: str,
+    limits: RiskLimits | None = None,
+    routable_strategy_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Judge the closed-outcome history against the loss limits. Never raises.
 
@@ -363,7 +448,18 @@ def run_risk_guard(
     daily_pnl_r = _pnl_since(rows, day_start)
     weekly_pnl_r = _pnl_since(rows, week_start)
     consecutive_losses = _consecutive_losses(rows)
-    max_drawdown_r, current_drawdown_r = _drawdowns_r(rows)
+    # The drawdown, and ONLY the drawdown, may measure a narrowed population — the three
+    # breakers above keep judging every closed outcome. The filter runs on the raw records
+    # rather than on `rows`, because `_closed_rows` projects each one down to (pnl_r,
+    # exit_time) and the lineage this rule turns on would not survive the projection.
+    dd_outcomes, baseline = drawdown_baseline(
+        outcomes,
+        excluded=limits.drawdown_excluded_strategy_ids,
+        routable=routable_strategy_ids,
+    )
+    max_drawdown_r, current_drawdown_r = _drawdowns_r(
+        rows if not baseline["applied"] else _closed_rows(dd_outcomes)
+    )
 
     problems: list[str] = []
     if daily_pnl_r <= limits.daily_max_loss_r:
@@ -386,6 +482,12 @@ def run_risk_guard(
         "drawdown_r": round(current_drawdown_r, 4),
         "max_drawdown_r": round(max_drawdown_r, 4),
         "drawdown_limit_r": round(_drawdown_limit_r(limits), 4),
+        # What the drawdown was measured over. Always present, `applied: False` on the
+        # overwhelming majority of cycles — a verdict that only mentioned the baseline when it
+        # narrowed one could not be told apart from a verdict written before the mechanism
+        # existed, and this number is a mechanism for forgetting losses: it has to say so on
+        # every row, not only on the rows where it did.
+        "drawdown_baseline": baseline,
         "problems": problems,
         # Which limits judged this cycle, and which record they came from. A verdict that
         # records only its outcome cannot be re-checked later against the numbers in force at
