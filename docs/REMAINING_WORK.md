@@ -413,20 +413,50 @@ Phasing: observe (no money) → paper (no external effect) → approval-gated li
       window closing and PM2 starting; two are engineering that can be done *during* the window,
       two are Thomas's and have to precede it. Nothing below was blocking anything yet, which is
       why none of it had been written down.
-  - [ ] **Hold-to-resolution has no read path, and it is PM2's defining mechanic.** Every adapter
-        reads *open* markets only: Kalshi pins `status=open` on both the targeted (`_read_named`)
-        and the discovery (`_read_events`) call, Gamma is asked for `active=true&closed=false`,
-        and `parse_prediction_markets` skips any outcome whose `tradingStatus` is not `OPEN`. A
-        market that settles therefore does not **resolve** in the read — it **disappears** from
-        it, and the watch scan files the leg as `MARKET_NOT_LISTED`, the same code it uses for a
-        market that was delisted or never existed. No call in this package can answer *how did it
-        resolve*, so a paper position held to settlement has nothing to settle against, and the
-        cross-venue resolution mismatch PM2 exists to measure is exactly the thing that is
-        invisible. What it needs is a third read path per venue (Kalshi's settled market and its
-        `result`, Gamma's resolved outcome, Binance's resolved topic) plus a resolution field on
-        the leg. **Worth building inside the window rather than after it**: `MARKET_NOT_LISTED`
-        is an unknown mixture of *gone* and *settled* — 268 of them at day 3.9 — and only one of
-        those two is an incident.
+  - [x] **Hold-to-resolution had no read path, and it is PM2's defining mechanic** — built
+        2026-07-31 (#400). Every adapter read *open* markets only: Kalshi pinned `status=open` on
+        both the targeted and the discovery call, Gamma was asked for `active=true&closed=false`,
+        and `parse_prediction_markets` skipped any outcome whose `tradingStatus` was not `OPEN`.
+        A market that settled therefore did not **resolve** in the read, it **disappeared** from
+        it. There is now a third read path — `read_resolutions` per collector, `Resolution` on
+        the leg, `collect_pred_resolutions` for the record — asked through its own call so the
+        two price paths are untouched and a settled market can never reach a scan about
+        tradability. Both parsers were verified against the live venues, and what that caught is
+        the argument for doing it that way:
+    - **Kalshi's `settlement_ts` is an ISO string despite the suffix** (`2026-07-31T08:22:18.605072Z`),
+          while the same venue's `min_close_ts` *request* parameter is epoch seconds. A parser
+          that took the convention from the name would have recorded `None` on every settlement.
+    - **A settlement of exactly 0 or 1 is the normal case**, and `_probability` maps both to
+          `None` because a *quote* there means "nobody is quoting this side". Running settlements
+          through it would have erased every resolved market while leaving the voided ones.
+    - **A market that paid nobody is not a NO.** Gamma's `["0","0"]` gives a YES value of 0,
+          indistinguishable from a real NO read off the YES side alone — and a real NO paid the
+          NO holder a dollar. Left that way, a voided market on one venue reads as *agreement*
+          with a genuine NO on the other, which is the exact disagreement PM2 exists to find.
+          It is now `VOID`, and it does not settle a position.
+  - [ ] **Binance settlements are unreachable, and it is an id format rather than an endpoint.**
+        The stored leg is `marketId:tokenId` — everything the order book needs, which is what it
+        was designed for — while `market/detail` is keyed by `marketTopicId`, which the composite
+        does not carry and the group record never kept. So even a settlement field on that
+        response could not be reached from the leg holding the position. `read_resolutions`
+        refuses with its own `PREDMARKET_RESOLUTION_UNSUPPORTED` rather than reporting every
+        Binance leg as *not settled yet*, because a caller that cannot tell those apart waits
+        forever for an answer that is not coming. **This is load-bearing for PM2, not a corner:
+        most confirmed groups are binance×polymarket**, so today most groups can never become
+        comparable. The fix has a precedent one box down — #287, a confirmed leg keeping the fee
+        rate a by-id re-read cannot carry: `confirm` sees the topic id at proposal time and could
+        capture it the same way. It is a change to the group record **and to every group already
+        confirmed**, so it is written down here rather than guessed at.
+  - [x] **`run_watch_scan` never degraded per venue** — found while building the sweep, fixed in
+        the same PR. `collect_pred_markets` converts an adapter's `ToolError` into a `ToolBlocked`,
+        and those two are **siblings** under `MvpRuntimeError` rather than parent and child, so
+        the scan's `except ToolError` could not fire. One venue failing raised out of the whole
+        scan and discarded the observations of every venue that *had* answered — the rows going
+        missing entirely instead of being recorded as non-readings, which is the omission this
+        module's own header calls out ("how often" is a ratio whose denominator is those
+        attempts) and which biases the number **upward**, because the scans that vanish are the
+        ones where conditions were worst. `VENUE_UNREADABLE` reading 0 across ~98,000 stored
+        readings was the visible symptom, and it looked like good news.
   - [ ] **The clean exit artifact is not available on 2026-08-10. It is available 2026-08-12T10:15Z.**
         `build_pm1_report` reads `is_opportunity` off the stored row instead of recomputing it,
         which is right — the row is the evidence — and means an unbounded report answers "how

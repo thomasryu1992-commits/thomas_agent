@@ -173,6 +173,21 @@ def _size(value: Any) -> float | None:
     return parsed
 
 
+def _settlement_value(value: Any) -> float | None:
+    """What one YES contract paid, in ``[0, 1]`` **inclusive**, or ``None``.
+
+    The deliberate opposite of :func:`_probability`, and the distinction is the whole point of
+    a separate helper. A *quote* of exactly 0 or 1 is an empty side, so that function maps it
+    to ``None``. A *settlement* of exactly 0 or 1 is the normal case — it is what every
+    resolved binary market pays — and running settlements through the quote parser would erase
+    every outcome this package reads while leaving the voided and split ones intact.
+    """
+    parsed = as_optional_float(value)
+    if parsed is None or not (0.0 <= parsed <= 1.0):
+        return None
+    return parsed
+
+
 @dataclass(frozen=True)
 class VenueQuote:
     """Best bid/ask for the YES side of one market, in probability units.
@@ -208,6 +223,91 @@ class VenueQuote:
             "yes_ask_size": self.yes_ask_size,
             "quoted": self.quoted(),
             "mid": self.mid(),
+        }
+
+
+# --- how a market ended -----------------------------------------------------------
+#
+# Four categories, and the fourth is not a failure. A binary contract can end paying the YES
+# side, paying the NO side, or paying both something — venues void a market, and Polymarket's
+# resolver can split it 50/50 — and PM2's ledger has to tell those apart because they are
+# three different amounts of money. `UNDETERMINED` is the market that closed and has not been
+# settled yet, which is a *wait*, not an outcome.
+RESOLVED_YES = "YES"
+RESOLVED_NO = "NO"
+RESOLVED_SPLIT = "SPLIT"
+RESOLVED_UNDETERMINED = "UNDETERMINED"
+# Settled, and no side was paid in full. A voided market is one way to get here; a row whose
+# prices were never populated is another, and from outside they are the same fact. It is NOT
+# `NO`: a NO resolution paid the NO holder a dollar, and this paid nobody. Collapsing the two
+# is what makes a voided market on one venue read as agreement with a real NO on the other —
+# which is precisely the cross-venue disagreement PM2 is built to catch.
+RESOLVED_VOID = "VOID"
+
+# The venue was asked and could not be asked usefully. Distinct from every code above: those
+# describe a market, this describes the read. See `BinancePredictionCollector.read_resolutions`.
+RESOLUTION_UNSUPPORTED = "PREDMARKET_RESOLUTION_UNSUPPORTED"
+
+
+def classify_resolution(yes_value: float | None) -> str:
+    """What one YES contract paid, as a category. ``None`` is *not settled*, never *lost*.
+
+    The boundaries are exact rather than tolerant on purpose. Both venues state a settlement
+    as an exact 0 or 1 (Kalshi's ``settlement_value_dollars``, Gamma's ``outcomePrices``), so
+    a value that is 0.9997 is not a rounding artifact of a YES win — it is a number this
+    function has not seen before, and calling it ``SPLIT`` says so where calling it ``YES``
+    would bury it.
+    """
+    if yes_value is None:
+        return RESOLVED_UNDETERMINED
+    if yes_value == 1.0:
+        return RESOLVED_YES
+    if yes_value == 0.0:
+        return RESOLVED_NO
+    return RESOLVED_SPLIT
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """How one venue says one market settled.
+
+    ``yes_value`` is what a single YES contract paid, in the same ``[0, 1]`` unit the quotes
+    use — so a paper position's P&L is ``yes_value - entry_price`` and needs no per-venue
+    special case. ``venue_word`` keeps whatever the venue actually called it, because the
+    categories above are this package's vocabulary and the disagreement PM2 is built to
+    measure is between the *venues*: two of them mapping to ``NO`` through different words is
+    agreement, and an operator reading an incident needs to see both words to believe it.
+
+    A ``Resolution`` on a market means the venue answered. ``PredMarket.resolution is None``
+    means it was not asked or did not say — the module's standing rule, applied here because
+    this is the field where guessing costs the most.
+    """
+
+    outcome: str
+    yes_value: float | None = None
+    venue_word: str | None = None
+    settled_at: str | None = None
+
+    def settled(self) -> bool:
+        """Whether a position can be closed against this. Two ways to fail, both fail closed.
+
+        The category has to name an outcome — ``UNDETERMINED`` is a wait and ``VOID`` paid
+        nobody — **and** there has to be a number, because a settlement whose evidence
+        contradicted itself carries the venue's word with no value behind it. Either gap means
+        a human decides; neither is something to book a paper P&L against.
+        """
+        return (
+            self.outcome in (RESOLVED_YES, RESOLVED_NO, RESOLVED_SPLIT)
+            and self.yes_value is not None
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome,
+            "yes_value": self.yes_value,
+            "venue_word": self.venue_word,
+            "settled_at": self.settled_at,
+            "settled": self.settled(),
         }
 
 
@@ -262,6 +362,10 @@ class PredMarket:
     # and never used as one. It ranks a venue's own markets against each other, which is how
     # discovery finds the head of each listing instead of whatever the page happened to hold.
     volume: float | None = None
+    # How this market settled, when it was read through `read_resolutions`. `None` on every
+    # market a price read produced, because a price read never asks — and this is the one
+    # field where "did not say" and "settled NO" differ by the whole position.
+    resolution: Resolution | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -277,6 +381,7 @@ class PredMarket:
             "accepting_orders": self.accepting_orders,
             "resolution_rules": self.resolution_rules,
             "volume": self.volume,
+            "resolution": self.resolution.as_dict() if self.resolution is not None else None,
             "quote": self.quote.as_dict(),
         }
 
@@ -311,6 +416,10 @@ class PredMarketCollector(Protocol):
         timeout_seconds: int,
         market_ids: Sequence[str] | None = None,
         with_quotes: bool = True,
+    ) -> PredMarketSnapshot: ...
+
+    def read_resolutions(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
     ) -> PredMarketSnapshot: ...
 
 
@@ -385,6 +494,63 @@ class MockPredMarketCollector:
             collector_version=self.tool_version,
             quotes_requested=with_quotes,
         )
+
+    # Which mock index the two venues deliberately disagree about. The same reasoning as the
+    # price skew above: mocks that always agree let a mismatch detector ship broken, and
+    # cross-venue resolution disagreement is the specific risk PM2 exists to measure.
+    _DISPUTED_INDEX = 2
+    # And the one that has closed without settling, so the wait-vs-outcome branch is reachable
+    # without a network.
+    _UNSETTLED_INDEX = 3
+
+    def read_resolutions(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
+    ) -> PredMarketSnapshot:
+        """Deterministic settlements: even indices pay YES, odd pay NO, with two exceptions.
+
+        Answers for **every** id it is given, which is the contract the real adapters keep
+        too — an id the venue does not report settled comes back ``UNDETERMINED`` rather than
+        missing from the list, so a caller can never read a dropped row as a lost position.
+        """
+        markets: list[PredMarket] = []
+        for raw in market_ids:
+            index = self._mock_index(raw)
+            if index is None or index == self._UNSETTLED_INDEX:
+                resolution = Resolution(outcome=RESOLVED_UNDETERMINED)
+            else:
+                pays_yes = index % 2 == 0
+                if index == self._DISPUTED_INDEX and self.venue == POLYMARKET:
+                    pays_yes = not pays_yes
+                value = 1.0 if pays_yes else 0.0
+                resolution = Resolution(
+                    outcome=classify_resolution(value),
+                    yes_value=value,
+                    venue_word=f"mock:{'yes' if pays_yes else 'no'}",
+                    settled_at="2026-01-01T00:00:00Z",
+                )
+            markets.append(PredMarket(
+                venue=self.venue, market_id=str(raw), group_id=None,
+                title="", close_time=None, status=None, resolution=resolution,
+            ))
+        return PredMarketSnapshot(
+            venue=self.venue,
+            markets=markets,
+            source=self.source,
+            is_synthetic=True,
+            collector_version=self.tool_version,
+            quotes_requested=False,
+        )
+
+    def _mock_index(self, market_id: Any) -> int | None:
+        """The trailing index of an id this mock would have produced, or ``None``."""
+        text = str(market_id)
+        prefix = f"{self.venue.upper()}-MOCK-"
+        if not text.startswith(prefix):
+            return None
+        try:
+            return int(text[len(prefix):])
+        except ValueError:
+            return None
 
 
 def rotation_index(now: Any, *, period_seconds: float = ROTATION_PERIOD_SECONDS) -> int:
@@ -513,6 +679,72 @@ def collect_pred_markets(
         "market_count": len(markets),
         "quoted_count": len(quoted),
         "quotes_requested": bool(getattr(result, "quotes_requested", True)),
+        "source": result.source,
+        "is_synthetic": bool(result.is_synthetic),
+        "output_sha256": integrity.sha256_record({"markets": markets}),
+        "latency_ms": int(result.latency_ms),
+        "read_only": True,
+        "external_action": False,
+        "network_egress": bool(getattr(collector, "network_egress", False)),
+        "created_at": now,
+    }
+    return snapshot, record
+
+
+def collect_pred_resolutions(
+    venue: str,
+    *,
+    collector: PredMarketCollector,
+    market_ids: Sequence[str],
+    now: str,
+    timeout_seconds: int = 10,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read how these markets settled. Returns ``(snapshot, tool_use_record)``.
+
+    ``collect_pred_markets``'s sibling, and deliberately the same shape: same hashes binding
+    record to snapshot, same fail-closed ``ToolBlocked`` on a collector error so the *caller*
+    decides whether one venue's silence degrades the read. What differs is only the question
+    asked, which is why this reuses the record vocabulary rather than inventing a second one.
+
+    ``settled_count`` is reported next to the total for the reason ``quoted_count`` is: a read
+    where every market came back ``UNDETERMINED`` is a successful call that answered nothing,
+    and a caller that sees only "12 markets" cannot tell that from twelve settlements.
+    """
+    venue = require_venue(venue)
+    wanted = [str(m) for m in market_ids]
+    try:
+        result = collector.read_resolutions(market_ids=wanted, timeout_seconds=timeout_seconds)
+    except (ToolError, TimeoutError) as exc:
+        # The adapter's own code survives here, where ``collect_pred_markets`` flattens to
+        # ``TOOL_ERROR``. The asymmetry is deliberate and is about what the caller must
+        # decide: a settlement read can fail *permanently* — Binance's ids cannot address the
+        # endpoint at all — and a sweep that cannot tell that from a transport blip would
+        # invite a retry every cycle, forever, for an answer that is not coming.
+        raise ToolBlocked(getattr(exc, "reason_code", "TOOL_ERROR"), str(exc)) from exc
+
+    markets = [m.as_dict() for m in result.markets if isinstance(m, PredMarket)]
+    settled = [m for m in markets if (m.get("resolution") or {}).get("settled")]
+    snapshot = {
+        "snapshot_version": "0.1",
+        "venue": venue,
+        "markets": markets,
+        "market_count": len(markets),
+        "settled_count": len(settled),
+        "source": result.source,
+        "is_synthetic": bool(result.is_synthetic),
+        "created_at": now,
+    }
+    record = {
+        "tool_id": collector.tool_id,
+        "tool_version": collector.tool_version,
+        "tool_class": PREDMARKET_TOOL_CLASS,
+        "operation": "collect_pred_resolutions",
+        "venue": venue,
+        "input_sha256": integrity.sha256_record(
+            {"tool_id": collector.tool_id, "venue": venue, "market_ids": sorted(set(wanted))}
+        ),
+        "market_count": len(markets),
+        "settled_count": len(settled),
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
         "output_sha256": integrity.sha256_record({"markets": markets}),
@@ -798,6 +1030,47 @@ class KalshiPublicCollector:
         )
         return parse_kalshi_markets(payload)[:limit]
 
+    def read_resolutions(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
+    ) -> PredMarketSnapshot:
+        """How these markets settled — ``status=settled`` over the same ``tickers`` allowlist.
+
+        A third read, not a widening of the first two. Both price paths pin ``status=open``,
+        and they are right to: a settled market has no book, and letting one through would put
+        a market that cannot be traded into a scan whose entire output is about tradability.
+        So this asks the opposite question through its own call, and the two never mix.
+
+        Verified against Kalshi's ``/markets`` reference on 2026-07-31: ``status`` takes
+        ``unopened|open|paused|closed|settled``, a settled row carries ``result``
+        (``yes|no|scalar|""``), ``settlement_value_dollars`` for the YES side, and
+        ``settlement_ts``. **``closed`` is not ``settled``** — the venue's own documentation
+        says a closed market is not necessarily settled — which is why only the latter is
+        asked for: a closed-but-unsettled market has no outcome to report and would arrive
+        looking like one.
+        """
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        started = time.monotonic()
+        wanted = [str(m) for m in market_ids]
+        found: dict[str, Resolution] = {}
+        if wanted:
+            params = {
+                "limit": min(len(wanted), self.PAGE_LIMIT),
+                "status": "settled",
+                "tickers": ",".join(sorted(set(wanted))),
+            }
+            payload = _get_json(
+                f"{self.BASE}/markets?{urllib.parse.urlencode(params)}",
+                timeout_seconds=timeout_seconds,
+            )
+            found = parse_kalshi_resolutions(payload)
+        return _resolution_snapshot(
+            self, wanted, found, latency_ms=int((time.monotonic() - started) * 1000))
+
     def _read_events(self, *, limit: int, timeout_seconds: int) -> tuple[list[PredMarket], list[PredMarket]]:
         """Discovery, through the event index: sweep several pages, then keep the busiest.
 
@@ -848,6 +1121,46 @@ class KalshiPublicCollector:
         head, tail = select_head_and_tail(
             rank_by_volume(markets), limit=limit, rotation=self._rotation)
         return head + tail, tail
+
+
+def _resolution_snapshot(
+    collector: Any,
+    wanted: Sequence[str],
+    found: Mapping[str, Resolution],
+    *,
+    latency_ms: int,
+) -> PredMarketSnapshot:
+    """One market per requested id, in the order asked, each carrying a resolution.
+
+    **Every id gets a row.** A venue lists only what has settled, so the ids it did not
+    return are the unsettled ones — and dropping them would make "still open" arrive as an
+    absence, which is the shape a caller reads as *nothing came back* rather than *not yet*.
+    ``UNDETERMINED`` says the venue was asked and has no outcome to report, which is a fact
+    worth storing and the only one that distinguishes waiting from failing.
+
+    Unquoted by construction: a settled market has no book, and this snapshot must never be
+    mistaken for one a scan could price.
+    """
+    return PredMarketSnapshot(
+        venue=collector.venue,
+        markets=[
+            PredMarket(
+                venue=collector.venue,
+                market_id=str(market_id),
+                group_id=None,
+                title="",
+                close_time=None,
+                status=None,
+                resolution=found.get(str(market_id), Resolution(outcome=RESOLVED_UNDETERMINED)),
+            )
+            for market_id in wanted
+        ],
+        source=collector.source,
+        is_synthetic=False,
+        collector_version=collector.tool_version,
+        latency_ms=latency_ms,
+        quotes_requested=False,
+    )
 
 
 def rank_by_volume(markets: Sequence[PredMarket]) -> list[PredMarket]:
@@ -961,6 +1274,55 @@ def parse_kalshi_markets(payload: Any) -> list[PredMarket]:
         if market is not None:
             markets.append(market)
     return markets
+
+
+def parse_kalshi_resolutions(payload: Any) -> dict[str, Resolution]:
+    """Kalshi's settled ``/markets`` payload as ``{ticker: Resolution}``. Pure — no network.
+
+    ``result`` decides, and ``settlement_value_dollars`` only fills in the number. That order
+    is deliberate: the venue's own word for the outcome is the fact, the dollar figure is a
+    representation of it, and a market whose two disagree is not a market to settle a position
+    against. When they disagree the *value* is dropped and the word is kept — the row becomes
+    a ``SPLIT`` carrying Kalshi's word, which reads as "this needs a human" rather than
+    silently paying out on whichever field was read first.
+
+    ``scalar`` is neither YES nor NO. Kalshi uses it for markets that settle to a number
+    rather than a side, which no binary position in this package can be settled against, so it
+    lands in ``SPLIT`` with the venue's word attached rather than being forced into a side.
+    """
+    if not isinstance(payload, Mapping):
+        raise ToolError("MALFORMED_RESULT", "kalshi markets payload is not an object")
+    rows = payload.get("markets")
+    if not isinstance(rows, list):
+        raise ToolError("MALFORMED_RESULT", "kalshi markets payload carries no markets list")
+
+    found: dict[str, Resolution] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        ticker = row.get("ticker")
+        if not isinstance(ticker, str) or not ticker:
+            continue
+        word = _text(row.get("result"))
+        value = _settlement_value(row.get("settlement_value_dollars"))
+        stated = {"yes": RESOLVED_YES, "no": RESOLVED_NO}.get((word or "").lower())
+        if stated is None:
+            # No side named: `scalar`, an empty result, or a word this parser has not met.
+            outcome = classify_resolution(value)
+        elif value is None:
+            outcome, value = stated, (1.0 if stated == RESOLVED_YES else 0.0)
+        elif classify_resolution(value) == stated:
+            outcome = stated
+        else:
+            # The word and the number describe different settlements. Neither is trusted.
+            outcome, value = RESOLVED_SPLIT, None
+        found[ticker] = Resolution(
+            outcome=outcome,
+            yes_value=value,
+            venue_word=word,
+            settled_at=_settled_at_iso(row.get("settlement_ts")),
+        )
+    return found
 
 
 def parse_kalshi_mve_legs(row: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -1164,6 +1526,44 @@ class PolymarketPublicCollector:
             tail_market_ids=tuple(m.market_id for m in tail),
         )
 
+    def read_resolutions(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
+    ) -> PredMarketSnapshot:
+        """How these markets settled — one Gamma call, ``closed=true``, no book.
+
+        The by-id allowlist is the same ``clob_token_ids`` the watch scan uses, for the reason
+        it was introduced there: a confirmed leg is not reliably in the front of the listing,
+        and filtering client-side reports a market the operator confirmed as one the venue
+        never listed.
+
+        ``active`` is deliberately **not** sent. This module already records that Gamma serves
+        ``active: true, closed: false`` on markets whose end date passed months ago, and the
+        settled row read on 2026-07-31 carried ``active: true, closed: true`` — the two flags
+        do not partition the listing, so adding ``active`` to the filter would drop settlements
+        on whichever side of that inconsistency a given market landed.
+        """
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        started = time.monotonic()
+        wanted = [str(m) for m in market_ids]
+        found: dict[str, Resolution] = {}
+        if wanted:
+            payload = _get_json(
+                f"{self.GAMMA_BASE}/markets?"
+                + urllib.parse.urlencode(
+                    {"limit": len(set(wanted)), "closed": "true",
+                     "clob_token_ids": sorted(set(wanted))}, doseq=True
+                ),
+                timeout_seconds=timeout_seconds,
+            )
+            found = parse_gamma_resolutions(payload)
+        return _resolution_snapshot(
+            self, wanted, found, latency_ms=int((time.monotonic() - started) * 1000))
+
 
 def _maybe_json_list(value: Any) -> list[Any]:
     """Gamma ships some array fields as *stringified* JSON. Accept both shapes.
@@ -1230,6 +1630,90 @@ def parse_gamma_markets(payload: Any) -> list[PredMarket]:
             volume=as_optional_float(row.get("volumeNum")),
         ))
     return markets
+
+
+def parse_gamma_resolutions(payload: Any) -> dict[str, Resolution]:
+    """Gamma's closed ``/markets`` payload as ``{yes_token_id: Resolution}``. Pure.
+
+    **The resolution describes the market, not the side that was asked for.** A Gamma row
+    carries ``outcomes``, ``clobTokenIds`` and ``outcomePrices`` as parallel arrays, and every
+    token in the row keys the same :class:`Resolution` — whose ``yes_value`` is always the YES
+    side's payout, located by finding ``"Yes"`` in ``outcomes`` rather than by assuming index
+    0. Keying each token to *its own* payout was the first shape of this function and it was
+    wrong in a way that reads as right: a lookup by the NO token returned ``yes_value: 1.0``
+    for a market that resolved NO, which is true of that token and the opposite of what the
+    field name promises every caller.
+
+    Index 0 is not assumed even though ``parse_gamma_markets`` takes ``clobTokenIds[0]`` as
+    the YES token. That is one venue-shaped assumption already in this file; a settlement that
+    inherited it would turn a listing-order surprise into a wrong payout instead of a missing
+    one, and ``outcomes`` says which side is which for free.
+
+    ``umaResolutionStatus`` is the gate, and it is Kalshi's *closed is not settled* in
+    Polymarket's vocabulary: a row with ``closed: true`` whose resolver has not finished
+    reports ``UNDETERMINED`` rather than a price that has not been arbitrated yet. When the
+    field is **absent** it does not veto — absence is silence, and the prices are then the
+    only thing the venue said. Observed 2026-07-31: a 2020 market carried the plural
+    ``umaResolutionStatuses: "[]"`` and no singular field at all, while a recent one carried
+    ``umaResolutionStatus: "resolved"``.
+    """
+    rows = _gamma_rows(payload)
+
+    found: dict[str, Resolution] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        token_ids = [t for t in _maybe_json_list(row.get("clobTokenIds")) if isinstance(t, str) and t]
+        if not token_ids:
+            continue
+        prices = _maybe_json_list(row.get("outcomePrices"))
+        names = _maybe_json_list(row.get("outcomes"))
+        status = _text(row.get("umaResolutionStatus"))
+        if status is not None and status.lower() != "resolved":
+            resolution = Resolution(outcome=RESOLVED_UNDETERMINED, venue_word=status)
+        else:
+            yes_index = next(
+                (i for i, name in enumerate(names)
+                 if isinstance(name, str) and name.strip().lower() == "yes"),
+                0,
+            )
+            value = _settlement_value(prices[yes_index]) if yes_index < len(prices) else None
+            known = [v for v in (_settlement_value(p) for p in prices) if v is not None]
+            resolution = Resolution(
+                # Classified off the WHOLE price vector, not the YES side alone. `["0","0"]`
+                # gives `yes_value: 0.0`, which `classify_resolution` would read as NO — true
+                # of what a YES holder received and false about the market, because the NO
+                # holder received nothing either.
+                outcome=(RESOLVED_VOID if known and not any(v == 1.0 for v in known)
+                         and all(v == 0.0 for v in known) else classify_resolution(value)),
+                yes_value=value,
+                # The name of the side that was paid, when exactly one was. Gamma has no
+                # single "result" field, so this is assembled — and it is assembled from the
+                # same arrays the value came from, so the two cannot describe different rows.
+                venue_word=_gamma_winning_name(names, prices),
+                settled_at=None,   # Gamma states no settlement instant; None is not a guess.
+            )
+        for token in token_ids:
+            found[token] = resolution
+    return found
+
+
+def _gamma_winning_name(names: Sequence[Any], prices: Sequence[Any]) -> str | None:
+    """The outcome Gamma paid in full, in the venue's own word, or ``None``. Pure.
+
+    ``None`` whenever that is not exactly one outcome — a void market paying nothing, a split
+    paying both, or a row whose arrays do not line up. The categories carry the arithmetic;
+    this is the word an operator reads next to it, and inventing one for an ambiguous
+    settlement would make the ambiguity invisible at exactly the row that needs it seen.
+    """
+    paid = [
+        index for index, price in enumerate(prices)
+        if _settlement_value(price) == 1.0
+    ]
+    if len(paid) != 1 or paid[0] >= len(names):
+        return None
+    name = names[paid[0]]
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 def _text(value: Any) -> str | None:
@@ -1379,6 +1863,35 @@ class BinancePredictionCollector:
         return bool(
             os.environ.get(BINANCE_API_KEY_ENV, "").strip()
             and os.environ.get(BINANCE_API_SECRET_ENV, "").strip()
+        )
+
+    def read_resolutions(
+        self, market_ids: Sequence[str], *, timeout_seconds: int
+    ) -> PredMarketSnapshot:
+        """Refuses, and the reason is an id format rather than a missing endpoint.
+
+        **A confirmed Binance leg cannot be re-read as a topic.** The id this package stores
+        is ``marketId:tokenId`` — everything the order book needs, which is what it was
+        designed for — while ``market/detail`` is keyed by ``marketTopicId``, an identifier
+        the composite does not carry and that nothing in the group record kept. So even a
+        settlement field on that response would be unreachable from the leg holding the
+        position, and the outage this would report is the id format's, not the venue's.
+
+        Raising is the honest answer rather than ``UNDETERMINED`` on every id: undetermined
+        means *asked and not settled yet*, and a caller that cannot tell that apart from
+        *never askable* will wait forever for an answer that is not coming. A typed refusal
+        with its own code is what the caller records and what the operator acts on.
+
+        The fix has a precedent in this package and is the same shape as #287 (a confirmed leg
+        keeping the fee rate a by-id re-read cannot carry): ``confirm`` sees the topic id at
+        proposal time and could capture it on the leg. That is a change to the group record
+        and to every group already confirmed, so it is written down here rather than guessed
+        at — see `docs/REMAINING_WORK.md`, section A.
+        """
+        raise ToolError(
+            RESOLUTION_UNSUPPORTED,
+            "binance legs carry marketId:tokenId, which cannot address market/detail's "
+            "marketTopicId — no settlement is reachable from a confirmed leg",
         )
 
     def _signed_get(self, path: str, params: Mapping[str, Any], *, timeout_seconds: int) -> Any:
@@ -1647,6 +2160,30 @@ def _epoch_seconds(value: Any) -> int | None:
         return None
 
 
+def _settled_at_iso(value: Any) -> str | None:
+    """Kalshi's ``settlement_ts`` as UTC ISO-8601, or ``None``.
+
+    **It is an ISO string, despite the ``_ts`` suffix.** Measured against the live endpoint on
+    2026-07-31: ``"2026-07-31T08:22:18.605072Z"``, microseconds and all — while the same
+    venue's ``min_close_ts`` *request* parameter is epoch seconds, which is why this module
+    already has :func:`_epoch_seconds` pointing the other way. The suffix means "timestamp",
+    not "epoch", and a parser that assumed the convention from the name would have divided a
+    string by nothing and recorded ``None`` on every settled market.
+
+    The numeric branch is kept as the fallback, not the expectation: if the venue ever does
+    send a number it is seconds, by the same evidence that established the request unit.
+    """
+    if isinstance(value, str):
+        try:
+            return timeutil.format_iso(timeutil.parse_iso(value))
+        except (TypeError, ValueError):
+            return None
+    parsed = as_optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return timeutil.format_iso(datetime.fromtimestamp(parsed, tz=timezone.utc))
+
+
 def _ms_to_iso(value: Any) -> str | None:
     """A venue epoch-millisecond stamp as UTC ISO-8601, or ``None``. The rest of this package
     compares close times as ISO strings, so the conversion belongs at the boundary."""
@@ -1806,6 +2343,12 @@ __all__ = [
     "BINANCE_ENV",
     "BINANCE_PROVIDER_ID",
     "PREDMARKET_DEGRADED",
+    "RESOLUTION_UNSUPPORTED",
+    "RESOLVED_YES",
+    "RESOLVED_NO",
+    "RESOLVED_SPLIT",
+    "RESOLVED_VOID",
+    "RESOLVED_UNDETERMINED",
     "PREDMARKET_TOOL_ID",
     "PREDMARKET_TOOL_VERSION",
     "SYNTHETIC_SOURCE",
@@ -1817,14 +2360,19 @@ __all__ = [
     "PredMarket",
     "PredMarketCollector",
     "PredMarketSnapshot",
+    "Resolution",
     "VenueQuote",
     "collect_pred_markets",
+    "collect_pred_resolutions",
+    "classify_resolution",
     "is_re_readable",
     "degraded_pred_market_record",
     "is_synthetic_snapshot",
     "parse_clob_book",
     "parse_gamma_markets",
+    "parse_gamma_resolutions",
     "parse_kalshi_markets",
+    "parse_kalshi_resolutions",
     "parse_prediction_book",
     "parse_prediction_topics",
     "parse_prediction_markets",
