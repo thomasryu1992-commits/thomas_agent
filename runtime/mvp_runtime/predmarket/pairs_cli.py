@@ -219,6 +219,16 @@ def run_discovery(
         for venue, rows in markets.items() for m in rows
         if isinstance(m.fee_rate_bps, (int, float)) and not isinstance(m.fee_rate_bps, bool)
     }
+    # And the topic id, for the same reason one step harder. A fee rate captured late is a
+    # cost read from a stale table; a topic id captured late is nothing at all — `market/list`
+    # serves only REGISTERED topics, so once a topic stops being listed there is no call left
+    # that maps this market back to it, and its settlement becomes permanently unreadable.
+    # Discovery is the only place in the pipeline that ever holds it.
+    result["topic_ids"] = {
+        f"{venue}:{m.market_id}": str(m.parent_id)
+        for venue, rows in markets.items() for m in rows
+        if isinstance(m.parent_id, str) and m.parent_id.strip()
+    }
     # Which slice each candidate came from, so "was reading past the head worth it?" is
     # answered by the record rather than argued. `tail` means at least ONE leg would not
     # have been read without rotation — which is exactly the pairing rotation paid for.
@@ -375,15 +385,69 @@ def _stated_fee_rates(venues: Sequence[str], *, now: str, root: Path | None = No
     return rates
 
 
+def _stated_topic_ids(
+    venues: Sequence[str], *, now: str, root: Path | None = None
+) -> dict[str, str]:
+    """``{"venue:market_id": topic_id}`` for every market whose container the venue names.
+
+    ``_stated_fee_rates``'s sibling, with one difference that inverts the precedence. A fee
+    rate has two sources of different ages and the live one wins. A topic id has **one**
+    source and no age: it never changes, and it is only ever visible on the listing walk. So a
+    recorded id is not a stale fallback here, it is the same fact — and the recorded half is
+    the one that matters, because the live listing drops a topic the moment it stops being
+    REGISTERED while a stored proposal keeps it.
+
+    Only Binance names one. Kalshi and Polymarket address their settled markets by the very id
+    the leg already carries, so the map is simply empty for them — kept whole rather than
+    venue-filtered for the reason the fee map is: a venue that grows a container later should
+    surface as a gap, not as a special case nobody remembers to add.
+
+    Best-effort, like the rates: an operator who has done the judgement this command exists
+    for must not be refused over a read. A leg with no captured topic id behaves exactly as
+    every Binance leg did before this existed — its settlement is unreadable, and the sweep
+    says so rather than pretending the market is still running.
+    """
+    topics: dict[str, str] = {}
+    try:
+        for row in proposals.read_proposals(root):
+            for key, topic in (row.get("topic_ids") or {}).items():
+                if isinstance(topic, str) and topic.strip():
+                    topics[str(key)] = topic.strip()
+    except MvpRuntimeError:
+        pass                                   # no proposals yet, or unreadable: live read only
+    for venue in dict.fromkeys(venues):
+        try:
+            collector = select_pred_market_collector(venue, now=now, root=root)
+            snapshot, _ = collect_pred_markets(
+                venue, collector=collector, now=now,
+                limit=DISCOVERY_MARKET_LIMIT, with_quotes=False,
+            )
+        except MvpRuntimeError:
+            continue
+        if is_synthetic_snapshot(snapshot):
+            # A rehearsal must not write a mock's topic id onto a durable group record — the
+            # same door `_read_venue` closes, and for the same reason: a confirmation lasts.
+            continue
+        for row in snapshot.get("markets") or []:
+            parent = row.get("parent_id")
+            if isinstance(parent, str) and parent.strip():
+                topics[f"{venue}:{row.get('market_id')}"] = parent.strip()
+    return topics
+
+
 def _cmd_confirm(args: argparse.Namespace) -> int:
     now = pairs.now_iso()
     legs = [_parse_leg(spec) for spec in args.leg]
     rates = _stated_fee_rates([leg["venue"] for leg in legs], now=now)
+    topics = _stated_topic_ids([leg["venue"] for leg in legs], now=now)
     for leg in legs:
         bps = rates.get(f"{leg['venue']}:{leg['market_id']}")
         if bps is not None:
             leg["fee_rate_bps"] = bps
             leg["fee_rate_read_at"] = now
+        topic = topics.get(f"{leg['venue']}:{leg['market_id']}")
+        if topic is not None:
+            leg["topic_id"] = topic
     record = pairs.build_event_group(
         legs=legs,
         criteria_note=args.criteria,

@@ -582,14 +582,14 @@ def test_a_sweep_degrades_a_venue_it_cannot_read_rather_than_calling_it_unsettle
     _group(state)
     monkeypatch.setattr(
         obs, "select_pred_market_collector",
-        lambda venue, **kw: (_BrokenCollector(venue, "PREDMARKET_RESOLUTION_UNSUPPORTED")
+        lambda venue, **kw: (_BrokenCollector(venue, "TOOL_TRANSPORT")
                              if venue == KALSHI else LiveLikePredMarketCollector(venue)),
     )
     sweep = obs.run_resolution_sweep(now=NOW, root=state)
-    assert sweep["venue_errors"] == {KALSHI: "PREDMARKET_RESOLUTION_UNSUPPORTED"}
+    assert sweep["venue_errors"] == {KALSHI: "TOOL_TRANSPORT"}
     assert sweep["comparable_count"] == 0
     legs = {leg["venue"]: leg for leg in sweep["groups"][0]["legs"]}
-    assert legs[KALSHI]["unreadable"] == "PREDMARKET_RESOLUTION_UNSUPPORTED"
+    assert legs[KALSHI]["unreadable"] == "TOOL_TRANSPORT"
     assert legs[KALSHI]["resolution"] is None
     assert legs[POLYMARKET]["resolution"]["settled"] is True
 
@@ -603,3 +603,44 @@ def test_a_sweep_on_the_mock_is_degraded_not_reported_as_settlements(state, monk
     assert set(sweep["venue_errors"]) == {KALSHI, POLYMARKET}
     assert all(code == SYNTHETIC_SOURCE for code in sweep["venue_errors"].values())
     assert sweep["comparable_count"] == 0
+
+
+def test_a_captured_topic_id_reaches_the_venue_that_needs_it(state, monkeypatch):
+    """The whole point of capturing it. The sweep collects each leg's topic id off the group
+    record and hands it to the collector, because Binance is the one venue that cannot be
+    asked about a settled market by the id the leg carries."""
+    _group(state,
+           {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
+           {"venue": "binance", "market_id": "44:tok", "topic_id": "4451653"})
+    seen: dict = {}
+
+    class _Recorder(LiveLikePredMarketCollector):
+        def read_resolutions(self, **kwargs):
+            seen[self.venue] = kwargs.get("parent_ids")
+            return super().read_resolutions(
+                **{k: v for k, v in kwargs.items() if k != "parent_ids"})
+
+    monkeypatch.setattr(obs, "select_pred_market_collector",
+                        lambda venue, **kw: _Recorder(venue))
+    obs.run_resolution_sweep(now=NOW, root=state)
+    assert seen["binance"] == {"44:tok": "4451653"}
+    # Kalshi addresses its settled markets by the leg id itself, so it is handed nothing.
+    assert not seen[KALSHI]
+
+
+def test_a_leg_confirmed_before_the_capture_carries_no_topic_id(state):
+    """The 44 legs already on this machine. `normalize_legs` preserves the field when it is
+    there and invents nothing when it is not — and the group's identity does not depend on it,
+    which is what lets a backfill add it later without orphaning a single observation."""
+    stored = _group(state, {"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
+                    {"venue": "binance", "market_id": "44:tok"})
+    binance_leg = next(l for l in stored["legs"] if l["venue"] == "binance")
+    assert "topic_id" not in binance_leg
+
+    with_topic = pairs.build_event_group(
+        legs=[{"venue": KALSHI, "market_id": "KALSHI-MOCK-00"},
+              {"venue": "binance", "market_id": "44:tok", "topic_id": "4451653"}],
+        criteria_note="both settle on the same official statement for this event",
+        confirmed_by="thomas", now=NOW)
+    # Same legs, same id: capturing the topic id does not re-key the group.
+    assert with_topic["event_id"] == stored["event_id"]

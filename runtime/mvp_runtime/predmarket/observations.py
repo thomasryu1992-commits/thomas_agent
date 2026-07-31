@@ -363,9 +363,15 @@ def run_resolution_sweep(
     """
     groups = pairs.read_groups(root)
     wanted: dict[str, list[str]] = {}
+    # The container id a venue needs to be asked about a settled market at all. Captured at
+    # confirmation, and only reachable from there — see `pairs.normalize_legs`.
+    parents: dict[str, dict[str, str]] = {}
     for group in groups:
         for leg in group.get("legs") or []:
             wanted.setdefault(leg["venue"], []).append(leg["market_id"])
+            topic = leg.get("topic_id")
+            if isinstance(topic, str) and topic.strip():
+                parents.setdefault(leg["venue"], {})[leg["market_id"]] = topic.strip()
     needed = sorted(wanted)
 
     settled: dict[str, dict[str, Any]] = {}
@@ -376,12 +382,12 @@ def run_resolution_sweep(
             snapshot, _record = collect_pred_resolutions(
                 venue, collector=collector, market_ids=sorted(set(wanted[venue])),
                 now=now, timeout_seconds=timeout_seconds,
+                parent_ids=parents.get(venue),
             )
         except (ToolBlocked, ToolError) as exc:
             # Both, for the reason spelled out in `run_watch_scan`: the one that arrives here
-            # is `ToolBlocked`, and it is not a subclass of `ToolError`. Binance arrives this
-            # way by design — its refusal is permanent rather than an outage, and it keeps its
-            # own `RESOLUTION_UNSUPPORTED` code so the sweep reports a gap and not a bad day.
+            # is `ToolBlocked`, and it is not a subclass of `ToolError`. The adapter's own code
+            # survives the wrap, so a permanent gap and a bad day stay distinguishable.
             degraded_pred_market_record(collector, venue, exc.reason_code, now=now)
             venue_errors[venue] = exc.reason_code
             continue
