@@ -90,9 +90,9 @@ def test_the_lock_directory_sits_inside_the_resolved_git_directory(tmp_path):
 
 
 def test_a_worktree_can_actually_take_the_lock(tmp_path):
-    """The regression itself, end to end. Against the old path this raised
-    ``NotADirectoryError`` before any lock was taken, and with it went Core activation —
-    and therefore the ~200 Core-gated tests — for every worktree."""
+    """The regression itself, end to end. Against the old path the lock could not be taken at
+    all, and with it went Core activation — and therefore the ~200 Core-gated tests — for
+    every worktree."""
     elsewhere = tmp_path / "main" / ".git" / "worktrees" / "w4"
     elsewhere.mkdir(parents=True)
     checkout = tmp_path / "w4"
@@ -100,11 +100,18 @@ def test_a_worktree_can_actually_take_the_lock(tmp_path):
     (checkout / ".git").write_text(f"gitdir: {elsewhere}\n", encoding="utf-8")
 
     # The old path construction, kept here so this test states the bug rather than merely
-    # asserting the cure. `.git` is a file, so creating a directory under it cannot work —
-    # and the error names pathlib, not git.
-    with pytest.raises(NotADirectoryError):
+    # asserting the cure. `.git` is a file, so creating a directory under it cannot work.
+    #
+    # Asserted as `OSError` and *not* `SafeIOError` rather than as a specific subclass,
+    # because which one you get is the whole complaint: Linux raises `NotADirectoryError`,
+    # Windows raises `FileNotFoundError` or `FileExistsError` depending on how far `mkdir`
+    # got. Pinning the Linux spelling is what turned this test red on windows-latest after it
+    # merged — the assertion was more specific than the thing it describes. An untyped OS
+    # error whose identity varies by platform is exactly why this path owed a typed one.
+    with pytest.raises(OSError) as raised:
         with exclusive_lock(checkout / ".git" / LOCK_DIR_NAME / "core_activation.lock"):
             pass
+    assert not isinstance(raised.value, SafeIOError)
 
     lock = repo_lock_dir(checkout) / "core_activation.lock"
     with exclusive_lock(lock):
