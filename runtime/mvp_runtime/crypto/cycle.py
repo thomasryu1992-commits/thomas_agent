@@ -637,6 +637,29 @@ def run_crypto_cycle(
     if counterfactual_summary.get("degraded"):
         reason_codes.append(counterfactual_summary["degraded"])
 
+    # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
+    # store as persisted: in dry-run it honestly reports the durable (empty) truth.
+    # Handed the history this cycle already read and verified at step 3, rather than paying for
+    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
+    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
+    # and the except below records it — a report over a history nobody could verify is exactly
+    # what must not be produced.
+    #
+    # It runs BEFORE the live leg, which is the one ordering change Gate 0 needed. It is a pure
+    # read over the pre-settlement snapshot taken at step 3 — it does not look at what the paper
+    # step just did, so moving it earlier cannot change what it says, and the alternative
+    # (persisting this report and having the live leg read the PREVIOUS cycle's) would have added
+    # a store to avoid a move that costs nothing. Nothing inside `run_paper_update`'s portfolio
+    # lock is touched or re-ordered, which is the restructuring that was actually worth avoiding.
+    try:
+        report, report_text = feedback.run_paper_performance_report(
+            now=now, root=root, outcomes=outcomes,
+        )
+    except ToolError as exc:
+        report, report_text = None, f"performance report unavailable: {exc.reason_code}"
+        if exc.reason_code not in reason_codes:
+            reason_codes.append(exc.reason_code)
+
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
@@ -644,10 +667,16 @@ def run_crypto_cycle(
     # it is given the same C4 verdict — a live entry can never be permitted where a paper one
     # was not. Never raises: `run_live_leg` reports, because a traceback here would be
     # indistinguishable from "no live activity".
+    #
+    # `live_candidate` is Gate 0, computed at step 5 just above and consulted here for the first
+    # time since C6 started producing it. A `None` report — the store could not be read, or could
+    # not be verified — arrives as a non-Mapping and `plan_live_entry` refuses on it, which is the
+    # only correct reading: a runtime that cannot show its paper record has not shown an edge.
     live = run_live_leg(
         route=shared_route,
         feature_row=feature_row,
         verdict=verdict,
+        live_candidate=report,
         symbol=symbol,
         collector=collector,
         now=now,
@@ -659,22 +688,6 @@ def run_crypto_cycle(
         control_store=control_store,
     )
     reason_codes.extend(live["live_reason_codes"])
-
-    # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
-    # store as persisted: in dry-run it honestly reports the durable (empty) truth.
-    # Handed the history this cycle already read and verified at step 3, rather than paying for
-    # a second full parse + per-record hash of the same file. `outcomes` is None only when that
-    # read RAISED, and passing None then is the point: the report re-reads, raises the same way,
-    # and the except below records it — a report over a history nobody could verify is exactly
-    # what must not be produced.
-    try:
-        report, report_text = feedback.run_paper_performance_report(
-            now=now, root=root, outcomes=outcomes,
-        )
-    except ToolError as exc:
-        report, report_text = None, f"performance report unavailable: {exc.reason_code}"
-        if exc.reason_code not in reason_codes:
-            reason_codes.append(exc.reason_code)
 
     # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
     # Evaluated every cycle (pure); APPLIED only through the real gated store, the
