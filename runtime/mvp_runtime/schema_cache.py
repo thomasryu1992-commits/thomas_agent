@@ -33,10 +33,15 @@ _cache: dict[tuple[Any, ...], dict[str, Draft202012Validator]] = {}
 
 
 def _directory_signature(directory: Path) -> tuple[Any, ...]:
-    entries = tuple(sorted(
-        (path.name, path.stat().st_size, path.stat().st_mtime_ns)
-        for path in directory.glob("*.schema.json")
-    ))
+    # One ``stat()`` per file, not two. ``path.stat()`` is a syscall every time it is called —
+    # it caches nothing — so reading size and mtime from two separate calls doubled the cost of
+    # the check in the module that exists to make checking cheap: 148 syscalls per validation
+    # across 74 schemas, and a single run validates 15-20 records.
+    def _entry(path: Path) -> tuple[str, int, int]:
+        info = path.stat()
+        return (path.name, info.st_size, info.st_mtime_ns)
+
+    entries = tuple(sorted(_entry(path) for path in directory.glob("*.schema.json")))
     return (str(directory.resolve()), entries)
 
 
