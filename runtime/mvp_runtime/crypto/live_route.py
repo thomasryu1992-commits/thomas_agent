@@ -223,6 +223,7 @@ def run_live_leg(
     route: Mapping[str, Any] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
+    live_candidate: Mapping[str, Any] | None,
     symbol: str,
     collector: Any,
     now: str,
@@ -268,6 +269,7 @@ def run_live_leg(
             route=route,
             feature_row=feature_row,
             verdict=verdict,
+            live_candidate=live_candidate,
             symbol=symbol,
             collector=collector,
             now=now,
@@ -301,6 +303,7 @@ def _run_gated_live_leg(
     route: Mapping[str, Any] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
+    live_candidate: Mapping[str, Any] | None,
     symbol: str,
     collector: Any,
     now: str,
@@ -419,6 +422,7 @@ def _run_gated_live_leg(
         # unreadable account cannot produce a position.
         equity_usdt=_f(getattr(snapshot, "available_balance", None)) or 0.0,
         verdict=verdict,
+        live_candidate=live_candidate,
         now=now,
     )
     record["live_decision"] = {

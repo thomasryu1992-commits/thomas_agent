@@ -146,6 +146,7 @@ def test_without_a_grant_the_live_leg_reads_nothing_and_sends_nothing(tmp_path, 
     )
     record = live_route.run_live_leg(
         route=None, feature_row={}, verdict={"allow_new_position": True},
+        live_candidate={"live_candidate_eligible": True, "failure_modes": []},
         symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
     )
     assert record["live_route_status"] == live_route.ROUTE_DISABLED
@@ -173,6 +174,7 @@ def test_the_env_var_alone_now_opens_the_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(live_route, "read_account", _account)
     record = live_route.run_live_leg(
         route=None, feature_row={}, verdict={"allow_new_position": True},
+        live_candidate={"live_candidate_eligible": True, "failure_modes": []},
         symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
     )
     assert reads, "the gate did not open — the account was never read"

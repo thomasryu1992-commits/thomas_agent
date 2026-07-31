@@ -15,6 +15,12 @@ Order of checks, and why:
 1. **route** — is there an entry candidate at all;
 2. **verdict** — did the C4 guards allow a new position this cycle (**required**: an absent or
    malformed verdict refuses, it does not skip the check);
+2b. **live candidate (Gate 0)** — does this runtime's own paper record show an edge *net of
+   costs* (``feedback.build_performance_report``'s ``live_candidate_eligible``). Same
+   **required** posture as the verdict, and not redundant with it on either axis: the verdict
+   asks *am I losing right now*, over a recent window, gross; this asks *is there an edge at
+   all*, over the whole own-paper record, net. A loss breaker also reopens on the calendar,
+   where this reopens only when the record itself changes;
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
@@ -29,7 +35,8 @@ Order of checks, and why:
 9. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
    truthful venue exposure.
 
-Steps 1-5 accumulate: an operator sees every reason at once, the guard's own posture.
+Steps 1-5 (2b included) accumulate: an operator sees every reason at once, the guard's own
+posture.
 Steps 6-9 are sequential because each consumes the previous one's output, and a step that
 cannot run is reported as the refusal it is rather than skipped.
 
@@ -62,6 +69,7 @@ STATUS_READY = "READY"
 # Refusal reasons, each naming exactly which door closed.
 NO_PLAN = "LIVE_ENTRY_NO_PLAN"
 VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
+CANDIDATE_REFUSED = "LIVE_ENTRY_NOT_LIVE_CANDIDATE"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
@@ -150,6 +158,12 @@ def plan_live_entry(
     # closed, and it was worse in one way: the test helper omitted it too, so the untested
     # branch was the *guarded* one. A missing or malformed verdict now refuses.
     verdict: Mapping[str, Any],
+    # Gate 0, and no default for the same reason the verdict has none: an optional gate is a gate
+    # the one caller that forgets it never meets, and the branch nobody tests is then the guarded
+    # one. This is `feedback.build_performance_report`'s record — handed over whole rather than as
+    # a bare bool, so a refusal can name what failed (`failure_modes`) instead of only that
+    # something did.
+    live_candidate: Mapping[str, Any] | None,
     # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
     # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
     # the same fail-closed default the guard gives `budget_registered`.
@@ -193,6 +207,19 @@ def plan_live_entry(
         reasons.append(VERDICT_REFUSED)
         detail["verdict_problems"] = (
             list(verdict.get("problems") or []) if isinstance(verdict, Mapping) else ["verdict missing or malformed"]
+        )
+
+    # 2b. Gate 0. The runtime has computed this every cycle since C6 and consulted it nowhere —
+    # it judged itself unfit for real money and then did not read the judgement. Same fail-closed
+    # shape as the verdict above: a missing or malformed report refuses, because "this runtime has
+    # not shown an edge" and "I could not tell whether it has" both mean the same thing here, and
+    # the only alternative to refusing is opening a real position on an unanswered question.
+    if not isinstance(live_candidate, Mapping) or not bool(live_candidate.get("live_candidate_eligible")):
+        reasons.append(CANDIDATE_REFUSED)
+        detail["live_candidate_failure_modes"] = (
+            list(live_candidate.get("failure_modes") or [])
+            if isinstance(live_candidate, Mapping)
+            else ["performance report missing or malformed"]
         )
 
     if not entry_allowed(reconciliation, symbol):
@@ -323,6 +350,7 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 __all__ = [
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",
+    "CANDIDATE_REFUSED",
     "CAPACITY_REFUSED",
     "COST_REFUSED",
     "GUARD_REFUSED",

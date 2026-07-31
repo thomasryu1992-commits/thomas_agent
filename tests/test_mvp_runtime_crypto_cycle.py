@@ -1076,3 +1076,29 @@ def test_a_readable_pool_hands_the_guard_its_routable_ids(tmp_path, monkeypatch)
     _install_pool(tmp_path, spec)
     _cycle(tmp_path, FakeExchangeCollector())
     assert seen["routable"] == {spec["strategy_id"]}
+
+# --- Gate 0 reaches the live leg ----------------------------------------------
+
+def test_the_live_leg_is_handed_gate_0(tmp_path, monkeypatch):
+    """The wiring, asserted at the cycle rather than only in `live_entry`: C6 has computed
+    `live_candidate_eligible` every cycle since it shipped and no caller read it. It also pins
+    the ORDERING — the report is built at step 5 and the live leg runs after it, so a report
+    that had stayed below the live leg would arrive here as `None`."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+
+    assert "live_candidate" in seen, "the live leg was called without Gate 0"
+    candidate = seen["live_candidate"]
+    assert isinstance(candidate, dict) and "live_candidate_eligible" in candidate
+    # The same object the cycle reports, not a second evaluation that could disagree with it.
+    assert candidate["status"] == record["report_status"]
