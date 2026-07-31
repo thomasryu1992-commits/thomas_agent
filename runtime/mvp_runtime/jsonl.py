@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .errors import PersistenceError
 
@@ -33,19 +33,48 @@ def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code
         raise PersistenceError(write_code, f"could not append {label}: {exc}") from exc
 
 
+def iter_objects(path: Path, *, read_code: str, label: str) -> Iterator[dict[str, Any]]:
+    """Yield every JSON object in ``path`` (one per line); nothing if the file is absent.
+
+    The streaming half of :func:`read_objects`, for stores that outgrew being held in memory.
+    Peak cost is one line, whatever the file's size.
+
+    ``read_objects`` used to ``read_text()`` the whole file into one string, ``splitlines()``
+    it into a second full copy, and only then parse — with both copies alive while the objects
+    were built, so opening a store cost several times its own size before a caller had touched
+    a row. That is not hypothetical: the crypto board OOM-killed on exactly this shape and was
+    repaired with a private streaming reader (``crypto/dashboard.py``), which left the shape
+    itself in place for the next store to grow into. It did: the PM1 observation store reached
+    290 MB in the first four days of a fourteen-day window. This is that repair at the
+    primitive rather than one caller further down.
+
+    Fail-closed identically — a corrupt or unparseable line raises
+    ``PersistenceError(read_code, ...)``. **The raise arrives mid-iteration**, once earlier rows
+    have already been yielded, because a generator cannot judge what it has not read. Callers
+    needing all-or-nothing get it by materializing (:func:`read_objects` does, and a list either
+    completes or raises); a caller that streams is choosing to see a prefix of a store whose
+    tail may not parse, and must treat a partial consumption as partial.
+    """
+    if not path.is_file():
+        return
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                yield json.loads(line)
+    except (OSError, ValueError) as exc:
+        raise PersistenceError(read_code, f"could not read {label}: {exc}") from exc
+
+
 def read_objects(path: Path, *, read_code: str, label: str) -> list[dict[str, Any]]:
     """Return every JSON object in ``path`` (one per line), or ``[]`` if it does not exist.
 
     A corrupt/unparseable file fails closed with ``PersistenceError(read_code, ...)``
-    rather than silently returning partial data.
+    rather than silently returning partial data: the list is built before it is returned,
+    so a bad line anywhere raises instead of yielding a truncated store.
     """
-    if not path.is_file():
-        return []
-    try:
-        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        return [json.loads(ln) for ln in lines]
-    except (OSError, ValueError) as exc:
-        raise PersistenceError(read_code, f"could not read {label}: {exc}") from exc
+    return list(iter_objects(path, read_code=read_code, label=label))
 
 
 def write_objects(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code: str, label: str) -> None:
