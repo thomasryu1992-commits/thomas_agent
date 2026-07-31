@@ -127,14 +127,22 @@ def validate_policy_binding(
     refuses; changed in what it says when it refuses.
 
     A record binding an *earlier* canonical policy is not malformed — it is a record written
-    before the bump — and this refusal is the only thing standing between it and being used.
-    Saying so matters: a policy bump silently voided every outstanding approval granted under
-    the previous version, and the operator's only clue was a `oneOf` failure naming neither the
-    bump nor the record's own version. Ten approvals on this host are in exactly that state.
+    before the bump — and this refusal is what stands between it and being used. Saying which of
+    the two it is matters, because the previous message did not: it was a `oneOf` failure naming
+    neither the bump nor the record's own version, so an operator could not tell a stale record
+    from a broken one.
 
-    Whether such a grant *should* survive a bump is a governance decision and is deliberately
-    not taken here — the answer is still no. What this changes is that the refusal now names
-    itself, so the decision can be made by someone who knows it is pending.
+    **Corrected 2026-07-31.** This docstring claimed a bump had "silently voided every
+    outstanding approval granted under the previous version — ten approvals on this host". It
+    had not. Five of those ten were never decided, and the other five had already expired on
+    their own ~30-minute single-use timers before the bump; `consumption` refuses them with
+    `APPROVAL_EXPIRED` regardless. Left visible rather than swapped out, because the mistake is
+    instructive: a schema error was loud enough to look like the story, and nobody checked
+    whether the approvals behind it were still live.
+
+    Whether a grant *should* survive a bump remains a governance decision and is deliberately not
+    taken here — the answer is still no. No such grant is currently outstanding, so nothing is
+    waiting on that answer today.
     """
     binding = record.get("operating_policy")
     if binding == POLICY_BINDING:
