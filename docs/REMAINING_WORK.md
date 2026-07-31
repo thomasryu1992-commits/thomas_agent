@@ -4,7 +4,14 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-30** (`main` = `0dc36f3`), after the sheet was caught offering one market
+Last updated: **2026-07-31** (`main` = `6c5999a`), after a QA pass over the whole build found
+three defects that a green suite and a green release gate both showed as fine, because each sat
+in a place neither looks: **the readiness board's own "authoritative" line was wrong** (#381),
+**the PM1 exit report could no longer read its own evidence** (#383), and **Core activation died
+in the worktree this repository tells you to use** (#386/#388). What they have in common is
+worth more than the fixes: none is a computation error, and all three are a *reader* — a status
+line, a report, a recovery path — disagreeing with the system it describes.
+Previously **2026-07-30** (`main` = `0dc36f3`), after the sheet was caught offering one market
 four partners of which three were impossible (#371) — an order-dependent trap rather than mere
 noise, because confirming an impostor first refuses the correct pairing forever.
 Earlier the same day (`main` = `c45d99b`), after **PM1 started running** — now 74 confirmed
@@ -127,7 +134,7 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 3.2 of 14 days
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 3.7 of 14 days
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
 **PM1's code is complete and the window is open.** Three venue adapters, screening, the
@@ -135,14 +142,13 @@ deterministic matcher with operator confirmation, the fee-adjusted detector, the
 both scheduler cadences (watch and discovery), the proposal record and the exit report all live
 under `runtime/mvp_runtime/predmarket/`. PM2 and PM3 are untouched.
 
-**Measured 2026-07-30T13:46Z** (`pairs_cli report`; ask the machine rather than trusting these —
-they go stale by the hour):
+**Measured 2026-07-31T03:00Z** (ask the machine rather than trusting these — they go stale by
+the hour):
 
 ```
-verdict   INSUFFICIENT_WINDOW      window 3.1642 of 14 days required
-groups    74 confirmed, 1 retired  80 pairing(s)
-readings  61,510 / 62,039 priced   coverage 0.9915
-totals    21,854 opportunity readings, 94 episodes
+verdict   INSUFFICIENT_WINDOW      window 3.6987 of 14 days required
+readings  86,598 / 87,127 priced   coverage 0.9939   82 pairing(s)
+totals    29,598 opportunity readings, 100 episodes
 incidents MARKET_NOT_LISTED=268   (frozen — the dead group was retired, see below)
 ```
 
@@ -150,12 +156,29 @@ Most confirmed groups pair **binance×polymarket**, with kalshi×polymarket next
 involving kalshi×binance or all three. That distribution is itself an open decision — see the
 Binance box below.
 
-**What the run has cost so far is five defects, none of which a green test suite showed.** Each was
+**What the run has cost so far is six defects, none of which a green test suite showed.** Each was
 found by reading what the deployed thing actually produced: Gamma was paginating past 400 rows it
 claimed to include (#318), a zero-depth touch counted toward frequency (#321), a quoted Polymarket
 read dropped five fields (#348), three separate changes to what counts as an opportunity all
-shipped under `predmarket_opportunity.v0.1` (#350), and the sheet offered one market four partners
-of which three were impossible (#371).
+shipped under `predmarket_opportunity.v0.1` (#350), the sheet offered one market four partners
+of which three were impossible (#371), and **the exit report stopped being able to read its own
+evidence** (#383).
+
+That last one is the phase's own success turning into its failure, so it is worth stating in
+full. The store is cumulative by design — a reading already banked cannot be un-banked — and at
+day four it was **290 MB across ~87,000 rows**. `build_pm1_report` materialized all of it:
+measured, that needed **over 1.2 GB** against roughly 1 GB free on the host *also* running the
+scan that writes it, and the day-14 volume projected to ~5 GB on a 3 GB machine. The artifact the
+whole fourteen days exists to produce was on track to be unreadable before the window closed, and
+nothing would have said so until someone ran it at the end. It now streams and keeps a projection
+of each row rather than the row: **51 MB for the full store**, with output verified byte-identical
+against the old reader on a 30,000-row slice of the real data.
+
+Two things to carry from it. The same whole-file-read shape had already OOM-killed the crypto
+board once and was repaired **at that one caller** (`crypto/dashboard.py`) rather than at the
+shared primitive, which left it in place for the next store to grow into — so the fix this time
+went into `jsonl.read_objects` itself. And **the store growing is not a bug to be trimmed**: the
+window is cumulative, so the thing that had to change was the reader, never the evidence.
 
 Two threads run through them and both are worth carrying into PM2. **Anything a person has to
 keep up to date drifts** — a hand-listed field rebuild and a hand-bumped version constant were
@@ -467,6 +490,26 @@ outlived by its own subject within a day, when Thomas removed the grant. Left vi
 than silently swapped: this file's recurring defect is not being wrong, it is describing a door
 that has since moved, and the banner above already carried the correction while this paragraph
 did not.)*
+
+**Everything above defers to the board, and on 2026-07-31 the board's own most emphatic line was
+found to be wrong** (#381). Beneath the twelve computed rows it prints a dry-run of the real
+guard, which its code calls *"the authoritative answer: whatever the rows above say, this is what
+would actually happen"* — and that call omitted `allowed_symbols`, whose default is EMPTY and
+blocks every symbol. So it reported `no symbol allowlist backs this order` on **every machine,
+forever**, and told the operator to register the budget they had already registered.
+
+The money path was never affected: both write doors (`live_route`, `place_canary_order`) read the
+scope off the same budget the caps come from. Only the reader was omitted — which is the
+dangerous direction here, because on this host, with the opt-in set and routing WIRED, the line
+an operator would read before concluding *live trading is stopped* said it could not place an
+order while it could.
+
+**What that means for how this section is read:** the board is still the authority for what is
+live on a machine, and it is still the only thing that can answer a per-machine question. But
+"the board says so" was load-bearing for a line that no test could contradict — every dry-run
+assertion in the suite ran on an empty `tmp_path`, where a block is correct, so the suite could
+only have failed if the bug were fixed. A computed row is not self-verifying merely by being
+computed.
 
 **The canary row cleared on 2026-07-28, and it changed less than it sounds.** Running that path
 end to end for the first time turned up six defects that had been sitting in code nobody had
