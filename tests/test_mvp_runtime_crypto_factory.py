@@ -30,8 +30,14 @@ from runtime.mvp_runtime.crypto.factory import (
     FusionRefused,
     ParamSpec,
 )
-from runtime.mvp_runtime.crypto.strategy import StrategySpec
-from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
+from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
+from runtime.mvp_runtime.scheduler import (
+    FACTORY_FUSION_PAIRS,
+    KIND_FACTORY,
+    ScheduleStore,
+    build_schedule,
+    run_due,
+)
 from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE, LedgerStore
 
 from scripts.promote_strategy_candidates import run_promotion
@@ -245,6 +251,124 @@ def test_all_ported_templates_validate():
     for template in templates_for_timeframe("1d"):
         batch = generate_batch("GEN-001", seed=3, count=1, timeframe="1d")
         assert batch["accepted_count"] == 1  # every family passes its own validator
+
+
+# --- volatility-regime families -----------------------------------------------
+
+VOLATILITY_FAMILIES = frozenset({"volatility_expansion_long", "volatility_expansion_short",
+                                 "volatility_squeeze_long", "volatility_squeeze_short"})
+
+# The columns these families exist to avoid. Each is a real, mintable member of
+# NUMERIC_FEATURES and each is a LEVEL: `atr` is in price units, the other two are
+# fractions of price that run ~0.2% at 15m and ~3% at 1d. A threshold mined on any of
+# them means a different thing at every rung of the ladder the template is retimed onto.
+_VOLATILITY_LEVEL_COLUMNS = frozenset({"atr", "atr_pct_of_price", "bb_width_pct"})
+
+
+def _volatility_regime_snapshot(n=600):
+    """Alternating calm and violent blocks, one of the violent ones falling.
+
+    ``_trending_snapshot`` cannot serve here: its highs and lows are a constant ±1.5
+    around the close, so ATR is flat, every rolling rank ties at ~0.5, and a family
+    gated on ``atr_percentile >= 0.7`` would take zero trades — which would look
+    exactly like a broken family rather than a fixture with no volatility in it."""
+    step = timedelta(days=1)
+    last_close = NOW_DT - timedelta(hours=1)
+    candles = []
+    price = 100.0
+    for i in range(n):
+        violent = (i // 25) % 2 == 1
+        drift = 2.0 if violent else 0.25
+        span = 4.0 if violent else 0.4
+        if (i // 25) % 4 == 3:  # one falling violent block, so the short legs can enter
+            drift = -drift
+        price = max(10.0, price + drift)
+        close_time = last_close - (n - 1 - i) * step
+        candles.append({
+            "open_time": timeutil.format_iso(close_time - step),
+            "open": price - drift, "high": price + span, "low": price - span,
+            "close": price, "volume": 10.0 + (i % 7),
+            "close_time": timeutil.format_iso(close_time),
+        })
+    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles, "is_synthetic": False}
+
+
+def _template_spec(template, timeframe="1d"):
+    return StrategySpec.from_dict(_spec_dict(
+        strategy_family=template.family, direction=template.direction, timeframe=timeframe,
+        entry_rules={"operator": "AND",
+                     "conditions": template.entry_builder(template.base_params)},
+        exit_rules={"stop_model": "atr", "stop_atr": 1.2, "target_atr": 3.0,
+                    "max_holding_bars": 24},
+    ))
+
+
+def test_volatility_families_close_trades_on_a_market_that_has_regimes():
+    """The hazard these families are most exposed to is the one `POSITIONING_FAMILIES`
+    documents: a family whose conditions are never *determined* mints, backtests, takes
+    zero trades and is retired as FRAGILE — blamed for a window it could not read.
+
+    A percentile column is the sharpest version of that risk, because it is None until
+    `rolling_percentile` has its `min_periods` and then ranks against a window that may
+    have no spread in it at all. So each family has to be shown closing real trades on a
+    market that actually changes volatility, not merely parsing."""
+    snapshot = _volatility_regime_snapshot()
+    for template in factory.TEMPLATES:
+        if template.family not in VOLATILITY_FAMILIES:
+            continue
+        evidence = backtest_spec(_template_spec(template), snapshot)
+        assert evidence["closed_count"] >= factory.MIN_TRADES_PER_WINDOW, (
+            f"{template.family} closed {evidence['closed_count']} trades — a family that "
+            "cannot trade its own premise is noise in the rotation, not diversity"
+        )
+
+
+def test_volatility_families_mine_percentiles_and_never_levels():
+    """The rule that makes these families retimeable at all, pinned structurally.
+
+    `atr`, `atr_pct_of_price` and `bb_width_pct` are all mintable — nothing in the
+    validator refuses them — so the only thing standing between this family and a
+    threshold that silently means something different at every timeframe is a decision.
+    This test is that decision, written down where breaking it fails."""
+    for template in factory.TEMPLATES:
+        if template.family not in VOLATILITY_FAMILIES:
+            continue
+        read = set()
+        for condition in template.entry_builder(template.base_params):
+            read.add(condition["feature"])
+            if condition.get("value_from"):
+                read.add(condition["value_from"])
+        assert not read & _VOLATILITY_LEVEL_COLUMNS, (
+            f"{template.family} mines a volatility LEVEL ({sorted(read & _VOLATILITY_LEVEL_COLUMNS)}); "
+            "a level is not comparable across the ladder this template is retimed onto"
+        )
+        assert read & {"atr_percentile", "bb_width_percentile"}, (
+            f"{template.family} is a volatility family that reads no volatility rank"
+        )
+
+
+def test_the_expansion_filter_actually_excludes_the_quiet_bars():
+    """The families trade (above) and read the right column (above); this pins that the
+    column is doing the work. A row identical but for a calm `atr_percentile` must not
+    enter — otherwise the filter is decoration and the family is `breakout` renamed."""
+    template = next(t for t in factory.TEMPLATES if t.family == "volatility_expansion_long")
+    spec = _template_spec(template)
+    trending = {"close": 110.0, "ma20": 105.0, "ma50": 100.0}
+    assert evaluate_spec(spec, {**trending, "atr_percentile": 0.95}).matched is True
+    assert evaluate_spec(spec, {**trending, "atr_percentile": 0.10}).matched is False
+    # Absent, not merely low: the fail-closed evaluator must leave it indeterminate rather
+    # than treat a missing rank as a passing one.
+    assert evaluate_spec(spec, trending).matched is False
+
+
+def test_scheduled_fusion_never_outgrows_the_seeded_rotation():
+    """`FACTORY_FUSION_PAIRS` was raised to 4 on the store's own evidence (crossover
+    reaches ROBUST at 13.6% against the seeded rotation's 5.5%), and the bound on raising
+    it further is not arithmetic — it is that the seeded rotation is the ONLY path by
+    which a newly added family enters the store at all. Fusion draws exclusively on
+    lineages that are already there. Let it exceed the seeded half of a fire and every
+    family added after today competes for a shrinking remainder."""
+    assert 0 < FACTORY_FUSION_PAIRS <= factory.DEFAULT_BATCH_SIZE
 
 
 # --- backtest -----------------------------------------------------------------
