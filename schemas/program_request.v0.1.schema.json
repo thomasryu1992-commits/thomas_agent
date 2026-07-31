@@ -47,6 +47,7 @@
       "pattern": "^ccb-[A-Za-z0-9._:-]+$"
     },
     "operating_policy": {
+      "description": "Current records bind the canonical Governance Policy; `validate_policy_binding` is the one authority for WHICH version a record may be written under and refuses anything but the current one at every write. This schema therefore describes the binding's SHAPE, not its recency: a record written under an earlier policy version is an older record, not a malformed one.",
       "oneOf": [
         {
           "type": "object",
@@ -54,7 +55,7 @@
           "required": ["policy_id", "policy_version", "policy_ref"],
           "properties": {
             "policy_id": {"const": "thomas.governance.policy"},
-            "policy_version": {"const": "1.2.0"},
+            "policy_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
             "policy_ref": {"const": "governance/GOVERNANCE_POLICY.yaml"}
           }
         },
