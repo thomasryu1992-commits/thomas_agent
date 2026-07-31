@@ -49,7 +49,7 @@ recorded. Nothing downstream depends on a proposal existing.
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -94,7 +94,7 @@ PROPOSER_BACKLOG_FULL = "PROPOSER_BACKLOG_FULL"
 
 
 def count_unreviewed_backlog(
-    record_rows: Sequence[Mapping[str, Any]],
+    record_rows: Iterable[Mapping[str, Any]],
     installed_families: Sequence[str],
     *,
     now: str,
@@ -107,8 +107,8 @@ def count_unreviewed_backlog(
     adding to faster than Thomas can work it. Deduped by family (re-proposing the same one
     is not a bigger backlog), windowed by ``created_at`` so an unreviewed proposal ages out
     (the tap reopens without an install), and blind to rejected proposals (they were never a
-    review burden). ``record_rows`` are ledger rows as ``LedgerStore.read_records`` returns
-    them (``{"kind", "record"}``); a malformed row is skipped, never fatal — a backlog count
+    review burden). ``record_rows`` are ledger rows as ``LedgerStore.iter_records`` yields
+    them (a single pass — the ledger is never materialized for a count) (``{"kind", "record"}``); a malformed row is skipped, never fatal — a backlog count
     must not itself fail closed and stop the scheduler."""
     from .. import timeutil
 
