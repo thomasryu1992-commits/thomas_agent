@@ -4,13 +4,22 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-31** (`main` = `6c5999a`), after a QA pass over the whole build found
+Last updated: **2026-07-31** (`main` = `128ed20`), adding **section E** — deferrals that were
+measured and then deliberately left alone, so the measurement does not have to be redone by the
+next person who greps.
+
+Earlier the same day (`main` = `6c5999a`), after a QA pass over the whole build found
 three defects that a green suite and a green release gate both showed as fine, because each sat
 in a place neither looks: **the readiness board's own "authoritative" line was wrong** (#381),
 **the PM1 exit report could no longer read its own evidence** (#383), and **Core activation died
 in the worktree this repository tells you to use** (#386/#388). What they have in common is
 worth more than the fixes: none is a computation error, and all three are a *reader* — a status
 line, a report, a recovery path — disagreeing with the system it describes.
+The same pass then found two more of that shape and one correction worth reading: the parity gate
+was checking the **superseded** PermissionDecision schema and not the live one (#393); a policy
+bump had left **314 stored records unable to satisfy their own schema** (#394); and the claim that
+the bump had voided ten outstanding approvals was **wrong** and is corrected in place (#396) —
+five were never decided and five had expired on their own timers before the bump.
 Previously **2026-07-30** (`main` = `0dc36f3`), after the sheet was caught offering one market
 four partners of which three were impossible (#371) — an order-dependent trap rather than mere
 noise, because confirming an impostor first refuses the correct pairing forever.
@@ -1209,6 +1218,51 @@ I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety S
 implemented-and-gated capabilities as "remain disabled"). Same failure as #200's readiness-board
 prose, one document over. Fixed by splitting Safety State at the seam it was blurring: *does the
 code exist* vs *may this machine act*.
+
+---
+
+## E. Recorded deferrals — measured, decided, and deliberately not done
+
+Not gaps and not work owed. Each entry is something that *looks* like a defect to anyone who
+greps for it, was measured, and was then left alone on purpose. Written down for one reason: the
+measurement is the expensive part, and without it here the next reader repeats it and reaches the
+same answer.
+
+- [ ] **`format: date-time` is declared on 110 fields and enforced nowhere — deferred by Thomas,
+      2026-07-31, after measuring.** 54 schemas carry it (`date-time` is the only format the
+      repository uses). Neither `requirements-validation.lock` nor `requirements-runtime.txt`
+      carries a format-checking dependency, so `jsonschema`'s `FormatChecker` silently skips it.
+      Confirmed inside the running container: its checker list is `date`, `email`, `idn-email`,
+      `ipv4`, `ipv6`, `regex`, `time`, `uuid` — every format the repository does *not* use, and
+      not the one it does. **This is not a CI-only switch**:
+      `schema_cache` builds a `FormatChecker()` too, so enabling it changes what the live runtime
+      accepts, and the two requirement files state they move in lockstep.
+
+      **Measured 2026-07-31 across the live ledger and its archives, the per-machine stores,
+      `examples/`, `generated/`, `THOMAS_CORE/` and `tests/fixtures/`, two independent ways** —
+      each record validated with and without a real format checker and the results diffed, then
+      every value at a `format: date-time` path tested directly against RFC 3339:
+
+      ```
+      262,656 timestamp values      0 invalid      (2026-07-31T04:00Z)
+      268,686 timestamp values      0 invalid      (re-run ~90 minutes later)
+        3,164 schema-bound records  0 that would newly fail
+      ```
+
+      Both rows are here on purpose. PM1 is still scanning, so the denominator moves by the hour
+      and any figure written down is stale before it is read — the **zero** is the finding, and
+      it is the part that did not move.
+
+      **Zero is structural rather than lucky.** `timeutil.utc_now_iso()` is the one authority
+      (its own comment records consolidating two copies, "one of them with the `$` footgun"), it
+      builds the string with `strftime`, and `FIXED_UTC_PATTERN` in the same module pins the
+      shape. No writer in the runtime can emit a value that would fail.
+
+      So enabling it today costs a dependency in two files and buys nothing measurable, and
+      deferring costs nothing either — the cost to enable later is identical. **What reopens
+      this:** a timestamp writer that does not go through `timeutil`, or an externally-supplied
+      or model-supplied time string reaching a record. Then the 110 declarations should become a
+      defence instead of documentation, and the measurement above is the thing to re-run first.
 
 ---
 
