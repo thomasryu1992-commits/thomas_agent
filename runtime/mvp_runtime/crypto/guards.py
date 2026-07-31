@@ -394,13 +394,58 @@ def run_risk_guard(
     }
 
 
+def paper_trade_verdict(health: dict[str, Any]) -> dict[str, Any]:
+    """The PAPER leg's verdict — data health only, and deliberately no loss breakers.
+
+    A loss limit exists to stop money being lost. Paper loses none, and metering it against
+    one had a cost that was not obvious until it was measured: on this machine 86 paper
+    outcomes settled while **656** were refused by the loss breakers and recorded as
+    counterfactual shadows. The five strategies routing at the time carried 2, 3, 3, 9 and 13
+    closed trades against ``lifecycle`` windows of 20 / 30 / 50, so the ladder — the thing that
+    actually judges a strategy — could not reach any of them. The samples were thin *because*
+    the breaker fired, and the breaker fired because those strategies were losing. A limit that
+    suppresses the evidence that would clear it is not a brake, it is a latch.
+
+    So the two legs answer different questions with different instruments:
+
+    - **paper**: is the data trustworthy enough to simulate on? Losses are evidence here, not
+      damage, and ``lifecycle`` demotes on them — a per-strategy judgement, where a
+      portfolio-wide brake stops the good strategies to punish the bad ones and then destroys
+      the sample that would have told them apart.
+    - **live**: :func:`merge_trade_verdict`, unchanged, still metering real money.
+
+    **What this does NOT remove.** Data health still refuses (a cycle that cannot trust its
+    candles must not simulate on them either), and everything outside this function is
+    untouched: the kill switch, the position caps, the directional skew cap,
+    ``cost.MAX_ENTRY_COST_R``, the regime filter. What is gone is the *loss* breaker, and only
+    on the leg that loses nothing.
+
+    Same shape as the merged verdict so no consumer needs a paper-specific branch.
+    ``risk_guard`` is ``None`` rather than a permissive stub: a caller reading the breaker state
+    off this verdict is asking a question the paper leg no longer answers, and should fail on
+    the absence rather than be handed an "everything is fine" that was never evaluated.
+    """
+    allow = bool(health.get("allow_trading"))
+    return {
+        "allow_new_position": allow,
+        "status": "ALLOW" if allow else "NO_NEW_POSITION",
+        "problems": sorted(health.get("problems", [])),
+        "data_health": health,
+        "risk_guard": None,
+    }
+
+
 def merge_trade_verdict(health: dict[str, Any], risk: dict[str, Any]) -> dict[str, Any]:
-    """Stricter-wins merge of the two guards — the cycle's single trade verdict.
+    """Stricter-wins merge of the two guards — the LIVE leg's trade verdict.
 
     ``allow_new_position`` only when BOTH guards allow; the reason codes of every
     refusing guard ride along, so the audit trail says exactly why a cycle ran in
     no-new-position mode. The cycle itself is never blocked here (DEGRADED, not
     halted — the source's fail-closed semantics and this repo's R3/R7.2 posture).
+
+    It used to be *the* cycle verdict, fed to paper and live alike; :func:`paper_trade_verdict`
+    now serves the paper leg and this one is what gates real money. Nothing about the merge
+    changed — a row recorded before the split means exactly what a live-gating row means now.
     """
     allow = bool(health.get("allow_trading")) and bool(risk.get("allow_new_position"))
     problems = sorted({*health.get("problems", []), *risk.get("problems", [])})

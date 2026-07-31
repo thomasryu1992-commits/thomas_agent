@@ -257,33 +257,51 @@ def test_a_cap_refusal_is_shadowed_under_its_own_reason_code(tmp_path, monkeypat
     assert eth[0]["block_reasons"] == ["POSITION_LIMIT_PORTFOLIO"]
 
 
-def test_a_guard_block_still_shadows_the_verdicts_problems(tmp_path):
-    """No regression: the branch that existed keeps its own reasons, and a cap reason must not
-    leak into it. The two are mutually exclusive by construction — `run_paper_update` only
-    reaches its cap checks when the verdict already allows a new position."""
+def test_a_tripped_breaker_binds_the_live_gate_and_not_the_paper_leg(tmp_path):
+    """The same fixture that used to prove a guard block stops the paper entry and shadows it.
+
+    It proves the opposite now, deliberately: six own losses trip the breaker, the live gate
+    refuses on it, and paper goes on trading. What used to be recorded as a shadow is recorded
+    as a settled outcome — the sample the ladder needs, which the breaker was suppressing."""
     from runtime.mvp_runtime.crypto import counterfactual
 
     _install_pool(tmp_path, _always_spec())
+    from runtime.read_only_kernel import integrity
+
     store = RealPaperStore(root=tmp_path, authorization=_AUTH)
     # A tripped breaker: an outcome history the risk guard refuses to trade on. Written through
     # the same gated store the runtime uses, so the guard reads it exactly as it would in life.
+    #
+    # SELF-HASHED, and that is not decoration. `append_outcome` stores what it is handed, so an
+    # unhashed row fails `read_outcomes`' verified read and the guard reports
+    # `risk_history_unreadable` — a refusal, but not the one this test names. The old assertion
+    # here was `verdict_status != "ALLOW"`, which both causes satisfy, so the fixture had never
+    # tripped the breaker it claimed to and nothing said so.
     for i in range(6):
-        store.append_outcome({
+        body = {
             "position_id": f"p{i}", "strategy_id": "S_ALWAYS", "symbol": "BTCUSDT",
-            "timeframe": "1d", "direction": "LONG", "result_R": -1.0,
-            "close_reason": "stop_loss", "closed_at_utc": "2026-07-21T00:00:00Z",
+            "timeframe": "1d", "direction": "LONG", "result_R": -1.0, "outcome_closed": True,
+            "outcome_id": f"o{i}", "close_reason": "stop_loss",
+            "created_at_utc": "2026-07-21T00:00:00Z", "closed_at_utc": "2026-07-21T00:00:00Z",
             # The runtime's OWN provenance, not a literal: the risk guard reads only its own
             # trading (imported history is split off), so a hand-written marker here would make
             # this test pass while the breaker it claims to trip stayed clear.
             "provenance": paper.PAPER_PROVENANCE,
-        })
+        }
+        store.append_outcome({**body, "record_sha256": integrity.sha256_record(body)})
     record = _cycle(tmp_path, FakeExchangeCollector(), store)
     assert record["verdict_status"] != "ALLOW", "the fixture must actually trip a breaker"
-    assert record["opened"] is None
-    shadows = counterfactual.load_open_counterfactuals(tmp_path)
-    assert shadows, "a guard-blocked actionable signal must still be shadowed"
-    assert "POSITION_LIMIT_PORTFOLIO" not in shadows[-1]["block_reasons"]
-    assert shadows[-1]["block_reasons"] == record["verdict_problems"]
+    # The breaker binds the LIVE gate and nothing else. The paper leg trades through it, which is
+    # the whole point: those six losses are six data points the ladder needs, and the sample that
+    # would demote S_ALWAYS only exists if the entries that produce it are allowed to happen.
+    assert "weekly_loss_limit_breached" in record["verdict_problems"]
+    assert record["paper_verdict_status"] == "ALLOW"
+    assert record["paper_verdict_problems"] == []
+    assert record["opened"] is not None
+    # And no shadow, because nothing on the paper leg was refused. The shadow path itself is
+    # covered where a paper refusal still happens — see
+    # `test_crypto_entry_economics.test_a_cost_refusal_is_shadowed_so_a_too_tight_gate_can_be_caught`.
+    assert counterfactual.load_open_counterfactuals(tmp_path) == []
 
 
 def test_an_opened_position_is_never_also_shadowed(tmp_path):
@@ -1011,7 +1029,12 @@ def test_a_tampered_limits_record_fails_the_cycle_guard_closed(tmp_path):
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert record["verdict_status"] == "NO_NEW_POSITION"
     assert risk_limits.LIMITS_TAMPERED in record["reason_codes"]
-    assert record["opened"] is None
+    # Fail-closed where the record governs. `crypto_risk_limits` configures the LOSS breakers,
+    # and after the verdict split those bind the live leg alone — so a record that cannot prove
+    # itself refuses real money and leaves the paper leg, which never consulted it, alone. The
+    # direction that matters is unchanged: the tampered record buys nothing it could not buy
+    # before, and widens nothing.
+    assert record["paper_verdict_status"] == "ALLOW"
 
 
 def test_a_lapsed_limits_record_fails_the_cycle_guard_closed(tmp_path):

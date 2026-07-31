@@ -36,6 +36,7 @@ from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
     merge_trade_verdict,
+    paper_trade_verdict,
     risk_guard_unavailable,
     risk_guard_unreadable,
     run_data_health_check,
@@ -545,7 +546,18 @@ def run_crypto_cycle(
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
             reason_codes.append(exc.reason_code)
-    verdict = merge_trade_verdict(health, risk)
+    # TWO verdicts, because the two legs are metering different things. `live_verdict` is the
+    # merge that has always gated real money — unchanged, so a ledger row from before this split
+    # means what a live-gating row means now. `paper_verdict` is data health alone: paper loses
+    # no money, and the loss breakers it used to answer to were suppressing the very sample the
+    # lifecycle ladder needs to demote the strategies that tripped them (see
+    # `guards.paper_trade_verdict` for the measurement).
+    #
+    # Both are computed every cycle even when only one is consulted, so the record can say what
+    # the other one would have decided. That is what keeps an unbraked paper book still able to
+    # describe a braked live one.
+    live_verdict = merge_trade_verdict(health, risk)
+    paper_verdict = paper_trade_verdict(health)
 
     # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
     try:
@@ -558,7 +570,7 @@ def run_crypto_cycle(
     # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
     # failure degrades the settlement to its pessimistic assumption, never blocks it.
     paper_summary, paper_records = run_paper_update(
-        snapshot, feature_row, active_pool, verdict,
+        snapshot, feature_row, active_pool, paper_verdict,
         store=store, now=now, root=root, control_store=control_store,
         intrabar_collector=collector, routing_marks=routing_marks,
     )
@@ -586,7 +598,12 @@ def run_crypto_cycle(
     # reason added here: the concurrency caps refuse because a slot is taken, and shadowing
     # those would fill the book with plans the runtime had no room for either way.
     cost_refused = (paper_summary.get("open_refused") or {}).get("reason_code") == ENTRY_COST_UNECONOMIC
-    block_reasons = list(verdict.get("problems") or [])
+    # The PAPER verdict, because this registry exists to price refusals that stopped a PAPER
+    # trade — a shadow is what stands in for an outcome that never happened, and after the
+    # verdict split the loss breakers no longer stop one. Those cycles now produce a real
+    # settled row instead, which is strictly better evidence than the simulation of it. What
+    # still lands here is what still refuses paper: data health, the economics gate, the caps.
+    block_reasons = list(paper_verdict.get("problems") or [])
     if cost_refused:
         block_reasons.append(ENTRY_COST_UNECONOMIC)
     blocked_plan = None
@@ -602,7 +619,7 @@ def run_crypto_cycle(
         # `block_reasons` already carries ENTRY_COST_UNECONOMIC from above. It also keeps the
         # branches mutually exclusive — `run_paper_update` refuses on cost BEFORE it reaches
         # the position caps, so a cost-refused cycle can never also carry `open_refused`.
-        if not bool(verdict.get("allow_new_position")) or cost_refused:
+        if not bool(paper_verdict.get("allow_new_position")) or cost_refused:
             blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
         else:
             # A POSITION CAP refused a plan the router had already built — the portfolio count,
@@ -640,14 +657,25 @@ def run_crypto_cycle(
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
-    # step so it can share that step's routing result rather than re-evaluating the pool, and
-    # it is given the same C4 verdict — a live entry can never be permitted where a paper one
-    # was not. Never raises: `run_live_leg` reports, because a traceback here would be
-    # indistinguishable from "no live activity".
+    # step so it can share that step's routing result rather than re-evaluating the pool.
+    #
+    # It is given `live_verdict`, which is the FULL merge including the loss breakers — so this
+    # leg is metered exactly as it was before the split, and dropping the paper breaker widened
+    # nothing here. The old comment on this line said a live entry can never be permitted where
+    # a paper one was not, and that sentence held two separate guarantees:
+    #
+    #   - the SIGNAL ceiling — live only ever trades what the paper router proposed. That is
+    #     `shared_route` above, and it is untouched.
+    #   - the RISK-STATE ceiling — live inherited paper's breaker verdict. That is what moved:
+    #     live now answers to its own, which is stricter than the paper leg's rather than equal
+    #     to it, because `merge_trade_verdict` still folds in every breaker the paper leg drops.
+    #
+    # Never raises: `run_live_leg` reports, because a traceback here would be indistinguishable
+    # from "no live activity".
     live = run_live_leg(
         route=shared_route,
         feature_row=feature_row,
-        verdict=verdict,
+        verdict=live_verdict,
         symbol=symbol,
         collector=collector,
         now=now,
@@ -711,14 +739,26 @@ def run_crypto_cycle(
         "degraded": bool(snapshot.get("degraded", False)),
         "reason_codes": reason_codes,
         "collection": collection_record,
-        "verdict_status": verdict["status"],
-        "verdict_problems": verdict["problems"],
+        # UNCHANGED MEANING, deliberately: this is the merged verdict that gates real money, so
+        # a row written before the paper/live split says the same thing as one written after and
+        # a window spanning that day mixes nothing. The paper leg's own verdict is a NEW field
+        # below rather than a redefinition of this one — the alternative is the defect
+        # `r_basis` exists to mark, one field name quietly holding two populations.
+        "verdict_status": live_verdict["status"],
+        "verdict_problems": live_verdict["problems"],
+        # What the PAPER leg decided, which is what the `route` / `opened` / `open_refused`
+        # fields on this same record are the consequence of. Recorded even when it agrees with
+        # the line above, because "they agreed" is itself the fact a later reader needs: a cycle
+        # where paper opened while the live gate refused is now an ordinary cycle, not an
+        # inconsistency, and only having both figures makes that legible.
+        "paper_verdict_status": paper_verdict["status"],
+        "paper_verdict_problems": paper_verdict["problems"],
         # The breaker limits this cycle was judged against, and the record they came from. Kept
         # even though the rest of the verdict is not: the limits are configurable now, so
         # "ALLOW" no longer states what was allowed, and a ledger row nobody can re-check
         # against the numbers in force at the time is not an audit trail. ~150 bytes against
         # the 24KB record the lifecycle trim above was worth doing for.
-        "risk_limits": verdict["risk_guard"].get("limits"),
+        "risk_limits": live_verdict["risk_guard"].get("limits"),
         "route_status": paper_summary.get("route_status"),
         # Which strategies fired and were declined by the regime filter. The ids rather than the
         # whole route, because this record is deliberately trimmed (the lifecycle note below is
@@ -944,8 +984,19 @@ def run_pool_cycle(
 
 
 def cycle_status_line(record: dict[str, Any]) -> str:
-    """The one-line status a scheduler fire records for this cycle."""
-    parts = [f"verdict={record['verdict_status']}", f"route={record['route_status']}"]
+    """The one-line status a scheduler fire records for this cycle.
+
+    ``verdict=`` is the PAPER leg's, because every other token on this line — the route, what
+    settled, what opened, what a cap held — is a paper fact, and pairing them with the live
+    gate's answer would read as a contradiction on any cycle where paper trades while live is
+    refused. That cycle is now ordinary rather than impossible, so the live gate gets its own
+    token, and only when it disagrees: a line that repeated the same verdict twice on every
+    quiet fire is a line an operator learns to skip.
+    """
+    parts = [f"verdict={record.get('paper_verdict_status') or record['verdict_status']}",
+             f"route={record['route_status']}"]
+    if record.get("paper_verdict_status") and record["paper_verdict_status"] != record["verdict_status"]:
+        parts.insert(1, f"live-gate={record['verdict_status']}")
     if record.get("degraded"):
         parts.insert(0, "degraded")
     if record.get("settled"):
