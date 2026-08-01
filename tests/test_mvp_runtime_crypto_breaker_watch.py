@@ -335,3 +335,105 @@ def test_the_numbers_moving_under_an_unchanged_door_stay_quiet(tmp_path):
     breaker_watch.run_breaker_watch(tmp_path, now=NOW)
     _seed(tmp_path, _outcome(0.5), _outcome(0.4))
     assert breaker_watch.run_breaker_watch(tmp_path, now=NOW)["changed"] is False
+
+
+# --- why the sample is 0, and the lapse that is still two days away ------------
+
+def test_a_zero_sample_says_which_of_its_three_causes_it_is(tmp_path):
+    """`sample 0` is the one Gate 0 reading an operator cannot act on.
+
+    Three states produce it and they want opposite responses: nothing has traded yet (wait),
+    the pool rotated past every row it had (stop promoting), or the pool could not be read
+    (a fault). Measured on the host 2026-08-01, it was the middle one — 86 own paper rows,
+    zero from a routable lineage — and the render said only "sample 0".
+    """
+    _seed(tmp_path, _outcome(0.5))
+    _seed_paper(tmp_path, _outcome(-1.0, at="2026-07-20T00:00:00Z"))   # a retired lineage's row
+    _pool(tmp_path, "S_ROUTABLE")                                      # which is not this one
+    text = breaker_watch.render_text(breaker_watch.evaluate(tmp_path, now=NOW), None)
+
+    assert "sample 0/20" in text                        # against the threshold, not bare
+    assert "1 own paper row on file" in text
+    assert "none came from a" in text and "lineage that can still route" in text
+    assert "a promotion restarts it" in text
+
+
+def test_an_unreadable_pool_is_withheld_rather_than_reported_as_a_zero_sample(tmp_path):
+    """The fault case, told apart from the two that are not faults. `_routable_rows` scopes an
+    unreadable pool to nothing, so it reaches the render as `sample 0` exactly like a rotation
+    does — and one of those is a broken machine."""
+    _seed(tmp_path, _outcome(0.5))
+    _seed_paper(tmp_path, _outcome(-1.0, at="2026-07-20T00:00:00Z"))
+    (state_dir(tmp_path) / "active_strategy_pool.json").write_text("{ not json", encoding="utf-8")
+
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert state["gate0_pool_readable"] is False
+    text = breaker_watch.render_text(state, None)
+    assert "WITHHELD, not failed" in text
+    assert "lineage that can still route" not in text   # not the rotation message
+
+
+def test_the_approaching_lapse_announces_before_it_happens_not_after(tmp_path):
+    """The one transition on this channel whose useful moment is BEFORE it fires. The lapse was
+    already announced — after the door had shut — which is fail-closed and useless for the
+    decision it informs."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"], days=7)
+
+    first = breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    assert first["state"]["gate0_ack_expiring_soon"] is False
+
+    # Still inside the window and still open, but now within the warning horizon.
+    warned = breaker_watch.run_breaker_watch(tmp_path, now="2026-08-05T12:00:00Z")
+    assert warned["changed"] is True
+    assert "acknowledgement expires soon" in warned["text"]
+    assert "re-sign it or the door shuts on its own" in warned["text"]
+    assert warned["state"]["live_entry_open"] is True     # it warned; it did not shut anything
+
+
+def test_the_warning_does_not_move_the_door_it_warns_about(tmp_path):
+    """The property the whole change rests on. #411 separated what a channel reports from what a
+    gate decides; a warning that shortened the window it warns about would be a gate wearing a
+    notification's clothes."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"], days=7)
+
+    inside_warning = "2026-08-05T12:00:00Z"
+    state = breaker_watch.evaluate(tmp_path, now=inside_warning)
+    assert state["gate0_ack_expiring_soon"] is True
+    # ...and every door reads exactly as it did before the flag existed.
+    assert state["live_entry_open"] is True
+    assert state["gate0_ack_applies"] is True
+    ack = lca.resolve_ack(tmp_path, now=inside_warning, routable_strategy_ids={"S_A"})
+    assert ack["applies"] is True and ack["reason"] == "acknowledged"
+
+
+def test_the_warning_stays_quiet_for_an_acknowledgement_that_does_not_apply(tmp_path):
+    """Advice for the wrong problem. An expired one has had its transition announced; one
+    refused for naming a different pool wants re-judging, not re-signing."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"], days=7)
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+
+    _pool(tmp_path, "S_A", "S_B")                        # the signature no longer matches
+    state = breaker_watch.evaluate(tmp_path, now="2026-08-05T12:00:00Z")
+    assert state["gate0_ack_applies"] is False
+    assert state["gate0_ack_expiring_soon"] is False
+    assert "re-sign it" not in breaker_watch.render_text(state, None)
+
+
+def test_a_warning_already_given_does_not_re_announce(tmp_path):
+    """Still an edge trigger. The flag rides along on later messages; it does not generate them."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"], days=7)
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    breaker_watch.run_breaker_watch(tmp_path, now="2026-08-05T12:00:00Z")   # the warning
+
+    again = breaker_watch.run_breaker_watch(tmp_path, now="2026-08-05T18:00:00Z")
+    assert again["changed"] is False

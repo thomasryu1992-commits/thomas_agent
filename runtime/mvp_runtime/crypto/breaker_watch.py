@@ -49,6 +49,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from . import guards, live_candidate_ack, pool
@@ -59,6 +60,25 @@ from .risk_limits import resolve_risk_limits
 
 WATCH_VERSION = "crypto_breaker_watch.v0.1"
 MARK_FILENAME = "breaker_watch_mark.json"
+
+# How long before an acknowledgement lapses this watch starts saying so.
+#
+# The lapse itself is already announced — `gate0_ack_reason` is on the change key — but only
+# AFTER it happens, and by then the door has shut. That is fail-closed and therefore safe, and
+# it is also useless for the one decision it informs: whether to re-sign. Nobody DOES an expiry,
+# so there is no moment anyone is watching, and the operator would find out from the absence of
+# trades or from an hourly message the following morning.
+#
+# 48 hours because the thing it buys time for is a person's judgement, not a process — Gate 0's
+# evidence arrives on its own schedule and re-signing is a deliberate act. Shorter risks landing
+# entirely inside a night; much longer would ride along on so many messages it stops reading as
+# a warning.
+#
+# **It moves no door.** `live_candidate_ack.resolve_ack` is untouched and an acknowledgement
+# applies for exactly as long as it says it does. This is the same separation #411 drew between
+# what a channel reports and what a gate decides: a warning that shortened the window it warns
+# about would be a gate wearing a notification's clothes.
+ACK_EXPIRY_WARNING_HOURS = 48
 
 
 def mark_path(root: Path | None = None) -> Path:
@@ -91,6 +111,30 @@ def write_mark(state: Mapping[str, Any], *, root: Path | None = None) -> Path:
         tmp.write_text(json.dumps(dict(state), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         tmp.replace(path)
     return path
+
+
+def _ack_expiring_soon(ack: Mapping[str, Any], *, now: str) -> bool:
+    """Whether an APPLYING acknowledgement lapses within the warning window. Pure, report-only.
+
+    False for an acknowledgement that does not currently apply: one already expired has had its
+    transition announced, and one refused for naming a different pool wants re-judging rather
+    than re-signing. Warning about either would be advice for the wrong problem.
+
+    Unparseable timestamps read as "not expiring", the quieter of the two errors. The record is
+    schema-valid by the time it reaches here so this is defensive rather than expected, and the
+    fallback is the behaviour that existed before this function: the lapse is still announced
+    when it happens, by ``gate0_ack_reason``.
+    """
+    if not ack.get("applies"):
+        return False
+    valid_until = (ack.get("record") or {}).get("valid_until")
+    if not isinstance(valid_until, str):
+        return False
+    try:
+        remaining = timeutil.parse_iso(valid_until) - timeutil.parse_iso(now)
+    except (ValueError, TypeError):
+        return False
+    return remaining.total_seconds() <= ACK_EXPIRY_WARNING_HOURS * 3600
 
 
 def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
@@ -181,10 +225,21 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         # they are exactly the transitions nobody would otherwise notice.
         "gate0_eligible": bool(gate0["eligible"]),
         "gate0_sample": gate0["sample"],
+        # What the sample is measured against, and whether it COULD be measured. A bare "sample
+        # 0" is the one Gate 0 reading an operator cannot act on, because three different states
+        # produce it: nothing has traded yet, the pool rotated past every row it had, or the pool
+        # could not be read at all. Only the middle one is a reason to stop promoting, and only
+        # the last one is a fault. Carried as data so the render names which.
+        "gate0_min_sample": feedback.LIVE_CANDIDATE_MIN_SAMPLE,
+        "gate0_pool_readable": routable is not None,
         "gate0_ack_applies": bool(ack["applies"]),
         "gate0_ack_reason": ack["reason"],
         "gate0_ack_id": (ack.get("record") or {}).get("acknowledgement_id"),
         "gate0_ack_valid_until": (ack.get("record") or {}).get("valid_until"),
+        # Reported ahead of the lapse, unlike every other transition on this channel, because
+        # this is the only one whose useful moment is BEFORE it happens. It changes nothing about
+        # when the acknowledgement stops applying — see ACK_EXPIRY_WARNING_HOURS.
+        "gate0_ack_expiring_soon": _ack_expiring_soon(ack, now=now),
         # What the two locks add up to. Recorded rather than re-derived by every reader, because
         # "the breaker released" and "the door opened" stopped being the same sentence.
         "live_entry_open": bool(verdict["allow_new_position"])
@@ -214,6 +269,13 @@ def has_changed(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
         or bool(current.get("live_entry_open")) != bool(previous.get("live_entry_open"))
         or current.get("gate0_ack_reason") != previous.get("gate0_ack_reason")
         or bool(current.get("gate0_eligible")) != bool(previous.get("gate0_eligible"))
+        # The approaching lapse, which is a transition like the others: it happens because time
+        # passed, nobody does it, and it is the last moment the response is still cheap. On the
+        # key rather than rendered-only, because a warning that waited for some OTHER state to
+        # change before it could be sent would arrive on a schedule nobody controls — the exact
+        # property that makes the lapse itself worth announcing.
+        or bool(current.get("gate0_ack_expiring_soon"))
+        != bool(previous.get("gate0_ack_expiring_soon"))
     )
 
 
@@ -231,12 +293,19 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # trades. The door shutting is the message this channel exists to carry.
     was_open = bool(previous.get("live_entry_open")) if previous is not None else None
     now_open = bool(current.get("live_entry_open"))
+    was_expiring = bool(previous.get("gate0_ack_expiring_soon")) if previous is not None else None
+    now_expiring = bool(current.get("gate0_ack_expiring_soon"))
     if previous is None:
         headline = "CRYPTO LIVE ENTRY - first report"
     elif now_open and not was_open:
         headline = "CRYPTO LIVE ENTRY OPEN - real orders can now be placed"
     elif was_open and not now_open:
         headline = "CRYPTO LIVE ENTRY CLOSED - real orders refused again"
+    # Keyed on the TRANSITION, not on the flag. The warning rides along in the block below on
+    # every message inside the window; making the headline the same way would relabel an
+    # unrelated change as an expiry notice for two days.
+    elif now_expiring and not was_expiring:
+        headline = "CRYPTO LIVE ENTRY - the operator acknowledgement expires soon"
     elif current.get("gate0_ack_reason") != previous.get("gate0_ack_reason"):
         headline = "CRYPTO LIVE ENTRY - the operator acknowledgement changed"
     elif bool(current.get("allow_new_position")) != bool(previous.get("allow_new_position")):
@@ -262,12 +331,42 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     ack_reason = current.get("gate0_ack_reason")
     if ack_reason is not None:
         sample = current.get("gate0_sample")
+        needed = current.get("gate0_min_sample")
+        shown = "?" if sample is None else (f"{sample}/{needed}" if needed else str(sample))
         lines.append(
             f"  gate 0   : evidence={current.get('gate0_eligible')} "
-            f"(sample {'?' if sample is None else sample}) | operator={current.get('gate0_ack_applies')}"
+            f"(sample {shown}) | operator={current.get('gate0_ack_applies')}"
         )
+        # WHY the sample is what it is, on the one reading an operator cannot act on. `0` has
+        # three causes and they want opposite responses: wait, stop promoting, or fix a fault.
+        own_closed_rows = current.get("own_closed")
+        if current.get("gate0_pool_readable") is False:
+            lines.append("  NOTE: the routable pool could not be read - Gate 0 is WITHHELD, not failed")
+        elif sample == 0 and isinstance(own_closed_rows, int) and own_closed_rows > 0:
+            # The state this machine is actually in, and the one that looks like a bug. The rows
+            # exist; they came from lineages the ladder has since retired, and Gate 0 judges the
+            # pool that would trade. Only a routable lineage's trades build this sample, so
+            # promoting again resets it — which is the decision this line exists to inform.
+            noun = "row" if own_closed_rows == 1 else "rows"
+            lines.append(
+                f"  NOTE: sample 0 with {own_closed_rows} own paper {noun} on file - none came from a"
+            )
+            lines.append(
+                "        lineage that can still route. Gate 0 judges the pool that would trade,"
+            )
+            lines.append(
+                "        so only its trades build this sample and a promotion restarts it"
+            )
         if current.get("gate0_ack_applies"):
             lines.append(f"  signed   : {current.get('gate0_ack_id')} until {current.get('gate0_ack_valid_until')}")
+            if current.get("gate0_ack_expiring_soon"):
+                # On every message inside the window, not only the one that opened it: an
+                # operator reading any report in the last two days should not have to remember
+                # which earlier message carried the warning.
+                lines.append(
+                    "  NOTE: that acknowledgement lapses within "
+                    f"{ACK_EXPIRY_WARNING_HOURS}h - re-sign it or the door shuts on its own"
+                )
         elif ack_reason != "not_registered":
             # The transition this channel exists for. An acknowledgement stops applying because
             # time passed or the pool moved — nobody DOES either, so nobody is watching.
