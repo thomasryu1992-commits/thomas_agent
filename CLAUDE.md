@@ -34,7 +34,10 @@ approval turns it on.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
   `.runtime_governance_state/`; a root run leaves files the service can no longer write and
   fails later, in another process, with nothing pointing back at the cause. Use
-  `docker exec thomas-scheduler python scripts/<script>.py …`. `state_guard` refuses the
+  `docker exec thomas-scheduler python -m scripts.<script> …` — the **module** form, not
+  `python scripts/<script>.py`, which puts `/app/scripts` on `sys.path` instead of `/app` and
+  dies on `ModuleNotFoundError: No module named 'runtime'` for every script that does not patch
+  `sys.path` itself. `state_guard` refuses the
   dangerous case at the door but does not self-heal — `chown -R 10001:10001` is the fix.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
