@@ -29,7 +29,8 @@ from runtime.read_only_kernel import integrity
 from .. import timeutil
 from . import paper
 from ..coerce import as_float as _f
-from .cost import FUNDING_INTERVALS_PER_DAY, CostModel, outcome_net_r
+from .cost import FUNDING_INTERVALS_PER_DAY, CostModel, funding_cost_r, outcome_net_r
+from .live_pnl import R_BASES_NET_OF_COSTS
 from .market_data import TIMEFRAMES
 
 PERFORMANCE_REPORT_VERSION = "performance_report.v1-mvp"
@@ -222,6 +223,48 @@ def net_result_r(
     network read behind a board that must render offline."""
     cost = cost or CostModel()
     carry = _funding_intervals(outcome) * cost.funding_bps_per_interval / 10000.0
+
+    # **A row that is ALREADY net is costed here, not reported as uncostable.**
+    #
+    # `cost.outcome_net_r` returns None for these deliberately, so a settlement that already
+    # charged fees and slippage is never charged them twice. But None means two different
+    # things to a caller — "this row cannot be priced" and "this row is already priced" — and
+    # `summarize_net_of_costs` was reading both as the first. Every row this runtime has minted
+    # since 2026-07-30 labels itself `intent_net_of_costs`, so the effect was that the whole
+    # forward record counted as uncostable: measured 2026-08-01 on the first settlement of the
+    # newly promoted pool, a +1.778R take-profit produced `costed_count: 0` and
+    # `OUTCOME_NOT_COSTABLE`. Gate 0 requires `not failure_modes`, so that mode alone would have
+    # held it shut **however well the pool traded** — the third time this exact latch has
+    # appeared, and the first time on the runtime's own current rows.
+    #
+    # What the two bases each contain has to be exact, or this trades a latch for a wrong
+    # number. `paper.build_outcome_record` charges fees and slippage at settlement and records
+    # no funding term, and `outcome_net_r` says the same in its own words: `intent_net_of_costs`
+    # is "fees and slippage both inside". Carry is therefore the one term still owed, which is
+    # also the term this function already owns (see the docstring above). So the net figure is
+    # `result_R` minus carry, charged on the ENTRY FILL exactly as `apply_cost_model` charges
+    # it — the same call, not a second copy of the arithmetic.
+    if outcome.get("r_basis") in R_BASES_NET_OF_COSTS:
+        result_r = outcome.get("result_R")
+        if isinstance(result_r, bool) or not isinstance(result_r, (int, float)):
+            return None
+        if not carry:
+            return round(float(result_r), 8)
+        entry = outcome.get("entry_price")
+        risk = outcome.get("risk")
+        direction = outcome.get("direction")
+        if (
+            not isinstance(entry, (int, float)) or isinstance(entry, bool) or entry <= 0
+            or not isinstance(risk, (int, float)) or isinstance(risk, bool) or risk <= 0
+            or direction not in ("LONG", "SHORT")
+        ):
+            # Carry is owed and cannot be priced, so the row genuinely is uncostable. Returning
+            # `result_R` here would report a figure that silently omits a cost this function
+            # exists to charge.
+            return None
+        entry_fill = cost.fill_price(entry, direction, "entry")
+        return round(float(result_r) - funding_cost_r(direction, entry_fill, risk, carry), 8)
+
     return outcome_net_r(outcome, cost=cost, funding_rate_sum=carry)
 
 
