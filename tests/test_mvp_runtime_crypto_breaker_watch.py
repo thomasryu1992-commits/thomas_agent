@@ -201,11 +201,14 @@ def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopp
     released = breaker_watch.run_breaker_watch(tmp_path, now=NOW)["text"]        # RELEASED
 
     for text in (first, tripped, changed, released):
-        assert text.splitlines()[0].startswith("CRYPTO LIVE BREAKER")
+        assert text.splitlines()[0].startswith("CRYPTO LIVE ")
         assert "scope    : LIVE entries only" in text
         assert "new positions refused" not in text and "new positions allowed" not in text
-    assert "TRIPPED - live entries refused" in tripped
-    assert "RELEASED - live entries allowed again" in released
+    # The breaker is one lock on the door, not the door. Gate 0 refuses throughout these
+    # fixtures (no acknowledgement, no sample), so the DOOR line stays REFUSED even on the
+    # cycle where the breaker releases — which is the sentence an operator needs.
+    assert "DOOR     : live entries REFUSED" in released
+    assert "TRIPPED" in tripped
 
 
 def test_the_render_separates_the_judged_rows_from_the_ones_that_are_not(tmp_path):
@@ -256,3 +259,79 @@ def test_the_mixed_basis_caveat_appears_only_when_the_window_has_one(tmp_path):
     mixed = breaker_watch.render_text(breaker_watch.evaluate(tmp_path, now=NOW), None)
     assert "mixed R bases" in mixed
     assert "intent 1" in mixed and "intent_net_of_costs 2" in mixed
+
+
+# --- Gate 0: the half that shuts with nobody doing anything --------------------
+
+def _sign(root, ids, *, days=7, at=NOW):
+    from datetime import datetime, timedelta
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    until = (datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ") + timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    lca.write_ack(lca.build_ack_record(
+        acknowledged_strategy_ids=list(ids), reason="checked the dashboard", valid_from=at,
+        valid_until=until, registered_by="thomas", registered_at=at), root=root)
+
+
+def _pool(root, *ids):
+    from tests.test_mvp_runtime_crypto_cycle import _always_spec, _install_pool
+
+    specs = []
+    for sid in ids:
+        spec = dict(_always_spec())
+        spec["strategy_id"] = sid
+        specs.append(spec)
+    _install_pool(root, *specs)
+
+
+def test_an_expiring_acknowledgement_announces_itself(tmp_path):
+    """The transition this channel exists for. Nobody DOES an expiry — time passes — so without
+    an edge-triggered message the operator finds out from the absence of trades."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"], days=1)
+
+    opened = breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    assert opened["state"]["gate0_ack_applies"] is True
+    assert "DOOR     : live entries OPEN" in opened["text"]
+
+    later = breaker_watch.run_breaker_watch(tmp_path, now="2026-08-05T00:00:00Z")
+    assert later["changed"] is True
+    assert "CRYPTO LIVE ENTRY CLOSED" in later["text"]
+    assert "no longer applies (outside_validity_window)" in later["text"]
+
+
+def test_a_pool_change_closes_the_door_and_says_which_way_it_closed(tmp_path):
+    """`expired` and `the pool moved under it` want different responses — one is re-signed, the
+    other re-judged — so the message names which happened rather than only that it did."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    _sign(tmp_path, ["S_A"])
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+
+    _pool(tmp_path, "S_A", "S_B")            # a promotion the signature never saw
+    after = breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    assert after["changed"] is True
+    assert "CRYPTO LIVE ENTRY CLOSED" in after["text"]
+    assert "routable_pool_changed_since_signature" in after["text"]
+
+
+def test_a_released_breaker_does_not_claim_the_door_is_open(tmp_path):
+    """The two locks are reported separately on purpose: an operator told "breaker released"
+    while Gate 0 still refuses has been told something true and useless."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert state["allow_new_position"] is True        # the breaker is clear...
+    assert state["live_entry_open"] is False          # ...and the door is not
+    assert "DOOR     : live entries REFUSED" in breaker_watch.render_text(state, None)
+
+
+def test_the_numbers_moving_under_an_unchanged_door_stay_quiet(tmp_path):
+    """Still an edge trigger. Gate 0 joining the key must not turn this into a trade feed."""
+    _seed(tmp_path, _outcome(0.5))
+    _pool(tmp_path, "S_A")
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW)
+    _seed(tmp_path, _outcome(0.5), _outcome(0.4))
+    assert breaker_watch.run_breaker_watch(tmp_path, now=NOW)["changed"] is False
