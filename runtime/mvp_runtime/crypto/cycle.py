@@ -699,6 +699,12 @@ def run_crypto_cycle(
     try:
         report, report_text = feedback.run_paper_performance_report(
             now=now, root=root, outcomes=outcomes,
+            # Gate 0 judges the pool that would actually trade. `routable_ids` is None when the
+            # pool could not be read, which scopes the report to nothing and refuses — the
+            # opposite direction to the drawdown baseline above, and right for the opposite
+            # reason: an unverifiable population must withhold an eligibility claim, where it
+            # must keep losses inside a brake.
+            routable_strategy_ids=routable_ids,
         )
     except ToolError as exc:
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"

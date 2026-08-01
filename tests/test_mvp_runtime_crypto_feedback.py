@@ -214,7 +214,7 @@ def test_run_paper_performance_report_reads_store(tmp_path):
     lines = "".join(json.dumps({**o, "record_sha256": integrity.sha256_record(o)}) + "\n"
                     for o in SPREAD)
     (state / "paper_outcomes.jsonl").write_text(lines, encoding="utf-8")
-    report, text = run_paper_performance_report(now=NOW, root=tmp_path)
+    report, text = run_paper_performance_report(now=NOW, root=tmp_path, routable_strategy_ids={"S1"})
     assert report["sample_size"] == 4
     assert "paper performance report" in text
 
@@ -224,7 +224,7 @@ def test_run_paper_performance_report_fails_closed_on_corrupt_store(tmp_path):
     state.mkdir(parents=True)
     (state / "paper_outcomes.jsonl").write_text("{broken\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
-        run_paper_performance_report(now=NOW, root=tmp_path)
+        run_paper_performance_report(now=NOW, root=tmp_path, routable_strategy_ids={"S1"})
     assert exc.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
 
 
@@ -344,15 +344,15 @@ def test_the_report_uses_a_history_the_caller_already_verified(tmp_path, monkeyp
     real = paper.read_outcomes
     monkeypatch.setattr(paper, "read_outcomes", lambda root=None: (reads.append(1), real(root))[1])
 
-    report, _text = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
+    report, _text = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD, routable_strategy_ids={"S1"})
     assert not reads, "the store was read despite being handed the rows"
     assert report["sample_size"] == 4
 
 
 def test_a_handed_history_produces_the_identical_report(tmp_path):
     """Reuse must change nothing about the answer — the same property the replay frame owes."""
-    a, text_a = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD)
-    b, text_b = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=list(SPREAD))
+    a, text_a = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=SPREAD, routable_strategy_ids={"S1"})
+    b, text_b = run_paper_performance_report(now=NOW, root=tmp_path, outcomes=list(SPREAD), routable_strategy_ids={"S1"})
     assert a == b and text_a == text_b
 
 
@@ -363,7 +363,7 @@ def test_passing_none_still_reads_and_still_raises(tmp_path):
     state.mkdir(parents=True, exist_ok=True)
     (state / paper.OUTCOMES_FILENAME).write_text("{not json}\n", encoding="utf-8")
     with pytest.raises(ToolError) as excinfo:
-        run_paper_performance_report(now=NOW, root=tmp_path, outcomes=None)
+        run_paper_performance_report(now=NOW, root=tmp_path, outcomes=None, routable_strategy_ids={"S1"})
     assert excinfo.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
 
 
@@ -374,7 +374,7 @@ def test_the_report_covers_own_paper_rows_and_not_the_imported_history():
     the frozen crypto_AI_System cannot be in the answer — the same split the risk guard draws."""
     imported = [_outcome(5.0, "2026-07-18T01:00:00Z", outcome_id="imp1",
                          priced=False, provenance="crypto_ai_system_import")]
-    report, _text = run_paper_performance_report(now=NOW, outcomes=SPREAD + imported)
+    report, _text = run_paper_performance_report(now=NOW, outcomes=SPREAD + imported, routable_strategy_ids={"S1"})
     assert report["sample_size"] == len(SPREAD)
     assert all(oid.startswith("out_") for oid in report["source_outcome_ids"])
 
@@ -398,6 +398,53 @@ def test_uncostable_imported_rows_can_no_longer_latch_gate_0_shut():
     assert "OUTCOME_NOT_COSTABLE" in blended["failure_modes"]
     assert blended["live_candidate_eligible"] is False
 
-    own_only, _text = run_paper_performance_report(now=NOW, outcomes=winners + imported)
+    own_only, _text = run_paper_performance_report(now=NOW, outcomes=winners + imported, routable_strategy_ids={"S1"})
     assert own_only["failure_modes"] == []
     assert own_only["live_candidate_eligible"] is True
+
+
+# --- Gate 0 judges the pool that would trade, not the ones already retired -----
+
+def test_a_retired_lineages_losses_no_longer_hold_gate_0_shut():
+    """Measured 2026-08-01 on the live machine: **all 86** rows holding Gate 0 shut came from
+    lineages `lifecycle` had already SUSPENDED, and **zero** from one that could still route.
+    The ladder had done its job — judge a strategy on its paper losses and retire it — and the
+    losses of strategies that no longer exist were still gating a real-money door."""
+    # Days apart: `count_independent_trade_events` collapses trades that close together, so a
+    # cluster of four inside one hour is one event and would fail the sample gate for a reason
+    # this test is not about.
+    losers = [_outcome(-2.0, f"2026-07-0{i + 1}T00:00:00Z", strategy_id="RETIRED",
+                       outcome_id=f"ret{i}") for i in range(4)]
+    winners = [_outcome(1.5, f"2026-07-1{i + 1}T00:00:00Z", strategy_id="ROUTING",
+                        outcome_id=f"rou{i}") for i in range(4)]
+
+    blended = build_performance_report(losers + winners, now=NOW)
+    assert blended["live_candidate_eligible"] is False        # the retired lineage drags it down
+
+    scoped, _text = run_paper_performance_report(
+        now=NOW, outcomes=losers + winners, routable_strategy_ids={"ROUTING"},
+    )
+    assert scoped["sample_size"] == 4
+    assert scoped["live_candidate_eligible"] is True
+
+
+def test_an_unreadable_pool_withholds_the_eligibility_claim():
+    """The opposite fail direction to `guards.drawdown_baseline`, and deliberately: there,
+    unknown routability must KEEP losses inside a brake; here it must WITHHOLD a claim that real
+    money may start. Both refuse — over a population nobody could establish, so does this."""
+    winners = [_outcome(1.5, f"2026-07-1{i + 1}T00:00:00Z", strategy_id="ROUTING",
+                        outcome_id=f"rou{i}") for i in range(4)]
+    report, _text = run_paper_performance_report(
+        now=NOW, outcomes=winners, routable_strategy_ids=None,
+    )
+    assert report["sample_size"] == 0
+    assert report["live_candidate_eligible"] is False
+
+
+def test_the_scope_has_no_default():
+    """Structural: an optional scope is one the caller that forgets it never applies, and the
+    untested branch is then the unscoped one."""
+    import inspect
+
+    parameter = inspect.signature(run_paper_performance_report).parameters["routable_strategy_ids"]
+    assert parameter.default is inspect.Parameter.empty

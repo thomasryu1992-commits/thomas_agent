@@ -55,7 +55,7 @@ from typing import Any, Callable
 
 from . import timeutil
 from .control import command_verb
-from .errors import MvpRuntimeError, OperatorBlocked
+from .errors import MvpRuntimeError, OperatorBlocked, ToolError
 
 CRYPTO_COMMAND = "crypto"
 PRED_COMMAND = "pred"
@@ -115,9 +115,19 @@ def _crypto_readiness(*, now: str, root: Path | None) -> str:
 
 
 def _crypto_paper(*, now: str, root: Path | None) -> str:
-    from .crypto import feedback
+    from .crypto import feedback, pool
 
-    _report, text = feedback.run_paper_performance_report(now=now, root=root)
+    # Scoped to the routable pool, exactly as the cycle scopes it — this console shows Gate 0's
+    # own line, and a console that judged a different population would tell an operator the live
+    # door is open on evidence the gate never read. An unreadable pool is `None`, which scopes to
+    # nothing and reports no eligibility rather than inventing one.
+    try:
+        routable = pool.routable_strategy_ids(pool.load_active_pool(root))
+    except ToolError:
+        routable = None
+    _report, text = feedback.run_paper_performance_report(
+        now=now, root=root, routable_strategy_ids=routable
+    )
     return text
 
 
