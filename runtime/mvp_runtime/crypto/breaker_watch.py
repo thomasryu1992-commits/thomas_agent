@@ -48,8 +48,9 @@ from typing import Any, Mapping
 
 from ..errors import ToolError
 from ..filelock import locked
-from . import guards, pool
+from . import guards, live_candidate_ack, pool
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
+from . import feedback
 from .paper import read_outcomes, split_by_provenance, state_dir
 from .risk_limits import resolve_risk_limits
 
@@ -117,6 +118,20 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         routable = None
     verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable)
 
+    # Gate 0's two answers — what the evidence computes, and what an operator signed. Read here
+    # rather than left to the cycle, for this module's founding reason: a watch that assembled
+    # its inputs differently would eventually report a state the runtime is not in.
+    ack = live_candidate_ack.resolve_ack(root, now=now, routable_strategy_ids=routable)
+    try:
+        report, _text = feedback.run_paper_performance_report(
+            now=now, root=root, routable_strategy_ids=routable
+        )
+        gate0 = {"eligible": bool(report["live_candidate_eligible"]), "sample": report["sample_size"]}
+    except ToolError:
+        # An unreadable paper store is exactly what Gate 0 refuses on, so the watch reports the
+        # refusal rather than going quiet about a door it could not see.
+        gate0 = {"eligible": False, "sample": None}
+
     closed = [r for r in own if r.get("outcome_closed") is True]
     basis = collections.Counter(str(r.get("r_basis") or "unlabelled") for r in closed)
     return {
@@ -144,6 +159,22 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         # this channel until live has traded, and "clear" without it reads as reassurance.
         "judged_rows": verdict["judged_rows"],
         "live_outcomes_excluded": bool(live_excluded),
+        # **Gate 0, the OTHER lock on the same door.** The breaker above answers "is the money
+        # losing right now"; this answers "may it start at all", and an operator watching only
+        # one of them is watching half a door. It matters most at the moment it SHUTS: an
+        # operator acknowledgement expires on its own window and voids itself the instant the
+        # routable pool changes, and both of those happen without anybody doing anything — so
+        # they are exactly the transitions nobody would otherwise notice.
+        "gate0_eligible": bool(gate0["eligible"]),
+        "gate0_sample": gate0["sample"],
+        "gate0_ack_applies": bool(ack["applies"]),
+        "gate0_ack_reason": ack["reason"],
+        "gate0_ack_id": (ack.get("record") or {}).get("acknowledgement_id"),
+        "gate0_ack_valid_until": (ack.get("record") or {}).get("valid_until"),
+        # What the two locks add up to. Recorded rather than re-derived by every reader, because
+        # "the breaker released" and "the door opened" stopped being the same sentence.
+        "live_entry_open": bool(verdict["allow_new_position"])
+        and (bool(gate0["eligible"]) or bool(ack["applies"])),
     }
 
 
@@ -152,12 +183,23 @@ def has_changed(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
 
     Keyed on the VERDICT — allow/refuse and which breakers are named — not on the R numbers,
     which move every settlement. A watch that fired on every number change would be a trade
-    feed, and the operator already has one."""
+    feed, and the operator already has one.
+
+    **Gate 0 is on the key too, and that is the half nobody would otherwise see.** A breaker
+    trips because something happened. An operator acknowledgement stops applying because time
+    passed, or because the ladder demoted a strategy — neither of which anybody DOES, so neither
+    produces a moment anyone is watching. `live_entry_open` carries the combined state and
+    `gate0_ack_reason` carries which of the several ways it stopped applying, because "expired"
+    and "the pool changed under it" want different responses: one is re-signed, the other is
+    re-judged."""
     if previous is None:
         return True
     return (
         bool(current.get("allow_new_position")) != bool(previous.get("allow_new_position"))
         or sorted(current.get("problems") or []) != sorted(previous.get("problems") or [])
+        or bool(current.get("live_entry_open")) != bool(previous.get("live_entry_open"))
+        or current.get("gate0_ack_reason") != previous.get("gate0_ack_reason")
+        or bool(current.get("gate0_eligible")) != bool(previous.get("gate0_eligible"))
     )
 
 
@@ -169,14 +211,25 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # stopped consulting the breakers: the message an operator would act on said the runtime was
     # stopped while paper kept opening positions. Naming the leg is the whole fix; the state
     # being reported is unchanged.
+    # The headline reports the DOOR, not either lock on its own. An operator told "breaker
+    # released" while Gate 0 still refuses has been told something true and useless; told
+    # nothing at all when an acknowledgement lapsed, they would find out from the absence of
+    # trades. The door shutting is the message this channel exists to carry.
+    was_open = bool(previous.get("live_entry_open")) if previous is not None else None
+    now_open = bool(current.get("live_entry_open"))
     if previous is None:
-        headline = "CRYPTO LIVE BREAKER - first report"
-    elif current.get("allow_new_position") and not previous.get("allow_new_position"):
-        headline = "CRYPTO LIVE BREAKER RELEASED - live entries allowed again"
-    elif not current.get("allow_new_position") and previous.get("allow_new_position"):
-        headline = "CRYPTO LIVE BREAKER TRIPPED - live entries refused"
+        headline = "CRYPTO LIVE ENTRY - first report"
+    elif now_open and not was_open:
+        headline = "CRYPTO LIVE ENTRY OPEN - real orders can now be placed"
+    elif was_open and not now_open:
+        headline = "CRYPTO LIVE ENTRY CLOSED - real orders refused again"
+    elif current.get("gate0_ack_reason") != previous.get("gate0_ack_reason"):
+        headline = "CRYPTO LIVE ENTRY - the operator acknowledgement changed"
+    elif bool(current.get("allow_new_position")) != bool(previous.get("allow_new_position")):
+        headline = ("CRYPTO LIVE BREAKER RELEASED" if current.get("allow_new_position")
+                    else "CRYPTO LIVE BREAKER TRIPPED")
     else:
-        headline = "CRYPTO LIVE BREAKER - reasons changed"
+        headline = "CRYPTO LIVE ENTRY - reasons changed"
 
     lines = [
         headline,
@@ -189,6 +242,23 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
         f"  problems : {', '.join(current.get('problems') or []) or 'none'}",
         f"  limits   : {limits.get('source')}",
     ]
+    # The Gate 0 block. Both readings, always — what the evidence computes and what a person
+    # signed — because a line that showed only the effective answer could not tell a pool that
+    # earned the gate from one that was waved through it.
+    ack_reason = current.get("gate0_ack_reason")
+    if ack_reason is not None:
+        sample = current.get("gate0_sample")
+        lines.append(
+            f"  gate 0   : evidence={current.get('gate0_eligible')} "
+            f"(sample {'?' if sample is None else sample}) | operator={current.get('gate0_ack_applies')}"
+        )
+        if current.get("gate0_ack_applies"):
+            lines.append(f"  signed   : {current.get('gate0_ack_id')} until {current.get('gate0_ack_valid_until')}")
+        elif ack_reason != "not_registered":
+            # The transition this channel exists for. An acknowledgement stops applying because
+            # time passed or the pool moved — nobody DOES either, so nobody is watching.
+            lines.append(f"  NOTE: the operator acknowledgement no longer applies ({ack_reason})")
+        lines.append(f"  DOOR     : live entries {'OPEN' if current.get('live_entry_open') else 'REFUSED'}")
     own_closed, live_closed = current.get("own_closed"), current.get("live_closed")
     if own_closed is not None and live_closed is not None:
         # Both counts, and only one of them is the ruling. The breakers judge the LIVE rows; the
