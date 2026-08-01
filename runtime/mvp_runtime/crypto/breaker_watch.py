@@ -28,15 +28,18 @@ Four properties worth stating:
 - **The FIRST fire always announces.** With no marker on disk there is no "previous" to differ
   from, and staying silent would mean a freshly deployed watch says nothing until the state
   happens to change — indistinguishable from a watch that is not running.
-- **It reports where the window's rows came from.** The live gate meters own paper outcomes plus
-  bridged live ones, and live has traded nothing — so every figure below is currently a
-  simulation's, deciding a real-money door. That is the intended design (paper evidence is what
-  says whether live may start) and it is also exactly the sentence an operator should not have
-  to reconstruct from two other consoles.
-- **It reports the r_basis mix.** Paper R became net of costs on 2026-07-30 while the rows
-  before it stayed gross, so a window spanning that day under-states its losses. The breaker's
-  number is only as honest as its window's basis, and an operator reading "-4.8R, clear" should
-  be able to see how much of that window predates the change.
+- **It reports where the window's rows came from.** #411 took the paper record off the live gate:
+  the breakers meter this runtime's LIVE outcomes and nothing else. Live has traded nothing, so
+  every figure below is zero *because there is nothing to judge* — the breakers are INERT, not
+  satisfied, and those are different facts about a brake. That is exactly the sentence an
+  operator should not have to reconstruct from two other consoles, so the render states it
+  outright instead of leaving it to be inferred from a count of zero.
+- **It reports the r_basis mix of the PAPER rows.** Paper R became net of costs on 2026-07-30
+  while the rows before it stayed gross, so a count spanning that day mixes two meanings of R.
+  These rows no longer feed the breakers, so this qualifies the `rows` line beside it rather than
+  the verdict above it. It stays because an operator who remembers a paper-driven `-19.35R`
+  needs to see what that number was made of, and the basis mix is the first thing to check when
+  it does not match a memory.
 """
 
 from __future__ import annotations
@@ -93,12 +96,23 @@ def write_mark(state: Mapping[str, Any], *, root: Path | None = None) -> Path:
 def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
     """Today's breaker state, read the way the LIVE leg reads it.
 
-    Deliberately the same composition as the guard step behind ``cycle.run_crypto_cycle``'s
-    ``live_verdict`` — own paper outcomes plus the bridged live ones, judged by the registered
-    limits — because a watch that assembled its inputs differently would eventually report a
-    state the runtime is not in. There is no paper equivalent to mirror: after the verdict split
-    the paper leg consults no loss breaker at all, so this is the only leg with a transition to
-    watch. An unusable limits record propagates as a ``ToolError`` for the caller to surface: the
+    Deliberately the same composition as the RISK half of the guard step behind
+    ``cycle.run_crypto_cycle``'s ``live_verdict`` — the bridged live outcomes, judged by the
+    registered limits — because a watch that assembled its inputs differently would eventually
+    report a state the runtime is not in. There is no paper equivalent to mirror: after the
+    verdict split the paper leg consults no loss breaker at all, so this is the only leg with a
+    transition to watch.
+
+    **The risk half, and only that**, which is the one place this watch is knowingly coarser than
+    the thing it reports on. ``live_verdict`` is ``merge_trade_verdict(health, risk)`` and allows
+    only when BOTH halves do; data health is per-context — it needs a symbol, a timeframe and
+    that context's candles — and this watch fires hourly with none of them. The omission is
+    one-directional: the door reported here is a superset of the one the cycle opens, so it can
+    read OPEN while a given context is held on stale data, and it can never read shut while the
+    cycle would enter. A watch that erred the other way could go quiet about a door the runtime
+    had opened, which is the failure this module exists to prevent; a false alarm is not.
+
+    An unusable limits record propagates as a ``ToolError`` for the caller to surface: the
     live gate refuses entries in that state, so a watch must not report it as merely normal.
     """
     # Paper is read for the r_basis mix and the row split below, never for the verdict: the
