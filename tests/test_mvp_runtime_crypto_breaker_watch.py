@@ -34,9 +34,9 @@ def _outcome(result_r, *, at=NOW, r_basis="intent_net_of_costs"):
     return record
 
 
-def _seed(root, *outcomes):
-    """Write the rows, stamping a unique id per row — the store refuses duplicates, and
-    several of these cases deliberately seed identical R values."""
+def _seed_paper(root, *outcomes):
+    """Paper rows. They no longer reach the breaker — kept because the watch still reports the
+    r_basis mix and the paper/live row split off this store."""
     path = state_dir(root) / OUTCOMES_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
@@ -45,6 +45,33 @@ def _seed(root, *outcomes):
         record["record_sha256"] = integrity.sha256_record(record)
         lines.append(json.dumps(record) + "\n")
     path.write_text("".join(lines), encoding="utf-8")
+
+
+def _seed(root, *outcomes):
+    """Write LIVE outcomes — the only rows the loss breakers judge now.
+
+    Takes the same ``(result_r, at)`` shape the paper seeder did, and converts: the live ledger
+    stores USDT plus the risk it was taken against, and `live_outcomes_for_analysis` derives R
+    from the pair. Written through `build_live_outcome_record` so every row is self-hashed and
+    shaped exactly as `live_leg.execute_live_exit` writes it — a hand-made row fails the
+    verified read and reports `risk_history_unreadable`, which is a refusal but never the one a
+    test here means."""
+    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+
+    target = live_state_dir(root)
+    target.mkdir(parents=True, exist_ok=True)
+    risk = 10.0
+    lines = []
+    for i, outcome in enumerate(outcomes):
+        record = build_live_outcome_record(
+            realized_pnl_usdt=float(outcome["result_R"]) * risk,
+            symbol="BTCUSDT", side="SELL", quantity=0.001,
+            position_id=f"live_p{i}", risk_usdt=risk,
+            now=str(outcome["created_at_utc"]),
+        )
+        lines.append(json.dumps(record, ensure_ascii=False) + "\n")
+    (target / "live_outcomes.jsonl").write_text("".join(lines), encoding="utf-8")
 
 
 # --- what it reports -----------------------------------------------------------
@@ -61,9 +88,9 @@ def test_it_reports_the_same_verdict_the_live_leg_would_act_on(tmp_path):
     runtime is not in, so it runs the real guard against the real limits."""
     _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))          # -2.4R today, daily limit -2.0
     state = breaker_watch.evaluate(tmp_path, now=NOW)
-    from runtime.mvp_runtime.crypto.paper import read_outcomes, split_by_provenance
-    own, _ = split_by_provenance(read_outcomes(tmp_path))
-    direct = guards.run_risk_guard(own, now=NOW, limits=risk_limits.resolve_risk_limits(tmp_path, now=NOW))
+    from runtime.mvp_runtime.crypto.live_pnl import live_outcomes_for_analysis, read_live_outcomes
+    live, _ = live_outcomes_for_analysis(read_live_outcomes(tmp_path))
+    direct = guards.run_risk_guard(live, now=NOW, limits=risk_limits.resolve_risk_limits(tmp_path, now=NOW))
     assert state["status"] == direct["status"] == "BLOCK_NEW_POSITION"
     assert state["problems"] == direct["problems"] == ["daily_loss_limit_breached"]
 
@@ -181,15 +208,28 @@ def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopp
     assert "RELEASED - live entries allowed again" in released
 
 
-def test_the_render_says_how_the_judged_window_splits_between_paper_and_live(tmp_path):
-    """The live gate's numbers are currently 100% paper — intended, and the one thing an
-    operator reading a real-money breaker would otherwise assume the opposite of."""
-    _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))
+def test_the_render_separates_the_judged_rows_from_the_ones_that_are_not(tmp_path):
+    """A paper book that used to BE the ruling now sits beside it, labelled. Watching
+    `-19.35R` simply vanish between two reports is how an operator concludes the breaker broke."""
+    _seed_paper(tmp_path, _outcome(-1.2), _outcome(-1.2), _outcome(-1.2))
+    _seed(tmp_path, _outcome(-0.5))
     state = breaker_watch.evaluate(tmp_path, now=NOW)
-    assert (state["own_closed"], state["live_closed"]) == (2, 0)
+    assert (state["own_closed"], state["live_closed"]) == (3, 1)
+    assert state["judged_rows"] == 1
     text = breaker_watch.render_text(state, None)
-    assert "rows     : 2 paper + 0 live closed" in text
-    assert "every figure above is paper-derived" in text
+    assert "rows     : 1 live closed (judged) | 3 paper (not judged)" in text
+    assert "INERT" not in text
+
+
+def test_an_empty_live_history_is_reported_as_inert_not_as_clear(tmp_path):
+    """The state the machine is in until live trades, and the one place a breaker channel can
+    mislead by being accurate: every number reads clear because there is nothing to judge."""
+    _seed_paper(tmp_path, _outcome(-1.2), _outcome(-1.2))
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert state["allow_new_position"] is True and state["judged_rows"] == 0
+    text = breaker_watch.render_text(state, None)
+    assert "rows     : 0 live closed (judged) | 2 paper (not judged)" in text
+    assert "the loss breakers are INERT, not satisfied" in text
 
 
 def test_the_row_split_does_not_make_the_watch_speak(tmp_path):
@@ -197,20 +237,22 @@ def test_the_row_split_does_not_make_the_watch_speak(tmp_path):
     and a watch that fired on them is the trade feed this was built not to be."""
     _seed(tmp_path, _outcome(0.5))
     breaker_watch.run_breaker_watch(tmp_path, now=NOW)
-    _seed(tmp_path, _outcome(0.5), _outcome(0.4))              # one more paper row, same verdict
+    _seed(tmp_path, _outcome(0.5), _outcome(0.4))              # one more live row, same verdict
     again = breaker_watch.run_breaker_watch(tmp_path, now=NOW)
-    assert again["state"]["own_closed"] == 2 and again["changed"] is False
+    assert again["state"]["live_closed"] == 2 and again["changed"] is False
 
 
 def test_the_mixed_basis_caveat_appears_only_when_the_window_has_one(tmp_path):
     """Rendered directly rather than through a transition: the caveat is a property of the
-    WINDOW, and whether the verdict happened to flip is a different question."""
-    _seed(tmp_path, _outcome(0.5), _outcome(0.4))
+    WINDOW, and whether the verdict happened to flip is a different question. Seeded on the
+    PAPER store, which is where the r_basis mix is read from — it no longer feeds the verdict,
+    and the caveat is about the rows, not the ruling."""
+    _seed_paper(tmp_path, _outcome(0.5), _outcome(0.4))
     clean = breaker_watch.render_text(breaker_watch.evaluate(tmp_path, now=NOW), None)
     assert "r_basis  : intent_net_of_costs 2" in clean
     assert "mixed R bases" not in clean
 
-    _seed(tmp_path, _outcome(0.5), _outcome(0.4, r_basis="intent"), _outcome(-1.2))
+    _seed_paper(tmp_path, _outcome(0.5), _outcome(0.4, r_basis="intent"), _outcome(-1.2))
     mixed = breaker_watch.render_text(breaker_watch.evaluate(tmp_path, now=NOW), None)
     assert "mixed R bases" in mixed
     assert "intent 1" in mixed and "intent_net_of_costs 2" in mixed

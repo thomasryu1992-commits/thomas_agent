@@ -482,6 +482,13 @@ def run_risk_guard(
         "drawdown_r": round(current_drawdown_r, 4),
         "max_drawdown_r": round(max_drawdown_r, 4),
         "drawdown_limit_r": round(_drawdown_limit_r(limits), 4),
+        # How many closed outcomes actually produced the numbers above. An empty history reads
+        # as NORMAL — deliberately, and stated in this function's docstring — but "clear" and
+        # "clear because there is nothing to judge" are different facts about a breaker, and
+        # after the live leg started metering only its own outcomes the second one is the
+        # ordinary case rather than a curiosity. A verdict that did not say so would let a
+        # reader mistake an inert breaker for a satisfied one.
+        "judged_rows": len(rows),
         # What the drawdown was measured over. Always present, `applied: False` on the
         # overwhelming majority of cycles — a verdict that only mentioned the baseline when it
         # narrowed one could not be told apart from a verdict written before the mechanism
