@@ -100,6 +100,9 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
     watch. An unusable limits record propagates as a ``ToolError`` for the caller to surface: the
     live gate refuses entries in that state, so a watch must not report it as merely normal.
     """
+    # Paper is read for the r_basis mix and the row split below, never for the verdict: the
+    # breakers judge live outcomes only now, so a watch that still blended the two would report
+    # a state the runtime is not in — the exact failure this module's docstring forbids.
     own, _imported = split_by_provenance(read_outcomes(root))
     live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
     limits = resolve_risk_limits(root, now=now)
@@ -112,7 +115,7 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         routable = pool.routable_strategy_ids(pool.load_active_pool(root))
     except ToolError:
         routable = None
-    verdict = guards.run_risk_guard(own + live, now=now, limits=limits, routable_strategy_ids=routable)
+    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable)
 
     closed = [r for r in own if r.get("outcome_closed") is True]
     basis = collections.Counter(str(r.get("r_basis") or "unlabelled") for r in closed)
@@ -137,6 +140,9 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         # above means something different when it was measured over a narrowed population, and an
         # operator reading a release has to be able to tell which kind of release it was.
         "drawdown_baseline": verdict["drawdown_baseline"],
+        # Zero here means the breakers are INERT, not satisfied. It is the load-bearing number on
+        # this channel until live has traded, and "clear" without it reads as reassurance.
+        "judged_rows": verdict["judged_rows"],
         "live_outcomes_excluded": bool(live_excluded),
     }
 
@@ -185,14 +191,17 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     ]
     own_closed, live_closed = current.get("own_closed"), current.get("live_closed")
     if own_closed is not None and live_closed is not None:
-        lines.append(f"  rows     : {own_closed} paper + {live_closed} live closed")
-        # Said out loud rather than left to be inferred: every figure above gates a real-money
-        # door, and with no live outcomes all of them are a simulation's reading of it. That is
-        # the intended design — paper evidence is what says whether live may start — but
-        # "weekly -19.35R" reads like a live number, and an operator who assumed it was one
-        # would be reading this channel exactly backwards.
+        # Both counts, and only one of them is the ruling. The breakers judge the LIVE rows; the
+        # paper count stands beside it because it used to BE the ruling, and an operator who
+        # remembers a `-19.35R` weekly needs to see where that number went rather than watch it
+        # vanish between two reports.
+        lines.append(f"  rows     : {live_closed} live closed (judged) | {own_closed} paper (not judged)")
         if live_closed == 0:
-            lines.append("  NOTE: no live outcomes yet - every figure above is paper-derived")
+            # The load-bearing line until live has traded. "clear" and "clear because there is
+            # nothing to judge" are different states of a brake, and only one of them is
+            # reassuring — an operator reading the first when it is the second has been told the
+            # opposite of the truth.
+            lines.append("  NOTE: no live outcomes yet - the loss breakers are INERT, not satisfied")
     if previous is not None:
         was = ', '.join(previous.get("problems") or []) or 'none'
         lines.append(f"  previous : {previous.get('status')} [{was}]")

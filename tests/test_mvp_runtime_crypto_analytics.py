@@ -264,36 +264,31 @@ def _always_spec():
 def test_a_loss_breaker_stops_the_live_gate_and_lets_paper_trade(tmp_path):
     """The verdict split, seen from outside the cycle.
 
-    This is the fixture that used to prove the opposite: two of this runtime's own losses, enough
-    to trip the daily breaker, which then stopped the PAPER entry and recorded a shadow instead
-    of an outcome. Paper loses no money, so all that brake ever bought was a smaller sample for
-    the ladder that has to judge the strategy.
+    Twice rewritten, and the history is the point. It first proved that two PAPER losses stopped
+    a PAPER entry and shadowed it. Then `paper_trade_verdict` took the paper leg off the
+    breakers, and it proved those same paper losses stopped only the LIVE gate. Both versions
+    metered real money against a simulation; the breakers now read LIVE outcomes, so the fixture
+    seeds the only losses that can trip one.
 
-    Now the paper trade happens — a settled row beats a simulation of one — while the live gate,
-    the merge that still folds in every breaker, refuses. Both verdicts ride on the record so
-    neither reading is lost."""
-    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
+    What survives unchanged is the invariant: the loss breaker binds the live gate and never the
+    paper leg, and both verdicts ride on the record so neither reading is lost."""
+    from tests.test_mvp_runtime_crypto_cycle import (
+        FakeExchangeCollector, _install_pool, _live_loss, _write_live_outcomes,
+    )
 
     _install_pool(tmp_path, _always_spec())
-    state = paper.state_dir(tmp_path)
-    state.mkdir(parents=True, exist_ok=True)
-    # This runtime's OWN losses — the risk guard counts only these (imported history cannot
-    # answer "is this system losing right now"), so the fixture carries the paper provenance.
-    losses = [_own_outcome(-1.2, f"2026-07-22T0{i}:00:00Z", outcome_id=f"o{i}") for i in range(2)]
-    with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
-        for o in losses:
-            handle.write(json.dumps(o) + "\n")
+    _write_live_outcomes(tmp_path, [_live_loss(i, when=NOW) for i in range(1, 4)])
 
     record = run_crypto_cycle(
         collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
     assert record["verdict_status"] == "NO_NEW_POSITION"
-    assert "daily_loss_limit_breached" in record["verdict_problems"]
+    assert "max_consecutive_losses_breached" in record["verdict_problems"]
     # ...and the paper leg never saw it.
     assert record["paper_verdict_status"] == "ALLOW"
-    assert "daily_loss_limit_breached" not in record["paper_verdict_problems"]
-    assert record["opened"] is not None, "the loss breaker must no longer stop a paper entry"
+    assert record["paper_verdict_problems"] == []
+    assert record["opened"] is not None, "the loss breaker must not stop a paper entry"
     # Nothing to shadow: a shadow stands in for an outcome that did not happen, and this one did.
     assert counterfactual.load_open_counterfactuals(tmp_path) == []
 
@@ -383,15 +378,18 @@ def test_dashboard_degrades_unreadable_inputs_to_warnings(tmp_path):
     assert "⚠ outcome store unreadable" in rendered.split("지금")[0]
 
 
-def test_imported_history_cannot_offset_the_risk_breaker(tmp_path):
-    """The reason the guard was scoped to own outcomes.
+def test_no_paper_row_reaches_the_loss_breaker_own_or_imported(tmp_path):
+    """What replaced the own/imported scoping question.
 
-    Imported crypto_AI_System history is real but was produced by different code, so it cannot
-    answer "is THIS system losing right now". Measured 2026-07-25: 112 imported rows worth
-    +266.8R sat inside the rolling week, so the weekly-loss breaker could not trip however this
-    runtime performed. Here a big imported profit sits alongside this runtime's own losses — the
-    breaker must still trip.
-    """
+    That scoping existed because the guard read the paper store and imported crypto_AI_System
+    rows could dilute it — measured 2026-07-25, 112 imported rows worth +266.8R sat inside the
+    rolling week, so the weekly breaker could not trip however this runtime performed. The guard
+    no longer reads that store at all, which answers the question by removing it: neither
+    provenance can move a live breaker, in either direction.
+
+    Seeded so that BOTH failure directions would show. The own losses would trip the daily
+    breaker if they were still counted; the imported profit would clear it if the split had been
+    dropped instead of the store. The verdict is ALLOW because neither is read."""
     from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
 
     _install_pool(tmp_path, _always_spec())
@@ -409,13 +407,10 @@ def test_imported_history_cannot_offset_the_risk_breaker(tmp_path):
         collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
         now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
     )
-    # +200R of someone else's history does not clear this runtime's own daily loss. Asserted on
-    # the LIVE verdict, which is where the breaker now binds: after the paper/live split the
-    # paper leg does not read the loss breakers at all, so "did paper refuse" stopped being a
-    # measurement of whether imported rows diluted them.
-    assert record["verdict_status"] == "NO_NEW_POSITION"
-    assert "daily_loss_limit_breached" in record["verdict_problems"]
-
+    assert record["verdict_status"] == "ALLOW"
+    assert record["verdict_problems"] == []
+    # The breaker judged nothing, and says so rather than reporting a comfortable clear.
+    assert record["risk_limits"] is not None
 
 def test_lifecycle_still_sees_the_full_history(tmp_path):
     """Deliberately NOT filtered: imported outcomes carry strategy lineage, and
@@ -430,7 +425,7 @@ def test_lifecycle_still_sees_the_full_history(tmp_path):
     # drawdown baseline's routable set, and a test that pins formatting rather than the
     # invariant fails on the next reflow while a real inversion of the two would slip past it.
     flat = " ".join(source.split())
-    assert "run_risk_guard( own_outcomes + live_readable" in flat   # guard: own only
+    assert "run_risk_guard( live_readable" in flat                  # guard: LIVE only
     assert "run_lifecycle(active_pool, outcomes" in flat            # lifecycle: full history
 
 

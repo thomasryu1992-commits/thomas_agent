@@ -79,7 +79,6 @@ from .paper import (
     list_open_positions,
     read_outcomes,
     run_paper_update,
-    split_by_provenance,
 )
 from .risk_limits import resolve_risk_limits
 
@@ -533,35 +532,50 @@ def run_crypto_cycle(
 
     # Guarded rather than folded into the try below: with no usable limits there is nothing to
     # judge the history against, so reading it would produce numbers no breaker can rule on.
+    # The paper history. Still read here and still handed to the feedback report,
+    # `run_lifecycle` and the counterfactual book below — but NO LONGER to the loss breaker.
+    # `outcomes` stays None when this raises, which is what makes the report re-read and raise
+    # the same way, and Gate 0 refuse on the absence.
+    try:
+        outcomes = read_outcomes(root)
+    except ToolError as exc:
+        reason_codes.append(exc.reason_code)
+
     if risk_limits is not None:
         try:
-            outcomes = read_outcomes(root)
-            # The risk guard judges **this runtime's own** trading only. The store also holds
-            # history imported from the frozen crypto_AI_System, which is real but was produced by
-            # different code — so it cannot answer "is THIS system losing right now", which is the
-            # only question a breaker asks. Measured 2026-07-25: 112 imported rows worth +266.8R sat
-            # inside the rolling week, so the weekly-loss breaker could not trip however this runtime
-            # performed. A breaker that cannot trip is not a breaker.
+            # **The loss breakers judge LIVE outcomes, and only live outcomes.**
             #
-            # Deliberately scoped to the guard. `run_lifecycle` below keeps the full history on
-            # purpose: imported outcomes carry strategy lineage, and promotion/demotion is a
-            # performance judgement about a strategy, not a safety brake on this runtime.
-            own_outcomes, _imported = split_by_provenance(outcomes)
-            # LP5.3: live results are this runtime's own trading too — and the only kind that costs
-            # real money — so the breaker must see them. They live in their own store, so the paper
-            # split above never sees them; without this the guard would ignore live losses entirely.
+            # They used to judge `own_outcomes + live_readable` — this runtime's paper book plus
+            # its live one — and with live having traded nothing, that meant a real-money door was
+            # opened and closed entirely by a simulation. Measured 2026-07-31: the breaker read
+            # `weekly -19.35R` and `drawdown -44.79R` off **86 paper rows and 0 live ones**, and
+            # 757 cycles were HELD on it while the router had a live entry candidate. A loss limit
+            # exists to stop money being lost; not one of those rows lost any.
             #
-            # Routed through LP5.4's bridge rather than concatenated raw: `guards._closed_rows` reads
-            # a missing `result_R` as 0.0, i.e. a BREAKEVEN, so an R-less live loss would SHORTEN a
-            # loss streak. The bridge drops those rows (they stay visible to the daily-loss breaker,
-            # which needs no R). An unreadable or tampered live history raises, and fails the guard
-            # closed exactly like an unreadable paper history — a history that cannot prove itself
-            # must not be allowed to argue the breaker is clear.
+            # `paper_trade_verdict` took the paper leg off this guard because a loss is evidence
+            # there rather than damage. This takes the paper *evidence* off the live leg for the
+            # mirror-image reason: it is evidence about a different book, at different size, with
+            # no cost of being wrong — and a brake on real money has to answer "is the money
+            # losing right now", which paper cannot answer at any sample size. Each leg now meters
+            # what it actually risks.
+            #
+            # Routed through LP5.4's bridge rather than read raw: `guards._closed_rows` reads a
+            # missing `result_R` as 0.0, i.e. a BREAKEVEN, so an R-less live loss would SHORTEN a
+            # loss streak. The bridge drops those rows; they stay visible to the venue-sourced
+            # daily-loss breaker in `live_route`, which needs no R. An unreadable or tampered LIVE
+            # history still fails this guard closed — a history that cannot prove itself must not
+            # be allowed to argue the breaker is clear.
+            #
+            # **What now covers an unreadable PAPER store**, which used to fail this guard closed:
+            # Gate 0. `run_paper_performance_report` re-reads and raises, `report` is None, and
+            # `plan_live_entry` refuses a non-Mapping `live_candidate`. The live door still fails
+            # closed on that store — through the check that actually reads it, rather than through
+            # a breaker that no longer does.
             live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
             risk = run_risk_guard(
-                own_outcomes + live_readable, now=now, limits=risk_limits,
+                live_readable, now=now, limits=risk_limits,
                 routable_strategy_ids=routable_ids,
             )
         except ToolError as exc:
@@ -685,6 +699,12 @@ def run_crypto_cycle(
     try:
         report, report_text = feedback.run_paper_performance_report(
             now=now, root=root, outcomes=outcomes,
+            # Gate 0 judges the pool that would actually trade. `routable_ids` is None when the
+            # pool could not be read, which scopes the report to nothing and refuses — the
+            # opposite direction to the drawdown baseline above, and right for the opposite
+            # reason: an unverifiable population must withhold an eligibility claim, where it
+            # must keep losses inside a brake.
+            routable_strategy_ids=routable_ids,
         )
     except ToolError as exc:
         report, report_text = None, f"performance report unavailable: {exc.reason_code}"

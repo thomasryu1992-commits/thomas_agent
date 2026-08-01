@@ -64,6 +64,24 @@ TRADE_EVENT_MERGE_GAP_MINUTES = 120
 
 MIN_SAMPLE_SIZE = 3  # source default
 
+# The sample Gate 0 needs before it may call a pool a live candidate, and it is deliberately
+# NOT the source default above.
+#
+# `MIN_SAMPLE_SIZE = 3` was harmless while the report covered the whole own-paper record: with
+# 86 rows behind it, three more could not move the verdict. Scoping the report to the routable
+# pool (which is the fix that makes retired strategies stop gating live) makes it the BINDING
+# constraint instead — measured, three profitable trades from a freshly promoted pool would
+# take `live_candidate_eligible` from False to True and open a real-money door. Three trades on
+# a book that runs about -0.5R/trade net is noise, not evidence, so scoping the population
+# without moving this number would have been a relaxation wearing a defect fix's clothes.
+#
+# Reused, never invented: it is `lifecycle`'s own lowest rung, the window that repo already
+# treats as "enough closed trades to judge a strategy's record" before it will even WARN one.
+# Gate 0 asks a strictly larger question — may this pool touch real money — so borrowing the
+# cheapest bar the ladder will act on is the floor, not the target. `robustness`'s
+# HEALTHY_TRADES_PER_PARAMETER (10, "under ~5 it is noise") sits below it and agrees.
+LIVE_CANDIDATE_MIN_SAMPLE = 20
+
 # Statuses / recommendations (source vocabulary, review-only).
 STATUS_BLOCKED_NO_OUTCOMES = "PERFORMANCE_REPORT_BLOCKED_NO_OUTCOMES"
 STATUS_INSUFFICIENT_SAMPLE = "PERFORMANCE_REPORT_REVIEW_ONLY_INSUFFICIENT_SAMPLE"
@@ -388,8 +406,51 @@ def render_report_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _routable_rows(
+    rows: list[Mapping[str, Any]], routable: set[str] | None
+) -> list[Mapping[str, Any]]:
+    """The rows Gate 0 may judge: those produced by a lineage that can still route.
+
+    **Why the scoping exists.** Gate 0 asks whether the paper record shows an edge, and the
+    answer decides whether real money may start. Measured 2026-08-01 on this machine: all **86**
+    rows holding it shut came from lineages the `lifecycle` ladder had already SUSPENDED, and
+    **zero** came from one that can still route. The ladder had done exactly its job — judge a
+    strategy on its paper losses and retire it — and the losses of strategies that no longer
+    exist were still gating the live door.
+
+    That is the same defect #405 names for the drawdown, by the same mechanism: on a system built
+    to rotate strategies, an all-time figure eventually measures elapsed time rather than
+    performance. Every retirement leaves permanent dead weight in the mean, so a pool that
+    improved by exactly the route the design intends could never clear the gate it has to clear.
+
+    **The direction this fails in.** ``routable=None`` means the caller could not read the pool,
+    and it scopes to NOTHING — the report then has no rows, and Gate 0 refuses on
+    ``BLOCKED_NO_OUTCOMES`` rather than on a population nobody could establish. That is the
+    opposite of `guards.drawdown_baseline`'s `None`, and deliberately: there, unknown-routability
+    must KEEP losses in a brake; here it must WITHHOLD an eligibility claim. Both refuse.
+
+    **What this does not do.** It does not change how large a sample Gate 0 needs —
+    ``MIN_SAMPLE_SIZE`` is untouched and raising it is #400 §7's own separate decision. Scoping
+    the population and moving the threshold are two changes, and only the first is a defect fix.
+    Retiring a loser can now raise the surviving mean, which is the intended behaviour of a
+    filter rather than a loophole: the question Gate 0 asks is whether the pool that would trade
+    shows an edge, and a retired strategy is not that pool.
+    """
+    if routable is None:
+        return []
+    return [r for r in rows if str(r.get("strategy_id") or "") in routable]
+
+
 def run_paper_performance_report(
-    *, now: str, root=None, outcomes: Iterable[Mapping[str, Any]] | None = None
+    *,
+    now: str,
+    root=None,
+    outcomes: Iterable[Mapping[str, Any]] | None = None,
+    # No default, for the reason `plan_live_entry`'s `verdict` has none: an optional scope is a
+    # scope the one caller that forgets it never applies, and the branch nobody tests is then
+    # the unscoped one. `None` is a legitimate value here — "the pool could not be read" — and
+    # it refuses; omitting the argument is a TypeError.
+    routable_strategy_ids: set[str] | None,
 ) -> tuple[dict[str, Any], str]:
     """Read the paper outcome store and produce (report, rendered_text).
 
@@ -434,7 +495,8 @@ def run_paper_performance_report(
     if outcomes is None:
         outcomes = paper.read_outcomes(root)  # raises ToolError when unreadable
     own, _imported = paper.split_by_provenance(outcomes)
-    report = build_performance_report(own, now=now)
+    own = _routable_rows(own, routable_strategy_ids)
+    report = build_performance_report(own, now=now, min_sample_size=LIVE_CANDIDATE_MIN_SAMPLE)
     return report, render_report_text(report)
 
 
