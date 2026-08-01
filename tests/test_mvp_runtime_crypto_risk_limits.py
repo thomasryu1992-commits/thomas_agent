@@ -14,6 +14,7 @@ Under test, in the order the risk actually runs:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -375,3 +376,94 @@ def test_the_rebase_block_does_not_rename_the_record():
     rebased = _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["S3"], "reason": "r"})
     assert plain["limits_id"] == rebased["limits_id"]
     assert plain["record_sha256"] != rebased["record_sha256"]
+
+
+# --- Gate 0's operator acknowledgement (crypto_live_candidate_ack.v0.1) --------
+
+def _ack(tmp_path, ids=("S1", "S2"), *, reason="checked the dashboard", days=7, by="thomas"):
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    until = (datetime.strptime(NOW, "%Y-%m-%dT%H:%M:%SZ") + timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    record = lca.build_ack_record(
+        acknowledged_strategy_ids=list(ids), reason=reason, valid_from=NOW,
+        valid_until=until, registered_by=by, registered_at=NOW)
+    lca.write_ack(record, root=tmp_path)
+    return record
+
+
+def test_nothing_registered_leaves_the_computed_answer_alone(tmp_path):
+    """The property that makes this safe to land: opt-in, absent by default."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    state = lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids={"S1"})
+    assert state["applies"] is False and state["reason"] == lca.NOT_REGISTERED
+
+
+def test_an_acknowledgement_applies_to_the_pool_it_was_signed_for(tmp_path):
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    _ack(tmp_path, ids=("S1", "S2"))
+    assert lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids={"S1", "S2"})["applies"] is True
+
+
+def test_promoting_or_demoting_a_strategy_voids_the_acknowledgement(tmp_path):
+    """EXACT set equality, not a subset. A signature for two strategies must not authorise a
+    pool that later gained a third nobody looked at — and the pool file changes without
+    anything re-reading this record, so the check has to live here."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    _ack(tmp_path, ids=("S1", "S2"))
+    grew = lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids={"S1", "S2", "S3"})
+    shrank = lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids={"S1"})
+    assert grew["applies"] is False and grew["reason"] == lca.POOL_CHANGED
+    assert shrank["applies"] is False and shrank["reason"] == lca.POOL_CHANGED
+
+
+def test_an_unreadable_pool_voids_it_too(tmp_path):
+    """`None` is "the routable set could not be confirmed", and an acknowledgement that cannot
+    be matched to a pool must not apply — the direction that leaves the stricter answer."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    _ack(tmp_path, ids=("S1",))
+    assert lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids=None)["applies"] is False
+
+
+def test_an_acknowledgement_expires(tmp_path):
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    _ack(tmp_path, ids=("S1",), days=1)
+    assert lca.resolve_ack(tmp_path, now="2026-08-05T00:00:00Z",
+                           routable_strategy_ids={"S1"})["reason"] == lca.EXPIRED
+
+
+def test_a_tampered_acknowledgement_does_not_apply_and_never_raises(tmp_path):
+    """Reports rather than raising: the computed answer is always available, so an unusable
+    record degrades to "no override" instead of stopping a cycle."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    record = _ack(tmp_path, ids=("S1",))
+    lca.ack_path(tmp_path).write_text(
+        json.dumps({**record, "acknowledged_strategy_ids": ["S1", "S9"]}), encoding="utf-8")
+    state = lca.resolve_ack(tmp_path, now=NOW, routable_strategy_ids={"S1", "S9"})
+    assert state["applies"] is False and state["reason"] == lca.UNUSABLE
+    assert state["error"] == lca.ACK_TAMPERED
+
+
+def test_signing_without_a_reason_is_refused():
+    """A person overriding a measurement that says otherwise has to say on what basis."""
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    with pytest.raises(ToolError) as exc:
+        lca.build_ack_record(acknowledged_strategy_ids=["S1"], reason="  ", valid_from=NOW,
+                             valid_until=UNTIL, registered_by="thomas", registered_at=NOW)
+    assert exc.value.reason_code == lca.ACK_INVALID
+
+
+def test_signing_for_no_strategy_is_refused():
+    from runtime.mvp_runtime.crypto import live_candidate_ack as lca
+
+    with pytest.raises(ToolError) as exc:
+        lca.build_ack_record(acknowledged_strategy_ids=[], reason="r", valid_from=NOW,
+                             valid_until=UNTIL, registered_by="thomas", registered_at=NOW)
+    assert exc.value.reason_code == lca.ACK_INVALID

@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, oi_store, pool, positioning_store
+from . import feedback, live_candidate_ack, oi_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -711,6 +711,29 @@ def run_crypto_cycle(
         if exc.reason_code not in reason_codes:
             reason_codes.append(exc.reason_code)
 
+    # Gate 0's OPERATOR answer, if one is registered and still applies.
+    #
+    # `CRYPTO_LIVE_EXECUTION_V0.1.md` puts Gate 0 on the operator checklist and tells the
+    # operator to check it on the dashboard; #400/#409 turned it into an aggregate computed over
+    # a whole pool, which refuses every strategy's entries for any one strategy's record. This
+    # does not remove that gate — `live_entry`'s refusal is untouched — it lets a signed,
+    # expiring, pool-bound record answer it, which is the idiom `risk_limits` and `live_budget`
+    # already use for the other checklist items.
+    #
+    # The computed figure is never overwritten: `report` keeps saying what the evidence says and
+    # both readings reach the ledger below, because a record that hid the disagreement would be
+    # worse than no record. An acknowledgement that does not apply — absent, expired, unusable,
+    # or signed for a different routable set — leaves the computed answer standing, which is the
+    # stricter of the two.
+    gate_ack = live_candidate_ack.resolve_ack(root, now=now, routable_strategy_ids=routable_ids)
+    live_candidate: dict[str, Any] | None = report
+    if gate_ack["applies"] and isinstance(report, dict):
+        live_candidate = {
+            **report,
+            "live_candidate_eligible": True,
+            "operator_acknowledgement": gate_ack["record"],
+        }
+
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
@@ -742,7 +765,7 @@ def run_crypto_cycle(
         route=shared_route,
         feature_row=feature_row,
         verdict=live_verdict,
-        live_candidate=report,
+        live_candidate=live_candidate,
         symbol=symbol,
         collector=collector,
         now=now,
@@ -851,6 +874,18 @@ def run_crypto_cycle(
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,
         "report_status": report.get("status") if report else None,
+        # BOTH readings of Gate 0, always. `live_candidate_eligible` is what the evidence says —
+        # never overwritten by an acknowledgement — and `live_candidate_ack` is whether a person
+        # signed for it and, when they did not, which of the several reasons applied. A ledger
+        # that recorded only the effective answer could not later tell a pool that earned the
+        # gate from one that was waved through it.
+        "live_candidate_eligible": report.get("live_candidate_eligible") if report else None,
+        "live_candidate_ack": {
+            "applies": bool(gate_ack["applies"]),
+            "reason": gate_ack["reason"],
+            "acknowledgement_id": (gate_ack.get("record") or {}).get("acknowledgement_id"),
+            "registered_by": (gate_ack.get("record") or {}).get("registered_by"),
+        },
         "report_text": report_text,
         "created_at": now,
     }
