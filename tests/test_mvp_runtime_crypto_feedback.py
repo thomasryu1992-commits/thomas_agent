@@ -16,6 +16,7 @@ from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import paper
 from runtime.mvp_runtime.crypto import feedback
 from runtime.mvp_runtime.crypto.feedback import (
+    LIVE_CANDIDATE_MIN_SAMPLE,
     RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT,
     RECOMMEND_DROP_CANDIDATE_PROFILE,
     RECOMMEND_EXPAND_TEST_COVERAGE,
@@ -385,20 +386,17 @@ def test_uncostable_imported_rows_can_no_longer_latch_gate_0_shut():
     empty `failure_modes` — so over the blended store the gate reads False however well the
     runtime trades. A gate that cannot open is indistinguishable from one that works right up
     until the moment it should have opened."""
-    winners = [
-        _outcome(2.0, "2026-07-18T00:00:00Z", outcome_id="w1"),
-        _outcome(2.0, "2026-07-19T00:00:00Z", outcome_id="w2"),
-        _outcome(2.0, "2026-07-20T00:00:00Z", outcome_id="w3"),
-        _outcome(2.0, "2026-07-21T00:00:00Z", outcome_id="w4"),
-    ]
-    imported = [_outcome(9.0, "2026-07-17T00:00:00Z", outcome_id="imp1",
+    winners = [_outcome(2.0, f"2026-06-{i + 1:02d}T00:00:00Z", outcome_id=f"w{i}")
+               for i in range(LIVE_CANDIDATE_MIN_SAMPLE)]
+    imported = [_outcome(9.0, "2026-05-17T00:00:00Z", outcome_id="imp1",
                          priced=False, provenance="crypto_ai_system_import")]
 
     blended = build_performance_report(winners + imported, now=NOW)
     assert "OUTCOME_NOT_COSTABLE" in blended["failure_modes"]
     assert blended["live_candidate_eligible"] is False
 
-    own_only, _text = run_paper_performance_report(now=NOW, outcomes=winners + imported, routable_strategy_ids={"S1"})
+    own_only, _text = run_paper_performance_report(
+        now=NOW, outcomes=winners + imported, routable_strategy_ids={"S1"})
     assert own_only["failure_modes"] == []
     assert own_only["live_candidate_eligible"] is True
 
@@ -411,12 +409,12 @@ def test_a_retired_lineages_losses_no_longer_hold_gate_0_shut():
     The ladder had done its job — judge a strategy on its paper losses and retire it — and the
     losses of strategies that no longer exist were still gating a real-money door."""
     # Days apart: `count_independent_trade_events` collapses trades that close together, so a
-    # cluster of four inside one hour is one event and would fail the sample gate for a reason
-    # this test is not about.
-    losers = [_outcome(-2.0, f"2026-07-0{i + 1}T00:00:00Z", strategy_id="RETIRED",
+    # cluster inside one hour is one event and would fail the sample gate for a reason this test
+    # is not about. Sized to LIVE_CANDIDATE_MIN_SAMPLE so the eligible case is reachable.
+    losers = [_outcome(-10.0, f"2026-05-{i + 1:02d}T00:00:00Z", strategy_id="RETIRED",
                        outcome_id=f"ret{i}") for i in range(4)]
-    winners = [_outcome(1.5, f"2026-07-1{i + 1}T00:00:00Z", strategy_id="ROUTING",
-                        outcome_id=f"rou{i}") for i in range(4)]
+    winners = [_outcome(1.5, f"2026-06-{i + 1:02d}T00:00:00Z", strategy_id="ROUTING",
+                        outcome_id=f"rou{i}") for i in range(LIVE_CANDIDATE_MIN_SAMPLE)]
 
     blended = build_performance_report(losers + winners, now=NOW)
     assert blended["live_candidate_eligible"] is False        # the retired lineage drags it down
@@ -424,7 +422,7 @@ def test_a_retired_lineages_losses_no_longer_hold_gate_0_shut():
     scoped, _text = run_paper_performance_report(
         now=NOW, outcomes=losers + winners, routable_strategy_ids={"ROUTING"},
     )
-    assert scoped["sample_size"] == 4
+    assert scoped["sample_size"] == LIVE_CANDIDATE_MIN_SAMPLE
     assert scoped["live_candidate_eligible"] is True
 
 
@@ -432,8 +430,8 @@ def test_an_unreadable_pool_withholds_the_eligibility_claim():
     """The opposite fail direction to `guards.drawdown_baseline`, and deliberately: there,
     unknown routability must KEEP losses inside a brake; here it must WITHHOLD a claim that real
     money may start. Both refuse — over a population nobody could establish, so does this."""
-    winners = [_outcome(1.5, f"2026-07-1{i + 1}T00:00:00Z", strategy_id="ROUTING",
-                        outcome_id=f"rou{i}") for i in range(4)]
+    winners = [_outcome(1.5, f"2026-06-{i + 1:02d}T00:00:00Z", strategy_id="ROUTING",
+                        outcome_id=f"rou{i}") for i in range(LIVE_CANDIDATE_MIN_SAMPLE)]
     report, _text = run_paper_performance_report(
         now=NOW, outcomes=winners, routable_strategy_ids=None,
     )
@@ -448,3 +446,34 @@ def test_the_scope_has_no_default():
 
     parameter = inspect.signature(run_paper_performance_report).parameters["routable_strategy_ids"]
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_gate_0_needs_more_than_a_handful_of_trades_from_a_fresh_pool():
+    """The hazard scoping the population created, and the reason the threshold moved with it.
+
+    While the report covered the whole 86-row record, `MIN_SAMPLE_SIZE = 3` could not move the
+    verdict — three more rows against 86 change nothing. Scoping to the routable pool makes it
+    the BINDING constraint, and three profitable trades from a freshly promoted pool would have
+    taken `live_candidate_eligible` from False to True. On a book running about -0.5R/trade net
+    that is noise, not evidence: scoping without raising this would have been a relaxation
+    wearing a defect fix's clothes."""
+    def _winners(n):
+        return [_outcome(0.4, f"2026-06-{i + 1:02d}T00:00:00Z", strategy_id="ROUTING",
+                         outcome_id=f"w{i}") for i in range(n)]
+
+    below, _ = run_paper_performance_report(
+        now=NOW, outcomes=_winners(LIVE_CANDIDATE_MIN_SAMPLE - 1), routable_strategy_ids={"ROUTING"})
+    assert below["live_candidate_eligible"] is False
+    assert "INSUFFICIENT_CLOSED_OUTCOME_SAMPLE" in below["failure_modes"]
+
+    at, _ = run_paper_performance_report(
+        now=NOW, outcomes=_winners(LIVE_CANDIDATE_MIN_SAMPLE), routable_strategy_ids={"ROUTING"})
+    assert at["live_candidate_eligible"] is True
+
+
+def test_the_floor_is_reused_from_the_lifecycle_ladder_not_invented():
+    """Pinned so the number cannot drift into an unsourced constant: it IS the window the ladder
+    needs before it will even WARN a strategy, and Gate 0 asks a strictly larger question."""
+    from runtime.mvp_runtime.crypto.lifecycle import DEFAULT_WINDOWS
+
+    assert LIVE_CANDIDATE_MIN_SAMPLE == DEFAULT_WINDOWS[0]

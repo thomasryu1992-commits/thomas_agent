@@ -64,6 +64,24 @@ TRADE_EVENT_MERGE_GAP_MINUTES = 120
 
 MIN_SAMPLE_SIZE = 3  # source default
 
+# The sample Gate 0 needs before it may call a pool a live candidate, and it is deliberately
+# NOT the source default above.
+#
+# `MIN_SAMPLE_SIZE = 3` was harmless while the report covered the whole own-paper record: with
+# 86 rows behind it, three more could not move the verdict. Scoping the report to the routable
+# pool (which is the fix that makes retired strategies stop gating live) makes it the BINDING
+# constraint instead — measured, three profitable trades from a freshly promoted pool would
+# take `live_candidate_eligible` from False to True and open a real-money door. Three trades on
+# a book that runs about -0.5R/trade net is noise, not evidence, so scoping the population
+# without moving this number would have been a relaxation wearing a defect fix's clothes.
+#
+# Reused, never invented: it is `lifecycle`'s own lowest rung, the window that repo already
+# treats as "enough closed trades to judge a strategy's record" before it will even WARN one.
+# Gate 0 asks a strictly larger question — may this pool touch real money — so borrowing the
+# cheapest bar the ladder will act on is the floor, not the target. `robustness`'s
+# HEALTHY_TRADES_PER_PARAMETER (10, "under ~5 it is noise") sits below it and agrees.
+LIVE_CANDIDATE_MIN_SAMPLE = 20
+
 # Statuses / recommendations (source vocabulary, review-only).
 STATUS_BLOCKED_NO_OUTCOMES = "PERFORMANCE_REPORT_BLOCKED_NO_OUTCOMES"
 STATUS_INSUFFICIENT_SAMPLE = "PERFORMANCE_REPORT_REVIEW_ONLY_INSUFFICIENT_SAMPLE"
@@ -478,7 +496,7 @@ def run_paper_performance_report(
         outcomes = paper.read_outcomes(root)  # raises ToolError when unreadable
     own, _imported = paper.split_by_provenance(outcomes)
     own = _routable_rows(own, routable_strategy_ids)
-    report = build_performance_report(own, now=now)
+    report = build_performance_report(own, now=now, min_sample_size=LIVE_CANDIDATE_MIN_SAMPLE)
     return report, render_report_text(report)
 
 
