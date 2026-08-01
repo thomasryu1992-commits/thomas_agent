@@ -37,8 +37,19 @@ approval turns it on.
   `docker exec thomas-scheduler python -m scripts.<script> …` — the **module** form, not
   `python scripts/<script>.py`, which puts `/app/scripts` on `sys.path` instead of `/app` and
   dies on `ModuleNotFoundError: No module named 'runtime'` for every script that does not patch
-  `sys.path` itself. `state_guard` refuses the
-  dangerous case at the door but does not self-heal — `chown -R 10001:10001` is the fix.
+  `sys.path` itself. `state_guard` refuses the dangerous case at the door but does not
+  self-heal — `chown -R 10001:10001` is the fix.
+- **Tag the running image BEFORE `docker compose build`, never after.** The build reassigns
+  `thomas-agent-runtime:latest`, and once it has, the image the containers are *still running
+  on* is gone from the image store — not dangling, not tagged. `docker tag <old-id> …` then
+  fails with `No such image` and there is no image left to roll back to. The tag convention
+  already existed (`rollback-pre-366`); what was never written down is that it only works
+  beforehand, while `latest` still points at the running image:
+  `docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>`.
+  Measured 2026-08-01 on the #416 deploy, where it was skipped and the rollback point was lost.
+  The fallback is `git checkout <commit> && docker compose build && docker compose up -d` —
+  reproducible, and the reason this is a lost minute rather than a lost deploy, but it needs a
+  clean tree and takes minutes where a tag takes seconds.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
 - **No direct `main` commits.** Branch → PR → gates → merge. Enforced by
