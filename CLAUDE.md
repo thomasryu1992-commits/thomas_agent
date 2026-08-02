@@ -47,6 +47,14 @@ approval turns it on.
   beforehand, while `latest` still points at the running image:
   `docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>`.
   Measured 2026-08-01 on the #416 deploy, where it was skipped and the rollback point was lost.
+  **`latest` is what you can tag; the RUNNING image is what you need — check they are the same
+  rather than assuming it.** `docker inspect thomas-scheduler --format '{{.Image}}'` against
+  `docker images thomas-agent-runtime`. A concurrent session that builds without deploying
+  leaves `latest` ahead of what is running, and tagging it then names the **new** image as the
+  rollback point — a tag that reads like a safety net and is not one. Hit 2026-08-02; it cost
+  nothing only because the previous deploy's tag still held the real image. When they differ,
+  tag **from that existing tag** (`docker tag …:rollback-pre-<prev> …:rollback-pre-<PR#>`),
+  never from the raw image id, which is exactly the reference that stops resolving.
   The fallback is `git checkout <commit> && docker compose build && docker compose up -d` —
   reproducible, and the reason this is a lost minute rather than a lost deploy, but it needs a
   clean tree and takes minutes where a tag takes seconds.
