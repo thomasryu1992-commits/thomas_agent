@@ -6,6 +6,7 @@ A fake executor stands in for the pipeline, so these run without a local Core.
 from __future__ import annotations
 
 import json
+from datetime import timedelta as _timedelta
 
 import pytest
 
@@ -346,6 +347,107 @@ def test_skipped_by_kill_switch_does_not_alert(tmp_path):
     summary = run_due(store, now=T1, control_store=control_store, executor=FakeExecutor(),
                       notifier=notifier)
     assert summary["skipped"] == 1 and notifier.calls == []
+
+
+# --- cadence anchoring --------------------------------------------------------
+#
+# The claim is always a little late — the loop polls, and a fire that runs long pushes the
+# next poll out behind it. What matters is whether that lateness becomes the new anchor.
+# It did: pm_scan registered at 120s ran at a measured p50 of 140s over 2,264 fires.
+
+def test_an_on_time_claim_advances_exactly_one_interval():
+    assert scheduler.next_occurrence(T1, 60, now=T1) == T2
+
+
+def test_a_late_claim_does_not_move_the_cadence():
+    # Due at T1, claimed 20s late. The next occurrence is T1 + 60 — the schedule's own
+    # grid — and NOT claim + 60, which would make the 20s permanent.
+    assert scheduler.next_occurrence(T1, 60, now="2026-07-16T09:01:20Z") == T2
+
+
+def _simulate(store, schedule_id, *, poll_seconds, fires):
+    """Claim `fires` times the way the tick loop does: on the first poll line at or after due.
+
+    The loop polls on a fixed grid — that is what the `scheduler_cli` half of this fix
+    restores by sleeping the period's REMAINDER, so a fire's own duration no longer widens
+    the grid. Returns the claim instants.
+    """
+    grid = scheduler.timeutil.parse_iso(T0)
+    claimed = []
+    for _ in range(fires):
+        due = scheduler.timeutil.parse_iso(store.list()[0].next_run_at)
+        while grid < due:
+            grid += _timedelta(seconds=poll_seconds)
+        stamp = scheduler.timeutil.format_iso(grid)
+        assert store.claim_due(schedule_id, now=stamp) is not None
+        claimed.append(grid)
+    return claimed
+
+
+def test_lateness_does_not_compound_over_successive_fires(tmp_path):
+    # pm_scan's own numbers: 120s registered, 30s poll. Every claim is on time here, and
+    # the point is that it STAYS that way — under `claim + interval` the 20s scan pushed
+    # each claim past the next poll line and the gap settled at a measured 140s.
+    store = ScheduleStore(tmp_path)
+    s = _task_schedule(store, now=T0, interval=120)
+    fires = _simulate(store, s.schedule_id, poll_seconds=30, fires=6)
+    gaps = [int((b - a).total_seconds()) for a, b in zip(fires, fires[1:])]
+    assert gaps == [120] * len(gaps), gaps     # not [140, 140, ...]
+
+
+def test_a_cadence_off_the_poll_grid_jitters_but_does_not_drift(tmp_path):
+    # The harder case: 100s does not divide by the 30s poll, so EVERY claim is late and
+    # there is no grid line that makes it otherwise. Anchoring to the due time turns that
+    # into bounded jitter; anchoring to the claim turned it into a permanently slower
+    # schedule, one poll period slower per fire.
+    store = ScheduleStore(tmp_path)
+    s = _task_schedule(store, now=T0, interval=100)
+    fires = _simulate(store, s.schedule_id, poll_seconds=30, fires=25)
+    gaps = [int((b - a).total_seconds()) for a, b in zip(fires, fires[1:])]
+    assert max(gaps) <= 100 + 30                # never worse than one poll period late
+    span = (fires[-1] - fires[0]).total_seconds()
+    assert abs(span - 100 * len(gaps)) <= 30    # the long-run rate is the registered one
+
+
+def test_an_outage_advances_past_now_in_one_claim_and_owes_no_burst(tmp_path):
+    # A day of downtime on a 120s schedule is 720 missed occurrences. The claim owes ONE:
+    # at-most-once means a dropped occurrence stays dropped, exactly as a kill drops one.
+    store = ScheduleStore(tmp_path)
+    s = _task_schedule(store, now=T0, interval=120)
+    back_up = "2026-07-17T09:00:00Z"                      # 24h after T0
+    assert store.claim_due(s.schedule_id, now=back_up) is not None
+    after = store.list()[0]
+    assert after.next_run_at > back_up
+    # And it landed on the schedule's own grid (T0 + 120s, stepped by whole intervals),
+    # not on `back_up + interval`, which would be 09:02:00 only by coincidence of T0.
+    assert after.next_run_at == "2026-07-17T09:02:00Z"
+    # Nothing further is due, so a second claim in the same instant finds nothing.
+    assert store.claim_due(s.schedule_id, now=back_up) is None
+
+
+@pytest.mark.parametrize("late_by", [0, 1, 59, 60, 61, 3600])
+def test_a_claim_always_advances_strictly_past_now(tmp_path, late_by):
+    # `claim_due`'s overlap guarantee and `schedule_run_id`'s no-collision argument both
+    # rest on this: after a claim the schedule is not due again at the same instant.
+    store = ScheduleStore(tmp_path)
+    s = _task_schedule(store, now=T0, interval=60)
+    now = scheduler.timeutil.format_iso(
+        scheduler.timeutil.parse_iso(s.next_run_at) + _timedelta(seconds=late_by))
+    assert store.claim_due(s.schedule_id, now=now) is not None
+    assert store.list()[0].next_run_at > now
+
+
+def test_the_failure_alert_names_the_stored_next_run(tmp_path):
+    # The operator's "다음 실행" and the store must not be two opinions.
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60, request="boom")
+    notifier = RecordingNotifier()
+    late = "2026-07-16T09:01:20Z"                          # claimed 20s after due
+    run_due(store, now=late, ledger=ledger, executor=_failing_executor,
+            notifier=notifier, control_store=ControlStore(tmp_path))
+    assert len(notifier.calls) == 1
+    assert f"다음 실행: {store.list()[0].next_run_at}" in notifier.calls[0][1]
 
 
 # --- downtime gap detection ---------------------------------------------------
