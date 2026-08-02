@@ -1159,3 +1159,55 @@ def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
     mutated = mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
     for name, spec in factory._EXIT_PARAMS.items():
         assert spec.lo <= mutated[name] <= spec.hi
+
+
+def test_the_backtest_refuses_the_entries_the_runtime_would_refuse(monkeypatch):
+    """Until 2026-08-02 only the two RUNTIME doors enforced `MAX_ENTRY_COST_R`
+    (`paper.entry_cost_refusal`, `live_entry`), so a candidate's expectancy described a
+    population the runtime would not trade.
+
+    Pinned as a DIFFERENCE on one spec and one snapshot — door on against door off — because
+    an absolute count depends on the fixture's ATR, and the property is that the two agree
+    about which trades exist, not that any particular number of them do."""
+    snapshot = _trending_snapshot(300)
+    tight = StrategySpec.from_dict(_spec_dict(
+        exit_rules={"stop_model": "atr", "stop_atr": 0.3, "target_atr": 3.0,
+                    "max_holding_bars": 10}))
+
+    with_door = backtest_spec(tight, snapshot)
+    monkeypatch.setattr(factory, "MAX_ENTRY_COST_R", 1e9)
+    without = backtest_spec(tight, snapshot)
+
+    assert with_door["entry_cost_door"]["applied"] is True
+    assert with_door["entry_cost_door"]["refused_entries"] > 0
+    assert with_door["closed_count"] < without["closed_count"], (
+        "the door removed nothing — the backtest is still scoring trades the runtime refuses"
+    )
+    # And the door is off in the second run, so its own record says so rather than lying.
+    assert without["entry_cost_door"]["refused_entries"] == 0
+
+
+def test_a_stop_wide_enough_to_pay_its_costs_is_not_refused():
+    """The other side of the same door, so the test above cannot pass by refusing everything."""
+    snapshot = _trending_snapshot(300)
+    wide = StrategySpec.from_dict(_spec_dict(
+        exit_rules={"stop_model": "atr", "stop_atr": 2.0, "target_atr": 4.0,
+                    "max_holding_bars": 10}))
+    evidence = backtest_spec(wide, snapshot)
+    assert evidence["entry_cost_door"]["refused_entries"] == 0
+    assert evidence["closed_count"] > 0
+
+
+def test_the_holdout_runs_the_same_door_as_the_scored_window(monkeypatch):
+    """A confirmation measured over a wider population than the score would not be confirming
+    the same thing — `holdout_status` gates ROBUST, so the two have to see the same trades."""
+    snapshot = _trending_snapshot(400)
+    tight = StrategySpec.from_dict(_spec_dict(
+        exit_rules={"stop_model": "atr", "stop_atr": 0.3, "target_atr": 3.0,
+                    "max_holding_bars": 10}))
+    with_door = backtest_spec(tight, snapshot)["holdout"]
+    monkeypatch.setattr(factory, "MAX_ENTRY_COST_R", 1e9)
+    without = backtest_spec(tight, snapshot)["holdout"]
+
+    assert with_door["refused_entries"] > 0
+    assert with_door["closed_count"] < without["closed_count"]
