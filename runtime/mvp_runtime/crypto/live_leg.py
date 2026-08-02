@@ -255,6 +255,16 @@ def place_bracket_leg(
         "status": None,
         "exchange_order_id": None,
         "error": None,
+        # WHY the venue said no, not just that it did. `error` is the reason CODE and it is the
+        # same string for every rejection there is; the venue's own numeric code and message ride
+        # inside the exception's text and were being dropped on the floor.
+        #
+        # Measured 2026-08-02 on the first real bracket failure: the record said
+        # `error: ORDER_REJECTED` and nothing else, so the cause of a protective stop being
+        # refused — the one leg whose absence forces a naked position closed — had to be guessed
+        # from the surrounding fields. A rejection that cannot say why is a rejection that has to
+        # happen twice before anyone can act on it.
+        "error_detail": None,
     }
     try:
         request = build_order_request(intent)
@@ -263,6 +273,7 @@ def place_bracket_leg(
         # A rejection is informative but not conclusive — the order may still have landed, so
         # the venue is asked below rather than assumed. (The entry path's posture.)
         result["error"] = exc.reason_code
+        result["error_detail"] = str(exc)
 
     try:
         venue_order = adapter.fetch_order(
@@ -270,6 +281,10 @@ def place_bracket_leg(
         )
     except ToolError as exc:
         result["error"] = result["error"] or exc.reason_code
+        # Only when the submit did not already explain itself: the submit's own message is the
+        # more specific of the two, and a fetch failure after it is a second symptom rather than
+        # the cause.
+        result["error_detail"] = result["error_detail"] or str(exc)
         result["status"] = "UNRECONCILABLE"
         return result
 
@@ -304,12 +319,15 @@ def cancel_bracket_legs(
         client_order_id = position.get(key)
         if not isinstance(client_order_id, str) or not client_order_id:
             continue
-        entry: dict[str, Any] = {"leg": key, "client_order_id": client_order_id, "error": None}
+        entry: dict[str, Any] = {
+            "leg": key, "client_order_id": client_order_id, "error": None, "error_detail": None,
+        }
         try:
             response = adapter.cancel_order(symbol, client_order_id, timeout_seconds=timeout_seconds)
         except ToolError as exc:
             entry["cancelled"] = False
             entry["error"] = exc.reason_code
+            entry["error_detail"] = str(exc)
         else:
             # None = the venue had nothing to cancel (already triggered or already gone), which
             # is a successful outcome for this operation, not a miss.
@@ -812,6 +830,7 @@ def read_bracket_legs(
             "fill": None,
             "exchange_order_id": None,
             "error": None,
+            "error_detail": None,
         }
         if not isinstance(client_order_id, str) or not client_order_id:
             leg["error"] = BRACKET_IDS_MISSING
@@ -822,6 +841,7 @@ def read_bracket_legs(
             venue_order = adapter.fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds)
         except ToolError as exc:
             leg["error"] = exc.reason_code
+            leg["error_detail"] = str(exc)
             unknown = True
             legs.append(leg)
             continue
