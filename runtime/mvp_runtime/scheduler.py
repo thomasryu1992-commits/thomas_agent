@@ -33,6 +33,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -223,6 +224,43 @@ def pm_scan_mode(request: str | None) -> str:
     return text.split()[0] if text else PM_SCAN_WATCH
 
 
+def next_occurrence(due_at: str, interval_seconds: int, *, now: str) -> str:
+    """The next occurrence after ``due_at``, on the schedule's own grid, strictly after ``now``.
+
+    Advancing from ``due_at`` rather than from the claim time is what keeps a cadence a
+    cadence. The claim happens at the first tick at or after the due time, which is always
+    a little late — the loop polls, and a fire that runs long pushes the poll after it. When
+    the next occurrence was computed as ``claim_time + interval`` that lateness became the
+    new anchor and **compounded on every cycle**: pm_scan, registered at 120s, settled at a
+    steady measured 140s (p50 over 2,264 fires) because its ~20s scan pushed each claim past
+    the tick grid and the grid then became the cadence. A 17% shortfall in the sample rate of
+    a measurement window whose exit artifact divides by the number of readings.
+
+    Anchoring to ``due_at`` makes the lateness per-occurrence jitter (bounded by the tick
+    interval) instead of accumulated drift, so the long-run rate is the registered one.
+
+    Whole intervals are stepped over, never partial ones, so the grid stays the one the
+    schedule was created on. And the result is strictly after ``now``, which preserves the
+    two properties the rest of this module builds on:
+
+    - **at-most-once, no catch-up burst.** A scheduler that was down for a day does not owe
+      720 pm_scans; it advances past ``now`` in one claim and fires once. That is the same
+      "a kill drops the occurrence rather than queueing a burst" rule the kill path states.
+    - **a claim always advances past ``now``**, so a second claimant finds nothing due
+      (``claim_due``'s overlap guarantee) and ``schedule_run_id`` cannot collide.
+
+    Integer arithmetic, not a loop: a schedule left behind by a long outage would otherwise
+    step one interval at a time over an unbounded gap.
+    """
+    anchor = timeutil.parse_iso(due_at)
+    behind = (timeutil.parse_iso(now) - anchor).total_seconds()
+    # Strictly after `now`: `floor(behind/interval) + 1` steps, which is >= 1 even when the
+    # claim is exactly on time (behind == 0) or somehow early (a negative behind floors to
+    # -1 and yields 0 steps -- so clamp, rather than hand back a due time already passed).
+    steps = max(1, int(behind // interval_seconds) + 1)
+    return timeutil.format_iso(anchor + timedelta(seconds=steps * interval_seconds))
+
+
 def build_schedule(
     *, kind: str, request: str, interval_seconds: int, created_by: str, now: str,
     reason: str = "", enabled: bool = True,
@@ -321,7 +359,11 @@ class ScheduleStore:
         claimed (pre-advance) schedule, else None — a concurrent operator disable/remove,
         or another process's claim, wins instead of being reverted by a stale batch
         rewrite. This is the per-schedule replacement for the old whole-list
-        ``replace_all`` the tick loop used to blind-write mid-batch."""
+        ``replace_all`` the tick loop used to blind-write mid-batch.
+
+        The advance is ``next_occurrence`` — the schedule's own grid, stepped past ``now``
+        — and not ``now + interval``, which re-anchored the cadence to whenever the claim
+        happened to land and let a late tick become a permanently slower schedule."""
         with self._lock():
             schedules = self.list()
             for index, s in enumerate(schedules):
@@ -329,7 +371,8 @@ class ScheduleStore:
                     continue
                 if not (s.enabled and s.next_run_at <= now):
                     return None
-                schedules[index] = replace(s, next_run_at=timeutil.plus_seconds(now, s.interval_seconds))
+                schedules[index] = replace(
+                    s, next_run_at=next_occurrence(s.next_run_at, s.interval_seconds, now=now))
                 self._save(schedules)
                 return s
             return None
@@ -432,7 +475,12 @@ def _notify_status_change(
             f"status: {status}\n"
             f"시각: {now}\n"
             f"이 회차는 유실됐습니다(at-most-once). "
-            f"다음 실행: {timeutil.plus_seconds(now, schedule.interval_seconds)}"
+            # `schedule` is the pre-advance claim, so its `next_run_at` is the occurrence
+            # that just failed — the same anchor `claim_due` advanced from. Recomputing it
+            # the store's way keeps the operator's "다음 실행" and the stored one identical;
+            # `now + interval` was a second opinion, and after the grid-anchored advance it
+            # would have been the wrong one.
+            f"다음 실행: {next_occurrence(schedule.next_run_at, schedule.interval_seconds, now=now)}"
         )
     elif (previous_status or "").startswith(FAILED_PREFIX):
         text = (

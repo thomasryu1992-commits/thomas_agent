@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from runtime.mvp_runtime import control
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.scheduler import KIND_PRUNE, KIND_TASK, ScheduleStore, build_schedule
-from runtime.mvp_runtime.scheduler_cli import main
+from runtime.mvp_runtime.scheduler_cli import main, remaining_period
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 
@@ -69,6 +71,37 @@ def test_tick_runs_due_prune(tmp_path, capsys):
     assert rc == 0
     assert "fired 1" in capsys.readouterr().out
     assert wm.read_all() == []
+
+
+@pytest.mark.parametrize("interval, elapsed, expected", [
+    (30.0, 20.0, 10.0),      # pm_scan's shape: the 20s scan is part of its own period
+    (30.0, 0.0, 30.0),       # an idle tick still waits the whole period
+    (30.0, 30.0, 0.0),       # exactly consumed
+    (30.0, 190.0, 0.0),      # a crypto_factory fire: poll again now, never sleep negative
+])
+def test_the_tick_sleeps_the_remainder_of_its_period(interval, elapsed, expected):
+    """Sleeping a fresh full interval on top of the work widened the poll grid to
+    `work + interval`, and a schedule can only be claimed on a poll line — so the grid
+    became the cadence. This is the loop half of the 140s pm_scan drift."""
+    assert remaining_period(interval, elapsed) == expected
+
+
+def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys):
+    # Wiring, not arithmetic: `pass_started` must be taken BEFORE run_due, so the sleep
+    # shrinks by the work. A real (tiny) pass makes this independent of monotonic's
+    # internal call count, which run_due shares.
+    store, ledger = _stores(tmp_path)
+    control_store = ControlStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+    slept: list[float] = []
+    rc = main(["tick", "--max-ticks", "2", "--interval-seconds", "30"],
+              store=store, ledger=ledger, control_store=control_store, working_memory=wm,
+              now=DUE, sleep=slept.append)
+    assert rc == 0
+    assert len(slept) == 1                  # only between ticks, never after the last
+    assert 0.0 <= slept[0] < 30.0           # reduced by the pass, and clamped
 
 
 def test_tick_skips_while_killed(tmp_path, capsys):

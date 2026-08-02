@@ -107,6 +107,25 @@ def build_alerter(*, repo_root: Path | None, now: str | None) -> OperatorAlerter
     return OperatorAlerter(channel, repo_root=repo_root)
 
 
+def remaining_period(interval_seconds: float, elapsed_seconds: float) -> float:
+    """How long to sleep after a pass that took ``elapsed_seconds`` of its own period.
+
+    The pass belongs to the period it ran in, so what is left to wait is the REMAINDER.
+    Sleeping a fresh full interval on top of the work made the poll grid ``work + interval``
+    wide — a 20s pm_scan on a 30s interval polled every 50s — and since a schedule can only
+    be claimed on a poll line, the grid became the cadence rather than the registered
+    interval. That is the loop half of the drift; ``scheduler.next_occurrence`` is the
+    store half, and neither alone is enough.
+
+    Clamped at zero: a pass longer than its period (a 190s ``crypto_factory`` fire on a 30s
+    interval) polls again immediately rather than borrowing from the next period, and
+    ``sleep`` is never handed a negative number. It does **not** catch up beyond that — this
+    function paces polling only. Which occurrences are owed is ``claim_due``'s to say, and
+    it owes at most one.
+    """
+    return max(0.0, interval_seconds - elapsed_seconds)
+
+
 def report_startup_gap(
     store: ScheduleStore, *, now: str, ledger: LedgerStore | None, alerter: OperatorAlerter | None
 ) -> list[tuple[Any, int]]:
@@ -313,6 +332,7 @@ def main(
         tick = 0
         try:
             while args.max_ticks == 0 or tick < args.max_ticks:
+                pass_started = time.monotonic()
                 summary = scheduler.run_due(
                     store, now=now or timeutil.utc_now_iso(), control_store=control_store, ledger=ledger,
                     working_memory=working_memory, programization=programization,
@@ -331,7 +351,7 @@ def main(
                 tick += 1
                 _beat()
                 if args.interval_seconds > 0 and (args.max_ticks == 0 or tick < args.max_ticks):
-                    sleep(args.interval_seconds)
+                    sleep(remaining_period(args.interval_seconds, time.monotonic() - pass_started))
         except KeyboardInterrupt:
             sys.stderr.write("\nSCHEDULER: stopped.\n")
         alerts = f", alerts {alerter.sent} sent/{alerter.failed} failed" if alerter is not None else ""
