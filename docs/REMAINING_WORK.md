@@ -4,7 +4,20 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-07-31** (`main` = `128ed20`), adding **section E** — deferrals that were
+Last updated: **2026-08-02** (`main` = `f7a9356`), after asking why the promotion board reported
+**0 promotable with 900 candidates on file**. The answer was three filters in series, and the
+middle one is the finding: **gross edge is nearly flat across the ladder (+0.09R at 15m to +0.15R
+at 4h) while cost varies 4.4× (0.28R to 0.06R)**, so what separates the timeframes is the
+denominator — 1R is `stop_atr` × ATR against a fixed ~10–16 bps of friction — and not the signal.
+Decomposed, **taker fee plus slippage is 94% of all cost at every timeframe and funding is
+0.2–4%**, which corrects this file's own emphasis below. Four changes followed: the factory stopped
+minting into the two bands that cannot pay for themselves (#420), the judgeability cap stopped
+hiding the operator's own pool (#422), and the Gate 0 board learned to say *why* its sample is zero
+and to warn before an acknowledgement lapses (#416). What did **not** change is the thing worth
+carrying forward — at 15m friction is 0.28R against 0.09R of gross edge, a 3× gap no stop multiple
+closes; see the new **section F**.
+
+Earlier: **2026-07-31** (`main` = `128ed20`), adding **section E** — deferrals that were
 measured and then deliberately left alone, so the measurement does not have to be redone by the
 next person who greps.
 
@@ -143,7 +156,13 @@ moved.** Everything below was true when written. Check before acting on it.
 
 ---
 
-## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 1.9 of 14 days
+## A. Prediction-market trading (Kalshi / Polymarket / Binance) — PM1 **running**, 5.7 of 14 days
+
+<!-- The day count is measured, not maintained: read it off the store rather than trusting it
+     here. 5.7 is `observations.jsonl`'s own span on 2026-08-02 — first reading
+     2026-07-27T09:49:28Z, latest 2026-08-02T03:43:03Z — which puts the window's end at
+     ~2026-08-10. It said 1.9 for six days, which is how a number in a heading fails. -->
+
 
 Roadmap: [`docs/PREDICTION_MARKET_ROADMAP_V0.1.md`](PREDICTION_MARKET_ROADMAP_V0.1.md) (on `main`).
 **PM1's code is complete and the window is open.** Three venue adapters, screening, the
@@ -737,6 +756,15 @@ same spec with and only with the carry, the per-trade carry (0.061R) exceeded fe
 combined (0.052R) and expectancy fell 20%; on the real 1d book, whose holds are 14–39 bars rather
 than the fixture's, the ratio is larger.
 
+> **Correction 2026-08-02 — that ratio does not hold for the pool that exists.** The figure above
+> is a **1d fixture holding 12–48 days**, which is where carry dominates by construction. Measured
+> across the 240 candidates carrying the current basis, per trade: funding is **0.0006R at 15m,
+> 0.0024R at 1h, 0.0025R at 4h** — **0.2% to 4% of total cost**, against taker fee plus slippage
+> at **94%**. The paragraph above is kept because charging carry was still right and its
+> *directional* property is real (a long pays, a short receives), but the weight it implies is
+> wrong for every timeframe the runtime actually trades. **Do not re-optimize this term.** The one
+> that decides whether a trade can pay for itself is the fixed bps against `stop_atr` × ATR.
+
 Two properties make this different from a rate change:
 
 - **It is directional.** A long pays and a short receives, so the factory had been ranking long
@@ -903,6 +931,12 @@ scopes at different levels, so nothing was owed to it.
           lands, replace the constant. If the measured rate comes in **above** 2.0, every
           candidate scored at the published rate becomes `OPTIMISTIC` and stops being promotable
           on its own evidence — intended behaviour of the gate above, not a regression.
+          **Update 2026-08-02 — the checklist it was waiting on has cleared.** The live entry
+          door reads OPEN (readiness READY, routing WIRED, breakers NORMAL, Gate 0 answered by
+          the operator acknowledgement), so the first live take-profit fill is now a matter of a
+          signal firing rather than of a step nobody has taken. This is the last unmeasured term
+          in the cost model, and the only one that errs in the **unsafe** direction — section F
+          reads it as such. Run `--fee-rates` after the first live TP, not before.
     - [x] **The grant's revocation was defeatable by the grant** — done 2026-07-29 (#324),
           reviewing #320 rather than running it. `assert_authorization` branched on
           `evidence_ref.startswith("env_only:")` to decide whether to re-read the grant file or
@@ -981,6 +1015,17 @@ scopes at different levels, so nothing was owed to it.
           now, so the evidence transfers better — but the sample question this box is about did
           not move, and the exit's *cost* still differs (paper models the bar close, live pays
           taker plus slippage).
+          **Update 2026-08-02 — the question this box asks now has a different owner and a
+          different number.** Gate 0 became machine-readable and wired into `live_entry` (#409),
+          scoped to the routable pool (#411), and answerable by a signed, expiring operator
+          acknowledgement (#413). The 60-trade figure above is not the sample any more: the pool
+          rotated on 2026-07-31 and Gate 0 counts only lineages that can still route, so the
+          measured sample went to **0 of 20** — every one of the 86 own closed rows belongs to a
+          retired lineage. It is **1 of 20** since #419 fixed a latch that had been reading every
+          row this runtime mints as un-priceable. **The live door is OPEN meanwhile**, on Thomas's
+          acknowledgement (valid to 2026-08-22), not on evidence — so this box no longer describes
+          a gate holding routing shut. It describes a sample being collected while routing runs,
+          and the honest read of that is in `crypto/live_candidate_ack.py`, not here.
 - [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
       board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
       evidence store is
@@ -1421,6 +1466,44 @@ same answer.
       this:** a timestamp writer that does not go through `timeutil`, or an externally-supplied
       or model-supplied time string reaching a record. Then the 110 declarations should become a
       defence instead of documentation, and the measurement above is the thing to re-run first.
+
+---
+
+## F. The fast timeframes do not pay for themselves — open, and nothing here has fixed it
+
+Measured 2026-08-02 across the 240 candidates carrying the current cost basis, per trade:
+
+| tf | gross | taker fee | slippage | maker | funding | **total cost** | **net** |
+|---|---|---|---|---|---|---|---|
+| 15m | +0.0923 | 0.1707 | 0.0948 | 0.0106 | 0.0006 | **0.2768** | **−0.1845** |
+| 1h | +0.1368 | 0.0939 | 0.0532 | 0.0058 | 0.0024 | **0.1553** | −0.0185 |
+| 4h | +0.1517 | 0.0370 | 0.0207 | 0.0026 | 0.0025 | **0.0628** | **+0.0889** |
+
+**Gross edge is nearly flat and cost varies 4.4×.** Signal quality is not what separates the
+timeframes; 1R is `stop_atr` × ATR and friction is a fixed ~10–16 bps, so the shorter the bar the
+larger the share of the risk unit friction takes. At 15m that share is ~3× the whole gross edge.
+
+**What has been done, and why it is not enough.** #420 raised the `stop_atr` floor 0.8 → 1.2 and
+retired `volatility_squeeze_*`; both are real and both are second-order. Within families the stop
+floor is worth ~0.05–0.15R at 15m, against a gap of ~0.18R at the median — it stops wasting half
+of every mint on a band that is negative, and it does not make 15m viable. #422 then stopped the
+board hiding 4h, which is the timeframe that *does* pay. Neither touched the friction.
+
+**The lever that would, and why it is not available.** Entry is taker (5 bps) plus slippage
+(3 bps); the take-profit leg already rests as a maker LIMIT since 2026-07-28. Converting the
+*entry* is worth roughly 6 of a ~16 bps round trip — enough to flip 1h clearly positive, not
+enough to save 15m. It is **deferred with recorded preconditions**, three of them unstarted, and
+the fourth is not a clock: see `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`, scope note 2026-08-02. The
+deferral's premise — that a resting entry selects against momentum/breakout strategies — has
+*hardened*, because every lineage that reached ROBUST or the promotable board is momentum or
+breakout while the families a limit entry would suit have never produced a ROBUST candidate.
+
+**So the open question is not "which knob".** It is whether this venue's fee schedule permits a
+15m strategy at all, and if it does not, whether the ladder's 20-trade window and the
+`MAX_DAYS_TO_LIFECYCLE_WINDOW` horizon should be stated in trades-per-lineage at 4h rather than
+in days. **Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for
+another `stop_atr` tweak — both were measured and both are small. What is unmeasured is the
+*maker* rate, which the item in section C is waiting on a live fill for.
 
 ---
 
