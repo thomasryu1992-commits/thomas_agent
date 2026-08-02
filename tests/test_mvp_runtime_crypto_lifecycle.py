@@ -118,12 +118,70 @@ def test_recovery_from_warning():
 
 
 def test_win_rate_drop_forces_probation():
-    rs = [1.0] * 10 + [-0.01] * 10  # win rate 0.5, healthy-ish window
+    rs = [1.0] * 25 + [-0.01] * 25  # win rate 0.5, healthy R, 50 trades
     decision = evaluate_lifecycle(
         "PAPER_ACTIVE", _perf(rs, backtest_win_rate=0.9), now=NOW,
     )
     assert decision["new_status"] == "PROBATION"
     assert "live_win_rate_dropped_below_backtest" in decision["reasons"]
+
+
+def test_one_losing_trade_does_not_demote_a_freshly_promoted_lineage():
+    """The defect this guard exists for, reproduced before it was fixed.
+
+    The win-rate rule reads LIFETIME trades, not a rolling window, so `_full_window` never
+    guarded it and nothing else did either. One losing trade puts the live win rate at 0.0
+    against a backtest rate of 0.411 — a drop of 0.411 past a 0.15 threshold — and the first
+    settlement of a freshly promoted lineage demoted it. The five lineages promoted
+    2026-07-31 escaped only because the first settlement happened to be a win."""
+    for n in (1, 2, 5, 20):
+        decision = evaluate_lifecycle(
+            "PAPER_ACTIVE", _perf([-1.0] * n, backtest_win_rate=0.411), now=NOW,
+        )
+        assert "live_win_rate_dropped_below_backtest" not in decision["reasons"], (
+            f"the win-rate rule fired on {n} trade(s) — below its minimum sample the statistic "
+            "is not weak, it is misleading"
+        )
+
+
+def test_the_win_rate_guard_binds_exactly_at_its_threshold():
+    """Pinned on both sides of the boundary, and read off the constant rather than written
+    down, so moving the threshold moves the test with it."""
+    from runtime.mvp_runtime.crypto.lifecycle import LifecycleThresholds
+
+    n = LifecycleThresholds().probation_win_rate_min_trades
+    # Healthy R throughout, so only the win-rate route can fire.
+    def at(count):
+        rs = [1.0] * (count // 2) + [-0.01] * (count - count // 2)
+        return evaluate_lifecycle("PAPER_ACTIVE", _perf(rs, backtest_win_rate=0.9), now=NOW)
+
+    assert "live_win_rate_dropped_below_backtest" not in at(n - 1)["reasons"]
+    assert "live_win_rate_dropped_below_backtest" in at(n)["reasons"]
+
+
+def test_the_win_rate_route_does_not_claim_a_window_it_never_read():
+    """The second defect: both routes to PROBATION shared one reason list, so a demotion the
+    win-rate rule caused also reported `rolling_30_below_probation_thresholds` — naming a
+    window that was healthy and, below 30 trades, not even full. A reason code that
+    attributes a decision to the wrong rule is worse than a missing one: it sends the reader
+    to re-derive a threshold that did not fire."""
+    rs = [1.0] * 25 + [-0.01] * 25          # rolling_30 is comfortably profitable
+    perf = _perf(rs, backtest_win_rate=0.9)
+    assert perf["rolling_30"]["expectancy_r"] > 0
+
+    decision = evaluate_lifecycle("PAPER_ACTIVE", perf, now=NOW)
+    assert decision["new_status"] == "PROBATION"
+    assert "live_win_rate_dropped_below_backtest" in decision["reasons"]
+    assert "rolling_30_below_probation_thresholds" not in decision["reasons"]
+
+
+def test_an_unknown_sample_size_refuses_the_rule_rather_than_waiving_the_guard():
+    """Not knowing the sample is the state this rule reads worst, so it must not be the state
+    in which it fires. The R-based rules are unaffected and still judge the lineage."""
+    perf = dict(_perf([1.0] * 25 + [-0.01] * 25, backtest_win_rate=0.9))
+    perf.pop("trade_count")
+    assert "live_win_rate_dropped_below_backtest" not in evaluate_lifecycle(
+        "PAPER_ACTIVE", perf, now=NOW)["reasons"]
 
 
 # --- run_lifecycle + pool application -----------------------------------------

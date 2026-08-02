@@ -158,6 +158,27 @@ class LifecycleThresholds:
     probation_expectancy_r: float = -0.05
     probation_profit_factor: float = 0.9
     probation_win_rate_drop: float = 0.15
+    # The win-rate rule is the only one that reads LIFETIME trades rather than a rolling
+    # window, so it is the only one `_full_window` does not already guard — and until
+    # 2026-08-02 it had no guard at all. A single losing trade put `live_win_rate` at 0.0
+    # against a backtest rate of 0.411, a drop of 0.411 past a 0.15 threshold, and demoted a
+    # freshly promoted lineage to PROBATION on its first settlement. Reproduced: `n=1 loss ->
+    # PROBATION`. The five lineages promoted 2026-07-31 escaped only because the first
+    # settlement was a WIN.
+    #
+    # **50, and it is the sharpest instrument in this ladder rather than the bluntest.** A
+    # Bernoulli rate converges far faster than the mean of a heavy-tailed R distribution:
+    # measured on the 4h ROBUST candidates (win rate 0.411, per-trade R sd 1.402), this
+    # threshold sits **2.16 SE** from the truth at 50 trades where the rolling-50 expectancy
+    # test sits at 0.60. False-PROBATION on a strategy performing exactly to its backtest:
+    # 31.6% at n=5, 10.6% at n=20, **1.9% at n=50**. That is the whole reason to guard it
+    # rather than weaken it — the rule is worth keeping precisely because it can decide
+    # something the R test cannot decide at any window a 4h lineage will reach this decade.
+    #
+    # Deliberately not tied to `probation_window` (30). This guards a LIFETIME statistic, and
+    # the number that matters is where its own false-positive rate becomes acceptable, which
+    # is a property of the win rate rather than of any rolling window's size.
+    probation_win_rate_min_trades: int = 50
 
     suspend_window: int = 50
     suspend_expectancy_r: float = 0.0
@@ -205,17 +226,38 @@ def evaluate_lifecycle(
     if warn:
         reasons.append(f"rolling_{t.warn_window}_below_warn_thresholds")
 
+    # Two independent routes to PROBATION, and each now appends only its OWN reason. They used
+    # to share one: the rolling-window reason was appended whenever `probation` was true from
+    # either route, so a demotion the win-rate rule caused reported
+    # `rolling_30_below_probation_thresholds` — naming a window that was not full and had not
+    # been consulted. A reason code that attributes a decision to the wrong rule is worse than
+    # a missing one, because it sends the reader to re-derive a threshold that did not fire.
     m_prob = _full_window(performance, t.probation_window)
-    probation = m_prob is not None and (
+    probation_metrics = m_prob is not None and (
         _le(m_prob.get("expectancy_r"), t.probation_expectancy_r)
         or _lt(m_prob.get("profit_factor"), t.probation_profit_factor)
     )
-    win_rate_drop = performance.get("live_vs_backtest_win_rate_drop")
-    if win_rate_drop is not None and win_rate_drop > t.probation_win_rate_drop:
-        probation = True
-        reasons.append("live_win_rate_dropped_below_backtest")
-    if probation and f"rolling_{t.probation_window}_below_warn_thresholds" not in reasons:
+    if probation_metrics:
         reasons.append(f"rolling_{t.probation_window}_below_probation_thresholds")
+
+    # The lifetime win-rate route, guarded by its own minimum sample — see
+    # `probation_win_rate_min_trades`. Below it the statistic is not weak, it is misleading:
+    # one losing trade reads as a total collapse in win rate.
+    # An absent or non-numeric `trade_count` refuses the rule rather than waiving the guard:
+    # not knowing the sample is the state this rule reads worst, so it must not be the state
+    # in which it fires. The R-based rules above are unaffected and still judge the lineage.
+    win_rate_drop = performance.get("live_vs_backtest_win_rate_drop")
+    trade_count = performance.get("trade_count")
+    win_rate_probation = (
+        win_rate_drop is not None
+        and isinstance(trade_count, int)
+        and trade_count >= t.probation_win_rate_min_trades
+        and win_rate_drop > t.probation_win_rate_drop
+    )
+    if win_rate_probation:
+        reasons.append("live_win_rate_dropped_below_backtest")
+
+    probation = probation_metrics or win_rate_probation
 
     m_susp = _full_window(performance, t.suspend_window)
     suspend_metrics = m_susp is not None and (
