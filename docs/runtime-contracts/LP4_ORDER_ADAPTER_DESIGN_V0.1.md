@@ -131,6 +131,41 @@ price. **The entry stays MARKET**, and the stop stays `STOP_MARKET`: a limit ent
 only when price comes back to it, which selects against the momentum strategies in the pool,
 and a limit stop cannot fill in a gap. Only the target leg can rest without a risk trade.
 
+**Scope note added 2026-08-02 (what re-opening the entry leg would take).** A limit entry is
+**deferred, not rejected**, and the fee prize is real — roughly 6 bps of a ~16 bps round trip,
+the single largest arithmetic lever in the cost structure (measured 2026-08-02: taker fee plus
+slippage is **94%** of all cost at every timeframe, funding 0.2–4%). It is written down here
+because the paragraph above records only the refusal, so a reader arriving later sees a closed
+door and no handle.
+
+**Provenance, stated because it changes how much these bind.** Thomas's decision of 2026-07-28
+is the paragraph above: ship the maker take-profit leg, entry stays MARKET, revisit later. The
+four items below are **engineering preconditions derived from that decision's stated reasoning**
+— they are not additional constraints Thomas set, and none of them has been ratified. Read them
+as "what would have to be true for the question to be worth re-opening", and correct the list
+rather than working around it.
+
+| # | Precondition | State on 2026-08-02 |
+|---|---|---|
+| 1 | The PM1 observation window has drained | **5.7 of 14 days** — started 2026-07-27T09:49Z, ends ~2026-08-10 |
+| 2 | The backtest has an explicit pessimistic fill model — filled only if the bar trades **through** the limit by ≥1 tick, never on a touch | **Does not exist.** `paper.build_entry_plan` enters at the row's close, so nothing rests and there is no fill to make pessimistic |
+| 3 | The cancel timeout is **bar-based**, not wall-clock, or backtest and live diverge on how long an entry waits | **Does not exist.** The only cancel path is `live_leg.cancel_bracket_legs`, which cancels the surviving *protective* leg after a close |
+| 4 | Gated **per strategy family**, starting where a limit entry is aligned rather than adverse (`mean_reversion_*`, `funding_fade_*`) | Families exist in `factory.TEMPLATES`; **62 candidates, 0 ROBUST** (31 FRAGILE, 31 PROVISIONAL, and only 4 at the current cost basis) |
+
+**(4) is the one that does not drain with time, and it is the load-bearing one.** The refusal
+above rests on the pool being momentum/breakout, where a non-fill correlates with the winner —
+the selection bias can exceed the fee saving, and OHLCV cannot score it honestly because a touch
+is not a fill. That premise has if anything hardened: every lineage that reached ROBUST or the
+promotable board on 2026-08-02 is momentum or breakout (`volatility_expansion_short`,
+`breakdown_short`, `breakout+macd_momentum`, `xs_momentum_short`, `session_trend_short`), while
+the families a limit entry would suit have never produced a ROBUST candidate at any cost basis.
+So the staged rollout has no first stage: this opens when those families earn one, not when a
+clock runs out.
+
+A limit **stop** is separately ruled out and is not part of this — a plain limit at the stop
+price sits on the wrong side of the book and fills at entry, and a stop-limit can miss in a gap.
+Only the target leg can rest without trading risk for the fee.
+
 ## Reconcile — the real-money safety core
 
 A submit is confirmed by a **read**, never assumed from the POST response:
