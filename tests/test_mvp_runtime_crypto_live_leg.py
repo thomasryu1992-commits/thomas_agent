@@ -649,3 +649,48 @@ def test_the_status_line_is_ascii():
     for result in (_entry(), _exit(), _entry(decision={**DECISION, "ready": False})):
         line = ll.leg_status_line(result)
         assert line.isascii() and line
+
+
+# --- a rejection says what the venue said ---------------------------------------
+
+def test_a_rejected_bracket_leg_records_what_the_venue_actually_said():
+    """`error` is the reason CODE, and it is the same string for every rejection there is.
+
+    Measured 2026-08-02 on the first real bracket failure: a protective stop was refused, the
+    record said `error: ORDER_REJECTED` and nothing else, and the cause of the one leg whose
+    absence forces a naked position closed had to be guessed from the surrounding fields. The
+    venue's own code and message were already inside the exception `live_execution.submit`
+    raises (`venue rejected the order (code -2021): ...`) — they were simply dropped when the
+    leg record was written. A rejection that cannot say why has to happen twice before anyone
+    can act on it."""
+    adapter = FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}, missing={"SL"})
+    result = _entry(adapter=adapter)
+    sl = [leg for leg in result["bracket"] if leg["client_order_id"].split("_")[2] == "SL"]
+    assert len(sl) == 1
+    assert sl[0]["error"] == "ORDER_REJECTED"
+    assert sl[0]["placed"] is False
+    # The detail, which is the whole point — and it carries the scripted text, so a real venue
+    # code would ride the same way.
+    assert "scripted SL rejection" in (sl[0]["error_detail"] or "")
+
+
+def test_a_leg_that_placed_cleanly_carries_no_detail():
+    """Absent rather than an empty string: "the venue said nothing" and "the venue said ''" are
+    different facts, and only one of them means the leg was fine."""
+    result = _entry(adapter=FakeAdapter())
+    for leg in result["bracket"]:
+        assert leg["error"] is None and leg["error_detail"] is None
+
+
+def test_the_submit_message_wins_over_a_later_fetch_failure():
+    """Both can fail on one leg. The submit's message is the more specific of the two — a fetch
+    failure after a rejection is a second symptom, not the cause — so it must not overwrite it."""
+    adapter = FakeAdapter(
+        submit_errors={"SL": "ORDER_REJECTED"},
+        statuses={"SL": ToolError("ORDER_TRANSPORT", "fetch blew up")},
+    )
+    result = _entry(adapter=adapter)
+    sl = [leg for leg in result["bracket"] if leg["client_order_id"].split("_")[2] == "SL"][0]
+    assert sl["error"] == "ORDER_REJECTED"
+    assert "scripted SL rejection" in (sl["error_detail"] or "")
+    assert "fetch blew up" not in (sl["error_detail"] or "")
