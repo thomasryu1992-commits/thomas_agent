@@ -711,10 +711,17 @@ NOTIFY_FAILED = "LIVE_NOTIFY_FAILED"
 def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> None:
     """Tell Thomas that real money moved, or that it is somewhere this runtime cannot account for.
 
-    Sent for exactly two outcomes — a position opened, and an incident. Everything else is the
+    Sent for exactly three outcomes — a position opened, an entry that filled and had to be
+    closed again because it could not be protected, and an incident. Everything else is the
     cycle doing nothing, and a channel that pings every fifteen minutes is a channel nobody
     reads by the second day; the one message that matters would arrive in a stream the operator
     has learned to skip. `crypto_report` already carries the routine picture daily.
+
+    The middle one was missing until 2026-08-02, and it is the case that looks like nothing from
+    the outside: `live_route_status` stays HELD because the position did not survive the cycle,
+    so a check on status alone skipped it. Two ETHUSDT entries filled for real, both lost their
+    protective stop to a venue rejection, both were force-closed — and no message was sent for
+    either.
 
     **Best-effort, and never in the money path's way.** By the time this runs the order is at
     the venue: a send failure is recorded on the cycle record and never raised, exactly like
@@ -723,13 +730,26 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     revoked telegram grant degrades this to "not sent" rather than breaking the cycle.
     """
     status = record.get("live_route_status")
-    if status not in (ROUTE_OPENED, ROUTE_INCIDENT):
+    reasons = [r for r in (record.get("live_reason_codes") or [])]
+    # A REVERSED entry is the third outcome worth a message, and it used to fall between the two
+    # above: the position opened, so nothing was merely held — and the runtime handled it, so it
+    # is not an incident. `live_route_status` stays HELD, which is why keying on status alone
+    # missed it.
+    #
+    # Measured 2026-08-02: two ETHUSDT entries filled for real, both had their protective
+    # STOP_MARKET refused, both were force-closed by rule 2, and **no message was sent** for
+    # either. They were found because a watch happened to be running; without it ~12 cents left
+    # the account and the operator's only trace was a line in the next morning's dashboard.
+    # Money moving and being reversed is not "the cycle doing nothing".
+    reversed_entry = live_leg.NAKED_POSITION_CLOSED in reasons
+    if status not in (ROUTE_OPENED, ROUTE_INCIDENT) and not reversed_entry:
         return
     opened = record.get("live_opened") or {}
     position = opened.get("position") or {}
-    reasons = [r for r in (record.get("live_reason_codes") or [])]
     if status == ROUTE_INCIDENT:
         head = "[LIVE INCIDENT] real money is in a state the runtime cannot account for"
+    elif reversed_entry:
+        head = "[LIVE] entry filled but could not be protected - position was closed again"
     else:
         head = "[LIVE] position opened and bracketed"
     lines = [
@@ -745,6 +765,18 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     ]
     if reasons:
         lines.append("reasons  : " + ",".join(str(r) for r in reasons[:8]))
+    if reversed_entry:
+        # The venue's own words, which #426 started recording. Without them this message says a
+        # protective order was refused and cannot say why — which is the position the operator
+        # was left in on 2026-08-02, and the reason it took a day and two round trips to narrow.
+        for leg in opened.get("bracket") or []:
+            if isinstance(leg, Mapping) and leg.get("error"):
+                lines.append(
+                    f"refused  : {leg.get('order_type')} {leg.get('error')} "
+                    f"- {leg.get('error_detail') or 'no detail recorded'}"
+                )
+        lines.append("")
+        lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
     if status == ROUTE_INCIDENT:
         lines.append("")
         lines.append("Check the venue. To stop new entries: console_cli kill --reason ...")

@@ -592,3 +592,64 @@ def test_an_unexpected_error_is_caught_too(monkeypatch):
     _notified(record, monkeypatch, fail=RuntimeError("boom"))
     assert live_route.NOTIFY_FAILED in record["live_reason_codes"]
     assert "UNEXPECTED_RuntimeError" in record["live_reason_codes"]
+
+
+# --- the reversed entry: the outcome that used to look like nothing --------------
+
+def _reversed_record(*, detail="venue rejected the order (code -2021): Order would immediately trigger."):
+    """What the 2026-08-02 attempts actually produced: a real fill, a refused protective stop,
+    and rule 2 closing the position again. `live_route_status` stays HELD."""
+    from runtime.mvp_runtime.crypto import live_leg
+
+    return {
+        "live_route_status": live_route.ROUTE_HELD,
+        "symbol": "ETHUSDT",
+        "live_reason_codes": [live_leg.BRACKET_FAILED, live_leg.NAKED_POSITION_CLOSED],
+        "live_opened": {
+            "status": live_leg.ENTRY_NAKED_CLOSED,
+            "position": {"symbol": "ETHUSDT", "direction": "SHORT", "quantity": 0.031,
+                         "entry_price": 1876.35, "stop_price": 1907.98, "target_price": 1808.7},
+            "bracket": [
+                {"order_type": "STOP_MARKET", "placed": False,
+                 "error": "ORDER_REJECTED", "error_detail": detail},
+                {"order_type": "LIMIT", "placed": True, "error": None, "error_detail": None},
+            ],
+        },
+    }
+
+
+def test_a_reversed_entry_reaches_the_operator(monkeypatch):
+    """The gap this closes. The position opened, so nothing was merely held — and the runtime
+    handled it, so it is not an incident. `live_route_status` stays HELD, which is why keying on
+    status alone missed it.
+
+    Measured 2026-08-02: two ETHUSDT entries filled for real, both lost their protective stop to
+    a venue rejection, both were force-closed, and no message was sent for either. They were
+    found because a watch happened to be running."""
+    sent = _notified(_reversed_record(), monkeypatch)
+    assert len(sent) == 1
+    assert "could not be protected" in sent[0]
+    assert "ETHUSDT" in sent[0] and "1876.35" in sent[0]
+
+
+def test_the_message_carries_the_venue_reason_for_the_refused_leg(monkeypatch):
+    """Without it the message says a protective order was refused and cannot say why — the
+    position the operator was left in on 2026-08-02, and the reason it took a day to narrow."""
+    sent = _notified(_reversed_record(), monkeypatch)
+    assert "STOP_MARKET ORDER_REJECTED" in sent[0]
+    assert "-2021" in sent[0] and "immediately trigger" in sent[0]
+    # The leg that placed cleanly is not listed — only what refused.
+    assert sent[0].count("refused  :") == 1
+
+
+def test_a_refused_leg_with_no_detail_still_names_the_gap(monkeypatch):
+    """A record written before the detail was captured must not render an empty line that reads
+    like the venue said nothing."""
+    sent = _notified(_reversed_record(detail=None), monkeypatch)
+    assert "no detail recorded" in sent[0]
+
+
+def test_a_held_cycle_with_no_entry_still_says_nothing(monkeypatch):
+    """The edge trigger survives: this must not become a message every fifteen minutes."""
+    quiet = {"live_route_status": live_route.ROUTE_HELD, "live_reason_codes": [], "symbol": "ETHUSDT"}
+    assert _notified(quiet, monkeypatch) == []
