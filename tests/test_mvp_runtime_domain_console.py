@@ -1,4 +1,4 @@
-"""Domain console — asking the crypto and prediction stacks what they are doing.
+"""Domain console — asking the crypto stack what it is doing.
 
 Both stacks ran on a schedule and spoke only when *they* had something to say; their state
 was reachable only from a terminal on the host. These verbs close that, and the whole design
@@ -46,8 +46,6 @@ def _msg(text):
     ("/crypto status", ("CRYPTO", "status")),
     ("/crypto  READINESS ", ("CRYPTO", "readiness")),
     ("crypto paper", ("CRYPTO", "paper")),          # slash-optional, like every read verb
-    ("/pred", ("PRED", None)),
-    ("/pred report", ("PRED", "report")),
 ])
 def test_parses_the_domain_verbs(text, expected):
     assert parse_domain_command(text) == expected
@@ -148,11 +146,20 @@ def test_the_renderers_text_is_passed_through_untouched(monkeypatch):
 # --- on the channel ----------------------------------------------------------
 
 def test_the_channel_answers_the_verb(monkeypatch):
-    _stub(monkeypatch, verb="pred", name="report", fn=lambda *, now, root: "pm1 리포트")
-    reply = handle_operator_message(_msg("/pred"), registration=REG, now=NOW)
+    _stub(monkeypatch, verb="crypto", name="status", fn=lambda *, now, root: "크립토 보드")
+    reply = handle_operator_message(_msg("/crypto"), registration=REG, now=NOW)
     assert reply.accepted and reply.status == "DOMAIN"
-    assert reply.reason_code == "PRED_REPORT"
-    assert reply.text == "pm1 리포트"
+    assert reply.reason_code == "CRYPTO_STATUS"
+    assert reply.text == "크립토 보드"
+
+
+def test_the_removed_prediction_verb_is_not_a_command():
+    """`/pred` answered here until 2026-08-02, when the lane was removed. It must now be
+    refused like any unknown verb rather than parsed into a subcommand nothing serves —
+    the console's own rule is that a leading slash matching no verb is refused, never run."""
+    assert parse_domain_command("/pred") is None
+    reply = handle_operator_message(_msg("/pred report"), registration=REG, now=NOW)
+    assert not reply.accepted and reply.reason_code == "UNKNOWN_COMMAND"
 
 
 def test_the_verbs_answer_while_the_runtime_is_halted(tmp_path, monkeypatch):
@@ -191,10 +198,11 @@ def test_an_unverified_sender_gets_nothing():
 
 
 def test_the_unknown_command_help_lists_the_new_verbs():
-    """A verb nobody can discover is a verb nobody uses."""
+    """A verb nobody can discover is a verb nobody uses — and one that no longer exists must
+    not be advertised, or the help text sends the operator at a door that is gone."""
     reply = handle_operator_message(_msg("/nosuchverb"), registration=REG, now=NOW)
     assert reply.reason_code == "UNKNOWN_COMMAND"
-    assert "/crypto" in reply.text and "/pred" in reply.text
+    assert "/crypto" in reply.text and "/pred" not in reply.text
 
 
 def test_the_verbs_write_no_ledger_event(monkeypatch, tmp_path):

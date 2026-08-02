@@ -64,8 +64,10 @@ from .cost import (
     FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
     FUNDING_SOURCE_VENUE,
+    MAX_ENTRY_COST_R,
     CostModel,
     apply_cost_model,
+    round_trip_cost_r,
 )
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
@@ -1278,7 +1280,7 @@ def funding_charges_per_bar(
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
-) -> tuple[list[dict[str, Any]], float, float]:
+) -> tuple[list[dict[str, Any]], float, float, float, float, int]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
     Extracted so the scored window and the holdout run through **exactly** the same
@@ -1292,6 +1294,10 @@ def _replay(
     total_maker_fee_cost_r = 0.0
     total_slippage_cost_r = 0.0
     total_funding_cost_r = 0.0
+    # Signals the economics door refused. Counted rather than dropped silently: a candidate
+    # whose evidence is thin because most of its setups were uneconomic is a different fact
+    # from one that simply did not fire, and only the count can tell them apart.
+    uneconomic_entries = 0
     charges = funding if funding is not None else [0.0] * len(rows)
 
     for i, row in enumerate(rows):
@@ -1339,6 +1345,27 @@ def _replay(
             stop_distance = spec.exit_rules.stop_atr * atr
             target_distance = spec.exit_rules.target_atr * atr
             long = spec.direction.value != "short"
+            # **The runtime's economics door, applied where the evidence is made.**
+            # `cost.MAX_ENTRY_COST_R` refuses a plan whose round trip eats more than a quarter
+            # of its own R, and until 2026-08-02 only the two RUNTIME doors enforced it
+            # (`paper.entry_cost_refusal`, `live_entry`). The backtest scored every signal, so
+            # a candidate's expectancy described a population the runtime would not trade —
+            # measured on this store: 48 of 50 15m entries refused, 11 of 17 at 1h, none at 4h.
+            #
+            # The gap is not noise, it is selection: cost in R is `fee_bps / stop_bps`, so what
+            # the door removes is systematically the TIGHT-stop, low-ATR bars — the expensive
+            # ones. Scoring them into a candidate's mean answers a question nobody asked, and
+            # answers it pessimistically at the fast end where the door removes almost
+            # everything.
+            #
+            # Priced exactly as the doors price it — taker in, taker plus adverse slippage out,
+            # through the same `round_trip_cost_r` and the same constant — so a spec cannot be
+            # economic at one door and uneconomic at another.
+            if round_trip_cost_r(
+                "LONG" if long else "SHORT", float(close), abs(stop_distance), cost=cost
+            ) > MAX_ENTRY_COST_R:
+                uneconomic_entries += 1
+                continue
             position = {
                 "direction": "LONG" if long else "SHORT",
                 "entry_price": float(close),
@@ -1353,7 +1380,7 @@ def _replay(
             }
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-            total_funding_cost_r)
+            total_funding_cost_r, uneconomic_entries)
 
 
 def _holdout_evidence(
@@ -1366,7 +1393,7 @@ def _holdout_evidence(
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
     that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, maker_fees, slippage, carry = _replay(
+    outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
         spec, rows, candles, cost=cost, funding=funding, offset=offset
     )
     total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
@@ -1377,6 +1404,9 @@ def _holdout_evidence(
         "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
         "total_R": total_r,
         "expectancy": round(total_r / closed, 8) if closed else 0.0,
+        # The holdout runs the same door as the scored window — a confirmation measured over a
+        # wider population than the score would not be confirming the same thing.
+        "refused_entries": uneconomic,
         # The cost breakdown the main evidence has carried all along, and this block did not.
         # Without it a holdout cannot be re-derived at another taker rate the way the main
         # figures can, so a rate change leaves `holdout_status` — which gates ROBUST — stuck
@@ -1479,7 +1509,7 @@ def backtest_spec(
     all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
     rows, candles = all_rows[:split], all_candles[:split]
     (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-     total_funding_cost_r) = _replay(
+     total_funding_cost_r, uneconomic_entries) = _replay(
         spec, rows, candles, cost=cost, funding=all_funding[:split]
     )
     holdout = _holdout_evidence(
@@ -1561,6 +1591,32 @@ def backtest_spec(
         "avg_win_R": summary["avg_win_R"],
         "avg_loss_R": summary["avg_loss_R"],
         "max_drawdown": summary["max_drawdown"],
+        # **What the economics door removed, and that it ran at all.** Deliberately its own
+        # block rather than a term in `cost_summary`: the cost basis answers "at what RATES was
+        # this scored", and a tier ordering built on it refuses evidence scored more cheaply
+        # than the venue charges. This is a different axis — the same rates over a NARROWER
+        # population — so folding it in would silently retier the whole store on a question the
+        # tier was not asked.
+        #
+        # Absence of this block is how a reader tells evidence minted before 2026-08-02, when
+        # the backtest scored every signal and a candidate's expectancy described trades the
+        # runtime would have refused. Whether the promotion door should REQUIRE the block is a
+        # separate decision and deliberately not taken here: requiring it would refuse the
+        # entire existing store at once, and the convergence path is the same re-minting the
+        # cost basis already relies on.
+        "entry_cost_door": {
+            "applied": True,
+            "max_entry_cost_r": MAX_ENTRY_COST_R,
+            # Refusal EVENTS, not distinct opportunities, and the difference is easy to trip
+            # over: a refused signal leaves the book flat, so the same setup can be refused
+            # again on the very next bar, while an accepted one occupies bars until it closes.
+            # Measured on BTCUSDT 15m, 672 trades without the door against 3,613 refusals with
+            # it. So this number over `closed_count` is NOT a rejection rate — it reads as one
+            # and would be wrong by an order of magnitude. What it is good for is comparing two
+            # specs on the same bars, and for seeing at a glance that a spec's setups mostly
+            # arrive on bars too quiet to pay for themselves.
+            "refused_entries": uneconomic_entries,
+        },
         "cost_summary": {
             "total_net_r": total_net_r,
             "total_fee_cost_r": round(total_fee_cost_r, 8),

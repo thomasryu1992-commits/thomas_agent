@@ -24,7 +24,7 @@ Two readers, because callers need two different answers to "it did not arrive":
   a market with no bid is not a market bid at zero.
 
 It lives here rather than under ``crypto/`` because nothing about it is crypto-specific —
-``predmarket`` reads venue numbers with exactly the same rule.
+the removed prediction-market reader used the same rule for venue numbers.
 """
 
 from __future__ import annotations

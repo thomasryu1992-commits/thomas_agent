@@ -79,21 +79,14 @@ KIND_DATA_REVIEW = "crypto_data_review"
 # files cannot conceal anything, and the audit chain and control-event ledger are refused
 # by the retention module itself, not by this caller remembering to skip them.
 KIND_ROTATE = "ledger_rotate"
-# PM1's observation scan. Two cadences under one kind, chosen by the schedule's request text
-# ("watch" or "discovery"), because they differ in what they read rather than in what they
-# are: watch prices the confirmed groups often enough to measure how long an edge lasts,
-# discovery only lists markets so the matcher has candidates. Decision #1, 2026-07-26.
-KIND_PM_SCAN = "pm_scan"
-# The two modes, named once. The dispatch below tests for "discovery" and everything else
-# falls through to the watch scan, which is fine for the default and dangerous for a typo:
-# `--request discvery` used to register cleanly and then run the *watch* scan every six hours
-# while the operator believed discovery was running, with `proposals.jsonl` staying empty and
-# nothing anywhere saying why. `build_schedule` now refuses an unknown mode by name — the same
-# rule `capabilities_for_request_kind` applies to request kinds, for the same reason: the
-# wrong job done confidently is worse than a refusal that names the jobs that exist.
-PM_SCAN_WATCH = "watch"
-PM_SCAN_DISCOVERY = "discovery"
-PM_SCAN_MODES = frozenset({PM_SCAN_WATCH, PM_SCAN_DISCOVERY})
+# A `pm_scan` kind lived here — PM1's prediction-market observation scan, two cadences under
+# one kind. Removed 2026-08-02: prediction-market trading is not a lane this project may
+# operate under Korean domestic regulation, so the capability is deleted rather than
+# disabled (`docs/BUILD_HISTORY.md` records why, and the PM1 window's outcome).
+# A stored schedule naming a kind this set no longer contains still LOADS — `_from_record`
+# reads `kind` as a string and does not check it against `KINDS` — and is then refused at
+# dispatch, which is the fail-closed direction. The two live rows were removed from the
+# store in the same change rather than left for a fire that can no longer run.
 # The C4 breaker's transition watch. Distinct from KIND_REPORT rather than folded into it
 # because the two answer different questions: the report renders the current LEVEL every day,
 # this fires on the EDGE. "Is it blocked right now" is one line in a daily digest; "it released
@@ -102,7 +95,7 @@ PM_SCAN_MODES = frozenset({PM_SCAN_WATCH, PM_SCAN_DISCOVERY})
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
-                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE, KIND_PM_SCAN,
+                   KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
@@ -212,18 +205,6 @@ class Schedule:
         )
 
 
-def pm_scan_mode(request: str | None) -> str:
-    """The mode a ``pm_scan`` schedule's request names. One reader for validation and dispatch.
-
-    Separate functions would drift, and the drift is silent in the worst direction: the
-    dispatch's ``else`` is the watch scan, so anything validation let through that dispatch did
-    not recognise runs the other job under this one's name. An empty request is ``watch`` — the
-    original behaviour, kept so an existing schedule keeps meaning what it meant.
-    """
-    text = (request or "").strip().lower()
-    return text.split()[0] if text else PM_SCAN_WATCH
-
-
 def next_occurrence(due_at: str, interval_seconds: int, *, now: str) -> str:
     """The next occurrence after ``due_at``, on the schedule's own grid, strictly after ``now``.
 
@@ -231,10 +212,13 @@ def next_occurrence(due_at: str, interval_seconds: int, *, now: str) -> str:
     cadence. The claim happens at the first tick at or after the due time, which is always
     a little late — the loop polls, and a fire that runs long pushes the poll after it. When
     the next occurrence was computed as ``claim_time + interval`` that lateness became the
-    new anchor and **compounded on every cycle**: pm_scan, registered at 120s, settled at a
-    steady measured 140s (p50 over 2,264 fires) because its ~20s scan pushed each claim past
-    the tick grid and the grid then became the cadence. A 17% shortfall in the sample rate of
-    a measurement window whose exit artifact divides by the number of readings.
+    new anchor and **compounded on every cycle**: the `pm_scan` kind, registered at 120s,
+    settled at a steady measured 140s (p50 over 2,264 fires) because its ~20s scan pushed
+    each claim past the tick grid and the grid then became the cadence. A 17% shortfall in
+    the sample rate of a measurement window whose exit artifact divided by the readings.
+    That kind was removed the same day for reasons of its own (see the note above `KINDS`);
+    the measurement is kept because it is the evidence this function exists on, and it
+    applies to every kind that outlives it — `crypto_pipeline` runs the same 900s/30s shape.
 
     Anchoring to ``due_at`` makes the lateness per-occurrence jitter (bounded by the tick
     interval) instead of accumulated drift, so the long-run rate is the registered one.
@@ -243,9 +227,10 @@ def next_occurrence(due_at: str, interval_seconds: int, *, now: str) -> str:
     schedule was created on. And the result is strictly after ``now``, which preserves the
     two properties the rest of this module builds on:
 
-    - **at-most-once, no catch-up burst.** A scheduler that was down for a day does not owe
-      720 pm_scans; it advances past ``now`` in one claim and fires once. That is the same
-      "a kill drops the occurrence rather than queueing a burst" rule the kill path states.
+    - **at-most-once, no catch-up burst.** A scheduler down for a day does not owe 720
+      occurrences of a 2-minute schedule; it advances past ``now`` in one claim and fires
+      once. The same "a kill drops the occurrence rather than queueing a burst" rule the
+      kill path states.
     - **a claim always advances past ``now``**, so a second claimant finds nothing due
       (``claim_due``'s overlap guarantee) and ``schedule_run_id`` cannot collide.
 
@@ -273,12 +258,6 @@ def build_schedule(
     request = request.strip() if isinstance(request, str) else ""
     if kind == KIND_TASK and not request:
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
-    if kind == KIND_PM_SCAN and pm_scan_mode(request) not in PM_SCAN_MODES:
-        raise SchedulerBlocked(
-            "UNKNOWN_PM_SCAN_MODE",
-            f"pm_scan request must name a mode: {sorted(PM_SCAN_MODES)} (empty means "
-            f"{PM_SCAN_WATCH!r}); got {request!r}",
-        )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
     schedule_id = integrity.short_id(
@@ -598,41 +577,6 @@ def _execute(
         if summary.get("event_error"):
             detail += f" unrecorded={summary['event_error']}"
         return detail
-    if schedule.kind == KIND_PM_SCAN:
-        # PM1 observation. Every venue read goes through its own Safety-Flag chokepoint at
-        # fire time, so a deleted grant is a live revocation here as everywhere else, and a
-        # venue that cannot be read degrades the scan rather than failing the tick.
-        #
-        # Records observations; confirms nothing. A scan can never add an event group — an
-        # operator does that, per event, after comparing resolution criteria.
-        from .predmarket import observations as pm_observations
-
-        # The same reader `build_schedule` validates with, so a mode it accepted cannot arrive
-        # here unrecognised and fall through to the other scan.
-        mode = pm_scan_mode(schedule.request)
-        if mode == PM_SCAN_DISCOVERY:
-            # Candidate generation for the operator, and a different job from the watch scan
-            # — it reads the venues' listings and confirms nothing. It runs on a cadence
-            # because the question is not "what is pairable right now?" but "what became
-            # pairable while nobody was looking?": a pairing that appeared and resolved
-            # between two hand-run `propose` commands leaves no trace it was ever missed.
-            #
-            # The run is recorded, or it would be invisible — the same work, producing output
-            # nobody reads, at a cadence nobody can audit. `new` counts only what no earlier
-            # run proposed, because an operator re-reading forty unchanged pairings every six
-            # hours stops reading them, and the one new pairing arrives in a list they have
-            # learned to skip.
-            from .predmarket import proposals as pm_proposals
-            from .predmarket.pairs_cli import run_discovery
-
-            result = run_discovery(now=now, root=repo_root)
-            record = pm_proposals.build_proposal_record(result, now=now)
-            previous = pm_proposals.read_proposals(repo_root)
-            fresh = len(pm_proposals.new_candidates(record, previous))
-            pm_proposals.append_proposal(record, root=repo_root)
-            return pm_proposals.proposal_status_line(record, new_count=fresh)
-        scan = pm_observations.run_watch_scan(now=now, root=repo_root)
-        return pm_observations.scan_status_line(scan)
     if schedule.kind == KIND_BREAKER_WATCH:
         # Read the C4 breaker the way the cycle reads it and speak only when the verdict
         # changed. Same delivery posture as KIND_REPORT below — channel selected at fire time,
@@ -924,6 +868,22 @@ def _execute(
             delivery = f" sheet_not_sent:{type(exc).__name__}"
         return (f"data_review={record['accepted_count']}/{record['suggested_count']} "
                 f"review={record['review_id']}{delivery}")
+    if schedule.kind != KIND_TASK:
+        # Every branch above tests one kind, and this used to be a bare fall-through: a
+        # schedule of ANY unrecognised kind ran the analysis pipeline below — a real model
+        # call — with its `request` text as the prompt. `build_schedule` guards `KINDS` at
+        # registration, so nothing could reach here while the code that wrote the store and
+        # the code that read it were the same version. **Removing a kind is exactly when
+        # they stop being.** The two live `pm_scan` rows were deleted with this change, but
+        # a machine restored from an older state directory still has them, and on this code
+        # the 2-minute one would have billed an LLM analysis of the string "watch" — quietly,
+        # and reported as a normal COMPLETED fire. Refused by name instead: an unknown kind
+        # is the fail-closed case this repo's own rule already covers.
+        raise SchedulerBlocked(
+            "UNKNOWN_KIND",
+            f"schedule {schedule.schedule_id} names kind {schedule.kind!r}, which this "
+            f"runtime does not execute; registrable kinds are {sorted(KINDS)}",
+        )
     # KIND_TASK: run the request through the full pipeline as a scheduler-initiated task.
     entry = task_registry.record_submission(
         registry, request_text=schedule.request, origin="SCHEDULER",

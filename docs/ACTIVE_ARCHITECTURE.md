@@ -141,11 +141,16 @@ Memory               memory.py · working_memory.py · retention.py
 Governed asks        approval.py · approval_store.py · consumption.py · trial.py
 Programization       programization.py · program_request.py · registration.py
 Domain packages      crypto/ (C-series, incl. the gated live-order path)
-                     predmarket/ (PM-series, observe-only)
 ```
 
 Domain packages are applications of the same chokepoints, not parallel runtimes: they build the same
 PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audit chain.
+
+A second domain package, `predmarket/` (PM-series, observe-only), stood beside `crypto/` until
+2026-08-02 and was removed — prediction-market trading is not a lane this project may operate under
+Korean domestic regulation. `docs/BUILD_HISTORY.md` records what it was and what the PM1 observation
+window had measured when it closed. There is one domain package now, and the sentence above about
+domain packages sharing the chokepoints is kept because it is the rule the *next* one must satisfy.
 
 ## Repository Boundaries
 

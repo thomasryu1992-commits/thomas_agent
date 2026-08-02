@@ -39,7 +39,6 @@ import yaml
 
 from runtime.mvp_runtime import consumption, frontdesk, operator, providers, tools, workspace
 from runtime.mvp_runtime.crypto import account, live_execution, live_order, live_pnl
-from runtime.mvp_runtime.predmarket import market_data as predmarket_data
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
@@ -54,16 +53,16 @@ OPERATOR_SELECTORS = {
     operator.OPERATOR_CHANNEL_ENV: "the real Telegram transport (R4)",
 }
 
-# Capability selectors the SCHEDULER service's prediction-market path reads. The `pm_scan`
-# kind runs in the scheduler, so this is where an observation run needs them; the operator
-# service reads none of them and must not be handed the signed credential.
-PREDMARKET_SCHEDULER_SELECTORS = {
-    predmarket_data.KALSHI_ENV: "Kalshi market data (PM1)",
-    predmarket_data.POLYMARKET_ENV: "Polymarket market data (PM1)",
-    predmarket_data.BINANCE_ENV: "Binance prediction market data (PM1)",
-    predmarket_data.BINANCE_API_KEY_ENV: "the signed Binance prediction key",
-    predmarket_data.BINANCE_API_SECRET_ENV: "the signed Binance prediction secret",
-}
+# The five selectors the removed prediction-market path read. Named as literals precisely
+# because the module that used to define them is gone: the point of the test below is that
+# NOTHING re-wires these, and a constant imported from the deleted package could not say so.
+REMOVED_PREDMARKET_SELECTORS = (
+    "MVP_KALSHI_MARKET_DATA",
+    "MVP_POLYMARKET_MARKET_DATA",
+    "MVP_BINANCE_PREDICTION",
+    "BINANCE_PREDICTION_API_KEY",
+    "BINANCE_PREDICTION_API_SECRET",
+)
 
 # Selectors deliberately NOT passed to the services, each with the reason it stays manual.
 # Present so the list above cannot be read as "everything else was forgotten".
@@ -161,22 +160,17 @@ def test_the_front_desk_is_operator_only():
     assert frontdesk.FRONTDESK_PROVIDER_ENV not in _service_environment("scheduler")
 
 
-@pytest.mark.parametrize("env_var, what", sorted(PREDMARKET_SCHEDULER_SELECTORS.items()))
-def test_the_scheduler_receives_every_prediction_market_selector(env_var, what):
-    """The failure this was added for, in full: three grants minted, the key in `.env`, the
-    container rebuilt and restarted — and the runtime still read mocks, because Compose
-    forwards only what its `environment:` block names. Nothing errored. Every one of these
-    selectors fails closed by design, and none can notice that the variable never arrived."""
-    environment = _service_environment("scheduler")
-    assert env_var in environment, f"scheduler never receives {env_var} ({what})"
-
-
-def test_the_signed_prediction_credential_stays_out_of_the_operator_service():
-    """The operator loop reads no prediction market data, so handing it a signed key would
-    widen a blast radius for nothing — the same reason the account key is its own grant."""
-    environment = _service_environment("operator")
-    for secret in (predmarket_data.BINANCE_API_KEY_ENV, predmarket_data.BINANCE_API_SECRET_ENV):
-        assert secret not in environment, f"operator service should not receive {secret}"
+@pytest.mark.parametrize("env_var", REMOVED_PREDMARKET_SELECTORS)
+@pytest.mark.parametrize("service", ["scheduler", "operator"])
+def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
+    """The lane was removed 2026-08-02 (Korean domestic regulation) and must not come back
+    by accident. Compose forwards only what its `environment:` block names, so a name here
+    is the whole difference between a stale key in `.env` reaching a container and reaching
+    nothing — which makes this block, not the deleted code, the thing worth pinning. The
+    inverse of the test that used to stand here, and for the same reason: nothing errors
+    either way, so only a test says which state the deployment is in."""
+    assert env_var not in _service_environment(service), \
+        f"{service} is still handed {env_var}; the prediction-market lane was removed"
 
 
 # --- the live-trading surface must reach neither service --------------------------------

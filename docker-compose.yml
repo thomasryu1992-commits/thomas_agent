@@ -153,17 +153,13 @@ services:
       MVP_PAPER_TRADING: ${MVP_PAPER_TRADING:-}
       MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
       COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
-      # Prediction-market observation (PM1, scheduler-only: the `pm_scan` kind runs here).
-      # Same posture as the crypto gates — the env var alone fails closed, and each venue
-      # also needs its own mounted safety-flag grant. Passed through because Compose forwards
-      # ONLY what this block names: without these lines a key in .env reaches nothing, and
-      # every one of these selectors is designed to fail closed rather than notice that.
-      MVP_KALSHI_MARKET_DATA: ${MVP_KALSHI_MARKET_DATA:-}
-      MVP_POLYMARKET_MARKET_DATA: ${MVP_POLYMARKET_MARKET_DATA:-}
-      MVP_BINANCE_PREDICTION: ${MVP_BINANCE_PREDICTION:-}
-      # The one venue of the three that is not keyless; every prediction endpoint is signed.
-      BINANCE_PREDICTION_API_KEY: ${BINANCE_PREDICTION_API_KEY:-}
-      BINANCE_PREDICTION_API_SECRET: ${BINANCE_PREDICTION_API_SECRET:-}
+      # Five prediction-market selectors (Kalshi / Polymarket / Binance, plus that venue's
+      # signed key pair) were forwarded here until 2026-08-02, when the lane was removed —
+      # `docs/BUILD_HISTORY.md`. Deliberately NOT left in place "harmlessly": Compose
+      # forwards only what this block names, so a name here is the whole difference between
+      # a key in `.env` reaching the container and reaching nothing. Leaving them would keep
+      # a door wired to a room that no longer exists, and the next person to find a stale
+      # `MVP_KALSHI_MARKET_DATA` in `.env` would have no way to tell it was inert.
       # Live-trading and account variables (scheduler-only). Thomas decision, 2026-07-27:
       # forwarded from `.env` so the readiness board and the account read answer on the
       # service without an operator exporting them per session.
