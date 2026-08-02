@@ -61,8 +61,10 @@ def _candidate(
     15m and 1,500 closed trades because the backlog now also asks whether the LIFECYCLE could
     ever judge the lineage, and these fixtures exist to exercise the other filters. Measured on
     the real store 2026-07-30, the median 15m lineage closes ~3 trades a day and reaches the
-    20-trade window in a week; a 4h one takes 110 days. A 4h default would have made every case
-    below silently fail on a filter it was not written to test.
+    20-trade window in a week; a 4h one takes 123. Kept fast on purpose even though the cap
+    rose to 130 on 2026-08-02 and a median 4h lineage now clears it: a default that sits near
+    the boundary would make these cases fail on a filter they were not written to test the
+    first time the boundary moves again.
     """
     cost_summary = {
         "cost_model": {
@@ -369,13 +371,16 @@ def test_days_to_the_window_comes_from_the_candidates_own_evidence():
     fast = _candidate("cand_fast", timeframe="15m", closed=1500)
     assert pool.days_to_lifecycle_window(fast) == pytest.approx(4.7, abs=0.2)
 
-    # 69 trades over a 350-day 4h replay is 0.2 a day: 101 days, the real BTC 4h lineage.
-    slow = _candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100)
-    assert pool.days_to_lifecycle_window(slow) == pytest.approx(101.0, abs=1.0)
+    # 27 trades over a 350-day 4h replay is 0.08 a day: 259 days — the real 4h store's 75th
+    # percentile, and the fixture moved there when the cap moved to 130 (2026-08-02). The
+    # timeframe label is not what makes a lineage too slow; its own trade rate is. A 4h lineage
+    # at the median (123 days) is now INSIDE the cap, which is the whole point of the change.
+    slow = _candidate("cand_slow", timeframe="4h", closed=27, bars_replayed=2100)
+    assert pool.days_to_lifecycle_window(slow) == pytest.approx(259.3, abs=1.0)
 
 
 def test_a_lineage_the_runtime_could_not_grade_is_deferred_not_counted():
-    result = _backlog([_candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100)])
+    result = _backlog([_candidate("cand_slow", timeframe="4h", closed=27, bars_replayed=2100)])
     assert result["count"] == 0
     assert [d["candidate_id"] for d in result["deferred_unjudgeable"]] == ["cand_slow"]
     assert result["deferred_unjudgeable"][0]["days_to_lifecycle_window"] > result["max_days_to_lifecycle_window"]
@@ -386,7 +391,7 @@ def test_deferred_is_named_never_silently_dropped():
     "nothing the runtime could grade is waiting"."""
     result = _backlog([
         _candidate("cand_fast"),
-        _candidate("cand_slow", family="breakout", timeframe="4h", closed=69, bars_replayed=2100),
+        _candidate("cand_slow", family="breakout", timeframe="4h", closed=27, bars_replayed=2100),
     ])
     assert result["candidate_ids"] == ["cand_fast"]
     assert len(result["deferred_unjudgeable"]) == 1
@@ -410,10 +415,48 @@ def test_an_unknown_timeframe_cannot_be_converted_and_is_deferred():
 def test_the_board_says_how_many_are_waiting_on_a_faster_timeframe(tmp_path):
     pool.install_active_pool({"active_strategies": []}, root=tmp_path)
     _write_candidates(tmp_path, [
-        _candidate("cand_slow", timeframe="4h", closed=69, bars_replayed=2100),
+        _candidate("cand_slow", timeframe="4h", closed=27, bars_replayed=2100),
     ])
     _write_cursor(tmp_path, updated_at=NOW)
 
     status = build_status(tmp_path, now=NOW)
     assert status["promotion_backlog"]["count"] == 0
     assert len(status["promotion_backlog"]["deferred_unjudgeable"]) == 1
+
+
+def test_the_cap_admits_the_horizon_the_operator_actually_promotes_at():
+    """The defect that moved this number on 2026-08-02, pinned so it cannot come back.
+
+    At 14 days the board reported `0 promotable` with 900 candidates on file — and every one
+    of the five lineages the operator had promoted the day before sat ABOVE the cap (40.5,
+    50.4, 81.4, 107.7, 127.3 days). It was refusing to advertise the exact class of thing the
+    operator was choosing to run, so the queue it reported was empty for a reason that had
+    nothing to do with whether work was waiting.
+
+    The old value's premise was that 15m is the workhorse. The cost model killed that: 15m
+    nets -0.1845R/trade at the current basis against 4h's +0.0889R, so a cap admitting only
+    15m admitted only the timeframe that cannot pay for itself."""
+    promoted_horizons = (40.5, 50.4, 81.4, 107.7, 127.3)   # the real pool, 2026-07-31
+    assert pool.MAX_DAYS_TO_LIFECYCLE_WINDOW >= max(promoted_horizons), (
+        "the board would hide a lineage the operator has already chosen to run — a queue of "
+        "zero that means 'not shown', not 'nothing waiting'"
+    )
+    # And still bounded: 1d's own FASTEST quartile is 341.5 days on the real store, so the
+    # timeframe the original argument was written against stays out.
+    assert pool.MAX_DAYS_TO_LIFECYCLE_WINDOW < 341.5, (
+        "the cap reached 1d's fastest quartile — at that point it bounds nothing and the "
+        "lifecycle ladder is decorative for every lineage it admits"
+    )
+
+
+def test_a_median_4h_lineage_is_judgeable_and_a_slow_one_is_not():
+    """The cap is a statement about a lineage's own trade rate, not about its timeframe label.
+    Both fixtures are 4h; only their rates differ, and the cap separates them."""
+    median_4h = _candidate("cand_median_4h", timeframe="4h", closed=57, bars_replayed=2100)
+    assert pool.days_to_lifecycle_window(median_4h) == pytest.approx(122.8, abs=1.5)
+    assert _backlog([median_4h])["count"] == 1
+
+    too_slow = _candidate("cand_slow_4h", timeframe="4h", closed=27, bars_replayed=2100)
+    result = _backlog([too_slow])
+    assert result["count"] == 0
+    assert [d["candidate_id"] for d in result["deferred_unjudgeable"]] == ["cand_slow_4h"]

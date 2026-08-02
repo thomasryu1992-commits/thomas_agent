@@ -1413,21 +1413,45 @@ LIFECYCLE_MIN_WINDOW_TRADES = 20
 
 # How long a lineage may take to reach that window before the backlog stops advertising it.
 #
-# **This is a recorded judgement, not a derivation.** Measured across the candidate store
-# 2026-07-30, median days for a lineage to close 20 trades at its own backtest rate: 15m 7,
-# 1h 25, 4h 110, 1d 371. The operator's retirement that day (`approval_c1b8eeb7681c08579648`,
-# 63 strategies) kept **one 15m lineage per symbol** and retired everything slower, on exactly
-# this argument — *"at current rates a 1d lineage needs 122d and a 1h lineage 29d to reach the
-# 20-trade WARNING window, so neither can ever be auto-demoted; today no own lineage exceeds
-# 13 trades and zero strategies are eligible for any lifecycle rule."* Fourteen days is the
-# line that reproduces that decision. Change it by deciding again, not by re-deriving it.
+# **This is a recorded judgement, not a derivation.** It was 14 until 2026-08-02, reproducing
+# the operator's retirement of 2026-07-30 (`approval_c1b8eeb7681c08579648`, 63 strategies),
+# which kept **one 15m lineage per symbol** and retired everything slower on exactly this
+# argument — *"at current rates a 1d lineage needs 122d and a 1h lineage 29d to reach the
+# 20-trade WARNING window, so neither can ever be auto-demoted."*
+#
+# **That value's premise was that 15m is the workhorse, and the cost model has since killed it.**
+# Measured over the 240 candidates carrying the current basis (2026-08-02), net per trade:
+# **15m −0.1845R, 1h −0.0185R, 4h +0.0889R** — friction at 15m is 0.2768R against 0.0923R of
+# gross edge, and gross is nearly flat across the ladder, so what separates the timeframes is
+# the denominator (1R = `stop_atr` × ATR) and not the signal. A cap admitting only 15m
+# therefore admitted only the timeframe that cannot pay for itself, and the board read
+# `0 promotable` with 900 candidates on file.
+#
+# **What settles the new number is that the old one was hiding the operator's own decision.**
+# Every one of the five lineages promoted 2026-07-31 sits above 14 days — 40.5, 50.4, 81.4,
+# 107.7 and 127.3 — so the board was refusing to advertise the exact class of thing the
+# operator was choosing to run. 130 is the slowest of those five, rounded up. The anchor is the
+# same KIND as the one it replaces (a recorded operator decision, read off what was actually
+# done); it is the decision that is newer. Change it by deciding again, not by re-deriving it.
+#
+# **The consequence, stated rather than smoothed over:** a lineage admitted at this horizon
+# cannot be auto-demoted by the `lifecycle` ladder until it closes 20 trades, so retiring these
+# is a MANUAL act for months. That is not created here — it is already true of all five pool
+# members — and hiding them did not make it less true. What changes is that the board stops
+# reporting a queue of zero while the operator promotes out of a queue it will not name.
+#
+# **What still bounds it:** 1d's own fastest quartile is 341.5 days, 2.6× this cap, so the
+# timeframe the original argument was written against stays excluded. And economics are NOT
+# encoded here — `promotable_backlog` already refuses on `expectancy_at_current_costs <= 0`
+# per candidate, upstream of this line. This cap answers "can the runtime ever judge it", and
+# only that.
 #
 # Why the backlog is the right place: `route_entries` picks ONE strategy per context, so adding
 # a lineage to a context does not add trades — it splits the same trades across more lineages.
 # A backlog that counted un-judgeable candidates was therefore advertising work whose only
 # effect would be to dilute the outcome stream the lifecycle needs, which is how a pool of 89
 # ended up with nothing in it the runtime could evaluate.
-MAX_DAYS_TO_LIFECYCLE_WINDOW = 14
+MAX_DAYS_TO_LIFECYCLE_WINDOW = 130
 
 
 def days_to_lifecycle_window(record: Mapping[str, Any], *, window: int = LIFECYCLE_MIN_WINDOW_TRADES) -> float | None:
