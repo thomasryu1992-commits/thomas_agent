@@ -79,6 +79,10 @@ ORDER_API_KEY_ENV = "MVP_LIVE_ORDER_API_KEY"
 ORDER_API_SECRET_ENV = "MVP_LIVE_ORDER_API_SECRET"
 ORDER_BASE_URL = "https://fapi.binance.com"
 ORDER_PATH = "/fapi/v1/order"
+# Read-only: what is RESTING at the venue right now. `fetch_order` can only answer about an id
+# the runtime already knows, which leaves everything it does not know invisible — including the
+# orders that decide whether a new one is even accepted.
+OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
@@ -316,6 +320,15 @@ class DryRunOrderAdapter:
         self._submitted[str(req["newClientOrderId"])] = req
         return {"dry_run": True, "accepted": True, "clientOrderId": req["newClientOrderId"]}
 
+    def open_orders(
+        self, symbol: str | None = None, *, timeout_seconds: int = 10
+    ) -> list[dict[str, Any]]:
+        """What this dry run has "placed" and not withdrawn, filtered by symbol like the venue."""
+        return [
+            dict(req) for req in self._submitted.values()
+            if symbol is None or req.get("symbol") == symbol
+        ]
+
     def cancel_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
     ) -> dict[str, Any] | None:
@@ -493,6 +506,41 @@ class BinanceFuturesOrderAdapter:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}")
         return body if isinstance(body, dict) else None
+
+    def open_orders(
+        self, symbol: str | None = None, *, timeout_seconds: int = 10
+    ) -> list[dict[str, Any]]:
+        """Everything RESTING at the venue right now. Read-only: places nothing, cancels nothing.
+
+        The gap this closes is a blind spot rather than a missing convenience. :meth:`fetch_order`
+        answers about an id the runtime already holds, so anything it does not know about is
+        invisible to it — and the venue's own limits are counted over exactly that population. A
+        conditional order is capped per symbol, so a bracket leg can be refused by orders this
+        runtime never placed and cannot see, which is the state it was left guessing at on
+        2026-08-02 when a protective stop was rejected twice with no way to count what was
+        already there.
+
+        It also answers the question every close path raises and none could check: after
+        ``cancel_bracket_orders`` runs, is anything still resting? A leg left behind cannot open a
+        position — a ``closePosition`` stop is Close-All and a ``reduceOnly`` target only reduces
+        — but it can still trigger against a position opened later, and until now nothing could
+        tell an operator whether the venue agreed the book was clean.
+
+        ``symbol=None`` asks for every symbol, which the venue rates far more expensively (weight
+        40 against 1); pass a symbol unless the whole account is genuinely the question. Raises
+        rather than returning an empty list on a refusal — "nothing is resting" and "I could not
+        find out" must never arrive as the same answer to a question about live exposure.
+        """
+        params: dict[str, Any] = {} if symbol is None else {"symbol": symbol}
+        body, code = self._signed_request(
+            "GET", OPEN_ORDERS_PATH, params, timeout_seconds=timeout_seconds
+        )
+        if code is not None:
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(
+                ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}"
+            )
+        return [o for o in body if isinstance(o, dict)] if isinstance(body, list) else []
 
     def cancel_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10

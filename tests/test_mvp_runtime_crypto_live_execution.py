@@ -636,3 +636,70 @@ def test_the_dry_run_adapter_rests_a_limit_rather_than_filling_it():
     req = lx.build_order_request(_limit_intent())
     adapter.submit(req)
     assert adapter.fetch_order("BTCUSDT", req["newClientOrderId"])["status"] == "NEW"
+
+
+# --- open_orders: seeing what the runtime did not place -------------------------
+
+class _Resp(io.BytesIO):
+    """A urlopen context manager over a canned JSON body."""
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+
+
+def _ok(payload):
+    return lambda *a, **k: _Resp(json.dumps(payload).encode("utf-8"))
+
+
+def test_open_orders_returns_what_is_resting(monkeypatch, order_creds):
+    """The blind spot this closes: `fetch_order` can only answer about an id the runtime already
+    holds, and the venue's conditional-order cap is counted over everything — including orders
+    this runtime never placed."""
+    monkeypatch.setattr(lx.urllib.request, "urlopen", _ok([
+        {"clientOrderId": "OTHER_1", "type": "STOP_MARKET", "status": "NEW"},
+        {"clientOrderId": "TAI_ETHUSDT_TP_x", "type": "LIMIT", "status": "NEW"},
+    ]))
+    orders = _adapter().open_orders("ETHUSDT")
+    assert [o["clientOrderId"] for o in orders] == ["OTHER_1", "TAI_ETHUSDT_TP_x"]
+
+
+def test_open_orders_is_empty_when_nothing_rests(monkeypatch, order_creds):
+    monkeypatch.setattr(lx.urllib.request, "urlopen", _ok([]))
+    assert _adapter().open_orders("ETHUSDT") == []
+
+
+def test_a_refused_open_orders_query_raises_rather_than_reading_as_empty(monkeypatch, order_creds):
+    """"Nothing is resting" and "I could not find out" must never arrive as the same answer to a
+    question about live exposure."""
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(-1021, "Timestamp out of recvWindow.")))
+    with pytest.raises(ToolError) as exc:
+        _adapter().open_orders("ETHUSDT")
+    assert exc.value.reason_code == lx.ORDER_REJECTED and "-1021" in exc.value.reason
+
+
+def test_open_orders_places_and_cancels_nothing(monkeypatch, order_creds):
+    """Read-only, asserted on the HTTP verb rather than trusted from the name."""
+    seen = {}
+
+    def _capture(request, *a, **k):
+        seen["method"] = request.method
+        seen["url"] = request.full_url
+        return _Resp(b"[]")
+
+    monkeypatch.setattr(lx.urllib.request, "urlopen", _capture)
+    _adapter().open_orders("ETHUSDT")
+    assert seen["method"] == "GET"
+    assert lx.OPEN_ORDERS_PATH in seen["url"]
+
+
+def test_the_dry_run_adapter_reports_its_own_resting_orders():
+    """Parity: the inert adapter answers the same question, so the orchestration above it can be
+    tested without a venue."""
+    adapter = lx.DryRunOrderAdapter()
+    adapter.submit(lx.build_order_request(_intent()))
+    assert len(adapter.open_orders()) == 1
+    assert adapter.open_orders("NOTHINGUSDT") == []
+    adapter.cancel_order("BTCUSDT", lx.build_order_request(_intent())["newClientOrderId"])
+    assert adapter.open_orders() == []
