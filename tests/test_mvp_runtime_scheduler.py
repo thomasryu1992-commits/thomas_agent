@@ -14,17 +14,15 @@ from runtime.mvp_runtime import control, scheduler
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import PersistenceError, SchedulerBlocked
 from runtime.mvp_runtime.scheduler import (
-    KIND_PM_SCAN,
+
     KIND_PROPOSER,
     KIND_PRUNE,
     KIND_TASK,
     MIN_INTERVAL_SECONDS,
-    PM_SCAN_DISCOVERY,
-    PM_SCAN_MODES,
-    PM_SCAN_WATCH,
+
     ScheduleStore,
     build_schedule,
-    pm_scan_mode,
+
     run_due,
 )
 from runtime.mvp_runtime.store import LedgerStore
@@ -35,7 +33,6 @@ T1 = "2026-07-16T09:01:00Z"   # T0 + 60s
 T2 = "2026-07-16T09:02:00Z"   # T0 + 120s
 PAST = "2026-07-16T08:00:00Z"
 
-
 class FakeExecutor:
     def __init__(self, status="COMPLETED"):
         self.calls: list[dict] = []
@@ -45,13 +42,11 @@ class FakeExecutor:
         self.calls.append({"request": request, **kwargs})
         return {"status": self._status}
 
-
 def _task_schedule(store, *, now=T0, interval=60, request="analyze X", enabled=True):
     s = build_schedule(kind=KIND_TASK, request=request, interval_seconds=interval,
                        created_by="op", now=now, enabled=enabled)
     store.add(s)
     return s
-
 
 # --- build_schedule validation ----------------------------------------------
 
@@ -59,7 +54,6 @@ def test_build_schedule_ok():
     s = build_schedule(kind=KIND_TASK, request="hi", interval_seconds=3600, created_by="op", now=T0)
     assert s.kind == KIND_TASK and s.interval_seconds == 3600 and s.enabled is True
     assert s.next_run_at == "2026-07-16T10:00:00Z"     # T0 + 3600s
-
 
 @pytest.mark.parametrize("kwargs, code", [
     (dict(kind="bogus", request="x", interval_seconds=60), "UNKNOWN_KIND"),
@@ -71,57 +65,42 @@ def test_build_schedule_fail_closed(kwargs, code):
         build_schedule(created_by="op", now=T0, **kwargs)
     assert exc.value.reason_code == code
 
-
 def test_prune_schedule_needs_no_request():
     s = build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400, created_by="op", now=T0)
     assert s.kind == KIND_PRUNE
 
+# --- the removed pm_scan kind must stay removed ------------------------------
 
-# --- pm_scan names one of two jobs, and a typo must not pick the other ------
-
-@pytest.mark.parametrize("request_text", ["discvery", "Discovery-scan", "wach", "observe"])
-def test_a_misspelled_pm_scan_mode_is_refused_at_registration(request_text):
-    """The failure this closes is silent and long-lived.
-
-    The dispatch tests for "discovery" and lets everything else fall through to the watch
-    scan. That is right for the default and wrong for a typo: `--request discvery` used to
-    register cleanly and then run the *watch* scan every six hours, while the operator
-    believed discovery was running and `proposals.jsonl` stayed empty with nothing anywhere
-    saying why. A schedule is typed by hand once and then trusted for weeks, so the refusal
-    has to happen at the keyboard.
-    """
+def test_the_prediction_market_kind_is_not_registrable():
+    """The lane was removed 2026-08-02 (Korean domestic regulation). `KINDS` is the door,
+    and `build_schedule` is the only way through it — so this is where a re-introduction
+    would show up first, whatever else came back with it."""
     with pytest.raises(SchedulerBlocked) as exc:
-        build_schedule(kind=KIND_PM_SCAN, request=request_text, interval_seconds=21600,
+        build_schedule(kind="pm_scan", request="watch", interval_seconds=120,
                        created_by="op", now=T0)
-    assert exc.value.reason_code == "UNKNOWN_PM_SCAN_MODE"
-    assert request_text in exc.value.reason        # names what was typed, not just the rule
+    assert exc.value.reason_code == "UNKNOWN_KIND"
+    assert "pm_scan" not in exc.value.reason        # the refusal must not advertise it back
 
-
-@pytest.mark.parametrize("request_text, mode", [
-    ("watch", PM_SCAN_WATCH),
-    ("discovery", PM_SCAN_DISCOVERY),
-    ("", PM_SCAN_WATCH),                            # empty keeps the original meaning
-    ("  DISCOVERY  ", PM_SCAN_DISCOVERY),           # trimmed and case-folded
-    ("watch every confirmed pair", PM_SCAN_WATCH),  # trailing words are a note, not a mode
-])
-def test_the_modes_that_name_a_real_job_are_accepted(request_text, mode):
-    s = build_schedule(kind=KIND_PM_SCAN, request=request_text, interval_seconds=120,
-                       created_by="op", now=T0)
-    assert pm_scan_mode(s.request) == mode and mode in PM_SCAN_MODES
-
-
-def test_validation_and_dispatch_read_the_mode_through_one_function():
-    """The structural half. Two readers would drift, and the drift is silent in the worst
-    direction — the dispatch's fall-through is the *other* scan, so anything validation let
-    past would quietly do the wrong job. `_execute` must call `pm_scan_mode`, not re-derive."""
-    import inspect
-
-    from runtime.mvp_runtime import scheduler
-
-    source = inspect.getsource(scheduler._execute)      # noqa: SLF001 - the dispatch under test
-    assert "pm_scan_mode(schedule.request)" in source
-    assert '.strip().lower().split()' not in source     # the re-derivation this replaced
-
+def test_a_stored_pm_scan_row_loads_and_is_refused_at_dispatch(tmp_path):
+    """Two live rows existed when the kind was deleted, and they were removed from the store
+    in the same change — but a machine restored from an older state directory still has
+    them. `_from_record` reads `kind` as a string and does not check `KINDS`, so the row
+    LOADS rather than taking the whole scheduler down with it (one dead schedule must not
+    stop `crypto_pipeline`), and `_execute` then refuses it. That split is the behaviour
+    worth pinning: survivable on read, fail-closed on run."""
+    store = ScheduleStore(tmp_path)
+    path = tmp_path / scheduler.SCHEDULES_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schedule_id": "schedule_legacy_pm", "kind": "pm_scan", "request": "watch",
+        "interval_seconds": 120, "enabled": True, "created_by": "op", "created_at": T0,
+        "next_run_at": T1,
+    }) + "\n", encoding="utf-8")
+    assert [s.kind for s in store.list()] == ["pm_scan"]        # loads, does not raise
+    ledger = LedgerStore(tmp_path / "ledger")
+    summary = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+    assert summary["fired"] == 0 and summary["failed"] == 1
 
 # --- store CRUD -------------------------------------------------------------
 
@@ -135,7 +114,6 @@ def test_store_add_list_remove_toggle(tmp_path):
     assert store.remove(s.schedule_id) is True
     assert store.list() == []
     assert store.remove("nope") is False
-
 
 @pytest.mark.parametrize("row, why", [
     ({"kind": KIND_TASK, "interval_seconds": 60, "next_run_at": T1}, "missing schedule_id"),
@@ -154,7 +132,6 @@ def test_malformed_schedule_record_fails_closed_with_a_typed_error(tmp_path, row
         store.list()
     assert exc.value.reason_code == "SCHEDULE_RECORD_INVALID", why
 
-
 @pytest.mark.parametrize("bad", [None, "None", "2026-07-16", "2026-07-16T09:00:00+00:00", 12345])
 def test_a_non_canonical_next_run_at_is_refused_not_silently_dormant(tmp_path, bad):
     """The dangerous one: `next_run_at: null` became the string "None", which sorts ABOVE
@@ -171,7 +148,6 @@ def test_a_non_canonical_next_run_at_is_refused_not_silently_dormant(tmp_path, b
         store.list()
     assert exc.value.reason_code == "SCHEDULE_RECORD_INVALID"
 
-
 def test_store_corrupt_fails_closed(tmp_path):
     store = ScheduleStore(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,7 +155,6 @@ def test_store_corrupt_fails_closed(tmp_path):
     with pytest.raises(PersistenceError) as exc:
         store.list()
     assert exc.value.reason_code == "SCHEDULES_UNREADABLE"
-
 
 # --- run_due firing ---------------------------------------------------------
 
@@ -199,7 +174,6 @@ def test_due_schedule_fires_and_advances(tmp_path):
     assert [started["action"], fired["action"]] == ["started", "fired"]
     assert fired["integrity"]["event_sha256"].startswith("sha256:")
 
-
 def test_not_due_schedule_does_not_fire(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60)        # next_run = T1
@@ -207,14 +181,12 @@ def test_not_due_schedule_does_not_fire(tmp_path):
     summary = run_due(store, now=T0, executor=ex, control_store=ControlStore(tmp_path))     # now < next_run
     assert summary["fired"] == 0 and ex.calls == []
 
-
 def test_disabled_schedule_does_not_fire(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60, enabled=False)
     ex = FakeExecutor()
     assert run_due(store, now=T1, executor=ex, control_store=ControlStore(tmp_path))["fired"] == 0
     assert ex.calls == []
-
 
 def test_two_due_schedules_both_fire_sequentially(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -224,7 +196,6 @@ def test_two_due_schedules_both_fire_sequentially(tmp_path):
     summary = run_due(store, now=T1, executor=ex, control_store=ControlStore(tmp_path))
     assert summary["fired"] == 2
     assert sorted(c["request"] for c in ex.calls) == ["a", "b"]
-
 
 # --- a raising fire is recorded, never fatal ---------------------------------
 
@@ -255,7 +226,6 @@ def test_raising_fire_is_recorded_and_the_batch_survives(tmp_path):
     events = _events(ledger)
     assert [e["action"] for e in events] == ["started", "failed", "started", "fired"]
 
-
 def test_unexpected_exception_is_recorded_with_its_type(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60)
@@ -267,7 +237,6 @@ def test_unexpected_exception_is_recorded_with_its_type(tmp_path):
     assert summary["failed"] == 1 and summary["fired"] == 0
     assert summary["results"][0]["status"] == "failed:UNEXPECTED:RuntimeError"
     assert store.list()[0].last_status == "failed:UNEXPECTED:RuntimeError"
-
 
 # --- operator alerting (failure / recovery / downtime gap) -------------------
 
@@ -283,10 +252,8 @@ class RecordingNotifier:
         if self._explode:
             raise RuntimeError("transport down")
 
-
 def _failing_executor(request, **kwargs):
     raise PersistenceError("LEDGER_WRITE_FAILED", "disk full")
-
 
 def test_failed_fire_alerts_the_operator(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -299,7 +266,6 @@ def test_failed_fire_alerts_the_operator(tmp_path):
     assert key == store.list()[0].schedule_id
     assert "스케줄 실패" in text and "failed:LEDGER_WRITE_FAILED" in text
 
-
 def test_healthy_fire_alerts_nothing(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60)
@@ -307,7 +273,6 @@ def test_healthy_fire_alerts_nothing(tmp_path):
     run_due(store, now=T1, executor=FakeExecutor(), control_store=ControlStore(tmp_path),
             notifier=notifier)
     assert notifier.calls == []          # steady green says nothing
-
 
 def test_recovery_after_failure_alerts_once(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -324,7 +289,6 @@ def test_recovery_after_failure_alerts_once(tmp_path):
             control_store=ControlStore(tmp_path), notifier=notifier)
     assert len(notifier.calls) == 2
 
-
 def test_a_broken_notifier_never_breaks_scheduling(tmp_path):
     store = ScheduleStore(tmp_path)
     ledger = LedgerStore(tmp_path / "ledger")
@@ -335,7 +299,6 @@ def test_a_broken_notifier_never_breaks_scheduling(tmp_path):
     assert store.list()[0].last_status == "failed:LEDGER_WRITE_FAILED"
     # the ledger is still the truth, and the run is still properly closed
     assert [e["action"] for e in _events(ledger)] == ["started", "failed"]
-
 
 def test_skipped_by_kill_switch_does_not_alert(tmp_path):
     # A kill is Thomas's own decision — telling him about it is noise, not news.
@@ -348,7 +311,6 @@ def test_skipped_by_kill_switch_does_not_alert(tmp_path):
                       notifier=notifier)
     assert summary["skipped"] == 1 and notifier.calls == []
 
-
 # --- cadence anchoring --------------------------------------------------------
 #
 # The claim is always a little late — the loop polls, and a fire that runs long pushes the
@@ -358,12 +320,10 @@ def test_skipped_by_kill_switch_does_not_alert(tmp_path):
 def test_an_on_time_claim_advances_exactly_one_interval():
     assert scheduler.next_occurrence(T1, 60, now=T1) == T2
 
-
 def test_a_late_claim_does_not_move_the_cadence():
     # Due at T1, claimed 20s late. The next occurrence is T1 + 60 — the schedule's own
     # grid — and NOT claim + 60, which would make the 20s permanent.
     assert scheduler.next_occurrence(T1, 60, now="2026-07-16T09:01:20Z") == T2
-
 
 def _simulate(store, schedule_id, *, poll_seconds, fires):
     """Claim `fires` times the way the tick loop does: on the first poll line at or after due.
@@ -383,7 +343,6 @@ def _simulate(store, schedule_id, *, poll_seconds, fires):
         claimed.append(grid)
     return claimed
 
-
 def test_lateness_does_not_compound_over_successive_fires(tmp_path):
     # pm_scan's own numbers: 120s registered, 30s poll. Every claim is on time here, and
     # the point is that it STAYS that way — under `claim + interval` the 20s scan pushed
@@ -393,7 +352,6 @@ def test_lateness_does_not_compound_over_successive_fires(tmp_path):
     fires = _simulate(store, s.schedule_id, poll_seconds=30, fires=6)
     gaps = [int((b - a).total_seconds()) for a, b in zip(fires, fires[1:])]
     assert gaps == [120] * len(gaps), gaps     # not [140, 140, ...]
-
 
 def test_a_cadence_off_the_poll_grid_jitters_but_does_not_drift(tmp_path):
     # The harder case: 100s does not divide by the 30s poll, so EVERY claim is late and
@@ -407,7 +365,6 @@ def test_a_cadence_off_the_poll_grid_jitters_but_does_not_drift(tmp_path):
     assert max(gaps) <= 100 + 30                # never worse than one poll period late
     span = (fires[-1] - fires[0]).total_seconds()
     assert abs(span - 100 * len(gaps)) <= 30    # the long-run rate is the registered one
-
 
 def test_an_outage_advances_past_now_in_one_claim_and_owes_no_burst(tmp_path):
     # A day of downtime on a 120s schedule is 720 missed occurrences. The claim owes ONE:
@@ -424,7 +381,6 @@ def test_an_outage_advances_past_now_in_one_claim_and_owes_no_burst(tmp_path):
     # Nothing further is due, so a second claim in the same instant finds nothing.
     assert store.claim_due(s.schedule_id, now=back_up) is None
 
-
 @pytest.mark.parametrize("late_by", [0, 1, 59, 60, 61, 3600])
 def test_a_claim_always_advances_strictly_past_now(tmp_path, late_by):
     # `claim_due`'s overlap guarantee and `schedule_run_id`'s no-collision argument both
@@ -435,7 +391,6 @@ def test_a_claim_always_advances_strictly_past_now(tmp_path, late_by):
         scheduler.timeutil.parse_iso(s.next_run_at) + _timedelta(seconds=late_by))
     assert store.claim_due(s.schedule_id, now=now) is not None
     assert store.list()[0].next_run_at > now
-
 
 def test_the_failure_alert_names_the_stored_next_run(tmp_path):
     # The operator's "다음 실행" and the store must not be two opinions.
@@ -449,7 +404,6 @@ def test_the_failure_alert_names_the_stored_next_run(tmp_path):
     assert len(notifier.calls) == 1
     assert f"다음 실행: {store.list()[0].next_run_at}" in notifier.calls[0][1]
 
-
 # --- downtime gap detection ---------------------------------------------------
 
 def test_overdue_schedules_finds_only_real_gaps(tmp_path):
@@ -462,12 +416,10 @@ def test_overdue_schedules_finds_only_real_gaps(tmp_path):
     late = scheduler.overdue_schedules(schedules, now="2026-07-16T11:00:00Z")
     assert len(late) == 1 and late[0][1] == 7140                       # 09:01 -> 11:00
 
-
 def test_overdue_ignores_disabled_schedules(tmp_path):
     store = ScheduleStore(tmp_path)
     _task_schedule(store, now=T0, interval=60, enabled=False)
     assert scheduler.overdue_schedules(store.list(), now="2026-07-16T11:00:00Z") == []
-
 
 def test_startup_gap_is_recorded_and_alerted(tmp_path):
     from runtime.mvp_runtime.scheduler_cli import report_startup_gap
@@ -483,7 +435,6 @@ def test_startup_gap_is_recorded_and_alerted(tmp_path):
     assert event["action"] == "gap_detected" and event["status"] == "overdue_seconds=7140"
     assert len(notifier.calls) == 1 and "공백 감지" in notifier.calls[0][1]
 
-
 def test_no_gap_records_nothing(tmp_path):
     from runtime.mvp_runtime.scheduler_cli import report_startup_gap
 
@@ -495,7 +446,6 @@ def test_no_gap_records_nothing(tmp_path):
     assert notifier.calls == []
     assert not (ledger.root / "scheduler_events.jsonl").exists()
 
-
 # --- per-run records (started/terminal pairing, duration, abandonment) -------
 
 def _events(ledger):
@@ -503,7 +453,6 @@ def _events(ledger):
     if not path.is_file():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
 
 def test_a_fire_is_bracketed_by_started_and_terminal(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -520,7 +469,6 @@ def test_a_fire_is_bracketed_by_started_and_terminal(tmp_path):
     assert isinstance(terminal["duration_ms"], int) and terminal["duration_ms"] >= 0
     assert summary["results"][0]["schedule_run_id"] == started["schedule_run_id"]
 
-
 def test_a_failed_fire_still_closes_its_run(tmp_path):
     store = ScheduleStore(tmp_path)
     ledger = LedgerStore(tmp_path / "ledger")
@@ -531,7 +479,6 @@ def test_a_failed_fire_still_closes_its_run(tmp_path):
     assert terminal["action"] == "failed"
     assert started["schedule_run_id"] == terminal["schedule_run_id"]
     assert scheduler.find_abandoned_runs(_events(ledger)) == []   # closed, not abandoned
-
 
 def test_a_skip_opens_no_run(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -545,7 +492,6 @@ def test_a_skip_opens_no_run(tmp_path):
     assert "schedule_run_id" not in events[0]
     assert scheduler.find_abandoned_runs(events) == []
 
-
 def test_run_ids_are_distinct_per_occurrence(tmp_path):
     store = ScheduleStore(tmp_path)
     ledger = LedgerStore(tmp_path / "ledger")
@@ -554,7 +500,6 @@ def test_run_ids_are_distinct_per_occurrence(tmp_path):
     run_due(store, now=T2, ledger=ledger, executor=FakeExecutor(), control_store=ControlStore(tmp_path))
     ids = {e["schedule_run_id"] for e in _events(ledger) if "schedule_run_id" in e}
     assert len(ids) == 2
-
 
 def test_a_process_killed_mid_fire_leaves_a_detectable_orphan(tmp_path):
     """The gap L3a could not close: a fire that never returns writes no terminal event,
@@ -573,7 +518,6 @@ def test_a_process_killed_mid_fire_leaves_a_detectable_orphan(tmp_path):
     assert [e["action"] for e in events] == ["started"]           # no terminal was written
     orphans = scheduler.find_abandoned_runs(events)
     assert len(orphans) == 1 and orphans[0]["schedule_id"] == store.list()[0].schedule_id
-
 
 def test_abandoned_is_reported_once_then_stays_quiet(tmp_path):
     from runtime.mvp_runtime.scheduler_cli import report_abandoned_runs
@@ -600,7 +544,6 @@ def test_abandoned_is_reported_once_then_stays_quiet(tmp_path):
     assert report_abandoned_runs(ledger=ledger, now=T2, alerter=notifier) == []
     assert len(notifier.calls) == 1
 
-
 def test_abandoned_scan_survives_an_unreadable_ledger(tmp_path):
     from runtime.mvp_runtime.scheduler_cli import report_abandoned_runs
 
@@ -609,7 +552,6 @@ def test_abandoned_scan_survives_an_unreadable_ledger(tmp_path):
     (ledger.root / "scheduler_events.jsonl").write_text("{not json\n", encoding="utf-8")
     # Diagnosis, not a gate: the tick loop must still start.
     assert report_abandoned_runs(ledger=ledger, now=T2, alerter=RecordingNotifier()) == []
-
 
 # --- kill-switch binding (governance kill_blocks: scheduler_execution) -------
 
@@ -627,7 +569,6 @@ def test_killed_or_paused_skips_execution(tmp_path, command, status):
     assert store.list()[0].next_run_at == T2          # occurrence dropped, cadence advanced
     event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
     assert event["action"] == "skipped" and event["status"] == status
-
 
 def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
     """The control state is re-read before EACH fire, not once per batch: a /kill issued
@@ -653,7 +594,6 @@ def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
     assert ex.calls == ["first"]                       # the second never executed
     assert summary["fired"] == 1 and summary["skipped"] == 1
     assert [e["action"] for e in _events(ledger)] == ["started", "fired", "skipped"]
-
 
 def test_operator_disable_mid_batch_survives_and_wins(tmp_path):
     """An operator disable landing while the tick executes an earlier schedule must both
@@ -682,7 +622,6 @@ def test_operator_disable_mid_batch_survives_and_wins(tmp_path):
     assert by_id[second.schedule_id].enabled is False          # the disable survived
     assert by_id[first.schedule_id].last_status == "COMPLETED"
 
-
 def test_operator_remove_mid_batch_survives_and_wins(tmp_path):
     store = ScheduleStore(tmp_path)
     control_store = ControlStore(tmp_path)
@@ -704,7 +643,6 @@ def test_operator_remove_mid_batch_survives_and_wins(tmp_path):
     assert ex.calls == ["first"] and summary["fired"] == 1
     assert [s.request for s in store.list()] == ["first"]      # the remove survived
 
-
 def test_no_control_store_defaults_to_the_per_machine_state_not_allowed(tmp_path):
     """With no injected control_store, run_due consults the per-machine state under
     repo_root — the old `else True` default silently ran with no kill binding at all."""
@@ -714,7 +652,6 @@ def test_no_control_store_defaults_to_the_per_machine_state_not_allowed(tmp_path
     ex = FakeExecutor()
     summary = run_due(store, now=T1, repo_root=tmp_path, executor=ex)
     assert summary["fired"] == 0 and summary["skipped"] == 1 and ex.calls == []
-
 
 def test_resume_lets_schedule_fire_again(tmp_path):
     store = ScheduleStore(tmp_path)
@@ -726,7 +663,6 @@ def test_resume_lets_schedule_fire_again(tmp_path):
     control.apply_command(control_store, "resume", actor="op", now=T0)
     run_due(store, now=T2, control_store=control_store, executor=ex)     # now fires
     assert len(ex.calls) == 1
-
 
 # --- memory_prune kind ------------------------------------------------------
 
@@ -743,7 +679,6 @@ def test_memory_prune_schedule_prunes_expired(tmp_path):
     assert summary["fired"] == 1
     assert summary["results"][0]["status"] == "pruned:1"
     assert wm.read_all() == []
-
 
 def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
     """The occurrence is claimed durably BEFORE executing: a failure on a LATER schedule in
@@ -781,7 +716,6 @@ def test_mid_batch_failure_does_not_refire_the_completed_schedule(tmp_path):
     assert by_id[second.schedule_id].next_run_at > T1
     assert by_id[second.schedule_id].last_status == "failed:LEDGER_WRITE_FAILED"
 
-
 # --- M4b: scheduled LLM strategy proposer, backlog-gated ---------------------
 
 def _proposer_schedule(store, *, now=T0, interval=60, request=""):
@@ -790,18 +724,15 @@ def _proposer_schedule(store, *, now=T0, interval=60, request=""):
     store.add(s)
     return s
 
-
 def _proposal_rows(ledger):
     from runtime.mvp_runtime.crypto.proposer import PROPOSAL_LEDGER_KIND
     return [r for r in ledger.read_records() if r["kind"] == PROPOSAL_LEDGER_KIND]
-
 
 def test_proposer_schedule_needs_no_request():
     # Like memory_prune: the proposer defaults to BTCUSDT/1h, so the request is optional.
     s = build_schedule(kind=KIND_PROPOSER, request="", interval_seconds=3600,
                        created_by="op", now=T0)
     assert s.kind == KIND_PROPOSER
-
 
 def test_proposer_schedule_fires_and_records_a_proposal(tmp_path):
     # repo_root=tmp_path forces the mock market-data + mock proposer paths (no grants there),
@@ -816,7 +747,6 @@ def test_proposer_schedule_fires_and_records_a_proposal(tmp_path):
     assert len(rows) == 1                                   # the proposal record persisted
     assert rows[0]["record"]["installation_effect"] == "NONE"   # installs nothing
     assert store.list()[0].last_status.startswith("proposed=")
-
 
 def test_proposer_schedule_skips_when_backlog_full(tmp_path):
     from runtime.mvp_runtime.crypto.proposer import (

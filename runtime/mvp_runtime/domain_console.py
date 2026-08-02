@@ -1,4 +1,4 @@
-"""Operator domain console — ask the crypto and prediction stacks what they are doing.
+"""Operator domain console — ask the crypto stack what it is doing.
 
 The fifth verb family on the control channel, beside the emergency console (``control``),
 approval (``approval``), memory (``memory_console``), task coordination
@@ -6,8 +6,8 @@ approval (``approval``), memory (``memory_console``), task coordination
 (``control.command_verb``) and the same precondition: the R4 identity gate in
 ``handle_operator_message`` has already run, so only the registered Thomas is here.
 
-The gap this closes: both domains ran on a schedule and reported into the channel when
-*they* had something to say (the digest, an alert), and there was no way to ask. Their state
+The gap this closes: the domain ran on a schedule and reported into the channel when
+*it* had something to say (the digest, an alert), and there was no way to ask. Their state
 was reachable only by opening a terminal on the host — so the answer to "어제 크립토 어떻게
 됐어?" was either a model narrating a store it cannot read, or nothing.
 
@@ -17,7 +17,6 @@ adapter over the module that already owns that answer — the same text the host
 - ``/crypto status`` → ``crypto.dashboard`` (the board)
 - ``/crypto readiness`` → ``crypto.live_readiness`` (what stands between here and a live order)
 - ``/crypto paper`` → ``crypto.feedback`` (the paper performance report)
-- ``/pred report`` → ``predmarket.report`` (the PM1 observation report)
 
 Writing a second rendering of any of them is what this module exists to avoid: two accounts
 of the same money would eventually disagree, and the one on the phone is the one read in a
@@ -57,13 +56,14 @@ from . import timeutil
 from .control import command_verb
 from .errors import MvpRuntimeError, OperatorBlocked, ToolError
 
+# A ``pred`` verb (the PM1 observation report) stood beside this one until 2026-08-02,
+# when the prediction-market lane was removed — see ``docs/BUILD_HISTORY.md``.
 CRYPTO_COMMAND = "crypto"
-PRED_COMMAND = "pred"
-COMMANDS = frozenset({CRYPTO_COMMAND, PRED_COMMAND})
+COMMANDS = frozenset({CRYPTO_COMMAND})
 
 # What each verb answers when asked with no argument: the one a person opening the chat
 # most likely wants. Never a guess between two — each verb has exactly one obvious default.
-DEFAULT_SUBCOMMAND = {CRYPTO_COMMAND: "status", PRED_COMMAND: "report"}
+DEFAULT_SUBCOMMAND = {CRYPTO_COMMAND: "status"}
 
 # A Telegram message caps at 4096 units and the channel already chunks past that, but a
 # board rendered for an 80-column terminal becomes unreadable long before it becomes
@@ -75,7 +75,7 @@ DEFAULT_SUBCOMMAND = {CRYPTO_COMMAND: "status", PRED_COMMAND: "report"}
 def parse_domain_command(text: Any) -> tuple[str, str | None] | None:
     """Classify a domain-console command, or return None if ``text`` is not one.
 
-    Returns ``(verb, subcommand)`` with the verb upper-cased (``CRYPTO``/``PRED``) and the
+    Returns ``(verb, subcommand)`` with the verb upper-cased (``CRYPTO``) and the
     subcommand lower-cased, or None for the subcommand when none was given — resolved to the
     verb's default by :func:`apply_domain_command`, which is also the only place that knows
     which subcommands exist.
@@ -131,20 +131,12 @@ def _crypto_paper(*, now: str, root: Path | None) -> str:
     return text
 
 
-def _pred_report(*, now: str, root: Path | None) -> str:
-    from .predmarket import report
-
-    return report.render_pm1_report_text(report.build_pm1_report(now=now, root=root))
-
 
 _SUBCOMMANDS: dict[str, dict[str, Callable[..., str]]] = {
     CRYPTO_COMMAND: {
         "status": _crypto_status,
         "readiness": _crypto_readiness,
         "paper": _crypto_paper,
-    },
-    PRED_COMMAND: {
-        "report": _pred_report,
     },
 }
 
