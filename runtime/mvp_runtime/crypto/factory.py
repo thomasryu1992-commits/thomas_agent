@@ -1629,6 +1629,43 @@ def _condition_key(cond: Mapping[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
+# Which validator range bounds each exit parameter. The generation space (`_EXIT_PARAMS`) is
+# strictly INSIDE these, which is the fact the clamp below turns on.
+_EXIT_LEGAL_RANGE = {
+    "stop_atr": STOP_ATR_RANGE,
+    "target_atr": TARGET_ATR_RANGE,
+    "max_holding_bars": MAX_HOLDING_BARS_RANGE,
+}
+
+
+def _fused_exit_param(name: str, first: float, second: float) -> float | int:
+    """The parents' midpoint, held inside the space the factory currently explores.
+
+    Same clamp and same constants as :func:`mutate_params`, so a fused parameter and a
+    mutated one can never land in different places.
+
+    **The clamp is a preference applied to legal inputs, and it must never rescue an illegal
+    one.** ``_EXIT_PARAMS`` is strictly inside the validator's range — stop_atr [1.2, 2.0]
+    against [0.3, 5.0], target_atr [1.6, 8.0] against [0.5, 10.0] — so clamping unconditionally
+    would map *every* value to a legal one, and a parent that was never validator-legal (an
+    imported spec at stop_atr 12.0, say) would be laundered into a valid child. That would
+    silently delete the refusal `fuse_specs` documents and
+    ``test_fusion_validates_the_child_even_when_a_parent_never_was`` pins.
+
+    So an out-of-range PARENT disables the clamp for that parameter and the midpoint goes
+    through untouched, where `validate_strategy` refuses it. Two legal parents, one merely
+    minted under an older generation space, clamp. The two bounds answer different questions —
+    *"is this a legal strategy"* and *"is this what the factory currently explores"* — and only
+    the second is a preference.
+    """
+    spec = _EXIT_PARAMS[name]
+    low, high = _EXIT_LEGAL_RANGE[name]
+    midpoint = (first + second) / 2
+    if low <= first <= high and low <= second <= high:
+        midpoint = max(spec.lo, min(spec.hi, midpoint))
+    return int(round(midpoint)) if spec.integer else round(midpoint, 4)
+
+
 def fuse_specs(
     first: StrategySpec, second: StrategySpec, *, strategy_id: str, generation_id: str,
 ) -> StrategySpec:
@@ -1643,8 +1680,27 @@ def fuse_specs(
     into an AND would silently change what that parent meant.
 
     The child is structurally parsed and put through the same ``validate_strategy``
-    as any generated spec; a blend that lands outside the validator's bounds (an
-    R:R below the floor, say) refuses rather than being clamped into range."""
+    as any generated spec; a blend that lands outside the **validator's** bounds (an
+    R:R below the floor, say) refuses rather than being clamped into range.
+
+    **The GENERATION space is the other kind of bound, and it clamps.** ``_EXIT_PARAMS``
+    is what `mutate_params` samples from and what `generate_batch` therefore explores;
+    `validate_strategy` is what a spec must satisfy to be legal at all. Averaging two
+    parents that are both inside an interval lands inside it — the midpoint of a convex
+    set is in the set — so the only way a child escapes is a **parent minted under an
+    older space**. Measured 2026-08-02, the day after `stop_atr`'s floor moved 0.8 → 1.2
+    (#420): 43% of the candidate store predates the move, and 20 of that day's 60 fused
+    children landed below the new floor, one of them (GEN-738 at 1.1700) reaching the
+    promotable board.
+
+    Clamped rather than refused, and the asymmetry with the paragraph above is the point.
+    A validator breach means the child is not a legal strategy; an out-of-space parent
+    means the child is legal but outside what the factory currently chooses to explore.
+    Refusing the second would block fusion against 43% of the store to enforce an
+    efficiency rule the promotion door already backstops on evidence (cost basis, ROBUST,
+    holdout, positive expectancy at current rates). Clamping is also what `mutate_params`
+    does with the same constants, which keeps one answer to "where may a minted parameter
+    land" instead of two."""
     if first.schema_version != second.schema_version:
         raise FusionRefused("schema_version_mismatch")
     if first.direction != second.direction:
@@ -1683,10 +1739,16 @@ def fuse_specs(
         "entry_rules": {"operator": "AND", "conditions": conditions},
         "exit_rules": {
             "stop_model": first.exit_rules.stop_model,
-            "stop_atr": round((first.exit_rules.stop_atr + second.exit_rules.stop_atr) / 2, 4),
-            "target_atr": round((first.exit_rules.target_atr + second.exit_rules.target_atr) / 2, 4),
-            "max_holding_bars": int(
-                round((first.exit_rules.max_holding_bars + second.exit_rules.max_holding_bars) / 2)
+            "stop_atr": _fused_exit_param(
+                "stop_atr", first.exit_rules.stop_atr, second.exit_rules.stop_atr
+            ),
+            "target_atr": _fused_exit_param(
+                "target_atr", first.exit_rules.target_atr, second.exit_rules.target_atr
+            ),
+            "max_holding_bars": _fused_exit_param(
+                "max_holding_bars",
+                first.exit_rules.max_holding_bars,
+                second.exit_rules.max_holding_bars,
             ),
         },
         "risk_constraints": {

@@ -1101,3 +1101,61 @@ def test_the_stop_floor_holds_and_the_base_sits_inside_it():
         "rather than bounding it"
     )
     assert min(draws) >= stop.lo and max(draws) <= stop.hi
+
+
+def test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from():
+    """The hole #420's `stop_atr` floor left open, found the day after it shipped.
+
+    Averaging two parents that are both inside an interval lands inside it — a midpoint of
+    a convex set is in the set — so the only escape is a parent minted under an OLDER space.
+    Measured 2026-08-02: 43% of the candidate store predates the floor moving 0.8 -> 1.2, and
+    20 of that day's 60 fused children landed below it, one (GEN-738 at 1.1700) reaching the
+    promotable board while the direct mint path was clean 60/60."""
+    spec = factory._EXIT_PARAMS["stop_atr"]
+    stale = _parent_spec("S1", [_CLOSE_OVER_MA20],
+                         exit_rules={"stop_model": "atr", "stop_atr": 0.9,
+                                     "target_atr": 3.0, "max_holding_bars": 24})
+    fresh = _parent_spec("S2", [_MA20_OVER_MA50],
+                         exit_rules={"stop_model": "atr", "stop_atr": 1.44,
+                                     "target_atr": 3.0, "max_holding_bars": 24})
+
+    child = fuse_specs(stale, fresh, strategy_id="S9", generation_id="GEN-9")
+    assert (0.9 + 1.44) / 2 < spec.lo, "fixture no longer straddles the floor"
+    assert child.exit_rules.stop_atr == spec.lo
+
+
+def test_fusion_leaves_an_in_space_blend_exactly_where_the_midpoint_falls():
+    """The clamp bounds; it does not round or re-centre. Two in-space parents must fuse to
+    their own midpoint, or the crossover has stopped meaning what its docstring says."""
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20],
+                     exit_rules={"stop_model": "atr", "stop_atr": 1.3,
+                                 "target_atr": 3.0, "max_holding_bars": 24})
+    b = _parent_spec("S2", [_MA20_OVER_MA50],
+                     exit_rules={"stop_model": "atr", "stop_atr": 1.5,
+                                 "target_atr": 4.0, "max_holding_bars": 30})
+    child = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert child.exit_rules.stop_atr == 1.4
+    assert child.exit_rules.target_atr == 3.5
+    assert child.exit_rules.max_holding_bars == 27
+
+
+def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
+    """One answer to "where may a minted parameter land". The clamp is not a second policy
+    beside `mutate_params`; it is the same constants applied at the other mint path — but only
+    to inputs the validator already accepts, so it cannot launder an illegal parent."""
+    rng = random.Random(4)
+    for name, spec in factory._EXIT_PARAMS.items():
+        low, high = factory._EXIT_LEGAL_RANGE[name]
+        # Legal but below the generation space: clamped up to it.
+        assert factory._fused_exit_param(name, low, low) == (
+            int(round(spec.lo)) if spec.integer else round(spec.lo, 4))
+        # Legal but above it: clamped down.
+        assert factory._fused_exit_param(name, high, high) == (
+            int(round(spec.hi)) if spec.integer else round(spec.hi, 4))
+        # ILLEGAL: passed through untouched so `validate_strategy` gets to refuse the child.
+        illegal = high * 10
+        assert factory._fused_exit_param(name, illegal, illegal) == (
+            int(round(illegal)) if spec.integer else round(illegal, 4))
+    mutated = mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+    for name, spec in factory._EXIT_PARAMS.items():
+        assert spec.lo <= mutated[name] <= spec.hi
