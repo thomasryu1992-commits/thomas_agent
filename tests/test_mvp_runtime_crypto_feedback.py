@@ -26,9 +26,11 @@ from runtime.mvp_runtime.crypto.feedback import (
     STATUS_RECORDED,
     build_performance_report,
     count_independent_trade_events,
+    net_result_r,
     r_distribution,
     render_report_text,
     run_paper_performance_report,
+    summarize_net_of_costs,
     summarize_outcomes,
 )
 from runtime.mvp_runtime.errors import ToolError
@@ -477,3 +479,53 @@ def test_the_floor_is_reused_from_the_lifecycle_ladder_not_invented():
     from runtime.mvp_runtime.crypto.lifecycle import DEFAULT_WINDOWS
 
     assert LIVE_CANDIDATE_MIN_SAMPLE == DEFAULT_WINDOWS[0]
+
+
+# --- a row that is already net is COSTED, not called uncostable ----------------
+
+def _settled_net_row(result_r=1.778, *, holding=8, timeframe="4h", direction="SHORT"):
+    """The shape `paper.build_outcome_record` writes since 2026-07-30: costs already charged,
+    labelled `intent_net_of_costs`, and carrying no funding term."""
+    return {
+        "outcome_closed": True, "result_R": result_r, "r_basis": "intent_net_of_costs",
+        "created_at_utc": "2026-08-01T10:00:00Z", "outcome_id": "net1", "strategy_id": "S1",
+        "symbol": "SOLUSDT", "timeframe": timeframe, "direction": direction,
+        "entry_price": 73.06, "exit_price": 71.501, "risk": 0.8358,
+        "holding_candles": holding, "close_reason": "take_profit",
+        "provenance": paper.PAPER_PROVENANCE,
+    }
+
+
+def test_an_already_net_row_is_costed_rather_than_reported_uncostable():
+    """The third instance of the same latch, and the first on the runtime's OWN current rows.
+
+    `cost.outcome_net_r` returns None for an already-net row deliberately, so settlement costs
+    are never charged twice — but None also means "cannot be priced", and
+    `summarize_net_of_costs` read both as the second. Every row minted since 2026-07-30 is
+    `intent_net_of_costs`, so the whole forward record counted as uncostable: measured on the
+    first settlement of the newly promoted pool, a +1.778R take-profit produced
+    `costed_count: 0` and `OUTCOME_NOT_COSTABLE`. Gate 0 requires `not failure_modes`, so that
+    mode alone would have held it shut however well the pool traded."""
+    summary = summarize_net_of_costs([_settled_net_row()])
+    assert (summary["costed_count"], summary["uncostable_count"]) == (1, 0)
+    assert summary["expectancy"] != 0.0
+
+
+def test_the_already_net_row_is_still_charged_the_carry_it_does_not_contain():
+    """Not a latch traded for a wrong number. Settlement charges fees and slippage and records
+    no funding term, so carry is the one cost still owed — and it is SIGNED: a short earns it,
+    which is why the net figure here sits ABOVE the stored `result_R` rather than below."""
+    short_net = net_result_r(_settled_net_row(direction="SHORT"))
+    long_net = net_result_r(_settled_net_row(direction="LONG"))
+    assert short_net > 1.778 > long_net
+    # A zero holding window owes no carry at all, so the stored figure passes through exactly.
+    assert net_result_r(_settled_net_row(holding=0)) == 1.778
+
+
+def test_a_row_that_owes_carry_it_cannot_price_stays_uncostable():
+    """Returning `result_R` there would report a figure that silently omits a cost this
+    function exists to charge."""
+    row = _settled_net_row()
+    row.pop("risk")
+    row["entry_price"] = 0
+    assert net_result_r(row) is None
