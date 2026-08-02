@@ -92,6 +92,13 @@ Secrets and per-host paths come from a gitignored `.env` next to `docker-compose
 ```text
 MVP_OPERATOR_CHANNEL=telegram
 TELEGRAM_BOT_TOKEN=...
+# OPTIONAL. The scheduler's outbound notifications only, on a DIFFERENT bot from the one the
+# operator loop polls. Set it when operator Telegram lives with the assistant (Hermes) and this
+# runtime kept the original bot: without it the scheduler's notifications are delivered
+# successfully into a conversation nobody reads any more. Safe only because the scheduler never
+# calls getUpdates — never set this on the operator service, which does poll, or the two
+# pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
+SCHEDULER_TELEGRAM_BOT_TOKEN=...
 MVP_HOSTED_PROVIDER=google_ai_studio,groq
 GOOGLE_AI_STUDIO_API_KEY=...
 GROQ_API_KEY=...
