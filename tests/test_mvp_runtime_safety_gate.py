@@ -588,7 +588,7 @@ def test_only_live_trading_uses_the_env_only_gate():
     only `ast.Attribute` — `safety_gate.select_env_gated(...)` — so a caller written
     `from ..safety_gate import select_env_gated` and then called bare is an `ast.Name` and scored
     ZERO. That import style is the idiomatic one in this repo: `workspace.py`, `providers.py`,
-    `tools.py`, `operator.py`, `predmarket/market_data.py` and `live_order.py` itself all use it.
+    `tools.py`, `operator.py`, `crypto/market_data.py` and `live_order.py` itself all use it.
     A containment test the common idiom walks straight through contains nothing.
 
     `env_only_authorization` is pinned by the same sweep, because it is public and a caller can
