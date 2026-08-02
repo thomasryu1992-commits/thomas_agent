@@ -170,7 +170,17 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
 
     So this walks the way the scheduler does. Asserted on the FAMILIES a context can
     reach, not on the offsets, because the offset is an implementation detail and the
-    reachable set is the thing that was broken."""
+    reachable set is the thing that was broken.
+
+    **Both halves are bounded to ONE covering pass, and that bound is the test.** The
+    starvation half used to run four passes and assert the generation number still fell
+    short, which held at 36 families and stopped holding at 34: whether a strided walk
+    *eventually* reaches everything is `gcd(stride * count, total)`, and that number jumps
+    around whenever a family joins or leaves the library. Retiring the `volatility_squeeze`
+    pair took the gcd from 12 to 2 and the four-pass contrast collapsed — the test said in its
+    own failure message that this meant rewrite, so this is that rewrite. "Covers its library
+    within one pass" is what the cursor actually promises and what an operator depends on;
+    "covers it eventually" is a coincidence of the library's size."""
     symbol, timeframe, contexts = "ETHUSDT", "1h", 15
     templates = templates_for_timeframe(timeframe, symbol=symbol)
     runs = -(-len(templates) // 4)  # ceil: fires needed to cover the library once
@@ -192,13 +202,15 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
         f"unreachable with the per-context cursor: {sorted({t.family for t in templates} - covered)}"
     )
 
-    # The generation number: still starved after FOUR full passes' worth of fires. Pinned as
-    # an inequality rather than an exact count — the point is that it plateaus, and the exact
-    # size of the plateau moves whenever a family is added to the library.
-    starved = families_over(runs * 4, use_rotation_index=False)
+    # The generation number, over the SAME fires: short of the library. Pinned as an inequality
+    # rather than an exact count — how far short depends on the stride arithmetic and moves
+    # whenever a family joins or leaves.
+    starved = families_over(runs, use_rotation_index=False)
     assert len(starved) < len(templates), (
-        "the global generation number reached the whole library — if the rotation arithmetic "
-        "changed so this is now true, this test is measuring nothing and should be rewritten"
+        "the global generation number covered the whole library in one pass — if the rotation "
+        "arithmetic changed so this is now true, this test is measuring nothing and should be "
+        "rewritten (do NOT relax it to more passes: 'covers eventually' is a property of the "
+        "library's size, not of the cursor this exists to protect)"
     )
 
 
@@ -356,8 +368,10 @@ def test_all_ported_templates_validate():
 
 # --- volatility-regime families -----------------------------------------------
 
-VOLATILITY_FAMILIES = frozenset({"volatility_expansion_long", "volatility_expansion_short",
-                                 "volatility_squeeze_long", "volatility_squeeze_short"})
+# The squeeze pair is deliberately absent — retired from the rotation 2026-08-02
+# (`factory.RETIRED_FAMILIES`). The tests below iterate `TEMPLATES` and would silently cover
+# nothing if this set named families that are not minted, so it names only what is.
+VOLATILITY_FAMILIES = frozenset({"volatility_expansion_long", "volatility_expansion_short"})
 
 # The columns these families exist to avoid. Each is a real, mintable member of
 # NUMERIC_FEATURES and each is a LEVEL: `atr` is in price units, the other two are
@@ -1041,3 +1055,49 @@ def test_a_frame_built_at_a_matching_cost_model_is_accepted():
     frame = build_replay_frame(snapshot, cost=cost)
     evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), snapshot, frame=frame, cost=cost)
     assert evidence["cost_summary"]["cost_model"]["taker_fee_bps"] == 7.5
+
+
+# --- the cost structure's two mint-time decisions ------------------------------
+
+def test_a_retired_family_is_not_minted_and_still_has_its_builder():
+    """Retired, not deleted. `volatility_squeeze_*` produced 28 candidates across 14
+    generations with zero ROBUST and a median of -0.2241R/trade — a compressed band is a
+    narrow ATR, a narrow ATR is a narrow 1R, and 1R is what every fixed-bps cost is divided
+    by. Stopping the mint is the decision; keeping the builder is what makes re-listing it a
+    one-line change if the entry ever gains a compensating widener."""
+    minted = {t.family for t in factory.TEMPLATES}
+    assert factory.RETIRED_FAMILIES, "a retirement set that empties itself records nothing"
+    assert not (minted & factory.RETIRED_FAMILIES), (
+        f"{sorted(minted & factory.RETIRED_FAMILIES)} is both retired and in the rotation"
+    )
+    for family in factory.RETIRED_FAMILIES:
+        assert hasattr(factory, f"_{family}_entry"), (
+            f"{family} is retired but its builder is gone — that is a deletion, and a "
+            "deletion cannot be reversed by re-listing one line"
+        )
+
+
+def test_the_stop_floor_holds_and_the_base_sits_inside_it():
+    """1R is `stop_atr` x ATR, so the multiple decides what fraction of the risk unit a fixed
+    ~10-16 bps round trip eats. Measured 2026-08-02: the 0.8-1.2 band runs -0.3746R/trade at
+    15m against +0.0054R for 1.2-1.6.
+
+    The second assertion is the one that is easy to get wrong. `mutate_params` draws
+    `base +/- (hi - lo) * scale` and CLAMPS, so a base sitting on the floor sends half of every
+    draw to exactly that value — one number, one rule hash, and the parameter stops varying
+    instead of shifting. The base has to clear the floor by more than nothing."""
+    stop = factory._EXIT_PARAMS["stop_atr"]
+    assert stop.lo >= 1.2, "the tight band is negative at 15m and worse at 4h than the alternative"
+
+    base = factory._EXIT_BASE["stop_atr"]
+    assert stop.lo < base < stop.hi, "the base must sit strictly inside its own range"
+
+    rng = random.Random(11)
+    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["stop_atr"]
+             for _ in range(2000)]
+    pinned = sum(1 for d in draws if d <= stop.lo + 1e-9) / len(draws)
+    assert pinned < 0.10, (
+        f"{pinned:.1%} of draws pinned to the floor — the clamp is eating the distribution "
+        "rather than bounding it"
+    )
+    assert min(draws) >= stop.lo and max(draws) <= stop.hi

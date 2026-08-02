@@ -238,12 +238,34 @@ class StrategyTemplate:
     entry_builder: Callable[[dict], list[dict]] = field(repr=False)
 
 
+# `stop_atr`'s floor is 1.2 and not 0.8, measured on this store 2026-08-02 over the 240
+# candidates carrying the current cost basis. 1R is `stop_atr` x ATR and costs are a fixed
+# ~10-16 bps round trip, so the multiple decides what fraction of the risk unit friction eats:
+#
+#   stop_atr    15m net/trade    1h net/trade    4h net/trade
+#   0.8-1.2       -0.3746R         -0.0070R        +0.0939R
+#   1.2-1.6       +0.0054R         +0.0228R        +0.1026R
+#
+# **The aggregate overstates it and the honest number is smaller.** Within each family at 15m
+# the gap is ~0.05-0.15R rather than 0.38R — the tight bucket happened to hold more of the
+# losing families — and it runs the right way in 7 of 10 families on cells of n=1-7. So this is
+# a real second-order improvement, not the fix for the fast timeframes: at 15m friction is
+# 0.28R against a gross edge of 0.09R, and no stop multiple closes a 3x gap. What it does do is
+# stop spending half of every mint on a band that is negative at 15m, marginal at 1h and worse
+# at 4h than the alternative, for free.
+#
+# The BASE moves with the floor, and that is not cosmetic. `mutate_params` draws
+# `base +/- (hi - lo) * 0.35` and clamps, so raising `lo` to 1.2 while leaving the base at 1.2
+# would pin **49.8%** of draws to exactly 1.2 — one value, one rule hash, a collapse in the
+# parameter's diversity rather than a shift in it. At 1.45 that is 5.4%, ~77% of draws land in
+# the band measured above, and the tail still reaches 1.73 so the region this store has never
+# sampled (1.6-2.0, n=2) stays explorable.
 _EXIT_PARAMS = {
-    "stop_atr": ParamSpec(0.8, 2.0),
+    "stop_atr": ParamSpec(1.2, 2.0),
     "target_atr": ParamSpec(1.6, 8.0),
     "max_holding_bars": ParamSpec(12, 48, integer=True),
 }
-_EXIT_BASE = {"stop_atr": 1.2, "target_atr": 3.0, "max_holding_bars": 24}
+_EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 
 
 def _trend_pullback_entry(p: dict) -> list[dict]:
@@ -617,10 +639,14 @@ def _volatility_expansion_short_entry(p: dict) -> list[dict]:
 
 
 def _volatility_squeeze_long_entry(p: dict) -> list[dict]:
-    # The opposite premise, and deliberately kept: bands compressed to the low end of their
-    # own range, price pushing out of the upper one. It is `bollinger_breakout` with the
-    # compression made an explicit precondition rather than left to chance, which is a
-    # different claim about WHEN the breakout is worth taking.
+    # The opposite premise: bands compressed to the low end of their own range, price pushing
+    # out of the upper one. It is `bollinger_breakout` with the compression made an explicit
+    # precondition rather than left to chance, which is a different claim about WHEN the
+    # breakout is worth taking.
+    #
+    # NOT MINTED — see RETIRED_FAMILIES. Kept because the claim above was never tested on its
+    # own terms: what the store measured is that a compressed band is a small 1R, and a small
+    # 1R loses to the fees before the claim gets a hearing.
     return [
         {"feature": "bb_width_percentile", "comparison": "<=", "value": p["squeeze_max"]},
         {"feature": "bb_percent_b", "comparison": ">=", "value": p["percent_b_min"]},
@@ -762,29 +788,41 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_short_entry),
-    # Volatility regime. Both param ranges are bounded by what leaves a sample behind rather
-    # than by a preference: a percentile floor above 0.9 (or a squeeze ceiling below 0.1)
-    # selects a tenth of the bars, which is how a family arrives FRAGILE for want of trades
-    # rather than for want of edge. The `percent_b` ranges are the `bollinger_*` families'
-    # verbatim, because the squeeze pair mines the same band crossing under a new precondition
-    # and two different bands would make the comparison between them meaningless.
+    # Volatility regime — the expansion side only; the squeeze pair that shipped beside it is
+    # in RETIRED_FAMILIES below. The param range is bounded by what leaves a sample behind
+    # rather than by a preference: a percentile floor above 0.9 selects a tenth of the bars,
+    # which is how a family arrives FRAGILE for want of trades rather than for want of edge.
     StrategyTemplate("volatility_expansion_long", "long", "1h",
                      {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
                      {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_long_entry),
     StrategyTemplate("volatility_expansion_short", "short", "1h",
                      {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
                      {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_short_entry),
-    StrategyTemplate("volatility_squeeze_long", "long", "1h",
-                     {"squeeze_max": ParamSpec(0.1, 0.4), "percent_b_min": ParamSpec(0.9, 1.1),
-                      **_EXIT_PARAMS},
-                     {"squeeze_max": 0.25, "percent_b_min": 1.0, **_EXIT_BASE},
-                     _volatility_squeeze_long_entry),
-    StrategyTemplate("volatility_squeeze_short", "short", "1h",
-                     {"squeeze_max": ParamSpec(0.1, 0.4), "percent_b_max": ParamSpec(-0.1, 0.1),
-                      **_EXIT_PARAMS},
-                     {"squeeze_max": 0.25, "percent_b_max": 0.0, **_EXIT_BASE},
-                     _volatility_squeeze_short_entry),
+    # `volatility_squeeze_long` / `_short` are RETIRED from the rotation — 2026-08-02. Their
+    # builders are kept below and re-listing them here is the whole of re-enabling; see
+    # RETIRED_FAMILIES for the measurement and for what would justify it.
 )
+
+# Families whose builders exist and which are deliberately NOT minted.
+#
+# `volatility_squeeze_*`, retired 2026-08-02 on its first full day of evidence: **28 candidates
+# across 14 generations, ZERO of them ROBUST, median net −0.2241R/trade**, and the worst figures
+# in the store at every timeframe (15m −0.4194R, 1h −0.1579R, 4h −0.0577R against family medians
+# of −0.05R, +0.02R and +0.10R).
+#
+# It reads as a mechanism rather than a run of luck, which is why one day is enough to stop
+# minting on it. The pair gates entry on `bb_width_percentile` being LOW — compressed bands are
+# a narrow ATR, a narrow ATR is a narrow 1R, and 1R is the denominator every fixed-bps cost is
+# divided by. Its sibling `volatility_expansion_*` takes the opposite side of the same variable
+# and is measurably cheaper (0.2438R vs 0.2713R per trade at 15m, 0.1334R vs 0.1555R at 1h). One
+# family widens the risk unit and one narrows it; the store now says which.
+#
+# Retired rather than deleted, and stopped rather than judged forever. The premise — "a breakout
+# is worth more when it comes out of compression" — is not refuted by this; what is refused is
+# paying for it with a risk unit too small to clear the fees. Re-list it if the entry gains a
+# compensating widener (a target scaled to the squeeze, an ATR floor), or if the cost structure
+# moves far enough that a narrow 1R stops being decisive.
+RETIRED_FAMILIES = frozenset({"volatility_squeeze_long", "volatility_squeeze_short"})
 
 # Families whose entry rules read the open-interest columns — mintable only where the
 # feed is configured; with no feed their conditions are indeterminate and never match,
