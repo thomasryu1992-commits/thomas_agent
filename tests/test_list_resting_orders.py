@@ -137,3 +137,29 @@ def test_the_dry_run_says_it_asked_nothing(monkeypatch, capsys):
 
     _run(monkeypatch, adapter=_Inert())
     assert "DRY RUN" in capsys.readouterr().out
+
+
+# --- the path itself ------------------------------------------------------------
+
+def test_the_list_path_is_the_read_one_not_the_mass_cancel_one():
+    """`GET /fapi/v1/openAlgoOrders` lists them. `/fapi/v1/algoOpenOrders` — the same words in
+    the other order — is `DELETE`: cancel EVERY open algo order on the account.
+
+    This constant pointed at the second one and 404'd on the live account 2026-08-03, because
+    the verb was GET. Pinned literally, because the two names are one transposition apart and
+    only one of them is a read."""
+    from runtime.mvp_runtime.crypto import live_execution as lx
+
+    assert lx.ALGO_OPEN_ORDERS_PATH == "/fapi/v1/openAlgoOrders"
+
+
+def test_no_bulk_cancel_path_exists_in_the_module():
+    """Nothing here cancels in bulk: `cancel_order` names one id, because a cancel that names
+    its target cannot take out a leg protecting a position it was never asked about. A constant
+    for the bulk path would be a loaded gun beside a very similar name."""
+    from runtime.mvp_runtime.crypto import live_execution as lx
+
+    source = open(lx.__file__, encoding="utf-8").read()
+    assert source.count("/fapi/v1/algoOpenOrders") == 1, (
+        "the mass-cancel path may appear only in the comment that warns about it"
+    )
