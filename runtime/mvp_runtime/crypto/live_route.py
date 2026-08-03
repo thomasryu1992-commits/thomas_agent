@@ -483,6 +483,7 @@ def _run_gated_live_leg(
     # is the state that stops the next cycle re-entering, and it is the one thing here that must
     # be durable even if everything after it goes wrong.
     _record_bracket_outcome(record, entry, symbol=symbol, now=now, root=root)
+    _record_entry_outcome(record, entry, ledger=ledger)
     if entry.get("entry") is not None:
         _report(record, governance, entry["entry"], guard=decision["guard"], now=now, root=root)
 
@@ -864,6 +865,28 @@ def _bracket_error_detail(entry: Mapping[str, Any]) -> list[dict[str, Any]] | No
             "error_detail": leg.get("error_detail"),
         })
     return failed or None
+
+
+def _record_entry_outcome(record: dict[str, Any], entry: Mapping[str, Any], *, ledger: Any) -> None:
+    """Persist the outcome a naked close produced. Only that branch makes one.
+
+    `live_leg`'s entry path takes no ledger — it builds the row and this persists it, the same
+    split `_record_bracket_outcome` above already uses for the other durable entry-side fact.
+
+    A failure to append is reported and never raised, for the reason the breaker recording
+    gives: the order is already at the venue and the money has already moved, so the choice is
+    between a recorded failure and an unrecorded one.
+    """
+    outcome = entry.get("outcome")
+    if not isinstance(outcome, Mapping):
+        return
+    try:
+        ledger.append_outcome(dict(outcome))
+    except Exception as exc:  # noqa: BLE001 — report, never raise; see the docstring
+        record["live_reason_codes"].append(live_leg.OUTCOME_PERSIST_FAILED)
+        record["live_reason_codes"].append(
+            getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
+        )
 
 
 def _record_bracket_outcome(

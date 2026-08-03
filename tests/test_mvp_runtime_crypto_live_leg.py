@@ -385,6 +385,43 @@ def test_a_refusing_close_guard_leaves_the_position_naked_and_says_so():
     assert result["naked_close"]["submitted"] is False
 
 
+# --- a naked close is a closed trade, and is recorded as one ----------------------
+
+def test_a_naked_close_records_an_outcome():
+    """It did not, until 2026-08-03. A position that filled, missed its bracket and was closed
+    again moved real money and produced no outcome row — so the weekly, drawdown and
+    consecutive-loss breakers judged zero rows and read NORMAL while the money moved. This is
+    the path most likely to be losing when it fires, so it is the worst one to be invisible."""
+    result = _entry(adapter=FakeAdapter(missing={"TP"}))
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    outcome = result["outcome"]
+    assert outcome is not None, "a closed position must produce a closed-trade row"
+    assert outcome["close_reason"] == ll.CLOSE_REASON_NAKED
+    assert outcome["realized_pnl_usdt"] is not None
+    # Attributed, or the ladder cannot judge the strategy it belonged to.
+    assert outcome["symbol"] == result["symbol"]
+    assert outcome["settlement_id"]
+
+
+def test_a_naked_close_that_cannot_be_priced_records_nothing_and_says_so():
+    """The position is closed at the venue either way, so unlike `execute_live_exit` there is
+    no book to keep. Inventing a figure to fill the row would put a fiction into the breaker's
+    accounting, which is worse than the gap this recording exists to close."""
+    adapter = FakeAdapter(missing={"TP"}, fills={"CLOSE": {"cumQuote": None, "avgPrice": None}})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED  # it still closed
+    assert result["outcome"] is None
+    assert ll.FILL_FACTS_MISSING in result["reason_codes"]
+
+
+def test_a_naked_position_that_stayed_open_records_no_outcome():
+    """The inverse pin: nothing was realized, so there is nothing to record. A row here would
+    report a closed trade against a position the venue still holds."""
+    result = _entry(adapter=FakeAdapter(missing={"TP", "CLOSE"}))
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    assert result["outcome"] is None
+
+
 # --- the bracket legs themselves -------------------------------------------------
 
 def test_the_stop_is_closePosition_never_sized():
