@@ -14,6 +14,7 @@ import pytest
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.data_review import (
+    DATA_REVIEW_DEGRADED,
     DATA_REVIEW_LEDGER_KIND,
     MAX_SUGGESTIONS_PER_RUN,
     MockDataReviewProvider,
@@ -72,12 +73,55 @@ def test_the_inventory_reports_the_venues_own_vocabulary():
     assert hyperliquid["venue"] == market_data.HYPERLIQUID
 
 
-def test_an_undeclared_venue_yields_an_empty_vocabulary_not_a_raise():
-    # A description of what exists should report the emptiness, not refuse to be built. The
-    # gates that must refuse an unknown venue (`known_features`, the template gate) do.
+def test_an_undeclared_venue_has_no_vocabulary_rather_than_an_empty_one():
+    """`market_data` states the rule this used to break, about this exact table:
+
+        "this venue provides nothing" and "nobody has said what this venue provides"
+        must not produce the same silence.
+
+    It returned `[]` for both. An empty list is the claim that nothing is mintable; `None`
+    is the absence of an answer, which is what an undeclared venue actually leaves behind.
+    """
     inv = build_data_inventory([], [], venue="not_a_venue")
-    assert inv["mintable_features"] == []
+    assert inv["mintable_features"] is None
     assert inv["venue"] == "not_a_venue"
+    # Still built, not refused — this record describes, and the module degrades rather
+    # than blocks. The gates that must refuse an unknown venue still do.
+    assert inv["current_sources"] and "feed_status" in inv
+
+
+def test_an_unknown_vocabulary_degrades_before_the_provider_is_paid():
+    """The review asks what data is worth ADDING. Against a venue nobody has described,
+    every suggestion reads as new because nothing is known to be covered — so the answer
+    could not be used, and buying it is the avoidable half."""
+    class Counting(MockDataReviewProvider):
+        calls = 0
+
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            type(self).calls += 1
+            return super().generate(
+                prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds
+            )
+
+    provider = Counting()
+    record = review_data_gaps(
+        build_data_inventory([], [], venue="not_a_venue"), provider=provider, now=NOW
+    )
+    assert Counting.calls == 0, "an unusable answer must not be bought"
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert "not_a_venue" in record["degraded_reason"]
+    assert record["suggested_count"] == 0 and record["accepted_count"] == 0
+    assert record["invocation"] is None
+    # The shape of every other record — built once at the bottom, so nothing drifts.
+    assert record["collection_effect"] == "NONE"
+    assert record["record_sha256"].startswith("sha256:")
+
+
+def test_a_declared_venue_still_calls_the_provider():
+    # The inverse pin: the new gate must not degrade a review that has a real vocabulary.
+    record = review_data_gaps(build_data_inventory([], []), provider=MockDataReviewProvider(),
+                              now=NOW)
+    assert "degraded" not in record and record["invocation"] is not None
 
 
 # --- suggestion judgment ------------------------------------------------------
