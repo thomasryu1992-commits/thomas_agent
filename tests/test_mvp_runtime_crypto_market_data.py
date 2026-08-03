@@ -16,7 +16,7 @@ import urllib.parse
 import pytest
 
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.crypto import market_data
+from runtime.mvp_runtime.crypto import factory, market_data
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
     FACTORY_DEPTH_DAYS,
@@ -148,6 +148,98 @@ def test_degraded_record_shape():
     assert record["degraded_reason_code"] == "MARKET_DATA_DEGRADED"
     assert record["candle_count"] == 0 and record["last_close"] is None
     assert record["read_only"] is True and record["external_action"] is False
+    # A collection that failed still knows which venue it failed to reach, and the cycle's
+    # degraded snapshot reads this field rather than defaulting.
+    assert record["venue"] == market_data.BINANCE_FUTURES
+
+
+# --- which venue the data came from ------------------------------------------
+
+def test_the_snapshot_and_record_name_the_venue_not_just_the_collector():
+    """`source` names the collector; `venue` names whose data it returned.
+
+    Two different questions, and the factory needs the second: a spec mined from these
+    candles may only reference what this venue serves. Until the snapshot carried it, that
+    fact lived in an env var read at collector construction and reached nothing downstream —
+    a hyperliquid collection fed a factory run that minted `binance_futures` specs.
+    """
+    snapshot, record = collect_market_data(
+        "BTCUSDT", "1d", collector=MockMarketDataCollector(), now=NOW, limit=50
+    )
+    assert snapshot["source"] == "mock.market_data"
+    assert snapshot["venue"] == market_data.BINANCE_FUTURES
+    assert record["venue"] == snapshot["venue"]
+
+
+def test_every_collector_speaks_for_a_declared_venue():
+    """`provider_id` is reused as the venue rather than restated as a second field, so it
+    has to keep naming something `VENUE_FEEDS` knows. A collector whose grant identity and
+    venue identity drifted apart would mint against a vocabulary nobody described."""
+    collectors = [
+        value for value in vars(market_data).values()
+        if isinstance(value, type) and value.__name__.endswith("Collector")
+        and hasattr(value, "provider_id")
+    ]
+    assert collectors, "expected to find the collector classes"
+    for collector in collectors:
+        assert collector.provider_id in market_data.VENUE_FEEDS, collector.__name__
+
+
+def test_a_collector_that_declares_nothing_reads_as_binance():
+    # The migration fact, not a guess: every collector that predates the field was Binance's.
+    class Bare:
+        pass
+
+    assert market_data.collector_venue(Bare()) == market_data.BINANCE_FUTURES
+
+
+def test_a_venue_a_collector_invents_stops_at_the_factory():
+    """`collector_venue`'s default is the fail-OPEN direction, bounded downstream instead.
+
+    A collector naming a venue nobody declared does not get a silent empty vocabulary — it
+    raises where the vocabulary is resolved, which is the only place that can tell the
+    difference between "this venue serves nothing" and "nobody said what it serves".
+    """
+    class Inventive(MockMarketDataCollector):
+        provider_id = "kraken_perps"
+
+    snapshot, _ = collect_market_data(
+        "BTCUSDT", "1d", collector=Inventive(), now=NOW, limit=50
+    )
+    assert snapshot["venue"] == "kraken_perps"
+    with pytest.raises(ToolBlocked) as exc:
+        factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                            existing_candidates=[], now=NOW, count=1)
+    assert exc.value.reason_code == "UNKNOWN_VENUE"
+
+
+def test_the_factory_mines_the_venue_the_snapshot_came_from():
+    """End to end: collector → snapshot → minted spec, with nothing to pass by hand."""
+    class HyperliquidLike(MockMarketDataCollector):
+        provider_id = market_data.HYPERLIQUID
+        source = "hyperliquid_public"
+
+    snapshot, _ = collect_market_data(
+        "BTCUSDT", "1h", collector=HyperliquidLike(), now=NOW, limit=400
+    )
+    result = factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                                 existing_candidates=[], now=NOW, count=4)
+    assert result["candidates"]
+    assert {c["strategy_spec"]["venue"] for c in result["candidates"]} == {
+        market_data.HYPERLIQUID}
+
+
+def test_a_snapshot_without_a_venue_still_mines_as_binance():
+    # Snapshots are passed between processes and a stored one predates the field. Same
+    # migration fact `StrategySpec.from_dict` uses, one layer up.
+    snapshot, _ = collect_market_data(
+        "BTCUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=400
+    )
+    del snapshot["venue"]
+    result = factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                                 existing_candidates=[], now=NOW, count=4)
+    assert {c["strategy_spec"]["venue"] for c in result["candidates"]} == {
+        market_data.BINANCE_FUTURES}
 
 
 # --- Safety-Flag Gate wiring in select_market_data_collector -----------------

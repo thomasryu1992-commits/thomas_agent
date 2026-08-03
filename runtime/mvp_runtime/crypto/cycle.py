@@ -450,7 +450,11 @@ def run_crypto_cycle(
         snapshot = {
             "snapshot_version": "0.1", "symbol": symbol, "timeframe": timeframe,
             "candles": [], "candle_count": 0, "last_close": None, "last_candle_time": None,
-            "source": collection_record["source"], "is_synthetic": False,
+            "source": collection_record["source"],
+            # Read off the record rather than defaulted: a degraded collection still knows
+            # which venue it failed to reach, and a stub that quietly said binance would put
+            # the wrong venue on anything mined from the cycle that carried it.
+            "venue": collection_record["venue"], "is_synthetic": False,
             "degraded": True, "created_at": now,
         }
         reason_codes.append(MARKET_DATA_DEGRADED)
