@@ -4,7 +4,17 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-02** (`main` = `f7a9356`), after asking why the promotion board reported
+Last updated: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
+is at the top of section C and nothing else in this file outranks it:** the runtime placed its
+first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
+therefore **cannot hold a position** — every entry fills and is closed again. Nobody lost money
+(0.12 USDT of fees, no adverse price) and the safety path worked exactly as written; what is open
+is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed,
+and the fact that **nothing counts repeated bracket failures**. That last one is the only build
+item in it. The deployed image is `320475b`; rollback tags `rollback-pre-<PR#>` are on the Docker
+host and do not travel.
+
+Earlier: **2026-08-02** (`main` = `f7a9356`), after asking why the promotion board reported
 **0 promotable with 900 candidates on file**. The answer was three filters in series, and the
 middle one is the finding: **gross edge is nearly flat across the ladder (+0.09R at 15m to +0.15R
 at 4h) while cost varies 4.4× (0.28R to 0.06R)**, so what separates the timeframes is the
@@ -246,6 +256,60 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 ---
 
 ## C. Crypto live execution — the governance packet + the order code
+
+> ### ⚠️ THE FIRST AUTONOMOUS LIVE ORDERS RAN ON 2026-08-02, AND THE PROTECTIVE STOP WAS REFUSED BOTH TIMES
+>
+> **Read this before anything else in this section.** Live trading is armed and reachable, it has
+> now placed real orders without a person present, and it **cannot currently hold a position** —
+> every entry fills and is immediately closed again.
+>
+> Two entries, both ETHUSDT 4h SHORT, both `status: ENTRY_NAKED_CLOSED`:
+>
+> | when (UTC) | entry fill | closed at | notional |
+> |---|---|---|---|
+> | 2026-08-02T08:03:48Z | 1876.35 | 1876.36 | 58.17 USDT |
+> | 2026-08-02T08:20:44Z | 1875.34 | 1875.35 | 58.14 USDT |
+>
+> **What happened each time.** The MARKET entry filled and reconciled. The `closePosition`
+> `STOP_MARKET` protective leg came back `ORDER_REJECTED` (`placed: false`). The resting maker TP
+> **did** place. `live_leg` then did exactly what it documents — cancelled the surviving TP and
+> closed the exposure — so the book ended flat (`position: null`) and the account shows
+> `positions: none`. **Cost: 0.12 USDT, all of it fees** (`realized 1d: pnl -0.00, fee -0.12`).
+> The safety path is not in question; it worked twice.
+>
+> **The cause is UNKNOWN, and that is itself the finding.** Ruled out by inspection, so do not
+> re-do this: the request shape matches the venue contract exactly (`stopPrice` + `closePosition`
+> only — no `price`, no `quantity`, no `reduceOnly`; the `price` in the stored record is a local
+> field, not sent); every ETHUSDT filter passes (`tickSize` 0.01 and 1907.98 is an exact multiple;
+> `PERCENT_PRICE multiplierUp 1.05` puts the ceiling at 1970.17; `MIN_NOTIONAL 20` does not apply
+> to a quantity-less order; `MAX_NUM_ORDERS 200`); `workingType: MARK_PRICE` is deliberate; and the
+> entry was `RECONCILED` before the bracket was attempted, so it is not an ordering race.
+>
+> **Why it could not be determined:** the venue's own message was never persisted. The record
+> carried `error: "ORDER_REJECTED"` — the same string for every rejection — and the container has
+> since been recreated, so the logs are gone. #426 closed exactly that gap (`error_detail`, the
+> venue's numeric code and text) and **is deployed as of 2026-08-02T15:59Z**.
+>
+> **So the next attempt answers it.** That is the agreed next step, chosen over guessing. On the
+> host, watch `.runtime_governance_state/crypto/live_order_counter.json` for a new date key, then
+> read the `live_opened.bracket[].error_detail` on that cycle record.
+>
+> **This path had never run before.** The four canary orders are entry-only MARKET by
+> construction (`place_canary_order`), so `STOP_MARKET closePosition` was executed for the first
+> time on 2026-08-02 and failed on first use — the same shape as the six defects the canary path
+> turned up, not a regression.
+>
+> **The one thing that is a build item, and it is open:** nothing counts repeated bracket
+> failures. `LIVE_BRACKET_FAILED` and `ENTRY_NAKED_CLOSED` appear nowhere outside `live_leg.py` —
+> no breaker, no escalation. The loop *signal → fill → refuse → close* is bounded only by the
+> registered budget's `2 orders/day`, i.e. about **0.12 USDT a day, indefinitely**, and it resumes
+> at every UTC midnight. Small, but it is a bleed with no stop, and while it runs **live trading
+> cannot work at all** because every position is closed the moment it opens.
+>
+> Evidence lives on the Docker host only (gitignored): the cycle records in
+> `.runtime_governance_state/runtime_ledger/records.jsonl` (search `live_opened`), the audit
+> events (which cover the ENTRY only — they do not carry the bracket rejection), and
+> `live_order_counter.json`. A fresh machine has none of it.
 
 Decision record: `docs/runtime-contracts/LIVE_EXECUTION_GOVERNANCE_V0.1.md` (decided 2026-07-23;
 **the governance packet is fully implemented** — the last item, the LP4-coupled flag, flipped with
@@ -1113,6 +1177,27 @@ A fresh machine has the code but not the local runtime state (gitignored, per CL
 
 None of this is "planned work" — it is per-machine state you re-establish with the CLAUDE.md
 "Core activation" steps + `scripts/activate_safety_flag.py`.
+
+**What the 2026-08-02 live incident leaves on the Docker host and nowhere else.** A fresh machine
+cannot investigate it — it has the code but none of the evidence, and it is not armed to reproduce
+it. All of the following are gitignored:
+
+- `crypto/live_order_counter.json` — the daily order count, and the *only* field that said two
+  live orders had gone out. `live_positions/` was empty and `live_outcomes.jsonl` absent, because
+  a naked-close leaves no ordinary outcome, so both of those read as "nothing has traded".
+- `runtime_ledger/records.jsonl` — the cycle records carrying `live_opened` (entry fill, bracket
+  result, `naked_close`). Grep `live_opened`; the useful keys are `bracket[].error`/`error_detail`,
+  `naked_close.result.fill`, and `status`.
+- `runtime_ledger/audit_events.jsonl` — the P5 decision and the ENTRY event. It does **not** carry
+  the bracket rejection, which is why the cause is still unknown.
+- `crypto/crypto_live_candidate_ack.json` — the operator acknowledgement holding Gate 0 open until
+  2026-08-22, without which the door closes and no live entry happens at all.
+- The rollback image tags (`thomas-agent-runtime:rollback-pre-<PR#>`) are in the host's Docker
+  image store, not in git.
+
+So: **do the live-order investigation on the Docker host, and use another machine for the code,
+docs and factory work.** Section F and the promotion/economics questions travel fine; this one
+does not.
 
 ---
 
