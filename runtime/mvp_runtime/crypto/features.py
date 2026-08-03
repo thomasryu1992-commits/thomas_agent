@@ -1081,6 +1081,44 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             else "OK"
         )
         rows.append(row)
+    return attach_previous_bar(rows)
+
+
+# The prefix a lagged reference resolves to, and the only lag depth there is.
+#
+# **A crossover is the thing the spec vocabulary could not say.** `macd > macd_signal` is a
+# STATE — true for the whole of a trend — so a spec built on it re-fires on every bar of that
+# trend rather than on the bar the relationship changed. There was no way to write "crossed
+# above": no lag operator, and `value_from` reads the same row. So the search could not see the
+# hypothesis at all, whatever it did with parameters.
+#
+# One bar, not n. A crossover needs exactly one, and each further depth copies the whole numeric
+# vocabulary into every row again — the cost here is row size, not CPU, and it is paid on every
+# bar of every replay. "ADX rising for five bars" wants a different mechanism (a rolling
+# derivative computed once) rather than five copies of everything, and is a later increment.
+PREVIOUS_BAR_PREFIX = "prev_"
+
+
+def attach_previous_bar(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give every row the PREVIOUS row's values under ``prev_``. Pure; mutates and returns rows.
+
+    The first row's are all ``None`` — there is no bar before it — which the fail-closed
+    evaluator reads as indeterminate, so a spec that references a lag simply does not match on
+    the first bar rather than matching on an invented one.
+
+    Only numeric and label columns are copied, and `prev_` columns are never copied again: a
+    row carries the bar before it, not the whole history, and `prev_prev_*` would grow the row
+    without any way to reference it.
+    """
+    previous: dict[str, Any] | None = None
+    for row in rows:
+        lagged = {
+            f"{PREVIOUS_BAR_PREFIX}{key}": (previous.get(key) if previous is not None else None)
+            for key in row
+            if not key.startswith(PREVIOUS_BAR_PREFIX)
+        }
+        previous = {k: v for k, v in row.items() if not k.startswith(PREVIOUS_BAR_PREFIX)}
+        row.update(lagged)
     return rows
 
 

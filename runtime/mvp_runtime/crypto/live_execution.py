@@ -151,7 +151,21 @@ OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
 # cap, so it can refuse the NEXT bracket; and a `closePosition` stop that survives its position
 # will Close-All against whatever is open when it triggers — a position it was never placed to
 # protect.
-ALGO_OPEN_ORDERS_PATH = "/fapi/v1/algoOpenOrders"
+# **`openAlgoOrders`, and the transposition is not a typo you get to make twice.** The venue
+# also publishes `/fapi/v1/algoOpenOrders` — same words, other order — and that one is
+# `DELETE`: cancel EVERY open algo order on the account. This constant pointed at it, which
+# 404'd on the live account 2026-08-03 because the verb was GET. A GET at a mass-cancel path is
+# a spelling mistake away from withdrawing every protective stop the account has.
+#
+# It is deliberately NOT defined here. Nothing in this repo cancels in bulk — `cancel_order`
+# takes one id, because a cancel that names its target cannot take out a leg protecting a
+# position it was never asked about — and a constant for the bulk path would be a loaded gun
+# lying beside a very similar name.
+#
+# Taken from a client implementation rather than a docs summary: the summary this was first
+# written from had the path wrong, and a path is exactly the kind of fact that reads plausible
+# either way.
+ALGO_OPEN_ORDERS_PATH = "/fapi/v1/openAlgoOrders"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
