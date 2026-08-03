@@ -1223,15 +1223,47 @@ def test_the_holdout_runs_the_same_door_as_the_scored_window(monkeypatch):
 # matches every bar forever, on a number nobody measured.
 
 def test_every_mintable_feature_is_classified():
-    # The load-bearing test of this increment. `_FEATURE_FEED` names the features that need
-    # something beyond candles; everything else is candle-derived and available anywhere.
-    # A feature that is in neither would default to "available on every venue" — the unsafe
-    # direction — so a new one must be classified rather than silently inherited.
+    """The load-bearing test of this increment: the two tables must PARTITION the vocabulary.
+
+    `known_features` reads an unclassified feature as available on every venue — the unsafe
+    direction — so "did anyone classify this?" cannot be answered by `_FEATURE_FEED` alone.
+    Checking only `classified <= vocabulary` would pass a new feature straight through: it
+    is absent from the table being checked, and absence is the thing being looked for.
+    `_CANDLE_DERIVED` exists to be the second statement that can disagree, so both
+    directions are asserted here — a name in neither list, and a name in both.
+    """
     vocabulary = set(factory.NUMERIC_FEATURES) | set(factory.CATEGORICAL_FEATURES)
     classified = set(factory._FEATURE_FEED)
-    assert classified <= vocabulary, f"classified but not mintable: {sorted(classified - vocabulary)}"
+    candle_derived = set(factory._CANDLE_DERIVED)
+
+    unclassified = vocabulary - classified - candle_derived
+    assert not unclassified, (
+        f"mintable but unclassified: {sorted(unclassified)} — name each in `_FEATURE_FEED` "
+        f"(with the feed it needs) or in `_CANDLE_DERIVED`. Left out, they read as available "
+        f"on every venue, including ones that cannot supply them."
+    )
+    assert not (classified & candle_derived), (
+        f"claimed both ways: {sorted(classified & candle_derived)}"
+    )
+    stale = (classified | candle_derived) - vocabulary
+    assert not stale, f"classified but not mintable: {sorted(stale)}"
     for feed in factory._FEATURE_FEED.values():
         assert feed in market_data.KNOWN_FEEDS, f"unknown feed named: {feed}"
+
+
+def test_an_unclassified_feature_is_caught_rather_than_inherited(monkeypatch):
+    """The guard above, exercised — the assertion this test file could not make before.
+
+    A feature added to the vocabulary and to neither table is the realistic mistake: nothing
+    about writing it is venue-aware, and every existing test still passes because it is
+    present on both sides of every set difference they take. This pins that the partition
+    check is what fails, and names the feature when it does.
+    """
+    monkeypatch.setattr(
+        factory, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
+    )
+    with pytest.raises(AssertionError, match="liquidation_burst_ratio"):
+        test_every_mintable_feature_is_classified()
 
 
 def test_binance_keeps_the_whole_vocabulary():

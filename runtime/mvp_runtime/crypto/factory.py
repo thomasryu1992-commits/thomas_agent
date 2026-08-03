@@ -1015,9 +1015,9 @@ def templates_for_timeframe(
 # derived from OHLCV (directly, or through the higher-timeframe, reference-symbol and
 # cross-section legs, which are all just more candles) and is available wherever candles are.
 #
-# `test_every_mintable_feature_is_classified` pins that this table plus the candle-derived
-# remainder covers the vocabulary exactly, so a new feature cannot arrive unclassified and
-# be silently claimed available on a venue that has no data for it.
+# `test_every_mintable_feature_is_classified` pins this table and `_CANDLE_DERIVED` below as
+# an exact PARTITION of the vocabulary, so a new feature cannot arrive unclassified and be
+# silently claimed available on a venue that has no data for it.
 _FEATURE_FEED: dict[str, str] = {
     "funding_rate": market_data.FEED_FUNDING,
     "funding_zscore": market_data.FEED_FUNDING,
@@ -1044,6 +1044,39 @@ _FEATURE_FEED: dict[str, str] = {
     "avg_trade_size_zscore": market_data.FEED_TRADE_COUNT,
     "trade_count_zscore": market_data.FEED_TRADE_COUNT,
 }
+
+# The other half of the partition: everything the candle series alone produces, and therefore
+# everything available wherever candles are.
+#
+# Written out rather than defined as "whatever `_FEATURE_FEED` did not name", which is what
+# `known_features` effectively assumes and is exactly why this list has to exist. The default
+# direction here is UNSAFE — an unclassified feature reads as available on every venue — so
+# the only thing that can catch a feature nobody classified is a second statement to disagree
+# with. `NUMERIC_FEATURES` splats `features.HTF_/REFERENCE_/XS_NUMERIC_COLUMNS`, so those
+# families grow without anyone editing this file; the names are listed individually so that
+# growth still has to be acknowledged as candle-derived rather than assumed to be.
+#
+# Adding a feature therefore fails `test_every_mintable_feature_is_classified` until it is
+# named in one list or the other. That failure IS the guard — it is cheaper than discovering
+# on a venue with no liquidation feed that `liquidation_spike_ratio`'s constant-0.0 fallback
+# has been matching every bar since the feature landed.
+_CANDLE_DERIVED: frozenset[str] = frozenset({
+    "open", "high", "low", "close", "volume",
+    "ma20", "ma50", "ema20", "ema50", "atr", "atr_pct_of_price", "atr_percentile",
+    "rsi", "adx", "macd", "macd_signal", "macd_hist",
+    "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
+    "roc_4", "price_distance_ma20", "volume_zscore",
+    # One step up the ladder — the same indicators over a slower candle.
+    "htf_rsi", "htf_adx", "htf_price_distance_ma20", "htf_ma20_distance_ma50",
+    # One proxy symbol's candles beside this symbol's.
+    "ref_roc_4", "rel_strength_roc_4", "ref_correlation",
+    # A cohort's candles, reduced to this symbol's place among them.
+    "xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio",
+    # Every categorical is a classifier over the candle series. Listed, not splatted from
+    # `CATEGORICAL_FEATURES`, because a future categorical need not be — a funding or
+    # positioning REGIME would be a label over a feed, and splatting would wave it through.
+    "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
+})
 
 
 def known_features(venue: str) -> tuple[frozenset[str], dict[str, Any]]:
