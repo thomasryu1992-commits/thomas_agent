@@ -824,25 +824,45 @@ _BRACKET_FAILURE_STATUSES = frozenset({live_leg.ENTRY_NAKED_CLOSED, live_leg.ENT
 
 
 def _bracket_error_detail(entry: Mapping[str, Any]) -> list[dict[str, Any]] | None:
-    """What the venue actually said about each protective leg that did not place.
+    """What the venue said — or did not say — about each protective leg that failed.
 
-    `error` alone is the same string for every rejection there is — reading it was what made the
-    first two naked entries uninvestigable once the container holding the logs was recreated.
-    `error_detail` (PR #426) is the venue's numeric code and text, and it is carried onto the
+    `error` alone is the same string for every rejection there is, and reading only it was what
+    made the first two naked entries uninvestigable once the container holding the logs was
+    recreated. `error_detail` (PR #426) is the venue's numeric code and text, carried onto the
     breaker record here because that record outlives the cycle, the logs and the container.
+
+    **A leg fails in two ways and only one of them talks.** A rejection carries a code and a
+    message. A leg that never came to rest carries nothing at all — no error, no exchange id,
+    just a status that is not `NEW`. The first version of this function looked only for an
+    error, so the third live failure (2026-08-03T04:28:58Z, the first one after #447 moved
+    conditional orders to the Algo API) recorded `last_error_detail: null`: the breaker counted
+    it and could not say one word about it, which is the same gap #426 closed for the other
+    half. The cycle record still held `placed: False, status: NOT_FOUND`. The durable record
+    that exists to outlive the cycle did not.
+
+    Membership is decided by `live_leg.BRACKET_RESTING_STATUSES` rather than by looking for an
+    error, because that frozenset is what `live_leg` itself uses to decide the bracket is in
+    place. One predicate, one answer — a second definition of "this leg is fine" is how two
+    files drift into disagreeing about whether a position is protected.
     """
     legs = entry.get("bracket")
     if not isinstance(legs, list):
         return None
-    failed = [
-        {
+    failed = []
+    for leg in legs:
+        if not isinstance(leg, Mapping):
+            continue
+        spoke = bool(leg.get("error") or leg.get("error_detail"))
+        if leg.get("status") in live_leg.BRACKET_RESTING_STATUSES and not spoke:
+            continue
+        failed.append({
             "leg": leg.get("leg"),
+            "order_type": leg.get("order_type"),
+            "placed": leg.get("placed"),
+            "status": leg.get("status"),
             "error": leg.get("error"),
             "error_detail": leg.get("error_detail"),
-        }
-        for leg in legs
-        if isinstance(leg, Mapping) and (leg.get("error") or leg.get("error_detail"))
-    ]
+        })
     return failed or None
 
 

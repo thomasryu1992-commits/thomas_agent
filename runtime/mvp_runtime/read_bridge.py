@@ -60,7 +60,6 @@ _READS: dict[str, tuple[str, Any]] = {
     "crypto_status":    (_DOMAIN, ("CRYPTO", "status")),
     "crypto_readiness": (_DOMAIN, ("CRYPTO", "readiness")),
     "crypto_paper":     (_DOMAIN, ("CRYPTO", "paper")),
-    "pred_report":      (_DOMAIN, ("PRED", "report")),
     "tasks":            (_REGISTRY, "TASKS"),
     "history":          (_REGISTRY, "HISTORY"),
     "result":           (_REGISTRY, "RESULT"),
