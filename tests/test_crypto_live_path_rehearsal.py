@@ -182,10 +182,10 @@ class ScriptedVenue:
 
     def submit(self, order_request, *, timeout_seconds: int = 10):
         self.submitted.append(dict(order_request))
-        self._requests[str(order_request["newClientOrderId"])] = dict(order_request)
+        self._requests[str((order_request.get("clientAlgoId") or order_request["newClientOrderId"]))] = dict(order_request)
         return {"accepted": True}
 
-    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
         kind = self._kind(str(client_order_id))
         request = self._requests.get(str(client_order_id))
         if request is None:
@@ -205,7 +205,7 @@ class ScriptedVenue:
             "orderId": f"oid-{kind}",
         }
 
-    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
         self.cancelled.append(str(client_order_id))
         return {"status": "CANCELED"}
 
@@ -332,7 +332,7 @@ def test_the_leg_opens_a_position_from_a_decision_the_planner_actually_produced(
     # rests in the book as a sized reduceOnly LIMIT so it earns the maker rate.
     sent = {r["type"]: r for r in venue.submitted}
     assert set(sent) == {"MARKET", "STOP_MARKET", "LIMIT"}
-    assert sent["STOP_MARKET"]["stopPrice"] == decision["bracket"]["stop_loss"]
+    assert sent["STOP_MARKET"]["triggerPrice"] == decision["bracket"]["stop_loss"]
     assert sent["STOP_MARKET"]["side"] == decision["bracket"]["stop_side"]
     assert sent["STOP_MARKET"]["workingType"] == decision["bracket"]["working_type"]
     assert sent["LIMIT"]["price"] == decision["bracket"]["take_profit"]

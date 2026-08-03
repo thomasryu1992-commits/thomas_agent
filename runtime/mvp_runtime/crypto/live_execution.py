@@ -79,6 +79,44 @@ ORDER_API_KEY_ENV = "MVP_LIVE_ORDER_API_KEY"
 ORDER_API_SECRET_ENV = "MVP_LIVE_ORDER_API_SECRET"
 ORDER_BASE_URL = "https://fapi.binance.com"
 ORDER_PATH = "/fapi/v1/order"
+
+# --- the Algo Order API: where every conditional order now lives ----------------------------
+#
+# **The venue moved them and this runtime did not notice for eight months.** Effective
+# 2025-11-06 (announced) / 2025-12-09 (enforced), Binance USD-M migrated conditional order
+# types off `POST /fapi/v1/order`, which now REFUSES them with `-4120: Order type not supported
+# for this endpoint. Please use the Algo Order API endpoints instead.`
+#
+# Measured on this account 2026-08-03 through `scripts/diagnose_bracket_leg`, which is the whole
+# reason that tool exists: the exact request the runtime sent on 2026-08-02 comes back -4120,
+# while the take-profit LIMIT beside it is accepted. That is the cause of both autonomous
+# entries filling and being closed again for want of a protective stop, and of the runtime being
+# unable to hold a live position at all.
+#
+# The bracket DESIGN was never wrong — a venue-side stop placed at entry is the right shape. One
+# transport fact went stale, and every check this repo had pointed at its own model of the
+# venue: closed schemas, tick sizes, filters, request shape. All of them passed. None of them
+# could catch "the venue stopped accepting this type", because that fact lives only at the
+# venue. The `Verified against the venue's New Order contract (2026-07-25)` note below this is
+# the trap in miniature — the parameter table was read correctly, eight months after the type
+# had been moved off the endpoint the table described.
+#
+# It is NOT only a path change, which is why guessing would have produced a second broken
+# release: two request parameters and three response fields are renamed.
+#
+#   place    POST   /fapi/v1/order      ->  POST   /fapi/v1/algoOrder  + algoType=CONDITIONAL
+#   query    GET    /fapi/v1/order      ->  GET    /fapi/v1/algoOrder
+#   cancel   DELETE /fapi/v1/order      ->  DELETE /fapi/v1/algoOrder
+#   trigger  stopPrice                  ->  triggerPrice
+#   send id  newClientOrderId           ->  clientAlgoId
+#   query id origClientOrderId          ->  clientAlgoId
+#   order id orderId                    ->  algoId
+#   state    status                     ->  algoStatus
+ALGO_ORDER_PATH = "/fapi/v1/algoOrder"
+# The only `algoType` the venue defines for these; sent on every place, and the discriminator
+# `is_algo_request` reads to pick the endpoint. Using the venue's own field rather than a local
+# flag means the request cannot say one thing and be routed by another.
+ALGO_TYPE_CONDITIONAL = "CONDITIONAL"
 # The venue's own validator: identical parameters and signing, **no order is ever created**.
 #
 # It exists here because on 2026-08-02 the runtime's first two autonomous entries had their
@@ -208,14 +246,18 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
             f"order_type_exchange must be one of {sorted(SUPPORTED_ORDER_TYPES)}, got {order_type!r}",
         )
 
+    algo = order_type in CONDITIONAL_ORDER_TYPES
     request: dict[str, Any] = {
         "symbol": symbol,
         "side": side,
         "type": order_type,
-        "newClientOrderId": client_order_id,
     }
+    # The identity field is named differently on the two endpoints, and it is the SAME id: the
+    # idempotency key the caller already minted. Only the spelling changes with the endpoint.
+    request["clientAlgoId" if algo else "newClientOrderId"] = client_order_id
 
-    if order_type in CONDITIONAL_ORDER_TYPES:
+    if algo:
+        request["algoType"] = ALGO_TYPE_CONDITIONAL
         stop_price = intent.get("stop_price")
         if not (isinstance(stop_price, (int, float)) and stop_price > 0):
             raise ToolError(
@@ -223,7 +265,9 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
                 f"{order_type} needs a positive stop_price (a conditional order without a "
                 "trigger is meaningless)",
             )
-        request["stopPrice"] = float(stop_price)
+        # `stopPrice` on the old endpoint, `triggerPrice` on this one. The intent field keeps its
+        # name — it describes the strategy's stop, not the venue's spelling of it.
+        request["triggerPrice"] = float(stop_price)
         working_type = intent.get("working_type")
         if working_type is not None:
             if working_type not in WORKING_TYPES:
@@ -270,6 +314,39 @@ def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
+def is_algo_request(order_request: Mapping[str, Any]) -> bool:
+    """Whether this request belongs on the Algo Order endpoints.
+
+    Reads the venue's own ``algoType`` rather than a flag this repo invented, so a request
+    cannot be shaped one way and routed the other — the failure that would turn a fixed stop
+    into a silently-refused one all over again."""
+    return bool(order_request.get("algoType"))
+
+
+def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """An algo order in the field names the rest of this runtime already speaks.
+
+    The Algo endpoints answer with ``algoId``/``algoStatus``/``triggerPrice`` where the order
+    endpoints answer with ``orderId``/``status``/``stopPrice``. Translated ONCE, here at the
+    wire boundary, so `reconcile_order`, `place_bracket_leg` and `read_bracket_legs` keep one
+    vocabulary — teaching every caller two spellings is how one of them ends up checking the
+    wrong field and reading a refused stop as a resting one.
+
+    **Additive, never lossy.** The venue's own keys are kept alongside the aliases, because the
+    raw response is what lands in the ledger and an incident is reconstructed from it — this
+    session reconstructed the 2026-08-02 request byte-for-byte only because nothing had been
+    helpfully tidied away first. An alias is written only when the venue supplied the source
+    field, so a missing value stays missing rather than becoming a confident default."""
+    if venue_order is None:
+        return None
+    out = dict(venue_order)
+    for source, alias in (("algoId", "orderId"), ("algoStatus", "status"),
+                          ("triggerPrice", "stopPrice")):
+        if source in out and alias not in out:
+            out[alias] = out[source]
+    return out
+
+
 def reconcile_order(
     intent: Mapping[str, Any], venue_order: Mapping[str, Any] | None
 ) -> tuple[str, list[str]]:
@@ -311,11 +388,13 @@ class OrderAdapter(Protocol):
     def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]: ...
 
     def fetch_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None: ...
 
     def cancel_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None: ...
 
 
@@ -334,8 +413,13 @@ class DryRunOrderAdapter:
 
     def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
         req = dict(order_request)
-        self._submitted[str(req["newClientOrderId"])] = req
-        return {"dry_run": True, "accepted": True, "clientOrderId": req["newClientOrderId"]}
+        # The id field is spelled `clientAlgoId` on an algo request and `newClientOrderId`
+        # otherwise. Reading only one of them made the inert adapter — the default everywhere,
+        # and the one every test runs through — raise KeyError on exactly the order type the
+        # Algo migration moved.
+        client_id = str(req.get("clientAlgoId") or req["newClientOrderId"])
+        self._submitted[client_id] = req
+        return {"dry_run": True, "accepted": True, "clientOrderId": client_id}
 
     def validate_order(
         self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10
@@ -345,7 +429,16 @@ class DryRunOrderAdapter:
         A dry run has no venue to ask, so ``accepted: True`` here means "nothing was checked",
         not "the venue is happy". ``dry_run`` rides on the result so a caller printing it cannot
         report an unasked question as a passing one — the whole failure mode this tool exists
-        to avoid."""
+        to avoid.
+
+        The algo refusal is mirrored, and deliberately: "conditional orders have no test
+        endpoint" is a fact about the API surface, not a venue answer, so a dry run that
+        reported ACCEPTED there would promise a check the real adapter is going to decline."""
+        if is_algo_request(order_request):
+            return {
+                "accepted": None, "code": None, "msg": None, "supported": False, "dry_run": True,
+                "detail": "conditional orders live on the Algo API, which has no test endpoint",
+            }
         return {"accepted": True, "code": None, "msg": None, "dry_run": True}
 
     def open_orders(
@@ -358,9 +451,14 @@ class DryRunOrderAdapter:
         ]
 
     def cancel_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None:
-        """Forget the order, as a cancel would. ``None`` when there was nothing to cancel."""
+        """Forget the order, as a cancel would. ``None`` when there was nothing to cancel.
+
+        ``algo`` is accepted and ignored: this adapter has one store and no endpoints, so the
+        routing the real one does has nothing to select here. Kept in the signature so a caller
+        that forgets it fails against the REAL adapter's default rather than against this one."""
         req = self._submitted.pop(str(client_order_id), None)
         if req is None:
             return None
@@ -368,7 +466,8 @@ class DryRunOrderAdapter:
                 "status": "CANCELED", "dry_run": True}
 
     def fetch_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None:
         req = self._submitted.get(str(client_order_id))
         if req is None:
@@ -387,6 +486,11 @@ class DryRunOrderAdapter:
             "reduceOnly": req.get("reduceOnly", False),
             "closePosition": req.get("closePosition") == "true",
             "orderId": f"dryrun-{str(client_order_id)[:16]}",
+            # The algo spellings too, so a dry run exercises the same normalization the real
+            # answer goes through instead of a shape only this adapter ever produces.
+            **({"algoId": f"dryrun-{str(client_order_id)[:16]}",
+                "algoStatus": "NEW" if req["type"] in RESTING_ORDER_TYPES else "FILLED",
+                "triggerPrice": req.get("triggerPrice")} if req.get("algoType") else {}),
             "dry_run": True,
         }
 
@@ -497,7 +601,10 @@ class BinanceFuturesOrderAdapter:
         actually happened. The one rejection that is *informative* is a duplicate client order id:
         it means this exact order already landed, so the reconcile read will find it."""
         body, code = self._signed_request(
-            "POST", ORDER_PATH, dict(order_request), timeout_seconds=timeout_seconds
+            "POST",
+            ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
+            dict(order_request),
+            timeout_seconds=timeout_seconds,
         )
         if code is not None:
             if code == VENUE_DUPLICATE_CLIENT_ORDER_ID:
@@ -523,7 +630,21 @@ class BinanceFuturesOrderAdapter:
 
         Transport failures still raise: "the venue refused it" and "I could not ask" are
         different answers and must not arrive as the same value.
+
+        **An algo request cannot be validated here, and saying so is the point.** The test
+        endpoint belongs to the order API, which is precisely the door conditional orders were
+        moved off — sending one there would return the -4120 this method was built to discover,
+        forever, as an artefact of asking the wrong endpoint rather than a fact about the
+        request. The venue publishes no counterpart under the Algo API, so the answer is
+        ``supported: False`` and the only proof for a conditional leg is a real placement. A
+        ``closePosition`` stop placed while FLAT and far from the market is the cheap version of
+        that: nothing to close means nothing to fill, and it cancels.
         """
+        if is_algo_request(order_request):
+            return {
+                "accepted": None, "code": None, "msg": None, "supported": False,
+                "detail": "conditional orders live on the Algo API, which has no test endpoint",
+            }
         body, code = self._signed_request(
             "POST", ORDER_TEST_PATH, dict(order_request), timeout_seconds=timeout_seconds
         )
@@ -536,7 +657,8 @@ class BinanceFuturesOrderAdapter:
         return {"accepted": True, "code": None, "msg": None}
 
     def fetch_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None:
         """The order's state at the venue, or ``None`` when the venue has no such order.
 
@@ -545,11 +667,22 @@ class BinanceFuturesOrderAdapter:
         query becomes UNRECONCILABLE rather than being read as "no position". Queried by
         ``origClientOrderId``, which is the idempotency key.
 
+        ``algo`` selects the Algo Order endpoint, where the same id is spelled ``clientAlgoId``
+        and the answer comes back in the algo field names — :func:`normalize_algo_order` puts it
+        back into the one vocabulary the callers speak. It has NO default that guesses: a
+        conditional order queried on the order endpoint answers "does not exist", which reads as
+        a stop that never landed when it may be resting perfectly well. False is the correct
+        default only because every non-bracket caller here places plain orders.
+
         Retention caveat (venue-documented): an order that was cancelled/expired with no fill
         stops being queryable after 3 days, so ``None`` is only a reliable "did not land" signal
         near the time of the submit — which is exactly when reconcile runs."""
+        params = (
+            {"clientAlgoId": client_order_id} if algo
+            else {"symbol": symbol, "origClientOrderId": client_order_id}
+        )
         body, code = self._signed_request(
-            "GET", ORDER_PATH, {"symbol": symbol, "origClientOrderId": client_order_id},
+            "GET", ALGO_ORDER_PATH if algo else ORDER_PATH, params,
             timeout_seconds=timeout_seconds,
         )
         if code is not None:
@@ -557,7 +690,9 @@ class BinanceFuturesOrderAdapter:
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}")
-        return body if isinstance(body, dict) else None
+        if not isinstance(body, dict):
+            return None
+        return normalize_algo_order(body) if algo else body
 
     def open_orders(
         self, symbol: str | None = None, *, timeout_seconds: int = 10
@@ -595,7 +730,8 @@ class BinanceFuturesOrderAdapter:
         return [o for o in body if isinstance(o, dict)] if isinstance(body, list) else []
 
     def cancel_order(
-        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
     ) -> dict[str, Any] | None:
         """Cancel a resting order. ``None`` when the venue says there was nothing to cancel.
 
@@ -610,9 +746,18 @@ class BinanceFuturesOrderAdapter:
 
         **This can only remove a resting order, never place one.** A cancel of a protective leg
         while its position is still open would *increase* risk, which is why the only caller is
-        the exit path, after the position is confirmed closed."""
+        the exit path, after the position is confirmed closed.
+
+        ``algo`` picks the Algo Order endpoint, and here the wrong value is worse than a wrong
+        query: cancelling a conditional order on the order endpoint answers "unknown order",
+        which this function reads as *already gone* — so a stop that is still resting would be
+        reported as withdrawn, and the next entry would meet the venue's per-symbol conditional
+        cap with a leg nobody knows about."""
         body, code = self._signed_request(
-            "DELETE", ORDER_PATH, {"symbol": symbol, "origClientOrderId": client_order_id},
+            "DELETE",
+            ALGO_ORDER_PATH if algo else ORDER_PATH,
+            {"clientAlgoId": client_order_id} if algo
+            else {"symbol": symbol, "origClientOrderId": client_order_id},
             timeout_seconds=timeout_seconds,
         )
         if code is not None:

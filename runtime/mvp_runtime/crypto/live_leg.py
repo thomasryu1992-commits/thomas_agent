@@ -71,6 +71,7 @@ from typing import Any, Mapping
 from ..coerce import as_optional_float as _f
 from ..errors import ToolError
 from .live_execution import (
+    CONDITIONAL_ORDER_TYPES,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
@@ -138,9 +139,15 @@ UNPROTECTED = "UNPROTECTED"
 PROTECTION_UNKNOWN = "PROTECTION_UNKNOWN"
 
 # The two stored bracket ids, and the close reason each one's fill means.
+# Which stored id belongs to which leg, its close reason, and whether the venue keeps it on the
+# ALGO endpoints. The third field mirrors `build_bracket_intent`'s shapes — the stop is a
+# conditional STOP_MARKET and therefore an algo order since the 2025 migration; the target has
+# been a plain resting LIMIT since 2026-07-28 and is not. A test pins the two in sync, because
+# reading a leg on the wrong endpoint answers "no such order", which this module would take as a
+# stop that never landed when it may be resting perfectly well.
 _BRACKET_LEGS = (
-    ("stop_client_order_id", CLOSE_REASON_STOP),
-    ("take_profit_client_order_id", CLOSE_REASON_TARGET),
+    ("stop_client_order_id", CLOSE_REASON_STOP, True),
+    ("take_profit_client_order_id", CLOSE_REASON_TARGET, False),
 )
 
 
@@ -277,7 +284,10 @@ def place_bracket_leg(
 
     try:
         venue_order = adapter.fetch_order(
-            str(intent["symbol"]), client_order_id, timeout_seconds=timeout_seconds
+            str(intent["symbol"]), client_order_id, timeout_seconds=timeout_seconds,
+            # From the intent's own type, not from the leg label: this is the same request that
+            # was just submitted, so the endpoint that took it is the endpoint that knows it.
+            algo=str(intent.get("order_type_exchange")) in CONDITIONAL_ORDER_TYPES,
         )
     except ToolError as exc:
         result["error"] = result["error"] or exc.reason_code
@@ -315,7 +325,9 @@ def cancel_bracket_legs(
     """
     symbol = str(position.get("symbol") or "")
     results: list[dict[str, Any]] = []
-    for key in ("stop_client_order_id", "take_profit_client_order_id"):
+    # Iterated from `_BRACKET_LEGS` rather than a second hardcoded tuple: this loop needs each
+    # leg's endpoint, and two lists of the same legs is how one of them keeps the old answer.
+    for key, _close_reason, algo in _BRACKET_LEGS:
         client_order_id = position.get(key)
         if not isinstance(client_order_id, str) or not client_order_id:
             continue
@@ -323,7 +335,9 @@ def cancel_bracket_legs(
             "leg": key, "client_order_id": client_order_id, "error": None, "error_detail": None,
         }
         try:
-            response = adapter.cancel_order(symbol, client_order_id, timeout_seconds=timeout_seconds)
+            response = adapter.cancel_order(
+                symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo
+            )
         except ToolError as exc:
             entry["cancelled"] = False
             entry["error"] = exc.reason_code
@@ -818,7 +832,7 @@ def read_bracket_legs(
     symbol = str(position.get("symbol") or "")
     legs: list[dict[str, Any]] = []
     unknown = False
-    for key, close_reason in _BRACKET_LEGS:
+    for key, close_reason, algo in _BRACKET_LEGS:
         client_order_id = position.get(key)
         leg: dict[str, Any] = {
             "leg": key,
@@ -838,7 +852,9 @@ def read_bracket_legs(
             legs.append(leg)
             continue
         try:
-            venue_order = adapter.fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds)
+            venue_order = adapter.fetch_order(
+                symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo
+            )
         except ToolError as exc:
             leg["error"] = exc.reason_code
             leg["error_detail"] = str(exc)

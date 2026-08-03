@@ -44,20 +44,24 @@ def test_the_validated_request_is_what_the_money_path_would_send():
     stop = build_order_request(legs[0])
     expected = build_order_request(build_bracket_intent(
         symbol="ETHUSDT", leg="SL", side="BUY", price=1907.98,
-        working_type="MARK_PRICE", position_seed=stop["newClientOrderId"].rsplit("_", 1)[0],
+        working_type="MARK_PRICE", position_seed=stop["clientAlgoId"].rsplit("_", 1)[0],
     ))
-    assert {k: v for k, v in stop.items() if k != "newClientOrderId"} == {
-        k: v for k, v in expected.items() if k != "newClientOrderId"}
+    assert {k: v for k, v in stop.items() if k != "clientAlgoId"} == {
+        k: v for k, v in expected.items() if k != "clientAlgoId"}
 
 
 def test_the_incident_request_is_reproduced_field_for_field():
-    """The literal request the venue refused, from cycle crypto_cycle_2e06c80e7e96ee7d20ac.
-    If any of these drift, the diagnosis stops being about the thing that failed."""
+    """The incident's stop, now in the Algo Order spellings the venue actually wants.
+
+    From cycle crypto_cycle_2e06c80e7e96ee7d20ac. The prices and the shape are the incident's;
+    what changed on 2026-08-03 is `stopPrice` -> `triggerPrice`, `newClientOrderId` ->
+    `clientAlgoId`, and the `algoType` that routes it to the endpoint conditional orders were
+    moved to. If these drift, the diagnosis stops being about the thing that failed."""
     stop = build_order_request(diag._legs(diag.argparse.Namespace(**diag.INCIDENT))[0])
-    stop.pop("newClientOrderId")
+    stop.pop("clientAlgoId")
     assert stop == {
-        "symbol": "ETHUSDT", "side": "BUY", "type": "STOP_MARKET",
-        "stopPrice": 1907.98, "workingType": "MARK_PRICE", "closePosition": "true",
+        "symbol": "ETHUSDT", "side": "BUY", "type": "STOP_MARKET", "algoType": "CONDITIONAL",
+        "triggerPrice": 1907.98, "workingType": "MARK_PRICE", "closePosition": "true",
     }
 
 
@@ -153,7 +157,7 @@ def test_the_cli_defaults_to_the_incident_and_reports_both_legs(monkeypatch, cap
     diag.main([])
     out = capsys.readouterr().out
     assert "STOP_MARKET" in out and "LIMIT" in out
-    assert "'stopPrice': 1907.98" in out
+    assert "'triggerPrice': 1907.98" in out
     assert "'closePosition': 'true'" in out
 
 
@@ -180,3 +184,37 @@ def test_an_unreachable_venue_is_neither_accepted_nor_rejected(monkeypatch, caps
     monkeypatch.setattr(diag, "select_order_adapter", lambda: _Down())
     assert diag.main([]) == diag.EXIT_OK      # not a rejection — nothing was learned
     assert "UNREACHABLE" in capsys.readouterr().out
+
+
+# --- what the migration took away from this tool -------------------------------
+
+def test_a_conditional_leg_cannot_be_validated_and_says_which_it_is():
+    """The stop moved to the Algo API, and the test endpoint belongs to the order API. Asking
+    it about an algo request would return -4120 forever as an artefact of the question rather
+    than a fact about the request — the exact confident-wrong-answer this file exists to
+    prevent."""
+    request = build_order_request(diag._legs(diag.argparse.Namespace(**diag.INCIDENT))[0])
+    verdict = DryRunOrderAdapter().validate_order(request)
+    assert verdict["supported"] is False
+    assert verdict["accepted"] is None          # neither pass nor fail — unasked
+    assert "Algo API" in verdict["detail"]
+
+
+def test_the_plain_target_leg_is_still_validatable():
+    """Only conditional types moved. The tool keeps its value for everything else."""
+    request = build_order_request(diag._legs(diag.argparse.Namespace(**diag.INCIDENT))[1])
+    verdict = DryRunOrderAdapter().validate_order(request)
+    assert verdict.get("supported") is not False
+    assert verdict["accepted"] is True
+
+
+def test_the_real_adapter_declines_an_algo_request_without_opening_a_socket():
+    """Structural: it must not reach `_signed_request` at all, or an unreachable venue and an
+    unvalidatable request would arrive as the same failure."""
+    adapter = lx.BinanceFuturesOrderAdapter.__new__(lx.BinanceFuturesOrderAdapter)
+
+    def _boom(*a, **k):
+        raise AssertionError("validate_order opened a socket for an algo request")
+
+    adapter._signed_request = _boom  # type: ignore[method-assign]
+    assert adapter.validate_order({"algoType": "CONDITIONAL"})["supported"] is False

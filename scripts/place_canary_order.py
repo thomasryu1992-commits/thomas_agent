@@ -31,8 +31,27 @@ Since 2026-07-28 the opt-in is the whole switch — the per-machine `live_tradin
 to also be required was removed by Thomas. One fewer thing to set, and one fewer thing standing
 between an exported variable and a real order.
 
-Deliberately one order per invocation, and deliberately **entry-only**: a canary opens a small
-position, which the operator then closes on the venue. It is not wired into any autonomous cycle.
+Deliberately one order per invocation. A canary opens a small position, which the operator then
+closes on the venue. It is not wired into any autonomous cycle.
+
+**``--with-bracket`` is the reason this stopped being entry-only.** Being entry-only is what
+made three clean canaries the wrong evidence: they proved signing, submission and
+reconciliation, and when the runtime first traded autonomously on 2026-08-02 the thing that was
+broken was none of those — the venue refused the protective STOP, twice, because Binance had
+moved conditional orders to the Algo Order API eight months earlier. The gate had measured a
+property that was not the one at risk.
+
+So with the flag, once the entry is CONFIRMED FILLED this places the real protective stop
+through the same ``place_bracket_leg`` the autonomous leg uses, checks the venue reports it
+RESTING, and withdraws it through the same ``cancel_bracket_legs``. That is the one thing that
+cannot be proved without an open position — a ``closePosition`` order is refused outright when
+there is nothing to close (``-4509``), which is why it cannot be checked on a flat account and
+why it has to happen here.
+
+The proving stop is not protection and is never left in place: it sits ``--bracket-distance-pct``
+away so it cannot trigger in the seconds it is alive, and it is cancelled immediately. A cancel
+that fails prints the order id and fails the run — a resting order this tool left behind counts
+against the venue's per-symbol conditional cap and must never read as a pass.
 """
 
 from __future__ import annotations
@@ -66,6 +85,12 @@ from runtime.mvp_runtime.crypto.live_order import (
     resolve_live_order_limits,
 )
 from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot, venue_daily_realized_net
+from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE
+from runtime.mvp_runtime.crypto.live_leg import (
+    build_bracket_intent,
+    cancel_bracket_legs,
+    place_bracket_leg,
+)
 from runtime.mvp_runtime.crypto.market_data import (
     read_reference_price,
     select_market_data_collector,
@@ -90,15 +115,91 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "(quantity x price; never back-filled from the cap). Verified "
                              "against the venue's last close; under-declaring is refused, "
                              "over-declaring passes since it only tightens every cap")
+    parser.add_argument(
+        "--with-bracket", action="store_true",
+        help="after the fill, place the protective STOP leg, confirm it RESTS and withdraw it "
+             "— the evidence an entry-only canary cannot produce",
+    )
+    parser.add_argument(
+        "--bracket-distance-pct", type=float, default=DEFAULT_BRACKET_DISTANCE_PCT,
+        help=f"how far the proving stop sits from the fill (min {MIN_BRACKET_DISTANCE_PCT})",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=10)
     parser.add_argument("--json", action="store_true", help="emit the full result as JSON")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
     return parser.parse_args(argv)
 
 
+# How far the PROVING stop sits from the fill. It protects nothing — it exists to be accepted by
+# the venue and then withdrawn — so it is placed far enough away that it cannot trigger in the
+# seconds it is alive. A real bracket's stop is `stop_atr x ATR` from the entry and is the spec's
+# decision, not this tool's.
+DEFAULT_BRACKET_DISTANCE_PCT = 10.0
+MIN_BRACKET_DISTANCE_PCT = 2.0
+
+
+def prove_bracket(
+    *, result, symbol: str, direction: str, adapter, distance_pct: float, timeout_seconds: int
+) -> dict:
+    """Place the real protective stop against the position just opened, confirm it RESTS, and
+    withdraw it. Never raises: every failure here is a finding, and one that has to be reported
+    beside an order that is already at the venue.
+
+    Placed through `place_bracket_leg` and withdrawn through `cancel_bracket_legs` — the same
+    functions the autonomous leg uses. A parallel implementation would prove the wrong thing,
+    which is the whole lesson of the canary that proved the wrong property.
+    """
+    fill = result.get("fill") or {}
+    fill_price = float(fill.get("avg_price") or 0.0)
+    filled = float(fill.get("executed_qty") or 0.0)
+    if result.get("reconcile_status") != live_promotion.RECONCILED or fill_price <= 0 or filled <= 0:
+        # No position means the venue refuses a closePosition order outright. Saying "not
+        # attempted" is the honest answer; attempting it would manufacture a -4509 that says
+        # nothing about the bracket.
+        return {"attempted": False,
+                "reason": "the entry did not confirm a fill, so there is nothing to protect"}
+
+    # A LONG is stopped BELOW the fill and a SHORT ABOVE — the bracket's own rule.
+    long = direction.upper() == "LONG"
+    factor = (1.0 - distance_pct / 100.0) if long else (1.0 + distance_pct / 100.0)
+    trigger = round(fill_price * factor, 8)
+    intent = build_bracket_intent(
+        symbol=symbol, leg="SL", side="SELL" if long else "BUY", price=trigger,
+        working_type=BRACKET_WORKING_TYPE, position_seed=str(result["client_order_id"]),
+    )
+    placement = place_bracket_leg(intent, adapter=adapter, timeout_seconds=timeout_seconds)
+    # Attempted whatever the placement reported: a rejected submit may still have landed, which
+    # is exactly why `place_bracket_leg` asks the venue rather than trusting the submit.
+    cancels = cancel_bracket_legs(
+        {"symbol": symbol, "stop_client_order_id": placement.get("client_order_id")},
+        adapter=adapter, timeout_seconds=timeout_seconds,
+    )
+    cancel = cancels[0] if cancels else {"cancelled": False, "error": "no cancel attempted"}
+    return {
+        "attempted": True,
+        "trigger_price": trigger,
+        "rested": bool(placement.get("placed")),
+        "status": placement.get("status"),
+        "client_order_id": placement.get("client_order_id"),
+        "error": placement.get("error"),
+        "error_detail": placement.get("error_detail"),
+        "withdrawn": bool(cancel.get("cancelled")),
+        "cancel_error": cancel.get("error"),
+        "cancel_error_detail": cancel.get("error_detail"),
+        "left_behind": bool(placement.get("placed")) and not cancel.get("cancelled"),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     force_utf8_io()
     args = _parse_args(argv)
+    if args.with_bracket and args.bracket_distance_pct < MIN_BRACKET_DISTANCE_PCT:
+        sys.stderr.write(
+            f"BLOCKED: --bracket-distance-pct must be at least {MIN_BRACKET_DISTANCE_PCT}. A "
+            "proving stop close enough to trigger would stop proving the bracket and start "
+            "closing the canary.\n"
+        )
+        return EXIT_USAGE
     if args.quantity <= 0 or args.notional <= 0:
         sys.stderr.write("ERROR: --quantity and --notional must both be positive\n")
         return EXIT_USAGE
@@ -261,6 +362,18 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 — past the venue; report, never raise
                 counter_error = getattr(exc, "reason_code", type(exc).__name__)
 
+        # 6b. Prove the protective bracket against the position that now exists. This is the
+        #     one check that CANNOT be made on a flat account: a `closePosition` order is
+        #     refused outright when there is nothing to close (-4509), so the only moment it can
+        #     be tested is while a real position is open — exactly the moment an entry-only
+        #     canary used to hand back to the operator untested.
+        bracket_proof = None
+        if args.with_bracket:
+            bracket_proof = prove_bracket(
+                result=result, symbol=args.symbol, direction=args.direction, adapter=adapter,
+                distance_pct=args.bracket_distance_pct, timeout_seconds=args.timeout_seconds,
+            )
+
         # 7. Record it. `clean` is derived by the record from the reconcile facts — this tool
         #    cannot assert that its own canary was clean.
         record = live_promotion.build_canary_order_record(
@@ -318,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {"guard": verdict, "result": result, "canary_record": record,
                "registry_error": registry_error, "audit_error": audit_error,
-               "counter_error": counter_error,
+               "counter_error": counter_error, "bracket_proof": bracket_proof,
                "permission_decision_id": governance["permission_decision"]["permission_decision_id"]}
     if args.json:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=1, default=str) + "\n")
@@ -344,6 +457,28 @@ def main(argv: list[str] | None = None) -> int:
                 f"  DAILY CAP : NOT counted ({counter_error}) — the order IS placed, so the "
                 "daily cap now under-reports until this is repaired\n"
             )
+        if bracket_proof is not None:
+            if not bracket_proof.get("attempted"):
+                sys.stdout.write(f"\nbracket   : NOT TESTED — {bracket_proof.get('reason')}\n")
+            else:
+                rested = "RESTED" if bracket_proof["rested"] else "REFUSED"
+                sys.stdout.write(
+                    f"\nbracket   : {rested} at {bracket_proof['trigger_price']} "
+                    f"(status {bracket_proof.get('status')})\n"
+                    f"  withdrawn: {bracket_proof['withdrawn']}\n"
+                )
+                if not bracket_proof["rested"]:
+                    sys.stdout.write(
+                        f"  refused  : {bracket_proof.get('error_detail') or bracket_proof.get('error')}\n"
+                        "  The protective stop still does not place. Do NOT enable autonomous\n"
+                        "  entries — every one of them will fill and be closed again.\n"
+                    )
+                if bracket_proof["left_behind"]:
+                    sys.stdout.write(
+                        f"  LEFT BEHIND: {bracket_proof['client_order_id']} is resting and the\n"
+                        "  cancel failed. Withdraw it by hand — it counts against this symbol's\n"
+                        "  conditional order cap until you do.\n"
+                    )
         sys.stdout.write(
             "\nClose this canary position on the venue yourself — a canary only opens.\n"
         )
@@ -353,7 +488,14 @@ def main(argv: list[str] | None = None) -> int:
     # governance obligation unmet — exiting 0 would report that as a clean canary.
     # `counter_error` likewise: an uncounted order leaves the daily cap reading low for every
     # later run, which is a risk limit quietly widened rather than a bookkeeping nicety.
-    if registry_error or audit_error or counter_error or not record["clean"]:
+    # A bracket that was asked for and did not rest is a failed canary, and one this tool left
+    # resting at the venue is worse than a failure — both must refuse to exit 0.
+    bracket_failed = bracket_proof is not None and (
+        not bracket_proof.get("attempted")
+        or not bracket_proof.get("rested")
+        or bracket_proof.get("left_behind")
+    )
+    if registry_error or audit_error or counter_error or not record["clean"] or bracket_failed:
         return EXIT_BLOCKED
     return EXIT_OK
 
