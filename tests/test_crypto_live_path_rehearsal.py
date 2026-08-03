@@ -238,6 +238,7 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
         gate_open=True,
         runtime_active=True,
         daily_loss_breached=False,
+        bracket_failures_consecutive=0,
         clean_canary_orders=3,
         submitted_today=0,
         equity_usdt=usable_equity_usdt(snapshot),
