@@ -627,7 +627,9 @@ scopes at different levels, so nothing was owed to it.
           **Update 2026-08-02 — the checklist it was waiting on has cleared.** The live entry
           door reads OPEN (readiness READY, routing WIRED, breakers NORMAL, Gate 0 answered by
           the operator acknowledgement), so the first live take-profit fill is now a matter of a
-          signal firing rather than of a step nobody has taken. This is the last unmeasured term
+          signal firing rather than of a step nobody has taken. (**2026-08-03:** the Gate 0 half
+          of that sentence is gone — #473 removed it and the acknowledgement with it. The door
+          is the bracket breaker alone, and it still reads OPEN.) This is the last unmeasured term
           in the cost model, and the only one that errs in the **unsafe** direction — section F
           reads it as such. Run `--fee-rates` after the first live TP, not before.
     - [x] **The grant's revocation was defeatable by the grant** — done 2026-07-29 (#324),
@@ -719,6 +721,15 @@ scopes at different levels, so nothing was owed to it.
           acknowledgement (valid to 2026-08-22), not on evidence — so this box no longer describes
           a gate holding routing shut. It describes a sample being collected while routing runs,
           and the honest read of that is in `crypto/live_candidate_ack.py`, not here.
+          **Update 2026-08-03 (#473) — there is no gate here at all now, and no acknowledgement.**
+          The sample could not be reached: the routable set is whichever batch was promoted last,
+          promotions land every 1-3 days, and the acknowledgement voided on the same event that
+          reset the sample — so 20 was ~32 days of a frozen pool away on a pool that does not
+          stay frozen. Gate 0's runtime enforcement and the acknowledgement are both removed;
+          it is an operator checklist item again. `live_candidate_eligible` is still computed
+          and still on the cycle record, and nothing refuses on it. What gates live routing is
+          the per-strategy ladder, which judges each strategy on its own record. Measurement:
+          `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`.
 - [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
       board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
       evidence store is
@@ -1317,8 +1328,12 @@ it. All of the following are gitignored:
   `naked_close.result.fill`, and `status`.
 - `runtime_ledger/audit_events.jsonl` — the P5 decision and the ENTRY event. It does **not** carry
   the bracket rejection, which is why the cause is still unknown.
-- `crypto/crypto_live_candidate_ack.json` — the operator acknowledgement holding Gate 0 open until
-  2026-08-22, without which the door closes and no live entry happens at all.
+- `crypto/crypto_live_candidate_ack.json` — **orphaned since 2026-08-03 (#473).** It was the
+  operator acknowledgement holding Gate 0 open, and this line said the door closed without it.
+  Neither is true now: Gate 0's runtime enforcement is removed, nothing reads this file, and the
+  live door is the bracket breaker alone. The file is still on disk on any machine that signed
+  one — inert, but it reads like live authority, so it is worth deleting as the service user:
+  `docker exec thomas-scheduler rm .runtime_governance_state/crypto/crypto_live_candidate_ack.json`
 - The rollback image tags (`thomas-agent-runtime:rollback-pre-<PR#>`) are in the host's Docker
   image store, not in git.
 

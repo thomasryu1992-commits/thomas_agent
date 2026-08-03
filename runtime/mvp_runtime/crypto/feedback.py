@@ -518,9 +518,11 @@ def run_paper_performance_report(
     :func:`build_performance_report` directly. It used to cover the whole store, which was wrong
     in two ways at once:
 
-    - **The question.** ``live_candidate_eligible`` is Gate 0 — *does THIS runtime's paper record
-      show an edge* — and the history imported from the frozen crypto_AI_System was produced by
-      different code. It is real, and it cannot answer a question about this runtime. `cycle`
+    - **The question.** ``live_candidate_eligible`` answers Gate 0 — *does THIS runtime's paper
+      record show an edge* — and the history imported from the frozen crypto_AI_System was
+      produced by different code. (It ANSWERS it; since 2026-08-03 it no longer enforces it.
+      Gate 0 is an operator checklist item again and nothing refuses on this number, but the
+      question is unchanged and so is every reason the scoping below is right.) It is real, and it cannot answer a question about this runtime. `cycle`
       already makes exactly this argument where it splits the same rows before the breakers see
       them; the report was the one consumer that had not.
     - **The arithmetic, which is worse.** Imported rows carry no cost basis, so
