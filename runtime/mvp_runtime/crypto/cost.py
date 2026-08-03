@@ -71,6 +71,7 @@ from typing import Any, Mapping
 # respelled here: `live_pnl` defines what each basis means, and two spellings of one label is how
 # the two drift. Constants only — no I/O at import, the same reason `paper.py` takes
 # `R_BASIS_INTENT` from there.
+from . import market_data
 from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED
 
 # The taker rate this venue actually charges, measured — not the source default.
@@ -314,6 +315,61 @@ def apply_cost_model(
         maker_fee_cost_r=round(maker_fee_cost_r, 8),
         funding_cost_r=round(carry_r, 8),
     )
+
+
+def worst_case_carry_r(
+    direction: str,
+    entry_price: float,
+    risk: float,
+    *,
+    timeframe: str,
+    max_holding_bars: Any,
+    cost: CostModel | None = None,
+) -> float | None:
+    """The carry this plan would pay if it held to its own time limit, in R. Positive or zero.
+
+    **Reported, not gated — and the distinction is the whole reason this function exists
+    separately from :func:`round_trip_cost_r` instead of being added to it.**
+
+    `MAX_ENTRY_COST_R` bounds the round trip, which is fees and slippage: a fixed cost, known
+    at entry, paid by every trade in full. Carry is none of those things — it accrues with
+    time held, and a plan's time limit is a bound rather than a plan. Measured on this store
+    2026-08-03, the median hold is **5-27% of `max_holding_bars`** (4h: 2.5 bars against a
+    limit of 30). Folding this figure into the same cap would charge every trade 4-20x the
+    carry it will actually pay, and the arithmetic is not close: it would take 4h — the only
+    timeframe near break-even on the round trip — from 0 of 18 refused to **10 of 18**, on a
+    cost those trades do not incur.
+    #
+    So the number is computed and recorded, and nothing refuses on it. What it buys is that
+    the entry decision stops being silent about a cost it does not price: `round_trip_cost_r`
+    is `apply_cost_model` at `exit_price == entry_price`, which prices no time at all, and
+    until now a plan could pass the economics door and lose to carry with no record that the
+    door had never looked.
+
+    Returns ``None`` when the hold cannot be priced — an unknown timeframe or a missing limit.
+    ``None`` is "not measured", which is a different record from ``0.0``, "measured at zero".
+
+    Zero-floored: carry is signed and a short EARNS it, but a short earning funding is a
+    forecast about a rate that flips, while a long paying it is a floor. Recording income
+    here would let a plan look cheaper on a rate nobody has seen yet.
+    """
+    bar_minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if bar_minutes is None:
+        return None
+    try:
+        bars = int(max_holding_bars)
+    except (TypeError, ValueError):
+        return None
+    if bars <= 0:
+        return None
+    model = cost or CostModel()
+    minutes_per_interval = 1440.0 / FUNDING_INTERVALS_PER_DAY
+    intervals = (bars * bar_minutes) / minutes_per_interval
+    rate_sum = model.funding_bps_per_interval / 10000.0 * intervals
+    carry = funding_cost_r(direction, entry_price, risk, rate_sum)
+    if not math.isfinite(carry):
+        return None
+    return max(0.0, carry)
 
 
 def round_trip_cost_r(
