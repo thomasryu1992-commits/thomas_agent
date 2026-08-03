@@ -28,7 +28,9 @@ The three rules this leg owes, each implemented as a branch you can point at:
 2. **A naked position is closed, not warned about.** If the entry fills but a bracket leg
    cannot be placed, the position is closed immediately (reduceOnly MARKET). An unprotected
    live position is exactly what the bracket exists to prevent, so the fail-closed direction
-   is *out*, not in.
+   is *out*, not in. It is also **recorded**: that round trip moved real money, and a trade
+   the accounting cannot see is a trade the accounting cannot stop (see
+   :func:`_record_naked_outcome`).
 3. **Cancel the surviving leg on close.** The venue documents no auto-cancel for conditional
    orders when a position closes, and a resting ``reduceOnly`` LIMIT is not cancelled either, so
    a leftover leg of either shape is withdrawn explicitly. Neither can open anything — Close-All
@@ -112,6 +114,10 @@ BRACKET_CANCEL_FAILED = "LIVE_BRACKET_CANCEL_FAILED"
 FILL_FACTS_MISSING = "LIVE_FILL_FACTS_MISSING"
 POSITION_PERSIST_FAILED = "LIVE_POSITION_PERSIST_FAILED"
 OUTCOME_PERSIST_FAILED = "LIVE_OUTCOME_PERSIST_FAILED"
+# Money moved and the runtime could not say how much: a round trip completed at the venue but
+# no outcome row could be built for it. Distinct from OUTCOME_PERSIST_FAILED, which means the
+# figure was known and the store refused it.
+OUTCOME_NOT_RECORDED = "LIVE_OUTCOME_NOT_RECORDED"
 BRACKET_IDS_MISSING = "LIVE_BRACKET_IDS_MISSING"
 VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 
@@ -457,6 +463,7 @@ def execute_live_entry(
     *,
     adapter: Any,
     position_store: Any,
+    ledger: Any,
     counter: Any = None,
     governance: Mapping[str, Any] | None = None,
     gate_open: bool,
@@ -482,7 +489,14 @@ def execute_live_entry(
     than sending an unaudited order. (It is a keyword with a default only so the refusal is a
     reported ``ENTRY_REFUSED`` rather than a TypeError at the call site.)
 
-    Returns a result record. ``position`` is non-None only on ``ENTRY_OPENED``.
+    ``ledger`` is required, and has no default for the same reason ``execute_live_exit``'s has
+    none: this path can complete a whole round trip on its own — an entry that fills, cannot be
+    protected, and is closed again — and a caller with nowhere to record that result must not be
+    able to open the position in the first place. Here the missing default is the fail-closed
+    choice, where for ``governance`` it would have hidden a refusal behind a TypeError.
+
+    Returns a result record. ``position`` is non-None only on ``ENTRY_OPENED``; ``outcome`` is
+    non-None only on a naked close whose realized P&L could be computed.
     """
     result: dict[str, Any] = {
         "live_leg_version": LIVE_LEG_VERSION,
@@ -493,6 +507,9 @@ def execute_live_entry(
         "bracket": [],
         "naked_close": None,
         "position": None,
+        # Non-None only when a naked close realized a P&L this run could compute. The entry
+        # path has a ledger for exactly one reason: that close is a completed round trip.
+        "outcome": None,
         "created_at": now,
     }
 
@@ -555,6 +572,10 @@ def execute_live_entry(
                 quantity=filled_qty,
                 entry_price=fill_price,
                 placements=[],
+                position=_unbooked_position(
+                    decision, entry, quantity=filled_qty, entry_price=fill_price, now=now
+                ),
+                ledger=ledger,
                 adapter=adapter,
                 gate_open=gate_open,
                 limits=limits,
@@ -599,6 +620,10 @@ def execute_live_entry(
             quantity=filled_qty,
             entry_price=fill_price,
             placements=placements,
+            position=_unbooked_position(
+                decision, entry, quantity=filled_qty, entry_price=fill_price, now=now
+            ),
+            ledger=ledger,
             adapter=adapter,
             gate_open=gate_open,
             limits=limits,
@@ -672,6 +697,8 @@ def _close_naked_position(
     quantity: float,
     entry_price: float,
     placements: list[dict[str, Any]],
+    position: Mapping[str, Any] | None,
+    ledger: Any,
     adapter: Any,
     gate_open: bool,
     limits: Any,
@@ -683,6 +710,10 @@ def _close_naked_position(
     Also withdraws whichever bracket leg *did* place: leaving one half of a bracket resting
     against a position that no longer exists is exactly the litter the cancel-on-close rule
     exists to avoid.
+
+    ``position`` is the record this entry *would* have booked, built but never persisted (see
+    :func:`_unbooked_position`). It carries the lineage, the risk and the identity the outcome
+    row needs, and is None only when the fill facts would not support one.
     """
     close_intent = {
         "status": "ORDER_INTENT_CREATED",
@@ -728,10 +759,127 @@ def _close_naked_position(
     if close["reconcile_status"] == RECONCILED:
         result["status"] = ENTRY_NAKED_CLOSED
         result["reason_codes"].append(NAKED_POSITION_CLOSED)
+        _record_naked_outcome(result, position=position, close=close, ledger=ledger, now=now)
     else:
         result["status"] = ENTRY_NAKED_OPEN
         result["reason_codes"].append(NAKED_CLOSE_FAILED)
     return result
+
+
+def _unbooked_position(
+    decision: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    *,
+    quantity: float,
+    entry_price: float,
+    now: str,
+) -> dict[str, Any] | None:
+    """The position record a naked entry would have had — built, never persisted.
+
+    It exists so the outcome row a naked close writes comes out of the same builder, with the
+    same lineage, risk and identity, as every other live outcome. Reusing
+    :func:`build_live_position` rather than assembling those fields by hand is deliberate: a
+    hand-rolled second shape is exactly how a row ends up with a ``risk`` of 0.0 and an R that
+    reads as a breakeven.
+
+    Returns None when the fill facts will not support a position record — a quantity or price
+    the venue reported in a form that would not parse. That is also the case where there is no
+    honest P&L to record, so the caller reports it rather than inventing one.
+    """
+    intent = decision.get("intent") or {}
+    bracket = decision.get("bracket") or {}
+    try:
+        position = build_live_position(
+            symbol=str(intent.get("symbol") or ""),
+            direction=str(intent.get("direction") or ""),
+            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss=bracket.get("stop_loss"),
+            take_profit=bracket.get("take_profit"),
+            opened_at=now,
+            entry_client_order_id=entry.get("client_order_id"),
+            entry_exchange_order_id=entry.get("exchange_order_id"),
+            strategy_id=intent.get("strategy_id"),
+            candidate_id=(decision.get("sizing") or {}).get("candidate_id") or intent.get("candidate_id"),
+            strategy_rule_hash=intent.get("strategy_rule_hash"),
+            strategy_generation_id=intent.get("strategy_generation_id"),
+        )
+    except ToolError:
+        return None
+    # The quote actually paid, same as the booked path: it makes the P&L a quote-in/quote-out
+    # subtraction rather than a reconstruction from a rounded average price.
+    return {**position, "entry_quote_usdt": _f((entry.get("fill") or {}).get("cum_quote"))}
+
+
+def _record_naked_outcome(
+    result: dict[str, Any],
+    *,
+    position: Mapping[str, Any] | None,
+    close: Mapping[str, Any],
+    ledger: Any,
+    now: str,
+) -> None:
+    """Record what a naked close realized. The gap this closes is worth stating plainly.
+
+    An entry that fills and is closed again seconds later is a **completed round trip**: it
+    paid a spread, it paid two lots of fees, and it moved the account. Until this existed the
+    entry path recorded no outcome for it at all, so the trade was invisible to every breaker
+    that judges the recorded history — the weekly limit, the drawdown limit, the
+    consecutive-loss streak all counted it as never having happened. Only the daily-loss
+    breaker saw it, and only because that one reads the venue's own realized figure instead of
+    this ledger. A breaker being blind to a *loss* is the wrong direction to be wrong in, and
+    the exit path already says why in its own words: a result that cannot be recorded is one
+    "the breaker will never see".
+
+    Best-effort by construction, unlike the exit path's equivalent, and the asymmetry is the
+    point. There, a failed append must stop the book being cleared, so it downgrades the
+    status. Here the position is already flat and nothing is left to protect or refuse, so a
+    failure is reported in the reason codes and ``ENTRY_NAKED_CLOSED`` stands — it describes
+    what happened at the venue and is still true. Both reason codes are incidents in
+    ``live_route``, so an unrecorded round trip halts the cycle rather than passing quietly.
+    """
+    if position is None:
+        result["reason_codes"].append(OUTCOME_NOT_RECORDED)
+        return
+
+    pnl, pnl_detail = realized_pnl_usdt(position, close["fill"])
+    result["pnl_detail"] = pnl_detail
+    if pnl is None:
+        result["reason_codes"].append(FILL_FACTS_MISSING)
+        result["reason_codes"].append(OUTCOME_NOT_RECORDED)
+        return
+
+    outcome = build_live_outcome_record(
+        realized_pnl_usdt=pnl,
+        symbol=str(position.get("symbol") or ""),
+        side="SELL" if str(position.get("direction") or "").upper() == "LONG" else "BUY",
+        quantity=_f(position.get("quantity")) or 0.0,
+        entry_price=_f(position.get("entry_price")),
+        exit_price=pnl_detail["exit_price"],
+        entry_order_id=position.get("entry_exchange_order_id"),
+        exit_order_id=close.get("exchange_order_id"),
+        strategy_id=position.get("strategy_id"),
+        position_id=position.get("position_id"),
+        # Named, not folded into the ordinary close reasons: a round trip that ended this way
+        # is evidence about the bracket, not about the strategy's exit.
+        close_reason=CLOSE_REASON_NAKED,
+        opened_at_utc=position.get("opened_at_utc"),
+        risk_usdt=_f(position.get("risk")),
+        candidate_id=position.get("candidate_id"),
+        strategy_rule_hash=position.get("strategy_rule_hash"),
+        strategy_generation_id=position.get("strategy_generation_id"),
+        now=now,
+    )
+    result["outcome"] = outcome
+
+    if ledger is None:
+        result["reason_codes"].append(OUTCOME_NOT_RECORDED)
+        return
+    try:
+        ledger.append_outcome(outcome)
+    except ToolError as exc:
+        result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
+        result["reason_codes"].append(exc.reason_code)
 
 
 # --- the exit -------------------------------------------------------------------
@@ -1139,6 +1287,7 @@ __all__ = [
     "NAKED_POSITION_CLOSED",
     "NOT_READY",
     "NO_GOVERNANCE",
+    "OUTCOME_NOT_RECORDED",
     "OUTCOME_PERSIST_FAILED",
     "POSITION_PERSIST_FAILED",
     "PROTECTED",

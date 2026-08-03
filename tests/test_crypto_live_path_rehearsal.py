@@ -254,6 +254,7 @@ def _open(decision, *, root, venue=None):
         decision,
         adapter=venue,
         position_store=RealLivePositionStore(root=root, authorization=_LIVE_AUTH),
+        ledger=RealLiveLedger(root=root, authorization=_LIVE_AUTH),
         governance=GOVERNANCE,
         gate_open=True,
         limits=LIMITS,

@@ -285,6 +285,16 @@ def test_an_unsettleable_venue_close_is_a_portfolio_level_incident():
     )
 
 
+def test_a_round_trip_the_runtime_could_not_price_is_an_incident():
+    """A naked close that completed at the venue and produced no outcome row is money this
+    runtime cannot account for — the ledger-based breakers have nothing to judge it by, so the
+    cycle stops instead of opening the next position on top of it."""
+    assert live_route._is_incident(
+        {"status": live_leg.ENTRY_NAKED_CLOSED,
+         "reason_codes": [live_leg.NAKED_POSITION_CLOSED, live_leg.OUTCOME_NOT_RECORDED]}
+    )
+
+
 def test_an_ordinary_refusal_is_not_an_incident():
     """A guard refusal, an unreadable account, a bracket that would not place but closed
     cleanly — none of these leave money in an unknown state, so none halts the fan-out."""

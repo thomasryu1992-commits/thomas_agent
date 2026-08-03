@@ -147,6 +147,10 @@ _INCIDENT_REASONS = frozenset({
     live_leg.VENUE_CLOSE_UNSETTLEABLE,
     live_leg.POSITION_PERSIST_FAILED,
     live_leg.OUTCOME_PERSIST_FAILED,
+    # A round trip completed at the venue and the runtime could not say what it cost. That is
+    # the state this predicate is named for, and the one the ledger-based breakers cannot reason
+    # about, so the cycle stops rather than trading on top of it.
+    live_leg.OUTCOME_NOT_RECORDED,
 })
 
 
@@ -470,6 +474,10 @@ def _run_gated_live_leg(
         decision,
         adapter=adapter,
         position_store=position_store,
+        # The entry path can complete a round trip without the exit path ever running: an entry
+        # that fills and cannot be bracketed is closed again immediately, and that close realizes
+        # a P&L the ledger-based breakers must be able to see.
+        ledger=ledger,
         counter=select_live_order_counter(now=now, root=root),
         governance=governance,
         gate_open=True,

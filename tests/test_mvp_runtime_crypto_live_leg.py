@@ -181,6 +181,7 @@ def _entry(**kw):
         sleep=kw.pop("sleep", _no_sleep),
         adapter=kw.pop("adapter", FakeAdapter()),
         position_store=kw.pop("position_store", FakeStore()),
+        ledger=kw.pop("ledger", FakeLedger()),
         counter=kw.pop("counter", None),
         governance=kw.pop("governance", GOVERNANCE),
         gate_open=kw.pop("gate_open", True),
@@ -383,6 +384,79 @@ def test_a_refusing_close_guard_leaves_the_position_naked_and_says_so():
     assert result["status"] == ll.ENTRY_NAKED_OPEN
     assert ll.NAKED_CLOSE_FAILED in result["reason_codes"]
     assert result["naked_close"]["submitted"] is False
+
+
+# --- rule 2, the other half: the round trip it realized is recorded ----------------
+#
+# An entry that fills and is closed again unprotected is a *completed trade* — it paid the
+# spread and two lots of fees. The entry path wrote no outcome row for one, so every breaker
+# that judges the recorded history (the weekly and drawdown limits, the consecutive-loss
+# streak) counted it as never having happened. Only the daily-loss breaker saw it, and only
+# because that one reads the venue's realized figure instead of this ledger.
+
+def test_a_naked_close_records_the_round_trip_it_realized():
+    ledger = FakeLedger()
+    result = _entry(adapter=FakeAdapter(missing={"TP"}), ledger=ledger)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert len(ledger.appended) == 1
+    row = ledger.appended[0]
+    # Quote-in vs quote-out from the venue's own fills — 60.0 paid, 61.0 returned.
+    assert row["realized_pnl_usdt"] == 1.0
+    assert row["stage"] == "live"
+    # Named, so a row that ends this way is legible as evidence about the bracket rather than
+    # about the strategy's exit.
+    assert row["close_reason"] == ll.CLOSE_REASON_NAKED
+    assert result["outcome"] == row
+
+
+def test_a_naked_outcome_carries_the_risk_and_the_lineage():
+    """Without them the row would be worse than absent: `guards._closed_rows` reads a missing
+    result_R as 0.0, so a real live loss would SHORTEN a loss streak instead of extending it."""
+    ledger = FakeLedger()
+    _entry(adapter=FakeAdapter(missing={"TP"}), ledger=ledger)
+    row = ledger.appended[0]
+    assert row["risk_usdt"] == 1.0      # |60000 - 59000| * 0.001, off the decision's own stop
+    assert row["result_R"] == 1.0
+    assert row["strategy_id"] == "S001"
+    assert row["candidate_id"] == "cand_1"
+    assert row["strategy_rule_hash"] == "deadbeef"
+
+
+def test_a_naked_close_that_cannot_be_priced_refuses_to_invent_a_figure():
+    """No fill price, no honest P&L. Reported as unaccounted-for money rather than recorded as
+    a zero, which every consumer would read as a breakeven trade."""
+    ledger = FakeLedger()
+    result = _entry(
+        adapter=FakeAdapter(fills={"ENTRY": {"avgPrice": None, "executedQty": 0.001}}),
+        ledger=ledger,
+    )
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert ll.OUTCOME_NOT_RECORDED in result["reason_codes"]
+    assert ledger.appended == []
+    assert result["outcome"] is None
+
+
+def test_a_ledger_that_refuses_a_naked_outcome_is_reported_not_swallowed():
+    """Unlike the exit path this does not downgrade the status: the position is already flat, so
+    there is nothing left to protect by refusing. The failure rides in the reason codes, where
+    live_route reads it as an incident."""
+    result = _entry(
+        adapter=FakeAdapter(missing={"TP"}), ledger=FakeLedger(error="LIVE_LEDGER_UNWRITABLE"),
+    )
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert ll.OUTCOME_PERSIST_FAILED in result["reason_codes"]
+    assert "LIVE_LEDGER_UNWRITABLE" in result["reason_codes"]
+    # The figure was computed; only the store refused it.
+    assert result["outcome"]["realized_pnl_usdt"] == 1.0
+
+
+def test_an_entry_that_opens_normally_records_nothing():
+    """The ledger is the exit's to write for a position that is still open."""
+    ledger = FakeLedger()
+    result = _entry(ledger=ledger)
+    assert result["status"] == ll.ENTRY_OPENED
+    assert ledger.appended == []
+    assert result["outcome"] is None
 
 
 # --- the bracket legs themselves -------------------------------------------------
