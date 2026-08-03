@@ -106,6 +106,16 @@ DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
 COUNTER_FILENAME = "live_order_counter.json"
 LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"
 
+BRACKET_BREAKER_FILENAME = "live_bracket_failures.json"
+LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
+
+# Two consecutive failures, and the number is the incident's own. The first protective bracket
+# this runtime ever placed was refused; so was the second, on the next signal seventeen minutes
+# later. One rejection can be the venue having a moment. Two in a row is the path being broken,
+# and every repetition is an entry that fills and is closed again immediately — a round trip in
+# fees for no exposure, repeating as fast as the daily order budget refills.
+MAX_CONSECUTIVE_BRACKET_FAILURES = 2
+
 _TRUTHY = frozenset({"1", "true", "yes", "y", "on", "enabled"})
 
 
@@ -727,6 +737,201 @@ def select_live_order_counter(*, now: str | None = None, root: Path | None = Non
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunLiveOrderCounter,
         gated_factory=lambda authorization: LiveOrderCounter(root=root, authorization=authorization),
+    )
+
+
+# --- the bracket-failure breaker ---------------------------------------------------
+#
+# A live entry that fills and cannot be protected is closed again immediately (`live_leg`
+# Rule 2), which is the safe response and was never the problem. The problem is that nothing
+# counted it: the loop *signal -> fill -> refuse -> close* was bounded only by the registered
+# budget's orders-per-day, which refills at every UTC midnight. So the runtime could spend
+# fees on entries it can never hold, indefinitely, and the only thing that would ever say so
+# was a person reading the order records.
+#
+# This counter is what makes the loop stop on its own. It counts CONSECUTIVE failures and is
+# reset by a bracket that actually rests — a transient rejection does not latch the door, and
+# a broken bracket path shuts it after `MAX_CONSECUTIVE_BRACKET_FAILURES`.
+#
+# It deliberately does NOT reset at midnight. The daily order budget does, and that reset is
+# exactly what let the loop resume; a breaker that expires on the same clock as the budget it
+# is bounding would bound nothing. Only a working bracket or an operator clears this.
+
+
+def _empty_bracket_record() -> dict[str, Any]:
+    return {
+        "consecutive": 0,
+        "total": 0,
+        "last_failure_at": None,
+        "last_symbol": None,
+        "last_status": None,
+        "last_reason_codes": [],
+        "last_error_detail": None,
+        "cleared_at": None,
+        "cleared_by": None,
+        "cleared_reason": None,
+    }
+
+
+def read_bracket_failures(root: Path | None = None) -> dict[str, Any]:
+    """The consecutive bracket-failure record. Ungated read; an unreadable file raises.
+
+    Fails closed for ``count_today``'s reason pointed the other way: a breaker whose state reads
+    as zero because the file is corrupt is a breaker that reopens the door it exists to hold
+    shut. The readiness board and the entry decision both read through here, so there is one
+    answer to "how many brackets have failed in a row" rather than two that can disagree.
+    """
+    path = state_dir(root) / BRACKET_BREAKER_FILENAME
+    if not path.is_file():
+        return _empty_bracket_record()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ToolError(LIVE_BRACKET_BREAKER_UNREADABLE, "bracket failure record is unreadable") from exc
+    if not isinstance(data, dict):
+        raise ToolError(LIVE_BRACKET_BREAKER_UNREADABLE, "bracket failure record is malformed")
+    record = _empty_bracket_record()
+    record.update({key: data.get(key, record[key]) for key in record})
+    try:
+        record["consecutive"] = int(record["consecutive"])
+        record["total"] = int(record["total"])
+    except (TypeError, ValueError) as exc:
+        raise ToolError(
+            LIVE_BRACKET_BREAKER_UNREADABLE, "bracket failure record holds a non-integer count"
+        ) from exc
+    if not isinstance(record["last_reason_codes"], list):
+        record["last_reason_codes"] = []
+    return record
+
+
+def bracket_breaker_status(
+    root: Path | None = None, *, limit: int = MAX_CONSECUTIVE_BRACKET_FAILURES
+) -> dict[str, Any]:
+    """``read_bracket_failures`` plus the verdict, so no caller re-derives the comparison."""
+    record = read_bracket_failures(root)
+    return {
+        **record,
+        "limit": limit,
+        "tripped": record["consecutive"] >= limit,
+    }
+
+
+class LiveBracketFailureBreaker:
+    """Durable consecutive-bracket-failure counter, behind the live-trading switch.
+
+    Gated exactly as ``LiveOrderCounter`` is, and for the same argument read the other way
+    round: an inert counter beside a durable adapter is an account with no daily cap, and an
+    inert breaker beside a durable adapter is a door that never shuts. Whichever way the switch
+    is set, the state that bounds real money has to be as durable as the money path.
+    """
+
+    provider_id = LIVE_TRADING_PROVIDER_ID
+    filesystem_write = True
+
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
+        self._root = root
+        self._authorization = authorization
+
+    def _assert(self) -> None:
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=LIVE_TRADING_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+
+    def _update(self, mutate: Any) -> dict[str, Any]:
+        self._assert()
+        target = state_dir(self._root)
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / BRACKET_BREAKER_FILENAME
+        with locked(
+            path.with_suffix(".lock"),
+            code="LIVE_BRACKET_BREAKER_LOCKED",
+            label="live bracket failure record",
+        ):
+            record = read_bracket_failures(self._root)
+            mutate(record)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(path)
+            return record
+
+    def record_failure(
+        self,
+        *,
+        symbol: str,
+        status: str,
+        at: str,
+        reason_codes: Sequence[str] = (),
+        error_detail: Any = None,
+    ) -> dict[str, Any]:
+        """One entry filled and could not be protected. Returns the record as stored.
+
+        ``error_detail`` is the venue's own numeric code and text (PR #426) carried onto the
+        breaker record, because the container that held the logs is the thing most likely to be
+        gone by the time anyone asks why the door shut.
+        """
+        def mutate(record: dict[str, Any]) -> None:
+            record["consecutive"] += 1
+            record["total"] += 1
+            record["last_failure_at"] = at
+            record["last_symbol"] = symbol
+            record["last_status"] = status
+            record["last_reason_codes"] = [str(code) for code in reason_codes]
+            record["last_error_detail"] = error_detail
+
+        return self._update(mutate)
+
+    def record_success(self) -> dict[str, Any]:
+        """A bracket rested at the venue: the path works, so the streak is over."""
+        def mutate(record: dict[str, Any]) -> None:
+            record["consecutive"] = 0
+
+        return self._update(mutate)
+
+    def clear(self, *, actor: str, reason: str, at: str) -> dict[str, Any]:
+        """The operator's reset, after looking at why the brackets were refused.
+
+        Separate from ``record_success`` because the two are not the same statement: one is the
+        venue demonstrating the path works, the other is a person saying they have dealt with
+        it. Only the second is worth recording who and why for.
+        """
+        def mutate(record: dict[str, Any]) -> None:
+            record["consecutive"] = 0
+            record["cleared_at"] = at
+            record["cleared_by"] = actor
+            record["cleared_reason"] = reason
+
+        return self._update(mutate)
+
+
+class DryRunLiveBracketFailureBreaker:
+    """Inert breaker: counts nothing, because with the switch off no bracket is ever placed."""
+
+    filesystem_write = False
+
+    def record_failure(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_bracket_record()
+
+    def record_success(self) -> dict[str, Any]:
+        return _empty_bracket_record()
+
+    def clear(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_bracket_record()
+
+
+def select_live_bracket_breaker(*, now: str | None = None, root: Path | None = None) -> Any:
+    """Return the durable breaker if live trading is opted in, else the inert one."""
+    return safety_gate.select_env_gated(
+        env_var=LIVE_TRADING_ENV,
+        opt_in_value=REAL_LIVE_TRADING,
+        flags=LIVE_TRADING_FLAGS,
+        provider_id=LIVE_TRADING_PROVIDER_ID,
+        default_factory=DryRunLiveBracketFailureBreaker,
+        gated_factory=lambda authorization: LiveBracketFailureBreaker(
+            root=root, authorization=authorization
+        ),
     )
 
 
