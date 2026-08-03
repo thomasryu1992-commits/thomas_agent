@@ -11,8 +11,30 @@ therefore **cannot hold a position** — every entry fills and is closed again. 
 (0.12 USDT of fees, no adverse price) and the safety path worked exactly as written; what is open
 is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed,
 and the fact that **nothing counts repeated bracket failures**. That last one is the only build
-item in it. The deployed image is `320475b`; rollback tags `rollback-pre-<PR#>` are on the Docker
-host and do not travel.
+item in it. Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
+
+This paragraph said "the deployed image is `320475b`" when it was written and that was already
+wrong a few hours later — the running image carries #434, which merged after it. **The deployed
+image is not a fact this file can hold**, for the same reason the canary count is not: it changes
+whenever any session deploys, and several do. Ask the host, and ask it about the image the
+containers are *running* rather than the one tagged `latest`, which a concurrent build moves
+without deploying:
+
+```
+docker inspect thomas-scheduler --format '{{.Image}}'
+docker images thomas-agent-runtime
+```
+
+If those two disagree, read CLAUDE.md's tagging rule before building anything — and note the case
+it does not cover, hit 2026-08-02: the running image can be absent from the image store entirely,
+in which case there is nothing to tag and the rollback point has to be a **commit**.
+
+Also 2026-08-03: a whole-codebase review is recorded as the new **section G**, and the per-machine
+hand-off below is made concrete — same reason, the work is moving to a different computer. Two of
+the review's findings were fixed rather than recorded (the scheduler's cadence drift, #431; the
+schema-cache check, this change) and one was removed outright with the prediction-market lane
+(section A). Three stay open, G1 the one worth doing first. **None of it outranks the paragraph
+above** — a live leg that cannot hold a position is the thing to fix on arrival.
 
 Earlier: **2026-08-02** (`main` = `f7a9356`), after asking why the promotion board reported
 **0 promotable with 900 candidates on file**. The answer was three filters in series, and the
@@ -1127,7 +1149,6 @@ same answer.
       defence instead of documentation, and the measurement above is the thing to re-run first.
 
 ---
-
 ## F. The fast timeframes do not pay for themselves — open, and nothing here has fixed it
 
 Measured 2026-08-02 across the 240 candidates carrying the current cost basis, per trade:
@@ -1166,6 +1187,97 @@ another `stop_atr` tweak — both were measured and both are small. What is unme
 
 ---
 
+## G. Codebase review backlog — measured 2026-08-02, three items open
+
+A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
+here rather than in a chat log because **this is the file that travels between machines**, and
+every item below is a measurement someone would otherwise have to redo. Numbers are as of
+`main` = `44c9b36`; each says how to re-measure rather than asking you to trust it.
+
+Three of the review's findings are already closed and are named so they are not re-investigated:
+
+- **Scheduler cadence drift** — closed by #431. `pm_scan` at a registered 120s ran at a measured
+  p50 of 140s; two causes (claim-time anchoring, and a full sleep after the work) each removed.
+- **The 694 MB prediction-market observation store, ~65% of it redundant** — moot: the whole lane
+  was removed 2026-08-02 (section A), store deleted.
+- **The audit chain's unrotated tip scan** — investigated and **not a problem.** `_tip()` streams
+  the whole chain on every audited append and the chain is never rotated by design, but it is 904
+  events / 2.7 MB / ~20 ms and grows ~20 events a day. Do not "fix" this; it would take years to
+  matter and the no-rotation rule is load-bearing.
+
+### G1. Crypto tunables have no owner — 602 constants across 42 modules ⚠️ highest value
+
+```
+grep -rhcE '^[A-Z_]{4,} *[:=]' runtime/mvp_runtime/crypto/*.py | paste -sd+ | bc
+ls runtime/mvp_runtime/crypto/ | grep -iE 'config|policy|const|params'   # returns nothing
+```
+
+`features.py` 56, `market_data.py` 50, `paper.py` 42, `live_leg.py` 33, `live_execution.py` 33,
+`factory.py` 29, `account.py` 25, `pool.py` 24, … and no module owns them.
+
+CLAUDE.md's *"One concept = One authority = One source of truth"* is enforced hard for contracts,
+schemas and registries, and **not at all for the numbers that decide money.** This is not
+hypothetical: `MAX_DAYS_TO_LIFECYCLE_WINDOW = 14` sat in `pool.py` with a premise (15m is the
+workhorse) that the cost model had already killed, and the board read **0 promotable against 900
+candidates on file** until someone went looking (BUILD_HISTORY, 2026-08-02). 601 constants of the
+same shape remain.
+
+**Do not do this as one refactor.** It is the live money path, and a sweep that moves 602 values
+is a sweep nobody can review. The tractable first slice is the class that already caused an
+incident: constants that encode an **operator decision or a cost premise** (promotion thresholds,
+lifecycle windows, fee/slippage assumptions, stop and sizing multiples) — perhaps 30-50 values.
+Give those one owner with the premise recorded beside each, and leave pure mechanics
+(buffer sizes, retry counts, format widths) where they are.
+
+### G2. The dead capability lane — 3,311 LOC, zero importers
+
+```
+grep -rn 'read_only_entry\|protected_governance_state' --include=*.py runtime/mvp_runtime/
+```
+
+`runtime/read_only_entry/` (1,877) + `runtime/protected_governance_state/` (1,434) are not
+imported by the live runtime at all — the single hit is a doc comment in `audit.py`.
+`docs/ARCHITECTURE_REVIEW_RECORD.md` (finding C) already identified this as *"the only genuinely
+safe, self-contained C slice"* and listed what must move in lockstep: `deferred/DEFERRED_ARCHITECTURE.yaml`
+(`implementation_candidates`), `scripts/validate_i0_5_2/3/4/5*`, `scripts/build_i0_5_2/3/5*`, and
+the CI patterns in `scripts/gate_matrix.py`. It triggers the full CI matrix.
+
+Safe, mechanical, and **not urgent** — the material is governed and indexed, not loose. Do it when
+something else already requires a full-matrix run.
+
+### G3. Diagnostics have outgrown their index — 1,188 codes, 34 error classes
+
+```
+grep -rhoE '"[A-Z][A-Z0-9_]{6,}"' --include=*.py runtime/ | sort -u | wc -l
+```
+
+`audit.py` alone defines 84 distinct codes. A large `reason_code` vocabulary is correct for a
+fail-closed system — the problem is that **there is no index**, and reading a code back to its
+cause is the operator's main diagnostic path. Nothing checks for duplicate or near-duplicate
+codes across modules either. A generated index (code -> module -> the condition that raises it)
+would be cheap and is the thing missing, not fewer codes.
+
+### Considered and deliberately NOT recommended
+
+- **`live_*` decomposition** (14 modules, 7,142 LOC; `live_route` and `live_readiness` each import
+  13 siblings). The boundaries look like PR order rather than responsibility — but this is the
+  money path, and re-cutting it buys tidiness against real risk.
+- **The eight functions over 300 lines** (`run_crypto_cycle` 475, `handle_operator_message` 423,
+  `run_task` 409, `scheduler._execute` 387, …). Same reasoning; `_execute` did get its missing
+  final `else` in #434, which was the part that was actually a defect.
+- **Trimming the validation surface** (36 of 75 schemas and 44 of 94 contracts describe disabled
+  or deferred capability). `ARCHITECTURE_REVIEW_RECORD.md` finding C parked exactly this and the
+  reason still holds: the gates genuinely read it, so it is dormant-but-governed, not dead.
+
+### One number that changed and should not be misread
+
+`runtime/` is 53,806 LOC, of which `crypto/` is 24,642 and the read-only kernel — the
+"governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
+**1,938**. The description has not matched the shape for some time. That is an observation about
+the doc, not a proposal to restructure the code.
+
+---
+
 ## Per-machine setup that does NOT travel via git
 
 A fresh machine has the code but not the local runtime state (gitignored, per CLAUDE.md). To actually
@@ -1198,6 +1310,30 @@ it. All of the following are gitignored:
 So: **do the live-order investigation on the Docker host, and use another machine for the code,
 docs and factory work.** Section F and the promotion/economics questions travel fine; this one
 does not.
+
+**What the current deployment machine has, as of 2026-08-03** — so a new machine knows what it is
+missing rather than discovering it one fail-closed error at a time. Twelve grants:
+`google_ai_studio`, `groq`, `openrouter` (the provider chain), `tavily_search`, `telegram`,
+`binance_futures`, `binance_futures_account`, `coinalyze_market_data`, `paper_trading`,
+`live_trading`, `approval_consumption`, `workspace.writer`. **A grant is per-machine and
+per-provider, and an env var alone fails closed** — so a new machine reads mocks until each one it
+needs is minted locally, and nothing errors to tell you that. Three prediction-venue grants
+(`kalshi_market_data`, `polymarket_market_data`, `binance_prediction`) were **deleted** 2026-08-02
+with section A's lane and must not be re-minted.
+
+Twenty-two schedules are registered here: `crypto_pipeline` (15 min), sixteen `crypto_factory`
+(daily — fifteen are one per symbol × timeframe over BTC/ETH/BNB/SOL/DOGE × 15m/1h/4h, and the
+sixteenth has an **empty request**, which is a different job rather than a duplicate),
+`crypto_report`, `crypto_propose`, `crypto_breaker_watch` (hourly), `crypto_data_review` (weekly),
+`ledger_rotate` (daily). These live in `.runtime_governance_state/schedules.jsonl` and do **not**
+travel either — a fresh machine ticks nothing until they are re-added. Read them off the machine
+(`scheduler_cli list`) rather than from this paragraph; it was written with fifteen factory rows
+and was wrong within the hour, because another session added one.
+
+The ledger does not travel, which has one consequence worth stating: **the canary-evidence count
+and the paper P&L that gate the live door are per-machine**, so a new machine reads `0/3` and an
+empty paper record however far along this one is. Ask the board
+(`python -m runtime.mvp_runtime.crypto.live_readiness`), never this file.
 
 ---
 
