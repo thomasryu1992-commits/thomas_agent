@@ -93,6 +93,38 @@ EXPOSURE_UNKNOWN_AT_CAP = "EXPOSURE_UNKNOWN_TREATED_AS_AT_CAP"
 
 # --- the record ---------------------------------------------------------------
 
+def unbooked_position_id(*, symbol: str, entry_client_order_id: Any, opened_at: str) -> str:
+    """The identity of a position that existed at the venue and was never written to the book.
+
+    A naked close settles exactly that: an entry filled, could not be protected, and was closed
+    again before :func:`build_live_position` ever ran, so there is no stored id to carry onto
+    the outcome. Passing ``None`` instead is not free. ``build_live_outcome_record`` derives
+    ``outcome_id`` from ``{position_id, closed_at, symbol}``, so two naked closes on one symbol
+    that share a cycle timestamp derive the **same** id — and ``read_live_outcomes`` raises
+    ``LIVE_HISTORY_DUPLICATE`` on that rather than return a history it cannot prove. One extra
+    unaccounted round trip would make the whole live history unreadable, and every risk
+    decision that reads it fails closed — on a duplicate this runtime minted itself.
+
+    Seeded from the entry's client order id, which ``live_order.make_client_order_id`` builds
+    over an idempotency key and is therefore unique per submitted order. Unique per trade, and
+    still a pure function of recorded facts, so a replay derives the same id.
+
+    Kept beside :func:`build_live_position` rather than in the leg: an id for a live position is
+    this module's to mint, whether or not the position survived long enough to be stored.
+    """
+    return integrity.short_id(
+        "live_position",
+        {
+            "symbol": symbol,
+            "entry_client_order_id": str(entry_client_order_id or ""),
+            "at": opened_at,
+            # Never booked, and the seed says so rather than leaving the id indistinguishable
+            # from one a stored position could hold.
+            "unbooked": True,
+        },
+    )
+
+
 def position_risk_usdt(*, entry_price: Any, stop_loss: Any, quantity: Any) -> float:
     """What a position stands to lose to its stop, in quote terms. Pure.
 
@@ -584,6 +616,7 @@ __all__ = [
     "load_open_live_position",
     "local_open_notional_usdt",
     "position_risk_usdt",
+    "unbooked_position_id",
     "reconcile_positions",
     "select_live_position_store",
 ]
