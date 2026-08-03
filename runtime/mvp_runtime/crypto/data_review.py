@@ -27,9 +27,9 @@ from typing import Any, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from ..budgets import TRIAGE_TIMEOUT_SECONDS
-from ..errors import ProviderError
+from ..errors import ProviderError, ToolBlocked
 from ..worker import Provider
-from . import factory
+from . import factory, market_data
 
 DATA_REVIEW_WORKER_ID = "mvp.crypto.data_gap_reviewer.llm"
 DATA_REVIEW_WORKER_VERSION = "0.1.0"
@@ -56,18 +56,35 @@ CURRENT_SOURCES = (
 _REQUIRED_FIELDS = ("name", "data_kind", "rationale", "expected_use")
 
 
+def _mintable(venue: str) -> frozenset[str]:
+    """The venue's vocabulary as one flat set. Never raises: this record is a description of
+    what exists, and an undeclared venue is a fact to report rather than a reason to produce
+    no inventory at all — the gates that must refuse it already do."""
+    try:
+        numeric, categorical = factory.known_features(venue)
+    except ToolBlocked:
+        return frozenset()
+    return numeric | frozenset(categorical)
+
+
 def build_data_inventory(
     cycle_records: Sequence[Mapping[str, Any]],
     outcomes: Sequence[Mapping[str, Any]],
     *,
     contexts: Sequence[tuple[str, str]] = (),
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
     """The deterministic facts the review runs on. Pure; never raises on odd rows.
 
     ``cycle_records`` are ledger rows (kind ``crypto_cycle``) — the most recent per-feed
     status wins, so a feed that recovered reads ``ok``, one that never configured reads
     ``absent``. ``outcomes`` is the paper book's realized history; performance is
-    reported per timeframe with honest counts (a two-trade win rate is visibly thin)."""
+    reported per timeframe with honest counts (a two-trade win rate is visibly thin).
+
+    ``mintable_features`` is scoped to ``venue``. This record is read by a model asked what
+    data is worth ADDING, so the global vocabulary would tell it a feature is already
+    covered here when the venue cannot serve it — the one suggestion it would have been
+    most useful to receive."""
     feed_status: dict[str, str] = {}
     for row in cycle_records:
         record = row.get("record") if isinstance(row.get("record"), Mapping) else row
@@ -96,8 +113,10 @@ def build_data_inventory(
 
     return {
         "current_sources": [dict(s) for s in CURRENT_SOURCES],
-        # CATEGORICAL_FEATURES maps feature -> allowed values; its keys join the vocabulary.
-        "mintable_features": sorted(factory.NUMERIC_FEATURES | frozenset(factory.CATEGORICAL_FEATURES)),
+        # `known_features` returns (numeric, categorical); the categorical mapping's keys
+        # join the vocabulary, and both halves are already narrowed to what `venue` serves.
+        "venue": venue,
+        "mintable_features": sorted(_mintable(venue)),
         "feed_status": feed_status,
         "performance_by_timeframe": performance,
         "traded_contexts": [f"{symbol} {timeframe}" for symbol, timeframe in contexts],
