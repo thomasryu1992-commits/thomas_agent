@@ -1454,6 +1454,44 @@ def _replay(
             total_funding_cost_r, uneconomic_entries)
 
 
+# A feature the rows never supply, and why minting on one is not merely wasteful.
+#
+# `mark_price`, `index_price` and `mark_index_basis_bps` are **None on every bar** unless the
+# snapshot carries `mark_prices`/`index_prices`, which this runtime's collector does not. The
+# fail-closed evaluator reads None as indeterminate, so a spec naming one never matches — no
+# trade, which is the honest outcome and not the problem.
+#
+# The problem is that 9 candidates in this store carry backtest evidence with `closed_count > 0`
+# on exactly those columns. They are C7 imports: scored in the source system, where the feed
+# supplied values. Here they are rankable, promotable in principle, and structurally incapable
+# of ever entering — evidence that says "this traded and made X" for a trade this runtime cannot
+# reproduce. That is a backtest/live divergence wearing a perfectly ordinary candidate record.
+#
+# Refused at MINT, where it costs nothing and the replay rows are right there to ask. A
+# read-time tier over the 20 already stored is a separate increment: it needs to know what the
+# feed supplies NOW, which `pool` cannot see.
+#
+# "Never supplied" is measured over the replay, not declared in a list. A list would go stale
+# the day a feed is configured, and would have to be maintained in the opposite direction from
+# the truth — the rows already know.
+UNSUPPLIABLE_FEATURE = "references a feature this runtime never supplies"
+
+
+def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> list[str]:
+    """The spec's referenced features that are None on every replay row.
+
+    Empty rows return empty: nothing was observed either way, and a caller with no data must not
+    be told a feature is missing — that is a claim, and this function only reports what it saw.
+    """
+    if not rows:
+        return []
+    missing = []
+    for name in sorted(spec.referenced_features()):
+        if all(row.get(name) is None for row in rows):
+            missing.append(name)
+    return missing
+
+
 def _holdout_evidence(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, offset: int, funding: list[float] | None = None,
@@ -2132,8 +2170,17 @@ def run_factory(
     frame = build_replay_frame(snapshot)
 
     candidates: list[dict[str, Any]] = []
+    starved_specs: list[dict[str, Any]] = []
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
+        # Before scoring, because scoring it is the waste: a spec naming a feature these rows
+        # never supply cannot enter here, and evidence saying otherwise would be evidence for a
+        # trade this runtime cannot reproduce. See `unsuppliable_features`.
+        starved = unsuppliable_features(spec, frame.rows)
+        if starved:
+            starved_specs.append({"strategy_family": spec.strategy_family,
+                                  "reason": UNSUPPLIABLE_FEATURE, "features": starved})
+            continue
         evidence = backtest_spec(spec, snapshot, frame=frame)
         record = {
             "strategy_id": spec.strategy_id,
@@ -2179,7 +2226,11 @@ def run_factory(
         "seed": seed,
         "requested_count": batch["requested_count"],
         "accepted_count": batch["accepted_count"],
-        "rejected": batch["rejected"],
+        # Mint-time refusals and score-time ones together: a caller reading "why did this fire
+        # produce so few candidates" must not have to know which loop dropped them. Kept as a
+        # separate key rather than merged into `batch["rejected"]`, because that list is the
+        # generator's own record and this refusal happens after it, with facts it cannot see.
+        "rejected": [*batch["rejected"], *starved_specs],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
         "fusion_rejected": fusion_rejected,
