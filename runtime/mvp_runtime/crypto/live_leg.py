@@ -119,6 +119,20 @@ VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 # unknown status) means the position is not protected the way the decision assumed.
 BRACKET_RESTING_STATUSES = frozenset({"NEW"})
 
+# The leg's status when the venue ACCEPTED the submit and then could not find the order.
+#
+# Measured 2026-08-03T04:28:58Z, on the first live bracket after the Algo migration: the POST to
+# `/fapi/v1/algoOrder` raised nothing — no code, no message — and the query that followed
+# answered "does not exist", so the leg recorded `placed: false`, `error: null`,
+# `error_detail: null`. A silent failure, and the worst kind: `_close_naked_position` cancels
+# what PLACED, so the stop was never withdrawn. If that order was in fact resting, it is resting
+# still, unowned, counting against the symbol's conditional cap and able to trigger on a
+# position it was never meant to protect.
+#
+# The two sources disagreed and the code believed only one of them. This status is what that
+# disagreement is called, so it can never again be filed as an ordinary "did not place".
+BRACKET_QUERY_MISSING = "SUBMIT_CONFIRMED_QUERY_MISSING"
+
 # Close reasons written onto the outcome record. The first two deliberately reuse paper's
 # vocabulary (`paper.settle_trade_plan`) so a live result and a paper result of the same shape
 # read identically to every consumer — the R statistics are compared across the two.
@@ -261,6 +275,18 @@ def place_bracket_leg(
         "placed": False,
         "status": None,
         "exchange_order_id": None,
+        # The venue's answer to the SUBMIT, kept rather than discarded. It was being thrown away
+        # while the query was treated as the only truth — which is defensible while the two
+        # agree and is exactly how a placed order became invisible when they did not. On the
+        # Algo endpoints this response carries `algoId` and `algoStatus`, i.e. direct evidence
+        # the order exists, so discarding it threw away the only thing that could have caught
+        # 2026-08-03. Recorded, never TRUSTED: `placed` still comes from the read.
+        "submit_response": None,
+        "submitted_order_id": None,
+        # Whether an order might be resting at the venue that this result cannot confirm. The
+        # cancel path reads it, because "might exist" and "does not exist" have the same correct
+        # treatment on close — withdraw it — and only one of them leaves litter if you are wrong.
+        "may_be_resting": False,
         "error": None,
         # WHY the venue said no, not just that it did. `error` is the reason CODE and it is the
         # same string for every rejection there is; the venue's own numeric code and message ride
@@ -275,7 +301,15 @@ def place_bracket_leg(
     }
     try:
         request = build_order_request(intent)
-        adapter.submit(request, timeout_seconds=timeout_seconds)
+        response = adapter.submit(request, timeout_seconds=timeout_seconds)
+        if isinstance(response, Mapping):
+            result["submit_response"] = dict(response)
+            # `algoId` on the Algo endpoints, `orderId` on the order endpoint. Either one means
+            # the venue created something and named it.
+            for key in ("algoId", "orderId"):
+                if response.get(key) is not None:
+                    result["submitted_order_id"] = response[key]
+                    break
     except ToolError as exc:
         # A rejection is informative but not conclusive — the order may still have landed, so
         # the venue is asked below rather than assumed. (The entry path's posture.)
@@ -299,6 +333,19 @@ def place_bracket_leg(
         return result
 
     if venue_order is None:
+        # A submit that named an order and a query that cannot find it is a CONTRADICTION, not a
+        # clean miss. `placed` stays False — this leg cannot be claimed as protection, so the
+        # naked-position close still runs, which is the safe half. What changes is that the leg
+        # is now known to be possibly-resting, so the close withdraws it too.
+        if result["submitted_order_id"] is not None:
+            result["status"] = BRACKET_QUERY_MISSING
+            result["may_be_resting"] = True
+            result["error"] = result["error"] or BRACKET_QUERY_MISSING
+            result["error_detail"] = result["error_detail"] or (
+                f"the venue accepted the submit and named order {result['submitted_order_id']}, "
+                "then answered that it does not exist; it may be resting"
+            )
+            return result
         result["status"] = "NOT_FOUND"
         return result
     status = str(venue_order.get("status") or "")
@@ -542,10 +589,20 @@ def execute_live_entry(
 
 
 def _placed_id(placements: list[dict[str, Any]], index: int) -> str | None:
-    """The client order id of a bracket leg that actually placed, else None."""
-    if index >= len(placements) or not placements[index].get("placed"):
+    """The client order id of a bracket leg that may be at the venue, else None.
+
+    ``placed`` OR ``may_be_resting``, and the second half is the fix for 2026-08-03: a leg whose
+    submit was accepted and whose query then missed it was cancelled by nobody, because this
+    function asked only whether it had been CONFIRMED. Cancelling an order that does not exist
+    costs a "-2011 unknown order" the adapter already reads as *already gone*; NOT cancelling one
+    that does exist leaves an unowned protective order resting at the venue. The two mistakes
+    are not the same size."""
+    if index >= len(placements):
         return None
-    return placements[index].get("client_order_id")
+    leg = placements[index]
+    if not (leg.get("placed") or leg.get("may_be_resting")):
+        return None
+    return leg.get("client_order_id")
 
 
 def _close_naked_position(
