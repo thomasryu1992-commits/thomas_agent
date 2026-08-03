@@ -287,6 +287,55 @@ def _trend_pullback_short_entry(p: dict) -> list[dict]:
     ]
 
 
+# --- crossovers: the shape the vocabulary could not express until #456 ------------------------
+#
+# Every family above tests a STATE. `ma20 > ma50` is true for the whole of a trend, so the spec
+# is eligible on every bar of it and the entry that actually happens is decided by whichever bar
+# the other conditions happen to clear on — not by the trend starting. These ask for the bar the
+# relationship CHANGED, which is a different hypothesis and one the search has never been able
+# to see.
+#
+# Two conditions, and the second one is the whole difference: the relation holds now, and did
+# NOT hold one bar ago. `lag` shifts the whole condition, so the existing AND composes them.
+#
+# The filter conditions are deliberately kept from the state families they mirror. The point of
+# the pair is to isolate ONE change — state versus event — so that if the crossover version
+# scores differently, the difference is attributable. Adding new filters at the same time would
+# make the comparison say nothing.
+
+
+def _ma_cross_up_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "ma20", "comparison": ">", "value_from": "ma50"},
+        {"feature": "ma20", "comparison": "<=", "value_from": "ma50", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _ma_cross_down_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
+        {"feature": "ma20", "comparison": ">=", "value_from": "ma50", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _macd_cross_up_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "macd", "comparison": ">", "value_from": "macd_signal"},
+        {"feature": "macd", "comparison": "<=", "value_from": "macd_signal", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _macd_cross_down_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "macd", "comparison": "<", "value_from": "macd_signal"},
+        {"feature": "macd", "comparison": ">=", "value_from": "macd_signal", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
 def _breakout_entry(p: dict) -> list[dict]:
     return [
         {"feature": "close", "comparison": ">", "value_from": "ma20"},
@@ -664,6 +713,19 @@ def _volatility_squeeze_short_entry(p: dict) -> list[dict]:
 
 
 TEMPLATES: tuple[StrategyTemplate, ...] = (
+    # The crossover pairs lead, so a reader meets the one structural addition first.
+    StrategyTemplate("ma_cross_up", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 22.0, **_EXIT_BASE}, _ma_cross_up_entry),
+    StrategyTemplate("ma_cross_down", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 22.0, **_EXIT_BASE}, _ma_cross_down_entry),
+    StrategyTemplate("macd_cross_up", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_cross_up_entry),
+    StrategyTemplate("macd_cross_down", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_cross_down_entry),
     StrategyTemplate("trend_pullback", "long", "1h",
                      {"adx_min": ParamSpec(15.0, 30.0), "rsi_max": ParamSpec(45.0, 65.0), **_EXIT_PARAMS},
                      {"adx_min": 22.0, "rsi_max": 55.0, **_EXIT_BASE}, _trend_pullback_entry),

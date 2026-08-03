@@ -199,9 +199,26 @@ WEIGHTS: dict[str, float] = {
 
 def count_free_parameters(spec: StrategySpec) -> int:
     """A ``value_from`` condition states a structural relationship (nothing to tune);
-    every literal threshold or label is a degree of freedom someone chose."""
+    every literal threshold or label is a degree of freedom someone chose.
+
+    **A lag is one of those choices.** Looking back a bar is not a property of the market, it
+    is a decision the search made about where to look — and once the factory can mint it (the
+    crossover families), a spec that uses it has searched a strictly larger space than one that
+    does not. Counting it keeps ``trades_per_parameter`` from getting quietly more optimistic at
+    exactly the moment the space got bigger, which matters because that ratio drives both
+    ``sample_adequacy`` (the heaviest component) and the FRAGILE veto.
+
+    Only a lag that is USED counts. Choosing not to look back is the default, costs nothing to
+    express, and charging every condition for the option would move `free_parameters` on every
+    spec ever scored — a re-rating of the whole store dressed up as an accounting fix.
+
+    **Still a floor, not the truth.** A4 in ``docs/TRADING_STRATEGY_REVIEW_RECORD.md`` remains
+    open: which of the template families was chosen, which of four timeframes, which symbol, and
+    how many attempts it took are all degrees of freedom and none of them are counted here.
+    ``pool.selection_rank`` charges the attempt count separately; the rest is unpaid."""
     literals = sum(1 for c in spec.entry_rules.conditions if c.value is not None)
-    return literals + EXIT_FREE_PARAMETERS
+    lags = sum(1 for c in spec.entry_rules.conditions if c.lag)
+    return literals + lags + EXIT_FREE_PARAMETERS
 
 
 def _clamp01(value: float) -> float:
