@@ -138,6 +138,20 @@ ORDER_TEST_PATH = "/fapi/v1/order/test"
 # the runtime already knows, which leaves everything it does not know invisible — including the
 # orders that decide whether a new one is even accepted.
 OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
+# ...and the other half of it, which the Algo migration created.
+#
+# `/fapi/v1/openOrders` does NOT return conditional orders any more — they live on the Algo
+# service now — so the runtime's only "what is resting" reader went blind to exactly the class
+# of order that can be left behind. That is not hypothetical: on 2026-08-03T04:28:58Z a
+# `closePosition` STOP_MARKET was accepted by the venue, could not be found by the query that
+# followed, was therefore recorded as `placed: false`, and so was never cancelled by the
+# naked-position close. Nothing in this repo could then answer whether it is resting.
+#
+# A stray conditional order is not inert. It counts against the venue's per-symbol conditional
+# cap, so it can refuse the NEXT bracket; and a `closePosition` stop that survives its position
+# will Close-All against whatever is open when it triggers — a position it was never placed to
+# protect.
+ALGO_OPEN_ORDERS_PATH = "/fapi/v1/algoOpenOrders"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
@@ -441,6 +455,17 @@ class DryRunOrderAdapter:
             }
         return {"accepted": True, "code": None, "msg": None, "dry_run": True}
 
+    def algo_open_orders(
+        self, symbol: str | None = None, *, timeout_seconds: int = 10
+    ) -> list[dict[str, Any]]:
+        """The conditional half of what this dry run holds, so a caller can exercise both
+        readers without a venue. Split on `algoType`, the same discriminator the real adapter
+        routes on."""
+        return [
+            dict(req) for req in self._submitted.values()
+            if req.get("algoType") and (symbol is None or req.get("symbol") == symbol)
+        ]
+
     def open_orders(
         self, symbol: str | None = None, *, timeout_seconds: int = 10
     ) -> list[dict[str, Any]]:
@@ -728,6 +753,31 @@ class BinanceFuturesOrderAdapter:
                 ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}"
             )
         return [o for o in body if isinstance(o, dict)] if isinstance(body, list) else []
+
+    def algo_open_orders(
+        self, symbol: str | None = None, *, timeout_seconds: int = 10
+    ) -> list[dict[str, Any]]:
+        """Every CONDITIONAL order resting at the venue right now. Read-only.
+
+        The companion to :meth:`open_orders`, which since the Algo migration returns none of
+        these. Answers in the algo field names, translated by :func:`normalize_algo_order` so a
+        caller comparing these against a position's stored bracket ids reads one vocabulary.
+
+        The venue's endpoint takes no symbol filter, so filtering is done here — deliberately
+        after the read, because "what is resting on THIS symbol" and "what is resting at all"
+        are different questions and only the second one can find an order the runtime has
+        forgotten which symbol it was for.
+        """
+        body, code = self._signed_request(
+            "GET", ALGO_OPEN_ORDERS_PATH, {}, timeout_seconds=timeout_seconds
+        )
+        if code is not None:
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(
+                ORDER_REJECTED, f"venue refused the algo open-orders query (code {code}): {msg}"
+            )
+        rows = [normalize_algo_order(o) for o in body if isinstance(o, dict)] if isinstance(body, list) else []
+        return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
 
     def cancel_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
