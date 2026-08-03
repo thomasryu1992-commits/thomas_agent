@@ -2118,10 +2118,16 @@ def fuse_specs(
     Entry conditions are the **deduplicated union** under AND, so the child is by
     construction at least as selective as either parent — a crossover can never
     loosen an entry. Exits are the midpoint of the parents'; risk takes the
-    stricter (minimum) cap. Everything the parents must agree on (schema,
+    stricter (minimum) cap. Everything the parents must agree on (schema, **venue**,
     direction, timeframe, symbol scope, stop model, AND-operator) is a fail-closed
     precondition, not something to reconcile: unioning an OR parent's conditions
     into an AND would silently change what that parent meant.
+
+    The child carries the parents' venue, which is the whole reason they must share one.
+    This is a minting path like ``build_spec_dict`` and it was silent about the venue until
+    2026-08-03, so every fused child read as ``binance_futures`` whatever it came from —
+    the separation `StrategySpec.venue` exists to make impossible, reintroduced by the one
+    caller that built a spec dict without it.
 
     The child is structurally parsed and put through the same ``validate_strategy``
     as any generated spec; a blend that lands outside the **validator's** bounds (an
@@ -2147,6 +2153,15 @@ def fuse_specs(
     land" instead of two."""
     if first.schema_version != second.schema_version:
         raise FusionRefused("schema_version_mismatch")
+    if first.venue != second.venue:
+        # Beside `schema_version` rather than beside `symbol_scope`, because this is not two
+        # rule sets that fail to line up — it is two rule sets judged against DIFFERENT
+        # vocabularies, so merging their conditions produces a spec neither parent's venue
+        # was asked about. It passed until now only because hyperliquid's vocabulary happens
+        # to be a subset of binance's; a venue with a feed binance lacks would have made the
+        # child unvalidatable on the venue it claimed. Refused rather than resolved: which
+        # venue a cross-venue child belongs to is a question with no correct answer.
+        raise FusionRefused("venue_mismatch")
     if first.direction != second.direction:
         raise FusionRefused("direction_mismatch")
     if first.timeframe != second.timeframe:
@@ -2202,6 +2217,11 @@ def fuse_specs(
             ),
         },
         "created_by": "mvp_factory_fusion",
+        # Both parents' venue — they are equal or this never got here. Recorded rather than
+        # left to `StrategySpec`'s default, which would label every fused child
+        # `binance_futures` no matter what it was mined from: the second minting path, and
+        # the one #463 did not close when it fixed `build_spec_dict`.
+        "venue": first.venue,
     }
     try:
         child = StrategySpec.from_dict(spec_dict)
