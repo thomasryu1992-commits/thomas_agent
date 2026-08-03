@@ -33,7 +33,9 @@ from .cost import (
     FUNDING_SOURCE_VENUE,
 )
 from .paper import OCCUPYING_STATUSES, state_dir
-from .robustness import HOLDOUT_CONFIRMED, ROBUST, classify_verdict, verdict_rank
+from .robustness import (
+    HOLDOUT_CONFIRMED, ROBUST, classify_verdict, holdout_status, verdict_rank,
+)
 from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_pool
 
 POOL_FILENAME = "active_strategy_pool.json"
@@ -1269,7 +1271,25 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     # Out-of-sample status rides into the ranking view so the promotion door can show
     # it: with ROBUST now gated on it, "PROVISIONAL because unconfirmed" and
     # "PROVISIONAL because it failed forward" are very different things to promote.
-    holdout_state = str(robustness.get("holdout_status") or "UNCONFIRMED")
+    #
+    # RECOMPUTED from the stored block, for the reason spelled out for the verdict below and
+    # discovered the same way. `holdout_status` is a label a rule produced at mint time, and
+    # the rule changed twice now — most recently when a confirmation stopped being `total_R > 0`
+    # on three trades and became an interval over `MIN_HOLDOUT_TRADES`. Reading the label back
+    # meant that change reached newly minted candidates only: measured on this machine, all 236
+    # stored CONFIRMED labels survived a rule under which 1 of them qualifies, and they gate
+    # ROBUST, which gates the live-promotion door. Recomputing the verdict from a stale holdout
+    # label fixed half of a two-part staleness and left the half that decides it.
+    #
+    # A record with no holdout block keeps its stored label — the same rule the verdict follows.
+    # Every candidate minted before the holdout existed lands there, and their stored label is
+    # UNCONFIRMED, so the fallback grants nothing it should not.
+    stored_holdout_state = str(robustness.get("holdout_status") or "UNCONFIRMED")
+    holdout_block = evidence.get("holdout")
+    holdout_state = (
+        holdout_status(holdout_block) if isinstance(holdout_block, Mapping) and holdout_block
+        else stored_holdout_state
+    )
     # The verdict is RECOMPUTED from the stored components, never read back as a label.
     #
     # It used to be read: `robustness.get("verdict")`. Verdicts are written once, at mint
