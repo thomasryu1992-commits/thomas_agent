@@ -229,10 +229,16 @@ def main(
     repo_root: Path | None = None,
     now: str | None = None,
     sleep: Any = time.sleep,
+    monotonic: Any = time.monotonic,
     alerter: OperatorAlerter | None = None,
 ) -> int:
     """Run one scheduler command. Returns 0 on success, non-zero on a fail-closed block.
-    Dependencies are injectable for tests; unset ones default to local state / the gate."""
+    Dependencies are injectable for tests; unset ones default to local state / the gate.
+
+    ``monotonic`` is injected alongside ``sleep`` because the pair is one mechanism: the
+    loop measures its own pass and sleeps the remainder. It is read at exactly two sites
+    (around ``run_due``), so a test clock controls the measured elapsed time without
+    sharing a call count with ``run_due``'s own ``time.monotonic`` duration_ms readings."""
     force_utf8_io()
     args = _parse_args(argv)
     store = store if store is not None else ScheduleStore.default(repo_root)
@@ -332,7 +338,7 @@ def main(
         tick = 0
         try:
             while args.max_ticks == 0 or tick < args.max_ticks:
-                pass_started = time.monotonic()
+                pass_started = monotonic()
                 summary = scheduler.run_due(
                     store, now=now or timeutil.utc_now_iso(), control_store=control_store, ledger=ledger,
                     working_memory=working_memory, programization=programization,
@@ -351,7 +357,7 @@ def main(
                 tick += 1
                 _beat()
                 if args.interval_seconds > 0 and (args.max_ticks == 0 or tick < args.max_ticks):
-                    sleep(remaining_period(args.interval_seconds, time.monotonic() - pass_started))
+                    sleep(remaining_period(args.interval_seconds, monotonic() - pass_started))
         except KeyboardInterrupt:
             sys.stderr.write("\nSCHEDULER: stopped.\n")
         alerts = f", alerts {alerter.sent} sent/{alerter.failed} failed" if alerter is not None else ""
