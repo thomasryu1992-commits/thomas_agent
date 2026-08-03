@@ -493,6 +493,10 @@ def execute_live_entry(
         "bracket": [],
         "naked_close": None,
         "position": None,
+        # Present on every entry result, `None` on almost all of them. Only a naked CLOSE
+        # produces one here — an entry that opens is settled later by `execute_live_exit`,
+        # which writes its own. `live_route` persists whichever it finds.
+        "outcome": None,
         "created_at": now,
     }
 
@@ -555,6 +559,7 @@ def execute_live_entry(
                 quantity=filled_qty,
                 entry_price=fill_price,
                 placements=[],
+                identity=_naked_close_identity(decision, intent, entry),
                 adapter=adapter,
                 gate_open=gate_open,
                 limits=limits,
@@ -598,6 +603,7 @@ def execute_live_entry(
             direction=str(intent["direction"]),
             quantity=filled_qty,
             entry_price=fill_price,
+            identity=_naked_close_identity(decision, intent, entry),
             placements=placements,
             adapter=adapter,
             gate_open=gate_open,
@@ -664,6 +670,28 @@ def _placed_id(placements: list[dict[str, Any]], index: int) -> str | None:
     return leg.get("client_order_id")
 
 
+def _naked_close_identity(
+    decision: Mapping[str, Any], intent: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Who this trade belonged to, for the outcome a naked close has to record.
+
+    The same fields `build_live_position` reads, taken from the same places — this path runs
+    BEFORE the position is booked (there is no record to read yet), so the facts are gathered
+    rather than looked up. Kept as one function so the two call sites cannot drift into
+    attributing the same trade differently.
+    """
+    return {
+        "strategy_id": intent.get("strategy_id"),
+        "candidate_id": (decision.get("sizing") or {}).get("candidate_id")
+        or intent.get("candidate_id"),
+        "strategy_rule_hash": intent.get("strategy_rule_hash"),
+        "strategy_generation_id": intent.get("strategy_generation_id"),
+        "entry_exchange_order_id": entry.get("exchange_order_id"),
+        "entry_quote_usdt": _f((entry.get("fill") or {}).get("cum_quote")),
+        "risk_usdt": _f((decision.get("sizing") or {}).get("risk_usdt")),
+    }
+
+
 def _close_naked_position(
     result: dict[str, Any],
     *,
@@ -672,6 +700,7 @@ def _close_naked_position(
     quantity: float,
     entry_price: float,
     placements: list[dict[str, Any]],
+    identity: Mapping[str, Any],
     adapter: Any,
     gate_open: bool,
     limits: Any,
@@ -683,6 +712,21 @@ def _close_naked_position(
     Also withdraws whichever bracket leg *did* place: leaving one half of a bracket resting
     against a position that no longer exists is exactly the litter the cancel-on-close rule
     exists to avoid.
+
+    **A close here is a closed trade and is recorded as one.** Until 2026-08-03 it was not:
+    this branch set ``ENTRY_NAKED_CLOSED`` and returned, so a position that filled, failed to
+    get its bracket and was closed again moved real money and produced no outcome row at all.
+    Measured that day — two such entries moved the venue's realized P&L by -0.1196 USDT while
+    ``live_closed`` read 0, so the weekly, drawdown and consecutive-loss breakers judged zero
+    rows and reported NORMAL. `execute_live_exit` states the rule this branch was missing:
+    a result "that cannot be recorded, or the trade would vanish from the breaker's
+    accounting". This is the path most likely to be producing losses when it fires, so it is
+    the worst one to be invisible.
+
+    The record is built here and persisted by `live_route`, beside the bracket-breaker
+    recording — this function takes no ledger for the same reason `execute_live_entry` takes
+    none, and adding one to the entry path to serve this branch would be a wider change than
+    the defect.
     """
     close_intent = {
         "status": "ORDER_INTENT_CREATED",
@@ -728,10 +772,80 @@ def _close_naked_position(
     if close["reconcile_status"] == RECONCILED:
         result["status"] = ENTRY_NAKED_CLOSED
         result["reason_codes"].append(NAKED_POSITION_CLOSED)
+        _record_naked_outcome(
+            result,
+            close=close,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            entry_price=entry_price,
+            identity=identity,
+            now=now,
+        )
     else:
+        # Nothing to record: the position is still OPEN at the venue, so there is no realized
+        # figure. `ENTRY_NAKED_OPEN` is the loud state and reconciliation is what resolves it.
         result["status"] = ENTRY_NAKED_OPEN
         result["reason_codes"].append(NAKED_CLOSE_FAILED)
     return result
+
+
+def _record_naked_outcome(
+    result: dict[str, Any],
+    *,
+    close: Mapping[str, Any],
+    symbol: str,
+    direction: str,
+    quantity: float,
+    entry_price: float,
+    identity: Mapping[str, Any],
+    now: str,
+) -> None:
+    """Build the outcome row for a naked close onto ``result["outcome"]``.
+
+    ``realized_pnl_usdt`` is reused rather than re-derived — it reads only quantity, entry
+    price, entry quote and direction, all of which this path has, so the position mapping it
+    wants is assembled instead of a second copy of the arithmetic being written.
+
+    An uncomputable figure records NOTHING and says so with `FILL_FACTS_MISSING`. The
+    position is closed at the venue either way, so unlike `execute_live_exit` there is no
+    book to keep — but inventing a number to fill the row would put a fiction into the
+    breaker's accounting, which is worse than the gap this function exists to close.
+    """
+    pnl, pnl_detail = realized_pnl_usdt(
+        {
+            "quantity": quantity,
+            "entry_price": entry_price,
+            "entry_quote_usdt": identity.get("entry_quote_usdt"),
+            "direction": direction,
+        },
+        close.get("fill") or {},
+    )
+    result["pnl_detail"] = pnl_detail
+    if pnl is None:
+        result["reason_codes"].append(FILL_FACTS_MISSING)
+        return
+    result["outcome"] = build_live_outcome_record(
+        realized_pnl_usdt=pnl,
+        symbol=symbol,
+        side="SELL" if direction.upper() == "LONG" else "BUY",
+        quantity=quantity,
+        entry_price=entry_price,
+        exit_price=pnl_detail["exit_price"],
+        entry_order_id=identity.get("entry_exchange_order_id"),
+        exit_order_id=close.get("exchange_order_id"),
+        strategy_id=identity.get("strategy_id"),
+        # No position was booked, so there is no position_id to carry. The settlement id is
+        # derived from the identity it does have; a naked close happens once per entry.
+        position_id=None,
+        close_reason=CLOSE_REASON_NAKED,
+        opened_at_utc=now,
+        risk_usdt=identity.get("risk_usdt"),
+        candidate_id=identity.get("candidate_id"),
+        strategy_rule_hash=identity.get("strategy_rule_hash"),
+        strategy_generation_id=identity.get("strategy_generation_id"),
+        now=now,
+    )
 
 
 # --- the exit -------------------------------------------------------------------

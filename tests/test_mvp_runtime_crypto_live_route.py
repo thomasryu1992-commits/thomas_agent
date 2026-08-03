@@ -294,6 +294,43 @@ def test_an_ordinary_refusal_is_not_an_incident():
     )
 
 
+# --- the naked close reaches the ledger ------------------------------------------------------
+#
+# `live_leg`'s entry path takes no ledger: it builds the row, this module persists it. The same
+# split `_record_bracket_outcome` already uses, and the reason the recording could be added
+# without threading a ledger through the entry signature.
+
+def test_a_naked_close_outcome_is_persisted():
+    ledger = _Ledger()
+    record = {"live_reason_codes": []}
+    live_route._record_entry_outcome(
+        record, {"outcome": {"settlement_id": "s1", "realized_pnl_usdt": -0.12}}, ledger=ledger
+    )
+    assert [o["settlement_id"] for o in ledger.appended] == ["s1"]
+    assert record["live_reason_codes"] == []
+
+
+def test_an_entry_with_no_outcome_appends_nothing():
+    # Every other entry result carries `outcome: None` — an opened position is settled later by
+    # `execute_live_exit`, which writes its own row.
+    ledger = _Ledger()
+    record = {"live_reason_codes": []}
+    live_route._record_entry_outcome(record, {"outcome": None}, ledger=ledger)
+    assert ledger.appended == []
+
+
+def test_an_outcome_that_will_not_persist_is_reported_and_never_raised():
+    """The order is already at the venue and the money has already moved, so the choice is
+    between a recorded failure and an unrecorded one — never between recording and raising."""
+    ledger = _Ledger(raises="LEDGER_UNWRITABLE")
+    record = {"live_reason_codes": []}
+    live_route._record_entry_outcome(
+        record, {"outcome": {"settlement_id": "s1"}}, ledger=ledger
+    )
+    assert live_leg.OUTCOME_PERSIST_FAILED in record["live_reason_codes"]
+    assert "LEDGER_UNWRITABLE" in record["live_reason_codes"]
+
+
 # --- the time exit (2026-07-29) --------------------------------------------------------------
 #
 # Paper has always enforced `max_holding_bars`; live did not, and the promotion evidence gating
