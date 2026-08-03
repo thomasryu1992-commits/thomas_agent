@@ -68,9 +68,10 @@ _NETWORK_FLAGS = (NETWORK_ACCESS,)
 # this venue provides" must not produce the same silence.
 #
 # Why declaring feeds beats listing features: a new feature is assigned to a feed once, and
-# every venue's answer follows. `factory` pins the other half — that every mintable feature
-# is classified — so adding one without saying what it needs fails a test rather than
-# defaulting to "available everywhere", which is the unsafe direction.
+# every venue's answer follows. `factory._FEATURE_FEED` is TOTAL over the vocabulary — every
+# mintable feature names a feed, candle-derived ones included — so a feature nobody classified
+# resolves to a feed no venue declares and is mintable nowhere, rather than everywhere.
+FEED_CANDLES = "candles"                    # OHLCV itself: no venue can be mined without it
 FEED_FUNDING = "funding"                    # a funding-rate SERIES, not just the current rate
 FEED_DERIVATIVE_PRICE = "derivative_price"  # mark / index / premium as candle-aligned series
 FEED_LIQUIDATION = "liquidation"            # forced closes (Coinalyze — crypto-only vendor)
@@ -80,7 +81,7 @@ FEED_TAKER_FLOW = "taker_flow"              # the candle's aggressor split (`tak
 FEED_TRADE_COUNT = "trade_count"            # the candle's trade count
 
 KNOWN_FEEDS = frozenset({
-    FEED_FUNDING, FEED_DERIVATIVE_PRICE, FEED_LIQUIDATION, FEED_OPEN_INTEREST,
+    FEED_CANDLES, FEED_FUNDING, FEED_DERIVATIVE_PRICE, FEED_LIQUIDATION, FEED_OPEN_INTEREST,
     FEED_POSITIONING, FEED_TAKER_FLOW, FEED_TRADE_COUNT,
 })
 
@@ -96,8 +97,14 @@ KNOWN_FEEDS = frozenset({
 # at all. Both are ungated identically today; only one of them stays that way.
 VENUE_FEEDS: dict[str, frozenset[str]] = {
     BINANCE_FUTURES: frozenset(KNOWN_FEEDS),
-    HYPERLIQUID: frozenset({FEED_FUNDING, FEED_TRADE_COUNT}),
+    HYPERLIQUID: frozenset({FEED_CANDLES, FEED_FUNDING, FEED_TRADE_COUNT}),
 }
+
+# The feed a feature that named none resolves to. Deliberately NOT in `KNOWN_FEEDS`, so it
+# cannot be declared by a venue even by accident — `test_no_venue_can_declare_the_unclassified
+# _feed` holds that. An unclassified feature is therefore mintable NOWHERE: still a mistake,
+# but one that blocks specs instead of minting them against data that does not exist.
+UNCLASSIFIED_FEED = "unclassified"
 
 
 def venue_feeds(venue: str) -> frozenset[str]:

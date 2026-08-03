@@ -1011,14 +1011,41 @@ def templates_for_timeframe(
 
 # --- which feed each mintable feature needs ----------------------------------------------
 #
-# Only features that need something BEYOND the candle series appear here; everything else is
-# derived from OHLCV (directly, or through the higher-timeframe, reference-symbol and
-# cross-section legs, which are all just more candles) and is available wherever candles are.
+# TOTAL over the vocabulary: every mintable feature names a feed, `FEED_CANDLES` included.
 #
-# `test_every_mintable_feature_is_classified` pins this table and `_CANDLE_DERIVED` below as
-# an exact PARTITION of the vocabulary, so a new feature cannot arrive unclassified and be
-# silently claimed available on a venue that has no data for it.
+# It was not always. Until this table absorbed the candle-derived half it listed only the
+# features needing something BEYOND candles, and `known_features` read "absent from the table"
+# as "available wherever candles are" — so a feature nobody classified was mintable on EVERY
+# venue, including one whose data cannot produce it. The guard for that was a test, and a test
+# only holds while it is written correctly; the first version of it checked the containment
+# that happened to be true rather than the one that mattered, and caught nothing.
+#
+# So the default moved into the code. An unclassified feature now resolves to
+# `market_data.UNCLASSIFIED_FEED`, which no venue declares and none can, so it is mintable
+# NOWHERE and any spec naming it takes BLOCK_UNKNOWN_FEATURE. Still a mistake — it just fails
+# in the direction that refuses to trade rather than the one that trades on absent data.
+# `test_every_mintable_feature_is_classified` remains, and now catches the mistake at CI
+# instead of being the only thing standing between it and a mined constant.
 _FEATURE_FEED: dict[str, str] = {
+    # Everything OHLCV alone produces — directly, or through the higher-timeframe,
+    # reference-symbol and cross-section legs, which are all just more candles.
+    **{name: market_data.FEED_CANDLES for name in (
+        "open", "high", "low", "close", "volume",
+        "ma20", "ma50", "ema20", "ema50", "atr", "atr_pct_of_price", "atr_percentile",
+        "rsi", "adx", "macd", "macd_signal", "macd_hist",
+        "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
+        "roc_4", "price_distance_ma20", "volume_zscore",
+        # One step up the ladder — the same indicators over a slower candle.
+        "htf_rsi", "htf_adx", "htf_price_distance_ma20", "htf_ma20_distance_ma50",
+        # One proxy symbol's candles beside this symbol's.
+        "ref_roc_4", "rel_strength_roc_4", "ref_correlation",
+        # A cohort's candles, reduced to this symbol's place among them.
+        "xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio",
+        # The categoricals are classifiers over the candle series. Named individually rather
+        # than swept in from `CATEGORICAL_FEATURES`, because a future categorical need not be
+        # candle-derived — a funding or positioning REGIME would be a label over a feed.
+        "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
+    )},
     "funding_rate": market_data.FEED_FUNDING,
     "funding_zscore": market_data.FEED_FUNDING,
     "mark_price": market_data.FEED_DERIVATIVE_PRICE,
@@ -1045,40 +1072,6 @@ _FEATURE_FEED: dict[str, str] = {
     "trade_count_zscore": market_data.FEED_TRADE_COUNT,
 }
 
-# The other half of the partition: everything the candle series alone produces, and therefore
-# everything available wherever candles are.
-#
-# Written out rather than defined as "whatever `_FEATURE_FEED` did not name", which is what
-# `known_features` effectively assumes and is exactly why this list has to exist. The default
-# direction here is UNSAFE — an unclassified feature reads as available on every venue — so
-# the only thing that can catch a feature nobody classified is a second statement to disagree
-# with. `NUMERIC_FEATURES` splats `features.HTF_/REFERENCE_/XS_NUMERIC_COLUMNS`, so those
-# families grow without anyone editing this file; the names are listed individually so that
-# growth still has to be acknowledged as candle-derived rather than assumed to be.
-#
-# Adding a feature therefore fails `test_every_mintable_feature_is_classified` until it is
-# named in one list or the other. That failure IS the guard — it is cheaper than discovering
-# on a venue with no liquidation feed that `liquidation_spike_ratio`'s constant-0.0 fallback
-# has been matching every bar since the feature landed.
-_CANDLE_DERIVED: frozenset[str] = frozenset({
-    "open", "high", "low", "close", "volume",
-    "ma20", "ma50", "ema20", "ema50", "atr", "atr_pct_of_price", "atr_percentile",
-    "rsi", "adx", "macd", "macd_signal", "macd_hist",
-    "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
-    "roc_4", "price_distance_ma20", "volume_zscore",
-    # One step up the ladder — the same indicators over a slower candle.
-    "htf_rsi", "htf_adx", "htf_price_distance_ma20", "htf_ma20_distance_ma50",
-    # One proxy symbol's candles beside this symbol's.
-    "ref_roc_4", "rel_strength_roc_4", "ref_correlation",
-    # A cohort's candles, reduced to this symbol's place among them.
-    "xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio",
-    # Every categorical is a classifier over the candle series. Listed, not splatted from
-    # `CATEGORICAL_FEATURES`, because a future categorical need not be — a funding or
-    # positioning REGIME would be a label over a feed, and splatting would wave it through.
-    "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
-})
-
-
 def known_features(venue: str) -> tuple[frozenset[str], dict[str, Any]]:
     """The (numeric, categorical) vocabulary a spec mined on ``venue`` may name.
 
@@ -1089,17 +1082,26 @@ def known_features(venue: str) -> tuple[frozenset[str], dict[str, Any]]:
     `liquidation_spike_ratio` falls back to a constant 0.0 with no feed rather than to None,
     so a mined `< x` condition on it matches every bar forever, on a number nobody measured.
 
-    Fail-closed on an unknown venue — `market_data.venue_feeds` raises rather than returning
-    an empty vocabulary, so a typo blocks instead of silently rejecting every feature.
+    Fail-closed twice, on the two things that can be missing here.
+
+    An unknown VENUE raises — `market_data.venue_feeds` refuses rather than returning an
+    empty vocabulary, so a typo blocks instead of silently rejecting every feature.
+
+    An unclassified FEATURE resolves to `UNCLASSIFIED_FEED`, which no venue declares, so it
+    is admitted nowhere. `.get` with that default is the whole mechanism and the reason
+    `_FEATURE_FEED` is total: the alternative reading of a missing key — "needs nothing
+    beyond candles, so it is available everywhere" — hands a venue a feature its data cannot
+    produce, and `liquidation_spike_ratio`'s constant-0.0 fallback makes that a mined
+    condition matching every bar rather than an inert one.
     """
     feeds = market_data.venue_feeds(venue)
     numeric = frozenset(
         name for name in NUMERIC_FEATURES
-        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+        if _FEATURE_FEED.get(name, market_data.UNCLASSIFIED_FEED) in feeds
     )
     categorical = {
         name: values for name, values in CATEGORICAL_FEATURES.items()
-        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+        if _FEATURE_FEED.get(name, market_data.UNCLASSIFIED_FEED) in feeds
     }
     return numeric, categorical
 

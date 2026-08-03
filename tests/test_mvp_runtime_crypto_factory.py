@@ -1223,47 +1223,61 @@ def test_the_holdout_runs_the_same_door_as_the_scored_window(monkeypatch):
 # matches every bar forever, on a number nobody measured.
 
 def test_every_mintable_feature_is_classified():
-    """The load-bearing test of this increment: the two tables must PARTITION the vocabulary.
+    """`_FEATURE_FEED` must be TOTAL over the vocabulary — every feature names its feed.
 
-    `known_features` reads an unclassified feature as available on every venue — the unsafe
-    direction — so "did anyone classify this?" cannot be answered by `_FEATURE_FEED` alone.
-    Checking only `classified <= vocabulary` would pass a new feature straight through: it
-    is absent from the table being checked, and absence is the thing being looked for.
-    `_CANDLE_DERIVED` exists to be the second statement that can disagree, so both
-    directions are asserted here — a name in neither list, and a name in both.
+    This is now the CI half of a two-layer guard rather than the whole of it: the runtime
+    half is `known_features`, which admits an unclassified feature nowhere. What this adds
+    is that the mistake is reported where it was made, instead of surfacing later as specs
+    blocking on a feature the author believed they had added.
     """
     vocabulary = set(factory.NUMERIC_FEATURES) | set(factory.CATEGORICAL_FEATURES)
     classified = set(factory._FEATURE_FEED)
-    candle_derived = set(factory._CANDLE_DERIVED)
 
-    unclassified = vocabulary - classified - candle_derived
+    unclassified = vocabulary - classified
     assert not unclassified, (
         f"mintable but unclassified: {sorted(unclassified)} — name each in `_FEATURE_FEED` "
-        f"(with the feed it needs) or in `_CANDLE_DERIVED`. Left out, they read as available "
-        f"on every venue, including ones that cannot supply them."
+        f"with the feed it needs (`FEED_CANDLES` if OHLCV alone produces it). Until then "
+        f"they are mintable on no venue at all."
     )
-    assert not (classified & candle_derived), (
-        f"claimed both ways: {sorted(classified & candle_derived)}"
-    )
-    stale = (classified | candle_derived) - vocabulary
+    stale = classified - vocabulary
     assert not stale, f"classified but not mintable: {sorted(stale)}"
     for feed in factory._FEATURE_FEED.values():
         assert feed in market_data.KNOWN_FEEDS, f"unknown feed named: {feed}"
 
 
-def test_an_unclassified_feature_is_caught_rather_than_inherited(monkeypatch):
-    """The guard above, exercised — the assertion this test file could not make before.
+def test_an_unclassified_feature_is_mintable_nowhere(monkeypatch):
+    """The runtime half: the code refuses it, not just the test above.
 
-    A feature added to the vocabulary and to neither table is the realistic mistake: nothing
-    about writing it is venue-aware, and every existing test still passes because it is
-    present on both sides of every set difference they take. This pins that the partition
-    check is what fails, and names the feature when it does.
+    A feature added to the vocabulary and to no table is the realistic mistake — nothing
+    about writing one is venue-aware. It used to resolve to "available on every venue",
+    which is how an unclassified feature would have reached a venue with no feed for it.
+    It now resolves to a feed nobody declares, so every venue rejects it and a spec naming
+    it takes BLOCK_UNKNOWN_FEATURE.
     """
     monkeypatch.setattr(
         factory, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
     )
+    for venue in market_data.VENUE_FEEDS:
+        numeric, _ = factory.known_features(venue)
+        assert "liquidation_burst_ratio" not in numeric, f"admitted on {venue}"
+    # And the CI half still names it, so the mistake is reported rather than only absorbed.
     with pytest.raises(AssertionError, match="liquidation_burst_ratio"):
         test_every_mintable_feature_is_classified()
+
+
+def test_no_venue_can_declare_the_unclassified_feed():
+    """The sentinel only fails closed while no venue answers to it — including by typo.
+
+    `KNOWN_FEEDS` is what a venue may declare and `UNCLASSIFIED_FEED` is deliberately not in
+    it, so a venue naming it is a mistake this catches rather than a venue that quietly
+    admits every unclassified feature.
+    """
+    assert market_data.UNCLASSIFIED_FEED not in market_data.KNOWN_FEEDS
+    for venue, feeds in market_data.VENUE_FEEDS.items():
+        assert market_data.UNCLASSIFIED_FEED not in feeds, f"{venue} declares the sentinel"
+        assert feeds <= market_data.KNOWN_FEEDS, (
+            f"{venue} declares feeds nobody defined: {sorted(feeds - market_data.KNOWN_FEEDS)}"
+        )
 
 
 def test_binance_keeps_the_whole_vocabulary():
