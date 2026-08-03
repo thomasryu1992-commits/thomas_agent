@@ -66,7 +66,7 @@ class _FakeAdapter:
             raise ToolError(self.submit_raises, "submit boom")
         return {"accepted": True}
 
-    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
         if self.fetch_raises:
             raise ToolError(self.fetch_raises, "fetch boom")
         return self.venue_order
@@ -361,9 +361,27 @@ def _cond_intent(order_type, **kw):
 
 @pytest.mark.parametrize("order_type", ["STOP_MARKET", "TAKE_PROFIT_MARKET"])
 def test_conditional_order_carries_the_stop_price(order_type):
+    """The trigger is `triggerPrice` and the id is `clientAlgoId` — the Algo Order spellings.
+
+    This assertion said `stopPrice` and `newClientOrderId` until 2026-08-03, which was the
+    correct contract for an endpoint that had stopped accepting these types eight months
+    earlier. A wire-shape test can only ever pin what the code sends; it cannot notice that the
+    venue moved the door."""
     req = lx.build_order_request(_cond_intent(order_type, reduce_only=True))
-    assert req["type"] == order_type and req["stopPrice"] == 59000.0
+    assert req["type"] == order_type and req["triggerPrice"] == 59000.0
+    assert req["algoType"] == lx.ALGO_TYPE_CONDITIONAL
+    assert req["clientAlgoId"].startswith("TAI_") and "newClientOrderId" not in req
     assert req["reduceOnly"] is True and req["quantity"] > 0
+    assert lx.is_algo_request(req) is True
+
+
+def test_a_plain_order_keeps_the_order_endpoint_spellings():
+    """The other half: only CONDITIONAL types moved. A LIMIT or MARKET routed to the algo
+    endpoint would be the same failure with the sides swapped."""
+    req = lx.build_order_request(_intent())
+    assert "newClientOrderId" in req and "clientAlgoId" not in req
+    assert "algoType" not in req
+    assert lx.is_algo_request(req) is False
 
 
 @pytest.mark.parametrize("order_type", ["STOP_MARKET", "TAKE_PROFIT_MARKET"])

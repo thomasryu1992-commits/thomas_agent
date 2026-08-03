@@ -85,14 +85,14 @@ class FakeAdapter:
 
     def submit(self, order_request, *, timeout_seconds=10):
         self.submitted.append(dict(order_request))
-        self._requests[str(order_request["newClientOrderId"])] = dict(order_request)
-        kind = self._kind(str(order_request["newClientOrderId"]))
+        self._requests[str((order_request.get("clientAlgoId") or order_request["newClientOrderId"]))] = dict(order_request)
+        kind = self._kind(str((order_request.get("clientAlgoId") or order_request["newClientOrderId"])))
         error = self._submit_errors.get(kind)
         if error is not None:
             raise ToolError(error, f"scripted {kind} rejection")
         return {"accepted": True}
 
-    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
         kind = self._kind(str(client_order_id))
         if kind in self._missing:
             return None
@@ -119,7 +119,7 @@ class FakeAdapter:
             "orderId": f"oid-{kind}",
         }
 
-    def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
         kind = self._kind(str(client_order_id))
         if kind in self._cancel_errors:
             raise ToolError(self._cancel_errors[kind], "scripted cancel failure")
@@ -413,7 +413,7 @@ def test_the_stop_triggers_on_the_mark_price_at_the_planned_price():
     adapter = FakeAdapter()
     _entry(adapter=adapter)
     sl = adapter.submitted[1]
-    assert sl["stopPrice"] == BRACKET["stop_loss"] and sl["workingType"] == "MARK_PRICE"
+    assert sl["triggerPrice"] == BRACKET["stop_loss"] and sl["workingType"] == "MARK_PRICE"
 
 
 def test_the_target_leg_is_sized_from_the_actual_fill_not_the_intent():
