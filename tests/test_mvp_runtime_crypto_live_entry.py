@@ -166,6 +166,30 @@ def test_an_allowing_verdict_passes_through():
     assert _plan(verdict={"allow_new_position": True, "problems": []})["status"] == le.STATUS_READY
 
 
+@pytest.mark.parametrize("managed", [
+    {"trail_distance": 500.0},
+    {"breakeven_at_r": 1.0},
+    {"trail_distance": 500.0, "breakeven_at_r": 1.0},
+])
+def test_a_stop_that_would_move_after_entry_is_refused(managed):
+    """This leg places the stop once — a `closePosition` STOP_MARKET, cancelled on close, with
+    no amend path. A spec carrying `breakeven_at_r` or `trail_atr` was SCORED on a stop that
+    moves, so executing it here on a stop that does not would trade a strategy nobody measured.
+    Refused rather than degraded, and named, so the day one is promoted the blocker is visible
+    instead of silent."""
+    decision = _plan(plan={**PLAN, **managed})
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.MANAGED_EXIT_REFUSED in decision["reasons"]
+    assert decision["managed_exit"] == managed
+
+
+def test_the_refusal_reads_the_plan_not_the_spec():
+    """A spec whose management rules failed to ride into the plan would pass a spec-side check
+    and still trade the wrong exit. The plan is what this leg executes."""
+    assert _plan(plan={**PLAN, "breakeven_at_r": None, "trail_distance": None})["status"] == (
+        le.STATUS_READY)
+
+
 @pytest.mark.parametrize("verdict", [None, {}, "ALLOW", 1, {"problems": []}])
 def test_an_absent_or_malformed_verdict_refuses_rather_than_skipping_the_check(verdict):
     """The fail-open this closed. `verdict` used to default to None and be skipped when absent,

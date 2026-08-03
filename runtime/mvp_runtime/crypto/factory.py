@@ -1373,6 +1373,14 @@ def _replay(
                 "stop_loss": close - stop_distance if long else close + stop_distance,
                 "take_profit": close + target_distance if long else close - target_distance,
                 "risk": abs(stop_distance),
+                # The stop-management rules, carried onto the position so the replay settles
+                # through exactly the same `settle_trade_plan` the live cycle runs. Trail is
+                # converted to price HERE, where the ATR is known, for the reason
+                # `advance_managed_stop` states: the settlement is a pure function of prices.
+                "breakeven_at_r": spec.exit_rules.breakeven_at_r,
+                "trail_distance": (
+                    spec.exit_rules.trail_atr * atr if spec.exit_rules.trail_atr is not None else None
+                ),
                 "holding_candles": 0,
                 # Where the carry starts. Kept on the position rather than in a parallel
                 # variable so a settlement can only ever bill the window of the trade that is

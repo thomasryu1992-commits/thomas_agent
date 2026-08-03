@@ -151,10 +151,34 @@ class EntryRules:
 
 @dataclass(frozen=True)
 class ExitRules:
+    """The fixed ATR bracket, plus the two stop MANAGEMENT rules (both optional).
+
+    Until now this was three scalars and the exit was decided entirely at entry: a stop, a
+    target, and a bar count. Entry got 20 template families and a mutation operator; the exit
+    got three numbers, which is a strange place to stop when the exit is what turns a signal
+    into a return. The store says so — settled time exits on this machine average **+1.02R**
+    (n=13 native) and **+1.31R** in the counterfactual shadow (n=58), i.e. the bar counter is
+    closing positions that were still ahead.
+
+    ``breakeven_at_r`` — once price has gone ``n`` R in favour, move the stop to entry. Caps
+    the loss on a trade that worked and then did not.
+
+    ``trail_atr`` — once moving, keep the stop ``n`` ATR behind the best close. Lets the same
+    trade keep running past its target instead of being cut by ``max_holding_bars``.
+
+    **Both are None by default and both are omitted from the identity hash when unset**, so
+    every spec already in the store keeps its ``strategy_rule_hash`` bit-identical. This is a
+    hard requirement, not a nicety: the C7 import keeps original hashes and ``from_dict``
+    verifies rather than re-mints them, so a fingerprint that gained a key unconditionally
+    would make every stored spec fail to re-parse.
+    """
+
     stop_model: str
     stop_atr: float
     target_atr: float
     max_holding_bars: int
+    breakeven_at_r: float | None = None
+    trail_atr: float | None = None
 
     @staticmethod
     def from_dict(raw: Any) -> "ExitRules":
@@ -174,6 +198,16 @@ class ExitRules:
                 raise SpecParseError(f"exit_rules.{key} must be > 0, got {num}")
             return num
 
+        def _optional_pos_number(key: str) -> float | None:
+            """Absent or null means "this management rule is off" — a spec that predates the
+            field and one that deliberately declines it are the same strategy, and must hash
+            the same. Present means it has to be a usable number: 0 or negative is refused
+            rather than read as off, because a stop trailing by zero ATR is a stop at the last
+            close, which is a very different trade from no trailing at all."""
+            if key not in raw or raw.get(key) is None:
+                return None
+            return _pos_number(key)
+
         stop_atr = _pos_number("stop_atr")
         target_atr = _pos_number("target_atr")
 
@@ -186,16 +220,31 @@ class ExitRules:
             raise SpecParseError(f"exit_rules.max_holding_bars must be > 0, got {max_holding_bars}")
 
         return ExitRules(
-            stop_model=stop_model, stop_atr=stop_atr, target_atr=target_atr, max_holding_bars=max_holding_bars
+            stop_model=stop_model, stop_atr=stop_atr, target_atr=target_atr,
+            max_holding_bars=max_holding_bars,
+            breakeven_at_r=_optional_pos_number("breakeven_at_r"),
+            trail_atr=_optional_pos_number("trail_atr"),
         )
 
+    def manages_stop(self) -> bool:
+        """Whether this spec moves its stop after entry — the property the live door refuses on."""
+        return self.breakeven_at_r is not None or self.trail_atr is not None
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "stop_model": self.stop_model,
             "stop_atr": self.stop_atr,
             "target_atr": self.target_atr,
             "max_holding_bars": self.max_holding_bars,
         }
+        # Emitted only when set, matching the fingerprint. A spec that round-trips through
+        # `to_dict` must produce the same JSON it was loaded from, or re-parsing a pool this
+        # runtime itself wrote would fail the hash check.
+        if self.breakeven_at_r is not None:
+            out["breakeven_at_r"] = self.breakeven_at_r
+        if self.trail_atr is not None:
+            out["trail_atr"] = self.trail_atr
+        return out
 
 
 @dataclass(frozen=True)
@@ -344,11 +393,20 @@ def strategy_rule_fingerprint(spec: StrategySpec) -> dict[str, Any]:
                 for c in spec.entry_rules.conditions
             ],
         },
+        # Keys are added here ONLY when set. A stop-management rule that is off must leave the
+        # canonical JSON byte-identical to what it was before the field existed, or every
+        # stored spec — 1020 candidates and the active pool — fails `from_dict`'s hash check
+        # on the next read. "Off" and "predates the field" are the same strategy and hash the
+        # same; a spec that turns one on is a different strategy and correctly hashes anew.
         "exit_rules": {
             "stop_model": spec.exit_rules.stop_model,
             "stop_atr": spec.exit_rules.stop_atr,
             "target_atr": spec.exit_rules.target_atr,
             "max_holding_bars": spec.exit_rules.max_holding_bars,
+            **({"breakeven_at_r": spec.exit_rules.breakeven_at_r}
+               if spec.exit_rules.breakeven_at_r is not None else {}),
+            **({"trail_atr": spec.exit_rules.trail_atr}
+               if spec.exit_rules.trail_atr is not None else {}),
         },
         "risk_constraints": {
             "max_risk_per_trade_R": spec.risk_constraints.max_risk_per_trade_R,

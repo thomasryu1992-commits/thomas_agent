@@ -538,6 +538,13 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         # plan so the live settlement uses the SAME rule the backtest evidence was
         # built on — a strategy promoted on max_holding_bars=12 must not hold 48.
         "max_holding_bars": int(spec.exit_rules.max_holding_bars),
+        # The same parity, for the two rules that move the stop after entry. `trail_atr` is
+        # multiplied out to a PRICE here, where the ATR is in hand — `advance_managed_stop` is
+        # a pure function of the position and the bar, and is never handed a feature row.
+        "breakeven_at_r": spec.exit_rules.breakeven_at_r,
+        "trail_distance": (
+            spec.exit_rules.trail_atr * float(atr) if spec.exit_rules.trail_atr is not None else None
+        ),
         "strategy_id": route.get("primary_strategy_id"),
         # The lineage the promotion evidence was built on rides all the way to the
         # outcome, so a later generation reusing this display name cannot inherit
@@ -598,6 +605,12 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
         "take_profit": plan["take_profit"],
         "risk": plan["risk"],
         "max_holding_bars": plan.get("max_holding_bars"),
+        # Carried for the same reason `max_holding_bars` is: the plan is what the settlement
+        # step reads, and a rule it could re-derive from the spec is a rule the two can
+        # disagree about. A strategy whose evidence was built with a trailing stop must not
+        # settle without one.
+        "breakeven_at_r": plan.get("breakeven_at_r"),
+        "trail_distance": plan.get("trail_distance"),
         "holding_candles": 0,
         "intrabar_policy": "pessimistic_sl_first",
         "opened_at_utc": now,
@@ -739,6 +752,63 @@ def collect_intrabar_candles(
     return [c for c in snapshot["candles"] if start <= str(c.get("open_time") or "") < end]
 
 
+def advance_managed_stop(position: dict[str, Any], candle: Mapping[str, Any] | None) -> bool:
+    """Ratchet the stop on a bar the position survived. Returns whether it moved.
+
+    Two rules, both off unless the plan carries them (see ``strategy.ExitRules``):
+
+    - ``breakeven_at_r`` — once the CLOSE is that many R in favour, the stop moves to entry.
+    - ``trail_distance`` — the stop keeps that far behind the best close, in price. Carried in
+      price rather than ATR so this stays a pure function of the position and the bar; the
+      entry step already knows the ATR and multiplies once, and a settlement that re-derived it
+      would need a feature row it is not given.
+
+    **Three properties make this safe to run inside a backtest that gates real money.**
+
+    It ratchets — the stop only ever moves toward profit, never away, so a rule can tighten a
+    trade's risk and never widen it. It trails the CLOSE, not the high: trailing the extreme
+    would raise the stop on a wick the position never held through a close, which reads as an
+    improvement and is an intrabar assumption of exactly the kind ``resolve_intrabar_exit``
+    exists to avoid making silently. And it runs only on a bar the position survived, so the
+    stop tested on bar N is always the stop that was standing when bar N opened.
+
+    The favourable-side check uses the close for the same reason. A LONG whose close is below
+    the trail candidate leaves the stop where it is rather than lowering it.
+    """
+    if candle is None:
+        return False
+    close = candle.get("close")
+    if not isinstance(close, (int, float)) or isinstance(close, bool):
+        return False
+    risk = float(position.get("risk") or 0.0)
+    if risk <= 0:
+        return False
+    direction = position.get("direction")
+    entry = float(position.get("entry_price") or 0.0)
+    current = float(position.get("stop_loss") or 0.0)
+    long = direction == "LONG"
+    close = float(close)
+
+    candidates: list[float] = []
+    breakeven_at_r = position.get("breakeven_at_r")
+    if isinstance(breakeven_at_r, (int, float)) and not isinstance(breakeven_at_r, bool):
+        moved_r = (close - entry) / risk if long else (entry - close) / risk
+        if moved_r >= float(breakeven_at_r):
+            candidates.append(entry)
+    trail_distance = position.get("trail_distance")
+    if isinstance(trail_distance, (int, float)) and not isinstance(trail_distance, bool) and trail_distance > 0:
+        candidates.append(close - float(trail_distance) if long else close + float(trail_distance))
+    if not candidates:
+        return False
+
+    best = max(candidates) if long else min(candidates)
+    if (best > current) if long else (best < current):
+        position["stop_loss"] = best
+        position["stop_moved"] = True
+        return True
+    return False
+
+
 def settle_trade_plan(
     position: dict[str, Any],
     candle: Mapping[str, Any] | None,
@@ -766,6 +836,12 @@ def settle_trade_plan(
     advance_holding(position, candle.get("close_time") if isinstance(candle, Mapping) else None)
     if candle is not None and risk > 0:
         hit_stop, hit_target = _touches(direction, candle, sl, tp)
+        # A stop that has been moved is no longer worth exactly -1R, and the hard-coded
+        # constant would report a breakeven exit as a full loss and a trailed exit as a loss
+        # when it was a win. Unmoved stops keep the exact -1.0 convention `build_outcome_record`
+        # names as the authority — computing it from prices instead would agree today and be a
+        # second thing to keep agreeing tomorrow.
+        stop_r = _result_r(direction, entry, sl, risk) if position.get("stop_moved") else -1.0
         if hit_stop and hit_target:
             # Both touched: observe the order if we were given the finer bars, and
             # record which basis decided it — an assumed exit is not evidence of the
@@ -775,10 +851,10 @@ def settle_trade_plan(
             hit = resolved or "stop_loss"
             if hit == "take_profit":
                 return "take_profit", tp, (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
-            return "stop_loss", sl, -1.0
+            return "stop_loss", sl, stop_r
         if hit_stop:
             position["exit_resolution"] = "unambiguous"
-            return "stop_loss", sl, -1.0
+            return "stop_loss", sl, stop_r
         if hit_target:
             position["exit_resolution"] = "unambiguous"
             return "take_profit", tp, (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
@@ -786,6 +862,10 @@ def settle_trade_plan(
     if last_close is not None and int(position.get("holding_candles", 0)) >= int(max_hold):
         return "time_exit", last_close, _result_r(direction, entry, last_close, risk)
 
+    # The position survived this bar, so the stop may ratchet for the NEXT one. Strictly after
+    # the exit checks: a stop moved from the same bar it is then tested against would be a
+    # level the trade never actually rested at.
+    advance_managed_stop(position, candle)
     return None, None, None
 
 
