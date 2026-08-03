@@ -20,6 +20,7 @@ Inputs this port cannot measure score ZERO, never full credit — the module's o
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
@@ -63,11 +64,55 @@ FRAGILE_SCORE_THRESHOLD = 0.35
 # before this was in-sample by construction, which meant a high score could not
 # distinguish a real edge from a lucky fit; promotion then selected the maximum of
 # many such scores, which is how noise gets promoted.
-HOLDOUT_CONFIRMED = "CONFIRMED"          # enough unseen trades, and profitable
-HOLDOUT_CONTRADICTED = "CONTRADICTED"    # enough unseen trades, and not profitable
-HOLDOUT_INSUFFICIENT = "INSUFFICIENT"    # the tail produced too few trades to judge
+HOLDOUT_CONFIRMED = "CONFIRMED"          # the unseen tail shows an edge that clears its own noise
+HOLDOUT_CONTRADICTED = "CONTRADICTED"    # enough unseen trades, and the edge does not clear it
+HOLDOUT_INSUFFICIENT = "INSUFFICIENT"    # the tail cannot be judged (too few trades, or no spread)
 HOLDOUT_UNCONFIRMED = "UNCONFIRMED"      # no holdout was evaluated at all
-MIN_HOLDOUT_TRADES = 3
+
+# **The gate above did not close, and the store says by how much.** It asked for 3 closed
+# trades and `total_R > 0`, which is the test "t > 0" on a sample of three — a coin flip at a
+# design R:R of 2.4 clears it roughly half the time. Measured on this machine's store
+# 2026-08-03, over the 847 candidates carrying a holdout block: **236 read CONFIRMED**, and 26
+# of them cleared every other filter the live-promotion door applies.
+#
+# That the survivors are selection rather than edge is measurable directly, because the same
+# store records how many trades each candidate's backtest closed:
+#
+#   backtest trades   candidates   mean expectancy
+#   < 20                    150         +0.114R
+#   20-49                   152         +0.093R
+#   50-199                  333         -0.003R
+#   200+                    344         -0.212R
+#
+# Expectancy is a monotonically DECREASING function of sample size, converging on roughly the
+# cost of trading. That is the signature of a population with no edge in it: the estimate is
+# noise at small n and the truth at large n. Across all 979 candidates the mean is -0.044R and
+# only 38.5% are positive, while 3 of 959 clear a Bonferroni-corrected t. A gate that admits
+# 236 of them is not measuring survival, it is measuring how many candidates were tried.
+#
+# Two numbers close it, and both are the same idea: a confirmation must be able to fail.
+#
+# **25 closed trades.** Not a power calculation — the honest floor is far higher — but the
+# point at which the second test below stops being arithmetic over a handful of rows. Measured:
+# it moves CONFIRMED from 236 to 107 on the stored blocks, and the half it removes is the half
+# whose mean holdout expectancy was inflated (+0.246R claimed at a median of 21 trades, versus
+# +0.117R for those clearing 25). Of the 847 blocks, 533 already clear it, so the floor does
+# not empty the store — it empties the part of it that never had a sample.
+MIN_HOLDOUT_TRADES = 25
+
+# **The edge must clear its own noise.** `total_R > 0` reads a mean without a spread beside it,
+# and a mean is not a finding. The interval is the same one `dashboard.sample_verdict` draws
+# over paper outcomes, deliberately — "can this sample tell the sign of its own edge" is one
+# question and it gets one answer in this runtime, which is why the multiplier lives here (the
+# module that judges whether an edge is real) and the board imports it rather than restating it.
+#
+# Two-sided 95%, and not the one-sided 1.645 that a "is it positive" gate would suggest on its
+# own. The correction this gate cannot make is for the number of candidates tried — 979 and
+# rising daily, `pool.rank_candidates` taking the maximum over all of them — so the stricter of
+# two defensible multipliers is the one that leaves the smaller unpaid debt. A1 in
+# `docs/TRADING_STRATEGY_REVIEW_RECORD.md` is the real fix and needs the attempt count on the
+# record; this is what can be charged without it.
+CONFIDENCE_Z = 1.96
 
 WEIGHTS: dict[str, float] = {
     "sample_adequacy": 0.30,
@@ -175,18 +220,58 @@ def _warnings(
     return sorted(set(warnings))
 
 
+def holdout_expectancy(holdout: Mapping[str, Any]) -> float:
+    """The tail's mean R per trade. Stored directly; derived when only the total is.
+
+    Both are written by ``factory._holdout_evidence`` and agree by construction, so the
+    fallback is for hand-built and imported blocks rather than for drift between the two."""
+    stored = holdout.get("expectancy")
+    if isinstance(stored, (int, float)) and not isinstance(stored, bool):
+        return float(stored)
+    closed = _f(holdout.get("closed_count"))
+    return _f(holdout.get("total_R")) / closed if closed else 0.0
+
+
 def holdout_status(holdout: Mapping[str, Any] | None) -> str:
     """Classify what the untouched tail showed. Fail-closed toward not-confirmed.
 
     A missing holdout block (every candidate minted before this existed) reads as
     UNCONFIRMED rather than as a pass: no evidence of out-of-sample survival is not
-    evidence of it — the same rule this module already applies to unknown verdicts."""
+    evidence of it — the same rule this module already applies to unknown verdicts.
+
+    CONFIRMED needs the tail to clear ``MIN_HOLDOUT_TRADES`` **and** to put zero outside the
+    interval its own dispersion draws. Three things therefore read as INSUFFICIENT rather than
+    as a pass, and the third is the one that matters most in practice:
+
+    - too few closed trades to judge;
+    - a ``closed_count`` this function cannot read as a number;
+    - **no ``stdev_r``** — every block written before the field existed. Those cannot compute
+      an interval at all, and the alternative (fall back to ``total_R > 0`` for them) would let
+      a record buy the weaker test by omitting a field, which is the failure mode
+      ``cost.outcome_net_r`` names in the other direction. Absence is not an opt-out. It costs
+      the 847 stored blocks their CONFIRMED status until the factory re-mints them carrying the
+      spread, which is the correct price: what those blocks proved is exactly what is unknown.
+
+    A ``stdev_r`` of zero is INSUFFICIENT for the same reason ``dashboard.sample_verdict``
+    refuses it — identical observations draw a zero-width interval that excludes zero by
+    construction, which is absence of observed variation, not evidence of none.
+    """
     if not isinstance(holdout, Mapping):
+        return HOLDOUT_UNCONFIRMED
+    if not holdout:
         return HOLDOUT_UNCONFIRMED
     closed = holdout.get("closed_count")
     if not isinstance(closed, (int, float)) or isinstance(closed, bool) or closed < MIN_HOLDOUT_TRADES:
-        return HOLDOUT_INSUFFICIENT if isinstance(holdout, Mapping) and holdout else HOLDOUT_UNCONFIRMED
-    return HOLDOUT_CONFIRMED if _f(holdout.get("total_R")) > 0 else HOLDOUT_CONTRADICTED
+        return HOLDOUT_INSUFFICIENT
+    stdev = holdout.get("stdev_r")
+    if not isinstance(stdev, (int, float)) or isinstance(stdev, bool) or stdev <= 0:
+        return HOLDOUT_INSUFFICIENT
+    stderr = float(stdev) / math.sqrt(float(closed))
+    return (
+        HOLDOUT_CONFIRMED
+        if holdout_expectancy(holdout) - CONFIDENCE_Z * stderr > 0
+        else HOLDOUT_CONTRADICTED
+    )
 
 
 def classify_verdict(score: float, trades_per_parameter: float, holdout_state: str) -> str:

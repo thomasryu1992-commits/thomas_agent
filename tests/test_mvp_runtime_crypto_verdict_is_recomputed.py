@@ -74,3 +74,51 @@ def test_the_critical_ratio_veto_survives_recomputation():
     """Below the critical trades-per-parameter every other component is noise, holdout or not."""
     thin = _candidate("cand_thin", verdict=ROBUST, score=0.95, tpp=2.0, holdout="CONFIRMED")
     assert candidate_quality(thin)["verdict"] == "FRAGILE"
+
+
+# --- the holdout STATUS is a stored label too ---------------------------------
+#
+# The recomputation above fixed one label and fed itself the other one stale. A stored
+# CONFIRMED was minted under whatever confirmation rule was current then, and the rule has
+# since changed twice — so the pair the tests above pin (stored ROBUST, current holdout) has a
+# twin: stored CONFIRMED, current block. Measured on the live store when this was found: 236
+# stored CONFIRMED labels under a rule that confirms 1 of them.
+
+def _with_block(cid: str, block: dict | None, *, stored_holdout: str = "CONFIRMED") -> dict:
+    record = _candidate(cid, verdict=ROBUST, score=0.88, tpp=8.5, holdout=stored_holdout)
+    if block is not None:
+        record["backtest_evidence"]["holdout"] = block
+    return record
+
+
+def test_a_stored_confirmed_does_not_survive_a_block_that_cannot_confirm():
+    """A tail of 3 profitable trades WAS a confirmation. The label outlived the rule."""
+    old_rule = _with_block("cand_old", {"closed_count": 3, "total_R": 1.5, "expectancy": 0.5})
+    assert candidate_quality(old_rule)["holdout_status"] == "INSUFFICIENT"
+    assert candidate_quality(old_rule)["verdict"] == PROVISIONAL
+
+
+def test_a_stored_confirmed_does_not_survive_a_block_with_no_recorded_spread():
+    """The 847 on this machine: deep tails, real profit, no interval to judge them by."""
+    unpriceable = _with_block("cand_legacy", {"closed_count": 400, "total_R": 90.0,
+                                              "expectancy": 0.225})
+    assert candidate_quality(unpriceable)["holdout_status"] == "INSUFFICIENT"
+    assert candidate_quality(unpriceable)["verdict"] == PROVISIONAL
+
+
+def test_a_block_that_clears_the_current_rule_is_confirmed_whatever_the_label_says():
+    """It recomputes in both directions, or it is a demotion rather than a rule."""
+    understated = _with_block("cand_good", {"closed_count": 400, "total_R": 90.0,
+                                            "expectancy": 0.225, "stdev_r": 1.4},
+                              stored_holdout="CONTRADICTED")
+    assert candidate_quality(understated)["holdout_status"] == "CONFIRMED"
+    assert candidate_quality(understated)["verdict"] == ROBUST
+
+
+def test_a_record_with_no_block_at_all_keeps_its_stored_status():
+    """Candidates predating the holdout entirely. Their stored label is UNCONFIRMED, so the
+    fallback grants nothing — but it must not invent an INSUFFICIENT either."""
+    pre_holdout = _candidate("cand_pre", verdict=ROBUST, score=0.88, tpp=8.5, holdout=None)
+    assert candidate_quality(pre_holdout)["holdout_status"] == "UNCONFIRMED"
+    empty_block = _with_block("cand_empty", {}, stored_holdout="UNCONFIRMED")
+    assert candidate_quality(empty_block)["holdout_status"] == "UNCONFIRMED"
