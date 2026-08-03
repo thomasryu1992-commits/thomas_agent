@@ -60,6 +60,55 @@ HYPERLIQUID = "hyperliquid"
 # Public-endpoint reads cross the network but invoke no model — network_access only.
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
+# --- what each venue can actually answer -------------------------------------------------
+#
+# A feature is only mintable where the data behind it exists. Declared per venue rather than
+# discovered per call, and the direction matters: an UNKNOWN venue raises rather than
+# resolving to an empty set, because "this venue provides nothing" and "nobody has said what
+# this venue provides" must not produce the same silence.
+#
+# Why declaring feeds beats listing features: a new feature is assigned to a feed once, and
+# every venue's answer follows. `factory` pins the other half — that every mintable feature
+# is classified — so adding one without saying what it needs fails a test rather than
+# defaulting to "available everywhere", which is the unsafe direction.
+FEED_FUNDING = "funding"                    # a funding-rate SERIES, not just the current rate
+FEED_DERIVATIVE_PRICE = "derivative_price"  # mark / index / premium as candle-aligned series
+FEED_LIQUIDATION = "liquidation"            # forced closes (Coinalyze — crypto-only vendor)
+FEED_OPEN_INTEREST = "open_interest"        # outstanding position, as HISTORY
+FEED_POSITIONING = "positioning"            # long/short account ratio (venue-specific)
+FEED_TAKER_FLOW = "taker_flow"              # the candle's aggressor split (`taker_buy_base`)
+FEED_TRADE_COUNT = "trade_count"            # the candle's trade count
+
+KNOWN_FEEDS = frozenset({
+    FEED_FUNDING, FEED_DERIVATIVE_PRICE, FEED_LIQUIDATION, FEED_OPEN_INTEREST,
+    FEED_POSITIONING, FEED_TAKER_FLOW, FEED_TRADE_COUNT,
+})
+
+# Measured against each venue rather than assumed (Hyperliquid: 2026-08-03, via
+# `candleSnapshot`, `fundingHistory` and `metaAndAssetCtxs`).
+#
+# Hyperliquid's absences are two different things and the difference is recorded because it
+# will matter later. **Never**: liquidations have no equity-covering vendor, and the candle
+# carries no aggressor split, so no request would produce either. **Not yet**: open interest,
+# mark, oracle and premium all EXIST on `metaAndAssetCtxs` — but only as a current snapshot,
+# and these features need a candle-aligned series. That history can be accumulated by polling
+# (the `oi_store` shape) and cannot be back-filled, because the venue serves no past for them
+# at all. Both are ungated identically today; only one of them stays that way.
+VENUE_FEEDS: dict[str, frozenset[str]] = {
+    BINANCE_FUTURES: frozenset(KNOWN_FEEDS),
+    HYPERLIQUID: frozenset({FEED_FUNDING, FEED_TRADE_COUNT}),
+}
+
+
+def venue_feeds(venue: str) -> frozenset[str]:
+    """Which feeds ``venue`` provides. Fail-closed on a venue nobody has declared."""
+    try:
+        return VENUE_FEEDS[venue]
+    except (KeyError, TypeError):
+        raise ToolBlocked(
+            "UNKNOWN_VENUE", f"venue {venue!r} has no declared feeds; declare it before use"
+        ) from None
+
 # The degraded-run reason code the pipeline audits when a live backend fails and the
 # cycle continues without live data (C3 wiring; the SEARCH_DEGRADED analog).
 MARKET_DATA_DEGRADED = "MARKET_DATA_DEGRADED"
