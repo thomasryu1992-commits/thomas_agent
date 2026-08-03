@@ -139,7 +139,8 @@ MIN_BRACKET_DISTANCE_PCT = 2.0
 
 
 def prove_bracket(
-    *, result, symbol: str, direction: str, adapter, distance_pct: float, timeout_seconds: int
+    *, result, symbol: str, direction: str, adapter, distance_pct: float, timeout_seconds: int,
+    sleep=None,
 ) -> dict:
     """Place the real protective stop against the position just opened, confirm it RESTS, and
     withdraw it. Never raises: every failure here is a finding, and one that has to be reported
@@ -167,7 +168,12 @@ def prove_bracket(
         symbol=symbol, leg="SL", side="SELL" if long else "BUY", price=trigger,
         working_type=BRACKET_WORKING_TYPE, position_seed=str(result["client_order_id"]),
     )
-    placement = place_bracket_leg(intent, adapter=adapter, timeout_seconds=timeout_seconds)
+    # `sleep` rides through to the confirm backoff so a test does not wait out real seconds;
+    # None keeps the real one, which is what an operator run wants.
+    placement = place_bracket_leg(
+        intent, adapter=adapter, timeout_seconds=timeout_seconds,
+        **({"sleep": sleep} if sleep is not None else {}),
+    )
     # Attempted whatever the placement reported: a rejected submit may still have landed, which
     # is exactly why `place_bracket_leg` asks the venue rather than trusting the submit.
     cancels = cancel_bracket_legs(
