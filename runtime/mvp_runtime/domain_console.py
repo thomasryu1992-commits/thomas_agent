@@ -170,7 +170,14 @@ def apply_domain_command(
     verb = verb.lower()
     stamp = now or timeutil.utc_now_iso()
 
-    if verb not in _SUBCOMMANDS:      # pragma: no cover — parse_domain_command bounds this
+    # Not `parse_domain_command bounds this`, which is what this said until 2026-08-03 and was
+    # only ever true of the operator channel. `read_bridge._READS` hands this applier a verb
+    # tuple **without** parsing, so when #434 deleted the PRED lane the bridge's `pred_report`
+    # entry went on pointing here and this branch became the assistant's actual answer — a
+    # refusal naming `/pred`, an operator verb that no longer exists either. What bounds it now
+    # is a test over that table (`test_every_bridge_domain_read_resolves_to_a_live_handler`),
+    # because the invariant is between two files and a comment in one of them cannot hold it.
+    if verb not in _SUBCOMMANDS:
         raise OperatorBlocked("UNKNOWN_DOMAIN_COMMAND", f"알 수 없는 명령입니다: /{verb}")
 
     name = subcommand or DEFAULT_SUBCOMMAND[verb]

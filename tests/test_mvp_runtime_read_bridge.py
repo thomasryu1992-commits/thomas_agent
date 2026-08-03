@@ -16,7 +16,7 @@ import threading
 
 import pytest
 
-from runtime.mvp_runtime import control, read_bridge, socket_door
+from runtime.mvp_runtime import control, domain_console, read_bridge, socket_door
 from runtime.mvp_runtime.control import ACTIVE, KILLED, ControlStore
 from runtime.mvp_runtime.errors import ControlBlocked, MvpRuntimeError
 
@@ -120,6 +120,32 @@ def test_every_table_entry_dispatches_without_an_unhandled_error(tmp_path):
             assert isinstance(out["reply"], str)
         except MvpRuntimeError:
             pass  # a typed refusal is a correct outcome for an unwired store
+
+
+def test_every_bridge_domain_read_resolves_to_a_live_handler():
+    """Static, and deliberately so — the test above cannot catch this.
+
+    `_READS` names domain verbs as a `(VERB, subcommand)` tuple handed straight to
+    `domain_console.apply_domain_command`, **bypassing `parse_domain_command`**. So a verb the
+    domain console no longer has is not a syntax error and not a crash; it is a typed
+    `OperatorBlocked`, which the dispatch test above swallows by design ("a typed refusal is a
+    correct outcome for an unwired store"). That is how `pred_report` survived #434 deleting
+    the PRED lane: the assistant kept a verb whose only possible answer was a refusal naming
+    `/pred`, an operator command that had been deleted in the same PR.
+
+    Checking the tables against each other needs no store, so nothing here can be absorbed.
+    """
+    for command, (family, spec) in read_bridge._READS.items():
+        if family != "domain":
+            continue
+        verb, subcommand = spec
+        assert verb.lower() in domain_console.COMMANDS, (
+            f"{command!r} points at domain verb {verb!r}, which the domain console no longer has"
+        )
+        known = domain_console._SUBCOMMANDS[verb.lower()]
+        assert subcommand in known, (
+            f"{command!r} asks for {verb}/{subcommand!r}; the verb has {sorted(known)}"
+        )
 
 
 # --- arguments ----------------------------------------------------------------

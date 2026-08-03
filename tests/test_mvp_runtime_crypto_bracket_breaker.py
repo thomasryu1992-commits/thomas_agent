@@ -188,9 +188,49 @@ def test_a_naked_close_is_counted(monkeypatch):
         "bracket": [{"leg": "stop", "error": "ORDER_REJECTED", "error_detail": "-2021"}],
     })
     assert recorder.calls == ["failure"]
-    assert recorder.kwargs["error_detail"] == [
-        {"leg": "stop", "error": "ORDER_REJECTED", "error_detail": "-2021"}
-    ]
+    assert recorder.kwargs["error_detail"] == [{
+        "leg": "stop", "order_type": None, "placed": None, "status": None,
+        "error": "ORDER_REJECTED", "error_detail": "-2021",
+    }]
+
+
+def test_a_leg_that_never_rested_is_described_even_though_it_said_nothing(monkeypatch):
+    """The real 2026-08-03T04:28:58Z shape, and the failure this function had.
+
+    A rejection talks (`error_detail`, #426). A leg that simply never came to rest does not:
+    no error, no exchange id, just a status that is not NEW. Reading only `error` recorded
+    `last_error_detail: null` for that entry — counted, and mute about why."""
+    recorder, _ = _outcome(monkeypatch, {
+        "status": live_leg.ENTRY_NAKED_CLOSED,
+        "reason_codes": [live_leg.BRACKET_FAILED],
+        "bracket": [
+            {"leg": "BUY", "order_type": "STOP_MARKET", "placed": False, "status": "NOT_FOUND",
+             "error": None, "error_detail": None, "exchange_order_id": None},
+            {"leg": "BUY", "order_type": "LIMIT", "placed": True, "status": "NEW",
+             "error": None, "error_detail": None, "exchange_order_id": "8389766247673980036"},
+        ],
+    })
+    detail = recorder.kwargs["error_detail"]
+    assert detail is not None, "a silent failure must still be described"
+    # Only the leg that failed. The take-profit rested, so it is not part of the finding.
+    assert len(detail) == 1
+    assert detail[0]["order_type"] == "STOP_MARKET"
+    assert detail[0]["status"] == "NOT_FOUND"
+    assert detail[0]["placed"] is False
+
+
+def test_a_fully_rested_bracket_describes_nothing(monkeypatch):
+    """The inverse pin: membership is decided by the status, so a bracket whose legs all rested
+    must not start appearing in the record as though something had gone wrong."""
+    recorder, _ = _outcome(monkeypatch, {
+        "status": live_leg.ENTRY_NAKED_CLOSED,
+        "reason_codes": [live_leg.BRACKET_FAILED],
+        "bracket": [
+            {"leg": "BUY", "order_type": "STOP_MARKET", "status": "NEW", "error": None},
+            {"leg": "BUY", "order_type": "LIMIT", "status": "NEW", "error": None},
+        ],
+    })
+    assert recorder.kwargs["error_detail"] is None
 
 
 def test_a_naked_open_is_counted(monkeypatch):
