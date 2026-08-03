@@ -21,6 +21,7 @@ Inputs this port cannot measure score ZERO, never full credit — the module's o
 from __future__ import annotations
 
 import math
+import statistics
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
@@ -113,6 +114,79 @@ MIN_HOLDOUT_TRADES = 25
 # `docs/TRADING_STRATEGY_REVIEW_RECORD.md` is the real fix and needs the attempt count on the
 # record; this is what can be charged without it.
 CONFIDENCE_Z = 1.96
+
+# --- selection: the correction the interval above cannot make on its own -------------------
+#
+# A 95% interval says "one sample in twenty clears this by chance". Score 979 candidates on
+# substantially the same bars and take the maximum, and one in twenty is not a warning — it is
+# a production line. Measured on this machine's store 2026-08-03: 39 of 959 candidates clear an
+# uncorrected t of 1.96, which is **4.1%** against the 2.5% a pure-noise population predicts.
+# The store is, to within its own resolution, noise; and `rank_candidates` sorts it and hands
+# an operator the top of it.
+#
+# ALPHA is the family-wise error rate: the probability that ANY of the attempts clears by
+# chance, rather than the probability each one does. Bonferroni divides it across them, which is
+# conservative when the attempts correlate — and these correlate heavily, since a rolling 500-day
+# window means two generations minted a day apart overlap 99.8%. Conservative is the right
+# direction for a threshold that gates real money, and the honest alternatives (White's Reality
+# Check, SPA, a Deflated Sharpe) all need the joint distribution of the attempts, which this
+# store does not retain.
+SELECTION_ALPHA = 0.05
+
+# What "one attempt" means, and it is deliberately NOT the lineage. A1's minimal fix names
+# `attempts_in_lineage`, but the family choice is itself a searched degree of freedom — 20
+# templates, and `count_free_parameters` already declines to count which one was picked. Two
+# candidates from different families on the same symbol and timeframe were tried against the
+# same bars, so they are two attempts at one question. Counting per family would divide the
+# burden by the very choice that creates it.
+SELECTION_CONTEXT = "symbol_scope + timeframe"
+
+# The believability tiers `pool.rank_candidates` orders on, lower is better.
+SELECTION_CLEARS_CORRECTED = 0    # survives the attempt count it was drawn from
+SELECTION_CLEARS_UNCORRECTED = 1  # would pass on its own; not against its siblings
+SELECTION_BELOW = 2               # measured, and it does not clear
+SELECTION_UNMEASURED = 3          # no spread recorded, or the attempt count is unknown
+
+
+def selection_adjusted_z(attempts: int) -> float:
+    """The two-sided threshold a t must clear when it is the best of ``attempts`` tries.
+
+    ``attempts <= 1`` is the uncorrected :data:`CONFIDENCE_Z` — one try needs no correction,
+    and a store that cannot count its own attempts must not be handed a *weaker* bar than a
+    store that can. Grows like ``sqrt(2 ln N)``: 1.96 at one attempt, 3.48 at 100, 4.06 at
+    1000. That the bar rises slowly is the point — an edge that is real does not care."""
+    if attempts <= 1:
+        return CONFIDENCE_Z
+    return statistics.NormalDist().inv_cdf(1.0 - SELECTION_ALPHA / (2.0 * attempts))
+
+
+def expectancy_t(expectancy: Any, stdev_r: Any, closed_count: Any) -> float | None:
+    """``expectancy / (stdev_r / sqrt(n))`` — how many standard errors from zero.
+
+    ``None`` when it cannot be computed, which is every candidate minted before the factory
+    recorded a spread. Never a substitute figure: a t invented from an assumed dispersion
+    would rank candidates on a number nobody measured, and this whole module exists because
+    ranking on unmeasured properties is how noise gets promoted. A ``stdev_r`` of zero is
+    also None, for the reason :func:`holdout_status` states — no observed variation is not
+    evidence of none."""
+    for value in (expectancy, stdev_r, closed_count):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+    if stdev_r <= 0 or closed_count < 2:
+        return None
+    return float(expectancy) / (float(stdev_r) / math.sqrt(float(closed_count)))
+
+
+def selection_rank(t_stat: float | None, attempts: int | None) -> int:
+    """Which believability tier this candidate's edge sits in once selection is charged."""
+    if t_stat is None or attempts is None:
+        return SELECTION_UNMEASURED
+    if t_stat >= selection_adjusted_z(int(attempts)):
+        return SELECTION_CLEARS_CORRECTED
+    if t_stat >= CONFIDENCE_Z:
+        return SELECTION_CLEARS_UNCORRECTED
+    return SELECTION_BELOW
+
 
 WEIGHTS: dict[str, float] = {
     "sample_adequacy": 0.30,

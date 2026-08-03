@@ -34,7 +34,8 @@ from .cost import (
 )
 from .paper import OCCUPYING_STATUSES, state_dir
 from .robustness import (
-    HOLDOUT_CONFIRMED, ROBUST, classify_verdict, holdout_status, verdict_rank,
+    HOLDOUT_CONFIRMED, ROBUST, classify_verdict, expectancy_t, holdout_status,
+    selection_adjusted_z, selection_rank, verdict_rank,
 )
 from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_pool
 
@@ -1255,7 +1256,44 @@ def _designed_reward_risk(record: Mapping[str, Any]) -> float | None:
     return round(target / stop, 8) if stop > 0 and target > 0 else None
 
 
-def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
+def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
+    """What makes two candidates two ATTEMPTS at the same question: one market, one timeframe.
+
+    Coarser than :func:`_lineage_key` on purpose, and the difference is the whole correction.
+    A lineage key includes the family, but which of the 20 templates to mint is itself a
+    searched degree of freedom — counting attempts per family would divide the multiple-testing
+    burden by the very choice that creates it. Two candidates on BTCUSDT 1h were scored against
+    the same bars whatever family they came from, so they are two draws from one distribution.
+    See ``robustness.SELECTION_CONTEXT``."""
+    return (tuple(spec.get("symbol_scope") or ()), spec.get("timeframe"))
+
+
+def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], int]:
+    """How many candidates have been scored against each market/timeframe's bars.
+
+    Counted at READ time over the store, never stored on the record, and that is the lesson
+    from the holdout label rather than a preference: an attempt count written at mint is wrong
+    by every candidate minted after it, and this one only ever grows. The replay window is a
+    rolling 500 days, so two generations minted a day apart overlap 99.8% — which is why "the
+    same bars" is a property of the context and not of the day.
+
+    Distinct candidates, not rows: the store re-appends a lineage and every append would
+    otherwise raise the bar for candidates that never moved."""
+    seen: set[str] = set()
+    counts: dict[tuple[Any, ...], int] = {}
+    for record in records:
+        cid = candidate_id(record)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        key = search_context_key(record.get("strategy_spec") or {})
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def candidate_quality(
+    record: Mapping[str, Any], *, attempts: int | None = None
+) -> dict[str, Any]:
     """The ranking view of one candidate: robustness tier + realized performance.
 
     First-pass ``verdict_rank`` (ROBUST < PROVISIONAL < FRAGILE < unknown) never
@@ -1265,7 +1303,14 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
     strong on *both* outranks one strong on either alone. A candidate with no losing
     trades has an undefined ratio (``reward_risk`` None, ``all_wins`` True); one
     predating the realized evidence falls back to the designed target/stop ratio
-    (``reward_risk_basis`` ``"designed"``)."""
+    (``reward_risk_basis`` ``"designed"``).
+
+    ``attempts`` is how many candidates were scored against this one's bars — the number that
+    decides how much of its t-statistic is selection (:func:`attempts_by_context` computes it,
+    ``rank_candidates`` injects it). A caller that does not have the store omits it, and every
+    candidate then reads ``SELECTION_UNMEASURED``: uniform, so the ordering such a caller sees
+    is exactly the one it saw before this existed. Unknown must never be the *cheaper* answer,
+    which is why it sorts last rather than falling back to the uncorrected threshold."""
     evidence = record.get("backtest_evidence") or {}
     robustness = evidence.get("robustness") or {}
     # Out-of-sample status rides into the ranking view so the promotion door can show
@@ -1331,11 +1376,25 @@ def candidate_quality(record: Mapping[str, Any]) -> dict[str, Any]:
         basis = "designed" if reward_risk is not None else "none"
 
     rr_sort = _ALL_WINS_RR_SORT if all_wins else (reward_risk or 0.0)
+    # How far this candidate's expectancy sits from zero in its own standard errors, and
+    # whether that survives being the best of `attempts` tries. Both None/UNMEASURED on
+    # evidence minted before `stdev_r` existed — the t is not reconstructed from the payoff
+    # legs, which would understate the spread and overstate every t derived from it.
+    t_stat = expectancy_t(evidence.get("expectancy"), evidence.get("stdev_r"), closed)
     return {
         "candidate_id": candidate_id(record),
         "verdict": verdict,
         "verdict_rank": verdict_rank(verdict),
         "holdout_status": holdout_state,
+        "expectancy_t": round(t_stat, 6) if t_stat is not None else None,
+        "attempts_in_context": attempts,
+        # The bar this t had to clear given how many candidates it was drawn from. Reported
+        # beside the rank so the surface an operator reads can say WHY a believable-looking
+        # edge ranks below one with a smaller t on a less-searched context.
+        "selection_adjusted_z": (
+            round(selection_adjusted_z(int(attempts)), 6) if attempts is not None else None
+        ),
+        "selection_rank": selection_rank(t_stat, attempts),
         "robustness_score": round(_as_float(record.get("champion_score")), 8),
         "win_rate": win_rate,
         "reward_risk": reward_risk,
@@ -1407,16 +1466,30 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     verdict tier it says the one thing left to say: same verdict, more market behind it. It
     ranks above ``edge_quality`` for the reason the tier exists at all — a win rate over 12
     trades and one over 120 are not the same measurement, and the sort should not pretend
-    they are."""
+    they are.
+
+    The SELECTION tier sits directly after the verdict, and it is the only key in this order
+    that knows a candidate has siblings. Everything above it judges one row against a standard;
+    this judges it against the number of rows tried on the same bars, which is the property
+    that made a store of 979 produce a top-ranked candidate with one closed trade. It ranks
+    below the verdict because the verdict carries the FRAGILE veto and the out-of-sample
+    confirmation — admission-shaped rules — and above depth because a deeper window on an edge
+    that is selection is more of the same thing. Evidence with no recorded spread reads
+    UNMEASURED and sorts last within its verdict tier: the same rule the verdict itself
+    follows, applied to the same kind of absence."""
     by_cid: dict[str, dict[str, Any]] = {}
     for record in records:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
+    attempts = attempts_by_context(list(by_cid.values()))
 
-    def _key(record: Mapping[str, Any]) -> tuple[int, int, int, float, float, str]:
-        q = candidate_quality(record)
-        return (q["cost_basis_rank"], q["verdict_rank"], q["evidence_depth_rank"],
-                -q["edge_quality"], -q["expectancy"], str(record["candidate_id"]))
+    def _key(record: Mapping[str, Any]) -> tuple[int, int, int, int, float, float, str]:
+        q = candidate_quality(
+            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+        )
+        return (q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
+                q["evidence_depth_rank"], -q["edge_quality"], -q["expectancy"],
+                str(record["candidate_id"]))
 
     return sorted(by_cid.values(), key=_key)
 
@@ -1554,6 +1627,10 @@ def promotable_backlog(
     records = candidates if candidates is not None else read_candidates(root)
     pool_doc = active_pool if active_pool is not None else load_active_pool(root)
     active_entries = pool_doc.get("active_strategies") or []
+    # Counted over the same population `rank_candidates` sorts, so the tier an operator sees
+    # in the backlog is the tier the ordering used. Recomputing it per record here instead
+    # would count a different store than the one that produced the order.
+    attempts = attempts_by_context(list(records))
     active_hashes = {entry.get("strategy_rule_hash") for entry in active_entries}
     seen_lineages: set[tuple[Any, ...]] = {
         _lineage_key(entry.get("strategy_spec") or {}) for entry in active_entries
@@ -1564,7 +1641,9 @@ def promotable_backlog(
     for record in rank_candidates(list(records)):
         if record.get("strategy_rule_hash") in active_hashes:
             continue
-        quality = candidate_quality(record)
+        quality = candidate_quality(
+            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+        )
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
             continue
         # The same rule for the other axis the door refuses on. It was missing here for seven

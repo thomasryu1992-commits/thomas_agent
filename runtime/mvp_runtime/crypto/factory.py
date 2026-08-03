@@ -1594,6 +1594,18 @@ def backtest_spec(
         "strategy_rule_hash": spec.strategy_rule_hash,
         "closed_count": summary["closed_count"],
         "expectancy": summary["expectancy"],
+        # The spread beside the mean, so `expectancy` can be read as a measurement rather than
+        # a number. `win_count`/`avg_win_R`/`avg_loss_R` are enough to reconstruct a two-point
+        # approximation of it, and that approximation is biased LOW — it collapses the spread
+        # within wins and within losses — which inflates every t derived from it. Recording the
+        # real one costs one line and removes the temptation.
+        #
+        # Sample stdev (n-1), matching `holdout.stdev_r` and `dashboard.sample_verdict`: these
+        # trades are a sample of what the spec would do on this market, never the whole of it.
+        # 0.0 below two trades, where the statistic is undefined — `robustness.expectancy_t`
+        # reads that back as "cannot compute", not as a zero-width interval.
+        "stdev_r": round(statistics.stdev(o["result_R"] for o in outcomes), 8)
+        if summary["closed_count"] >= 2 else 0.0,
         "win_count": summary["win_count"],
         "loss_count": summary["loss_count"],
         # M4a: realized payoff legs, so a candidate carries its win-rate and realized
