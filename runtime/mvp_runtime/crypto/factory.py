@@ -2399,7 +2399,6 @@ def run_factory(
     count: int = DEFAULT_BATCH_SIZE,
     fusion_pairs: int = 0,
     positioning_eligible: bool = False,
-    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
@@ -2430,6 +2429,14 @@ def run_factory(
 
     symbol = str(snapshot.get("symbol") or "BTCUSDT")
     timeframe = str(snapshot.get("timeframe") or "1d")
+    # Read off the snapshot for the same reason as the two above: it is a property of the
+    # data this run is mining, not a claim by whoever called. It was briefly a parameter,
+    # which meant the venue an env var selected at collection and the venue the factory
+    # recorded were two independent values that nothing checked against each other — the
+    # scheduler passed none, so a hyperliquid collection minted binance_futures specs.
+    # Absent means the snapshot predates the field, which proves binance_futures: the
+    # `StrategySpec.from_dict` migration fact, one layer up.
+    venue = str(snapshot.get("venue") or market_data.BINANCE_FUTURES)
     # What each family has already learned in THIS context. Empty on a store whose candidates
     # predate `mint_params`, which is every one of them today — so the first generation after
     # this lands still draws around the template base, and the one after it has something to

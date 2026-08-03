@@ -404,10 +404,31 @@ class MarketSnapshot:
 class MarketDataCollector(Protocol):
     tool_id: str
     tool_version: str
+    # Which venue's data this collector returns, and therefore which vocabulary a spec mined
+    # from it may name. Already carried for the Safety-Flag Gate (one grant per provider) and
+    # reused rather than restated: a collector that needed its own `venue` field could come to
+    # disagree with the provider it is actually authorized against, and two statements of one
+    # fact is the shape #462 removed from the feature tables.
+    provider_id: str
 
     def collect(
         self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int
     ) -> MarketSnapshot: ...
+
+
+def collector_venue(collector: Any) -> str:
+    """The venue a collector speaks for.
+
+    Defaults to ``binance_futures`` for a collector that declares nothing — the migration
+    fact, not a guess: every collector that existed before this field did was Binance's, and
+    the two that carry one already name a declared venue (``test_every_collector_speaks_for_a
+    _declared_venue`` holds that they keep doing so).
+
+    The default is the fail-OPEN direction and is bounded downstream rather than here: an
+    undeclared venue reaching `known_features` raises, so a collector inventing a venue name
+    stops at the factory instead of minting against a vocabulary nobody described.
+    """
+    return str(getattr(collector, "provider_id", BINANCE_FUTURES))
 
 
 def _optional_float(row: list, index: int) -> float | None:
@@ -447,6 +468,10 @@ class MockMarketDataCollector:
     tool_version = MARKET_DATA_TOOL_VERSION
     network_egress = False  # deterministic, in-process; no outbound call
     source = "mock.market_data"
+    # The venue this stands in for. Declared rather than left to `collector_venue`'s default
+    # because the Mock is also what `select_gated` returns when a grant is MISSING, and a
+    # silent default there would be the one case where nobody chose the answer.
+    provider_id = BINANCE_FUTURES
     _ANCHOR = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def collect(
@@ -656,6 +681,12 @@ def collect_market_data(
         "last_close": candles[-1]["close"] if candles else None,
         "last_candle_time": candles[-1]["close_time"] if candles else None,
         "source": result.source,
+        # `source` names the COLLECTOR ("mock.market_data", "binance_futures_public"); this
+        # names the venue whose data it returned. They are not the same question and the
+        # factory needs the second one: a spec mined from these candles may only reference
+        # the features this venue can serve, and until the snapshot said so, that fact lived
+        # in an env var read at collector construction and reached nothing downstream.
+        "venue": collector_venue(collector),
         "is_synthetic": bool(result.is_synthetic),
         "depth_capped": bool(getattr(result, "depth_capped", False)),
         "created_at": now,
@@ -676,6 +707,7 @@ def collect_market_data(
         "last_close": snapshot["last_close"],
         "last_candle_time": snapshot["last_candle_time"],
         "source": result.source,
+        "venue": collector_venue(collector),
         "is_synthetic": bool(result.is_synthetic),
         "depth_capped": bool(getattr(result, "depth_capped", False)),
         "output_sha256": output_sha256,
@@ -715,6 +747,7 @@ def degraded_market_data_record(
         "last_close": None,
         "last_candle_time": None,
         "source": getattr(collector, "source", "unknown"),
+        "venue": collector_venue(collector),
         "is_synthetic": False,
         "output_sha256": integrity.sha256_record({"candles": []}),
         "latency_ms": 0,
