@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, proposer
+from runtime.mvp_runtime.crypto import factory, features, proposer
 from runtime.mvp_runtime.crypto.features import latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
 from runtime.mvp_runtime.errors import ProviderError
@@ -97,7 +97,12 @@ def test_every_computed_liquidation_feature_is_proposable(row):
     so this now guards the other direction: a column features.py computes but the
     validator will not admit is a column no proposal can ever use.
     """
-    computed = {k for k in row if "liquidation" in k}
+    # `prev_*` is the SAME series read one bar back (`features.attach_previous_bar`), not a
+    # column of its own — a spec reaches it through `lag`, never by naming it, and
+    # `referenced_features` strips the prefix for exactly this reason. Counting it here would
+    # demand the validator admit a name no proposal may write.
+    computed = {k for k in row
+                if "liquidation" in k and not k.startswith(features.PREVIOUS_BAR_PREFIX)}
     usable = {f for f in proposer.known_features() if "liquidation" in f}
     assert computed == usable == {
         "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",

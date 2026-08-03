@@ -16,7 +16,7 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import factory, pool
+from runtime.mvp_runtime.crypto import factory, market_data, pool
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -31,6 +31,7 @@ from runtime.mvp_runtime.crypto.factory import (
     ParamSpec,
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
+from runtime.mvp_runtime.errors import ToolBlocked
 from runtime.mvp_runtime.scheduler import (
     FACTORY_FUSION_PAIRS,
     KIND_FACTORY,
@@ -1211,3 +1212,141 @@ def test_the_holdout_runs_the_same_door_as_the_scored_window(monkeypatch):
 
     assert with_door["refused_entries"] > 0
     assert with_door["closed_count"] < without["closed_count"]
+
+
+# --- S1 increment 2: the vocabulary is scoped to the venue a spec was mined on ----
+#
+# A feature whose feed the venue lacks is not merely useless there. Most such specs never
+# fire, never accrue a sample, and so can never be demoted off a routing slot — the latch
+# BUILD_HISTORY records for the loss breaker. One is worse: `liquidation_spike_ratio` falls
+# back to a CONSTANT 0.0 with no feed rather than to None, so a mined `< x` condition on it
+# matches every bar forever, on a number nobody measured.
+
+def test_every_mintable_feature_is_classified():
+    """The load-bearing test of this increment: the two tables must PARTITION the vocabulary.
+
+    `known_features` reads an unclassified feature as available on every venue — the unsafe
+    direction — so "did anyone classify this?" cannot be answered by `_FEATURE_FEED` alone.
+    Checking only `classified <= vocabulary` would pass a new feature straight through: it
+    is absent from the table being checked, and absence is the thing being looked for.
+    `_CANDLE_DERIVED` exists to be the second statement that can disagree, so both
+    directions are asserted here — a name in neither list, and a name in both.
+    """
+    vocabulary = set(factory.NUMERIC_FEATURES) | set(factory.CATEGORICAL_FEATURES)
+    classified = set(factory._FEATURE_FEED)
+    candle_derived = set(factory._CANDLE_DERIVED)
+
+    unclassified = vocabulary - classified - candle_derived
+    assert not unclassified, (
+        f"mintable but unclassified: {sorted(unclassified)} — name each in `_FEATURE_FEED` "
+        f"(with the feed it needs) or in `_CANDLE_DERIVED`. Left out, they read as available "
+        f"on every venue, including ones that cannot supply them."
+    )
+    assert not (classified & candle_derived), (
+        f"claimed both ways: {sorted(classified & candle_derived)}"
+    )
+    stale = (classified | candle_derived) - vocabulary
+    assert not stale, f"classified but not mintable: {sorted(stale)}"
+    for feed in factory._FEATURE_FEED.values():
+        assert feed in market_data.KNOWN_FEEDS, f"unknown feed named: {feed}"
+
+
+def test_an_unclassified_feature_is_caught_rather_than_inherited(monkeypatch):
+    """The guard above, exercised — the assertion this test file could not make before.
+
+    A feature added to the vocabulary and to neither table is the realistic mistake: nothing
+    about writing it is venue-aware, and every existing test still passes because it is
+    present on both sides of every set difference they take. This pins that the partition
+    check is what fails, and names the feature when it does.
+    """
+    monkeypatch.setattr(
+        factory, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
+    )
+    with pytest.raises(AssertionError, match="liquidation_burst_ratio"):
+        test_every_mintable_feature_is_classified()
+
+
+def test_binance_keeps_the_whole_vocabulary():
+    # The vocabulary was built for this venue, so scoping must subtract nothing from it —
+    # this is the "crypto verdicts are unchanged" guarantee in its narrowest form.
+    numeric, categorical = factory.known_features(market_data.BINANCE_FUTURES)
+    assert numeric == factory.NUMERIC_FEATURES
+    assert categorical == factory.CATEGORICAL_FEATURES
+
+
+def test_hyperliquid_loses_exactly_the_features_its_feeds_cannot_produce():
+    numeric, categorical = factory.known_features(market_data.HYPERLIQUID)
+    removed = factory.NUMERIC_FEATURES - numeric
+    assert removed == {
+        "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
+        "open_interest_change_pct", "open_interest_zscore",
+        "positioning_divergence_change", "positioning_divergence_zscore",
+        "mark_price", "index_price", "mark_index_basis_bps",
+        "premium_index", "premium_index_zscore",
+        "taker_buy_ratio", "taker_flow_imbalance", "taker_flow_zscore", "taker_flow_ma",
+    }
+    # Kept, and easy to lose by accident: these live in the same feature builder as the
+    # taker split but need the trade COUNT, which this venue reports.
+    assert {"avg_trade_size_zscore", "trade_count_zscore"} <= numeric
+    # Funding is a real series here, and the categorical columns are all candle-derived.
+    assert {"funding_rate", "funding_zscore"} <= numeric
+    assert categorical == factory.CATEGORICAL_FEATURES
+
+
+def test_a_fabricated_constant_feature_is_refused_where_its_feed_can_never_exist():
+    # `liquidation_spike_ratio` is the reason this increment is not merely tidy: with no
+    # feed it is 0.0, not None, so this spec would match on every bar of an equity venue.
+    spec_dict = _spec_dict(entry_rules={
+        "operator": "AND",
+        "conditions": [{"feature": "liquidation_spike_ratio", "comparison": "<", "value": 0.5}],
+    })
+    on_binance = factory.validate_strategy(StrategySpec.from_dict(spec_dict))
+    assert on_binance["approved_for_backtest"] is True
+
+    on_hyperliquid = factory.validate_strategy(
+        StrategySpec.from_dict({**spec_dict, "venue": market_data.HYPERLIQUID})
+    )
+    assert on_hyperliquid["approved_for_backtest"] is False
+    assert on_hyperliquid["block_reasons"] == ["BLOCK_UNKNOWN_FEATURE"]
+
+
+def test_an_undeclared_venue_blocks_on_the_venue_not_on_its_features():
+    # Reporting BLOCK_UNKNOWN_FEATURE here would blame every condition for something that
+    # has nothing to do with them, so the verdict names the venue and stops.
+    verdict = factory.validate_strategy(StrategySpec.from_dict(_spec_dict(venue="not_a_venue")))
+    assert verdict["approved_for_backtest"] is False
+    assert verdict["block_reasons"] == ["BLOCK_UNKNOWN_VENUE"]
+
+
+def test_venue_feeds_refuses_an_undeclared_venue():
+    with pytest.raises(ToolBlocked) as exc:
+        market_data.venue_feeds("not_a_venue")
+    assert exc.value.reason_code == "UNKNOWN_VENUE"
+
+
+def test_a_stored_spec_without_a_venue_reads_as_binance():
+    # Absent PROVES binance_futures: no other venue existed when the record was written.
+    # That is a migration default backed by a fact, not a guess about a forgetful caller.
+    stored = _spec_dict()
+    assert "venue" not in stored
+    spec = StrategySpec.from_dict(stored)
+    assert spec.venue == market_data.BINANCE_FUTURES
+    assert factory.validate_strategy(spec)["approved_for_backtest"] is True
+
+
+def test_the_venue_field_does_not_move_the_rule_hash():
+    # The guard for 1020 stored candidates and the active pool. `from_dict` VERIFIES a
+    # stored `strategy_rule_hash` rather than re-minting it, so a fingerprint that gained a
+    # key would make every stored spec fail to load. Identity is already venue-discriminated
+    # through `symbol_scope`, whose symbols are namespaced (`xyz:XLE` vs `BTCUSDT`).
+    base = StrategySpec.from_dict(_spec_dict())
+    other = StrategySpec.from_dict(_spec_dict(venue=market_data.HYPERLIQUID))
+    assert base.strategy_rule_hash == other.strategy_rule_hash
+    # And a spec carrying its ORIGINAL hash still parses — the real failure mode.
+    round_trip = StrategySpec.from_dict(base.to_dict())
+    assert round_trip.strategy_rule_hash == base.strategy_rule_hash
+    assert round_trip.venue == market_data.BINANCE_FUTURES
+
+
+def test_to_dict_carries_the_venue():
+    assert StrategySpec.from_dict(_spec_dict()).to_dict()["venue"] == market_data.BINANCE_FUTURES

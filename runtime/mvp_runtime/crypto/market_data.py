@@ -52,8 +52,62 @@ MARKET_DATA_TOOL_CLASS = "read"
 # network_access for the backend's own provider id first.
 MARKET_DATA_ENV = "MVP_MARKET_DATA"
 BINANCE_FUTURES = "binance_futures"
+# The second venue, and a SEPARATE grant: one file per provider is the gate's rule, so
+# authorizing Binance's public reads never authorizes Hyperliquid's. Selection is a CHOICE
+# between the two, never a chain — the model provider's ordered failover is the wrong shape
+# here and `select_market_data_collector` says why.
+HYPERLIQUID = "hyperliquid"
 # Public-endpoint reads cross the network but invoke no model — network_access only.
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
+
+# --- what each venue can actually answer -------------------------------------------------
+#
+# A feature is only mintable where the data behind it exists. Declared per venue rather than
+# discovered per call, and the direction matters: an UNKNOWN venue raises rather than
+# resolving to an empty set, because "this venue provides nothing" and "nobody has said what
+# this venue provides" must not produce the same silence.
+#
+# Why declaring feeds beats listing features: a new feature is assigned to a feed once, and
+# every venue's answer follows. `factory` pins the other half — that every mintable feature
+# is classified — so adding one without saying what it needs fails a test rather than
+# defaulting to "available everywhere", which is the unsafe direction.
+FEED_FUNDING = "funding"                    # a funding-rate SERIES, not just the current rate
+FEED_DERIVATIVE_PRICE = "derivative_price"  # mark / index / premium as candle-aligned series
+FEED_LIQUIDATION = "liquidation"            # forced closes (Coinalyze — crypto-only vendor)
+FEED_OPEN_INTEREST = "open_interest"        # outstanding position, as HISTORY
+FEED_POSITIONING = "positioning"            # long/short account ratio (venue-specific)
+FEED_TAKER_FLOW = "taker_flow"              # the candle's aggressor split (`taker_buy_base`)
+FEED_TRADE_COUNT = "trade_count"            # the candle's trade count
+
+KNOWN_FEEDS = frozenset({
+    FEED_FUNDING, FEED_DERIVATIVE_PRICE, FEED_LIQUIDATION, FEED_OPEN_INTEREST,
+    FEED_POSITIONING, FEED_TAKER_FLOW, FEED_TRADE_COUNT,
+})
+
+# Measured against each venue rather than assumed (Hyperliquid: 2026-08-03, via
+# `candleSnapshot`, `fundingHistory` and `metaAndAssetCtxs`).
+#
+# Hyperliquid's absences are two different things and the difference is recorded because it
+# will matter later. **Never**: liquidations have no equity-covering vendor, and the candle
+# carries no aggressor split, so no request would produce either. **Not yet**: open interest,
+# mark, oracle and premium all EXIST on `metaAndAssetCtxs` — but only as a current snapshot,
+# and these features need a candle-aligned series. That history can be accumulated by polling
+# (the `oi_store` shape) and cannot be back-filled, because the venue serves no past for them
+# at all. Both are ungated identically today; only one of them stays that way.
+VENUE_FEEDS: dict[str, frozenset[str]] = {
+    BINANCE_FUTURES: frozenset(KNOWN_FEEDS),
+    HYPERLIQUID: frozenset({FEED_FUNDING, FEED_TRADE_COUNT}),
+}
+
+
+def venue_feeds(venue: str) -> frozenset[str]:
+    """Which feeds ``venue`` provides. Fail-closed on a venue nobody has declared."""
+    try:
+        return VENUE_FEEDS[venue]
+    except (KeyError, TypeError):
+        raise ToolBlocked(
+            "UNKNOWN_VENUE", f"venue {venue!r} has no declared feeds; declare it before use"
+        ) from None
 
 # The degraded-run reason code the pipeline audits when a live backend fails and the
 # cycle continues without live data (C3 wiring; the SEARCH_DEGRADED analog).
@@ -244,6 +298,18 @@ CROSS_SECTION_UNIVERSE: tuple[str, ...] = (
 )
 CROSS_SECTION_DEGRADED = "CROSS_SECTION_DEGRADED"
 _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (QA wave 7)
+
+# HIP-3 builder-deployed markets are named `dex:ticker` (`xyz:XLE`, `para:AVGO`) and the
+# prefix is the venue's own format, not decoration: `AVGO` is listed on BOTH `xyz` and
+# `para`, so stripping it would silently merge two different books into one symbol. The
+# pattern is therefore a lowercase dex segment, a colon, then the ticker — which is why
+# `_SYMBOL_PATTERN` cannot simply be widened: uppercase-only and a 5-char floor reject
+# every HIP-3 name (`xyz:XLE` for both reasons, bare `XLE` for the floor).
+#
+# Per-venue rather than one permissive union, for the reason the anchored pattern exists at
+# all: a symbol that is well-formed for the WRONG venue must not reach that venue's endpoint.
+_HIP3_SYMBOL_PATTERN = re.compile(r"\A[a-z0-9]{2,10}:[A-Z0-9]{2,20}\Z")
+
 MAX_CANDLES = 60_000
 DEFAULT_CANDLES = 120
 
@@ -311,6 +377,21 @@ class MarketSnapshot:
     is_synthetic: bool
     collector_version: str = MARKET_DATA_TOOL_VERSION
     latency_ms: int = 0
+    # Fewer closed candles came back than the caller asked for — the venue has no more,
+    # in either direction it can run out: a hard per-request ceiling, or a market too
+    # young to fill the window. Beside `is_synthetic` because it answers the same kind of
+    # question ("what IS this data") rather than reporting a failure; the collection
+    # succeeded and returned everything that exists.
+    #
+    # Recorded because the caller cannot infer it and the consequence is silent. The
+    # factory asks for `factory_candle_target` bars — 12,000 at 1h — and a venue with a
+    # 5,000-row ceiling answers 5,000 with no error. Without this flag a window too
+    # shallow for the walk-forward slices to span more than one regime is indistinguishable
+    # from a normal collection, and the robustness score it produces looks earned.
+    #
+    # The two causes are deliberately NOT split: one response cannot tell a ceiling from a
+    # short history, and the consequence is identical either way.
+    depth_capped: bool = False
 
 
 class MarketDataCollector(Protocol):
@@ -474,11 +555,19 @@ class MockMarketDataCollector:
         return rows
 
 
-def _require_symbol(symbol: Any) -> str:
+def _require_symbol(symbol: Any, *, pattern: re.Pattern[str] | None = None) -> str:
+    """Validate a symbol against its VENUE's format.
+
+    ``pattern`` defaults to the Binance form so every existing caller keeps the behaviour
+    it had. A collector that names a different venue supplies its own via
+    ``symbol_pattern`` (read in :func:`collect_market_data`) — the venue owns what one of
+    its symbols looks like, and a per-venue pattern is what stops a name that is
+    well-formed for one venue from being sent to another.
+    """
     if not isinstance(symbol, str) or not symbol.strip():
         raise ToolBlocked("EMPTY_SYMBOL", "market-data symbol must be a non-empty string")
-    if not _SYMBOL_PATTERN.fullmatch(symbol):
-        raise ToolBlocked("INVALID_SYMBOL", "symbol must be 5-20 uppercase alphanumerics (e.g. BTCUSDT)")
+    if not (pattern or _SYMBOL_PATTERN).fullmatch(symbol):
+        raise ToolBlocked("INVALID_SYMBOL", f"symbol {symbol!r} is not valid for this venue")
     return symbol
 
 
@@ -521,7 +610,7 @@ def collect_market_data(
     ``output_sha256`` binds the two verifiably. Fails closed (``ToolBlocked``) on an
     invalid request or a collector error/timeout.
     """
-    symbol = _require_symbol(symbol)
+    symbol = _require_symbol(symbol, pattern=getattr(collector, "symbol_pattern", None))
     timeframe = _require_timeframe(timeframe)
     limit = max(1, min(int(limit), MAX_CANDLES))
     try:
@@ -561,6 +650,7 @@ def collect_market_data(
         "last_candle_time": candles[-1]["close_time"] if candles else None,
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
+        "depth_capped": bool(getattr(result, "depth_capped", False)),
         "created_at": now,
     }
     input_sha256 = integrity.sha256_record(
@@ -580,6 +670,7 @@ def collect_market_data(
         "last_candle_time": snapshot["last_candle_time"],
         "source": result.source,
         "is_synthetic": bool(result.is_synthetic),
+        "depth_capped": bool(getattr(result, "depth_capped", False)),
         "output_sha256": output_sha256,
         "latency_ms": int(result.latency_ms),
         "read_only": True,
@@ -647,7 +738,31 @@ def select_market_data_collector(
     ``safety_gate.select_gated`` enforces the ordering: no network-capable collector is
     constructed until the gate has opened. One backend — collection degrades instead of
     failing over (see ``degraded_market_data_record``).
+
+    **Two venues now, and this is a CHOICE, not a chain.** ``MVP_MARKET_DATA`` names
+    exactly one backend; whichever it names goes through ``select_gated`` and so through
+    its OWN provider grant. The model provider's ordered failover chain
+    (``select_gated_chain``) is deliberately not reused: that exists so a second provider
+    can answer the same question when the first is unavailable, and these two answer
+    *different* questions — a Binance symbol has no meaning on Hyperliquid, and silently
+    substituting one venue's candles for another's is the failure this shape prevents.
+    A backend that is down degrades (above); it does not hand the symbol to a stranger.
+
+    An unrecognised value is not an error here: it matches neither opt-in, so the inert
+    Mock is returned. That is the same fail-closed direction the single-venue form had —
+    a typo reaches nothing.
     """
+    if os.environ.get(MARKET_DATA_ENV, "").strip().lower() == HYPERLIQUID:
+        return safety_gate.select_gated(
+            env_var=MARKET_DATA_ENV,
+            opt_in_value=HYPERLIQUID,
+            flags=_NETWORK_FLAGS,
+            provider_id=HYPERLIQUID,
+            default_factory=MockMarketDataCollector,
+            gated_factory=lambda authorization: HyperliquidCollector(authorization=authorization),
+            now=now,
+            root=root,
+        )
     return safety_gate.select_gated(
         env_var=MARKET_DATA_ENV,
         opt_in_value=BINANCE_FUTURES,
@@ -743,14 +858,19 @@ class BinanceFuturesCollector:
         latency_ms = int((time.monotonic() - started) * 1000)
 
         candles = [collected[open_ms] for open_ms in sorted(collected)]
+        window = candles[-limit:]
         return MarketSnapshot(
             symbol=symbol,
             timeframe=timeframe,
-            candles=candles[-limit:],
+            candles=window,
             source=self.source,
             is_synthetic=False,
             collector_version=self.tool_version,
             latency_ms=latency_ms,
+            # This venue pages backward, so a short window means its history ran out (or
+            # MAX_PAGES stopped the walk) rather than a per-request ceiling. Same fact for
+            # the caller either way: fewer bars than the window it asked to score.
+            depth_capped=len(window) < limit,
         )
 
     def _parse(self, raw: str, *, now_ms: int) -> list[tuple[int, Candle]]:
@@ -1093,6 +1213,153 @@ class BinanceFuturesCollector:
         if not isinstance(payload, dict):
             raise ToolError("MALFORMED_RESULT", "exchange-info returned an unparseable response")
         return payload
+
+
+# --- S1 Hyperliquid collector (HIP-3 equity perps — its own provider and grant) ----------
+
+class HyperliquidCollector:
+    """Real OHLCV via Hyperliquid's public ``info`` endpoint (read-only, no API key).
+
+    Same posture as :class:`BinanceFuturesCollector`: public data, but an outbound HTTPS
+    request, so the Safety-Flag Gate must be open for the ``hyperliquid`` provider before
+    this class is constructed, and ``collect`` re-verifies at the moment of egress.
+
+    Three things differ from the Binance collector, all forced by the venue:
+
+    - **Symbols are ``dex:ticker``** (`xyz:XLE`). ``symbol_pattern`` publishes that format
+      so :func:`collect_market_data` validates against this venue's shape rather than
+      Binance's, which rejects every HIP-3 name.
+    - **No paging.** One request answers with at most ``PAGE_LIMIT`` rows and there is
+      nothing behind them — this is a hard ceiling, not a page boundary, so a backward
+      walk would re-ask for history the venue does not have. A short window is reported
+      through ``depth_capped`` instead of being papered over with more requests.
+    - **The request is a POST with a JSON body**, and the window is expressed as a time
+      range rather than a count, so ``limit`` is converted to a ``startTime`` here.
+    """
+
+    tool_id = MARKET_DATA_TOOL_ID
+    tool_version = f"{MARKET_DATA_TOOL_VERSION}-hyperliquid"
+    provider_id = HYPERLIQUID
+    network_egress = True  # makes an outbound HTTPS call — recorded as network egress
+    source = "hyperliquid_public"
+    symbol_pattern = _HIP3_SYMBOL_PATTERN
+    _ENDPOINT = "https://api.hyperliquid.xyz/info"
+    # The venue serves at most this many candles per request and nothing older. Measured
+    # 2026-08-03: `xyz:SP500` listed 2026-03-18 and returns its full 138 days at 1h (3,304
+    # rows) but only 52 days at 15m (5,007 rows) — so the ceiling is real and the older 15m
+    # history is already unreachable. Named a LIMIT rather than a page size for that reason.
+    PAGE_LIMIT = 5_000
+
+    def __init__(self, *, authorization: Authorization | None = None):
+        # Egress authorization from the Safety-Flag Gate. Without it, collect() refuses
+        # to open a socket — a directly-constructed collector cannot bypass the gate.
+        self._authorization = authorization
+
+    def collect(
+        self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int
+    ) -> MarketSnapshot:
+        """At most ``limit`` closed candles, newest last. One request, no paging."""
+        # Chokepoint: re-verify authorization at the moment of egress (defense in depth).
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        started = time.monotonic()
+        now_ms = int(time.time() * 1000)
+        minutes = TIMEFRAMES[timeframe]
+        # One extra bar of span: the venue returns the still-forming candle, and dropping
+        # it must not shrink the caller's requested window. `max(0, …)` because a window
+        # longer than the epoch is a caller's arithmetic, not a request worth sending.
+        span_ms = (min(limit, self.PAGE_LIMIT) + 1) * minutes * 60_000
+        payload = json.dumps({
+            "type": "candleSnapshot",
+            "req": {
+                "coin": symbol,
+                "interval": timeframe,
+                "startTime": max(0, now_ms - span_ms),
+                "endTime": now_ms,
+            },
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            self._ENDPOINT,
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise classify_transport_error(exc, "market-data") from None
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        parsed = self._parse(raw, now_ms=now_ms)
+        # Keyed by open time before ordering: a venue that repeats a boundary bar must not
+        # have it counted twice (the Binance collector's rule, kept even without paging).
+        by_open = {open_ms: candle for open_ms, candle in parsed}
+        candles = [by_open[open_ms] for open_ms in sorted(by_open)]
+        window = candles[-limit:]
+        return MarketSnapshot(
+            symbol=symbol,
+            timeframe=timeframe,
+            candles=window,
+            source=self.source,
+            is_synthetic=False,
+            collector_version=self.tool_version,
+            latency_ms=latency_ms,
+            depth_capped=len(window) < limit,
+        )
+
+    def _parse(self, raw: str, *, now_ms: int) -> list[tuple[int, Candle]]:
+        """The candle array as ``(open_time_ms, Candle)``, still-forming bar dropped."""
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response") from None
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response")
+
+        parsed: list[tuple[int, Candle]] = []
+        for row in rows:
+            # The venue's candle is an OBJECT, not a positional row:
+            #   t open_ms   T close_ms   s symbol   i interval
+            #   o open   c close   h high   l low   v volume   n trade count
+            # OHLCV arrive as STRINGS; `n` is an integer.
+            if not isinstance(row, dict):
+                raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response")
+            try:
+                open_ms, close_ms = int(row["t"]), int(row["T"])
+                candle = Candle(
+                    open_time=self._iso(open_ms),
+                    open=float(row["o"]),
+                    high=float(row["h"]),
+                    low=float(row["l"]),
+                    close=float(row["c"]),
+                    volume=float(row["v"]),
+                    close_time=self._iso(close_ms),
+                    # `quote_volume`, `taker_buy_base` and `taker_buy_quote` are STRUCTURALLY
+                    # absent here — this venue's candle does not carry them, and no request
+                    # or grant would produce them. They stay None rather than being derived
+                    # (`volume * close` would be a plausible-looking fabrication) or dropped,
+                    # so a flow spec goes indeterminate and refuses to trade instead of
+                    # matching on a number nobody measured. `trade_count` IS reported.
+                    trade_count=float(row["n"]) if row.get("n") is not None else None,
+                )
+            except (KeyError, TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", "market-data backend returned an unparseable response") from None
+            if close_ms >= now_ms:
+                continue  # still-forming candle — its close is still moving
+            parsed.append((open_ms, candle))
+        return parsed
+
+    @staticmethod
+    def _iso(epoch_ms: int) -> str:
+        # Pure arithmetic, not fromtimestamp — the Binance collector's reason: Windows'
+        # gmtime rejects far-future epochs and a venue-supplied timestamp is input.
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=epoch_ms)
+        return timeutil.format_iso(epoch)
 
 
 # --- C9 liquidation feed (Coinalyze — its own provider, key, and grant) -------

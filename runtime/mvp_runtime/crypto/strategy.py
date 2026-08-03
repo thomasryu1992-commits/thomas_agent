@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from .features import PREVIOUS_BAR_PREFIX
+from .market_data import BINANCE_FUTURES
+
 SCHEMA_VERSION = "strategy_spec.v1"
 STRATEGY_RULE_HASH_VERSION = "strategy_rule_hash.v1"
 
@@ -65,15 +68,39 @@ class StrategyStatus(str, Enum):
     ARCHIVED = "ARCHIVED"
 
 
+# How many bars back a condition may look. One, and the number is the design.
+#
+# **A crossover is what this vocabulary could not say.** `macd > macd_signal` is a STATE, true
+# for the whole of a trend, so a spec built on it re-fires on every bar of that trend instead of
+# on the bar the relationship changed. Writing "crossed above" needs the previous bar, and there
+# was no way to reach it — no lag, and `value_from` reads the same row. The search could not see
+# the hypothesis at all, whatever it did with parameters.
+#
+# With `lag`, a crossover is two ordinary conditions ANDed: the relationship holds now, and did
+# NOT hold one bar ago. No new operator, no new evaluator semantics — the existing AND already
+# expresses the sequence.
+#
+# One bar, because that is what a crossover needs and each further depth copies the whole
+# numeric vocabulary into every row again (`features.attach_previous_bar`). Persistence over n
+# bars wants a rolling derivative computed once, not n copies of everything.
+MAX_CONDITION_LAG = 1
+
+
 @dataclass(frozen=True)
 class RuleCondition:
     """One entry condition: ``feature comparison (value | value_from)`` — exactly one
-    of ``value`` (constant) or ``value_from`` (another feature name) is set."""
+    of ``value`` (constant) or ``value_from`` (another feature name) is set.
+
+    ``lag`` shifts the WHOLE condition back that many bars: both sides read the earlier row, so
+    `macd > macd_signal` at ``lag: 1`` asks what was true one bar ago. Shifting the condition
+    rather than one side of it is what keeps a crossover expressible as two conditions the
+    existing AND already combines."""
 
     feature: str
     comparison: str
     value: float | str | None = None
     value_from: str | None = None
+    lag: int = 0
 
     @staticmethod
     def from_dict(raw: Any, *, where: str) -> "RuleCondition":
@@ -108,11 +135,20 @@ class RuleCondition:
                     f"{where}: condition 'value' must be a number or non-empty string, got {raw_value!r}"
                 )
 
+        raw_lag = raw.get("lag", 0)
+        if isinstance(raw_lag, bool) or not isinstance(raw_lag, int):
+            raise SpecParseError(f"{where}: condition 'lag' must be an integer, got {raw_lag!r}")
+        if not 0 <= raw_lag <= MAX_CONDITION_LAG:
+            raise SpecParseError(
+                f"{where}: condition 'lag' must be between 0 and {MAX_CONDITION_LAG}, got {raw_lag}"
+            )
+
         return RuleCondition(
             feature=feature,
             comparison=comparison,
             value=value,
             value_from=value_from if has_value_from else None,
+            lag=raw_lag,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,6 +157,11 @@ class RuleCondition:
             out["value_from"] = self.value_from
         else:
             out["value"] = self.value
+        # Emitted only when set, matching the fingerprint. A spec that does not look back must
+        # round-trip to the JSON it was loaded from, or re-parsing a pool this runtime wrote
+        # would fail the hash check it carries.
+        if self.lag:
+            out["lag"] = self.lag
         return out
 
 
@@ -285,6 +326,16 @@ class StrategySpec:
     generation_id: str | None = None
     created_by: str = "StrategyGenerationAgent"
     schema_version: str = SCHEMA_VERSION
+    # The venue this spec was MINED ON, and therefore the vocabulary it may name.
+    # Carried on the spec rather than passed to the validator: a spec is a thing mined
+    # from one venue's data, and separating it from that origin would let a spec mined on
+    # Hyperliquid be validated against Binance's feature set and pass.
+    #
+    # Deliberately NOT in `strategy_rule_fingerprint`. `symbol_scope` is already in there
+    # and symbols are venue-namespaced (`xyz:XLE` can never collide with `BTCUSDT`), so the
+    # venue adds nothing to identity — while adding it would change the hash of all 1020
+    # stored candidates and fail every `from_dict` on the next read.
+    venue: str = BINANCE_FUTURES
     strategy_rule_hash: str = ""
 
     @staticmethod
@@ -334,6 +385,10 @@ class StrategySpec:
             status=status,
             generation_id=generation_id,
             created_by=created_by,
+            # Absent means it predates the field, which PROVES binance_futures: no other
+            # venue existed when it was written. That is a migration default backed by a
+            # fact — unlike a validator default, which would only mean the caller forgot.
+            venue=str(raw.get("venue", BINANCE_FUTURES)),
             schema_version=str(raw.get("schema_version", SCHEMA_VERSION)),
         )
 
@@ -345,6 +400,12 @@ class StrategySpec:
         return spec
 
     def referenced_features(self) -> set[str]:
+        """The BASE feature names this spec reads, lag stripped.
+
+        Callers use this to check a spec against a vocabulary and against what a feed supplies,
+        and both questions are about the underlying series — `prev_macd` is available exactly
+        when `macd` is. Returning the lagged spelling would make every lagged spec look like it
+        referenced a feature nobody has heard of."""
         names: set[str] = set()
         for cond in self.entry_rules.conditions:
             names.add(cond.feature)
@@ -369,6 +430,7 @@ class StrategySpec:
             "created_by": self.created_by,
             "can_submit_orders": False,
             "can_modify_runtime": False,
+            "venue": self.venue,
             "strategy_rule_hash": self.strategy_rule_hash,
         }
 
@@ -389,6 +451,11 @@ def strategy_rule_fingerprint(spec: StrategySpec) -> dict[str, Any]:
                     "comparison": c.comparison,
                     "value": c.value,
                     "value_from": c.value_from,
+                    # Only when set, so a spec that does not look back hashes byte-identically
+                    # to what it hashed before `lag` existed. `from_dict` VERIFIES a stored
+                    # `strategy_rule_hash` rather than re-minting it, so a fingerprint that
+                    # gained a key unconditionally would make every stored spec fail to load.
+                    **({"lag": c.lag} if c.lag else {}),
                 }
                 for c in spec.entry_rules.conditions
             ],
@@ -447,14 +514,30 @@ def _cell(row: Mapping[str, Any], name: str) -> Any:
     return value
 
 
+def _lagged(name: str, lag: int) -> str:
+    """The column a reference resolves to at ``lag`` bars back.
+
+    ``features.attach_previous_bar`` materialises these, because the evaluator sees exactly one
+    row and that is load-bearing: the factory replays row by row and paper and live share this
+    function. A lag that reached back through history would need a different evaluator in each
+    of the three, which is how a backtest and a live trade stop being the same computation."""
+    return name if lag <= 0 else f"{PREVIOUS_BAR_PREFIX * lag}{name}"
+
+
 def evaluate_condition(cond: RuleCondition, row: Mapping[str, Any]) -> bool | None:
-    """Evaluate one condition. Returns None when it cannot be evaluated."""
-    left = _cell(row, cond.feature)
+    """Evaluate one condition. Returns None when it cannot be evaluated.
+
+    ``lag`` shifts BOTH sides: the condition asks what was true that many bars ago, not what an
+    old left side would say against a current right one. A row that does not carry the lagged
+    column — the first bar of a replay, or a caller that built rows without them — reads as
+    indeterminate, so a spec that looks back simply does not match rather than matching on a
+    value that was never there."""
+    left = _cell(row, _lagged(cond.feature, cond.lag))
     if left is None:
         return None
 
     if cond.value_from is not None:
-        right: Any = _cell(row, cond.value_from)
+        right: Any = _cell(row, _lagged(cond.value_from, cond.lag))
     else:
         right = cond.value
     if right is None:

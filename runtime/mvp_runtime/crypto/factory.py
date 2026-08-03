@@ -61,6 +61,7 @@ from typing import Any, Callable, Mapping
 from runtime.read_only_kernel import integrity
 
 from . import features, market_data
+from ..errors import ToolBlocked
 from .cost import (
     FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
@@ -284,6 +285,55 @@ def _trend_pullback_short_entry(p: dict) -> list[dict]:
         {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
         {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
         {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
+# --- crossovers: the shape the vocabulary could not express until #456 ------------------------
+#
+# Every family above tests a STATE. `ma20 > ma50` is true for the whole of a trend, so the spec
+# is eligible on every bar of it and the entry that actually happens is decided by whichever bar
+# the other conditions happen to clear on — not by the trend starting. These ask for the bar the
+# relationship CHANGED, which is a different hypothesis and one the search has never been able
+# to see.
+#
+# Two conditions, and the second one is the whole difference: the relation holds now, and did
+# NOT hold one bar ago. `lag` shifts the whole condition, so the existing AND composes them.
+#
+# The filter conditions are deliberately kept from the state families they mirror. The point of
+# the pair is to isolate ONE change — state versus event — so that if the crossover version
+# scores differently, the difference is attributable. Adding new filters at the same time would
+# make the comparison say nothing.
+
+
+def _ma_cross_up_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "ma20", "comparison": ">", "value_from": "ma50"},
+        {"feature": "ma20", "comparison": "<=", "value_from": "ma50", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _ma_cross_down_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "ma20", "comparison": "<", "value_from": "ma50"},
+        {"feature": "ma20", "comparison": ">=", "value_from": "ma50", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _macd_cross_up_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "macd", "comparison": ">", "value_from": "macd_signal"},
+        {"feature": "macd", "comparison": "<=", "value_from": "macd_signal", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _macd_cross_down_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "macd", "comparison": "<", "value_from": "macd_signal"},
+        {"feature": "macd", "comparison": ">=", "value_from": "macd_signal", "lag": 1},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
     ]
 
 
@@ -664,6 +714,19 @@ def _volatility_squeeze_short_entry(p: dict) -> list[dict]:
 
 
 TEMPLATES: tuple[StrategyTemplate, ...] = (
+    # The crossover pairs lead, so a reader meets the one structural addition first.
+    StrategyTemplate("ma_cross_up", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 22.0, **_EXIT_BASE}, _ma_cross_up_entry),
+    StrategyTemplate("ma_cross_down", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 22.0, **_EXIT_BASE}, _ma_cross_down_entry),
+    StrategyTemplate("macd_cross_up", "long", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_cross_up_entry),
+    StrategyTemplate("macd_cross_down", "short", "1h",
+                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_cross_down_entry),
     StrategyTemplate("trend_pullback", "long", "1h",
                      {"adx_min": ParamSpec(15.0, 30.0), "rsi_max": ParamSpec(45.0, 65.0), **_EXIT_PARAMS},
                      {"adx_min": 22.0, "rsi_max": 55.0, **_EXIT_BASE}, _trend_pullback_entry),
@@ -946,28 +1009,139 @@ def templates_for_timeframe(
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
 
+# --- which feed each mintable feature needs ----------------------------------------------
+#
+# Only features that need something BEYOND the candle series appear here; everything else is
+# derived from OHLCV (directly, or through the higher-timeframe, reference-symbol and
+# cross-section legs, which are all just more candles) and is available wherever candles are.
+#
+# `test_every_mintable_feature_is_classified` pins this table and `_CANDLE_DERIVED` below as
+# an exact PARTITION of the vocabulary, so a new feature cannot arrive unclassified and be
+# silently claimed available on a venue that has no data for it.
+_FEATURE_FEED: dict[str, str] = {
+    "funding_rate": market_data.FEED_FUNDING,
+    "funding_zscore": market_data.FEED_FUNDING,
+    "mark_price": market_data.FEED_DERIVATIVE_PRICE,
+    "index_price": market_data.FEED_DERIVATIVE_PRICE,
+    "mark_index_basis_bps": market_data.FEED_DERIVATIVE_PRICE,
+    "premium_index": market_data.FEED_DERIVATIVE_PRICE,
+    "premium_index_zscore": market_data.FEED_DERIVATIVE_PRICE,
+    "liquidation_spike_ratio": market_data.FEED_LIQUIDATION,
+    "liquidation_total": market_data.FEED_LIQUIDATION,
+    "long_liquidation": market_data.FEED_LIQUIDATION,
+    "short_liquidation": market_data.FEED_LIQUIDATION,
+    "open_interest_change_pct": market_data.FEED_OPEN_INTEREST,
+    "open_interest_zscore": market_data.FEED_OPEN_INTEREST,
+    "positioning_divergence_change": market_data.FEED_POSITIONING,
+    "positioning_divergence_zscore": market_data.FEED_POSITIONING,
+    # The aggressor split, and only it. `avg_trade_size_zscore` and `trade_count_zscore` sit
+    # in the same feature builder but need the trade COUNT rather than the buy/sell split —
+    # grouping them here by where the code lives would disable two features a venue can serve.
+    "taker_buy_ratio": market_data.FEED_TAKER_FLOW,
+    "taker_flow_imbalance": market_data.FEED_TAKER_FLOW,
+    "taker_flow_zscore": market_data.FEED_TAKER_FLOW,
+    "taker_flow_ma": market_data.FEED_TAKER_FLOW,
+    "avg_trade_size_zscore": market_data.FEED_TRADE_COUNT,
+    "trade_count_zscore": market_data.FEED_TRADE_COUNT,
+}
+
+# The other half of the partition: everything the candle series alone produces, and therefore
+# everything available wherever candles are.
+#
+# Written out rather than defined as "whatever `_FEATURE_FEED` did not name", which is what
+# `known_features` effectively assumes and is exactly why this list has to exist. The default
+# direction here is UNSAFE — an unclassified feature reads as available on every venue — so
+# the only thing that can catch a feature nobody classified is a second statement to disagree
+# with. `NUMERIC_FEATURES` splats `features.HTF_/REFERENCE_/XS_NUMERIC_COLUMNS`, so those
+# families grow without anyone editing this file; the names are listed individually so that
+# growth still has to be acknowledged as candle-derived rather than assumed to be.
+#
+# Adding a feature therefore fails `test_every_mintable_feature_is_classified` until it is
+# named in one list or the other. That failure IS the guard — it is cheaper than discovering
+# on a venue with no liquidation feed that `liquidation_spike_ratio`'s constant-0.0 fallback
+# has been matching every bar since the feature landed.
+_CANDLE_DERIVED: frozenset[str] = frozenset({
+    "open", "high", "low", "close", "volume",
+    "ma20", "ma50", "ema20", "ema50", "atr", "atr_pct_of_price", "atr_percentile",
+    "rsi", "adx", "macd", "macd_signal", "macd_hist",
+    "bb_upper", "bb_lower", "bb_width_pct", "bb_percent_b", "bb_width_percentile",
+    "roc_4", "price_distance_ma20", "volume_zscore",
+    # One step up the ladder — the same indicators over a slower candle.
+    "htf_rsi", "htf_adx", "htf_price_distance_ma20", "htf_ma20_distance_ma50",
+    # One proxy symbol's candles beside this symbol's.
+    "ref_roc_4", "rel_strength_roc_4", "ref_correlation",
+    # A cohort's candles, reduced to this symbol's place among them.
+    "xs_rank_pct", "xs_excess_roc_4", "xs_dispersion_ratio",
+    # Every categorical is a classifier over the candle series. Listed, not splatted from
+    # `CATEGORICAL_FEATURES`, because a future categorical need not be — a funding or
+    # positioning REGIME would be a label over a feed, and splatting would wave it through.
+    "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
+})
+
+
+def known_features(venue: str) -> tuple[frozenset[str], dict[str, Any]]:
+    """The (numeric, categorical) vocabulary a spec mined on ``venue`` may name.
+
+    A feature whose feed the venue does not provide is not merely useless there — it is
+    unsafe. The evaluator treats a missing column as indeterminate, so most such specs
+    would never fire, never accrue a sample, and so never be demotable off a routing slot
+    (the latch `BUILD_HISTORY` records for the loss breaker). **And one is worse than that:**
+    `liquidation_spike_ratio` falls back to a constant 0.0 with no feed rather than to None,
+    so a mined `< x` condition on it matches every bar forever, on a number nobody measured.
+
+    Fail-closed on an unknown venue — `market_data.venue_feeds` raises rather than returning
+    an empty vocabulary, so a typo blocks instead of silently rejecting every feature.
+    """
+    feeds = market_data.venue_feeds(venue)
+    numeric = frozenset(
+        name for name in NUMERIC_FEATURES
+        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+    )
+    categorical = {
+        name: values for name, values in CATEGORICAL_FEATURES.items()
+        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+    }
+    return numeric, categorical
+
+
 def validate_strategy(spec: StrategySpec) -> dict[str, Any]:
-    """Approval-for-backtest verdict. Pure, fail-closed, never mutates."""
+    """Approval-for-backtest verdict. Pure, fail-closed, never mutates.
+
+    Judged against the vocabulary of the spec's OWN venue (`known_features`), which is why
+    the venue rides on the spec rather than arriving as an argument here — an argument could
+    be omitted or supplied wrongly, and a spec cannot be separated from where it was mined.
+    """
     reasons: list[str] = []
+    try:
+        numeric_features, categorical_features = known_features(spec.venue)
+    except ToolBlocked:
+        # An undeclared venue is not a feature problem and must not be reported as one:
+        # every condition would "fail" for a reason that has nothing to do with it.
+        return {
+            "strategy_id": spec.strategy_id,
+            "strategy_rule_hash": spec.strategy_rule_hash,
+            "approved_for_backtest": False,
+            "block_reasons": ["BLOCK_UNKNOWN_VENUE"],
+        }
     if spec.schema_version != SCHEMA_VERSION:
         reasons.append("BLOCK_SCHEMA_VERSION")
     if len(spec.entry_rules.conditions) > MAX_ENTRY_CONDITIONS:
         reasons.append("BLOCK_TOO_MANY_CONDITIONS")
     for cond in spec.entry_rules.conditions:
-        if cond.feature in NUMERIC_FEATURES:
+        if cond.feature in numeric_features:
             if cond.comparison not in _NUMERIC_COMPARISONS:
                 reasons.append("BLOCK_INVALID_COMPARISON")
             if cond.value is not None and isinstance(cond.value, str):
                 reasons.append("BLOCK_INVALID_FEATURE_VALUE")
-        elif cond.feature in CATEGORICAL_FEATURES:
+        elif cond.feature in categorical_features:
             if cond.comparison not in _CATEGORICAL_COMPARISONS:
                 reasons.append("BLOCK_INVALID_COMPARISON")
-            if cond.value is not None and cond.value not in CATEGORICAL_FEATURES[cond.feature]:
+            if cond.value is not None and cond.value not in categorical_features[cond.feature]:
                 reasons.append("BLOCK_INVALID_FEATURE_VALUE")
         else:
             reasons.append("BLOCK_UNKNOWN_FEATURE")
-        if cond.value_from is not None and cond.value_from not in NUMERIC_FEATURES:
-            reasons.append("BLOCK_UNKNOWN_FEATURE" if cond.value_from not in CATEGORICAL_FEATURES
+        if cond.value_from is not None and cond.value_from not in numeric_features:
+            reasons.append("BLOCK_UNKNOWN_FEATURE" if cond.value_from not in categorical_features
                            else "BLOCK_VALUE_FROM_NOT_NUMERIC")
 
     exit_rules = spec.exit_rules
@@ -1006,6 +1180,78 @@ def mutate_params(
         val = max(spec.lo, min(spec.hi, val))
         out[name] = int(round(val)) if spec.integer else round(val, 4)
     return out
+
+
+# --- where the search looks next ------------------------------------------------------------
+#
+# `mutate_params` draws `base +/- (hi - lo) * 0.35` around `template.base_params`, and that base
+# is a CONSTANT. A hundred generations later the search is still sampling the same neighbourhood
+# it started in: repeated sampling, not evolution. Nothing a generation learns changes where the
+# next one looks.
+#
+# Moving the centre is the fix, and it has a hazard that has to be named or it is a worse bug
+# than the one it closes. Hill-climbing on a noisy fitness surface converges on the noise —
+# which is exactly the failure this store already exhibits, expectancy falling toward the cost
+# of trading as sample size grows. So two rules:
+#
+# **The centre follows ROBUSTNESS, never expectancy.** Centring on the highest expectancy is
+# precisely the mechanism that produced a store of maxima. `champion_score` is the anti-overfit
+# score; a region that scores well there has more trades per parameter and broader regimes
+# behind it, which is what "worth looking near" should mean.
+#
+# **Half the draws stay home.** Even-indexed mints use the elite centre, odd-indexed use the
+# template's own base. The search cannot collapse onto one point however good that point looks,
+# and the region the template was written for is never abandoned. Deterministic — it is the
+# accept index, not a coin flip.
+#
+# What keeps this honest is the two gates that landed first: #438's holdout interval and #440's
+# selection-adjusted ranking, which charges the attempt count that concentrating the search will
+# raise. The open risk is A2 — the holdout tail is shared, so a region that got lucky on it can
+# be confirmed repeatedly. That is not closed here and concentrating the search makes it matter
+# more, which is the honest reason it is written down rather than left implicit.
+ELITE_EVIDENCE_MIN_TRADES = 20
+
+
+def elite_base_params(
+    candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
+    fallback: dict[str, float],
+) -> dict[str, float]:
+    """The params of the most ROBUST prior candidate for this family and context.
+
+    ``fallback`` (the template's own base) whenever there is nothing better to say: no prior
+    candidate here, none carrying `mint_params`, or none with enough closed trades for its score
+    to mean anything. A centre moved on three trades is not a lesson.
+
+    Pure and deterministic given the store, which is what keeps a replay reproducible — the
+    centre is derived from recorded evidence, never from wall-clock or draw order.
+    """
+    best_score = None
+    best_params: dict[str, float] | None = None
+    for record in candidates:
+        spec = record.get("strategy_spec") or {}
+        if spec.get("strategy_family") != family or spec.get("timeframe") != timeframe:
+            continue
+        if symbol not in (spec.get("symbol_scope") or []):
+            continue
+        params = record.get("mint_params")
+        if not isinstance(params, Mapping) or not params:
+            continue
+        evidence = record.get("backtest_evidence") or {}
+        closed = evidence.get("closed_count")
+        if not isinstance(closed, (int, float)) or closed < ELITE_EVIDENCE_MIN_TRADES:
+            continue
+        score = record.get("champion_score")
+        if not isinstance(score, (int, float)):
+            continue
+        # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
+        # store order among equals.
+        if best_score is None or score > best_score:
+            best_score, best_params = float(score), {str(k): v for k, v in params.items()}
+    if best_params is None:
+        return dict(fallback)
+    # Only keys the template still declares: a param the family dropped must not be resurrected
+    # from an old record, and one it gained must come from the template's own base.
+    return {name: best_params.get(name, fallback[name]) for name in fallback}
 
 
 def build_spec_dict(
@@ -1116,6 +1362,7 @@ def generate_batch(
     known_rule_hashes: frozenset[str] = frozenset(),
     positioning_eligible: bool = False,
     rotation_index: int | None = None,
+    elite_params: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
@@ -1149,6 +1396,7 @@ def generate_batch(
     offset = _rotation_offset(generation_id, seed, count, len(templates),
                               rotation_index=rotation_index)
     accepted: list[StrategySpec] = []
+    accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen_hashes: set[str] = set(known_rule_hashes)
@@ -1157,7 +1405,16 @@ def generate_batch(
     while len(accepted) < count and attempts < count * _MAX_ATTEMPTS_PER_SPEC:
         attempts += 1
         template = templates[(offset + len(accepted)) % len(templates)]
-        params = mutate_params(template.base_params, template.param_space, rng)
+        # Half the draws around what this family has already learned, half around where it
+        # started. The index, not a coin flip, so the split is reproducible — and so the search
+        # cannot collapse onto one point however good that point looks. See `elite_base_params`.
+        elite = (elite_params or {}).get(template.family)
+        centre = (
+            {name: float(elite.get(name, template.base_params[name]))
+             for name in template.base_params}
+            if elite and len(accepted) % 2 == 0 else template.base_params
+        )
+        params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
                                     generation_id=generation_id, symbol=symbol)
@@ -1175,6 +1432,7 @@ def generate_batch(
             continue
         seen_hashes.add(spec.strategy_rule_hash)
         accepted.append(spec)
+        accepted_params[spec.strategy_id] = dict(params)
         validations.append(verdict)
 
     return {
@@ -1183,6 +1441,10 @@ def generate_batch(
         "requested_count": count,
         "accepted_count": len(accepted),
         "specs": [s.to_dict() for s in accepted],
+        # The draw each spec came from, keyed by strategy_id. Returned rather than re-derived,
+        # for the reason `mint_params` states on the record: reversing a param out of a spec
+        # would be a second implementation of every family's entry builder.
+        "params": accepted_params,
         "validations": validations,
         "rejected": rejected,
         "batch_complete": len(accepted) == count,
@@ -1390,6 +1652,44 @@ def _replay(
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
             total_funding_cost_r, uneconomic_entries)
+
+
+# A feature the rows never supply, and why minting on one is not merely wasteful.
+#
+# `mark_price`, `index_price` and `mark_index_basis_bps` are **None on every bar** unless the
+# snapshot carries `mark_prices`/`index_prices`, which this runtime's collector does not. The
+# fail-closed evaluator reads None as indeterminate, so a spec naming one never matches — no
+# trade, which is the honest outcome and not the problem.
+#
+# The problem is that 9 candidates in this store carry backtest evidence with `closed_count > 0`
+# on exactly those columns. They are C7 imports: scored in the source system, where the feed
+# supplied values. Here they are rankable, promotable in principle, and structurally incapable
+# of ever entering — evidence that says "this traded and made X" for a trade this runtime cannot
+# reproduce. That is a backtest/live divergence wearing a perfectly ordinary candidate record.
+#
+# Refused at MINT, where it costs nothing and the replay rows are right there to ask. A
+# read-time tier over the 20 already stored is a separate increment: it needs to know what the
+# feed supplies NOW, which `pool` cannot see.
+#
+# "Never supplied" is measured over the replay, not declared in a list. A list would go stale
+# the day a feed is configured, and would have to be maintained in the opposite direction from
+# the truth — the rows already know.
+UNSUPPLIABLE_FEATURE = "references a feature this runtime never supplies"
+
+
+def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> list[str]:
+    """The spec's referenced features that are None on every replay row.
+
+    Empty rows return empty: nothing was observed either way, and a caller with no data must not
+    be told a feature is missing — that is a claim, and this function only reports what it saw.
+    """
+    if not rows:
+        return []
+    missing = []
+    for name in sorted(spec.referenced_features()):
+        if all(row.get(name) is None for row in rows):
+            missing.append(name)
+    return missing
 
 
 def _holdout_evidence(
@@ -2051,10 +2351,22 @@ def run_factory(
 
     symbol = str(snapshot.get("symbol") or "BTCUSDT")
     timeframe = str(snapshot.get("timeframe") or "1d")
+    # What each family has already learned in THIS context. Empty on a store whose candidates
+    # predate `mint_params`, which is every one of them today — so the first generation after
+    # this lands still draws around the template base, and the one after it has something to
+    # move toward. Same shape as every other "record it before you can use it" step here.
+    elite_centres = {
+        template.family: elite_base_params(
+            existing_candidates, family=template.family, symbol=symbol, timeframe=timeframe,
+            fallback=template.base_params,
+        )
+        for template in templates_for_timeframe(timeframe, positioning_eligible=positioning_eligible)
+    }
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
         timeframe=timeframe,
+        elite_params=elite_centres,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         # Counted from the store this function was already given — the rotation steps on
@@ -2070,8 +2382,17 @@ def run_factory(
     frame = build_replay_frame(snapshot)
 
     candidates: list[dict[str, Any]] = []
+    starved_specs: list[dict[str, Any]] = []
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
+        # Before scoring, because scoring it is the waste: a spec naming a feature these rows
+        # never supply cannot enter here, and evidence saying otherwise would be evidence for a
+        # trade this runtime cannot reproduce. See `unsuppliable_features`.
+        starved = unsuppliable_features(spec, frame.rows)
+        if starved:
+            starved_specs.append({"strategy_family": spec.strategy_family,
+                                  "reason": UNSUPPLIABLE_FEATURE, "features": starved})
+            continue
         evidence = backtest_spec(spec, snapshot, frame=frame)
         record = {
             "strategy_id": spec.strategy_id,
@@ -2084,6 +2405,13 @@ def run_factory(
             "evidence_input_sha256": candles_sha,
             "provenance": "mvp_factory",
             "derivation_type": "seeded_template",
+            # What this candidate was drawn from, recorded because nothing did and the search
+            # therefore could not learn: `elite_base_params` reads exactly this. Stored on the
+            # record rather than re-derived from the spec — the mapping from a param name to the
+            # condition it lands in lives in the family's own entry builder, so reversing it
+            # would be a second implementation of every template, silently wrong the first time
+            # one changed.
+            "mint_params": batch["params"].get(spec.strategy_id, {}),
             "parent_candidate_ids": [],
             "created_at_utc": now,
         }
@@ -2117,7 +2445,11 @@ def run_factory(
         "seed": seed,
         "requested_count": batch["requested_count"],
         "accepted_count": batch["accepted_count"],
-        "rejected": batch["rejected"],
+        # Mint-time refusals and score-time ones together: a caller reading "why did this fire
+        # produce so few candidates" must not have to know which loop dropped them. Kept as a
+        # separate key rather than merged into `batch["rejected"]`, because that list is the
+        # generator's own record and this refusal happens after it, with facts it cannot see.
+        "rejected": [*batch["rejected"], *starved_specs],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
         "fusion_rejected": fusion_rejected,
