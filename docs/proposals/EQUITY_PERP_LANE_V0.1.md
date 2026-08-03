@@ -30,12 +30,12 @@
 
 | 이음매 | 위치 | 현재 구현 | 추가할 것 |
 |---|---|---|---|
-| 캔들 | [market_data.py:634](runtime/mvp_runtime/crypto/market_data.py:634) `select_market_data_collector` | `Mock` / `BinanceFuturesCollector` | `HyperliquidCollector` |
-| 계좌 | [account.py:520](runtime/mvp_runtime/crypto/account.py:520) `select_account_feed` | `NoAccountFeed` / `BinanceFuturesAccountFeed` | `HyperliquidAccountFeed` |
-| 주문 | [live_execution.py:574](runtime/mvp_runtime/crypto/live_execution.py:574) `select_order_adapter` | `DryRun` / `BinanceFuturesOrderAdapter` | `HyperliquidOrderAdapter` |
+| 캔들 | [market_data.py:634](../../runtime/mvp_runtime/crypto/market_data.py) `select_market_data_collector` | `Mock` / `BinanceFuturesCollector` | `HyperliquidCollector` |
+| 계좌 | [account.py:520](../../runtime/mvp_runtime/crypto/account.py) `select_account_feed` | `NoAccountFeed` / `BinanceFuturesAccountFeed` | `HyperliquidAccountFeed` |
+| 주문 | [live_execution.py:574](../../runtime/mvp_runtime/crypto/live_execution.py) `select_order_adapter` | `DryRun` / `BinanceFuturesOrderAdapter` | `HyperliquidOrderAdapter` |
 
-**`venue`는 이미 일급 필드다.** [paper.py:78](runtime/mvp_runtime/crypto/paper.py:78) `DEFAULT_VENUE`,
-[live_budget.py:91](runtime/mvp_runtime/crypto/live_budget.py:91) `SUPPORTED_VENUE` 검사, 예산 스키마의
+**`venue`는 이미 일급 필드다.** [paper.py:78](../../runtime/mvp_runtime/crypto/paper.py) `DEFAULT_VENUE`,
+[live_budget.py:91](../../runtime/mvp_runtime/crypto/live_budget.py) `SUPPORTED_VENUE` 검사, 예산 스키마의
 `venue` enum. 다중 베뉴는 **미구현이지만 미설계는 아니다**.
 
 **Reuse first의 귀결:** `runtime/mvp_runtime/stocks/`를 새로 파는 안은 기각한다. 24k LOC이 두 벌이
@@ -63,17 +63,17 @@ Thomas 결정에 따라 대상을 **팩터/디스퍼전**으로 재정의한다:
 
 `features.py`가 매 바마다 계산하는 컬럼 두 그룹이 정확히 이 전략군의 재료다.
 
-**벤치마크 상대 (`_reference_columns`, [features.py:340](runtime/mvp_runtime/crypto/features.py:340))**
+**벤치마크 상대 (`_reference_columns`, [features.py:340](../../runtime/mvp_runtime/crypto/features.py))**
 — `ref_roc_4`, `rel_strength_roc_4`(초과 모멘텀), `ref_correlation`(바별 **수익률** 기준),
 `ref_market_regime`. 모듈 주석이 존재 이유를 직접 적고 있다: *"다른 모든 컬럼은 심볼 하나를 고립시켜
 기술하며, 그래서 풀이 가진 모든 전략이 같은 마켓 베타를 진다."*
 
-**코호트 횡단면 (`_cross_section_columns`, [features.py:107–147](runtime/mvp_runtime/crypto/features.py:107))**
+**코호트 횡단면 (`_cross_section_columns`, [features.py:107–147](../../runtime/mvp_runtime/crypto/features.py))**
 — `xs_rank_pct`(코호트 내 순위 분위), `xs_excess_roc_4`, `xs_dispersion_ratio`(자기 최근 정상 대비
 디스퍼전 비율). 셋 다 스케일 프리로 주조 가능하고, 주석이 벤치마크와의 차이를 명시한다:
 *"모든 알트가 동시에 BTC를 이길 수 있고, 그 사실은 그중 무엇을 사야 하는지 아무것도 말해주지 않는다."*
 
-**전략 주조 템플릿도 있다** ([factory.py:434–492](runtime/mvp_runtime/crypto/factory.py:434)):
+**전략 주조 템플릿도 있다** ([factory.py:434–492](../../runtime/mvp_runtime/crypto/factory.py)):
 `_rel_strength_long_entry` / `_rel_strength_short_entry`, 그리고 `xs_rank_pct` + `xs_dispersion_ratio`를
 결합한 횡단면 롱/숏 진입. **주조 → 풀 채점 → 라이프사이클 판정의 사다리를 그대로 탄다.**
 
@@ -131,7 +131,7 @@ Thomas 결정 2026-08-03. 넣었다면 `paper`/`live_leg`가 두 다리를 하�
 
 `cost.py` 주석은 펀딩이 *"모델에 없었고 지배적인"* 항이라고 스스로 적는다. 정산이 3회/일 →
 24회/일이면 다일 보유의 캐리 항은 성격 자체가 달라진다. 그리고
-[cost.py:144](runtime/mvp_runtime/crypto/cost.py:144) `MAX_ENTRY_COST_R = 0.25`는 크립토에서 15m을
+[cost.py:144](../../runtime/mvp_runtime/crypto/cost.py) `MAX_ENTRY_COST_R = 0.25`는 크립토에서 15m을
 **수리한 게 아니라 꺼버린** 게이트다(50행 중 48행 거부). 새 베뉴·새 유니버스에서 무엇이 살아남는지가
 S2의 판정 대상이다.
 
@@ -143,7 +143,7 @@ S2의 판정 대상이다.
    현 풀 스탑 중앙값 37.6 bps인데 실적 8% 갭은 그 거리를 20배 이상 건너뛴다. 갭 너머에서 스탑은
    보장이 아니라 **요청**이다. 그리고 **실적 캘린더는 이 시스템에 없는 입력이다.**
 
-**주문 타입:** [live_order.py:195](runtime/mvp_runtime/crypto/live_order.py:195)는 `MARKET`을 고정한다.
+**주문 타입:** [live_order.py:195](../../runtime/mvp_runtime/crypto/live_order.py)는 `MARKET`을 고정한다.
 Hyperliquid도 시장가를 지원하므로 v1은 유지(리밋 진입 보류는 LP4 스코프 노트의 별건이며 근거는
 베뉴별로 다시 따져야 한다). 슬리피지 상수만 재측정 대상.
 
@@ -155,10 +155,10 @@ Hyperliquid도 시장가를 지원하므로 v1은 유지(리밋 진입 보류는
    정합성 검사**를 통과해야 한다.
 2. **시장 소멸 리스크.** Ventuals는 2026-06에 시장을 닫았다. 배포자는 시장을 **철수할 수 있다.**
    "포지션을 들고 있는 시장이 더 이상 없다"는 상태를 크립토 레인은 모른다.
-3. **상관 리스크 — v1 필수(§4).** [paper.py:116](runtime/mvp_runtime/crypto/paper.py:116)
+3. **상관 리스크 — v1 필수(§4).** [paper.py:116](../../runtime/mvp_runtime/crypto/paper.py)
    `MAX_POSITIONS_PER_SYMBOL = 4`와 방향성 스큐 캡은 **심볼 단위**다. NVDA/AAPL/MSFT/GOOGL에 각각
    롱을 잡으면 전부 통과하고 시스템은 분산됐다고 믿지만 실상은 한 개 베팅이다. 재료는 이미 있다 —
-   [indicators.py:256](runtime/mvp_runtime/crypto/indicators.py:256) `rolling_correlation`, 그리고
+   [indicators.py:256](../../runtime/mvp_runtime/crypto/indicators.py) `rolling_correlation`, 그리고
    피처 행에 이미 실려 있는 `ref_correlation`.
 4. **담보·크로스마진.** HIP-3 dex는 각자 quote 자산을 고르고, 배포자를 가로지르는 크로스마진은
    위험을 키운다. 계좌 조회가 다계좌가 된다.
@@ -167,8 +167,8 @@ Hyperliquid도 시장가를 지원하므로 v1은 유지(리밋 진입 보류는
 
 Hyperliquid는 HMAC이 아니라 **EIP-712 서명(agent/API 지갑 개인키)**을 쓴다. 거버넌스에 유리한
 성질: **API 지갑은 서명만 하고, 계좌 데이터를 조회할 수 없으며, 출금할 수 없다.**
-[live_execution.py:76](runtime/mvp_runtime/crypto/live_execution.py:76)의 기존 자세("선물 활성,
-출금 비활성") 및 [account.py:55](runtime/mvp_runtime/crypto/account.py:55)이 `binance_futures` /
+[live_execution.py:76](../../runtime/mvp_runtime/crypto/live_execution.py)의 기존 자세("선물 활성,
+출금 비활성") 및 [account.py:55](../../runtime/mvp_runtime/crypto/account.py)이 `binance_futures` /
 `binance_futures_account`를 **별도 그랜트로 쪼갠 선례**와 그대로 겹친다. 같은 분리를 적용:
 `hyperliquid_order`(agent 지갑, 서명 전용) + `hyperliquid_account`(읽기).
 
