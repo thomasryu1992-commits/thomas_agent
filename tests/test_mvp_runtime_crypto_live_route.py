@@ -55,12 +55,12 @@ class _Adapter:
         self.submitted.append(dict(order_request))
         return {"accepted": True}
 
-    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
         if self.fetch_raises:
             raise ToolError(self.fetch_raises, "scripted")
         return self.orders.get(str(client_order_id))
 
-    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
         self.cancelled.append(str(client_order_id))
         return self.orders.pop(str(client_order_id), None)
 
@@ -316,7 +316,7 @@ class _ClosingAdapter(_Adapter):
     resting (or protection would fail first and the unprotected branch would close it for a
     different reason), while the close this test is about must confirm."""
 
-    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
         if self.fetch_raises:
             raise ToolError(self.fetch_raises, "scripted")
         known = self.orders.get(str(client_order_id))

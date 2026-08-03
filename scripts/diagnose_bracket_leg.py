@@ -22,6 +22,17 @@ does not make, which is worse than not testing at all — it would produce a con
 answer. Only the inputs (symbol, side, prices, quantity) come from the command line, and
 ``--from-record`` takes them from the incident itself.
 
+**It found the answer on 2026-08-03, and the answer changed what this tool can do.** The stop
+came back `-4120: Order type not supported for this endpoint. Please use the Algo Order API
+endpoints instead.` Binance moved every conditional order type off `/fapi/v1/order` (announced
+2025-11-06, enforced 2025-12-09); the runtime now places the stop on `/fapi/v1/algoOrder`.
+
+Which means the STOP leg can no longer be validated here at all: the test endpoint belongs to
+the order API — the door conditional orders were moved off — so asking it about an algo request
+would return -4120 forever as an artefact of the question rather than a fact about the request.
+The venue publishes no test counterpart under the Algo API, so this reports the stop leg as
+`UNSUPPORTED` and validates the target leg, which is a plain LIMIT and still lives there.
+
 **What an ACCEPTED result does and does not mean.** The endpoint validates the REQUEST. A
 rejection that depends on account state at that instant — no position to reduce, an algo-order
 count, a margin condition — can pass here and still fail on the real path. So ACCEPTED narrows
@@ -147,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             verdict = row["verdict"]
             if verdict.get("unreachable"):
                 mark = f"UNREACHABLE ({verdict['unreachable']})"
+            elif verdict.get("supported") is False:
+                mark = f"UNSUPPORTED — {verdict.get('detail')}"
             elif verdict.get("accepted"):
                 mark = "ACCEPTED" + (" (dry run — nothing checked)" if verdict.get("dry_run") else "")
             else:
