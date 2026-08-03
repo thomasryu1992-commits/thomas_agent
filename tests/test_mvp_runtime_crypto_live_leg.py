@@ -22,6 +22,11 @@ from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
 
+
+def _no_sleep(_seconds):
+    """The confirm backoff is real seconds; a unit test must not wait them out."""
+
+
 NOW = "2026-07-25T12:00:00Z"
 
 LIMITS = LiveOrderLimits(
@@ -173,6 +178,7 @@ GOVERNANCE = {
 def _entry(**kw):
     return ll.execute_live_entry(
         kw.pop("decision", DECISION),
+        sleep=kw.pop("sleep", _no_sleep),
         adapter=kw.pop("adapter", FakeAdapter()),
         position_store=kw.pop("position_store", FakeStore()),
         counter=kw.pop("counter", None),
@@ -430,8 +436,9 @@ def test_a_resting_leg_is_placed_a_filled_one_is_not():
     """A protective order that already executed is not protection — it is a closed position."""
     intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
-    assert ll.place_bracket_leg(intent, adapter=FakeAdapter())["placed"] is True
-    assert ll.place_bracket_leg(intent, adapter=FakeAdapter(statuses={"SL": "FILLED"}))["placed"] is False
+    assert ll.place_bracket_leg(intent, adapter=FakeAdapter(), sleep=_no_sleep)["placed"] is True
+    assert ll.place_bracket_leg(intent, adapter=FakeAdapter(statuses={"SL": "FILLED"}),
+                                 sleep=_no_sleep)["placed"] is False
 
 
 def test_the_two_legs_get_distinct_idempotency_keys():
@@ -448,7 +455,8 @@ def test_a_leg_confirmed_resting_clears_a_duplicate_id_rejection():
     venue read is the truth."""
     intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
-    result = ll.place_bracket_leg(intent, adapter=FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}))
+    result = ll.place_bracket_leg(intent, adapter=FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}),
+                                  sleep=_no_sleep)
     assert result["placed"] is True and result["error"] is None
 
 
@@ -641,7 +649,7 @@ def test_the_dry_run_adapter_rests_a_conditional_leg_rather_than_filling_it():
     'confirm' a bracket in a state the venue never reports."""
     intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                      working_type="MARK_PRICE", position_seed="seed")
-    result = ll.place_bracket_leg(intent, adapter=DryRunOrderAdapter())
+    result = ll.place_bracket_leg(intent, adapter=DryRunOrderAdapter(), sleep=_no_sleep)
     assert result["placed"] is True and result["status"] == "NEW"
 
 
