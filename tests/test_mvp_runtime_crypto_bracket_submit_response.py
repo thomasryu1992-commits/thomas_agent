@@ -56,7 +56,10 @@ class _Adapter:
 def _leg(**kw):
     intent = build_bracket_intent(symbol="ETHUSDT", leg="SL", side="BUY", price=1887.86,
                                   working_type="MARK_PRICE", position_seed="seed")
-    return place_bracket_leg(intent, adapter=_Adapter(**kw), timeout_seconds=10)
+    # No wall clock in a unit test: the confirm backoff is real seconds and this suite
+    # exercises the missing-order path deliberately.
+    return place_bracket_leg(intent, adapter=_Adapter(**kw), timeout_seconds=10,
+                             sleep=lambda _seconds: None)
 
 
 # --- the submit's answer is kept ------------------------------------------------

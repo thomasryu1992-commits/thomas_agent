@@ -68,6 +68,7 @@ def _prove(result=None, *, adapter=None, direction="SHORT", distance_pct=10.0):
     proof = canary.prove_bracket(
         result=result if result is not None else _filled(), symbol="ETHUSDT",
         direction=direction, adapter=adapter, distance_pct=distance_pct, timeout_seconds=10,
+        sleep=lambda _seconds: None,
     )
     return proof, adapter
 
