@@ -1364,3 +1364,100 @@ def test_the_venue_field_does_not_move_the_rule_hash():
 
 def test_to_dict_carries_the_venue():
     assert StrategySpec.from_dict(_spec_dict()).to_dict()["venue"] == market_data.BINANCE_FUTURES
+
+
+# --- S1 increment 3: generation is scoped to the venue too ------------------------
+#
+# The validator refusing a spec is the right OUTCOME and the wrong PLACE to spend a rotation
+# slot: the family is picked, params drawn, spec built and hashed, all to be refused for a
+# feature the venue was never going to serve. Worse for `liquidation_spike_ratio`, whose
+# constant-0.0 fallback means the condition is not refused at evaluation, it is TRUE.
+
+def test_binance_mints_every_template():
+    # The "nothing changes today" guarantee, in its narrowest form: the vocabulary was built
+    # for this venue, so the venue gate must subtract no family from it.
+    for timeframe in ("15m", "1h", "4h"):
+        scoped = factory.templates_for_timeframe(timeframe, venue=market_data.BINANCE_FUTURES)
+        unscoped_families = {
+            t.family for t in factory.TEMPLATES
+            if t.family not in factory.POSITIONING_FAMILIES
+        }
+        assert {t.family for t in scoped} >= unscoped_families - factory.HTF_FAMILIES
+
+
+def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
+    scoped = {t.family for t in factory.templates_for_timeframe("1h", venue=market_data.HYPERLIQUID)}
+    binance = {t.family for t in factory.templates_for_timeframe("1h", venue=market_data.BINANCE_FUTURES)}
+    assert binance - scoped == {
+        "oi_squeeze_long", "oi_squeeze_short", "oi_unwind_long", "oi_unwind_short",
+        "premium_fade_long", "premium_fade_short",
+        "taker_absorption_long", "taker_absorption_short",
+        "taker_flow_long", "taker_flow_short",
+    }
+    # Funding rides a real series here, so the funding families survive — the gate is about
+    # the feed each family needs, not about which venue is the familiar one.
+    assert {f for f in scoped if f.startswith("funding_")}
+
+
+def test_a_templates_feature_set_does_not_move_with_its_params():
+    """The assumption `template_features` rests on, pinned rather than trusted.
+
+    It reads the conditions built from `base_params`, which is only the template's whole
+    feature set if the builders use params for thresholds and never to CHOOSE a feature. A
+    builder that branched on a param would make the venue gate read one arm and mint the
+    other.
+    """
+    for template in factory.TEMPLATES:
+        moved = {k: (v * 1.5 if isinstance(v, (int, float)) else v)
+                 for k, v in template.base_params.items()}
+        shifted = frozenset(
+            name
+            for cond in template.entry_builder(moved)
+            for key in ("feature", "value_from")
+            if (name := cond.get(key))
+        )
+        assert shifted == factory.template_features(template), template.family
+
+
+def test_every_template_names_only_mintable_features():
+    # A template naming something outside the vocabulary would be dropped on EVERY venue by
+    # the new gate — silently, since a dropped family looks exactly like an ungated one.
+    vocabulary = frozenset(factory.NUMERIC_FEATURES) | frozenset(factory.CATEGORICAL_FEATURES)
+    for template in factory.TEMPLATES:
+        unknown = factory.template_features(template) - vocabulary
+        assert not unknown, f"{template.family} names {sorted(unknown)}"
+
+
+def test_templates_for_an_undeclared_venue_refuse():
+    # Not "no templates" — that reads as a timeframe that mints nothing, which is a thing
+    # that legitimately happens and would hide the typo.
+    with pytest.raises(ToolBlocked) as exc:
+        factory.templates_for_timeframe("1h", venue="not_a_venue")
+    assert exc.value.reason_code == "UNKNOWN_VENUE"
+
+
+def test_a_generated_spec_records_the_venue_it_was_mined_on():
+    batch = generate_batch("gen-venue", seed=11, count=2, timeframe="1h",
+                           venue=market_data.HYPERLIQUID)
+    assert batch["specs"], "expected the venue to still mint something"
+    for spec in batch["specs"]:
+        assert spec["venue"] == market_data.HYPERLIQUID
+        # And it survives the round trip the store puts it through.
+        assert StrategySpec.from_dict(spec).venue == market_data.HYPERLIQUID
+
+
+def test_generation_mints_nothing_its_own_venue_would_refuse():
+    """The loop this increment closes: what generation produces, validation accepts.
+
+    Before the gate, a run on a venue lacking the taker/oi/premium feeds still picked those
+    families off the rotation and built specs the validator then refused — the slot spent,
+    the candidate never scored.
+    """
+    for venue in sorted(market_data.VENUE_FEEDS):
+        batch = generate_batch("gen-loop", seed=5, count=4, timeframe="1h", venue=venue)
+        assert batch["specs"], venue
+        for spec in batch["specs"]:
+            verdict = factory.validate_strategy(StrategySpec.from_dict(spec))
+            assert verdict["approved_for_backtest"], (
+                venue, spec["strategy_family"], verdict["block_reasons"]
+            )

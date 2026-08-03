@@ -54,9 +54,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from ..budgets import TRIAGE_TIMEOUT_SECONDS
-from ..errors import ProviderError
+from ..errors import ProviderError, ToolBlocked
 from ..worker import Provider
-from . import factory
+from . import factory, market_data
 from .robustness import score_robustness
 from .strategy import ALLOWED_TIMEFRAMES, SpecParseError, StrategySpec
 
@@ -195,11 +195,17 @@ class MockProposerProvider:
         )
 
 
-def known_features() -> frozenset[str]:
-    """The feature vocabulary a strategy may reference — the validator's own, not the
-    feature row's. The row is wider (it computes columns no spec is allowed to name),
-    and the validator is the authority on what a spec may say."""
-    return frozenset(factory.NUMERIC_FEATURES) | frozenset(factory.CATEGORICAL_FEATURES)
+def known_features(venue: str = market_data.BINANCE_FUTURES) -> frozenset[str]:
+    """The feature vocabulary a strategy mined on ``venue`` may reference.
+
+    The validator's own, not the feature row's: the row is wider (it computes columns no
+    spec is allowed to name), and the validator is the authority on what a spec may say.
+    Delegates to ``factory.known_features`` rather than unioning the raw tables, so the
+    venue scoping cannot be true at validation and false here — which is the failure this
+    function had when it read `NUMERIC_FEATURES` directly.
+    """
+    numeric, categorical = factory.known_features(venue)
+    return numeric | frozenset(categorical)
 
 
 def unknown_features(spec: StrategySpec) -> list[str]:
@@ -208,8 +214,17 @@ def unknown_features(spec: StrategySpec) -> list[str]:
     Diagnostic, not a gate: ``factory.validate_strategy`` has already refused the spec
     by the time this is called. It exists because ``BLOCK_UNKNOWN_FEATURE`` names no
     feature, and the reader needs to know which one to stop proposing.
+
+    Scoped to the spec's OWN venue, so a name that exists but is unavailable where the spec
+    was mined is reported — a name absent from this list while the spec is refused for
+    naming it would send the reader looking for a typo that is not there.
     """
-    available = known_features()
+    try:
+        available = known_features(spec.venue)
+    except ToolBlocked:
+        # An undeclared venue is not a feature problem; `validate_strategy` reports it as
+        # BLOCK_UNKNOWN_VENUE, and naming every feature here would bury that.
+        return []
     return sorted(name for name in spec.referenced_features() if name not in available)
 
 
@@ -218,14 +233,21 @@ def build_proposal_prompt(
     existing_families: Sequence[str],
     focus: str | None = None,
     count: int = MAX_PROPOSALS_PER_RUN,
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> str:
     """The proposal prompt: the real vocabulary, the real families, the real bounds.
 
     The feature list comes from the validator's own vocabulary rather than a
     written-down copy, so the model is asked for exactly what a spec is allowed to name
     — the cheapest way to make hallucinated indicators rare instead of merely caught.
+
+    ``venue`` narrows that list to what the venue can actually serve. Offering a feature the
+    validator will refuse invites a proposal that is discarded after the model has already
+    been paid for it, and the model has no way to know which of the names it was handed are
+    real here — it was told to use ONLY these, so listing one it may not use is our error
+    reported as its mistake.
     """
-    features = ", ".join(sorted(known_features()))
+    features = ", ".join(sorted(known_features(venue)))
     families = ", ".join(sorted(existing_families))
     focus_line = (
         f"\nFocus this proposal on: {focus}. Prefer features related to that focus.\n"
@@ -372,6 +394,7 @@ def propose_strategy_families(
     existing_families: Sequence[str],
     focus: str | None = None,
     count: int = MAX_PROPOSALS_PER_RUN,
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
     """Ask the model for families, judge each one, return the proposal record.
 
@@ -380,7 +403,7 @@ def propose_strategy_families(
     nothing downstream depends on a proposal existing.
     """
     prompt = build_proposal_prompt(
-        existing_families=existing_families, focus=focus, count=count
+        existing_families=existing_families, focus=focus, count=count, venue=venue
     )
 
     degraded: str | None = None

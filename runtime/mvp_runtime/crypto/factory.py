@@ -942,8 +942,34 @@ CROSS_SECTION_FAMILIES = frozenset({"xs_momentum_long", "xs_momentum_short"})
 POSITIONING_FAMILIES = frozenset({"positioning_divergence_long", "positioning_divergence_short"})
 
 
+def template_features(template: StrategyTemplate) -> frozenset[str]:
+    """Every feature name ``template`` would mint a condition on.
+
+    Derived by building the template's own conditions, not declared beside it. A declaration
+    would be a third table to hold in step with `_FEATURE_FEED` and the builder itself, and
+    the two that already existed were reduced to one for exactly that reason — a second
+    statement of the same fact is a second thing that can be wrong.
+
+    ``base_params`` is what the conditions are built from because the builders read params
+    for THRESHOLDS only; which feature a condition names is fixed by the family.
+    ``test_a_templates_feature_set_does_not_move_with_its_params`` holds that, since it is
+    the assumption this whole function rests on.
+
+    Lag needs no handling here: a lagged condition carries ``lag`` as its own key and leaves
+    ``feature``/``value_from`` as base names, the same shape ``referenced_features`` reads.
+    """
+    names: set[str] = set()
+    for cond in template.entry_builder(dict(template.base_params)):
+        if cond.get("feature"):
+            names.add(str(cond["feature"]))
+        if cond.get("value_from"):
+            names.add(str(cond["value_from"]))
+    return frozenset(names)
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> tuple[StrategyTemplate, ...]:
     """The rotation retimed to ``timeframe`` (and narrowed for ``symbol``).
 
@@ -977,8 +1003,20 @@ def templates_for_timeframe(
     than a read because this function is pure and the coverage lives on disk; the scheduler's
     factory path is where the store is read.
 
-    The taker_* and premium_* families need no gate — their legs ride the same klines call as
-    the OHLCV, at every timeframe and for every symbol."""
+    The taker_* and premium_* families need no gate of that kind — their legs ride the same
+    klines call as the OHLCV, at every timeframe and for every symbol. They do need the last
+    one below, because riding the klines call is a statement about Binance's klines.
+
+    ``venue`` is a gate of a different kind and the strongest of them. The five above ask
+    whether a family's conditions can be DETERMINED in this context; this one asks whether
+    the venue's data can produce them at all, and the answer does not improve with a
+    different timeframe or symbol. Minting them anyway would be the validator's problem to
+    catch — it does, per spec — but a family that can only ever be refused is a rotation slot
+    spent producing nothing, and `liquidation_spike_ratio` is the case where refusal is not
+    even the outcome: with no feed it reads a constant 0.0 rather than None, so a mined
+    condition on it is not indeterminate, it is TRUE on every bar of a venue that never
+    measured it. The default is `binance_futures` for the reason `StrategySpec.venue` carries
+    the same one — it is the only venue anything has been mined on."""
     timeframe = str(timeframe)
     has_htf = timeframe in market_data.HIGHER_TIMEFRAME
     bar_minutes = market_data.TIMEFRAMES.get(timeframe)
@@ -990,6 +1028,10 @@ def templates_for_timeframe(
         1 for member in market_data.CROSS_SECTION_UNIVERSE if member != str(symbol)
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
+    # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
+    # silently return no templates at all and read as "this timeframe mints nothing".
+    numeric, categorical = known_features(venue)
+    mintable = numeric | frozenset(categorical)
 
     def _minted(template: StrategyTemplate) -> bool:
         if template.family in HTF_FAMILIES and not has_htf:
@@ -1001,6 +1043,10 @@ def templates_for_timeframe(
         if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
             return False
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
+            return False
+        # Whole-family, not per-condition: a template is one premise, and one it can state
+        # only half of is a different premise nobody chose to mine.
+        if not template_features(template) <= mintable:
             return False
         return True
 
@@ -1259,7 +1305,11 @@ def elite_base_params(
 def build_spec_dict(
     template: StrategyTemplate, params: dict[str, float], *,
     strategy_id: str, generation_id: str, symbol: str = "BTCUSDT",
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
+    # `venue` is recorded here rather than left to `StrategySpec`'s default because this is
+    # where the fact exists: a spec mined by this function was mined on that venue's data.
+    # The default agrees with the dataclass's for the same reason it has one.
     return {
         "schema_version": SCHEMA_VERSION,
         "strategy_id": strategy_id,
@@ -1279,6 +1329,7 @@ def build_spec_dict(
         },
         "risk_constraints": {"max_risk_per_trade_R": 1.0},
         "created_by": "mvp_factory",
+        "venue": venue,
     }
 
 
@@ -1365,6 +1416,7 @@ def generate_batch(
     positioning_eligible: bool = False,
     rotation_index: int | None = None,
     elite_params: Mapping[str, Mapping[str, float]] | None = None,
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
@@ -1379,10 +1431,14 @@ def generate_batch(
     is what the rotation should step on. It defaults to None — the generation-number
     behaviour — because a caller that does not pass it is a caller with no store to count
     from, and for those callers the generations really are consecutive. `run_factory` passes
-    it; see :func:`_rotation_offset` for what the global generation number did instead."""
+    it; see :func:`_rotation_offset` for what the global generation number did instead.
+
+    ``venue`` reaches both the template gate and the minted spec, and it has to be the same
+    one in both places: a spec recorded as mined on a venue whose vocabulary it was not
+    chosen against is the separation :class:`StrategySpec` carries the field to prevent."""
     rng = random.Random(seed)
     templates = templates_for_timeframe(
-        timeframe, symbol=symbol, positioning_eligible=positioning_eligible
+        timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue
     )
     # Which slice of the family list THIS run mints. Without it the picker was
     # ``templates[len(accepted) % len(templates)]``, and since a batch is four specs
@@ -1419,7 +1475,7 @@ def generate_batch(
         params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
-                                    generation_id=generation_id, symbol=symbol)
+                                    generation_id=generation_id, symbol=symbol, venue=venue)
         try:
             spec = StrategySpec.from_dict(spec_dict)
         except SpecParseError as exc:
@@ -2323,6 +2379,7 @@ def run_factory(
     count: int = DEFAULT_BATCH_SIZE,
     fusion_pairs: int = 0,
     positioning_eligible: bool = False,
+    venue: str = market_data.BINANCE_FUTURES,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
@@ -2362,7 +2419,9 @@ def run_factory(
             existing_candidates, family=template.family, symbol=symbol, timeframe=timeframe,
             fallback=template.base_params,
         )
-        for template in templates_for_timeframe(timeframe, positioning_eligible=positioning_eligible)
+        for template in templates_for_timeframe(
+            timeframe, positioning_eligible=positioning_eligible, venue=venue
+        )
     }
     batch = generate_batch(
         generation_id, seed=seed, count=count,
@@ -2371,6 +2430,7 @@ def run_factory(
         elite_params=elite_centres,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
+        venue=venue,
         # Counted from the store this function was already given — the rotation steps on
         # THIS context's fire count, not on the global generation number.
         rotation_index=context_rotation_index(

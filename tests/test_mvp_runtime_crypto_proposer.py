@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, features, proposer
+from runtime.mvp_runtime.crypto import factory, features, market_data, proposer
 from runtime.mvp_runtime.crypto.features import latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
 from runtime.mvp_runtime.errors import ProviderError
@@ -142,6 +142,57 @@ def test_why_naming_them_matters(row, snapshot):
     ))
     assert evaluate_spec(spec, row).matched is False  # parses fine, never matches
     assert proposer.unknown_features(spec) == ["quantum_flux"]
+
+
+# --- the vocabulary offered is the venue's, not the library's ------------------
+
+def test_the_prompt_offers_only_features_the_venue_can_serve():
+    """The model is told to use ONLY the names it is given, so a name it may not use is
+    our error surfacing as its mistake — a proposal discarded after the provider was paid."""
+    hyperliquid = proposer.build_proposal_prompt(
+        existing_families=["breakout"], venue=market_data.HYPERLIQUID
+    )
+    binance = proposer.build_proposal_prompt(existing_families=["breakout"])
+
+    assert "liquidation_spike_ratio" in binance
+    assert "liquidation_spike_ratio" not in hyperliquid
+    assert "taker_flow_zscore" in binance and "taker_flow_zscore" not in hyperliquid
+    # Kept: funding is a real series on this venue, and the trade count is on its candle.
+    assert "funding_zscore" in hyperliquid
+    assert "trade_count_zscore" in hyperliquid
+
+
+def test_known_features_agrees_with_the_validator_per_venue():
+    # It used to union the raw tables, which made it right only for binance_futures.
+    for venue in (market_data.BINANCE_FUTURES, market_data.HYPERLIQUID):
+        numeric, categorical = factory.known_features(venue)
+        assert proposer.known_features(venue) == numeric | frozenset(categorical)
+
+
+def test_unknown_features_are_judged_against_the_specs_own_venue():
+    """`liquidation_spike_ratio` is a real feature on binance and not on hyperliquid, so the
+    same spec must be reported differently — a refusal naming nothing sends the reader
+    looking for a typo that is not there."""
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+
+    raw = proposer._spec_dict(
+        _valid_proposal(entry_rules={"operator": "AND", "conditions": [
+            {"feature": "liquidation_spike_ratio", "comparison": "<", "value": 0.5}]}),
+        index=1, symbol="BTCUSDT",
+    )
+    assert proposer.unknown_features(StrategySpec.from_dict(raw)) == []
+    on_hyperliquid = StrategySpec.from_dict({**raw, "venue": market_data.HYPERLIQUID})
+    assert proposer.unknown_features(on_hyperliquid) == ["liquidation_spike_ratio"]
+
+
+def test_an_undeclared_venue_reports_no_unknown_features():
+    # The venue is what is wrong; `validate_strategy` says so with BLOCK_UNKNOWN_VENUE, and
+    # listing every condition here would bury that under names that are all perfectly real.
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+
+    raw = proposer._spec_dict(_valid_proposal(), index=1, symbol="BTCUSDT")
+    spec = StrategySpec.from_dict({**raw, "venue": "not_a_venue"})
+    assert proposer.unknown_features(spec) == []
 
 
 # --- deterministic judgement --------------------------------------------------

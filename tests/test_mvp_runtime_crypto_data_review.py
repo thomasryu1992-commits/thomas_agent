@@ -12,6 +12,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.control import ControlStore
+from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.data_review import (
     DATA_REVIEW_LEDGER_KIND,
     MAX_SUGGESTIONS_PER_RUN,
@@ -54,6 +55,29 @@ def test_inventory_reports_latest_feed_status_and_performance():
     assert "unknown" in inv["performance_by_timeframe"]
     assert inv["traded_contexts"] == ["BTCUSDT 1d"]
     assert "close" in inv["mintable_features"] and inv["current_sources"]
+    assert inv["venue"] == market_data.BINANCE_FUTURES
+
+
+def test_the_inventory_reports_the_venues_own_vocabulary():
+    """This record is read by a model asked what data is worth ADDING.
+
+    The global vocabulary would tell it `liquidation_spike_ratio` is already covered on a
+    venue that has no liquidation feed — suppressing exactly the suggestion worth having."""
+    binance = build_data_inventory([], [])
+    hyperliquid = build_data_inventory([], [], venue=market_data.HYPERLIQUID)
+
+    assert "liquidation_spike_ratio" in binance["mintable_features"]
+    assert "liquidation_spike_ratio" not in hyperliquid["mintable_features"]
+    assert "close" in hyperliquid["mintable_features"]
+    assert hyperliquid["venue"] == market_data.HYPERLIQUID
+
+
+def test_an_undeclared_venue_yields_an_empty_vocabulary_not_a_raise():
+    # A description of what exists should report the emptiness, not refuse to be built. The
+    # gates that must refuse an unknown venue (`known_features`, the template gate) do.
+    inv = build_data_inventory([], [], venue="not_a_venue")
+    assert inv["mintable_features"] == []
+    assert inv["venue"] == "not_a_venue"
 
 
 # --- suggestion judgment ------------------------------------------------------
