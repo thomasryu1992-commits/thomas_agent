@@ -79,6 +79,23 @@ ORDER_API_KEY_ENV = "MVP_LIVE_ORDER_API_KEY"
 ORDER_API_SECRET_ENV = "MVP_LIVE_ORDER_API_SECRET"
 ORDER_BASE_URL = "https://fapi.binance.com"
 ORDER_PATH = "/fapi/v1/order"
+# The venue's own validator: identical parameters and signing, **no order is ever created**.
+#
+# It exists here because on 2026-08-02 the runtime's first two autonomous entries had their
+# `closePosition` STOP_MARKET protective leg refused, both times, and the record kept only
+# `error: ORDER_REJECTED` — the same string for every rejection there is. #426 now records the
+# venue's own code and message, but only on the NEXT rejection, and reaching one costs a real
+# entry and a real close, only happens when a strategy routes, and is capped at 2 orders a day.
+#
+# This turns that into a free, repeatable question. A validation request cannot fill, cannot
+# rest, and cannot be cancelled because there is nothing to cancel — so the one experiment that
+# answers "why did the venue say no" carries none of the risk of the event that raised it.
+#
+# What it cannot answer is stated so a null result is not misread: the endpoint validates the
+# REQUEST, so a rejection that depends on account state at that instant (no position to reduce,
+# an algo-order count, a margin condition) can pass here and still fail on the real path. An
+# ACCEPTED result is therefore evidence the shape is right, never evidence the order will land.
+ORDER_TEST_PATH = "/fapi/v1/order/test"
 # Read-only: what is RESTING at the venue right now. `fetch_order` can only answer about an id
 # the runtime already knows, which leaves everything it does not know invisible — including the
 # orders that decide whether a new one is even accepted.
@@ -320,6 +337,17 @@ class DryRunOrderAdapter:
         self._submitted[str(req["newClientOrderId"])] = req
         return {"dry_run": True, "accepted": True, "clientOrderId": req["newClientOrderId"]}
 
+    def validate_order(
+        self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10
+    ) -> dict[str, Any]:
+        """Accepts everything, and says which adapter answered.
+
+        A dry run has no venue to ask, so ``accepted: True`` here means "nothing was checked",
+        not "the venue is happy". ``dry_run`` rides on the result so a caller printing it cannot
+        report an unasked question as a passing one — the whole failure mode this tool exists
+        to avoid."""
+        return {"accepted": True, "code": None, "msg": None, "dry_run": True}
+
     def open_orders(
         self, symbol: str | None = None, *, timeout_seconds: int = 10
     ) -> list[dict[str, Any]]:
@@ -482,6 +510,30 @@ class BinanceFuturesOrderAdapter:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}")
         return body if isinstance(body, dict) else {}
+
+    def validate_order(
+        self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10
+    ) -> dict[str, Any]:
+        """Ask the venue whether it would ACCEPT this request. Creates nothing.
+
+        Returns ``{"accepted": bool, "code": int | None, "msg": str | None}`` and — unlike
+        :meth:`submit` — a rejection is **returned, not raised**. The rejection is the answer
+        this method exists to obtain, so making the caller catch it would put the finding in an
+        exception's text, which is exactly how the 2026-08-02 cause was lost the first time.
+
+        Transport failures still raise: "the venue refused it" and "I could not ask" are
+        different answers and must not arrive as the same value.
+        """
+        body, code = self._signed_request(
+            "POST", ORDER_TEST_PATH, dict(order_request), timeout_seconds=timeout_seconds
+        )
+        if code is not None:
+            return {
+                "accepted": False,
+                "code": code,
+                "msg": body.get("msg") if isinstance(body, dict) else None,
+            }
+        return {"accepted": True, "code": None, "msg": None}
 
     def fetch_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10

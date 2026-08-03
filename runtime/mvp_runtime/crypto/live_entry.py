@@ -80,6 +80,21 @@ CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
 BRACKET_UNPRICEABLE = "LIVE_ENTRY_BRACKET_UNPRICEABLE"
 COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
+# A plan whose stop MOVES after entry, which this leg cannot execute.
+#
+# The live stop is a `closePosition` STOP_MARKET placed once at entry and cancelled on close;
+# there is no amend path, and `cancel_bracket_legs` exists to remove a leg, not to reprice one.
+# So a spec carrying `breakeven_at_r` or `trail_atr` would trade live on a stop that never
+# moves while its backtest evidence was built on one that does — the exact backtest/live exit
+# divergence `max_holding_bars` rides into the plan to prevent, and in the direction that
+# matters most: the evidence would claim a risk profile the money path does not have.
+#
+# Refused rather than silently degraded to a fixed stop. Degrading would trade a strategy
+# nobody scored; refusing costs nothing today (the factory mints no such spec yet) and turns
+# into a visible, named blocker the moment one is promoted. Closing it means cancel/replace of
+# a live protective order on every bar, which is a change to the money path and a separate
+# decision with its own approval.
+MANAGED_EXIT_REFUSED = "LIVE_ENTRY_MANAGED_EXIT_UNSUPPORTED"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
@@ -259,6 +274,16 @@ def plan_live_entry(
     if filters is None or not filters.valid() or filters.tick_size <= 0:
         reasons.append(NO_FILTERS)
         detail["filters_reason"] = filters_reason
+
+    # Read off the PLAN, not the spec: the plan is what this leg executes, and a spec whose
+    # management rules failed to ride into it would pass a spec-side check and still trade the
+    # wrong exit. Either field present means the stop is meant to move.
+    managed = {
+        key: plan.get(key) for key in ("breakeven_at_r", "trail_distance") if plan.get(key) is not None
+    }
+    if managed:
+        reasons.append(MANAGED_EXIT_REFUSED)
+        detail["managed_exit"] = managed
 
     if reasons:
         return _decision(STATUS_REFUSED, reasons, symbol=symbol, now=now, **detail)
