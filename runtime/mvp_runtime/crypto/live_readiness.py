@@ -68,6 +68,7 @@ from .live_route import ROUTE_DISABLED
 from .live_order import (
     CONFIRMATION_ENV,
     MANUAL_KILL_SWITCH_ENV,
+    bracket_breaker_status,
     count_today,
     evaluate_live_order_guard,
     resolve_live_order_limits,
@@ -326,6 +327,38 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"limit {risk['daily_loss_limit_usdt']} (source={risk.get('pnl_source')})"
         )
     checks.append(_check("daily_loss_breaker", not breached and not no_source, detail))
+
+    # 6b. The bracket breaker. Unlike the loss breaker above it always has a source: it counts
+    # what this runtime's own leg did, so it reads zero only when zero is true. It is on the
+    # board because a tripped breaker means live entries are shut off for a reason no other row
+    # would show — the account is fine, the limits are fine, and nothing will trade.
+    try:
+        bracket = bracket_breaker_status(root)
+    except MvpRuntimeError as exc:
+        # An unreadable record must not take the board down, and must not read as clear either:
+        # the entry path refuses on this same error, so the board reports what it reports.
+        bracket = None
+        bracket_detail = (
+            f"UNREADABLE ({getattr(exc, 'reason_code', 'UNKNOWN')}) - the entry path refuses on "
+            "this too, so live entries are blocked until the record is repaired or removed"
+        )
+    else:
+        if bracket["tripped"]:
+            bracket_detail = (
+                f"TRIPPED - {bracket['consecutive']} consecutive entries filled and could not be "
+                f"protected (limit {bracket['limit']}), last {bracket['last_symbol']} at "
+                f"{bracket['last_failure_at']}. New entries are refused until an operator clears "
+                "it: python -m scripts.clear_bracket_breaker --cleared-by ... --reason ..."
+            )
+        else:
+            bracket_detail = (
+                f"{bracket['consecutive']}/{bracket['limit']} consecutive bracket failures"
+                + (f" ({bracket['total']} total, last {bracket['last_failure_at']})"
+                   if bracket["total"] else "")
+            )
+    checks.append(
+        _check("bracket_breaker", bracket is not None and not bracket["tripped"], bracket_detail)
+    )
 
     # 7. Canary evidence.
     promotion = live_promotion.promotion_status(

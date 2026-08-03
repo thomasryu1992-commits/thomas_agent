@@ -94,6 +94,7 @@ def _plan(**kw):
         gate_open=kw.pop("gate_open", True),
         runtime_active=kw.pop("runtime_active", True),
         daily_loss_breached=kw.pop("daily_loss_breached", False),
+        bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
         clean_canary_orders=kw.pop("clean_canary_orders", 3),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
@@ -182,6 +183,31 @@ def test_the_verdict_has_no_default():
     import inspect
 
     parameter = inspect.signature(le.plan_live_entry).parameters["verdict"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_the_bracket_breaker_refuses_at_the_limit():
+    """The door #436 found missing: two entries filled, both protective stops were refused, and
+    the third signal was treated exactly like the first."""
+    decision = _plan(bracket_failures_consecutive=le.MAX_CONSECUTIVE_BRACKET_FAILURES)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.BRACKET_BREAKER_REFUSED in decision["reasons"]
+    assert decision["bracket_failure_limit"] == le.MAX_CONSECUTIVE_BRACKET_FAILURES
+
+
+def test_the_bracket_breaker_allows_one_failure():
+    """One rejection can be the venue having a moment; it must not latch the door."""
+    decision = _plan(bracket_failures_consecutive=le.MAX_CONSECUTIVE_BRACKET_FAILURES - 1)
+    assert le.BRACKET_BREAKER_REFUSED not in decision["reasons"]
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_the_bracket_failure_count_has_no_default():
+    """Same structural pin as the verdict: the caller that would forget this gate is the
+    autonomous leg, and a permissive default is a gate it never meets."""
+    import inspect
+
+    parameter = inspect.signature(le.plan_live_entry).parameters["bracket_failures_consecutive"]
     assert parameter.default is inspect.Parameter.empty
 
 

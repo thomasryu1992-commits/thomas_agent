@@ -55,7 +55,11 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r
-from .live_order import build_live_order_intent, evaluate_live_order_guard
+from .live_order import (
+    MAX_CONSECUTIVE_BRACKET_FAILURES,
+    build_live_order_intent,
+    evaluate_live_order_guard,
+)
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
 
@@ -70,6 +74,7 @@ STATUS_READY = "READY"
 NO_PLAN = "LIVE_ENTRY_NO_PLAN"
 VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
 CANDIDATE_REFUSED = "LIVE_ENTRY_NOT_LIVE_CANDIDATE"
+BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
@@ -164,6 +169,12 @@ def plan_live_entry(
     # a bare bool, so a refusal can name what failed (`failure_modes`) instead of only that
     # something did.
     live_candidate: Mapping[str, Any] | None,
+    # How many live entries in a row filled and could not be protected. No default, for the two
+    # reasons above and one of its own: this door exists because the runtime placed two live
+    # entries whose protective stop was refused and re-entered on the next signal regardless.
+    # A gate with a permissive default is a gate the caller that forgot it never meets, and the
+    # caller that would forget this one is the autonomous leg.
+    bracket_failures_consecutive: int,
     # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
     # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
     # the same fail-closed default the guard gives `budget_registered`.
@@ -221,6 +232,18 @@ def plan_live_entry(
             if isinstance(live_candidate, Mapping)
             else ["performance report missing or malformed"]
         )
+
+    # 2c. The bracket breaker. An entry that fills and cannot be protected is closed again
+    # safely, so no single one of these is an emergency — and that is exactly why the loop ran
+    # unbounded: each iteration ends tidily, costs only fees, and looks like nothing happened.
+    # What it means in aggregate is that this runtime currently cannot hold a position, and
+    # re-entering on the next signal spends money to learn that again. The streak is counted
+    # durably (`live_order.read_bracket_failures`) and only a resting bracket or an operator
+    # clears it; it deliberately survives the UTC midnight that refills the order budget.
+    if bracket_failures_consecutive >= MAX_CONSECUTIVE_BRACKET_FAILURES:
+        reasons.append(BRACKET_BREAKER_REFUSED)
+        detail["bracket_failures_consecutive"] = bracket_failures_consecutive
+        detail["bracket_failure_limit"] = MAX_CONSECUTIVE_BRACKET_FAILURES
 
     if not entry_allowed(reconciliation, symbol):
         reasons.append(RECONCILE_REFUSED)
@@ -348,6 +371,7 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "BRACKET_BREAKER_REFUSED",
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",
     "CANDIDATE_REFUSED",
