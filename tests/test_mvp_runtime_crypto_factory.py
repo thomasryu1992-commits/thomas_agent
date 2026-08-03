@@ -771,6 +771,7 @@ def test_fused_entry_is_the_deduplicated_union_under_and():
     ({"direction": "short"}, "direction_mismatch"),
     ({"timeframe": "4h"}, "timeframe_mismatch"),
     ({"symbol_scope": ["ETHUSDT"]}, "symbol_scope_mismatch"),
+    ({"venue": market_data.HYPERLIQUID}, "venue_mismatch"),
 ])
 def test_fusion_refuses_parents_that_disagree_on_context(overrides, reason):
     a = _parent_spec("S1", [_CLOSE_OVER_MA20])
@@ -778,6 +779,54 @@ def test_fusion_refuses_parents_that_disagree_on_context(overrides, reason):
     with pytest.raises(FusionRefused) as exc:
         fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
     assert exc.value.reason == reason
+
+
+def test_a_fused_child_carries_the_venue_it_was_mined_from():
+    """Fusion is the second minting path, and it was silent about the venue.
+
+    `build_spec_dict` records it; this one built a spec dict without it, so the child took
+    `StrategySpec`'s migration default and every fused child read as binance_futures
+    whatever its parents were — the separation the field exists to prevent, reintroduced
+    by the one caller that did not set it.
+    """
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20], venue=market_data.HYPERLIQUID)
+    b = _parent_spec("S2", [_MA20_OVER_MA50], venue=market_data.HYPERLIQUID)
+    child = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert child.venue == market_data.HYPERLIQUID
+    # And the child is judged against that venue, not against the default one.
+    assert factory.validate_strategy(child)["approved_for_backtest"]
+
+
+def test_a_cross_venue_fusion_cannot_smuggle_a_feature_into_a_venue_lacking_it():
+    """Why this is a refusal and not a resolution.
+
+    The union of two parents' conditions is judged against ONE vocabulary, and there is no
+    correct answer to which. It passed until now only because hyperliquid's vocabulary is a
+    subset of binance's — an accident of today's venue list. This pins the shape rather than
+    the accident: the conditions never get merged at all.
+    """
+    binance = _parent_spec(
+        "S1", [{"feature": "taker_flow_zscore", "comparison": ">", "value": 1.0}]
+    )
+    hyperliquid = _parent_spec("S2", [_MA20_OVER_MA50], venue=market_data.HYPERLIQUID)
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(hyperliquid, binance, strategy_id="S9", generation_id="GEN-9")
+    assert exc.value.reason == "venue_mismatch"
+
+
+def test_stored_parents_without_a_venue_still_fuse():
+    # Both read as binance_futures, so the new precondition is satisfied rather than
+    # tripped: 1020 stored candidates predate the field and must keep fusing.
+    stored_a, stored_b = _spec_dict(strategy_id="S1"), _spec_dict(strategy_id="S2")
+    assert "venue" not in stored_a and "venue" not in stored_b
+    child = fuse_specs(
+        StrategySpec.from_dict({**stored_a, "entry_rules": {
+            "operator": "AND", "conditions": [_CLOSE_OVER_MA20]}}),
+        StrategySpec.from_dict({**stored_b, "entry_rules": {
+            "operator": "AND", "conditions": [_MA20_OVER_MA50]}}),
+        strategy_id="S9", generation_id="GEN-9",
+    )
+    assert child.venue == market_data.BINANCE_FUTURES
 
 
 def test_fusion_refuses_an_or_parent():
