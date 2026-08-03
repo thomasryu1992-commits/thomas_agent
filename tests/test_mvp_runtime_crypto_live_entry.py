@@ -94,6 +94,7 @@ def _plan(**kw):
         gate_open=kw.pop("gate_open", True),
         runtime_active=kw.pop("runtime_active", True),
         daily_loss_breached=kw.pop("daily_loss_breached", False),
+        bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
         clean_canary_orders=kw.pop("clean_canary_orders", 3),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
@@ -165,6 +166,30 @@ def test_an_allowing_verdict_passes_through():
     assert _plan(verdict={"allow_new_position": True, "problems": []})["status"] == le.STATUS_READY
 
 
+@pytest.mark.parametrize("managed", [
+    {"trail_distance": 500.0},
+    {"breakeven_at_r": 1.0},
+    {"trail_distance": 500.0, "breakeven_at_r": 1.0},
+])
+def test_a_stop_that_would_move_after_entry_is_refused(managed):
+    """This leg places the stop once — a `closePosition` STOP_MARKET, cancelled on close, with
+    no amend path. A spec carrying `breakeven_at_r` or `trail_atr` was SCORED on a stop that
+    moves, so executing it here on a stop that does not would trade a strategy nobody measured.
+    Refused rather than degraded, and named, so the day one is promoted the blocker is visible
+    instead of silent."""
+    decision = _plan(plan={**PLAN, **managed})
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.MANAGED_EXIT_REFUSED in decision["reasons"]
+    assert decision["managed_exit"] == managed
+
+
+def test_the_refusal_reads_the_plan_not_the_spec():
+    """A spec whose management rules failed to ride into the plan would pass a spec-side check
+    and still trade the wrong exit. The plan is what this leg executes."""
+    assert _plan(plan={**PLAN, "breakeven_at_r": None, "trail_distance": None})["status"] == (
+        le.STATUS_READY)
+
+
 @pytest.mark.parametrize("verdict", [None, {}, "ALLOW", 1, {"problems": []}])
 def test_an_absent_or_malformed_verdict_refuses_rather_than_skipping_the_check(verdict):
     """The fail-open this closed. `verdict` used to default to None and be skipped when absent,
@@ -182,6 +207,31 @@ def test_the_verdict_has_no_default():
     import inspect
 
     parameter = inspect.signature(le.plan_live_entry).parameters["verdict"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_the_bracket_breaker_refuses_at_the_limit():
+    """The door #436 found missing: two entries filled, both protective stops were refused, and
+    the third signal was treated exactly like the first."""
+    decision = _plan(bracket_failures_consecutive=le.MAX_CONSECUTIVE_BRACKET_FAILURES)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.BRACKET_BREAKER_REFUSED in decision["reasons"]
+    assert decision["bracket_failure_limit"] == le.MAX_CONSECUTIVE_BRACKET_FAILURES
+
+
+def test_the_bracket_breaker_allows_one_failure():
+    """One rejection can be the venue having a moment; it must not latch the door."""
+    decision = _plan(bracket_failures_consecutive=le.MAX_CONSECUTIVE_BRACKET_FAILURES - 1)
+    assert le.BRACKET_BREAKER_REFUSED not in decision["reasons"]
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_the_bracket_failure_count_has_no_default():
+    """Same structural pin as the verdict: the caller that would forget this gate is the
+    autonomous leg, and a permissive default is a gate it never meets."""
+    import inspect
+
+    parameter = inspect.signature(le.plan_live_entry).parameters["bracket_failures_consecutive"]
     assert parameter.default is inspect.Parameter.empty
 
 

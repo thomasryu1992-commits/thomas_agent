@@ -9,9 +9,10 @@ is at the top of section C and nothing else in this file outranks it:** the runt
 first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
 therefore **cannot hold a position** — every entry fills and is closed again. Nobody lost money
 (0.12 USDT of fees, no adverse price) and the safety path worked exactly as written; what is open
-is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed,
-and the fact that **nothing counts repeated bracket failures**. That last one is the only build
-item in it. Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
+is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed.
+The one build item in it — **nothing counted repeated bracket failures** — is closed by #439: the
+loop now stops itself after two, instead of running on the daily order budget's midnight refill.
+Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
 
 This paragraph said "the deployed image is `320475b`" when it was written and that was already
 wrong a few hours later — the running image carries #434, which merged after it. **The deployed
@@ -321,12 +322,26 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > time on 2026-08-02 and failed on first use — the same shape as the six defects the canary path
 > turned up, not a regression.
 >
-> **The one thing that is a build item, and it is open:** nothing counts repeated bracket
-> failures. `LIVE_BRACKET_FAILED` and `ENTRY_NAKED_CLOSED` appear nowhere outside `live_leg.py` —
-> no breaker, no escalation. The loop *signal → fill → refuse → close* is bounded only by the
-> registered budget's `2 orders/day`, i.e. about **0.12 USDT a day, indefinitely**, and it resumes
-> at every UTC midnight. Small, but it is a bleed with no stop, and while it runs **live trading
-> cannot work at all** because every position is closed the moment it opens.
+> **The one thing that was a build item — CLOSED, PR #439.** Nothing counted repeated bracket
+> failures: `LIVE_BRACKET_FAILED` and `ENTRY_NAKED_CLOSED` appeared nowhere outside `live_leg.py`,
+> so the loop *signal → fill → refuse → close* was bounded only by the registered budget's
+> `2 orders/day` — about **0.12 USDT a day, indefinitely**, resuming at every UTC midnight. Small,
+> but a bleed with no stop, and while it ran **live trading could not work at all** because every
+> position was closed the moment it opened.
+>
+> Now counted durably in `live_bracket_failures.json` and read as a door in `plan_live_entry`
+> (`LIVE_ENTRY_BRACKET_BREAKER_TRIPPED`). Two consecutive naked entries and new entries are
+> refused; a bracket that actually rests ends the streak, an entry that never reached the bracket
+> does not. It deliberately does **not** reset at UTC midnight — expiring on the same clock as
+> the budget it bounds would bound nothing — so the only ways back are a working bracket or
+> `python -m scripts.clear_bracket_breaker --cleared-by … --reason …`, which demands a written
+> reason because the failure it follows is by definition one nobody had explained yet. The
+> venue's own `error_detail` (#426) is copied onto the breaker record, which outlives the
+> container that holds the logs. Shown on the readiness board as `bracket_breaker`.
+>
+> **This does not fix the rejection**, and is not meant to: the cause is still unknown and the
+> next attempt is still what answers it. What changed is that the next attempt is now the *last*
+> one that costs anything if the answer is "it is still broken".
 >
 > Evidence lives on the Docker host only (gitignored): the cycle records in
 > `.runtime_governance_state/runtime_ledger/records.jsonl` (search `live_opened`), the audit

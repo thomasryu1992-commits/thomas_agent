@@ -1,13 +1,22 @@
-# 제안: Conversational Orchestration Front v0.1 (DRAFT)
+# 제안: Conversational Orchestration Front v0.1 — F1·F2 구현 완료, F3 미착수
 
-> **상태: DRAFT — 제안 문서. 어떤 것도 활성화하지 않음.**
-> 이 문서는 설계 방향 제안이며, 구현 착수는 아래 §7의 명시적 Thomas 결정들을 각각 요구한다.
-> 확정 시 각 파트는 저장소 관례대로 영문 runtime-contract(`docs/runtime-contracts/`)로
-> 재작성되어 PR로 들어간다.
+> **상태 (2026-07-30 갱신): 더 이상 미착수 제안이 아니다.** §7의 D1–D3는 결정·구현되어
+> 프로덕션에서 가동 중이고, D4(standing grant)만 미결이다. 항목별 현재 상태는 §7의 표에,
+> 구현이 제안을 벗어난 지점은 §7.1에 있다.
 >
-> 설계 기준: `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` (Goal 문서)의
-> 3-레이어 및 확장 기준/가드레일(§12–§16). 권한·효과의 authority는
-> `governance/GOVERNANCE_POLICY.yaml`, 현재 구현 사실은 `docs/ACTIVE_ARCHITECTURE.md`.
+> **§1–§6 본문은 2026-07-25 제안 원문 그대로 둔다.** 무엇을 제안했고 무엇이 그 모양대로
+> 지어졌는지의 대조가 이 문서에 남은 값이기 때문이다 — 본문을 현재 사실로 고쳐 쓰면 그
+> 대조가 사라진다. 따라서 **본문의 미래시제 문장은 현재 사실의 진술이 아니다.**
+>
+> **이 문서는 어떤 것의 authority도 아니다.** 지어진 두 파트의 계약은 예고대로 영문
+> runtime-contract가 됐다 — `docs/runtime-contracts/FRONTDESK_V0.1.md`,
+> `docs/runtime-contracts/TASK_REGISTRY_V0.1.md`. 그 밖에 역할 상태는
+> `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml`, 권한·효과는 `governance/GOVERNANCE_POLICY.yaml`,
+> 구현 사실은 `docs/ACTIVE_ARCHITECTURE.md`, 왜 그 모양인지는 `docs/BUILD_HISTORY.md`.
+> 설계 기준은 `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md`(§12–§16)이며 그대로다.
+>
+> 상태 확인 기준: `main` = `a0f281c` (2026-07-30). 아래 상태는 레지스트리·스키마·정책
+> 파일에서 직접 확인했다.
 
 ---
 
@@ -328,21 +337,45 @@ standing_grant:
 - RUNNING 작업 취소 — kill-switch의 영역
 - Executor handoff / 외부 / 금융 effect — 기존 로드맵 문구 그대로 별도 결정
 
-## 7. 요구되는 Thomas 결정 (단계별, 각각 독립)
+## 7. Thomas 결정 — 현재 상태 (2026-07-30)
 
-| # | 결정 | 단계 | 성격 |
+| # | 결정 | 단계 | 상태 |
 |---|---|---|---|
-| D1 | Task Registry + 조율 verb 구현 착수 | F1 | 거버넌스 변경 zero — 구현 승인만 |
-| D2 | `conversation.frontdesk` 역할 활성화 (registry `status: active`) | F2 | 역할 활성화 결정 |
-| D3 | 프론트 provider 그랜트 (해당 머신 `activate_safety_flag`) | F2 | per-machine, 기존 절차 |
-| D4 | `approval.v0.3` + standing_grant 정책 + 게이트 확장 | F3 | **거버넌스 확장 — 핵심 결정** |
-| D5 | (F3 이후 건별) eligible_scopes에 scope 추가 | — | 건별 정책 버전업 |
+| ~~D1~~ | Task Registry + 조율 verb 구현 착수 | F1 | ✅ **구현 완료 2026-07-25** (`c8dbbab`) — `task_registry.jsonl` + `/tasks` `/history` `/result` `/cancel` |
+| ~~D2~~ | `conversation.frontdesk` 역할 활성화 (registry `status: active`) | F2 | ✅ **승인·활성 2026-07-25** (`122f2d0`) — 레지스트리 `status: active`, `routable: false`는 일관성 검증기가 영구 고정. 역할 정의는 이후 `0.5.0`까지 감 |
+| ~~D3~~ | 프론트 provider 그랜트 (해당 머신 `activate_safety_flag`) | F2 | ✅ **이 머신에서 충족** — `MVP_FRONTDESK_PROVIDER=groq`, 그랜트는 per-machine·gitignored이므로 **다른 머신에는 각각 다시 필요** |
+| **D4** | `approval.v0.3` + standing_grant 정책 + 게이트 확장 | F3 | ❌ **미착수** — approval은 여전히 `v0.2`(`consumption.one_time_use: const true`), 정책에 `standing_grant` 블록 없음. `docs/proposals/APPROVAL_CONVERSATION_V0.1.md` §6에 **V4**로 다시 올라와 있다 |
+| D5 | (F3 이후 건별) eligible_scopes에 scope 추가 | — | D4 대기 |
 
-권장 순서: **D1 먼저 단독 진행** (즉시 유용 + 무위험) → 운용해보고 D2/D3 → 승인 왕복이
-실제로 거슬리는 지점이 확인되면 D4.
+원문의 권장 순서(D1 → 운용 → D2/D3 → 필요가 확인되면 D4)에서 실제로 달랐던 것은 **간격**
+하나다: D1과 D2/D3는 운용 관측 없이 같은 날 연달아 랜딩했다. D4는 권장대로 아직 열려 있고,
+"승인 왕복이 실제로 거슬리는 지점"은 이후 `APPROVAL_CONVERSATION` 제안이 다시 묻고 있다.
+
+### 7.1 구현이 제안을 벗어난 지점
+
+본문을 고치지 않는 대신 여기에 모은다. 각 항목은 왜 벗어났는지가 요점이다.
+
+- **턴 종류 7종 → 10종** (`frontdesk_turn.v0.1` → `v0.2`, 2026-07-25). §2.2 목록에
+  `QUERY_SCHEDULES` / `QUERY_CONTROL` / `QUERY_MEMORY`가 더해졌다 — 대화가 물어볼 상태는
+  Registry 하나가 아니었다.
+- **`CANCEL_TASK`는 프론트가 처분하지 않는다** (`frontdesk._propose_cancel`). §3.4는 프론트의
+  취소를 상태 전이로 그렸지만, 구현은 **칠 명령을 제안**만 하고 처분은 operator의 `/cancel`이
+  한다 — 읽기 전용으로 구성. §5 불변식 1을 제안보다 좁게 지킨 결과다.
+- **역할 라우팅이 대화에 들어왔다** (`frontdesk_turn.v0.3` + `task_registry_entry.v0.2`의
+  `request_kind`, 2026-07-27). 제안 시점엔 활성 역할이 둘뿐이라 없던 문제다. v0.1 행은
+  `null`로 읽히고, 그 값이 그 행들이 실제로 돈 analysis 라우팅이다.
+- **되묻기가 답을 실어 나른다** (`frontdesk_turn.v0.4`의 `clarification_texts`, 2026-07-28).
+  §2.2의 `CLARIFY`는 질문하고 턴을 끝내서, Thomas의 답을 원 요청과 합쳐 제출할 길이 없었다.
+- **provider는 체인이 아니라 단일이다.** §2.4는 `MVP_HOSTED_PROVIDER`와 같은 페일오버 체인
+  의미론을 적었으나 구현·운용은 멤버 하나(`groq`)다. 2026-07-29 그 단일 키의 프리티어 쿼터를
+  프롬프트 측정 작업이 소진해 운영 채널이 degrade됐고(fail-closed, 메시지 손실 없음),
+  체인화 여부는 `docs/REMAINING_WORK.md`의 열린 항목이다.
 
 ---
 
 *작성: 2026-07-25, Thomas ↔ Claude 설계 대화 (비서 vs 오케스트레이터 → 조율 레이어 →
-대화형 프론트 → standing grant) 의 합의 내용을 문서화. 이 파일 자체는 untracked 초안이며
-커밋/PR 여부는 Thomas 결정.*
+대화형 프론트 → standing grant) 의 합의 내용을 문서화. 초안 당시 이 파일은 untracked였고,
+같은 날 `09ce869`으로 커밋됐다.*
+
+*상태 갱신: 2026-07-30 (`main` = `a0f281c`) — 상단 상태 블록과 §7/§7.1만 현재 사실로 고쳤다.
+§1–§6은 제안 원문 그대로다.*

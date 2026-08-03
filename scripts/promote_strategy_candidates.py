@@ -467,10 +467,16 @@ def main(argv: list[str] | None = None) -> int:
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
         # believable edges surface first for the promotion decision.
+        # Counted once over the population being listed, and handed to every row — the same
+        # number `rank_candidates` just sorted on. Reading it per row would count a store the
+        # order did not use.
+        attempts = pool_store.attempts_by_context(candidates)
         for c in pool_store.rank_candidates(candidates):
             spec = c.get("strategy_spec") or {}
             evidence = c.get("backtest_evidence") or {}
-            q = pool_store.candidate_quality(c)
+            q = pool_store.candidate_quality(
+                c, attempts=attempts.get(pool_store.search_context_key(spec))
+            )
             rr = "inf" if q["all_wins"] else ("-" if q["reward_risk"] is None else f"{q['reward_risk']:.2f}")
             at_now = q["expectancy_at_current_costs"]
             stored_exp = evidence.get("expectancy")
@@ -492,6 +498,15 @@ def main(argv: list[str] | None = None) -> int:
                 "" if q["evidence_depth_rank"] == pool_store.EVIDENCE_DEPTH_RANK_FULL
                 else f" depth={depth_label[q['evidence_depth_rank']].strip()}"
             )
+            # And for the sort key that knows this row has siblings. `t` alone would read as a
+            # strength; it is only a strength relative to the bar N attempts demand, so both
+            # numbers go on the row or neither is actionable. `sel=unmeasured` is every
+            # candidate minted before `stdev_r` — an absent spread, not a weak one.
+            if q["expectancy_t"] is None or q["attempts_in_context"] is None:
+                sel_mark = " sel=unmeasured"
+            else:
+                sel_mark = (f" t={q['expectancy_t']:+.2f}/{q['selection_adjusted_z']:.2f}"
+                            f"(n={q['attempts_in_context']})")
             print(f"{pool_store.candidate_id(c):26} {c.get('strategy_id'):8} "
                   f"{c.get('generation_id') or '-':8} "
                   f"{spec.get('strategy_family') or '-':26} score={c.get('champion_score')} "
@@ -499,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"oos={q['holdout_status']:12} "
                   f"win_rate={q['win_rate']:.2f} rr={rr}({q['reward_risk_basis']}) "
                   f"closed={evidence.get('closed_count')} provenance={c.get('provenance')}"
-                  f"{exp_now}{basis_mark}{depth_mark}")
+                  f"{exp_now}{basis_mark}{depth_mark}{sel_mark}")
         return EXIT_OK
 
     if not args.strategy_ids:

@@ -53,6 +53,7 @@ real instead of always zero.
 from __future__ import annotations
 
 import random
+import statistics
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import Any, Callable, Mapping
@@ -1372,6 +1373,14 @@ def _replay(
                 "stop_loss": close - stop_distance if long else close + stop_distance,
                 "take_profit": close + target_distance if long else close - target_distance,
                 "risk": abs(stop_distance),
+                # The stop-management rules, carried onto the position so the replay settles
+                # through exactly the same `settle_trade_plan` the live cycle runs. Trail is
+                # converted to price HERE, where the ATR is known, for the reason
+                # `advance_managed_stop` states: the settlement is a pure function of prices.
+                "breakeven_at_r": spec.exit_rules.breakeven_at_r,
+                "trail_distance": (
+                    spec.exit_rules.trail_atr * atr if spec.exit_rules.trail_atr is not None else None
+                ),
                 "holding_candles": 0,
                 # Where the carry starts. Kept on the position rather than in a parallel
                 # variable so a settlement can only ever bill the window of the trade that is
@@ -1396,14 +1405,23 @@ def _holdout_evidence(
     outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
         spec, rows, candles, cost=cost, funding=funding, offset=offset
     )
-    total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
+    results = [float(o["result_R"]) for o in outcomes]
+    total_r = round(sum(results), 8)
     closed = len(outcomes)
     return {
         "bars": len(rows),
         "closed_count": closed,
-        "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
+        "win_count": sum(1 for r in results if r > 0),
         "total_R": total_r,
         "expectancy": round(total_r / closed, 8) if closed else 0.0,
+        # The spread the confirmation is judged against. Without it `holdout_status` compared a
+        # mean to zero, which cannot fail on a small tail — the whole reason it now needs an
+        # interval. Sample stdev (n-1), matching `dashboard.sample_verdict`: these trades are a
+        # sample of what the spec would do, never the whole of it, and `pstdev` understates the
+        # spread of exactly that inference. 0.0 below two trades, where the statistic is
+        # undefined; the trade floor refuses that block anyway, and a stored 0.0 reads as
+        # INSUFFICIENT rather than as a zero-width interval that excludes zero for free.
+        "stdev_r": round(statistics.stdev(results), 8) if closed >= 2 else 0.0,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
@@ -1584,6 +1602,18 @@ def backtest_spec(
         "strategy_rule_hash": spec.strategy_rule_hash,
         "closed_count": summary["closed_count"],
         "expectancy": summary["expectancy"],
+        # The spread beside the mean, so `expectancy` can be read as a measurement rather than
+        # a number. `win_count`/`avg_win_R`/`avg_loss_R` are enough to reconstruct a two-point
+        # approximation of it, and that approximation is biased LOW — it collapses the spread
+        # within wins and within losses — which inflates every t derived from it. Recording the
+        # real one costs one line and removes the temptation.
+        #
+        # Sample stdev (n-1), matching `holdout.stdev_r` and `dashboard.sample_verdict`: these
+        # trades are a sample of what the spec would do on this market, never the whole of it.
+        # 0.0 below two trades, where the statistic is undefined — `robustness.expectancy_t`
+        # reads that back as "cannot compute", not as a zero-width interval.
+        "stdev_r": round(statistics.stdev(o["result_R"] for o in outcomes), 8)
+        if summary["closed_count"] >= 2 else 0.0,
         "win_count": summary["win_count"],
         "loss_count": summary["loss_count"],
         # M4a: realized payoff legs, so a candidate carries its win-rate and realized

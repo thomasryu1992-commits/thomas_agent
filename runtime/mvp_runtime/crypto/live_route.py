@@ -78,7 +78,13 @@ from . import live_execution, live_governance, live_leg, live_promotion
 from .account import read_account
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
-from .live_order import count_today, resolve_live_order_limits, select_live_order_counter
+from .live_order import (
+    bracket_breaker_status,
+    count_today,
+    resolve_live_order_limits,
+    select_live_bracket_breaker,
+    select_live_order_counter,
+)
 from .live_pnl import live_risk_snapshot, select_live_ledger, venue_daily_realized_net
 from .live_position import (
     DRIFT,
@@ -113,6 +119,10 @@ ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"
 BOOK_DRIFT = "LIVE_ROUTING_BOOK_DRIFT"
 AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
 CANARY_HISTORY = "LIVE_ROUTING_CANARY_HISTORY"
+# The breaker's own state could not be updated after a leg that had something to tell it. By
+# then the order is at the venue, so this is reported and never raised — but it is the one
+# reason code meaning the count that bounds the naked-entry loop may now be short.
+BRACKET_BREAKER_UNRECORDED = "LIVE_BRACKET_BREAKER_UNRECORDED"
 # This position is judged by the timeframe table rather than by the `max_holding_bars` its own
 # backtest was built on, because it predates the record shape that carries one. Reported so a
 # live/backtest R gap stays attributable instead of being rediscovered from a curve.
@@ -395,6 +405,16 @@ def _run_gated_live_leg(
         ),
     )
 
+    # How many entries in a row filled and could not be protected. Read here with every other
+    # runtime fact, and read even when it is zero, so the decision below is judged against the
+    # same state the readiness board shows rather than a second opinion of it.
+    breaker = bracket_breaker_status(root)
+    record["live_bracket_breaker"] = {
+        "consecutive": breaker["consecutive"],
+        "limit": breaker["limit"],
+        "tripped": breaker["tripped"],
+    }
+
     decision = plan_live_entry(
         plan,
         symbol=symbol,
@@ -416,6 +436,7 @@ def _run_gated_live_leg(
         gate_open=True,  # the adapter above IS the grant; nothing else selects a capable one
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
+        bracket_failures_consecutive=breaker["consecutive"],
         clean_canary_orders=clean_canaries,
         submitted_today=count_today(root),
         # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
@@ -458,6 +479,10 @@ def _run_gated_live_leg(
     )
     record["live_opened"] = entry
     record["live_reason_codes"].extend(entry["reason_codes"])
+    # Before the audit report and the operator notice, both of which can fail on their own: this
+    # is the state that stops the next cycle re-entering, and it is the one thing here that must
+    # be durable even if everything after it goes wrong.
+    _record_bracket_outcome(record, entry, symbol=symbol, now=now, root=root)
     if entry.get("entry") is not None:
         _report(record, governance, entry["entry"], guard=decision["guard"], now=now, root=root)
 
@@ -793,6 +818,64 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     except Exception as exc:  # noqa: BLE001 — the order is at the venue; report, never raise
         record["live_reason_codes"].append(NOTIFY_FAILED)
         record["live_reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
+
+
+_BRACKET_FAILURE_STATUSES = frozenset({live_leg.ENTRY_NAKED_CLOSED, live_leg.ENTRY_NAKED_OPEN})
+
+
+def _bracket_error_detail(entry: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    """What the venue actually said about each protective leg that did not place.
+
+    `error` alone is the same string for every rejection there is — reading it was what made the
+    first two naked entries uninvestigable once the container holding the logs was recreated.
+    `error_detail` (PR #426) is the venue's numeric code and text, and it is carried onto the
+    breaker record here because that record outlives the cycle, the logs and the container.
+    """
+    legs = entry.get("bracket")
+    if not isinstance(legs, list):
+        return None
+    failed = [
+        {
+            "leg": leg.get("leg"),
+            "error": leg.get("error"),
+            "error_detail": leg.get("error_detail"),
+        }
+        for leg in legs
+        if isinstance(leg, Mapping) and (leg.get("error") or leg.get("error_detail"))
+    ]
+    return failed or None
+
+
+def _record_bracket_outcome(
+    record: dict[str, Any], entry: Mapping[str, Any], *, symbol: str, now: str, root: Path | None
+) -> None:
+    """Tell the breaker what this entry proved about the protective path.
+
+    Only two results say anything. A bracket that rested proves the path works, so the streak
+    ends. One that did not adds to it. ``ENTRY_REFUSED`` and ``ENTRY_NOT_CONFIRMED`` say nothing
+    — no bracket was attempted — and must not clear a streak they never tested, which is the
+    whole reason this is a status match rather than "not a failure means success".
+    """
+    status = entry.get("status")
+    if status != live_leg.ENTRY_OPENED and status not in _BRACKET_FAILURE_STATUSES:
+        return
+    try:
+        breaker = select_live_bracket_breaker(now=now, root=root)
+        if status == live_leg.ENTRY_OPENED:
+            breaker.record_success()
+        else:
+            breaker.record_failure(
+                symbol=symbol,
+                status=str(status),
+                at=now,
+                reason_codes=entry.get("reason_codes") or [],
+                error_detail=_bracket_error_detail(entry),
+            )
+    except Exception as exc:  # noqa: BLE001 — the order is at the venue; report, never raise
+        record["live_reason_codes"].append(BRACKET_BREAKER_UNRECORDED)
+        record["live_reason_codes"].append(
+            getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
+        )
 
 
 def _is_incident(result: Mapping[str, Any]) -> bool:

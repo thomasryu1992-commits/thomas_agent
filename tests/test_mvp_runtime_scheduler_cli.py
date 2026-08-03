@@ -86,11 +86,46 @@ def test_the_tick_sleeps_the_remainder_of_its_period(interval, elapsed, expected
     assert remaining_period(interval, elapsed) == expected
 
 
+class _PassClock:
+    """A monotonic that only advances while a pass is doing work (see the test below)."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
+class _WorkCostsTime(ScheduleStore):
+    """A ScheduleStore that charges the clock for the one call only `run_due` makes.
+
+    `claim_due` is the pass's own work: the loop's other store reader (the startup gap
+    scan) is `list`, and it runs before the first tick. So the clock advances strictly
+    BETWEEN the loop's two monotonic reads — which is the ordering under test."""
+
+    def __init__(self, root, clock: _PassClock, cost: float) -> None:
+        super().__init__(root)
+        self._clock = clock
+        self._cost = cost
+
+    def claim_due(self, *args, **kwargs):
+        self._clock.advance(self._cost)
+        return super().claim_due(*args, **kwargs)
+
+
 def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys):
     # Wiring, not arithmetic: `pass_started` must be taken BEFORE run_due, so the sleep
-    # shrinks by the work. A real (tiny) pass makes this independent of monotonic's
-    # internal call count, which run_due shares.
-    store, ledger = _stores(tmp_path)
+    # shrinks by the work. Timing a REAL pass could not test that on Windows, where
+    # time.monotonic has ~15.6ms granularity: a prune of 0 items finishes inside one
+    # tick, elapsed measured 0.0, and the sleep came back the full 30.0. So the clock is
+    # injected (like `sleep`) and the pass's own work is what moves it — a `pass_started`
+    # read after run_due measures 0.0 and sleeps 30.0 here, on every platform.
+    clock = _PassClock()
+    store = _WorkCostsTime(tmp_path, clock, cost=5.0)
+    ledger = LedgerStore(tmp_path / "ledger")
     control_store = ControlStore(tmp_path)
     wm = WorkingMemoryStore(tmp_path / "wm")
     store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
@@ -98,10 +133,10 @@ def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys):
     slept: list[float] = []
     rc = main(["tick", "--max-ticks", "2", "--interval-seconds", "30"],
               store=store, ledger=ledger, control_store=control_store, working_memory=wm,
-              now=DUE, sleep=slept.append)
+              now=DUE, sleep=slept.append, monotonic=clock)
     assert rc == 0
     assert len(slept) == 1                  # only between ticks, never after the last
-    assert 0.0 <= slept[0] < 30.0           # reduced by the pass, and clamped
+    assert slept[0] == 25.0                 # the 30s period minus the 5s pass, not 30.0
 
 
 def test_tick_skips_while_killed(tmp_path, capsys):
