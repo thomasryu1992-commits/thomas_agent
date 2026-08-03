@@ -61,6 +61,7 @@ from typing import Any, Callable, Mapping
 from runtime.read_only_kernel import integrity
 
 from . import features, market_data
+from ..errors import ToolBlocked
 from .cost import (
     FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
@@ -1008,28 +1009,106 @@ def templates_for_timeframe(
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
 
+# --- which feed each mintable feature needs ----------------------------------------------
+#
+# Only features that need something BEYOND the candle series appear here; everything else is
+# derived from OHLCV (directly, or through the higher-timeframe, reference-symbol and
+# cross-section legs, which are all just more candles) and is available wherever candles are.
+#
+# `test_every_mintable_feature_is_classified` pins that this table plus the candle-derived
+# remainder covers the vocabulary exactly, so a new feature cannot arrive unclassified and
+# be silently claimed available on a venue that has no data for it.
+_FEATURE_FEED: dict[str, str] = {
+    "funding_rate": market_data.FEED_FUNDING,
+    "funding_zscore": market_data.FEED_FUNDING,
+    "mark_price": market_data.FEED_DERIVATIVE_PRICE,
+    "index_price": market_data.FEED_DERIVATIVE_PRICE,
+    "mark_index_basis_bps": market_data.FEED_DERIVATIVE_PRICE,
+    "premium_index": market_data.FEED_DERIVATIVE_PRICE,
+    "premium_index_zscore": market_data.FEED_DERIVATIVE_PRICE,
+    "liquidation_spike_ratio": market_data.FEED_LIQUIDATION,
+    "liquidation_total": market_data.FEED_LIQUIDATION,
+    "long_liquidation": market_data.FEED_LIQUIDATION,
+    "short_liquidation": market_data.FEED_LIQUIDATION,
+    "open_interest_change_pct": market_data.FEED_OPEN_INTEREST,
+    "open_interest_zscore": market_data.FEED_OPEN_INTEREST,
+    "positioning_divergence_change": market_data.FEED_POSITIONING,
+    "positioning_divergence_zscore": market_data.FEED_POSITIONING,
+    # The aggressor split, and only it. `avg_trade_size_zscore` and `trade_count_zscore` sit
+    # in the same feature builder but need the trade COUNT rather than the buy/sell split —
+    # grouping them here by where the code lives would disable two features a venue can serve.
+    "taker_buy_ratio": market_data.FEED_TAKER_FLOW,
+    "taker_flow_imbalance": market_data.FEED_TAKER_FLOW,
+    "taker_flow_zscore": market_data.FEED_TAKER_FLOW,
+    "taker_flow_ma": market_data.FEED_TAKER_FLOW,
+    "avg_trade_size_zscore": market_data.FEED_TRADE_COUNT,
+    "trade_count_zscore": market_data.FEED_TRADE_COUNT,
+}
+
+
+def known_features(venue: str) -> tuple[frozenset[str], dict[str, Any]]:
+    """The (numeric, categorical) vocabulary a spec mined on ``venue`` may name.
+
+    A feature whose feed the venue does not provide is not merely useless there — it is
+    unsafe. The evaluator treats a missing column as indeterminate, so most such specs
+    would never fire, never accrue a sample, and so never be demotable off a routing slot
+    (the latch `BUILD_HISTORY` records for the loss breaker). **And one is worse than that:**
+    `liquidation_spike_ratio` falls back to a constant 0.0 with no feed rather than to None,
+    so a mined `< x` condition on it matches every bar forever, on a number nobody measured.
+
+    Fail-closed on an unknown venue — `market_data.venue_feeds` raises rather than returning
+    an empty vocabulary, so a typo blocks instead of silently rejecting every feature.
+    """
+    feeds = market_data.venue_feeds(venue)
+    numeric = frozenset(
+        name for name in NUMERIC_FEATURES
+        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+    )
+    categorical = {
+        name: values for name, values in CATEGORICAL_FEATURES.items()
+        if _FEATURE_FEED.get(name) is None or _FEATURE_FEED[name] in feeds
+    }
+    return numeric, categorical
+
+
 def validate_strategy(spec: StrategySpec) -> dict[str, Any]:
-    """Approval-for-backtest verdict. Pure, fail-closed, never mutates."""
+    """Approval-for-backtest verdict. Pure, fail-closed, never mutates.
+
+    Judged against the vocabulary of the spec's OWN venue (`known_features`), which is why
+    the venue rides on the spec rather than arriving as an argument here — an argument could
+    be omitted or supplied wrongly, and a spec cannot be separated from where it was mined.
+    """
     reasons: list[str] = []
+    try:
+        numeric_features, categorical_features = known_features(spec.venue)
+    except ToolBlocked:
+        # An undeclared venue is not a feature problem and must not be reported as one:
+        # every condition would "fail" for a reason that has nothing to do with it.
+        return {
+            "strategy_id": spec.strategy_id,
+            "strategy_rule_hash": spec.strategy_rule_hash,
+            "approved_for_backtest": False,
+            "block_reasons": ["BLOCK_UNKNOWN_VENUE"],
+        }
     if spec.schema_version != SCHEMA_VERSION:
         reasons.append("BLOCK_SCHEMA_VERSION")
     if len(spec.entry_rules.conditions) > MAX_ENTRY_CONDITIONS:
         reasons.append("BLOCK_TOO_MANY_CONDITIONS")
     for cond in spec.entry_rules.conditions:
-        if cond.feature in NUMERIC_FEATURES:
+        if cond.feature in numeric_features:
             if cond.comparison not in _NUMERIC_COMPARISONS:
                 reasons.append("BLOCK_INVALID_COMPARISON")
             if cond.value is not None and isinstance(cond.value, str):
                 reasons.append("BLOCK_INVALID_FEATURE_VALUE")
-        elif cond.feature in CATEGORICAL_FEATURES:
+        elif cond.feature in categorical_features:
             if cond.comparison not in _CATEGORICAL_COMPARISONS:
                 reasons.append("BLOCK_INVALID_COMPARISON")
-            if cond.value is not None and cond.value not in CATEGORICAL_FEATURES[cond.feature]:
+            if cond.value is not None and cond.value not in categorical_features[cond.feature]:
                 reasons.append("BLOCK_INVALID_FEATURE_VALUE")
         else:
             reasons.append("BLOCK_UNKNOWN_FEATURE")
-        if cond.value_from is not None and cond.value_from not in NUMERIC_FEATURES:
-            reasons.append("BLOCK_UNKNOWN_FEATURE" if cond.value_from not in CATEGORICAL_FEATURES
+        if cond.value_from is not None and cond.value_from not in numeric_features:
+            reasons.append("BLOCK_UNKNOWN_FEATURE" if cond.value_from not in categorical_features
                            else "BLOCK_VALUE_FROM_NOT_NUMERIC")
 
     exit_rules = spec.exit_rules

@@ -31,6 +31,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .features import PREVIOUS_BAR_PREFIX
+from .market_data import BINANCE_FUTURES
 
 SCHEMA_VERSION = "strategy_spec.v1"
 STRATEGY_RULE_HASH_VERSION = "strategy_rule_hash.v1"
@@ -325,6 +326,16 @@ class StrategySpec:
     generation_id: str | None = None
     created_by: str = "StrategyGenerationAgent"
     schema_version: str = SCHEMA_VERSION
+    # The venue this spec was MINED ON, and therefore the vocabulary it may name.
+    # Carried on the spec rather than passed to the validator: a spec is a thing mined
+    # from one venue's data, and separating it from that origin would let a spec mined on
+    # Hyperliquid be validated against Binance's feature set and pass.
+    #
+    # Deliberately NOT in `strategy_rule_fingerprint`. `symbol_scope` is already in there
+    # and symbols are venue-namespaced (`xyz:XLE` can never collide with `BTCUSDT`), so the
+    # venue adds nothing to identity — while adding it would change the hash of all 1020
+    # stored candidates and fail every `from_dict` on the next read.
+    venue: str = BINANCE_FUTURES
     strategy_rule_hash: str = ""
 
     @staticmethod
@@ -374,6 +385,10 @@ class StrategySpec:
             status=status,
             generation_id=generation_id,
             created_by=created_by,
+            # Absent means it predates the field, which PROVES binance_futures: no other
+            # venue existed when it was written. That is a migration default backed by a
+            # fact — unlike a validator default, which would only mean the caller forgot.
+            venue=str(raw.get("venue", BINANCE_FUTURES)),
             schema_version=str(raw.get("schema_version", SCHEMA_VERSION)),
         )
 
@@ -415,6 +430,7 @@ class StrategySpec:
             "created_by": self.created_by,
             "can_submit_orders": False,
             "can_modify_runtime": False,
+            "venue": self.venue,
             "strategy_rule_hash": self.strategy_rule_hash,
         }
 
