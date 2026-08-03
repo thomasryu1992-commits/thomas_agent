@@ -439,6 +439,65 @@ def test_a_naked_close_states_the_same_risk_the_booked_path_would_have():
     assert outcome["risk_usdt"] == booked["risk"]
 
 
+def _second_entry_decision():
+    """A second, distinct entry on the same symbol — a different order, so a different id."""
+    return {**DECISION, "intent": {**INTENT, "client_order_id": "TAI_BTCUSDT_LONG_def"}}
+
+
+def test_a_naked_outcome_names_the_position_that_briefly_existed():
+    outcome = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    assert outcome["position_id"]
+
+
+def test_two_naked_closes_on_one_symbol_do_not_mint_the_same_id():
+    """`outcome_id` is derived from `{position_id, closed_at, symbol}`, and a naked close
+    carried `position_id=None`. Two of them on one symbol sharing a cycle timestamp therefore
+    derived the SAME id — nothing about the trades had to be alike."""
+    a = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    b = _entry(decision=_second_entry_decision(), adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    # The two fields the old id had left: identical, as they would be in one cycle.
+    assert a["symbol"] == b["symbol"]
+    assert a["closed_at_utc"] == b["closed_at_utc"]
+    assert a["outcome_id"] != b["outcome_id"]
+    assert a["settlement_id"] != b["settlement_id"]
+
+
+def test_two_naked_closes_leave_a_live_history_that_still_reads(tmp_path):
+    """The failure the id prevents, at the level it bites. `read_live_outcomes` raises
+    LIVE_HISTORY_DUPLICATE rather than return a history it cannot prove, so one duplicate does
+    not lose one row — it makes the whole live history unreadable, and every risk decision that
+    reads it fails closed. On a duplicate this runtime minted itself."""
+    import json
+
+    from runtime.mvp_runtime.crypto.live_pnl import (
+        LIVE_OUTCOMES_FILENAME,
+        read_live_outcomes,
+        state_dir,
+    )
+
+    rows = [
+        _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"],
+        _entry(decision=_second_entry_decision(), adapter=FakeAdapter(missing={"TP"}))["outcome"],
+    ]
+    path = state_dir(tmp_path) / LIVE_OUTCOMES_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    assert len(read_live_outcomes(tmp_path)) == 2
+
+
+def test_the_unbooked_position_id_is_deterministic_and_per_order():
+    """Deterministic, so a replay derives the same id; per-order, so two entries never share
+    one. Both halves matter: the first is what makes the record replayable, the second is what
+    keeps `read_live_outcomes` from refusing the file."""
+    from runtime.mvp_runtime.crypto.live_position import unbooked_position_id
+
+    kw = {"symbol": "BTCUSDT", "entry_client_order_id": "TAI_BTCUSDT_LONG_abc", "opened_at": NOW}
+    assert unbooked_position_id(**kw) == unbooked_position_id(**kw)
+    assert unbooked_position_id(**{**kw, "entry_client_order_id": "TAI_BTCUSDT_LONG_def"}) != \
+        unbooked_position_id(**kw)
+
+
 def test_a_naked_close_that_cannot_be_priced_records_nothing_and_says_so():
     """The position is closed at the venue either way, so unlike `execute_live_exit` there is
     no book to keep. Inventing a figure to fill the row would put a fiction into the breaker's
