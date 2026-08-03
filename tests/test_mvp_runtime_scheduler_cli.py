@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime import control, scheduler
+from runtime.mvp_runtime import control
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.scheduler import KIND_PRUNE, KIND_TASK, ScheduleStore, build_schedule
 from runtime.mvp_runtime.scheduler_cli import main, remaining_period
@@ -86,39 +86,57 @@ def test_the_tick_sleeps_the_remainder_of_its_period(interval, elapsed, expected
     assert remaining_period(interval, elapsed) == expected
 
 
-def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys, monkeypatch):
+class _PassClock:
+    """A monotonic that only advances while a pass is doing work (see the test below)."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
+class _WorkCostsTime(ScheduleStore):
+    """A ScheduleStore that charges the clock for the one call only `run_due` makes.
+
+    `claim_due` is the pass's own work: the loop's other store reader (the startup gap
+    scan) is `list`, and it runs before the first tick. So the clock advances strictly
+    BETWEEN the loop's two monotonic reads — which is the ordering under test."""
+
+    def __init__(self, root, clock: _PassClock, cost: float) -> None:
+        super().__init__(root)
+        self._clock = clock
+        self._cost = cost
+
+    def claim_due(self, *args, **kwargs):
+        self._clock.advance(self._cost)
+        return super().claim_due(*args, **kwargs)
+
+
+def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys):
     # Wiring, not arithmetic: `pass_started` must be taken BEFORE run_due, so the sleep
-    # shrinks by the work. The pass is the real one — run_due runs for its own sake; only
-    # the clock is faked, and it advances ONLY across run_due, so the sleep names the pass
-    # exactly. Timing a real pass cannot pin this: it finishes inside one tick of Windows'
-    # ~15.6ms monotonic, which then reports 0.0 elapsed and the full interval, and the
-    # strict `< 30.0` this assertion used to make failed on the boundary (#439). A fake
-    # clock is also independent of monotonic's internal call count, which run_due shares.
-    store, ledger = _stores(tmp_path)
+    # shrinks by the work. Timing a REAL pass could not test that on Windows, where
+    # time.monotonic has ~15.6ms granularity: a prune of 0 items finishes inside one
+    # tick, elapsed measured 0.0, and the sleep came back the full 30.0. So the clock is
+    # injected (like `sleep`) and the pass's own work is what moves it — a `pass_started`
+    # read after run_due measures 0.0 and sleeps 30.0 here, on every platform.
+    clock = _PassClock()
+    store = _WorkCostsTime(tmp_path, clock, cost=5.0)
+    ledger = LedgerStore(tmp_path / "ledger")
     control_store = ControlStore(tmp_path)
     wm = WorkingMemoryStore(tmp_path / "wm")
     store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
                              created_by="op", now=T0))
-    pass_seconds = 12.0
-    clock = [1000.0]
-    monkeypatch.setattr("runtime.mvp_runtime.scheduler_cli.time.monotonic", lambda: clock[0])
-    real_run_due = scheduler.run_due
-
-    def run_due_that_takes_time(*args, **kwargs):
-        summary = real_run_due(*args, **kwargs)
-        clock[0] += pass_seconds
-        return summary
-
-    monkeypatch.setattr("runtime.mvp_runtime.scheduler.run_due", run_due_that_takes_time)
     slept: list[float] = []
     rc = main(["tick", "--max-ticks", "2", "--interval-seconds", "30"],
               store=store, ledger=ledger, control_store=control_store, working_memory=wm,
-              now=DUE, sleep=slept.append)
+              now=DUE, sleep=slept.append, monotonic=clock)
     assert rc == 0
     assert len(slept) == 1                  # only between ticks, never after the last
-    # 18.0, not 30.0: a `pass_started` taken after the pass measures a 0.0-long pass and
-    # sleeps the whole interval on top of the work — the poll grid this test exists for.
-    assert slept[0] == 30.0 - pass_seconds
+    assert slept[0] == 25.0                 # the 30s period minus the 5s pass, not 30.0
 
 
 def test_tick_skips_while_killed(tmp_path, capsys):
