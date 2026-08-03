@@ -93,6 +93,27 @@ EXPOSURE_UNKNOWN_AT_CAP = "EXPOSURE_UNKNOWN_TREATED_AS_AT_CAP"
 
 # --- the record ---------------------------------------------------------------
 
+def position_risk_usdt(*, entry_price: Any, stop_loss: Any, quantity: Any) -> float:
+    """What a position stands to lose to its stop, in quote terms. Pure.
+
+    The entry↔stop distance times the size actually held — measured from the **filled** price,
+    not the intended one, which is what makes it the same number the venue would take.
+
+    0.0 when no stop is known, never a guess from the order cap: a fabricated risk produces a
+    fabricated R, and R is what every breaker downstream is denominated in.
+
+    Extracted from :func:`build_live_position` so the naked-close path can state a position's
+    risk without booking one. Both callers must produce the identical figure for the same fill
+    — an outcome row whose R was computed a second way is not comparable to the rows beside it.
+    """
+    entry = _f(entry_price)
+    stop = _f(stop_loss)
+    size = _f(quantity)
+    if stop <= 0 or entry <= 0 or size <= 0:
+        return 0.0
+    return round(abs(entry - stop) * size, 8)
+
+
 def build_live_position(
     *,
     symbol: str,
@@ -149,7 +170,7 @@ def build_live_position(
         "stop_loss": stop,
         "take_profit": _f(take_profit) if take_profit is not None else 0.0,
         # Risk in quote terms, 0.0 when no stop is known — never guessed from the cap.
-        "risk": round(abs(entry_price - stop) * quantity, 8) if stop > 0 else 0.0,
+        "risk": position_risk_usdt(entry_price=entry_price, stop_loss=stop, quantity=quantity),
         "opened_at_utc": opened_at,
         "entry_client_order_id": entry_client_order_id,
         "entry_exchange_order_id": entry_exchange_order_id,
@@ -562,6 +583,7 @@ __all__ = [
     "live_positions_dir",
     "load_open_live_position",
     "local_open_notional_usdt",
+    "position_risk_usdt",
     "reconcile_positions",
     "select_live_position_store",
 ]
