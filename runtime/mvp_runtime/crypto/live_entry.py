@@ -15,12 +15,19 @@ Order of checks, and why:
 1. **route** — is there an entry candidate at all;
 2. **verdict** — did the C4 guards allow a new position this cycle (**required**: an absent or
    malformed verdict refuses, it does not skip the check);
-2b. **live candidate (Gate 0)** — does this runtime's own paper record show an edge *net of
-   costs* (``feedback.build_performance_report``'s ``live_candidate_eligible``). Same
-   **required** posture as the verdict, and not redundant with it on either axis: the verdict
-   asks *am I losing right now*, over a recent window, gross; this asks *is there an edge at
-   all*, over the whole own-paper record, net. A loss breaker also reopens on the calendar,
-   where this reopens only when the record itself changes;
+2b. ~~**live candidate (Gate 0)**~~ — **removed 2026-08-03.** Gate 0 is defined by
+   ``CRYPTO_LIVE_EXECUTION_V0.1.md`` as an item on the **operator** go-live checklist, under
+   a heading reading "Every step is Thomas's". #409 wired the computed
+   ``live_candidate_eligible`` in here as a refusal, which turned a checklist item into a
+   pool-wide aggregate that refuses every strategy's entries for any one strategy's record.
+   Measured 2026-08-03, that aggregate could not be satisfied at all: the routable set is
+   whichever batch was promoted last, promotions land every 1-3 days, and the sample it needs
+   (20) takes ~32 days of a frozen pool to accrue — so the gate's only reachable state was the
+   operator acknowledgement that #413 added to override it. A gate whose sole satisfiable
+   state is "overridden" is a signature requirement wearing an evidence gate's clothes.
+   Design and measurement: ``docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md``. The
+   measurement is not deleted — ``feedback.live_candidate_eligible`` is still computed and
+   still reported; what is deleted is its authority over this door;
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
@@ -73,7 +80,6 @@ STATUS_READY = "READY"
 # Refusal reasons, each naming exactly which door closed.
 NO_PLAN = "LIVE_ENTRY_NO_PLAN"
 VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
-CANDIDATE_REFUSED = "LIVE_ENTRY_NOT_LIVE_CANDIDATE"
 BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
@@ -178,12 +184,6 @@ def plan_live_entry(
     # closed, and it was worse in one way: the test helper omitted it too, so the untested
     # branch was the *guarded* one. A missing or malformed verdict now refuses.
     verdict: Mapping[str, Any],
-    # Gate 0, and no default for the same reason the verdict has none: an optional gate is a gate
-    # the one caller that forgets it never meets, and the branch nobody tests is then the guarded
-    # one. This is `feedback.build_performance_report`'s record — handed over whole rather than as
-    # a bare bool, so a refusal can name what failed (`failure_modes`) instead of only that
-    # something did.
-    live_candidate: Mapping[str, Any] | None,
     # How many live entries in a row filled and could not be protected. No default, for the two
     # reasons above and one of its own: this door exists because the runtime placed two live
     # entries whose protective stop was refused and re-entered on the next signal regardless.
@@ -235,18 +235,10 @@ def plan_live_entry(
             list(verdict.get("problems") or []) if isinstance(verdict, Mapping) else ["verdict missing or malformed"]
         )
 
-    # 2b. Gate 0. The runtime has computed this every cycle since C6 and consulted it nowhere —
-    # it judged itself unfit for real money and then did not read the judgement. Same fail-closed
-    # shape as the verdict above: a missing or malformed report refuses, because "this runtime has
-    # not shown an edge" and "I could not tell whether it has" both mean the same thing here, and
-    # the only alternative to refusing is opening a real position on an unanswered question.
-    if not isinstance(live_candidate, Mapping) or not bool(live_candidate.get("live_candidate_eligible")):
-        reasons.append(CANDIDATE_REFUSED)
-        detail["live_candidate_failure_modes"] = (
-            list(live_candidate.get("failure_modes") or [])
-            if isinstance(live_candidate, Mapping)
-            else ["performance report missing or malformed"]
-        )
+    # 2b was Gate 0 and is gone; see the docstring. The bracket breaker below kept its 2c
+    # numbering deliberately — the reason codes it emits are in ledger rows going back weeks,
+    # and renumbering a door to close a gap in a comment would make those rows harder to read
+    # for no gain.
 
     # 2c. The bracket breaker. An entry that fills and cannot be protected is closed again
     # safely, so no single one of these is an emergency — and that is exactly why the loop ran
@@ -399,7 +391,6 @@ __all__ = [
     "BRACKET_BREAKER_REFUSED",
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",
-    "CANDIDATE_REFUSED",
     "CAPACITY_REFUSED",
     "COST_REFUSED",
     "GUARD_REFUSED",

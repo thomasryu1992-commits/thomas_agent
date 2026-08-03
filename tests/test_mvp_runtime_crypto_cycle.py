@@ -1130,8 +1130,10 @@ def test_the_live_leg_is_handed_gate_0(tmp_path, monkeypatch):
     _install_pool(tmp_path, _always_spec())
     record = _cycle(tmp_path, FakeExchangeCollector())
 
-    assert "live_candidate" in seen, "the live leg was called without Gate 0"
-    candidate = seen["live_candidate"]
-    assert isinstance(candidate, dict) and "live_candidate_eligible" in candidate
-    # The same object the cycle reports, not a second evaluation that could disagree with it.
-    assert candidate["status"] == record["report_status"]
+    # Gate 0 is no longer handed to the live leg (removed 2026-08-03). The assertion flips:
+    # what this now guards is that nothing quietly re-wires it, and that the MEASUREMENT
+    # survived the removal — the report is still built and still on the record, because "has
+    # this pool shown an edge net of costs" is exactly what the operator checklist asks.
+    assert "live_candidate" not in seen, "the live leg was handed a gate that no longer exists"
+    assert record["report_status"] is not None
+    assert "live_candidate_eligible" in record

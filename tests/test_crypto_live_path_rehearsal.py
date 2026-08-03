@@ -244,7 +244,6 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
         equity_usdt=usable_equity_usdt(snapshot),
         now=NOW,
         verdict={"allow_new_position": True, "problems": []},
-        live_candidate={"live_candidate_eligible": True, "failure_modes": []},
     )
 
 

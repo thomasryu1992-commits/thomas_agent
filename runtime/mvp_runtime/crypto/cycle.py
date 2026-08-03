@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, live_candidate_ack, oi_store, pool, positioning_store
+from . import feedback, oi_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -715,28 +715,13 @@ def run_crypto_cycle(
         if exc.reason_code not in reason_codes:
             reason_codes.append(exc.reason_code)
 
-    # Gate 0's OPERATOR answer, if one is registered and still applies.
-    #
-    # `CRYPTO_LIVE_EXECUTION_V0.1.md` puts Gate 0 on the operator checklist and tells the
-    # operator to check it on the dashboard; #400/#409 turned it into an aggregate computed over
-    # a whole pool, which refuses every strategy's entries for any one strategy's record. This
-    # does not remove that gate — `live_entry`'s refusal is untouched — it lets a signed,
-    # expiring, pool-bound record answer it, which is the idiom `risk_limits` and `live_budget`
-    # already use for the other checklist items.
-    #
-    # The computed figure is never overwritten: `report` keeps saying what the evidence says and
-    # both readings reach the ledger below, because a record that hid the disagreement would be
-    # worse than no record. An acknowledgement that does not apply — absent, expired, unusable,
-    # or signed for a different routable set — leaves the computed answer standing, which is the
-    # stricter of the two.
-    gate_ack = live_candidate_ack.resolve_ack(root, now=now, routable_strategy_ids=routable_ids)
-    live_candidate: dict[str, Any] | None = report
-    if gate_ack["applies"] and isinstance(report, dict):
-        live_candidate = {
-            **report,
-            "live_candidate_eligible": True,
-            "operator_acknowledgement": gate_ack["record"],
-        }
+    # Gate 0's runtime enforcement, and the operator acknowledgement that existed to override
+    # it, were removed 2026-08-03. `report` is still computed and still reaches the ledger
+    # below — the measurement was never the problem. What is gone is its authority over the
+    # live door, which it could not exercise: the routable set is whichever batch was promoted
+    # last, so the sample resets and the acknowledgement voids on the same event, and the gate's
+    # only reachable state was the override. `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`
+    # has the measurement; `live_entry`'s docstring records the removal at the door itself.
 
     # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
@@ -754,14 +739,13 @@ def run_crypto_cycle(
     #     live now answers to its own, which is stricter than the paper leg's rather than equal
     #     to it, because `merge_trade_verdict` still folds in every breaker the paper leg drops.
     #
-    # `live_candidate` is Gate 0 (#409), computed at step 5 just above. It is what makes the
-    # split above safe rather than merely coherent: an unbraked paper book that recovers would
-    # clear the drawdown breaker on its own, and Gate 0 does not clear with it — measured
-    # 2026-07-31, the drawdown reopens after +34.79R of net paper gain and Gate 0 after +43.43R,
-    # so the door the paper leg no longer answers to is not the last one in front of the venue.
-    # A `None` report — the store could not be read, or could not be verified — arrives as a
-    # non-Mapping and `plan_live_entry` refuses on it, which is the only correct reading: a
-    # runtime that cannot show its paper record has not shown an edge.
+    # Gate 0 used to be handed in here as the door in front of the venue that the paper leg's
+    # split no longer answered to. It is gone (2026-08-03) because it could not be satisfied,
+    # and what stands in its place is not a second aggregate but the per-strategy ladder:
+    # `routable_strategy_ids` is derived from lifecycle status, so a strategy the ladder has
+    # SUSPENDED cannot route here at all, and the ladder judges each one on its OWN record, net
+    # of costs, at any sample size. Beneath that the registered budget, the venue-sourced daily
+    # loss breaker, the bracket breaker and both kill switches all still bind.
     #
     # Never raises: `run_live_leg` reports, because a traceback here would be indistinguishable
     # from "no live activity".
@@ -769,7 +753,6 @@ def run_crypto_cycle(
         route=shared_route,
         feature_row=feature_row,
         verdict=live_verdict,
-        live_candidate=live_candidate,
         symbol=symbol,
         collector=collector,
         now=now,
@@ -878,18 +861,12 @@ def run_crypto_cycle(
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,
         "report_status": report.get("status") if report else None,
-        # BOTH readings of Gate 0, always. `live_candidate_eligible` is what the evidence says —
-        # never overwritten by an acknowledgement — and `live_candidate_ack` is whether a person
-        # signed for it and, when they did not, which of the several reasons applied. A ledger
-        # that recorded only the effective answer could not later tell a pool that earned the
-        # gate from one that was waved through it.
+        # What the paper evidence says about this pool. Kept on the record after Gate 0's
+        # enforcement was removed (2026-08-03), because the question is still worth answering
+        # — "has this pool shown an edge net of costs" is exactly what an operator working the
+        # go-live checklist needs. What changed is that nothing refuses on it. The companion
+        # `live_candidate_ack` field is gone with the acknowledgement it reported.
         "live_candidate_eligible": report.get("live_candidate_eligible") if report else None,
-        "live_candidate_ack": {
-            "applies": bool(gate_ack["applies"]),
-            "reason": gate_ack["reason"],
-            "acknowledgement_id": (gate_ack.get("record") or {}).get("acknowledgement_id"),
-            "registered_by": (gate_ack.get("record") or {}).get("registered_by"),
-        },
         "report_text": report_text,
         "created_at": now,
     }
