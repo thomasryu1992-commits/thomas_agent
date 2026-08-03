@@ -56,14 +56,24 @@ CURRENT_SOURCES = (
 _REQUIRED_FIELDS = ("name", "data_kind", "rationale", "expected_use")
 
 
-def _mintable(venue: str) -> frozenset[str]:
-    """The venue's vocabulary as one flat set. Never raises: this record is a description of
-    what exists, and an undeclared venue is a fact to report rather than a reason to produce
-    no inventory at all — the gates that must refuse it already do."""
+def _mintable(venue: str) -> frozenset[str] | None:
+    """The venue's vocabulary as one flat set, or ``None`` when nobody has declared the venue.
+
+    Still never raises — this record describes what exists and the module's contract is to
+    degrade rather than block. What changed is that it no longer answers both questions the
+    same way. It used to return an empty set for an undeclared venue, which `market_data`
+    names as the thing not to do, about this exact table:
+
+        "this venue provides nothing" and "nobody has said what this venue provides"
+        must not produce the same silence.
+
+    An empty list is a claim. ``None`` is the absence of one, and `review_data_gaps` reads it
+    as a reason to degrade rather than as an inventory to reason from.
+    """
     try:
         numeric, categorical = factory.known_features(venue)
     except ToolBlocked:
-        return frozenset()
+        return None
     return numeric | frozenset(categorical)
 
 
@@ -84,7 +94,9 @@ def build_data_inventory(
     ``mintable_features`` is scoped to ``venue``. This record is read by a model asked what
     data is worth ADDING, so the global vocabulary would tell it a feature is already
     covered here when the venue cannot serve it — the one suggestion it would have been
-    most useful to receive."""
+    most useful to receive. It is ``None``, not ``[]``, when nobody has declared the venue:
+    an empty list is the claim that nothing is mintable, and `review_data_gaps` reads the
+    absence of an answer as a reason to degrade rather than as an inventory to reason from."""
     feed_status: dict[str, str] = {}
     for row in cycle_records:
         record = row.get("record") if isinstance(row.get("record"), Mapping) else row
@@ -111,12 +123,15 @@ def build_data_inventory(
         bucket["win_rate"] = round(bucket["wins"] / bucket["closed"], 3) if bucket["closed"] else None
         bucket["total_R"] = round(bucket["total_R"], 3)
 
+    mintable = _mintable(venue)
     return {
         "current_sources": [dict(s) for s in CURRENT_SOURCES],
         # `known_features` returns (numeric, categorical); the categorical mapping's keys
         # join the vocabulary, and both halves are already narrowed to what `venue` serves.
+        # `null` rather than `[]` when the venue is undeclared — an empty list is the claim
+        # that nothing is mintable, which is a different statement from having no answer.
         "venue": venue,
-        "mintable_features": sorted(_mintable(venue)),
+        "mintable_features": None if mintable is None else sorted(mintable),
         "feed_status": feed_status,
         "performance_by_timeframe": performance,
         "traded_contexts": [f"{symbol} {timeframe}" for symbol, timeframe in contexts],
@@ -241,37 +256,50 @@ def review_data_gaps(
     """Ask the model for data suggestions, judge each one's shape, return the record.
 
     The record is evidence for a human decision — it grants nothing and collects
-    nothing. A provider failure degrades to zero suggestions with the reason recorded."""
-    prompt = build_review_prompt(inventory)
+    nothing. A provider failure degrades to zero suggestions with the reason recorded.
 
+    An inventory with no known vocabulary degrades the same way, and BEFORE the call rather
+    than after it. The review's question is "what data is worth adding here", which cannot
+    be judged against a venue nobody has described: every suggestion would read as new
+    because nothing is known to be covered. Degrading is also the cheaper half — the
+    alternative is paying a provider for an answer that could not be used."""
     degraded: str | None = None
     invocation: dict[str, Any] | None = None
     raw: list[dict[str, Any]] = []
-    try:
-        result = provider.generate(
-            prompt,
-            max_output_tokens=DATA_REVIEW_TOKEN_ALLOWANCE,
-            timeout_seconds=DATA_REVIEW_TIMEOUT_SECONDS,
+    if inventory.get("mintable_features") is None:
+        # Not an early return: the record is built once at the bottom, so a degraded review
+        # has exactly the shape of every other one and no second construction to drift.
+        degraded = (
+            f"venue {inventory.get('venue')!r} has no declared feeds; "
+            "the mintable vocabulary is unknown"
         )
-    except (ProviderError, TimeoutError) as exc:
-        degraded = f"data-review provider failed: {exc}"
     else:
-        raw = _extract_suggestions(result.analysis if isinstance(result.analysis, Mapping) else {})
-        if not raw:
-            degraded = "data reviewer returned no parseable suggestions"
-        invocation = {
-            "worker_id": DATA_REVIEW_WORKER_ID,
-            "worker_version": DATA_REVIEW_WORKER_VERSION,
-            "model_id": result.model_id,
-            "model_version": result.model_version,
-            "prompt_version": DATA_REVIEW_PROMPT_VERSION,
-            "input_tokens": int(result.input_tokens),
-            "output_tokens": int(result.output_tokens),
-            "tokens_used": int(result.input_tokens) + int(result.output_tokens),
-            "latency_ms": int(result.latency_ms),
-            "finish_reason": result.finish_reason,
-            "network_egress": bool(getattr(provider, "network_egress", False)),
-        }
+        prompt = build_review_prompt(inventory)
+        try:
+            result = provider.generate(
+                prompt,
+                max_output_tokens=DATA_REVIEW_TOKEN_ALLOWANCE,
+                timeout_seconds=DATA_REVIEW_TIMEOUT_SECONDS,
+            )
+        except (ProviderError, TimeoutError) as exc:
+            degraded = f"data-review provider failed: {exc}"
+        else:
+            raw = _extract_suggestions(result.analysis if isinstance(result.analysis, Mapping) else {})
+            if not raw:
+                degraded = "data reviewer returned no parseable suggestions"
+            invocation = {
+                "worker_id": DATA_REVIEW_WORKER_ID,
+                "worker_version": DATA_REVIEW_WORKER_VERSION,
+                "model_id": result.model_id,
+                "model_version": result.model_version,
+                "prompt_version": DATA_REVIEW_PROMPT_VERSION,
+                "input_tokens": int(result.input_tokens),
+                "output_tokens": int(result.output_tokens),
+                "tokens_used": int(result.input_tokens) + int(result.output_tokens),
+                "latency_ms": int(result.latency_ms),
+                "finish_reason": result.finish_reason,
+                "network_egress": bool(getattr(provider, "network_egress", False)),
+            }
 
     known_sources = frozenset(str(s.get("source")) for s in inventory.get("current_sources") or ())
     verdicts = [
