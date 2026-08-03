@@ -15,6 +15,8 @@ size was chosen for.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from runtime.mvp_runtime.crypto import live_entry as le
@@ -70,7 +72,6 @@ def _position(symbol="BTCUSDT", side="LONG", quantity=0.001, notional=60.0):
 
 
 ALLOWING_VERDICT = {"allow_new_position": True, "problems": []}
-ELIGIBLE_CANDIDATE = {"live_candidate_eligible": True, "failure_modes": []}
 
 
 def _plan(**kw):
@@ -81,7 +82,6 @@ def _plan(**kw):
     """
     args = dict(
         verdict=kw.pop("verdict", ALLOWING_VERDICT),
-        live_candidate=kw.pop("live_candidate", ELIGIBLE_CANDIDATE),
         plan=kw.pop("plan", PLAN),
         symbol=kw.pop("symbol", "BTCUSDT"),
         reconciliation=kw.pop("reconciliation", reconcile_positions([], FLAT, now=NOW)),
@@ -448,52 +448,23 @@ def test_the_status_line_is_ascii():
         assert line.isascii() and line
 
 
-# --- 2b: Gate 0 ----------------------------------------------------------------
-
-def test_an_ineligible_live_candidate_refuses_the_entry():
-    """The wiring this gate existed without: C6 computed `live_candidate_eligible` every cycle
-    and nothing read it, so the runtime judged itself unfit for real money and traded anyway."""
-    decision = _plan(live_candidate={
-        "live_candidate_eligible": False,
-        "failure_modes": ["NEGATIVE_EXPECTANCY_NET_OF_COSTS"],
-    })
-    assert decision["status"] == le.STATUS_REFUSED
-    assert le.CANDIDATE_REFUSED in decision["reasons"]
-    assert decision["live_candidate_failure_modes"] == ["NEGATIVE_EXPECTANCY_NET_OF_COSTS"]
-
-
-def test_a_missing_report_refuses_rather_than_skipping_the_gate():
-    """`None` is what `cycle` passes when the outcome store could not be read or verified.
-    "This runtime has not shown an edge" and "I could not tell whether it has" have the same
-    correct consequence, and the alternative is a real position on an unanswered question."""
-    decision = _plan(live_candidate=None)
-    assert le.CANDIDATE_REFUSED in decision["reasons"]
-    assert decision["live_candidate_failure_modes"] == ["performance report missing or malformed"]
+# --- 2b: Gate 0, removed 2026-08-03 ---------------------------------------------
+#
+# Five tests stood here and are deleted rather than rewritten, which is the rarer of the two
+# right answers. They pinned that an ineligible paper record refuses a live entry, that a
+# missing record refuses too, that the argument had no default, and that the gate could
+# disagree with the C4 verdict. Every one of them was correct about the behaviour that
+# existed; none of them describes behaviour that exists now. A test kept alive by relaxing
+# what it asserts stops being a specification and becomes a fixture with opinions.
+#
+# What replaced them is not another test here but the absence of a door: `routable_strategy_ids`
+# already gates live routing per strategy off lifecycle status, and the tests for that live in
+# `test_mvp_runtime_crypto_lifecycle.py`. Measurement and reasoning:
+# `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`.
 
 
-def test_the_live_candidate_has_no_default():
-    """Structural, like the verdict beside it: omitting it is a TypeError, so no future caller
-    can reintroduce the skip by forgetting the argument."""
-    import inspect
-
-    parameter = inspect.signature(le.plan_live_entry).parameters["live_candidate"]
-    assert parameter.default is inspect.Parameter.empty
-
-
-def test_gate_0_accumulates_with_the_other_cheap_doors():
-    """Steps 1-5 report every closed door at once — an operator who fixes only the breaker
-    should already know Gate 0 is also shut, rather than discovering it one cycle later."""
-    decision = _plan(
-        verdict={"allow_new_position": False, "problems": ["weekly_loss_limit_breached"]},
-        live_candidate={"live_candidate_eligible": False, "failure_modes": ["NEGATIVE_EXPECTANCY_NET_OF_COSTS"]},
-    )
-    assert le.VERDICT_REFUSED in decision["reasons"]
-    assert le.CANDIDATE_REFUSED in decision["reasons"]
-
-
-def test_gate_0_is_not_the_verdict_in_another_costume():
-    """The two gates answer different questions and must be able to disagree: an allowing C4
-    verdict (nothing lost recently) over a record with no edge net of costs still refuses."""
-    decision = _plan(live_candidate={"live_candidate_eligible": False, "failure_modes": []})
-    assert decision["status"] == le.STATUS_REFUSED
-    assert decision["reasons"] == [le.CANDIDATE_REFUSED]
+def test_the_removed_gate_left_no_reason_code_behind():
+    """A refusal nothing can emit is dead surface on the record an operator reads, and the
+    kind that survives a deletion because nothing fails when it lingers."""
+    assert not hasattr(le, "CANDIDATE_REFUSED")
+    assert "live_candidate" not in inspect.signature(le.plan_live_entry).parameters

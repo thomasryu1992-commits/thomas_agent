@@ -179,6 +179,24 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - [ ] Paper trading **by this runtime** shows positive expectancy over a sustained window.
       Check with `python -m runtime.mvp_runtime.crypto.dashboard`.
 
+      **This is an operator step again, as written. Amended 2026-08-03.** #409 wired the
+      computed `live_candidate_eligible` into `live_entry` as an automatic refusal, and #413
+      added a signed, expiring record to override it. Both are removed. The checklist item is
+      unchanged — a person still has to be satisfied on this before real money — but the
+      runtime no longer refuses on it.
+
+      **Why: the automatic form could not be satisfied.** Measured 2026-08-03 on this machine,
+      `routable_strategy_ids` is whichever batch was promoted last (5 of 94 entries; the other
+      89 SUSPENDED), promotions land every 1–3 days, and the acknowledgement binds by exact set
+      equality — so each promotion reset the sample and voided the signature in the same event.
+      The sample stood at 2 against a required 20, roughly 32 days of a frozen pool away, on a
+      pool that does not stay frozen. Its only reachable state was the override, which makes it
+      a signature requirement rather than an evidence gate.
+
+      Measurement, alternatives considered, and what replaces it (nothing pool-wide; the
+      per-strategy lifecycle ladder already gates routing off its own record):
+      `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`.
+
       **Corrected 2026-07-25.** This box was previously ticked citing "2.36R over 114 closed
       trades". Those 114 are the **imported crypto_AI_System history**
       (`provenance: crypto_ai_system_import`, brought in by `scripts/import_crypto_history.py`),
