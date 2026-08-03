@@ -1070,6 +1070,78 @@ def mutate_params(
     return out
 
 
+# --- where the search looks next ------------------------------------------------------------
+#
+# `mutate_params` draws `base +/- (hi - lo) * 0.35` around `template.base_params`, and that base
+# is a CONSTANT. A hundred generations later the search is still sampling the same neighbourhood
+# it started in: repeated sampling, not evolution. Nothing a generation learns changes where the
+# next one looks.
+#
+# Moving the centre is the fix, and it has a hazard that has to be named or it is a worse bug
+# than the one it closes. Hill-climbing on a noisy fitness surface converges on the noise —
+# which is exactly the failure this store already exhibits, expectancy falling toward the cost
+# of trading as sample size grows. So two rules:
+#
+# **The centre follows ROBUSTNESS, never expectancy.** Centring on the highest expectancy is
+# precisely the mechanism that produced a store of maxima. `champion_score` is the anti-overfit
+# score; a region that scores well there has more trades per parameter and broader regimes
+# behind it, which is what "worth looking near" should mean.
+#
+# **Half the draws stay home.** Even-indexed mints use the elite centre, odd-indexed use the
+# template's own base. The search cannot collapse onto one point however good that point looks,
+# and the region the template was written for is never abandoned. Deterministic — it is the
+# accept index, not a coin flip.
+#
+# What keeps this honest is the two gates that landed first: #438's holdout interval and #440's
+# selection-adjusted ranking, which charges the attempt count that concentrating the search will
+# raise. The open risk is A2 — the holdout tail is shared, so a region that got lucky on it can
+# be confirmed repeatedly. That is not closed here and concentrating the search makes it matter
+# more, which is the honest reason it is written down rather than left implicit.
+ELITE_EVIDENCE_MIN_TRADES = 20
+
+
+def elite_base_params(
+    candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
+    fallback: dict[str, float],
+) -> dict[str, float]:
+    """The params of the most ROBUST prior candidate for this family and context.
+
+    ``fallback`` (the template's own base) whenever there is nothing better to say: no prior
+    candidate here, none carrying `mint_params`, or none with enough closed trades for its score
+    to mean anything. A centre moved on three trades is not a lesson.
+
+    Pure and deterministic given the store, which is what keeps a replay reproducible — the
+    centre is derived from recorded evidence, never from wall-clock or draw order.
+    """
+    best_score = None
+    best_params: dict[str, float] | None = None
+    for record in candidates:
+        spec = record.get("strategy_spec") or {}
+        if spec.get("strategy_family") != family or spec.get("timeframe") != timeframe:
+            continue
+        if symbol not in (spec.get("symbol_scope") or []):
+            continue
+        params = record.get("mint_params")
+        if not isinstance(params, Mapping) or not params:
+            continue
+        evidence = record.get("backtest_evidence") or {}
+        closed = evidence.get("closed_count")
+        if not isinstance(closed, (int, float)) or closed < ELITE_EVIDENCE_MIN_TRADES:
+            continue
+        score = record.get("champion_score")
+        if not isinstance(score, (int, float)):
+            continue
+        # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
+        # store order among equals.
+        if best_score is None or score > best_score:
+            best_score, best_params = float(score), {str(k): v for k, v in params.items()}
+    if best_params is None:
+        return dict(fallback)
+    # Only keys the template still declares: a param the family dropped must not be resurrected
+    # from an old record, and one it gained must come from the template's own base.
+    return {name: best_params.get(name, fallback[name]) for name in fallback}
+
+
 def build_spec_dict(
     template: StrategyTemplate, params: dict[str, float], *,
     strategy_id: str, generation_id: str, symbol: str = "BTCUSDT",
@@ -1178,6 +1250,7 @@ def generate_batch(
     known_rule_hashes: frozenset[str] = frozenset(),
     positioning_eligible: bool = False,
     rotation_index: int | None = None,
+    elite_params: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
@@ -1211,6 +1284,7 @@ def generate_batch(
     offset = _rotation_offset(generation_id, seed, count, len(templates),
                               rotation_index=rotation_index)
     accepted: list[StrategySpec] = []
+    accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen_hashes: set[str] = set(known_rule_hashes)
@@ -1219,7 +1293,16 @@ def generate_batch(
     while len(accepted) < count and attempts < count * _MAX_ATTEMPTS_PER_SPEC:
         attempts += 1
         template = templates[(offset + len(accepted)) % len(templates)]
-        params = mutate_params(template.base_params, template.param_space, rng)
+        # Half the draws around what this family has already learned, half around where it
+        # started. The index, not a coin flip, so the split is reproducible — and so the search
+        # cannot collapse onto one point however good that point looks. See `elite_base_params`.
+        elite = (elite_params or {}).get(template.family)
+        centre = (
+            {name: float(elite.get(name, template.base_params[name]))
+             for name in template.base_params}
+            if elite and len(accepted) % 2 == 0 else template.base_params
+        )
+        params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
                                     generation_id=generation_id, symbol=symbol)
@@ -1237,6 +1320,7 @@ def generate_batch(
             continue
         seen_hashes.add(spec.strategy_rule_hash)
         accepted.append(spec)
+        accepted_params[spec.strategy_id] = dict(params)
         validations.append(verdict)
 
     return {
@@ -1245,6 +1329,10 @@ def generate_batch(
         "requested_count": count,
         "accepted_count": len(accepted),
         "specs": [s.to_dict() for s in accepted],
+        # The draw each spec came from, keyed by strategy_id. Returned rather than re-derived,
+        # for the reason `mint_params` states on the record: reversing a param out of a spec
+        # would be a second implementation of every family's entry builder.
+        "params": accepted_params,
         "validations": validations,
         "rejected": rejected,
         "batch_complete": len(accepted) == count,
@@ -2151,10 +2239,22 @@ def run_factory(
 
     symbol = str(snapshot.get("symbol") or "BTCUSDT")
     timeframe = str(snapshot.get("timeframe") or "1d")
+    # What each family has already learned in THIS context. Empty on a store whose candidates
+    # predate `mint_params`, which is every one of them today — so the first generation after
+    # this lands still draws around the template base, and the one after it has something to
+    # move toward. Same shape as every other "record it before you can use it" step here.
+    elite_centres = {
+        template.family: elite_base_params(
+            existing_candidates, family=template.family, symbol=symbol, timeframe=timeframe,
+            fallback=template.base_params,
+        )
+        for template in templates_for_timeframe(timeframe, positioning_eligible=positioning_eligible)
+    }
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
         timeframe=timeframe,
+        elite_params=elite_centres,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         # Counted from the store this function was already given — the rotation steps on
@@ -2193,6 +2293,13 @@ def run_factory(
             "evidence_input_sha256": candles_sha,
             "provenance": "mvp_factory",
             "derivation_type": "seeded_template",
+            # What this candidate was drawn from, recorded because nothing did and the search
+            # therefore could not learn: `elite_base_params` reads exactly this. Stored on the
+            # record rather than re-derived from the spec — the mapping from a param name to the
+            # condition it lands in lives in the family's own entry builder, so reversing it
+            # would be a second implementation of every template, silently wrong the first time
+            # one changed.
+            "mint_params": batch["params"].get(spec.strategy_id, {}),
             "parent_candidate_ids": [],
             "created_at_utc": now,
         }
