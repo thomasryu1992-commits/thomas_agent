@@ -403,6 +403,42 @@ def test_a_naked_close_records_an_outcome():
     assert outcome["settlement_id"]
 
 
+def test_a_naked_outcome_carries_a_real_R_and_not_None():
+    """Writing the row was only half the reconnection. `risk_usdt` was read from
+    `sizing["risk_usdt"]`, a key nothing in the runtime writes, so every naked row came out
+    R-less — and an R-less live row is DROPPED by `cycle.live_outcomes_for_analysis` before the
+    weekly, drawdown and consecutive-loss breakers see it. The row reached the ledger and was
+    discarded one layer above it."""
+    outcome = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    # |60000 - 59000| * 0.001, off the FILLED price and the decision's own stop.
+    assert outcome["risk_usdt"] == 1.0
+    assert outcome["result_R"] == 1.0
+
+
+def test_a_naked_outcome_reaches_the_breakers_it_was_recorded_for():
+    """The behaviour the field exists for, pinned end to end rather than by proxy: the bridge
+    that feeds the ledger-based breakers must keep this row, not drop it."""
+    from runtime.mvp_runtime.crypto.cycle import live_outcomes_for_analysis
+
+    outcome = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    readable, excluded = live_outcomes_for_analysis([outcome])
+    assert len(readable) == 1
+    assert excluded == []
+
+
+def test_a_naked_close_states_the_same_risk_the_booked_path_would_have():
+    """Two ways to compute one trade's risk is how the R in this row stops being comparable to
+    the R in the rows beside it."""
+    from runtime.mvp_runtime.crypto.live_position import build_live_position
+
+    booked = build_live_position(
+        symbol="BTCUSDT", direction="LONG", quantity=0.001, entry_price=60000.0,
+        stop_loss=BRACKET["stop_loss"], opened_at=NOW,
+    )
+    outcome = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    assert outcome["risk_usdt"] == booked["risk"]
+
+
 def test_a_naked_close_that_cannot_be_priced_records_nothing_and_says_so():
     """The position is closed at the venue either way, so unlike `execute_live_exit` there is
     no book to keep. Inventing a figure to fill the row would put a fiction into the breaker's

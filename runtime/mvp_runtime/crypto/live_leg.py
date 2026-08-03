@@ -82,7 +82,7 @@ from .live_execution import (
 )
 from .live_order import evaluate_live_close_guard, make_client_order_id, make_idempotency_key
 from .live_pnl import build_live_outcome_record
-from .live_position import build_live_position
+from .live_position import build_live_position, position_risk_usdt
 from .live_promotion import RECONCILED
 
 LIVE_LEG_VERSION = "live_leg.v0.1"
@@ -559,7 +559,9 @@ def execute_live_entry(
                 quantity=filled_qty,
                 entry_price=fill_price,
                 placements=[],
-                identity=_naked_close_identity(decision, intent, entry),
+                identity=_naked_close_identity(
+                    decision, intent, entry, quantity=filled_qty, entry_price=fill_price
+                ),
                 adapter=adapter,
                 gate_open=gate_open,
                 limits=limits,
@@ -603,7 +605,9 @@ def execute_live_entry(
             direction=str(intent["direction"]),
             quantity=filled_qty,
             entry_price=fill_price,
-            identity=_naked_close_identity(decision, intent, entry),
+            identity=_naked_close_identity(
+                decision, intent, entry, quantity=filled_qty, entry_price=fill_price
+            ),
             placements=placements,
             adapter=adapter,
             gate_open=gate_open,
@@ -671,7 +675,12 @@ def _placed_id(placements: list[dict[str, Any]], index: int) -> str | None:
 
 
 def _naked_close_identity(
-    decision: Mapping[str, Any], intent: Mapping[str, Any], entry: Mapping[str, Any]
+    decision: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    *,
+    quantity: float,
+    entry_price: float,
 ) -> dict[str, Any]:
     """Who this trade belonged to, for the outcome a naked close has to record.
 
@@ -679,6 +688,18 @@ def _naked_close_identity(
     BEFORE the position is booked (there is no record to read yet), so the facts are gathered
     rather than looked up. Kept as one function so the two call sites cannot drift into
     attributing the same trade differently.
+
+    ``risk_usdt`` is **computed**, through the same :func:`position_risk_usdt` the booked path
+    uses, and not read off the sizing record. It was read from ``sizing["risk_usdt"]`` when
+    this landed, and nothing in the runtime has ever written that key — ``size_live_order``
+    emits ``risk_per_unit``, ``risk_budget_usdt`` and ``risk_quantity``, none of them a
+    position's quote risk. So the lookup returned None on every naked close, and a None here is
+    not a cosmetic gap: ``build_live_outcome_record`` turns it into ``result_R: None``, and
+    ``cycle.live_outcomes_for_analysis`` then DROPS R-less live rows before the weekly,
+    drawdown and consecutive-loss breakers ever see them. The row reached the ledger and was
+    discarded one layer above it — the same three breakers this path was reconnected for.
+    Computing it from the filled price closes that, and matches the risk the exit paths record
+    for a position that was booked.
     """
     return {
         "strategy_id": intent.get("strategy_id"),
@@ -688,7 +709,11 @@ def _naked_close_identity(
         "strategy_generation_id": intent.get("strategy_generation_id"),
         "entry_exchange_order_id": entry.get("exchange_order_id"),
         "entry_quote_usdt": _f((entry.get("fill") or {}).get("cum_quote")),
-        "risk_usdt": _f((decision.get("sizing") or {}).get("risk_usdt")),
+        "risk_usdt": position_risk_usdt(
+            entry_price=entry_price,
+            stop_loss=(decision.get("bracket") or {}).get("stop_loss"),
+            quantity=quantity,
+        ),
     }
 
 
