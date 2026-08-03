@@ -82,7 +82,7 @@ from .live_execution import (
 )
 from .live_order import evaluate_live_close_guard, make_client_order_id, make_idempotency_key
 from .live_pnl import build_live_outcome_record
-from .live_position import build_live_position, position_risk_usdt
+from .live_position import build_live_position, position_risk_usdt, unbooked_position_id
 from .live_promotion import RECONCILED
 
 LIVE_LEG_VERSION = "live_leg.v0.1"
@@ -560,7 +560,7 @@ def execute_live_entry(
                 entry_price=fill_price,
                 placements=[],
                 identity=_naked_close_identity(
-                    decision, intent, entry, quantity=filled_qty, entry_price=fill_price
+                    decision, intent, entry, quantity=filled_qty, entry_price=fill_price, now=now
                 ),
                 adapter=adapter,
                 gate_open=gate_open,
@@ -606,7 +606,7 @@ def execute_live_entry(
             quantity=filled_qty,
             entry_price=fill_price,
             identity=_naked_close_identity(
-                decision, intent, entry, quantity=filled_qty, entry_price=fill_price
+                decision, intent, entry, quantity=filled_qty, entry_price=fill_price, now=now
             ),
             placements=placements,
             adapter=adapter,
@@ -681,6 +681,7 @@ def _naked_close_identity(
     *,
     quantity: float,
     entry_price: float,
+    now: str,
 ) -> dict[str, Any]:
     """Who this trade belonged to, for the outcome a naked close has to record.
 
@@ -700,8 +701,18 @@ def _naked_close_identity(
     discarded one layer above it — the same three breakers this path was reconnected for.
     Computing it from the filled price closes that, and matches the risk the exit paths record
     for a position that was booked.
+
+    ``position_id`` is minted rather than left None, for the reason
+    :func:`unbooked_position_id` gives: the outcome's ``outcome_id`` is derived from it, and a
+    None made two naked closes on one symbol in one cycle collide into an id
+    ``read_live_outcomes`` refuses — taking the whole live history down with it.
     """
     return {
+        "position_id": unbooked_position_id(
+            symbol=str(intent.get("symbol") or ""),
+            entry_client_order_id=entry.get("client_order_id"),
+            opened_at=now,
+        ),
         "strategy_id": intent.get("strategy_id"),
         "candidate_id": (decision.get("sizing") or {}).get("candidate_id")
         or intent.get("candidate_id"),
@@ -860,9 +871,9 @@ def _record_naked_outcome(
         entry_order_id=identity.get("entry_exchange_order_id"),
         exit_order_id=close.get("exchange_order_id"),
         strategy_id=identity.get("strategy_id"),
-        # No position was booked, so there is no position_id to carry. The settlement id is
-        # derived from the identity it does have; a naked close happens once per entry.
-        position_id=None,
+        # No position was booked, but the row still needs an identity: `outcome_id` is derived
+        # from it, and a None collides across two naked closes on one symbol in one cycle.
+        position_id=identity.get("position_id"),
         close_reason=CLOSE_REASON_NAKED,
         opened_at_utc=now,
         risk_usdt=identity.get("risk_usdt"),
