@@ -20,6 +20,7 @@ from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
     FACTORY_DEPTH_DAYS,
+    HYPERLIQUID,
     MARKET_DATA_ENV,
     MAX_CANDLES,
     MIN_FACTORY_BARS,
@@ -799,3 +800,213 @@ def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():
     assert live_execution.select_order_adapter is not None      # separate selector
     assert account.read_account is not None                     # separate endpoint
     assert live_route.run_live_leg is not None
+
+
+# --- S1: the Hyperliquid collector (HIP-3 equity perps) ----------------------
+#
+# Same gate posture as the Binance collector above, so the tests that matter are the ones
+# where this venue DIFFERS: `dex:ticker` symbols, an object-shaped candle whose OHLCV are
+# strings, three flow legs that structurally do not exist, and a hard per-request ceiling
+# reported rather than papered over.
+
+_HL_AUTH = Authorization(
+    flags=(NETWORK_ACCESS,),
+    provider_id=HYPERLIQUID,
+    activation_sha256="sha256:test",
+    expires_at="2999-01-01T00:00:00Z",
+    evidence_ref=".runtime_governance_state/evidence.md",
+)
+
+
+def _hl_candle(open_ms: int, close_ms: int, price: float) -> dict:
+    return {"t": open_ms, "T": close_ms, "s": "xyz:XLE", "i": "1h",
+            "o": str(price), "c": str(price), "h": str(price * 1.01),
+            "l": str(price * 0.99), "v": "5221.48", "n": 365}
+
+
+# Two closed candles + one whose close is far in the future (still forming).
+_HL_RESPONSE = json.dumps([
+    _hl_candle(1_000_000, 2_000_000, 100.0),
+    _hl_candle(2_000_000, 3_000_000, 101.0),
+    _hl_candle(3_000_000, 99_999_999_999_999, 102.0),
+])
+
+
+def test_hyperliquid_drops_the_forming_candle(monkeypatch):
+    # The venue returns the still-forming bar (measured 2026-08-03), so dropping it is the
+    # adapter's job — a downstream indicator must never see a close that is still moving.
+    _patch_urlopen(monkeypatch, _HL_RESPONSE)
+    result = market_data.HyperliquidCollector(authorization=_HL_AUTH).collect(
+        "xyz:XLE", "1h", limit=10, timeout_seconds=5
+    )
+    assert [c.close for c in result.candles] == [100.0, 101.0]
+    assert result.is_synthetic is False
+    assert result.source == "hyperliquid_public"
+
+
+def test_hyperliquid_absent_flow_legs_are_none_not_derived(monkeypatch):
+    # This venue's candle carries no quote volume and no taker split. They must stay
+    # indeterminate: `volume * close` would be a plausible-looking fabrication that a
+    # mined threshold could match on. `trade_count` IS reported and must survive.
+    _patch_urlopen(monkeypatch, _HL_RESPONSE)
+    candle = market_data.HyperliquidCollector(authorization=_HL_AUTH).collect(
+        "xyz:XLE", "1h", limit=10, timeout_seconds=5
+    ).candles[0]
+    assert candle.quote_volume is None
+    assert candle.taker_buy_base is None
+    assert candle.taker_buy_quote is None
+    assert candle.trade_count == 365.0
+
+
+def test_hyperliquid_reports_a_window_shallower_than_requested(monkeypatch):
+    # The ceiling is silent at the venue: ask for more than it holds and it answers with
+    # what it has and no error. `depth_capped` is the only thing that says so, and without
+    # it a single-regime window is indistinguishable from a full one.
+    _patch_urlopen(monkeypatch, _HL_RESPONSE)
+    collector = market_data.HyperliquidCollector(authorization=_HL_AUTH)
+    deep = collector.collect("xyz:XLE", "1h", limit=5_000, timeout_seconds=5)
+    assert deep.depth_capped is True
+    shallow = collector.collect("xyz:XLE", "1h", limit=2, timeout_seconds=5)
+    assert shallow.depth_capped is False
+
+
+def test_depth_capped_reaches_the_snapshot_and_the_record(monkeypatch):
+    _patch_urlopen(monkeypatch, _HL_RESPONSE)
+    snapshot, record = collect_market_data(
+        "xyz:XLE", "1h",
+        collector=market_data.HyperliquidCollector(authorization=_HL_AUTH),
+        now=NOW, limit=5_000,
+    )
+    assert snapshot["depth_capped"] is True
+    assert record["depth_capped"] is True
+
+
+def test_binance_records_a_full_window_as_not_capped(monkeypatch):
+    # The flag is additive, not a behaviour change: an existing collector that filled the
+    # window still reports False, so nothing that reads the record starts meaning something
+    # different.
+    _patch_urlopen(monkeypatch, _KLINES_RESPONSE)
+    snapshot, record = collect_market_data(
+        "BTCUSDT", "1d", collector=BinanceFuturesCollector(authorization=_AUTH), now=NOW, limit=2
+    )
+    assert snapshot["depth_capped"] is False
+    assert record["depth_capped"] is False
+
+
+@pytest.mark.parametrize("symbol", ["xyz:XLE", "para:AVGO", "mkts:US500"])
+def test_hip3_symbols_are_valid_for_this_venue_only(symbol):
+    collector = market_data.HyperliquidCollector(authorization=_HL_AUTH)
+    assert market_data._require_symbol(symbol, pattern=collector.symbol_pattern) == symbol
+    # ...and the SAME name is refused for the Binance-shaped venue, which is the point of
+    # a per-venue pattern rather than one permissive union.
+    with pytest.raises(ToolBlocked) as exc:
+        market_data._require_symbol(symbol)
+    assert exc.value.reason_code == "INVALID_SYMBOL"
+
+
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "XLE", "XYZ:XLE", "xyz:", ":XLE", "xyz:xle"])
+def test_non_hip3_symbols_are_refused_by_the_hyperliquid_venue(symbol):
+    # Includes `BTCUSDT`: a name that is well-formed for the OTHER venue must not reach
+    # this one's endpoint. Bare `XLE` too — the prefix is what separates `xyz:AVGO` from
+    # `para:AVGO`, so a stripped name is ambiguous rather than convenient.
+    collector = market_data.HyperliquidCollector(authorization=_HL_AUTH)
+    with pytest.raises(ToolBlocked) as exc:
+        market_data._require_symbol(symbol, pattern=collector.symbol_pattern)
+    assert exc.value.reason_code == "INVALID_SYMBOL"
+
+
+def test_hyperliquid_refuses_egress_without_authorization():
+    # Constructing the collector directly must not bypass the gate.
+    with pytest.raises(SafetyGateBlocked) as exc:
+        market_data.HyperliquidCollector(authorization=None).collect(
+            "xyz:XLE", "1h", limit=10, timeout_seconds=5
+        )
+    assert exc.value.reason_code == "NOT_AUTHORIZED"
+
+
+def test_select_hyperliquid_without_activation_fails_closed(monkeypatch, tmp_path):
+    # The env var alone opens nothing — and Binance's own grant must not authorize this
+    # venue, which is what one-file-per-provider buys.
+    monkeypatch.setenv(MARKET_DATA_ENV, HYPERLIQUID)
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+
+def test_select_hyperliquid_with_its_own_activation(monkeypatch, tmp_path):
+    state = tmp_path / ".runtime_governance_state"
+    state.mkdir()
+    evidence_rel = ".runtime_governance_state/market_data_gate_approval.md"
+    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
+    record = build_activation_record(
+        flags=[NETWORK_ACCESS],
+        provider_id=HYPERLIQUID,
+        activated_at="2026-08-01T00:00:00Z",
+        expires_at="2026-12-31T23:59:59Z",
+        evidence_ref=evidence_rel,
+        authority_level="P1",
+    )
+    path = safety_gate.activation_path(tmp_path, HYPERLIQUID)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setenv(MARKET_DATA_ENV, HYPERLIQUID)
+    collector = select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
+    assert isinstance(collector, market_data.HyperliquidCollector)
+
+    # The Hyperliquid grant must not open the Binance path either — the check runs both ways.
+    monkeypatch.setenv(MARKET_DATA_ENV, BINANCE_FUTURES)
+    with pytest.raises(SafetyGateBlocked) as exc:
+        select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+
+def test_an_unknown_venue_selects_the_inert_mock(monkeypatch):
+    # A typo reaches nothing rather than raising: the same fail-closed direction the
+    # single-venue form had.
+    monkeypatch.setenv(MARKET_DATA_ENV, "hyperliquid_typo")
+    assert isinstance(select_market_data_collector(), MockMarketDataCollector)
+
+
+@pytest.mark.parametrize("payload", ["not json", '{"a": 1}', "[[1, 2]]", '[{"t": 1}]', '[{"t":1,"T":2,"o":"x","c":"1","h":"1","l":"1","v":"1","n":1}]'])
+def test_hyperliquid_malformed_response_fails_closed(monkeypatch, payload):
+    _patch_urlopen(monkeypatch, payload)
+    with pytest.raises(ToolError) as exc:
+        market_data.HyperliquidCollector(authorization=_HL_AUTH).collect(
+            "xyz:XLE", "1h", limit=10, timeout_seconds=5
+        )
+    assert exc.value.reason_code == "MALFORMED_RESULT"
+
+
+def test_hyperliquid_transport_error_fails_closed(monkeypatch):
+    _patch_urlopen(monkeypatch, urllib.error.URLError("connection refused"))
+    with pytest.raises(ToolError) as exc:
+        market_data.HyperliquidCollector(authorization=_HL_AUTH).collect(
+            "xyz:XLE", "1h", limit=10, timeout_seconds=5
+        )
+    assert exc.value.reason_code == "TOOL_TRANSPORT"
+
+
+def test_hyperliquid_sends_one_post_with_a_time_window(monkeypatch):
+    # No paging: one request, and the window is a time range rather than a count, so the
+    # `limit` -> `startTime` conversion is what the venue actually receives.
+    seen: list = []
+
+    def fake_urlopen(request, timeout):
+        seen.append(request)
+        return _FakeResp(_HL_RESPONSE)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    market_data.HyperliquidCollector(authorization=_HL_AUTH).collect(
+        "xyz:XLE", "1h", limit=100, timeout_seconds=5
+    )
+    assert len(seen) == 1
+    request = seen[0]
+    assert request.method == "POST"
+    assert request.full_url == "https://api.hyperliquid.xyz/info"
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["type"] == "candleSnapshot"
+    assert body["req"]["coin"] == "xyz:XLE"
+    assert body["req"]["interval"] == "1h"
+    # 101 hourly bars of span (the extra one covers the forming bar that gets dropped).
+    assert body["req"]["endTime"] - body["req"]["startTime"] == 101 * 60 * 60_000
