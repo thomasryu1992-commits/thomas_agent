@@ -299,8 +299,10 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
 #     `CRITICAL_TRADES_PER_PARAMETER` it vetoes straight to FRAGILE whatever else scored;
 #   - `temporal_consistency` (0.25) reads a walk-forward pass rate that stays None — scoring
 #     zero — until the replay's slices each hold `MIN_TRADES_PER_WINDOW` trades;
-#   - ROBUST additionally requires a holdout of at least `MIN_HOLDOUT_TRADES` closed trades,
-#     so a thin tail puts the top verdict out of reach however good the edge is.
+#   - ROBUST additionally requires a holdout of at least `MIN_HOLDOUT_TRADES` closed trades
+#     whose mean clears `CONFIDENCE_Z` standard errors, so a thin tail puts the top verdict
+#     out of reach however good the edge is — and a wide one does too, which is the point:
+#     the tail has to be able to fail.
 # A shallow row's verdict is therefore a FLOOR: it withholds credit the strategy may deserve,
 # which is exactly what the 500 → 2000 re-score demonstrated.
 #

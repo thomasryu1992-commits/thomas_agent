@@ -35,6 +35,11 @@ from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
     account, counterfactual, digest, feedback, lifecycle, oi_store, paper, pool, positioning_store,
 )
+# "Can this sample tell the sign of its own edge" is one question with one answer in this
+# runtime. `robustness` owns the multiplier because it is the module that judges whether an
+# edge is real — the holdout gate draws the same interval over a candidate's unseen tail that
+# this board draws over settled paper outcomes. Restating 1.96 here is how the two drift.
+from .robustness import CONFIDENCE_Z
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -417,8 +422,7 @@ def _net_performance(own_outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-CONFIDENCE_Z = 1.96          # two-sided 95%
-POWER_Z = 0.84               # 80% power, the usual pairing
+POWER_Z = 0.84               # 80% power, the usual pairing (CONFIDENCE_Z: see the import)
 
 
 def sample_verdict(r_values: list[float]) -> dict[str, Any]:

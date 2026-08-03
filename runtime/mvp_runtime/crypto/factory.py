@@ -53,6 +53,7 @@ real instead of always zero.
 from __future__ import annotations
 
 import random
+import statistics
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import Any, Callable, Mapping
@@ -1396,14 +1397,23 @@ def _holdout_evidence(
     outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
         spec, rows, candles, cost=cost, funding=funding, offset=offset
     )
-    total_r = round(sum(float(o["result_R"]) for o in outcomes), 8)
+    results = [float(o["result_R"]) for o in outcomes]
+    total_r = round(sum(results), 8)
     closed = len(outcomes)
     return {
         "bars": len(rows),
         "closed_count": closed,
-        "win_count": sum(1 for o in outcomes if float(o["result_R"]) > 0),
+        "win_count": sum(1 for r in results if r > 0),
         "total_R": total_r,
         "expectancy": round(total_r / closed, 8) if closed else 0.0,
+        # The spread the confirmation is judged against. Without it `holdout_status` compared a
+        # mean to zero, which cannot fail on a small tail — the whole reason it now needs an
+        # interval. Sample stdev (n-1), matching `dashboard.sample_verdict`: these trades are a
+        # sample of what the spec would do, never the whole of it, and `pstdev` understates the
+        # spread of exactly that inference. 0.0 below two trades, where the statistic is
+        # undefined; the trade floor refuses that block anyway, and a stored 0.0 reads as
+        # INSUFFICIENT rather than as a zero-width interval that excludes zero for free.
+        "stdev_r": round(statistics.stdev(results), 8) if closed >= 2 else 0.0,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
