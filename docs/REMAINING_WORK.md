@@ -1412,6 +1412,109 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
 
+### The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
+
+F1 attributes the unjudgeable half of the store to fusion's AND-union. **The seeded templates
+have the same defect from a different cause**, and `htf_trend_*` shows it exactly: the family
+gates on a categorical, and the classifier behind that categorical returns before it ever tests
+for a trend.
+
+```python
+# features.classify_market_regime
+if atr_pct is not None:
+    if atr_pct >= 0.80:
+        return "HIGH_VOLATILITY"                              # <- returns first
+    ...
+if close > ma20 > ma50 and adx >= adx_threshold:
+    return "TREND_UP"
+```
+
+So `htf_market_regime == "TREND_UP"` **cannot be true on the higher timeframe's top-quintile
+volatility bars**, however cleanly they are trending. Three things go with it: those bars, a
+searchable ADX floor (`ADX_TREND_THRESHOLD = 20.0` is hard-coded inside the label, so 19.9 and
+20.1 switch the family off and on), and trend *strength* — a 0.1% ma20/ma50 separation and an 8%
+one are the same label. The first is the one that costs: 1R is `stop_atr` × ATR against
+fixed-bps friction, which is the premise `volatility_expansion_*` was added on, so the family
+the store shows with its least-negative holdout is structurally excluded from the bars where
+friction is cheapest.
+
+**The counter-design holds every accounting constant.** `count_free_parameters` charges literals
+and not `value_from`, so swapping the categorical for a normalized continuous column is free:
+
+| | conditions | literals | `free_parameters` |
+|---|---|---|---|
+| `htf_trend_long` (current) | `regime=="TREND_UP"`, `close>ma20`, `adx>=p` | 2 | 5 |
+| `htf_trend_strength_long` | `htf_ma20_distance_ma50>=p`, `close>ma20`, `adx>=p` | 2 | **5** |
+| `htf_pullback_long` (current) | `regime=="TREND_UP"`, `rsi<=p` | 2 | 5 |
+| `htf_pullback_ext_long` | `htf_price_distance_ma20>=p`, `rsi<=p` | 2 | **5** |
+
+`htf_ma20_distance_ma50` is `(ma20-ma50)/ma50` and carries direction *and* strength in one
+condition; both columns are already computed every cycle (`features.HTF_NUMERIC_COLUMNS`) and
+neither template has ever read them.
+
+**Method.** 5 symbols × 12 draws × long/short per family, `backtest_spec` per symbol against
+live frames at the current cost basis, read-only — nothing appended. Exit parameters come from
+their own rng keyed by draw index, so draw *i* carries identical `stop_atr` / `target_atr` /
+`max_holding_bars` in every arm and the entry rule is the only difference between them. An
+earlier unpaired pass is not reported: the extra entry parameter shifted the shared stream and
+the arms' exits diverged, which is the confound F1 was itself corrected for. Single-symbol
+rather than pooled because the deployed image predates `backtest_spec_pooled`.
+
+| 4h | IS trades | IS exp | HO trades | **judgeable** | HO exp | HO+% | t max |
+|---|---|---|---|---|---|---|---|
+| `htf_trend_long` | 43 | −0.0918 | 16 | 12/60 (20%) | −0.0848 | 25% | 0.58 |
+| `htf_trend_strength_long` | 64 | −0.0532 | 24 | **29/60 (48%)** | −0.1521 | 24% | 0.35 |
+| `htf_trend_short` | 34 | −0.0578 | 15 | 10/60 (17%) | +0.0051 | 50% | 1.63 |
+| `htf_trend_strength_short` | 72 | −0.0688 | 32 | **46/60 (77%)** | −0.1585 | 24% | 1.10 |
+| `htf_pullback_long` | 21 | −0.3132 | 5 | **0/60** | n/a | n/a | n/a |
+| `htf_pullback_ext_long` | 30 | −0.2562 | 14 | 5/60 (8%) | −0.1774 | 40% | 0.93 |
+| `htf_pullback_short` | 22 | **+0.0660** | 6 | **1/60** | +0.4399 | 100% | 2.24 |
+| `htf_pullback_ext_short` | 50 | +0.1130 | 19 | 14/60 (23%) | +0.2321 | 71% | 1.46 |
+
+| 1h | IS trades | IS exp | HO trades | judgeable | HO exp | HO+% | t max |
+|---|---|---|---|---|---|---|---|
+| `htf_trend_long` | 120 | −0.0712 | 62 | 60/60 | −0.1789 | 23% | 1.53 |
+| `htf_trend_strength_long` | 207 | −0.1053 | 70 | 58/60 | −0.1998 | 7% | 0.55 |
+| `htf_trend_short` | 138 | −0.0229 | 60 | 60/60 | −0.2647 | 2% | 0.06 |
+| `htf_trend_strength_short` | 224 | −0.0307 | 88 | 59/60 | −0.1578 | 2% | 0.32 |
+| `htf_pullback_long` | 47 | −0.2378 | 30 | 42/60 | −0.1562 | 12% | 0.86 |
+| `htf_pullback_ext_long` | 82 | −0.1750 | 31 | 37/60 | −0.2895 | 3% | 1.17 |
+| `htf_pullback_short` | 58 | −0.1173 | 28 | 36/60 | −0.2840 | 3% | 0.29 |
+| `htf_pullback_ext_short` | 106 | −0.1046 | 33 | 36/60 | −0.2106 | 0% | −0.09 |
+
+**Trade count and judgeability move; the edge does not.** At 4h the trend pair goes 20% → 48%
+and 17% → 77% judgeable, and the pullback pair 0% → 8% and 2% → 23%, for no extra parameter. At
+1h the tails are already deep, so the same change only adds trades (120 → 207, 47 → 82) and
+judgeability is flat to slightly down — the extension condition can only cut a sample that was
+already confirmable.
+
+**And nothing clears.** 0 of 960 specs clear the selection-adjusted bar (z = 3.34 at 60 attempts
+per family). Exactly **one** clears the uncorrected 1.96, where ~24 are expected by chance at
+that attempt count — so this population is not merely edgeless, it is thinner-tailed than noise.
+The best-looking cell (4h `htf_pullback_ext_short`, HO +0.2321 at 71% positive) does not clear
+1.96 and reads −0.2106 at 1h; it does not reproduce across the ladder.
+
+**One finding that stands apart from the proposal.** `htf_pullback_long/short` produce **0 and 1
+judgeable holdouts out of 60** at 4h, and `htf_pullback_short` does it while carrying a
+*positive* in-sample expectancy (+0.0660). That is a family which looks good in sample and can
+never be confirmed, at the timeframe where four of the five routable strategies live — F1's
+mechanism, in a seeded template rather than a fused child.
+
+**What it composes with.** Giving these rules more evidence makes them judgeably negative rather
+than confirmable — the same result the pooled measurement reaches one level up. So the value of
+a template change like this is **diagnostic speed**, not a promotable candidate: it buys a
+verdict at 4h in weeks instead of never. That is worth something and it is not an edge, and the
+two should not be traded for each other in whatever decides this.
+
+**Not done here, deliberately.** Shipping it means *replacing* rather than adding — a new family
+is +1 hypothesis on the same data, which raises the selection bar for everything else, so the
+shape would be `htf_trend_strength_*` minted and `htf_trend_*` moved to `RETIRED_FAMILIES`
+(the `volatility_squeeze_*` precedent: builder kept, rotation entry removed, old evidence still
+readable under its own name). The pullback variant should **not** ship on this evidence: it helps
+only at 4h, hurts at 1h, and its one good number does not reproduce. Both are mint-time changes
+and are judged over generations rather than days (the `#420` error), which is why the numbers are
+recorded here instead.
+
 ---
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
