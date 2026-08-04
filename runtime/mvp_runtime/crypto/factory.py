@@ -295,6 +295,14 @@ class StrategyTemplate:
 # parameter's diversity rather than a shift in it. At 1.45 that is 5.4%, ~77% of draws land in
 # the band measured above, and the tail still reaches 1.73 so the region this store has never
 # sampled (1.6-2.0, n=2) stays explorable.
+#
+# `target_atr` carries the same trap less severely and it was never measured until 2026-08-04:
+# the base 3.0 clears the 1.6 floor by 1.4 against a span of +/-2.24, so **18.9%** of draws pin
+# at exactly 1.6. Under the floor tolerated for the stop (10%) that is a fail, and it is why
+# "the low-target region" is mostly a spike ON the bound rather than a region — of the accepted
+# draws below target 2.0, roughly four in five are the pinned value. `_apply_reward_risk_floor`
+# takes it to 14.4% as a side effect, which is an improvement and not a fix; moving this base up
+# would be the fix, and it is a change to where the trend search aims, so it is not made here.
 _EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.2, 2.0),
     "target_atr": ParamSpec(1.6, 8.0),
@@ -330,11 +338,14 @@ _EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 #
 # **The lower target bound is 2.0 because it must equal the upper stop bound, not because 2.0
 # was chosen.** ``validate_strategy`` enforces ``target_atr / stop_atr >= MIN_REWARD_RISK`` (1.0),
-# and `mutate_params` draws the two independently, so any space with ``target.lo < stop.hi`` mints
-# a fraction of specs the validator then refuses — burning attempts and biasing the accepted
-# population toward the high-target corner, which is the opposite of the intent. This is also the
-# binding reason the classic fade geometry (RR below 1 carried by a high hit rate) cannot be
-# expressed here at all; widening MIN_REWARD_RISK is a separate, explicit decision.
+# so a space with ``target.lo < stop.hi`` contains pairs the validator refuses; at ``target.lo ==
+# stop.hi`` the property is arithmetic rather than lucky. Since 2026-08-04 `mutate_params` also
+# enforces the ratio at draw time (`_apply_reward_risk_floor`), so such a space no longer mints
+# refusals — but a space that never reaches the repair is still the stronger construction, and
+# the repair costs an rng draw and bends the target's marginal. Build them this way; the floor is
+# the net for spaces that cannot be. This is also the binding reason the classic fade geometry
+# (RR below 1 carried by a high hit rate) cannot be expressed here at all; widening
+# MIN_REWARD_RISK is a separate, explicit decision.
 #
 # Bases sit mid-range for the reason recorded above the trend base: a base ON a bound pins ~50%
 # of draws to that bound. At 1.7/2.7/10 no draw clamps at all (spans are +/-0.21, +/-0.49, +/-4.2),
@@ -1512,7 +1523,10 @@ def mutate_params(
     base_params: dict[str, float], param_space: dict[str, ParamSpec], rng: random.Random,
     *, scale: float = _MUTATION_SCALE,
 ) -> dict[str, float]:
-    """Perturb each parameter within a fraction of its range, clamped to bounds."""
+    """Perturb each parameter within a fraction of its range, clamped to bounds.
+
+    Every parameter is drawn independently EXCEPT the exit pair — see
+    :func:`_apply_reward_risk_floor` for the one coupling and why it lives here."""
     out: dict[str, float] = {}
     for name, spec in param_space.items():
         base = base_params[name]
@@ -1520,7 +1534,102 @@ def mutate_params(
         val = base + rng.uniform(-span, span)
         val = max(spec.lo, min(spec.hi, val))
         out[name] = int(round(val)) if spec.integer else round(val, 4)
+    _apply_reward_risk_floor(out, base_params, param_space, rng, scale=scale)
     return out
+
+
+# The one pair of generated parameters that is not free of the other, and the reason the coupling
+# is enforced here rather than by shaping each space's bounds.
+#
+# `validate_strategy` refuses `target_atr / stop_atr < MIN_REWARD_RISK`, and the loop above draws
+# both independently. So any space whose ``target_atr.lo`` sits below its ``stop_atr.hi`` proposes
+# pairs the validator then refuses: the attempt is spent against `_MAX_ATTEMPTS_PER_SPEC`, and
+# whatever survives is biased toward the high-target corner, because that corner is the only one
+# that is never refused.
+#
+# Measured 2026-08-04 over 200,000 draws from `_EXIT_PARAMS` at `_EXIT_BASE`: **4.71% refused**,
+# minimum drawn R:R 0.925. That is the rate from the TEMPLATE base, and it is the floor rather
+# than the figure — `generate_batch` centres half of every batch on `elite_base_params`, which
+# returns the params of a prior ACCEPTED candidate, so every accepted draw is a reachable centre.
+# Over 400 reachable centres: median 0%, mean 4.99%, p90 **19.4%**, worst **36.9%** (at centre
+# stop=1.7185, target=1.7627), with 9.5% of centres above 20%. `champion_score` picks the centre
+# and knows nothing about R:R, so nothing stops a family settling beside the diagonal and
+# refusing a third of its own draws for as long as that centre holds.
+#
+# **Raising ``target_atr.lo`` to ``stop_atr.hi`` — the `_FADE_EXIT_PARAMS` construction — is the
+# obvious fix and is the wrong one for the trend space.** It deletes target_atr [1.6, 2.0), which
+# is 27.7% of trend draws, and that region is not dead weight: bucketed on the candidate store by
+# holdout R/trade it is the LEAST negative band (target==1.6 -0.2642, 1.6-2.0 -0.2502, 2.0-3.0
+# -0.3059, >=3.0 -0.3216), and paired within (family, timeframe, symbol) to control the confound
+# the `_EXIT_PARAMS` note warns about it runs +0.0174R median in favour of the low band, 34 of 58
+# cells. Weak and near enough to null — but the direction is wrong for deleting it, and a fade
+# space's argument does not transfer to a trend space that measures differently.
+#
+# The bound cannot move without the base moving either: at ``target_atr.lo`` 2.0 the base 3.0
+# pins **26.2%** of draws on the new floor (against 18.9% on the present one), which is the
+# collapse `_EXIT_BASE` documents, and clearing it needs base 4.1 — median target 3.00 -> 4.10,
+# median R:R 2.07 -> 2.83. That is not a consistency fix, it is a re-aiming of the trend geometry
+# with nothing measured behind it.
+#
+# So the target is drawn against a floor the stop sets. Two properties make this cheap:
+#
+# - **It is a redraw, not a clamp.** Clamping the target up to the stop is one line shorter and
+#   puts 4.71% of draws on R:R exactly 1.0 — the worst legal ratio in the space — where the
+#   redraw leaves 0.005%. Measured, that concentration does NOT run away through the elite loop
+#   (it holds at ~4.2% over 40 generations rather than compounding), so it is a standing bias
+#   and not a spiral; it is still 4.71% of the search spent on the boundary for no reason.
+# - **The redraw is the truncated draw in closed form**, not a retry loop: one extra `rng` call,
+#   no arbitrary retry ceiling, and the same distribution — against rejection sampling at 300,000
+#   draws the target mean and median agree to <=0.0008 and <=0.0012 at the template base, at an
+#   adverse elite centre, and at the worst corner of the space.
+#
+# Net effect on the trend space: refusals 4.71% -> 0.00%, floor pinning 18.9% -> 14.4%, the low
+# band kept (target<2.0 27.7% -> 23.5%, the loss being only the part that was never mintable),
+# median target 3.002 -> 3.122, median R:R 2.072 -> 2.137.
+#
+# **This does not make a space's own bounds irrelevant, and `_FADE_EXIT_PARAMS` should stay
+# self-consistent.** A space that satisfies ``target.lo >= stop.hi`` never reaches this function,
+# which is a stronger guarantee than being repaired by it: the repair costs an rng draw and bends
+# the target's marginal distribution, however slightly. This is the safety net for a space that
+# cannot be built that way, not a licence to stop building them that way.
+#
+# The deeper fix is not taken here: the quantity the validator constrains is the RATIO, so a space
+# expressing ``target_atr`` as a multiple of the drawn ``stop_atr`` would make the floor
+# structural and need no repair at all. That changes the recorded `mint_params` key set, which
+# `elite_base_params` reads off stored candidates, and would strand every centre in the store.
+def _apply_reward_risk_floor(
+    out: dict[str, float], base_params: dict[str, float], param_space: dict[str, ParamSpec],
+    rng: random.Random, *, scale: float,
+) -> None:
+    """Redraw ``target_atr`` above ``MIN_REWARD_RISK x`` the drawn ``stop_atr``, in place."""
+    target_spec = param_space.get("target_atr")
+    if target_spec is None or "stop_atr" not in param_space:
+        return
+    floor = out["stop_atr"] * MIN_REWARD_RISK
+    if out["target_atr"] >= floor:
+        return
+    # No legal target exists inside this space for the stop that was drawn, so there is nothing
+    # to redraw toward: leave the draw alone and let `validate_strategy` refuse the pair.
+    #
+    # The ceiling clamp at the end of this function is what prevents a target ABOVE the space
+    # being invented here — the laundering `_fused_exit_param` refuses for the same reason — and
+    # it holds with or without this branch. What the branch buys is that the impossible case
+    # stays a DRAW instead of becoming the ceiling: without it every such pair returns
+    # `target_spec.hi` exactly, a value the search never chose, recorded into `mint_params` and
+    # read back later as an elite centre.
+    if floor > target_spec.hi:
+        return
+    lo = max(target_spec.lo, floor)
+    base = base_params["target_atr"]
+    span = (target_spec.hi - target_spec.lo) * scale
+    # The mutation window intersected with the legal region. `max(lo, ...)` on BOTH ends is what
+    # keeps the interval non-empty when the window sits entirely below the floor — a case
+    # `_EXIT_PARAMS` cannot reach (its span is 2.24 against a floor that never exceeds 2.0) but
+    # which a future space could.
+    val = rng.uniform(max(lo, base - span), max(lo, min(target_spec.hi, base + span)))
+    # `max(lo, ...)` after rounding, not before: rounding to the 4-decimal grid can land a hair
+    # under the floor once `MIN_REWARD_RISK` is not 1.0 and the floor is off-grid.
+    out["target_atr"] = min(target_spec.hi, max(lo, round(val, 4)))
 
 
 # --- where the search looks next ------------------------------------------------------------
