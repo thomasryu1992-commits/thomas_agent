@@ -1460,6 +1460,14 @@ earlier unpaired pass is not reported: the extra entry parameter shifted the sha
 the arms' exits diverged, which is the confound F1 was itself corrected for. Single-symbol
 rather than pooled because the deployed image predates `backtest_spec_pooled`.
 
+**"Judgeable" here means `holdout.closed_count >= MIN_HOLDOUT_TRADES`, and the stricter reading
+gives the same answer** — stated because on the stored candidates it does not. Over the store,
+requiring `stdev_r > 0` as well cuts 599 rows to 66, and those 533 are rows that traded deep
+enough but predate the field, so the strict set is a **schema vintage** rather than a depth
+filter and any per-group comparison over it collapses onto the newest cohort. Every spec below
+was replayed fresh, so all of them carry `stdev_r` and the two definitions coincide; the `t max`
+column could not be computed otherwise.
+
 | 4h | IS trades | IS exp | HO trades | **judgeable** | HO exp | HO+% | t max |
 |---|---|---|---|---|---|---|---|
 | `htf_trend_long` | 43 | −0.0918 | 16 | 12/60 (20%) | −0.0848 | 25% | 0.58 |
