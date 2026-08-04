@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -64,6 +64,12 @@ VENUE_CANDLE_CEILING = 5_000
 # is a few megabytes a year. Declaring the symbol list would trade an unrecoverable loss for a
 # maintenance chore, in the wrong direction.
 ARCHIVE_DEXES: tuple[str, ...] = ("xyz",)
+
+# Every timeframe a strategy can be authored at (`strategy.ALLOWED_TIMEFRAMES`). The two the
+# venue can still serve are kept as well as the two it cannot, because a book that is
+# recoverable today stops being recoverable the moment the ceiling passes it, and the cost of
+# keeping 4h and 1d is a rounding error against 15m.
+ARCHIVE_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h", "1d")
 
 # A filename must round-trip the symbol, and `xyz:XLE` cannot be one on every filesystem.
 # Substituted rather than stripped: `xyz:AVGO` and `para:AVGO` are different books, so the
@@ -296,6 +302,14 @@ def refresh_book(
         return {"symbol": symbol, "timeframe": timeframe, "requested": limit,
                 "written": 0, "degraded": True,
                 "reason_code": getattr(exc, "reason_code", type(exc).__name__)}
+    # The selector's inert default is not the Mock precisely so this cannot happen — but a
+    # caller can construct a collector directly, and a synthetic bar in this store is
+    # indistinguishable from a real one a year later. An empty archive is recoverable by
+    # turning archiving on; a poisoned one is not, so the check is here as well as there.
+    if getattr(snapshot, "is_synthetic", False):
+        return {"symbol": symbol, "timeframe": timeframe, "requested": limit,
+                "returned": 0, "written": 0, "degraded": True,
+                "reason_code": "ARCHIVE_REFUSES_SYNTHETIC"}
     candles = [
         {
             "open_time": c.open_time, "close_time": c.close_time,
@@ -308,3 +322,48 @@ def refresh_book(
     written = append_candles(candles, venue=venue, symbol=symbol, timeframe=timeframe, root=root)
     return {"symbol": symbol, "timeframe": timeframe, "requested": limit,
             "returned": len(candles), "written": written, "degraded": False}
+
+
+def run_candle_archive(
+    collector: Any,
+    *,
+    venue: str,
+    now_ms: int,
+    dexes: Sequence[str] = ARCHIVE_DEXES,
+    timeframes: Sequence[str] = ARCHIVE_TIMEFRAMES,
+    timeout_seconds: int = 20,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """One archive pass: every live symbol on ``dexes``, every timeframe. Never raises.
+
+    The universe is read from the venue rather than declared — see :data:`ARCHIVE_DEXES`. If
+    that read fails there is nothing to iterate, so the pass reports why and writes nothing;
+    a per-book failure only costs that book, because losing one symbol must not cost the
+    other eighty-seven.
+
+    Returns a summary rather than a record: this store feeds nothing, and what an operator
+    needs from a fire is how much was kept and what did not answer.
+    """
+    try:
+        symbols = collector.live_symbols(dexes=list(dexes), timeout_seconds=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — a universe read failure is a quiet no-op, not a crash
+        return {"venue": venue, "symbols": 0, "books": 0, "written": 0, "degraded": 0,
+                "blocked": True, "reason_code": getattr(exc, "reason_code", type(exc).__name__)}
+
+    written = 0
+    degraded: list[str] = []
+    books = 0
+    for symbol in symbols:
+        for timeframe in timeframes:
+            books += 1
+            result = refresh_book(
+                collector, venue=venue, symbol=symbol, timeframe=timeframe,
+                now_ms=now_ms, timeout_seconds=timeout_seconds, root=root,
+            )
+            written += int(result.get("written") or 0)
+            if result.get("degraded"):
+                degraded.append(f"{symbol}/{timeframe}:{result.get('reason_code')}")
+    return {"venue": venue, "symbols": len(symbols), "books": books, "written": written,
+            "degraded": len(degraded), "blocked": False,
+            # Bounded: a venue-wide outage would otherwise put 352 entries in a status line.
+            "degraded_sample": degraded[:5]}
