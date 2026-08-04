@@ -61,7 +61,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
-from .cost import MAX_ENTRY_COST_R, round_trip_cost_r
+from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -304,6 +304,22 @@ def plan_live_entry(
         str(plan.get("direction") or "").upper(), _f(plan.get("entry_price")), _f(bracket["risk_per_unit"])
     )
     detail["round_trip_cost_r"] = round(cost_r, 6) if math.isfinite(cost_r) else "inf"
+    # The cost this door does NOT price, recorded beside the one it does. `round_trip_cost_r`
+    # is `apply_cost_model` at `exit_price == entry_price` — it prices no time, so carry
+    # reaches the record only at settlement, and until now a plan could clear the economics
+    # door and lose to carry with nothing saying the door had not looked.
+    #
+    # Reported, never added to `cost_r`. The cap bounds a cost every trade pays in full; this
+    # is the carry a trade would pay holding to its own limit, and the median hold on this
+    # store is 5-27% of that limit. Adding it would refuse 10 of 18 4h trades on a cost they
+    # do not incur. See `cost.worst_case_carry_r` for the measurement.
+    detail["worst_case_carry_r"] = worst_case_carry_r(
+        str(plan.get("direction") or ""),
+        _f(plan.get("entry_price")) or 0.0,
+        _f(bracket["risk_per_unit"]) or 0.0,
+        timeframe=plan.get("timeframe"),
+        max_holding_bars=plan.get("max_holding_bars"),
+    )
     if cost_r > MAX_ENTRY_COST_R:
         detail["cost_limit_r"] = MAX_ENTRY_COST_R
         return _decision(STATUS_REFUSED, [COST_REFUSED], symbol=symbol, now=now, **detail)

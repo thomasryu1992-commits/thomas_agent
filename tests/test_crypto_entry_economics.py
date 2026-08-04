@@ -118,6 +118,60 @@ def test_a_wide_enough_stop_is_admitted():
     ) is None
 
 
+# --- the cost this door does NOT price -----------------------------------------
+#
+# `round_trip_cost_r` is `apply_cost_model` at `exit_price == entry_price`, so it prices no
+# time. Carry reached the record only at settlement, and a plan could clear this door and lose
+# to carry with nothing saying the door had never looked. It is now recorded here — and
+# deliberately NOT added to the figure that refuses.
+
+def test_the_carry_is_recorded_beside_the_refusal_not_inside_it():
+    plan = {"direction": "LONG", "entry_price": 60000.0, "risk": 100.0, "symbol": "BTCUSDT",
+            "timeframe": "15m", "strategy_id": "S1", "max_holding_bars": 96}
+    refusal = entry_cost_refusal(plan)
+    carry = refusal["worst_case_carry_r"]
+    assert carry is not None and carry > 0
+    # The refusal is still the round trip alone. If these were summed the number an operator
+    # reads as "what this door measured" would stop matching the door's own limit.
+    assert refusal["round_trip_cost_r"] == pytest.approx(
+        round(round_trip_cost_r("LONG", 60000.0, 100.0), 6)
+    )
+
+
+def test_adding_the_carry_to_the_cap_would_refuse_trades_that_do_not_pay_it():
+    """The measurement that decided this is reported rather than gated.
+
+    A 4h plan sits under the cap on the round trip and goes OVER it once worst-case carry is
+    added — while the median 4h hold on this store is 2.5 bars against a limit of 30, so the
+    charge would be ~12x what the trade actually pays. Pinned as arithmetic so the decision to
+    gate it later has to confront this rather than rediscover it.
+    """
+    direction, entry, risk = "LONG", 60000.0, 720.0        # a 4h-shaped stop, 120 bps
+    round_trip = round_trip_cost_r(direction, entry, risk)
+    carry = cost.worst_case_carry_r(
+        direction, entry, risk, timeframe="4h", max_holding_bars=30
+    )
+    assert round_trip < MAX_ENTRY_COST_R                    # admitted today
+    assert round_trip + carry > MAX_ENTRY_COST_R            # would be refused if summed
+
+
+def test_a_short_is_not_credited_for_funding_it_might_earn():
+    """Carry is signed and a short earns it, but that is a forecast about a rate that flips.
+    Recording income would let a plan read cheaper on a number nobody has seen yet."""
+    assert cost.worst_case_carry_r(
+        "SHORT", 60000.0, 720.0, timeframe="4h", max_holding_bars=30
+    ) == 0.0
+
+
+@pytest.mark.parametrize("timeframe, bars", [("7m", 30), ("4h", None), ("4h", 0), ("4h", "x")])
+def test_an_unpriceable_hold_is_none_rather_than_zero(timeframe, bars):
+    """`0.0` is "measured at zero" and `None` is "not measured". A record that said 0.0 for an
+    unknown timeframe would report a cost of nothing where it means an answer of nothing."""
+    assert cost.worst_case_carry_r(
+        "LONG", 60000.0, 720.0, timeframe=timeframe, max_holding_bars=bars
+    ) is None
+
+
 # --- half one, wired: the paper book refuses ----------------------------------
 
 def _spec_dict(**overrides):

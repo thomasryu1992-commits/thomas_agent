@@ -572,13 +572,23 @@ def entry_cost_refusal(
     :func:`build_entry_plan`: that function returns ``None`` for unpriceable data, and a refusal
     that arrives as an absent plan is a refusal nothing can attribute, count, or shadow.
     """
-    cost_r = costs.round_trip_cost_r(
-        str(plan.get("direction") or ""), float(plan.get("entry_price") or 0.0), float(plan.get("risk") or 0.0)
-    )
+    direction = str(plan.get("direction") or "")
+    entry_price = float(plan.get("entry_price") or 0.0)
+    risk = float(plan.get("risk") or 0.0)
+    cost_r = costs.round_trip_cost_r(direction, entry_price, risk)
     if cost_r <= max_cost_r:
         return None
     return {
         "reason_code": ENTRY_COST_UNECONOMIC,
+        # Recorded beside the figure that refused, never added to it — see
+        # `cost.worst_case_carry_r`. The cap bounds the round trip, which every trade pays in
+        # full; this is what the trade would pay if it held to its own limit, which almost none
+        # of them do. On the record so a refusal can be read against the whole cost of the
+        # trade rather than against the half this door prices.
+        "worst_case_carry_r": costs.worst_case_carry_r(
+            direction, entry_price, risk,
+            timeframe=plan.get("timeframe"), max_holding_bars=plan.get("max_holding_bars"),
+        ),
         # `inf` is what an unpriceable plan costs (see round_trip_cost_r) and is not JSON, so it
         # rides as a string. A refusal record that cannot be serialised is a crash on the refusal
         # path, which is the one path that must not crash.
