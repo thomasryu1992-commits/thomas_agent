@@ -858,9 +858,19 @@ def test_a_fan_out_asks_each_symbol_scoped_question_once(tmp_path):
     # different questions, so the memo must not collapse them — and `oi_store` has always had its
     # own once-per-hour-per-symbol throttle for exactly the fan-out this memo now covers for the
     # other three feeds.
-    assert len(per_symbol(inner_feed.calls, "open_interest_history")) == 4
-    assert sorted(per_symbol(inner_feed.calls, "open_interest_history")) == [
-        "BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT"
+    #
+    # The hourly leg is no longer scoped to the VISITED symbols: `accumulate_open_interest_cohort`
+    # sweeps the declared cohort, because a retention store's scope cannot be a side effect of
+    # routing (the rule the positioning sweep already follows — vendor retention is ~84 days
+    # against a 500-day replay, so an hour not recorded is gone). So the two routed symbols are
+    # asked twice each (daily + hourly) and the four cohort members this pool never routes are
+    # asked once each, for the hourly store only. The throttle is visible in that split: BTC and
+    # ETH are NOT asked a third time, because the sweep runs after `attach_feeds` in the same
+    # hour and reads `skipped_fresh`.
+    calls = sorted(per_symbol(inner_feed.calls, "open_interest_history"))
+    assert len(calls) == 8
+    assert calls == [
+        "BNBUSDT", "BTCUSDT", "BTCUSDT", "DOGEUSDT", "ETHUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
     ]
 
 
