@@ -150,6 +150,79 @@ def test_shadow_book_is_capped(tmp_path):
     assert len(counterfactual.load_open_counterfactuals(tmp_path)) == counterfactual.MAX_OPEN_COUNTERFACTUALS
 
 
+def test_a_shadow_whose_clock_froze_expires_instead_of_holding_a_cap_slot(tmp_path):
+    """A shadow only advances `holding_candles` in the cycle owning its context, so one whose
+    context leaves the fan-out can never reach its time exit — it holds a cap slot forever.
+    Measured 2026-08-04: 30 of 30 open shadows sat outside the five routed contexts, i.e. 30
+    of the 50 slots were permanently spent."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "max_holding_bars": 2}, block_reasons=["regime_excluded"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    assert len(counterfactual.load_open_counterfactuals(tmp_path)) == 1
+
+    # Another context's cycle, three days on: 2 bars x 1d of budget is spent.
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="ETHUSDT", timeframe="4h", now="2026-07-25T12:00:00Z", root=tmp_path,
+    )
+    assert [e["reason"] for e in summary["expired"]] == ["holding_budget_elapsed_unsettled"]
+    assert summary["expired"][0]["block_reasons"] == ["regime_excluded"]
+    assert summary["open_count"] == 0
+    assert counterfactual.load_open_counterfactuals(tmp_path) == []
+    # Never priced: an expiry has no result_R, so it must not reach per-reason expectancy.
+    assert counterfactual.read_counterfactual_outcomes(tmp_path) == []
+
+
+def test_a_shadow_inside_its_own_budget_is_left_alone(tmp_path):
+    """Expiry is the shadow's own clock, not its context's membership. Contexts come back —
+    1d re-entered the rotation on 2026-08-04 — and 17 of the 30 stranded shadows were still
+    legitimately running, the ETHUSDT 1d block at 242h against a 648h budget."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "max_holding_bars": 27}, block_reasons=["x"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="ETHUSDT", timeframe="4h", now="2026-07-25T12:00:00Z", root=tmp_path,
+    )
+    assert summary["expired"] == [] and summary["foreign_context_skipped"] == 1
+    assert len(counterfactual.load_open_counterfactuals(tmp_path)) == 1
+
+
+def test_an_overdue_shadow_in_its_own_context_settles_rather_than_expires(tmp_path):
+    """Settling beats expiring wherever it is possible: a priced outcome is what the book
+    exists for, and only a shadow this cycle cannot judge is a candidate for expiry."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "max_holding_bars": 1}, block_reasons=["x"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+    )
+    calm = {"high": 101.0, "low": 99.5, "close": 100.5, "close_time": "2026-07-25T00:00:00Z"}
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=calm, last_close=100.5,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-25T12:00:00Z", root=tmp_path,
+    )
+    assert summary["expired"] == [] and len(summary["settled"]) == 1
+    assert counterfactual.read_counterfactual_outcomes(tmp_path)[0]["close_reason"] == "time_exit"
+
+
+def test_a_shadow_that_cannot_state_its_budget_is_never_expired(tmp_path):
+    """Fail-closed on unreadable inputs, the `settles_in_context` posture: an unknown
+    timeframe cannot be converted to a span, so the row is left alone rather than expired on
+    a guess."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "timeframe": "3w", "max_holding_bars": 1},
+        block_reasons=["x"], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="3w", now=NOW, root=tmp_path,
+    )
+    summary = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="ETHUSDT", timeframe="4h", now="2027-01-01T00:00:00Z", root=tmp_path,
+    )
+    assert summary["expired"] == []
+    assert len(counterfactual.load_open_counterfactuals(tmp_path)) == 1
+
+
 def test_a_foreign_context_shadow_is_never_settled_or_advanced(tmp_path):
     """The L1a guard the shadow book reintroduced: an ETH cycle used to settle a BTC
     shadow against ETH candles, fabricating a hypothetical that feeds gate calibration."""

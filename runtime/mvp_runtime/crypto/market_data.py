@@ -262,6 +262,31 @@ DERIVATIVE_MAX_PAGES = 60
 # states that premise — and it does NOT cover 1d, whose window is a 2,000-BAR floor
 # (`MIN_FACTORY_BARS`) rather than a calendar span, i.e. 2,000 days. That gap is what the gate
 # in the factory exists for.
+#
+# **This number is OURS, not the vendor's, and knowing which it is only matters at the moment
+# someone deepens the replay window.** The comment above explains why 520 was chosen but never
+# said whether a larger figure was available, so a reader arriving with a longer window in hand
+# could not tell an unlucky constant from a hard ceiling. Measured against Coinalyze on
+# 2026-08-04, `open_interest_history("BTCUSDT", days=N)` returned N points for every N asked:
+#
+#   | asked |  returned | oldest      |
+#   |-------|-----------|-------------|
+#   |   520 |       520 | 2025-03-02  |
+#   |   800 |       800 | 2024-05-26  |
+#   | 1,100 |     1,100 | 2023-07-31  |
+#   | 1,500 |     1,500 | 2022-06-26  |
+#
+# so the daily series reaches at least **2.9x** what this asks for, and nothing external binds
+# below that. `FACTORY_DEPTH_DAYS` was found to be the same kind of number on the same day.
+#
+# **The consequence, stated so it is not discovered afterwards: raising the replay window
+# WITHOUT raising this silently removes the four `oi_*` families from every timeframe it
+# passes.** `factory._oi_feed_reaches` compares the replay span against this constant, so at a
+# 1,000-day window it flips 1h and 4h from True to False — and on the store of 2026-08-04 the
+# `oi_*` rows were the only judgeable group with a POSITIVE median holdout (+0.0446 over 6 rows,
+# against -0.1428 over the other 422). Six rows is not evidence of an edge; it is a reason not
+# to drop the lane by accident. The two constants move together or the gain is paid for in the
+# one place the store had something to show.
 DERIVATIVE_HISTORY_DAYS = 520
 
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path

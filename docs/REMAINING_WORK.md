@@ -1483,6 +1483,39 @@ is strong on the *mechanism* (394 pairs, controlled by construction) it is four 
 on the *consequence* — so it is written down with its numbers rather than merged into the
 generation engine on the strength of one measurement.
 
+**What that decision costs is half the mint budget, and the number was not written down.**
+Everything above measures fusion's *effect*; this is its *share*. A fire mints
+`DEFAULT_BATCH_SIZE = 4` seeded specs and `FACTORY_FUSION_PAIRS = 4` fused ones per context, so
+it is **exactly half by construction** — not an emergent ratio. `scheduler.py` chose 4 knowing
+it: *"4 makes the fire half-crossover; past that the seeded rotation — the only path by which a
+NEWLY ADDED family ever enters the store — starts losing its share of each fire."* Measured over
+the store, the share is a policy history rather than a constant:
+
+| minted | total | crossover | share |
+|---|---|---|---|
+| 2026-07-23 → 07-25 | 4 / 64 / 64 | 0 | 0% |
+| 2026-07-26 → 07-30 | 90–115 | 30–32 | 33% |
+| 2026-07-31 → 08-03 | 120 | 60 | **50%** |
+| 2026-08-04 (fire only) | 80 | 40 | **50%** |
+
+The store-wide figure is **434 of 1,556 (28%)** and should not be quoted as the policy — it
+averages in the three days that ran at 0%. The 2026-08-04 row is the fire alone: that day's raw
+count is 416, of which **336 are `provenance: mvp_rescore`** appended by #503 and not mints at
+all, so a naive by-day count reads 10% and understates the policy fivefold.
+
+**Why the share belongs beside the effect.** The paired test says a child reproduces its parents
+(IS −0.0034, HO −0.0062, both CIs spanning zero) while closing 0.51× their trades — so half the
+budget buys no measured edge and costs judgeability. And the cost falls on the one path that
+cannot be substituted: seeded draws are how a NEW family enters the store at all, which the
+rotation fix (#489) has just made matter more. The first fire on the phased rotation minted 20
+distinct base families across 10 contexts — but at 1–3 candidates each, because the seeded half
+is what those 20 families were sharing.
+
+**Still not a recommendation.** `FACTORY_FUSION_PAIRS = 4 → 2` would move the share to 33% and
+roughly double the seeded supply per family, and that is the same kind of mint-time decision as
+the depth refusal above — judged over generations, not days (the `#420` error). What is recorded
+here is only the number the decision needs and did not have.
+
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
 judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
@@ -1544,6 +1577,70 @@ what the factory explores on the strength of one afternoon's measurement, and a 
 is judged over generations, not days (the `#420` error). The capability landed; the decision did
 not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
 the single-symbol search of the same family produced none.
+
+#### That batch was run, and it confirms — measured 2026-08-04, corrected the same day
+
+The condition above is the whole of the decision, so it was tested rather than left standing.
+Every mintable family at a timeframe, 8 freshly drawn parameter sets each, minted **pooled** —
+one spec with `symbol_scope` set to the whole cohort, replayed across all five legs, so each is
+ONE hypothesis at five symbols' data rather than five hypotheses at one symbol's each. Verdicts
+are `robustness.holdout_status`, not a re-implementation of it. Read-only; nothing appended.
+
+| pooled mint | specs | CONFIRMED | CONTRADICTED | INSUFFICIENT |
+|---|---|---|---|---|
+| 4h, 34 families × 8 | 272 | **11** (4.0%) | 218 | 43 |
+| 1h, 34 families × 8 | 272 | **4** (1.5%) | 247 | 21 |
+
+> **This replaces a first pass that reported 0 and 0, and the way it was wrong is the reusable
+> part.** That run built its frames with `attach_htf` alone. The scheduler attaches four legs
+> before a fire, so ten feed-dependent families — all four `oi_*`, `funding_fade_*`,
+> `premium_fade_*`, `xs_reversion_*` — were scored over columns that were `None` on **every**
+> row. They took no trades, returned INSUFFICIENT, and were written up as *"pooling does not fix
+> judgeability everywhere"*. It was not a verdict on them; it was a frame with their inputs
+> missing. With the legs attached those columns are 100% populated over the 4h replay
+> (`open_interest_zscore` 3000/3000, `funding_zscore` 2990/3000). `unsuppliable_features` would
+> have caught it inside `run_factory` — calling `backtest_spec_pooled` directly walked around
+> the guard that exists for exactly this.
+
+**F2's condition is met.** A pooled mint batch does produce CONFIRMED holdouts where the
+single-symbol search produced none — 1 CONFIRMED in 1,595 stored single-symbol rows, and that
+one PROVISIONAL, against 15 in 544 pooled mints.
+
+**Two families do it at both timeframes, and they are the same two.**
+
+| family | tf | HO trades | HO exp | t | IS exp |
+|---|---|---|---|---|---|
+| `oi_unwind_short` | 4h | 33 | +0.5347 | 3.15 | +0.4768 |
+| `oi_unwind_short` | 1h | 28 | +0.6303 | 3.34 | +0.1702 |
+| `oi_squeeze_long` | 4h | 38 | +0.5042 | 2.79 | +0.4234 |
+| `oi_squeeze_long` | 1h | 74 | +0.3027 | 2.75 | +0.3054 |
+
+Positive in-sample **and** out-of-sample, at two timeframes — which is the property every prior
+candidate in this record failed. `premium_fade_short` also confirms 4 of 8 at 4h and is
+**dismissed**: its in-sample expectancy is *negative* (−0.09 to −0.13) against a positive
+holdout, which is the signature of an artifact rather than an edge, and it is CONTRADICTED 8/8
+at 1h.
+
+**And none of it clears the selection correction, because the attempt count is not per family.**
+`SELECTION_CONTEXT` is `symbol_scope + timeframe`, and this batch is one symbol scope at one
+timeframe — so the honest count is **272 attempts**, not 8 per family. That puts the bar at
+**z = 3.74**, above the best `t` here (3.34). Reporting it per family, as the first pass did,
+charges 2.73 and lets two rows read as clearing. They do not.
+
+**So the finding is narrow and specific:** pooled minting reaches CONFIRMED where single-symbol
+minting does not, and the confirmations concentrate in the `oi_*` families rather than being
+spread across the library. What is *not* established is that they survive the attempt count they
+were drawn from.
+
+**What this does not test.** The draws are `mutate_params` around each template's own base;
+`elite_base_params` steering was not reproduced, so this is an *unsteered* pooled mint — the one
+difference from what `run_factory` would actually do. Eight draws per family is also modest.
+
+**And it changes the price of a longer replay window.** The two families that confirm are
+`oi_*`, which `factory._oi_feed_reaches` gates out of any rotation whose replay exceeds
+`DERIVATIVE_HISTORY_DAYS = 520` days. Lengthening the window therefore removes **exactly the
+families that produced the only confirmations this record has** — a cost that reads as
+bookkeeping until these numbers exist, and as decisive once they do.
 
 ### F3. The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
 
@@ -1663,6 +1760,62 @@ The pullback variant is **not** shipped and should not be on this evidence: it h
 hurts at 1h, and its one good number does not reproduce. `htf_pullback_long/short` remain in the
 rotation producing 0 and 1 judgeable holdouts out of 60 at 4h — an open item, not a resolved one.
 
+#### The pullback family's problem is not its rule — measured 2026-08-04
+
+Two different replacements were tried and both say the same thing, so the item above is closed
+in a direction it was not pointed at. **The rule was never what made it unjudgeable; one
+symbol's evidence was too thin for a conjunction this rare.** Replayed pooled across the cohort
+with `factory.backtest_spec_pooled` and the rule *unchanged*, at 4h:
+
+| 4h, same rule | specs | IS trades | HO trades | judgeable | HO exp | pos | t max | z bar |
+|---|---|---|---|---|---|---|---|---|
+| `htf_pullback_long` single | 60 | 21 | 5 | **0/60** | n/a | n/a | n/a | 3.34 |
+| `htf_pullback_long` pooled | 12 | 124 | 38 | **8/12** | −0.0823 | 25% | 1.25 | 2.87 |
+| `htf_pullback_short` single | 60 | 22 | 6 | **1/60** | +0.4399 | 100% | 2.24 | 3.34 |
+| `htf_pullback_short` pooled | 12 | 112 | 38 | **12/12** | **+0.1748** | **100%** | 1.87 | 2.87 |
+
+So the judgeability defect is fully removed without touching a condition. That also answers, for
+one family, the question F2 leaves open — a pooled *re-score* (not yet a pooled *mint*) turns
+un-judgeable into judged, and what it judges is **not confirmed**: nothing clears the
+selection-adjusted bar, and 1h is negative on both legs (long −0.1661, short −0.3332, 0% of
+draws positive).
+
+**The one result worth a second look, and the control that undercuts it.** 4h
+`htf_pullback_short` is the only positive figure this investigation has produced twice. Walking
+the holdout backwards in **adjacent, non-overlapping** windows (truncating the series by 0.7 each
+step makes window *k+1* end exactly where window *k* begins):
+
+| holdout window (4h) | bars | HO trades | judgeable | HO exp | pos | t max |
+|---|---|---|---|---|---|---|
+| `[2100,3000)` | 900 | 38 | 12/12 | +0.1748 | 100% | 1.87 |
+| `[1470,2100)` | 630 | 62 | 12/12 | +0.1539 | 100% | **2.08** |
+| `[1029,1470)` | 441 | 20 | 2/12 | +0.0338 | 100% | 0.16 |
+| `[720,1029)` | 309 | 2 | 0/12 | — | — | — |
+
+No negative window, and the two deep ones agree on magnitude. Its long sibling over the same
+windows is uniformly negative (−0.0823, −0.7568, −0.5062, −0.1579), so the result is not an
+artifact of the windowing.
+
+**And it still does not clear.** `t max` peaks at 2.08 against a selection-adjusted 2.87, the 12
+draws are correlated (one rule, adjacent parameters, one cohort, one window set) so "100% of
+draws positive" is nearer one observation than twelve, and only two windows carry real depth.
+
+The control is in the table above it. The **same rule at 1h** produces `[4116,5880)` at
+**+0.4052 with t max 3.91** — clearing even a selection-adjusted bar — surrounded by
+−0.3332, −0.2676 and −0.3338. If that window had been the only one sampled it would read as a
+confirmed edge. It is the cleanest demonstration this record has that **one strong window is not
+evidence here**, and it is why the 4h rows above are reported as suggestive rather than found.
+
+**What would settle it** is more independent evidence, not more draws of the same twelve: a
+replay window long enough to yield four non-overlapping tails that all reach
+`MIN_HOLDOUT_TRADES` at 4h (today the third is 2/12 and the fourth 0/12), or forward paper
+outcomes. **What would not:** loosening the rule to raise its trade count, which changes the
+hypothesis rather than testing it.
+
+**So the open item changes shape.** `htf_pullback_*` should not be replaced, and its
+unjudgeability at 4h is a *sampling* fact rather than a rule defect — which makes it evidence
+for the pooled-mint experiment F2 defers, not an argument for another template edit.
+
 **What is still owed.** A mint-time change is judged over generations rather than days (the
 `#420` error), so the shipped half is a *bet placed*, not a result: the check is the next fire's
 `strategy_family` distribution, and a few generations later whether 4h `htf_trend_strength_*`
@@ -1671,7 +1824,117 @@ measured — opening the high-volatility bars means trading where `DEFAULT_SLIPP
 constant, is most likely optimistic, so the new family's backtest carries a favourable bias of
 unknown size. Live is partly covered by `volatility_size_multiplier`; the backtest is not.
 
----
+### F4. The replay window is our constant, not the venue's limit — measured 2026-08-04
+
+F1 and F3 both end pointing at the same place. F1: *"What reopens it is a mint at 8 conditions
+that reaches `MIN_HOLDOUT_TRADES`, which cannot happen at these signal rates without a longer
+replay window — so re-measure `market_data.factory_candle_target` first."* F3: settling 4h
+`htf_pullback_short` needs four non-overlapping tails that all reach the same floor, and today
+only two do. So it was re-measured, against the live venue:
+
+| BTCUSDT | asked | returned | span | oldest bar | fetch |
+|---|---|---|---|---|---|
+| 4h (today's window) | 3,000 | 3,000 | 500 d | 2025-03-22 | 0.4 s |
+| 4h | 12,000 | 12,000 | 2,000 d | 2021-02-11 | 1.6 s |
+| 4h | 24,000 | **15,130** | **2,522 d** | 2019-09-08 | 2.0 s |
+| 1h (today's window) | 12,000 | 12,000 | 500 d | 2025-03-22 | 1.7 s |
+| 1h | 48,000 | 48,000 | 2,000 d | 2021-02-11 | 6.1 s |
+
+**Nothing external is binding.** 4h returns less than asked only at 15,130 bars, which is
+BTCUSDT's own listing date — the true floor, and **5.0×** the window the factory replays. 1h
+gives at least 4×. `MAX_CANDLES = 60,000` is nowhere near (its own comment already says it is
+head-room, not a live limit). The window is set by **`FACTORY_DEPTH_DAYS = 500`**, a constant of
+ours, and nothing else.
+
+**What 5× would resolve.** The 0.7-truncation chain F3 uses gives 4h holdout tails of
+900 / 630 / 441 / 309 bars today, of which two carry depth; at 15,130 bars the same chain gives
+**4,539 / 3,177 / 2,224 / 1,557**, so all four clear `MIN_HOLDOUT_TRADES` comfortably and F3's
+open item is decidable rather than merely open. For F1: an 8-condition mint closing 7 in-sample
+and 5 holdout trades scales to roughly **35 / 25**, which lands on the floor rather than far
+under it — the reopening condition F1 names becomes reachable.
+
+**What it costs, and the cost is the reason not to take it.**
+`DERIVATIVE_HISTORY_DAYS = 520` does not follow the window: at 2,000 days the OI and liquidation
+series would cover **26%** of the replay, and funding — capped by `FUNDING_MAX_PAGES = 4` at
+~1,314 days — about 66%. `factory._oi_feed_reaches` already computes this dynamically
+(`replay_days <= DERIVATIVE_HISTORY_DAYS`), so lengthening the window **auto-gates the four
+`oi_*` families out of the rotation** rather than mining them over a window that is
+three-quarters empty; its docstring records why that matters (every trade lands in the newest
+walk-forward slice, `temporal_consistency` is 0 by construction, and the family is retired
+FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivalent gate** and
+would walk into exactly that failure — one code change an extension requires either way, since
+it is a defect independent of the window.
+
+**There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
+to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
+
+| series | configured | vendor actually serves |
+|---|---|---|
+| OI daily (Coinalyze) | `DERIVATIVE_HISTORY_DAYS = 520` d | **2,200 d**, back to 2020-07-26 — returns exactly what is asked |
+| funding (Binance) | `FUNDING_MAX_PAGES = 4` ≈ 1,314 d | ~333 d per page; 6–7 pages reach 2,000 d |
+
+So a 2,000-day window is coverable on every axis at once — candles to 2,150 (SOL binding), OI to
+2,200, funding to whatever `FUNDING_MAX_PAGES` is set to. Lengthening the replay costs the
+`oi_*` families **only if `DERIVATIVE_HISTORY_DAYS` is left behind**, and it is a constant in
+this repo. The gate in `_oi_feed_reaches` stays exactly as it is — it is the thing that makes
+forgetting to raise them *safe* rather than silent.
+
+**Which matters because `oi_*` is where the only confirmations are, and they are not yet
+verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
+1h and 4h. Walked backwards through the same adjacent, non-overlapping windows F3 uses, at 4h:
+
+| window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
+|---|---|---|---|
+| `[2100,3000)` | +0.4240, **4 CONF**, 7/8 judgeable | +0.2565, **3 CONF**, 4/8 | −0.0761, 0 CONF, 6/8 |
+| `[1470,2100)` | +0.0946, 0 CONF, 6/8 | +0.1133, 0 CONF, 3/8 | −0.1485, 0 CONF, 6/8 |
+| `[1029,1470)` | +0.1024, 0 CONF, 2/8 | +0.2954, 1 CONF, 3/8 | −0.3189, 0 CONF, 5/8 |
+| `[720,1029)` | +0.2781, 0 CONF, 3/8 | +0.6172, 1 CONF, 1/8 | −0.1388, 0 CONF, 2/8 |
+
+**The confirmations concentrate in the newest window** — `oi_squeeze_long` confirms 4 of 8 there
+and 0 in every older one — which is the shape F3's 1h control showed is not evidence. What does
+hold is the *sign*: both confirmers are positive in all four windows on 83–100% of judgeable
+draws, while the control is negative in all four. So there is a consistent direction and no
+confirmed magnitude.
+
+**And the reason the older windows cannot decide it is the window itself.** The 0.7 chain
+shrinks geometrically, so on a 3,000-bar series the last two tails are 441 and 309 bars — 2/8 and
+3/8 draws judgeable, medians of 16 and 22 holdout trades. At 12,000 bars the same chain gives
+3,600 / 2,520 / 1,764 / 1,235-bar tails, all deep. **The measurement that would verify `oi_*` is
+the one this section proposes**, which inverts the ordering the previous paragraph asserted: the
+window is not priced *against* `oi_*`, it is what `oi_*` needs.
+
+Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
+cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
+contexts, and `build_feature_rows` is 6.0 s at 48,000 bars. What the arithmetic misses is the
+venue's rate limiter — measuring the depths in this table **hit HTTP 429** (the venue asked for
+17 s), and the factory shares an IP with the 15-minute cycle that trades. The live cycle was
+unaffected that time (no `MARKET_DATA_DEGRADED` in the 400 ledger rows around it), but a 4×
+fetch volume on the same address is the pattern that produced it, so an extension needs explicit
+backoff and spacing rather than the same call pattern run four times as hard.
+
+**The cohort's own history bounds the window before the venue does.** `backtest_spec_pooled`
+pools by bar INDEX and states its precondition — "bar *i* is the same calendar window on every
+leg" — which holds only while every leg is at least as long as the window. Measured per symbol
+at 4h: SOLUSDT 12,901 bars (2,150 d, listed 2020-09-14) is the binding leg, then DOGEUSDT 13,296,
+BNBUSDT 14,202, XRPUSDT 14,412, ETHUSDT 14,653, BTCUSDT 15,130. **2,150 days is the deepest
+window that keeps every leg equal-length**; past it the pooled walk-forward slices start mixing
+calendar windows across symbols. A 2,000-day target sits under that with head-room and makes the
+whole ladder uniform, since 1d already replays 2,000 days via `MIN_FACTORY_BARS`.
+
+**The real reason this is written down rather than done.** A longer window re-bases every number
+in the store: candidates scored on 500 days and candidates scored on 2,522 are not comparable,
+and ranking them together is the defect `EDGE_COST_BASIS_UNRECORDED` exists to mark, one axis
+over. So an extension needs the same treatment the cost basis got — the window recorded **with**
+each candidate's evidence, and `promotable_backlog` refusing to compare across bases — or it
+silently invalidates 1,595 rows. That is a larger change than the constant it turns on.
+
+**What an extension is, then, in full.** Not one constant — four, plus the basis machinery:
+`FACTORY_DEPTH_DAYS` 500 → 2,000; `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 (or the `oi_*` families
+leave the rotation, which is now the expensive outcome rather than the bookkeeping one);
+`FUNDING_MAX_PAGES` 4 → 7; a `funding_fade_*` gate mirroring `_oi_feed_reaches`, which is owed
+regardless; backoff and spacing on the factory's fetches; and the replay window recorded with
+each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
+2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
@@ -1763,7 +2026,7 @@ would be cheap and is the thing missing, not fewer codes.
 the doc, not a proposal to restructure the code.
 
 ---
-## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on one grant**
+## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on two env-level steps**
 
 **This section exists because the lane was not in this file at all**, while three PRs of it
 merged. A reader arriving on a fresh machine and starting here — which is what this file tells
@@ -1778,26 +2041,32 @@ own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (
 correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
 are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
 
-**Nothing runs.** No schedule is registered, and the gate is closed twice over — verified by
-running it rather than by reading the code, 2026-08-04:
+**Nothing runs.** No schedule is registered, and the gate is closed **once** — re-measured by
+running it rather than by reading the code, after #496:
 
 ```
 MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
-MVP_CANDLE_ARCHIVE='hyperliquid' -> SafetyGateBlocked: ACTIVATION_MISSING
-                                    (no safety_flag_activations/hyperliquid.json)
+MVP_CANDLE_ARCHIVE='hyperliquid' -> HyperliquidCollector          # no grant required
 ```
 
-The second line is the one worth knowing: **the env alone fails at selection**, before any
-collector is constructed. This machine holds **eleven** grants and no `hyperliquid`; the count
-is given rather than the list, because an inventory in this file goes stale the first time one
-is issued or removed — which it did, within the hour of this section being written. Ask the
-directory, or the board's 권한 line.
+> **This block previously read `SafetyGateBlocked: ACTIVATION_MISSING` on the second line, and
+> the paragraph under it said "gated by a grant" describes the archive "and not the one that
+> moves real money".** #496 (Thomas, 2026-08-04) moved the archive to
+> `safety_gate.select_env_gated` — the same env-only door `live_trading` took on 2026-07-28 —
+> so the contrast that sentence drew no longer exists. The archive is the **second** capability
+> on that door and the first that is not live trading.
+>
+> Why: the grant is TTL-capped at 30 days and archiving is worth nothing unless it runs for
+> months against a window that rolls, so a renewal gap is not a pause — it is a hole nothing
+> can fill. Half of `live_trading`'s argument does not transfer (nothing here can be trapped
+> open) and neither does its kill-switch counterpart; what makes the trade acceptable is the
+> side live trading did not have — public candles, no key, sends nothing, orders nothing, and
+> **feeds nothing**. The full reasoning is at `select_candle_archive_collector`, and
+> `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` pins the caller set at two.
 
-**One grant this section named is gone, and why is worth reading before assuming the grant model
-is uniform: see section C, *"An expired grant pinned the board's expiry warning"*.** `live_trading`
-does **not** take this path at all — Thomas moved it to `safety_gate.select_env_gated` on
-2026-07-28, the environment opt-in alone, no per-machine grant and no expiry. So "gated by a
-grant" describes the archive and every other capability, and not the one that moves real money.
+This machine's grant inventory is no longer part of this lane's answer. The count is given
+elsewhere and goes stale the first time one is issued or removed; ask the directory, or the
+board's 권한 line.
 
 **S0's record is complete as of 2026-08-04 — and it no longer blocks S1.** Both `〔확인 필요〕`
 markers in Appendix A of `EQUITY_PERP_LANE_V0.1.md` were answered by Thomas, so the appendix is
@@ -1816,31 +2085,47 @@ in short:
    centralized exchange account) is classed as **counterparty risk rather than a regulatory
    question**, and re-review conditions 1 and 2 already cover that axis.
 
-**So what blocks archiving is now the grant alone**, and the ordering below is unchanged in
-substance: it is one step shorter.
+**So nothing governance-shaped blocks archiving any more.** What remains is two environment
+steps, both minutes long and both the operator's.
 
 **No approval record names this lane.** 53 records in
 `.runtime_governance_state/approvals/approvals.jsonl`, zero mentioning equity / Hyperliquid /
 HIP-3 in any human-readable field; they are runtime action approvals
 (`crypto.strategy_pool.retirement` and kin), which is a different thing from a lane decision.
 
-**Nothing in code references S0, and that is the design rather than a gap.** S0 is enforced
-*through* the grant — Thomas does not issue `hyperliquid` until it is ratified, and without the
-grant the selector fails closed. What that leaves is worth stating: the enforcement is a human
-commitment, and no record ties the grant to S0, so a grant issued later for any reason would
-not reveal that S0 had been skipped. If that link should be durable, it is a line in the grant's
-own record, not a new gate.
+**Nothing in code references S0, and the mechanism this section said enforced it is gone.** It
+read: *"S0 is enforced through the grant — Thomas does not issue `hyperliquid` until it is
+ratified."* #496 removed that grant, so that sentence no longer describes anything. It cost
+nothing here only because S0 was answered the same day (#505) and S1 is read-only — but a
+reader should not carry away that a grant is holding this lane shut.
+
+**What still holds the line that matters is a different mechanism, and it is a real one.** S0's
+answer draws it at live orders, not at collection: *"live orders (S3 and later) do not open
+until this is promoted to settled."* That is enforced by the budget, not by any archive gate —
+`schemas/live_trading_budget.v0.1.schema.json` pins `venue` to `enum: ["binance_futures"]` and
+`live_budget.SUPPORTED_VENUE` refuses anything else with `BUDGET_INVALID`. **An equity live
+order cannot register a budget at all**, and widening that enum is a schema bump that has to be
+argued for. Collection is ungated by governance and the money path is gated by a schema — which
+is the right way round, and worth stating because this section previously implied the reverse.
 
 **In order, what is still needed to archive a single candle:** ~~S0 ratified~~ (done 2026-08-04)
-→ the `hyperliquid` grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
-scheduler service → a registered `candle_archive` schedule. **Only the grant is Thomas's now**;
-the last two are minutes.
+→ ~~the `hyperliquid` grant~~ (no longer exists, #496) → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
+scheduler service → a registered `candle_archive` schedule. **Both remaining steps are the
+operator's and both are minutes.**
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
 unrecoverable once it rolls — measured, not projected: `xyz:SP500` listed 2026-03-18 and the
-venue already returns only 52 days of its 15m bars. Every day before the grant is a day of the
-two timeframes the factory can otherwise never reach.
+venue already returns only 52 days of its 15m bars.
+
+**Of those two, 1h is the one that still matters, and the reason changed on 2026-08-04.** This
+paragraph used to lean on section F's "the holdout is strongest at the fast end"; #487 measured
+the full 426 holdout blocks and 15m came out **net −0.2691R, the worst rung rather than the
+best**, so #501 withdrew that argument from the lane's proposals. The factory rotation has also
+moved off 15m onto {1h, 4h, 1d}. What survives is narrower and does not depend on any strategy
+being right: **1h is both inside the rotation and permanently unservable at factory depth
+(208-day ceiling against 500), and its window rolls every day.** Archiving is the only path to
+depth there.
 
 ---
 

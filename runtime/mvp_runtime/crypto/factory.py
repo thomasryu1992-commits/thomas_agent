@@ -66,6 +66,7 @@ from ..errors import ToolBlocked
 from .cost import (
     FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_PARTIAL,
     FUNDING_SOURCE_VENUE,
     MAX_ENTRY_COST_R,
     CostModel,
@@ -96,6 +97,35 @@ MIN_TRADES_PER_WINDOW = 3
 # because that is the regime a promoted strategy trades next.
 HOLDOUT_FRACTION = 0.30
 MIN_BARS_FOR_HOLDOUT = 60
+
+# How well-sourced each funding label is, for pooling legs that disagree. Higher is stronger;
+# an unknown label sorts below every known one, so a future source this table has not been
+# taught about can only ever weaken a pooled claim, never strengthen it.
+_FUNDING_SOURCE_STRENGTH = {
+    FUNDING_SOURCE_FALLBACK: 1,
+    FUNDING_SOURCE_PARTIAL: 2,
+    FUNDING_SOURCE_VENUE: 3,
+}
+
+# How many equal-bar slices the tail is subtotalled into, so a confirmation can be judged on
+# market periods instead of on trades. Five, and the number is bounded on both sides:
+#
+# - **Below**, by the test being possible at all. A one-sided t at 95% needs a spread, so four
+#   periods is the floor `robustness.MIN_HOLDOUT_PERIODS` enforces; five leaves one period of
+#   headroom for a slice that closes nothing.
+# - **Above**, by what the window can supply. The tail is `HOLDOUT_FRACTION` of the replay
+#   span — 150 days at every routed timeframe today — so five slices are 30 days each, and the
+#   block-to-block measurement that motivated this used 50-day blocks. Cutting finer does not
+#   buy independence; it buys correlated slices that LOOK like more evidence, which is the
+#   error this whole change exists to stop making.
+#
+# The honest consequence, stated here rather than discovered later: at today's 500-day window
+# this is not enough periods to confirm anything. Simulated over the store 2026-08-04, a
+# period-based interval returns **0 CONFIRMED of 421** judgeable blocks, against 1 under the
+# trade-based test — and that one is PROVISIONAL, so `promotable_backlog` was already 0 and
+# does not move. The door does not get stricter in effect; it gets honest about having been
+# shut. What reopens it is a deeper window, not a smaller number here.
+HOLDOUT_PERIODS = 5
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -2032,13 +2062,15 @@ def funding_charges_per_bar(
         except (ValueError, TypeError):
             continue
 
+    # Settlements per bar, from the bar's own span. Sub-8h timeframes get a fraction, which
+    # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
+    # one per bar would price a scalper like a swing trader.
+    minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
+    per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    modelled = cost.funding_bps_per_interval / 10000.0 * per_bar
+
     if not events:
-        # Settlements per bar, from the bar's own span. Sub-8h timeframes get a fraction, which
-        # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
-        # one per bar would price a scalper like a swing trader.
-        minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
-        per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
-        return [cost.funding_bps_per_interval / 10000.0 * per_bar] * len(candles), FUNDING_SOURCE_FALLBACK
+        return [modelled] * len(candles), FUNDING_SOURCE_FALLBACK
 
     events.sort(key=lambda pair: pair[0])
     bar_opens: list[Any] = []
@@ -2048,13 +2080,34 @@ def funding_charges_per_bar(
         except (ValueError, TypeError):
             bar_opens.append(None)
 
+    # **A series that starts inside the window leaves the bars before it UNMEASURED, and the
+    # bucketing below scores unmeasured as zero.** The empty-series guard above is the same
+    # rule for the all-or-nothing case; this is the partial one, and it is the case a deeper
+    # replay window creates. `market_data.DERIVATIVE_HISTORY_DAYS` is 520, so a 1500-day window
+    # would leave roughly two thirds of its bars charged nothing while `FUNDING_SOURCE_VENUE`
+    # claimed the venue had priced them — free carry on exactly the deep history a longer
+    # window is bought for, and in the direction that flatters it.
+    #
+    # Uncovered means the bar's WHOLE span predates the series, not merely its open. A bar
+    # opening at 00:00 against a first settlement at 08:00 is covered — that settlement is
+    # inside it — and testing the open alone would label a fully-covered window partial and
+    # over-charge its first bar. The bar's span is `[open, next_open)`, so the test is against
+    # the same upper bound the bucketing below uses.
+    first_event = events[0][0]
+    uncovered = 0
+
     cursor = 0
     for i, opened in enumerate(bar_opens):
         if opened is None:
             continue
-        # The next parseable bar open bounds this bar; the last bar is bounded by nothing, so it
-        # takes every remaining settlement. A trade cannot close after the last bar anyway.
+        # The next parseable bar open bounds this bar; the last bar is bounded by nothing.
         upper = next((b for b in bar_opens[i + 1:] if b is not None), None)
+        if upper is not None and upper <= first_event:
+            charges[i] = modelled
+            uncovered += 1
+            continue
+        # The last bar is bounded by nothing, so it takes every remaining settlement — a trade
+        # cannot close after it anyway.
         while cursor < len(events) and events[cursor][0] < opened:
             cursor += 1  # before this bar (only reachable for leading events)
         total = 0.0
@@ -2064,7 +2117,7 @@ def funding_charges_per_bar(
             scan += 1
         charges[i] = total
         cursor = scan
-    return charges, FUNDING_SOURCE_VENUE
+    return charges, (FUNDING_SOURCE_PARTIAL if uncovered else FUNDING_SOURCE_VENUE)
 
 
 def _replay(
@@ -2242,6 +2295,12 @@ def _holdout_evidence(
     fees = maker_fees = slippage = carry = 0.0
     uneconomic = 0
     bars: list[int] = []
+    # Pooled by period INDEX, not by frame: every frame here is the same timeframe over the
+    # same window, so period k is the same calendar slice on each symbol. That is the point —
+    # what makes the shared tail one observation rather than many is that the market is the
+    # same in it, so the symbols must be summed inside a period, never treated as extra ones.
+    period_r = [0.0] * HOLDOUT_PERIODS
+    period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
         part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
@@ -2253,7 +2312,16 @@ def _holdout_evidence(
         slippage += part_slip
         carry += part_carry
         uneconomic += part_uneconomic
-        bars.append(len(frame.rows) - frame.split)
+        tail_bars = len(frame.rows) - frame.split
+        bars.append(tail_bars)
+        width = max(1, tail_bars // HOLDOUT_PERIODS)
+        for outcome in part:
+            closed_at = outcome.get("closed_at_bar")
+            if not isinstance(closed_at, int):
+                continue
+            index = min(HOLDOUT_PERIODS - 1, max(0, (closed_at - frame.split) // width))
+            period_r[index] += float(outcome["result_R"])
+            period_trades[index] += 1
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
@@ -2275,6 +2343,20 @@ def _holdout_evidence(
         # undefined; the trade floor refuses that block anyway, and a stored 0.0 reads as
         # INSUFFICIENT rather than as a zero-width interval that excludes zero for free.
         "stdev_r": round(statistics.stdev(results), 8) if closed >= 2 else 0.0,
+        # **The spread above is drawn over TRADES, and trades are not independent draws.**
+        # Measured 2026-08-04 over 700 frozen specs and 113,127 replayed trades: the same
+        # market periods are good or bad for everything at once — mean pairwise correlation of
+        # per-block gross across the ten routed contexts is **+0.459**, and block-to-block
+        # dispersion of gross is 0.1087R against an effect being hunted at 0.01-0.05R. So the
+        # unit of independence is the market PERIOD, and `stdev_r / sqrt(closed_count)`
+        # overstates precision by roughly sqrt(trades / periods).
+        #
+        # These two lists are what makes the honest interval computable at all: the tail's R,
+        # subtotalled over equal-bar slices. `robustness.holdout_status` draws its interval
+        # over them; nothing else can, because the per-trade timestamps are not stored.
+        # See `HOLDOUT_PERIODS` for why the count is what it is.
+        "period_r": [round(value, 8) for value in period_r],
+        "period_trades": period_trades,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
@@ -2424,10 +2506,15 @@ def backtest_spec_pooled(
     # The weaker label wins when the legs disagree: a pooled carry is only as well-sourced as
     # its worst leg, and reporting `venue_history` over a book where one symbol fell back to
     # the modelled rate would overstate what the funding figure is evidence of.
-    funding_source = (
-        FUNDING_SOURCE_VENUE
-        if all(f.funding_source == FUNDING_SOURCE_VENUE for f in frames)
-        else FUNDING_SOURCE_FALLBACK
+    #
+    # Ordered rather than a VENUE/not-VENUE test, because there are three answers now and
+    # collapsing the middle one loses the distinction it was added to carry: a leg with a
+    # PARTIAL series measured most of its window, and calling that `modelled_constant` would
+    # understate it exactly as calling it `venue_history` overstated it.
+    funding_source = min(
+        (f.funding_source for f in frames),
+        key=lambda source: _FUNDING_SOURCE_STRENGTH.get(source, 0),
+        default=FUNDING_SOURCE_VENUE,
     )
     outcomes: list[dict[str, Any]] = []
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
@@ -2826,6 +2913,20 @@ def fuse_specs(
     return child
 
 
+def carries_retired_family(record: Mapping[str, Any]) -> bool:
+    """Does any component of this row's family name name a family that left the rotation?
+
+    Component-wise, because a fused family is ``"a+b"``: a child of a retired parent carries
+    that parent's entry conditions, so treating only the exact name as retired lets the
+    lineage keep breeding under a compound name.
+    """
+    spec = record.get("strategy_spec")
+    family = spec.get("strategy_family") if isinstance(spec, Mapping) else None
+    if not isinstance(family, str):
+        return False
+    return any(part in RETIRED_FAMILIES for part in family.split("+"))
+
+
 def rank_fusion_parents(
     existing_candidates: list[Mapping[str, Any]], *, top_n: int = FUSION_PARENT_POOL,
 ) -> list[dict[str, Any]]:
@@ -2834,7 +2935,52 @@ def rank_fusion_parents(
     Only rows carrying a numeric ``champion_score`` and a parseable spec can parent
     — an unscored or legacy-shaped row has no evidence to pass on. Ordering is
     (score desc, candidate_id asc) so a tie never depends on file order, and a
-    lineage appears once however many times it was appended (latest-wins)."""
+    lineage appears once however many times it was appended (latest-wins).
+
+    **"Once per lineage" was keyed on the wrong identity, and a re-score is what
+    exposed it.** ``candidate_id`` derives from (generation, rules, *evidence window*)
+    — see :func:`pool.derive_candidate_id` — so re-scoring a spec at a new window mints
+    a DIFFERENT id for the SAME strategy, and both rows then entered the pool as if
+    they were two lineages. `scripts/rescore_stale_holdout_candidates.py` appended 336
+    such rows on 2026-08-04; measured on the store that day, **348 rule hashes appeared
+    in more than one row (709 rows, up to 3 per hash)**, and rebuilding
+    :func:`fusion_parent_buckets` over the live contexts put twins in 20 of 27 fusable
+    buckets, occupying 36 of their top slots. Every twin pair then dies in
+    ``_fuse_batch`` as ``duplicate_rule_hash``, and ``(twin_a, X)`` and ``(twin_b, X)``
+    propose the identical child twice — so the bucket's parent diversity and its pair
+    draws are both silently halved.
+
+    ``strategy_rule_hash`` is the identity that answers "is this the same strategy",
+    which is the question this dedup is asking; the id falls back to ``candidate_id``
+    only for a row carrying no usable hash, so hash-less legacy rows collapse into each
+    other rather than into one bucket.
+
+    **Latest-wins is kept deliberately, rather than best-score-wins.** Two rows sharing
+    a rule hash are one strategy measured over two windows, and taking the higher score
+    would pick whichever window happened to flatter it — the max-of-many-draws selection
+    this store is already full of (see ``robustness.MIN_HOLDOUT_TRADES``). File order
+    puts the freshest evidence last, and fresh beats flattering.
+
+    **A retired family may not parent, and that was leaking until 2026-08-04.**
+    ``RETIRED_FAMILIES`` is enforced by de-listing from ``TEMPLATES``, which stops the
+    DIRECT mint path and nothing else — fusion draws its parents from the candidate STORE,
+    which still holds every row the family produced before it was retired. Measured on the
+    08:09Z fire, the first one after `macd_momentum_*` and `xs_momentum_*` were retired:
+    three of eighty children carried a retired parent, one of them
+    (``macd_momentum_short+xs_momentum_short``) built from two retired families and nothing
+    else. Their holdouts read -0.467R, -0.471R and -0.122R, which is what the retirement
+    said they would.
+
+    This is the leak that makes every retirement note in this file false as written — each
+    says re-listing one line is the whole of re-enabling, and the mirror of that claim is
+    that de-listing is the whole of disabling. It was not. 229 of the store's 1,556 rows
+    (14.7%) carry a retired component today, so this narrows the parent pool measurably
+    rather than cosmetically; ``_fuse_batch`` simply draws fewer pairs, which is its
+    documented behaviour when a bucket runs dry.
+
+    Filtered HERE rather than in ``fusion_parent_buckets`` because this is the function that
+    answers *"which stored rows may parent"* — the bucketing below is about compatibility,
+    and a second eligibility rule there would split one question across two places."""
     best: dict[str, dict[str, Any]] = {}
     for record in existing_candidates:
         score = record.get("champion_score")
@@ -2842,8 +2988,12 @@ def rank_fusion_parents(
             continue
         if not isinstance(record.get("strategy_spec"), Mapping):
             continue
+        if carries_retired_family(record):
+            continue
         cid = candidate_id(record)
-        best[cid] = {**record, "candidate_id": cid}
+        rule_hash = record.get("strategy_rule_hash")
+        key = rule_hash if isinstance(rule_hash, str) and rule_hash else cid
+        best[key] = {**record, "candidate_id": cid}
     ranked = sorted(best.values(), key=lambda r: (-float(r["champion_score"]), r["candidate_id"]))
     return ranked[:top_n]
 

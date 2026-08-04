@@ -27,8 +27,10 @@ from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
+from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
+from . import market_data
 from .paper import position_max_hold, settle_trade_plan, state_dir
 
 COUNTERFACTUAL_TRACKER_VERSION = "counterfactual_tracker.v1"
@@ -43,6 +45,28 @@ MAX_OPEN_COUNTERFACTUALS = 50
 MISSED_OPPORTUNITY = "MISSED_OPPORTUNITY"
 AVOIDED_LOSS = "AVOIDED_LOSS"
 NEUTRAL_BLOCK = "NEUTRAL_BLOCK"
+
+# A shadow only advances `holding_candles` in the cycle that owns its context, so a shadow
+# whose context leaves the fan-out has its clock FROZEN — `settle_trade_plan` can never reach
+# the time exit, and the row occupies a cap slot forever. Measured 2026-08-04: **30 of 30 open
+# shadows sat outside the fan-out's five contexts** (ETHUSDT 1d ×16, BNBUSDT 4h ×10, and four
+# others), i.e. 30 of the 50 slots were permanently spent and the instrument that prices gate
+# refusals was 60% of the way to silently dropping every new one.
+#
+# `pool_cycle_contexts` already solved the same problem for real positions by visiting their
+# contexts — deliberately NOT copied here, because that buys candle collection forever for
+# contexts nothing trades.
+#
+# **The predicate is the shadow's OWN clock, not its context's membership.** Contexts come
+# back (1d re-entered the rotation on 2026-08-04), and expiring on absence would delete a
+# shadow that is still legitimately running — measured, 17 of the 30 were still inside their
+# own budget, the ETHUSDT 1d block at 242h against 27 bars × 24h = 648h. Past that budget the
+# position could not still be open under its own rules however many candles anyone counted,
+# and that is also why waiting is worse than expiring: a returning context would settle these
+# against TODAY's candles and feed a fabricated outcome to gate calibration, which is exactly
+# what `settles_in_context` exists to prevent in the other direction.
+EXPIRED_STATUS = "EXPIRED"
+EXPIRY_REASON_CLOCK_FROZEN = "holding_budget_elapsed_unsettled"
 
 COUNTERFACTUAL_BOOK_UNVERIFIABLE = "COUNTERFACTUAL_BOOK_UNVERIFIABLE"
 COUNTERFACTUAL_HISTORY_TAMPERED = "COUNTERFACTUAL_HISTORY_TAMPERED"
@@ -98,6 +122,58 @@ def settles_in_context(plan: Mapping[str, Any], *, symbol: str, timeframe: str) 
         str(plan.get("symbol") or "") == symbol
         and str(plan.get("timeframe") or "") == timeframe
     )
+
+
+def holding_budget_elapsed(plan: Mapping[str, Any], *, now: str) -> bool:
+    """Whether this shadow's own clock says it could not still be open.
+
+    Wall-clock, because the candle counter is the thing that fails: ``holding_candles`` only
+    advances in the cycle owning the shadow's context, so a shadow outside the fan-out is
+    frozen short of ``max_holding_bars`` forever. The budget is that same limit read as a
+    span — bars × the timeframe's minutes — so a shadow is judged by exactly the number its
+    spec was backtested with (the :func:`paper.position_max_hold` parity rule), never by a
+    fixed timeout invented here.
+
+    Unreadable inputs return False: a shadow that cannot state its own budget is left alone
+    rather than expired on a guess, which is the same fail-closed direction as
+    :func:`settles_in_context`.
+    """
+    timeframe = str(plan.get("timeframe") or "")
+    minutes = market_data.TIMEFRAMES.get(timeframe)
+    if not minutes:
+        return False
+    bars, _legacy = position_max_hold(plan, timeframe)
+    if not bars or bars <= 0:
+        return False
+    opened = plan.get("opened_at_utc")
+    if not isinstance(opened, str) or not opened:
+        return False
+    try:
+        age_minutes = (timeutil.parse_iso(now) - timeutil.parse_iso(opened)).total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return False
+    return age_minutes > float(bars) * float(minutes)
+
+
+def expire_shadow(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
+    """The same row, closed as EXPIRED with the reason and the time. Writes no outcome.
+
+    Deliberately not an outcome row: an outcome carries a ``result_R`` and feeds per-reason
+    expectancy, and this shadow has no result — nobody ever priced it. Recording a 0.0 would
+    dilute the gate's measured cost with trades that were never judged.
+
+    It leaves the BOOK, and the trace lives in the cycle record instead. The book has only
+    ever held open shadows (``load_open_counterfactuals`` filters on ``OPEN`` and the writer
+    persists exactly what it was handed), so a row kept there would be dropped on the next
+    save anyway — a durable-looking trace that is not one. The caller reports the ids, and
+    ``run_crypto_cycle`` already puts that summary on the cycle record that reaches the
+    ledger, which is where every other per-cycle decision is auditable."""
+    return {
+        **dict(plan),
+        "status": EXPIRED_STATUS,
+        "expired_at_utc": now,
+        "expiry_reason": EXPIRY_REASON_CLOCK_FROZEN,
+    }
 
 
 def _save_book(rows: list[dict[str, Any]], *, root: Path | None, now: str) -> None:
@@ -291,9 +367,16 @@ def run_counterfactual_update(
 
     still_open: list[dict[str, Any]] = []
     settled: list[dict[str, Any]] = []
+    expired: list[dict[str, Any]] = []
     foreign = 0
     for plan in rows:
         if not settles_in_context(plan, symbol=symbol, timeframe=timeframe):
+            # Only here, never for a shadow this cycle CAN judge: an in-context row reaches
+            # the time exit on its own and settling beats expiring, because settling produces
+            # the priced outcome this whole book exists for.
+            if holding_budget_elapsed(plan, now=now):
+                expired.append(expire_shadow(plan, now=now))
+                continue
             foreign += 1
             still_open.append(plan)          # untouched: no settle, no holding advance
             continue
@@ -327,6 +410,15 @@ def run_counterfactual_update(
         ],
         "opened": opened.get("counterfactual_id") if opened else None,
         "open_count": len(still_open),
+        # The only durable trace of an expiry — see `expire_shadow`. Named ids rather than a
+        # count, because "which shadow stopped being priceable" is the question a later reader
+        # of the gate's cost will have.
+        "expired": [
+            {"counterfactual_id": r.get("counterfactual_id"),
+             "symbol": r.get("symbol"), "timeframe": r.get("timeframe"),
+             "block_reasons": r.get("block_reasons"), "reason": r.get("expiry_reason")}
+            for r in expired
+        ],
         "foreign_context_skipped": foreign,
     }
 

@@ -738,8 +738,12 @@ def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
     would overstate what the funding figure is evidence of."""
     spec = StrategySpec.from_dict(_spec_dict())
     with_funding = dict(_trending_snapshot())
+    # At the bar OPEN, which is where the venue actually settles (00:00/08:00/16:00 UTC against
+    # a daily bar opening at 00:00). Stamping them at the close would leave the first bar's
+    # whole span before the series' first settlement, i.e. a genuinely partial series — which
+    # is a different property from the one this test pins.
     with_funding["funding"] = [
-        {"timestamp": c["close_time"], "funding_rate": 0.0001}
+        {"timestamp": c["open_time"], "funding_rate": 0.0001}
         for c in with_funding["candles"]
     ]
     frames = [factory.build_replay_frame(with_funding), factory.build_replay_frame(_shifted_snapshot())]
@@ -747,6 +751,29 @@ def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
     assert frames[1].funding_source == factory.FUNDING_SOURCE_FALLBACK
     pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
     assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_FALLBACK
+
+
+def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled():
+    """Three answers now, and the middle one has to survive pooling. A leg whose series covers
+    most of its window measured most of it — calling that `modelled_constant` understates it
+    exactly as `venue_history` overstated it, and an ordered strength is what keeps both from
+    happening."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    covered = dict(_trending_snapshot())
+    covered["funding"] = [
+        {"timestamp": c["open_time"], "funding_rate": 0.0001} for c in covered["candles"]
+    ]
+    partial = dict(_trending_snapshot())
+    # Starts a third of the way in: the bars before it are unmeasured, not free.
+    partial["funding"] = [
+        {"timestamp": c["open_time"], "funding_rate": 0.0001}
+        for c in partial["candles"][len(partial["candles"]) // 3:]
+    ]
+    frames = [factory.build_replay_frame(covered), factory.build_replay_frame(partial)]
+    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == factory.FUNDING_SOURCE_PARTIAL
+    pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
 
 
 # --- run_factory --------------------------------------------------------------
@@ -1153,6 +1180,58 @@ def test_rank_fusion_parents_orders_by_score_and_skips_the_unscorable():
     ]
     ranked = rank_fusion_parents(records)
     assert [r["candidate_id"] for r in ranked] == ["cand-high", "cand-low"]
+
+
+def test_a_rescored_lineage_parents_once_not_twice():
+    """A re-score is the same strategy at a new evidence window, not a second lineage.
+
+    `derive_candidate_id` keys on (generation, rules, evidence_input_sha256), so re-scoring
+    mints a new id for identical rules — and dedup on the id then admitted both. Measured on
+    the store the day the 336-row backfill landed: 348 rule hashes in more than one row, twins
+    in 20 of 27 fusable buckets. Every twin pair dies in `_fuse_batch` as `duplicate_rule_hash`
+    and `(twin_a, X)` / `(twin_b, X)` propose the same child twice, so the bucket loses both
+    parent diversity and pair draws.
+    """
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    other = _parent_spec("S2", [_MA20_OVER_MA50]).to_dict()
+    records = [
+        {"candidate_id": "cand-source", "champion_score": 0.9,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+        {"candidate_id": "cand-rescored", "champion_score": 0.4,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},   # same rules, new window
+        {"candidate_id": "cand-other", "champion_score": 0.5,
+         "strategy_rule_hash": "hash-b", "strategy_spec": other},
+    ]
+    ranked = rank_fusion_parents(records)
+    assert [r["candidate_id"] for r in ranked] == ["cand-other", "cand-rescored"]
+
+
+def test_the_surviving_twin_is_the_freshest_not_the_best_scoring():
+    """Latest-wins, deliberately. Two rows sharing a rule hash are one strategy measured over
+    two windows; taking the higher score would pick whichever window flattered it, which is the
+    max-of-many-draws selection the holdout gate exists to refuse. File order puts the freshest
+    evidence last."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-flattering", "champion_score": 0.95,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+        {"candidate_id": "cand-fresh", "champion_score": 0.10,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+    ]
+    assert [r["candidate_id"] for r in rank_fusion_parents(records)] == ["cand-fresh"]
+
+
+def test_hashless_legacy_rows_do_not_collapse_into_one_parent():
+    """The fallback matters: keying on a missing hash would merge every legacy row into a single
+    bucket entry and delete real lineages. Absent hash falls back to the candidate id."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-1", "champion_score": 0.9, "strategy_spec": spec},
+        {"candidate_id": "cand-2", "champion_score": 0.8, "strategy_spec": spec},
+        {"candidate_id": "cand-3", "champion_score": 0.7,
+         "strategy_rule_hash": "", "strategy_spec": spec},          # empty is not an identity
+    ]
+    assert len(rank_fusion_parents(records)) == 3
 
 
 # --- fusion parent bucketing --------------------------------------------------
@@ -1939,6 +2018,79 @@ def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
     )
 
 
+# --- a retirement has to reach the fusion path too (2026-08-04) --------------------------------
+#
+# `RETIRED_FAMILIES` is enforced by de-listing from `TEMPLATES`, which stops the DIRECT mint path
+# and nothing else. Fusion draws its parents from the candidate STORE, which still holds every row
+# the family produced before it was retired — so a retired lineage kept breeding under a compound
+# name. Measured on the 08:09Z fire of 2026-08-04, the first after `macd_momentum_*` and
+# `xs_momentum_*` were retired: 3 of 80 children carried a retired parent.
+
+def _retired_parent_record(cid, family, score=0.9):
+    return {"candidate_id": cid, "champion_score": score,
+            "strategy_spec": _spec_dict(strategy_family=family)}
+
+
+def test_a_retired_family_cannot_parent_a_fusion_child():
+    """The direct mint path and the fusion path are two doors, and the retirement set was only
+    on one of them. A row whose family left the rotation carries the entry conditions the
+    retirement was about, so it may not pass them on."""
+    retired = sorted(factory.RETIRED_FAMILIES)[0]
+    records = [
+        {"candidate_id": "cand-live", "champion_score": 0.5,
+         "strategy_spec": _spec_dict(strategy_family="breakout")},
+        _retired_parent_record("cand-retired", retired),
+    ]
+    ranked = rank_fusion_parents(records)
+    assert [r["candidate_id"] for r in ranked] == ["cand-live"], (
+        f"{retired} is retired but still ranked as a fusion parent"
+    )
+
+
+def test_a_compound_family_is_retired_when_any_component_is():
+    """The form the leak actually took. A fused family is "a+b", so a child of a retired parent
+    is stored under a name that matches no entry in the set — `macd_momentum_short+
+    xs_momentum_short` was built from two retired families and nothing else, and an exact-name
+    check would have re-admitted it as a grandparent."""
+    retired = sorted(factory.RETIRED_FAMILIES)[0]
+    assert factory.carries_retired_family(_retired_parent_record("c", f"breakout+{retired}"))
+    assert factory.carries_retired_family(_retired_parent_record("c", f"{retired}+breakout"))
+    assert factory.carries_retired_family(
+        _retired_parent_record("c", f"{retired}+{sorted(factory.RETIRED_FAMILIES)[1]}"))
+    assert not factory.carries_retired_family(
+        _retired_parent_record("c", "breakout+trend_pullback"))
+    # A name that merely CONTAINS a retired name as a substring is not a component of it.
+    assert not factory.carries_retired_family(
+        _retired_parent_record("c", f"{retired}_extended"))
+
+
+def test_a_row_without_a_readable_family_is_not_treated_as_retired():
+    """Fail-open here rather than closed, and deliberately: the other eligibility rules in
+    `rank_fusion_parents` already refuse a row with no parseable spec, so this predicate only
+    has to answer about rows that survived them. Refusing an unreadable name would silently
+    narrow the parent pool for a reason unrelated to retirement."""
+    assert not factory.carries_retired_family({"strategy_spec": {"strategy_family": None}})
+    assert not factory.carries_retired_family({"strategy_spec": {}})
+    assert not factory.carries_retired_family({})
+
+
+def test_retired_parents_are_gone_from_every_bucket_not_just_the_ranking():
+    """`fusion_parent_buckets` is what `_fuse_batch` actually consumes, so the filter has to
+    survive the grouping. Two live rows plus two retired ones in the same context: the bucket
+    must form from the live pair alone, and a bucket of one is dropped entirely."""
+    live = [_bucket_record(f"live-{i}", 0.9 - i * 0.1,
+                           _parent_spec(f"L{i}", [_CLOSE_OVER_MA20], strategy_family="breakout"))
+            for i in range(2)]
+    retired_name = sorted(factory.RETIRED_FAMILIES)[0]
+    dead = [_bucket_record(f"dead-{i}", 0.99,
+                           _parent_spec(f"D{i}", [_MA20_OVER_MA50], strategy_family=retired_name))
+            for i in range(2)]
+    buckets = factory.fusion_parent_buckets(
+        [*dead, *live], symbol="BTCUSDT", timeframe="1d")
+    seen = {r["candidate_id"] for bucket in buckets for r in bucket}
+    assert seen == {"live-0", "live-1"}, f"retired rows reached a bucket: {sorted(seen)}"
+
+
 def test_no_generation_space_can_draw_a_reward_risk_the_validator_refuses():
     """`validate_strategy` refuses `target_atr / stop_atr < MIN_REWARD_RISK` and `mutate_params`
     draws every other parameter independently, so before 2026-08-04 the trend space proposed
@@ -2085,3 +2237,5 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     assert not refused_seeds, (
         f"seeds {refused_seeds} spent attempts on risk:reward refusals from an elite centre"
     )
+
+
