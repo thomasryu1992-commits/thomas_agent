@@ -433,9 +433,14 @@ def test_the_cap_admits_the_horizon_the_operator_actually_promotes_at():
     operator was choosing to run, so the queue it reported was empty for a reason that had
     nothing to do with whether work was waiting.
 
-    The old value's premise was that 15m is the workhorse. The cost model killed that: 15m
-    nets -0.1845R/trade at the current basis against 4h's +0.0889R, so a cap admitting only
-    15m admitted only the timeframe that cannot pay for itself."""
+    The old value's premise was that 15m is the workhorse. The cost model killed that on the
+    day: 15m netted -0.1845R/trade at the current basis against 4h's +0.0889R, so a cap
+    admitting only 15m admitted only the timeframe that cannot pay for itself.
+
+    Re-measured 2026-08-04 the economics read 15m -0.0866R, 1h +0.0241R, 4h +0.1083R, which
+    does not touch either bound below — this cap is anchored on the horizon the operator
+    promoted at, never on which timeframe pays. Stated so the next reader does not take the
+    paragraph above for a current measurement."""
     promoted_horizons = (40.5, 50.4, 81.4, 107.7, 127.3)   # the real pool, 2026-07-31
     assert pool.MAX_DAYS_TO_LIFECYCLE_WINDOW >= max(promoted_horizons), (
         "the board would hide a lineage the operator has already chosen to run — a queue of "
