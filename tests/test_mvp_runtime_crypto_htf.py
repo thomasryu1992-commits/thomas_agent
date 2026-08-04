@@ -17,6 +17,7 @@ from runtime.mvp_runtime.crypto.features import (
     latest_feature_row,
 )
 from runtime.mvp_runtime.crypto.market_data import HIGHER_TIMEFRAME
+from runtime.mvp_runtime.crypto.robustness import count_free_parameters
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
 
 
@@ -132,8 +133,16 @@ def test_htf_regime_rejects_a_value_outside_the_closed_vocabulary():
 
 @pytest.mark.parametrize("timeframe", sorted(HIGHER_TIMEFRAME))
 def test_htf_families_are_minted_where_a_higher_timeframe_exists(timeframe):
+    """Minus the retired ones. `HTF_FAMILIES` names every family that READS the htf columns —
+    retired ones included, deliberately, so the higher-timeframe gate keeps covering a family
+    somebody re-lists — so the set that must actually be minted is that one less
+    `RETIRED_FAMILIES`. Asserting the raw membership would make retiring any htf family fail
+    this test, which would read as a broken gate rather than as an intended retirement."""
     families = {t.family for t in factory.templates_for_timeframe(timeframe)}
-    assert factory.HTF_FAMILIES <= families
+    mintable = factory.HTF_FAMILIES - factory.RETIRED_FAMILIES
+    assert mintable, "every htf family is retired — this test is measuring nothing"
+    assert mintable <= families
+    assert not (factory.RETIRED_FAMILIES & families)
 
 
 def test_htf_families_are_withheld_at_the_top_of_the_ladder():
@@ -151,3 +160,93 @@ def test_generated_htf_specs_pass_their_own_validator():
     for spec_dict in batch["specs"]:
         spec = StrategySpec.from_dict(spec_dict)
         assert factory.validate_strategy(spec)["approved_for_backtest"] is True
+
+
+# --- the trend replacement (2026-08-04) ----------------------------------------
+
+def _regime_row(regime, separation, *, close=100.0, ma20=99.0, adx=25.0):
+    """A feature row where the higher timeframe's LABEL and its SEPARATION disagree.
+
+    That disagreement is not contrived — it is what `classify_market_regime` produces on a
+    trending bar whose volatility is in the top quintile, because the volatility branch
+    returns before the trend branch is reached.
+    """
+    return {"close": close, "ma20": ma20, "adx": adx,
+            "htf_market_regime": regime, "htf_ma20_distance_ma50": separation}
+
+
+def _entry(family, params):
+    template = next(t for t in factory.TEMPLATES if t.family == family)
+    return template.entry_builder(params)
+
+
+def test_the_retired_pair_cannot_see_a_trend_the_replacement_can():
+    """The whole reason for the swap, asserted on the evaluator rather than argued.
+
+    A higher-timeframe bar that is cleanly trending up but volatile reads HIGH_VOLATILITY,
+    so the retired condition is false; the separation it was built from is unchanged and
+    strongly positive, so the replacement is true. These are the bars where 1R is largest
+    against a fixed-bps round trip, which is why losing them cost more than it looks."""
+    row = _regime_row("HIGH_VOLATILITY", 0.02)
+
+    retired = StrategySpec.from_dict(_htf_spec(entry_rules={"operator": "AND", "conditions": [
+        {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"}]}))
+    assert evaluate_spec(retired, row).matched is False
+
+    replacement = StrategySpec.from_dict(_htf_spec(
+        strategy_family="htf_trend_strength_long",
+        entry_rules={"operator": "AND", "conditions": _entry(
+            "htf_trend_strength_long", {"htf_sep_min": 0.008, "adx_min": 20.0})}))
+    assert evaluate_spec(replacement, row).matched is True
+
+    # And it still refuses the case the label was right about: separation the wrong way.
+    assert evaluate_spec(replacement, _regime_row("HIGH_VOLATILITY", -0.02)).matched is False
+
+
+def test_the_replacement_costs_no_free_parameter():
+    """The claim the retirement note makes about `trades_per_parameter`, which is the
+    heaviest robustness term — so a replacement that quietly spent one would be paying for
+    its judgeability out of the score it exists to make meaningful."""
+    def free_params(family, params, direction="long"):
+        spec = StrategySpec.from_dict(_htf_spec(
+            strategy_family=family, direction=direction,
+            entry_rules={"operator": "AND", "conditions": _entry(family, params)}))
+        return count_free_parameters(spec)
+
+    # The retired builders are still importable; they are out of the rotation, not deleted.
+    retired = factory._htf_trend_long_entry({"adx_min": 20.0})
+    retired_spec = StrategySpec.from_dict(_htf_spec(entry_rules={
+        "operator": "AND", "conditions": retired}))
+    assert count_free_parameters(retired_spec) == free_params(
+        "htf_trend_strength_long", {"htf_sep_min": 0.008, "adx_min": 20.0})
+
+
+def test_the_replacement_kept_the_library_the_same_size():
+    """Two out, two in. A family is +1 hypothesis fitted on the same bars, and
+    `selection_adjusted_z` charges every attempt — so *adding* the replacement instead of
+    swapping it would have raised the bar for every other family in the store to buy this
+    one's judgeability."""
+    families = [t.family for t in factory.TEMPLATES]
+    assert len(families) == len(set(families)), "a family is listed twice"
+    assert {"htf_trend_strength_long", "htf_trend_strength_short"} <= set(families)
+    assert not ({"htf_trend_long", "htf_trend_short"} & set(families))
+    assert {"htf_trend_long", "htf_trend_short"} <= factory.RETIRED_FAMILIES
+    # Retired rather than deleted: re-listing is the whole of re-enabling.
+    assert callable(factory._htf_trend_long_entry)
+    assert callable(factory._htf_trend_short_entry)
+
+
+def test_the_short_replacement_is_the_mirror_of_the_long_one():
+    """One parameter range describes both signs, so a draw that is a weak long signal is an
+    equally weak short one. Negating the VALUE rather than flipping the comparison is what
+    makes that true; the other spelling would read `>= -p`, which is satisfied by every
+    uptrend."""
+    params = {"htf_sep_min": 0.008, "adx_min": 20.0}
+    down = _regime_row("HIGH_VOLATILITY", -0.02, close=99.0, ma20=100.0)
+    short = StrategySpec.from_dict(_htf_spec(
+        strategy_family="htf_trend_strength_short", direction="short",
+        entry_rules={"operator": "AND", "conditions": _entry(
+            "htf_trend_strength_short", params)}))
+    assert evaluate_spec(short, down).matched is True
+    # An uptrend must not satisfy the short leg — the failure the sign convention prevents.
+    assert evaluate_spec(short, _regime_row("TREND_UP", 0.02)).matched is False
