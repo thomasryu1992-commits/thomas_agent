@@ -4,14 +4,21 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-04** (`main` = `9c45d16`), re-measuring **section F** on a candidate store
+Last updated: **2026-08-04** — **the live leg holds a position again.** The stop refusal that has
+headed section C since 2026-08-02 is resolved (#460, the confirm race); observed 05:00Z, an
+ETHUSDT SHORT opened 00:13:57Z with both bracket legs `placed: true, status: NEW`. Section C is
+rewritten around what that leaves: **no live trade has ever closed** — `live_outcomes.jsonl` does
+not exist — so the exit path and the #470–#472 naked-close accounting are both undemonstrated,
+and the first live close is the next thing that answers anything.
+
+Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
 fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
 −0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
 finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
 candidates carrying the current basis survive their own holdout, and the promotion board reports
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
-**It does not outrank the paragraph below**, which is still the thing to fix on arrival.
+**It does not outrank section C**, which is still what to read first on arrival.
 
 Also 2026-08-04: the board can now say it (#477 — `promotable_backlog` returns a refusal
 partition), and **section F1** diagnoses why nothing survives. Three explanations are ruled out
@@ -33,12 +40,14 @@ that costs while it waits is measured there, because the venue's window rolls.
 
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
-first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
-therefore **cannot hold a position** — every entry fills and is closed again. Nobody lost money
-(0.12 USDT of fees, no adverse price) and the safety path worked exactly as written; what is open
-is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed.
-The one build item in it — **nothing counted repeated bracket failures** — is closed by #439: the
-loop now stops itself after two, instead of running on the daily order budget's midnight refill.
+first two autonomous live orders on 2026-08-02 and the protective stop was refused both times, so
+it could not hold a position. **That is resolved as of 2026-08-04** — the cause was the confirm
+race (#460), and the runtime is holding an ETHUSDT SHORT opened 00:13:57Z with both bracket legs
+`placed: true, status: NEW`. What is open moved with it: **no live trade has ever closed**
+(`live_outcomes.jsonl` does not exist), so the exit path and the naked-close accounting from
+#470–#472 are both undemonstrated. The one build item — **nothing counted repeated bracket
+failures** — is closed by #439: the loop stops itself after two, instead of running on the daily
+order budget's midnight refill.
 Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
 
 This paragraph said "the deployed image is `320475b`" when it was written and that was already
@@ -308,11 +317,41 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 
 ## C. Crypto live execution — the governance packet + the order code
 
-> ### ⚠️ THE FIRST AUTONOMOUS LIVE ORDERS RAN ON 2026-08-02, AND THE PROTECTIVE STOP WAS REFUSED BOTH TIMES
+> ### ⚠️ LIVE TRADING IS ARMED, AND AS OF 2026-08-04 IT HOLDS A POSITION WITH BOTH PROTECTIVE LEGS RESTING
 >
-> **Read this before anything else in this section.** Live trading is armed and reachable, it has
-> now placed real orders without a person present, and it **cannot currently hold a position** —
-> every entry fills and is immediately closed again.
+> **Read this before anything else in this section.** Live trading is armed and reachable and has
+> placed real orders without a person present. **The stop refusal that opened this section is
+> resolved** — the paragraph below said the next attempt would answer it, and it did.
+>
+> Observed on the host 2026-08-04T05:00Z, from local records only:
+>
+> | | |
+> |---|---|
+> | position | ETHUSDT **SHORT** 0.022 @ 1859.14, notional 40.90 USDT |
+> | opened | 2026-08-04T00:13:57Z — **held ~4.75h**, `holding_candles: 2` of a 4h spec |
+> | `live_opened.bracket[0]` | SL @ 1900.5 — **`placed: true`, `status: NEW`** |
+> | `live_opened.bracket[1]` | TP @ 1776.71 — **`placed: true`, `status: NEW`** |
+> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z |
+>
+> The breaker was cleared 2026-08-03T15:51:37Z with the written reason *"#460 confirm-race fix
+> deployed; cause addressed"*, and nothing has tripped it since. `placed: true` on the stop leg is
+> the exact field that read `false` in the incident below, so this is the measurement that
+> paragraph asked for rather than an inference from silence.
+>
+> **What this does NOT yet show, and the distinction is the whole remaining risk.** No live trade
+> has ever *closed*: `live_outcomes.jsonl` **does not exist** on this machine. The entry and the
+> bracket are demonstrated; the **exit** path — a stop or a target actually filling, and the
+> outcome reaching the ledger — has never run end to end. Nor has the naked-close accounting from
+> #470–#472, which merged *after* the last naked close, so it has never fired on a real one. The
+> first live close is the next thing that answers something, and it is the one to watch for.
+>
+> **One position is not a fixed system.** The cause was addressed and one bracket rests; that is
+> evidence, not a warranty. Two consecutive naked entries still shut the door
+> (`LIVE_ENTRY_BRACKET_BREAKER_TRIPPED`), which is what makes it safe to let the next one run.
+>
+> ---
+>
+> **The incident this section was written for — 2026-08-02, kept as history:**
 >
 > Two entries, both ETHUSDT 4h SHORT, both `status: ENTRY_NAKED_CLOSED`:
 >
@@ -341,9 +380,13 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > since been recreated, so the logs are gone. #426 closed exactly that gap (`error_detail`, the
 > venue's numeric code and text) and **is deployed as of 2026-08-02T15:59Z**.
 >
-> **So the next attempt answers it.** That is the agreed next step, chosen over guessing. On the
-> host, watch `.runtime_governance_state/crypto/live_order_counter.json` for a new date key, then
-> read the `live_opened.bracket[].error_detail` on that cycle record.
+> **So the next attempt answers it — and it did.** That was the agreed next step, chosen over
+> guessing, and it is the reason this section could be closed by reading a record rather than by
+> re-deriving a cause. The answer was the confirm race, fixed in #460; the bracket has rested
+> since (see the block at the top of this section). The instruction that produced it, kept
+> because it is the reusable part: watch
+> `.runtime_governance_state/crypto/live_order_counter.json` for a new date key, then read
+> `live_opened.bracket[].placed` and `.error_detail` on that cycle record.
 >
 > **This path had never run before.** The four canary orders are entry-only MARKET by
 > construction (`place_canary_order`), so `STOP_MARKET closePosition` was executed for the first
@@ -367,9 +410,11 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > venue's own `error_detail` (#426) is copied onto the breaker record, which outlives the
 > container that holds the logs. Shown on the readiness board as `bracket_breaker`.
 >
-> **This does not fix the rejection**, and is not meant to: the cause is still unknown and the
-> next attempt is still what answers it. What changed is that the next attempt is now the *last*
-> one that costs anything if the answer is "it is still broken".
+> **This did not fix the rejection**, and was not meant to — #460 did. What this bought was that
+> the next attempt was the *last* one that could cost anything if the answer had been "still
+> broken", and it is why letting that attempt run was the cheap move rather than the brave one.
+> The breaker stays exactly as it is: it is what makes the position at the top of this section
+> something to observe rather than something to worry about.
 >
 > Evidence lives on the Docker host only (gitignored): the cycle records in
 > `.runtime_governance_state/runtime_ledger/records.jsonl` (search `live_opened`), the audit
