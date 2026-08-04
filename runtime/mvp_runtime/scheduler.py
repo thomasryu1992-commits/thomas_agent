@@ -997,8 +997,21 @@ def _execute(
                 f"candle archiving reached no book of {summary['books']}: "
                 f"{', '.join(summary['degraded_sample'])}"
             ))
+        if summary.get("rate_limited"):
+            # A pass the venue cut short. This is NOT covered by the all-degraded check above
+            # and that gap is the whole reason this branch exists: on 2026-08-04 the first real
+            # pass lost 282 of 352 books to rate limiting and reported COMPLETED, because 282 is
+            # not 352. A summary string reaches nobody, so an 80% loss announced itself only to
+            # a log line — while the window it races kept rolling. Raising puts it on the
+            # existing failure alert within one cadence, which is what "on and not working"
+            # is supposed to do here.
+            raise SchedulerBlocked("ARCHIVE_RATE_LIMITED", (
+                f"candle archiving was rate limited after {summary['books']} books; "
+                f"{summary['skipped']} not attempted, kept={summary['written']}"
+            ))
         return (f"candle_archive symbols={summary['symbols']} books={summary['books']} "
-                f"kept={summary['written']} degraded={summary['degraded']}")
+                f"kept={summary['written']} degraded={summary['degraded']} "
+                f"deferred={summary.get('deferred', 0)}")
     if schedule.kind != KIND_TASK:
         # Every branch above tests one kind, and this used to be a bare fall-through: a
         # schedule of ANY unrecognised kind ran the analysis pipeline below — a real model

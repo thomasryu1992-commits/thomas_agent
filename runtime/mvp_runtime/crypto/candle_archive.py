@@ -39,15 +39,16 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
-from .market_data import FACTORY_DEPTH_DAYS, TIMEFRAMES
+from .market_data import FACTORY_DEPTH_DAYS, TIMEFRAMES, TOOL_RATE_LIMITED
 from .paper import state_dir
 
 ARCHIVE_DIRNAME = "candle_archive"
@@ -77,6 +78,35 @@ ARCHIVE_DEXES: tuple[str, ...] = ("xyz",)
 # recoverable today stops being recoverable the moment the ceiling passes it, and the cost of
 # keeping 4h and 1d is a rounding error against 15m.
 ARCHIVE_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h", "1d")
+
+# How long to wait between venue reads inside ONE pass.
+#
+# Measured on the first real pass, 2026-08-04T14:59:57Z: the loop issued its 352 reads as fast
+# as it could, roughly 70 answered, and the remaining 282 came back `TOOL_RATE_LIMITED`. The
+# fire still reported COMPLETED — `degraded != books` — so an 80% loss was carried in a summary
+# string that reaches nobody. 88 symbols x 4 timeframes is simply more than this venue will
+# answer in a burst, and no amount of retrying changes that.
+#
+# Sized off that measurement rather than off the venue's published weights, and deliberately
+# under it: ~70 reads went through before the wall, so pacing below one per second keeps a full
+# pass inside what was already demonstrated to work. A pass then takes ~6.5 minutes of an hourly
+# cadence, which is cost this schedule can trivially afford — the alternative is not a faster
+# pass, it is 282 books that never get archived at all.
+ARCHIVE_REQUEST_INTERVAL_SECONDS = 1.1
+
+# How many books ONE pass may attempt. Pacing alone would make a full 352-book pass take about
+# 6.5 minutes, and that is not free time: `run_due` runs due schedules sequentially, so the pass
+# holds the tick — the same tick the live leg's `_settle_or_protect` runs on (the arithmetic is
+# spelled out on `PerRunFeedCache`). Trading a bounded archive delay for a 6.5-minute delay to
+# position protection is the wrong direction, and it is not a trade this module gets to make
+# silently.
+#
+# So a pass is bounded instead: 100 books x 1.1s is under two minutes of tick, and the rotating
+# start offset below means the books this pass did not reach are the ones the next passes start
+# from. Full coverage therefore takes a few passes rather than one — which costs nothing real
+# here, because what the archive races is a window that rolls at 52 days (15m) and 208 (1h).
+# Hours of latency against months of ceiling.
+ARCHIVE_BOOKS_PER_PASS = 100
 
 # A filename must round-trip the symbol, and `xyz:XLE` cannot be one on every filesystem.
 # Substituted rather than stripped: `xyz:AVGO` and `para:AVGO` are different books, so the
@@ -495,28 +525,72 @@ def run_candle_archive(
     timeframes: Sequence[str] = ARCHIVE_TIMEFRAMES,
     timeout_seconds: int = 20,
     root: Path | None = None,
+    request_interval_seconds: float = ARCHIVE_REQUEST_INTERVAL_SECONDS,
+    books_per_pass: int = ARCHIVE_BOOKS_PER_PASS,
+    sleep: Callable[[float], Any] | None = None,
 ) -> dict[str, Any]:
-    """One archive pass: every live symbol on ``dexes``, every timeframe. Never raises.
+    """One archive pass: a bounded slice of the universe. Never raises.
 
     The universe is read from the venue rather than declared — see :data:`ARCHIVE_DEXES`. If
     that read fails there is nothing to iterate, so the pass reports why and writes nothing;
     a per-book failure only costs that book, because losing one symbol must not cost the
     other eighty-seven.
 
+    **Paced, bounded, and it stops when the venue says stop.** Reads are spaced by
+    ``request_interval_seconds`` and a pass attempts at most ``books_per_pass`` of them (both
+    constants carry the measurement that sized them). A ``TOOL_RATE_LIMITED`` answer latches:
+    the pass ends there rather than issuing the rest. That is `PerRunFeedCache`'s posture, for
+    its reason — a 429 is not "try again", it is the step before a 418 ban, so continuing to
+    knock is the one response that makes it worse.
+
+    Three counts, because three different things happen to a book and only one of them is
+    evidence about that book: ``degraded`` is "asked, and it did not answer", ``skipped`` is
+    "inside this pass's budget but never asked, because the rate limit latched first", and
+    ``deferred`` is "outside this pass's budget", which is the normal design and not a fault.
+    Folding them together is what let an 80% loss read like a completed day.
+
+    **Iteration starts at a rotating offset.** Every pass used to walk the venue's order from
+    the top, so a pass that ended early always ended in the same place: the first real pass
+    archived the first twenty symbols alphabetically and none of the other sixty-eight, and an
+    hourly cadence would have repeated exactly that, forever. The tail was not slow to fill, it
+    was unreachable. Rotating costs nothing — every book is independent — and converts a
+    permanent starvation into a delay.
+
     Returns a summary rather than a record: this store feeds nothing, and what an operator
     needs from a fire is how much was kept and what did not answer.
     """
+    # Resolved here rather than as a default argument, because a default binds `time.sleep` at
+    # import and no later patch of it can be seen — which would make every test that reaches
+    # this through the scheduler wait in real seconds.
+    wait = sleep if sleep is not None else time.sleep
     try:
         symbols = collector.live_symbols(dexes=list(dexes), timeout_seconds=timeout_seconds)
     except Exception as exc:  # noqa: BLE001 — a universe read failure is a quiet no-op, not a crash
         return {"venue": venue, "symbols": 0, "books": 0, "written": 0, "degraded": 0,
+                "skipped": 0, "deferred": 0, "rate_limited": False,
                 "blocked": True, "reason_code": getattr(exc, "reason_code", type(exc).__name__)}
 
+    # Minutes, not hours: the offset has to move between passes at whatever cadence this kind is
+    # registered at, and an hour-derived offset would be identical for all four passes of a
+    # 15-minute schedule — reintroducing the fixed order this exists to break.
+    order = list(symbols)
+    if order:
+        offset = (now_ms // 60_000) % len(order)
+        order = order[offset:] + order[:offset]
+
+    planned = min(len(order) * len(timeframes), max(1, books_per_pass))
     written = 0
     degraded: list[str] = []
     books = 0
-    for symbol in symbols:
+    rate_limited = False
+    for symbol in order:
+        if rate_limited or books >= planned:
+            break
         for timeframe in timeframes:
+            if books >= planned:
+                break
+            if books:  # pace between reads, never before the first
+                wait(request_interval_seconds)
             books += 1
             result = refresh_book(
                 collector, venue=venue, symbol=symbol, timeframe=timeframe,
@@ -525,7 +599,13 @@ def run_candle_archive(
             written += int(result.get("written") or 0)
             if result.get("degraded"):
                 degraded.append(f"{symbol}/{timeframe}:{result.get('reason_code')}")
+            if result.get("reason_code") == TOOL_RATE_LIMITED:
+                rate_limited = True
+                break
     return {"venue": venue, "symbols": len(symbols), "books": books, "written": written,
-            "degraded": len(degraded), "blocked": False,
+            "degraded": len(degraded),
+            "skipped": planned - books,                                  # budgeted, never asked
+            "deferred": len(order) * len(timeframes) - planned,          # next pass's slice
+            "rate_limited": rate_limited, "blocked": False,
             # Bounded: a venue-wide outage would otherwise put 352 entries in a status line.
             "degraded_sample": degraded[:5]}

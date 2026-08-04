@@ -1824,7 +1824,117 @@ measured — opening the high-volatility bars means trading where `DEFAULT_SLIPP
 constant, is most likely optimistic, so the new family's backtest carries a favourable bias of
 unknown size. Live is partly covered by `volatility_size_multiplier`; the backtest is not.
 
----
+### F4. The replay window is our constant, not the venue's limit — measured 2026-08-04
+
+F1 and F3 both end pointing at the same place. F1: *"What reopens it is a mint at 8 conditions
+that reaches `MIN_HOLDOUT_TRADES`, which cannot happen at these signal rates without a longer
+replay window — so re-measure `market_data.factory_candle_target` first."* F3: settling 4h
+`htf_pullback_short` needs four non-overlapping tails that all reach the same floor, and today
+only two do. So it was re-measured, against the live venue:
+
+| BTCUSDT | asked | returned | span | oldest bar | fetch |
+|---|---|---|---|---|---|
+| 4h (today's window) | 3,000 | 3,000 | 500 d | 2025-03-22 | 0.4 s |
+| 4h | 12,000 | 12,000 | 2,000 d | 2021-02-11 | 1.6 s |
+| 4h | 24,000 | **15,130** | **2,522 d** | 2019-09-08 | 2.0 s |
+| 1h (today's window) | 12,000 | 12,000 | 500 d | 2025-03-22 | 1.7 s |
+| 1h | 48,000 | 48,000 | 2,000 d | 2021-02-11 | 6.1 s |
+
+**Nothing external is binding.** 4h returns less than asked only at 15,130 bars, which is
+BTCUSDT's own listing date — the true floor, and **5.0×** the window the factory replays. 1h
+gives at least 4×. `MAX_CANDLES = 60,000` is nowhere near (its own comment already says it is
+head-room, not a live limit). The window is set by **`FACTORY_DEPTH_DAYS = 500`**, a constant of
+ours, and nothing else.
+
+**What 5× would resolve.** The 0.7-truncation chain F3 uses gives 4h holdout tails of
+900 / 630 / 441 / 309 bars today, of which two carry depth; at 15,130 bars the same chain gives
+**4,539 / 3,177 / 2,224 / 1,557**, so all four clear `MIN_HOLDOUT_TRADES` comfortably and F3's
+open item is decidable rather than merely open. For F1: an 8-condition mint closing 7 in-sample
+and 5 holdout trades scales to roughly **35 / 25**, which lands on the floor rather than far
+under it — the reopening condition F1 names becomes reachable.
+
+**What it costs, and the cost is the reason not to take it.**
+`DERIVATIVE_HISTORY_DAYS = 520` does not follow the window: at 2,000 days the OI and liquidation
+series would cover **26%** of the replay, and funding — capped by `FUNDING_MAX_PAGES = 4` at
+~1,314 days — about 66%. `factory._oi_feed_reaches` already computes this dynamically
+(`replay_days <= DERIVATIVE_HISTORY_DAYS`), so lengthening the window **auto-gates the four
+`oi_*` families out of the rotation** rather than mining them over a window that is
+three-quarters empty; its docstring records why that matters (every trade lands in the newest
+walk-forward slice, `temporal_consistency` is 0 by construction, and the family is retired
+FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivalent gate** and
+would walk into exactly that failure — one code change an extension requires either way, since
+it is a defect independent of the window.
+
+**There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
+to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
+
+| series | configured | vendor actually serves |
+|---|---|---|
+| OI daily (Coinalyze) | `DERIVATIVE_HISTORY_DAYS = 520` d | **2,200 d**, back to 2020-07-26 — returns exactly what is asked |
+| funding (Binance) | `FUNDING_MAX_PAGES = 4` ≈ 1,314 d | ~333 d per page; 6–7 pages reach 2,000 d |
+
+So a 2,000-day window is coverable on every axis at once — candles to 2,150 (SOL binding), OI to
+2,200, funding to whatever `FUNDING_MAX_PAGES` is set to. Lengthening the replay costs the
+`oi_*` families **only if `DERIVATIVE_HISTORY_DAYS` is left behind**, and it is a constant in
+this repo. The gate in `_oi_feed_reaches` stays exactly as it is — it is the thing that makes
+forgetting to raise them *safe* rather than silent.
+
+**Which matters because `oi_*` is where the only confirmations are, and they are not yet
+verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
+1h and 4h. Walked backwards through the same adjacent, non-overlapping windows F3 uses, at 4h:
+
+| window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
+|---|---|---|---|
+| `[2100,3000)` | +0.4240, **4 CONF**, 7/8 judgeable | +0.2565, **3 CONF**, 4/8 | −0.0761, 0 CONF, 6/8 |
+| `[1470,2100)` | +0.0946, 0 CONF, 6/8 | +0.1133, 0 CONF, 3/8 | −0.1485, 0 CONF, 6/8 |
+| `[1029,1470)` | +0.1024, 0 CONF, 2/8 | +0.2954, 1 CONF, 3/8 | −0.3189, 0 CONF, 5/8 |
+| `[720,1029)` | +0.2781, 0 CONF, 3/8 | +0.6172, 1 CONF, 1/8 | −0.1388, 0 CONF, 2/8 |
+
+**The confirmations concentrate in the newest window** — `oi_squeeze_long` confirms 4 of 8 there
+and 0 in every older one — which is the shape F3's 1h control showed is not evidence. What does
+hold is the *sign*: both confirmers are positive in all four windows on 83–100% of judgeable
+draws, while the control is negative in all four. So there is a consistent direction and no
+confirmed magnitude.
+
+**And the reason the older windows cannot decide it is the window itself.** The 0.7 chain
+shrinks geometrically, so on a 3,000-bar series the last two tails are 441 and 309 bars — 2/8 and
+3/8 draws judgeable, medians of 16 and 22 holdout trades. At 12,000 bars the same chain gives
+3,600 / 2,520 / 1,764 / 1,235-bar tails, all deep. **The measurement that would verify `oi_*` is
+the one this section proposes**, which inverts the ordering the previous paragraph asserted: the
+window is not priced *against* `oi_*`, it is what `oi_*` needs.
+
+Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
+cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
+contexts, and `build_feature_rows` is 6.0 s at 48,000 bars. What the arithmetic misses is the
+venue's rate limiter — measuring the depths in this table **hit HTTP 429** (the venue asked for
+17 s), and the factory shares an IP with the 15-minute cycle that trades. The live cycle was
+unaffected that time (no `MARKET_DATA_DEGRADED` in the 400 ledger rows around it), but a 4×
+fetch volume on the same address is the pattern that produced it, so an extension needs explicit
+backoff and spacing rather than the same call pattern run four times as hard.
+
+**The cohort's own history bounds the window before the venue does.** `backtest_spec_pooled`
+pools by bar INDEX and states its precondition — "bar *i* is the same calendar window on every
+leg" — which holds only while every leg is at least as long as the window. Measured per symbol
+at 4h: SOLUSDT 12,901 bars (2,150 d, listed 2020-09-14) is the binding leg, then DOGEUSDT 13,296,
+BNBUSDT 14,202, XRPUSDT 14,412, ETHUSDT 14,653, BTCUSDT 15,130. **2,150 days is the deepest
+window that keeps every leg equal-length**; past it the pooled walk-forward slices start mixing
+calendar windows across symbols. A 2,000-day target sits under that with head-room and makes the
+whole ladder uniform, since 1d already replays 2,000 days via `MIN_FACTORY_BARS`.
+
+**The real reason this is written down rather than done.** A longer window re-bases every number
+in the store: candidates scored on 500 days and candidates scored on 2,522 are not comparable,
+and ranking them together is the defect `EDGE_COST_BASIS_UNRECORDED` exists to mark, one axis
+over. So an extension needs the same treatment the cost basis got — the window recorded **with**
+each candidate's evidence, and `promotable_backlog` refusing to compare across bases — or it
+silently invalidates 1,595 rows. That is a larger change than the constant it turns on.
+
+**What an extension is, then, in full.** Not one constant — four, plus the basis machinery:
+`FACTORY_DEPTH_DAYS` 500 → 2,000; `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 (or the `oi_*` families
+leave the rotation, which is now the expensive outcome rather than the bookkeeping one);
+`FUNDING_MAX_PAGES` 4 → 7; a `funding_fade_*` gate mirroring `_oi_feed_reaches`, which is owed
+regardless; backoff and spacing on the factory's fetches; and the replay window recorded with
+each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
+2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
