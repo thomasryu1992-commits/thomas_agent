@@ -1072,11 +1072,12 @@ REFERENCE_FAMILIES = frozenset({"rel_strength_long", "rel_strength_short"})
 # still take zero trades, and be retired as FRAGILE — the family blamed for a cohort that was
 # too small to rank.
 #
-# Both the minted pair and the retired one are named. The gate asks "may a family that reads
-# `xs_*` be minted here", which is a property of the COLUMNS and not of which sign reads them —
-# so leaving the retired pair out would silently un-gate it the day somebody re-listed it.
-CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short",
-                                    "xs_momentum_long", "xs_momentum_short"})
+# Names only what is MINTED, which is why the retired `xs_momentum_*` pair is absent even though
+# it reads the same columns: `tests/test_mvp_runtime_crypto_cross_section.py` iterates this set
+# and requires every member to be in the rotation and to fire on a real frame, so a retired name
+# here would turn that coverage into a StopIteration. Re-listing the momentum pair means adding
+# it back here too — the same one-line reversal the retirement itself is.
+CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short"})
 
 # Families whose entry rules read the positioning columns — mintable only where the store has
 # accumulated enough history to answer the whole replay window

@@ -1778,21 +1778,6 @@ def test_two_trend_parents_still_clamp_exactly_as_they_did():
 
 # --- xs_momentum -> xs_reversion is a swap, not an addition (2026-08-04) -----------------------
 
-def test_the_cross_sectional_legs_stay_disjoint_so_a_row_cannot_match_both():
-    """`paper.route_entries` fails a bar closed (`BLOCK_DIRECTION_CONFLICT`) when a LONG and a
-    SHORT match the same feature row. The reversion pair keeps the momentum pair's construction
-    — long takes `rank <= edge`, short `rank >= 1 - edge` — so with `xs_rank_edge` capped at 0.4
-    the two conditions can never both hold. Mined over the whole parameter range rather than at
-    the base, because the cap is what makes this true and a base-only test would not see it."""
-    space = {t.family: t.param_space for t in factory.TEMPLATES}
-    edge = space["xs_reversion_long"]["xs_rank_edge"]
-    assert edge.hi <= 0.5, "edge above 0.5 lets the two legs overlap"
-    for value in (edge.lo, (edge.lo + edge.hi) / 2, edge.hi):
-        long_max = value                    # long fires at rank <= value
-        short_min = 1.0 - value             # short fires at rank >= 1 - value
-        assert long_max < short_min or value == 0.5
-
-
 def test_the_momentum_pair_is_retired_rather_than_deleted_and_cannot_return_alongside_reversion():
     """Retired, so the builders stay and re-listing one line is the whole of re-enabling. But the
     pair is mutually exclusive with the reversion families rather than merely superseded:
@@ -1811,10 +1796,10 @@ def test_the_momentum_pair_is_retired_rather_than_deleted_and_cannot_return_alon
         "gone and both could be minted"
     )
 
-    # And the gate that decides whether an xs_* family may be minted at all names both pairs,
-    # so re-listing the retired one cannot silently escape it.
-    assert {"xs_momentum_long", "xs_momentum_short",
-            "xs_reversion_long", "xs_reversion_short"} <= factory.CROSS_SECTION_FAMILIES
+    # The cohort gate names only what is minted (see CROSS_SECTION_FAMILIES), so the swap has to
+    # move that set too or the minted pair escapes the gate. Disjointness itself is pinned in
+    # tests/test_mvp_runtime_crypto_cross_section.py, which owns that property.
+    assert factory.CROSS_SECTION_FAMILIES == {"xs_reversion_long", "xs_reversion_short"}
 
 
 def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
