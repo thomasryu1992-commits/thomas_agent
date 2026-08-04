@@ -95,9 +95,25 @@ KIND_ROTATE = "ledger_rotate"
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
 # Keeps candles the equity venue will stop serving. Its own kind rather than a leg of
-# `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence and must keep
-# running when the pipeline is paused — the data it is racing is lost by the clock, not by
-# anything the pipeline does.
+# `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence, and a per-book
+# failure has to cost that book alone — losing one symbol must not cost the other eighty-seven.
+#
+# **It is NOT exempt from the kill switch, and the comment here used to say it was.** `run_due`
+# skips every due schedule while PAUSED/KILLED and *drops* the occurrence rather than queueing
+# it; there is no per-kind exemption and this kind does not have one. The original rationale —
+# "must keep running when the pipeline is paused, because the data it races is lost by the
+# clock" — described a property nothing implements, which is worse than not claiming it: an
+# operator reading it would issue a halt believing archiving continued.
+#
+# What is true is that the exposure is BOUNDED by the same ceiling the archive exists for. A
+# refresh sizes its request from the newest bar it holds and may ask for up to
+# `VENUE_CANDLE_CEILING`, so a halt shorter than that window costs nothing — the next fire
+# refills it, which is `candle_archive`'s own "a gap shorter than the ceiling self-heals". Only
+# a halt outlasting **52 days at 15m or 208 at 1h** loses bars permanently.
+#
+# Exempting it would be a change to `run_due` and a different safety claim — a kill switch with
+# an exception is not a kill switch — so it is argued there or not at all. A test pins that this
+# kind stops with everything else, so the exemption cannot arrive by comment.
 KIND_CANDLE_ARCHIVE = "candle_archive"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
