@@ -25,7 +25,11 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import positioning_store
-from runtime.mvp_runtime.crypto.cycle import accumulate_positioning_cohort, attach_feeds
+from runtime.mvp_runtime.crypto.cycle import (
+    accumulate_positioning_cohort,
+    attach_feeds,
+    pool_cycle_status_line,
+)
 from runtime.mvp_runtime.crypto.market_data import (
     CROSS_SECTION_UNIVERSE,
     POSITIONING_SERIES,
@@ -454,6 +458,27 @@ def test_one_symbol_refusing_does_not_cost_the_others_their_hour(tmp_path):
     assert not positioning_store.read_rows(tmp_path, symbol="XRPUSDT")
     for symbol in (s for s in CROSS_SECTION_UNIVERSE if s != "XRPUSDT"):
         assert positioning_store.read_rows(tmp_path, symbol=symbol), symbol
+
+
+def test_a_lost_hour_is_named_on_the_fire_that_lost_it():
+    """Silence is what made this defect cost four days on one symbol and everything on
+    another, and an hour missed here is not retryable — so a degraded symbol reaches the
+    fan-out's own status line, named."""
+    line = pool_cycle_status_line({
+        "cycles": [], "skipped": [], "unvisited": [],
+        "positioning": {"BTCUSDT": "appended", "XRPUSDT": "degraded", "BNBUSDT": "degraded"},
+    })
+    assert "positioning-degraded=BNBUSDT,XRPUSDT" in line
+
+
+def test_a_clean_sweep_says_nothing():
+    """`cycle_status_line`'s rule: a token on every quiet fire is a token an operator learns
+    to skip, and this one has to still be readable the day it matters."""
+    line = pool_cycle_status_line({
+        "cycles": [], "skipped": [], "unvisited": [],
+        "positioning": {s: "skipped_fresh" for s in CROSS_SECTION_UNIVERSE},
+    })
+    assert "positioning" not in line
 
 
 # The predecessor of the two tests below asserted that NO feature column read this store — a

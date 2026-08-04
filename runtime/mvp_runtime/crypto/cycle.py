@@ -1189,6 +1189,19 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
             f" ({','.join(halt['reason_codes']) or halt['live_route_status']})"
             f" unvisited={len(unvisited)}"
         )
+    # Only the symbols whose hour was LOST, and only when there are any. What this sweep exists
+    # to close was silent for four days on one symbol and forever on another, so a degraded
+    # symbol has to reach the fire's own status line — an hour missed here is not retryable,
+    # the vendor serves 30 days. Named rather than counted, because which symbol it is decides
+    # whether anyone should act: one bad hour heals on the next fire, the same symbol every
+    # hour does not. Silent when clean, for `cycle_status_line`'s reason — a line that named
+    # all six on every quiet fire is a line an operator learns to skip.
+    degraded = sorted(
+        symbol for symbol, status in (summary.get("positioning") or {}).items()
+        if status == "degraded"
+    )
+    if degraded:
+        head += f" positioning-degraded={','.join(degraded)}"
     parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
     parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)
