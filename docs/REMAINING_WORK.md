@@ -13,6 +13,13 @@ candidates carrying the current basis survive their own holdout, and the promoti
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
 **It does not outrank the paragraph below**, which is still the thing to fix on arrival.
 
+Also 2026-08-04: the board can now say it (#477 — `promotable_backlog` returns a refusal
+partition), and **section F1** diagnoses why nothing survives. Three explanations are ruled out
+by measurement; what is left is that **41% of mints produce a holdout too shallow to confirm**,
+56% of them among the bred half of every generation. The change that implies is written out
+there with its numbers and deliberately not made — it trades exploration for judgeability and
+rests on four days of mints.
+
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
 first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
@@ -1270,16 +1277,81 @@ factory's in-sample edge has not yet reproduced forward at any timeframe.
 
 **What is open, in the order it binds:**
 
-1. **Nothing in this store survives its own holdout.** That is the item, and it is upstream of
-   every timeframe question in this section. The cost work is done; the edge is what is missing.
-2. **The board cannot say so.** `promotable_backlog` returns `count: 0` with an empty
-   `deferred_unjudgeable`, because everything is eliminated by the verdict filter *upstream* of
-   the judgeability filter that exists to name what it dropped. "0 promotable" currently reads
-   as "nothing waiting" when what is true is "474 waiting, all stopped at one gate" — the exact
-   failure the deferred list was added to prevent, one filter earlier.
+1. **Nothing in this store survives its own holdout — diagnosed 2026-08-04, and it is not a
+   gate.** Every mechanism was checked for a defect and each is behaving as designed; what the
+   measurement found instead is below. This stays open because the finding is a direction, not
+   a fix.
+2. ~~**The board cannot say so.**~~ Closed by #477: `promotable_backlog` now returns a `refused`
+   partition and `candidates_read`, and the daily board prints
+   `승격 대기 0 (판정 후보 1140건 · cost_basis 546건 · holdout_insufficient 409건)` where it
+   used to print nothing at all.
 3. **The maker-entry lever is unchanged and still deferred** — `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`,
    scope note 2026-08-02, three preconditions unstarted. Its premise (a resting entry selects
    against momentum/breakout) is untouched by anything above.
+
+### F1. Why nothing survives its holdout — measured 2026-08-04 over 480 current-basis rows
+
+**Four candidate explanations were tested and three are ruled out.** *Not a one-sided regime:*
+long and short both degrade and both end negative out of sample (long HO −0.1694, short
+−0.1547), so the holdout window is not simply a market that killed one side. *Not a steering
+defect:* `champion_score` — which `elite_base_params` uses to place the search centre, and
+which is composed entirely of in-sample terms — does predict the holdout, monotonically
+(quintiles of judgeable rows: −0.3181, −0.2691, −0.1814, −0.1463, −0.1007; corr +0.363, and
++0.479 for in-sample expectancy). *Not a gate that is too strict:* nothing in the store clears
+the selection-adjusted bar (z ≈ 3.37 at 64–70 attempts per context), and the nine rows that
+clear the uncorrected 1.96 do so on 3–95 closed trades with holdouts of 2–24 — the exact
+population `trades_per_parameter` and `MIN_HOLDOUT_TRADES` exist to refuse, and both refuse
+them.
+
+**What is left is that the search produces evidence it cannot confirm.** Crossover is half of
+every generation, and matched on holdout depth it buys in-sample expectancy and no
+out-of-sample expectancy at all:
+
+| tf | seeded IS → HO | crossover IS → HO |
+|---|---|---|
+| 15m | −0.2493 → −0.3459 | −0.0529 → −0.2853 |
+| 1h | −0.0858 → −0.1625 | +0.0459 → **−0.2101** |
+| 4h | −0.0102 → −0.0661 | +0.1218 → **−0.0779** |
+
+On the raw population crossover looks *better* out of sample (−0.0404 against seeded's
+−0.1993). That advantage is an artifact of depth: bred children hold a median of **17** holdout
+trades against seeded's **59**, so 134 of the 240 sit below the depth at which anything can be
+judged, and their medians are noise around zero (+0.0006, 51% positive). Read only where the
+tail can be judged, the advantage inverts at two of three timeframes. Degradation by
+derivation is 2–3× and holds within every mint date, so it is not the cost change: seeded
++0.0784R, crossover +0.2241R.
+
+**The mechanism is selectivity, and it is monotone.** Fusion unions two parents' conditions
+under AND, so a child is strictly more selective than either parent — median 6 conditions
+against a seeded template's 3, and 49 in-sample trades against 139:
+
+| entry conditions | in-sample trades | holdout trades | share judgeable |
+|---|---|---|---|
+| 3 | 249 | 92 | 85% |
+| 5 | 72 | 31 | 64% |
+| 6 | 48 | 14 | 30% |
+| 7 | 18 | 6 | 16% |
+| 8 | 7 | 5 | **0%** |
+
+**41% of all mints (198 of 480) produce a holdout that can never be confirmed** — 27% of
+seeded draws and **56%** of crossover children.
+
+**The change this implies, stated so it can be decided rather than re-measured.** `fuse_specs`
+bounds a child at `MAX_ENTRY_CONDITIONS = 8`, which is a validator bound copied verbatim from
+source S3 — a statement about rule legality, not about whether the child can produce evidence.
+The measurement puts 0 of 22 mints at that bound inside the judgeable band. The precedent for
+refusing at mint is already in the same function: a child closing **no** trades is rejected
+rather than stored, on the argument that it "would otherwise sit in the store as a scored
+candidate that can never trade" — a child whose tail is too shallow to confirm is that defect
+one notch weaker. Refusal is cheap: `mint_fusions` draws from `combinations(bucket, 2)` until
+`pairs` children carry evidence, so a rejected pair redirects the draw instead of costing a
+mint, and the rejection-reason list already exists to record it.
+
+**Not done here, deliberately.** Refusing on holdout depth would reject 56% of crossover
+children, which is a change to what the factory explores and trades exploration for
+judgeability. That is a decision about the search space and it rests on four days of mints —
+so it is written down with its numbers rather than merged into the generation engine on the
+strength of one measurement.
 
 **Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for another
 `stop_atr` tweak — the floor has now been credited with what it was worth and the next multiple
