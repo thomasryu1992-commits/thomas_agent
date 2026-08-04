@@ -1578,6 +1578,70 @@ is judged over generations, not days (the `#420` error). The capability landed; 
 not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
 the single-symbol search of the same family produced none.
 
+#### That batch was run, and it confirms — measured 2026-08-04, corrected the same day
+
+The condition above is the whole of the decision, so it was tested rather than left standing.
+Every mintable family at a timeframe, 8 freshly drawn parameter sets each, minted **pooled** —
+one spec with `symbol_scope` set to the whole cohort, replayed across all five legs, so each is
+ONE hypothesis at five symbols' data rather than five hypotheses at one symbol's each. Verdicts
+are `robustness.holdout_status`, not a re-implementation of it. Read-only; nothing appended.
+
+| pooled mint | specs | CONFIRMED | CONTRADICTED | INSUFFICIENT |
+|---|---|---|---|---|
+| 4h, 34 families × 8 | 272 | **11** (4.0%) | 218 | 43 |
+| 1h, 34 families × 8 | 272 | **4** (1.5%) | 247 | 21 |
+
+> **This replaces a first pass that reported 0 and 0, and the way it was wrong is the reusable
+> part.** That run built its frames with `attach_htf` alone. The scheduler attaches four legs
+> before a fire, so ten feed-dependent families — all four `oi_*`, `funding_fade_*`,
+> `premium_fade_*`, `xs_reversion_*` — were scored over columns that were `None` on **every**
+> row. They took no trades, returned INSUFFICIENT, and were written up as *"pooling does not fix
+> judgeability everywhere"*. It was not a verdict on them; it was a frame with their inputs
+> missing. With the legs attached those columns are 100% populated over the 4h replay
+> (`open_interest_zscore` 3000/3000, `funding_zscore` 2990/3000). `unsuppliable_features` would
+> have caught it inside `run_factory` — calling `backtest_spec_pooled` directly walked around
+> the guard that exists for exactly this.
+
+**F2's condition is met.** A pooled mint batch does produce CONFIRMED holdouts where the
+single-symbol search produced none — 1 CONFIRMED in 1,595 stored single-symbol rows, and that
+one PROVISIONAL, against 15 in 544 pooled mints.
+
+**Two families do it at both timeframes, and they are the same two.**
+
+| family | tf | HO trades | HO exp | t | IS exp |
+|---|---|---|---|---|---|
+| `oi_unwind_short` | 4h | 33 | +0.5347 | 3.15 | +0.4768 |
+| `oi_unwind_short` | 1h | 28 | +0.6303 | 3.34 | +0.1702 |
+| `oi_squeeze_long` | 4h | 38 | +0.5042 | 2.79 | +0.4234 |
+| `oi_squeeze_long` | 1h | 74 | +0.3027 | 2.75 | +0.3054 |
+
+Positive in-sample **and** out-of-sample, at two timeframes — which is the property every prior
+candidate in this record failed. `premium_fade_short` also confirms 4 of 8 at 4h and is
+**dismissed**: its in-sample expectancy is *negative* (−0.09 to −0.13) against a positive
+holdout, which is the signature of an artifact rather than an edge, and it is CONTRADICTED 8/8
+at 1h.
+
+**And none of it clears the selection correction, because the attempt count is not per family.**
+`SELECTION_CONTEXT` is `symbol_scope + timeframe`, and this batch is one symbol scope at one
+timeframe — so the honest count is **272 attempts**, not 8 per family. That puts the bar at
+**z = 3.74**, above the best `t` here (3.34). Reporting it per family, as the first pass did,
+charges 2.73 and lets two rows read as clearing. They do not.
+
+**So the finding is narrow and specific:** pooled minting reaches CONFIRMED where single-symbol
+minting does not, and the confirmations concentrate in the `oi_*` families rather than being
+spread across the library. What is *not* established is that they survive the attempt count they
+were drawn from.
+
+**What this does not test.** The draws are `mutate_params` around each template's own base;
+`elite_base_params` steering was not reproduced, so this is an *unsteered* pooled mint — the one
+difference from what `run_factory` would actually do. Eight draws per family is also modest.
+
+**And it changes the price of a longer replay window.** The two families that confirm are
+`oi_*`, which `factory._oi_feed_reaches` gates out of any rotation whose replay exceeds
+`DERIVATIVE_HISTORY_DAYS = 520` days. Lengthening the window therefore removes **exactly the
+families that produced the only confirmations this record has** — a cost that reads as
+bookkeeping until these numbers exist, and as decisive once they do.
+
 ### F3. The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
 
 F1 attributes the unjudgeable half of the store to fusion's AND-union. **The seeded templates
@@ -1695,6 +1759,62 @@ the library at 40 families and `free_parameters` at 5.
 The pullback variant is **not** shipped and should not be on this evidence: it helps only at 4h,
 hurts at 1h, and its one good number does not reproduce. `htf_pullback_long/short` remain in the
 rotation producing 0 and 1 judgeable holdouts out of 60 at 4h — an open item, not a resolved one.
+
+#### The pullback family's problem is not its rule — measured 2026-08-04
+
+Two different replacements were tried and both say the same thing, so the item above is closed
+in a direction it was not pointed at. **The rule was never what made it unjudgeable; one
+symbol's evidence was too thin for a conjunction this rare.** Replayed pooled across the cohort
+with `factory.backtest_spec_pooled` and the rule *unchanged*, at 4h:
+
+| 4h, same rule | specs | IS trades | HO trades | judgeable | HO exp | pos | t max | z bar |
+|---|---|---|---|---|---|---|---|---|
+| `htf_pullback_long` single | 60 | 21 | 5 | **0/60** | n/a | n/a | n/a | 3.34 |
+| `htf_pullback_long` pooled | 12 | 124 | 38 | **8/12** | −0.0823 | 25% | 1.25 | 2.87 |
+| `htf_pullback_short` single | 60 | 22 | 6 | **1/60** | +0.4399 | 100% | 2.24 | 3.34 |
+| `htf_pullback_short` pooled | 12 | 112 | 38 | **12/12** | **+0.1748** | **100%** | 1.87 | 2.87 |
+
+So the judgeability defect is fully removed without touching a condition. That also answers, for
+one family, the question F2 leaves open — a pooled *re-score* (not yet a pooled *mint*) turns
+un-judgeable into judged, and what it judges is **not confirmed**: nothing clears the
+selection-adjusted bar, and 1h is negative on both legs (long −0.1661, short −0.3332, 0% of
+draws positive).
+
+**The one result worth a second look, and the control that undercuts it.** 4h
+`htf_pullback_short` is the only positive figure this investigation has produced twice. Walking
+the holdout backwards in **adjacent, non-overlapping** windows (truncating the series by 0.7 each
+step makes window *k+1* end exactly where window *k* begins):
+
+| holdout window (4h) | bars | HO trades | judgeable | HO exp | pos | t max |
+|---|---|---|---|---|---|---|
+| `[2100,3000)` | 900 | 38 | 12/12 | +0.1748 | 100% | 1.87 |
+| `[1470,2100)` | 630 | 62 | 12/12 | +0.1539 | 100% | **2.08** |
+| `[1029,1470)` | 441 | 20 | 2/12 | +0.0338 | 100% | 0.16 |
+| `[720,1029)` | 309 | 2 | 0/12 | — | — | — |
+
+No negative window, and the two deep ones agree on magnitude. Its long sibling over the same
+windows is uniformly negative (−0.0823, −0.7568, −0.5062, −0.1579), so the result is not an
+artifact of the windowing.
+
+**And it still does not clear.** `t max` peaks at 2.08 against a selection-adjusted 2.87, the 12
+draws are correlated (one rule, adjacent parameters, one cohort, one window set) so "100% of
+draws positive" is nearer one observation than twelve, and only two windows carry real depth.
+
+The control is in the table above it. The **same rule at 1h** produces `[4116,5880)` at
+**+0.4052 with t max 3.91** — clearing even a selection-adjusted bar — surrounded by
+−0.3332, −0.2676 and −0.3338. If that window had been the only one sampled it would read as a
+confirmed edge. It is the cleanest demonstration this record has that **one strong window is not
+evidence here**, and it is why the 4h rows above are reported as suggestive rather than found.
+
+**What would settle it** is more independent evidence, not more draws of the same twelve: a
+replay window long enough to yield four non-overlapping tails that all reach
+`MIN_HOLDOUT_TRADES` at 4h (today the third is 2/12 and the fourth 0/12), or forward paper
+outcomes. **What would not:** loosening the rule to raise its trade count, which changes the
+hypothesis rather than testing it.
+
+**So the open item changes shape.** `htf_pullback_*` should not be replaced, and its
+unjudgeability at 4h is a *sampling* fact rather than a rule defect — which makes it evidence
+for the pooled-mint experiment F2 defers, not an argument for another template edit.
 
 **What is still owed.** A mint-time change is judged over generations rather than days (the
 `#420` error), so the shipped half is a *bet placed*, not a result: the check is the next fire's
