@@ -1383,10 +1383,21 @@ is strong on the *mechanism* (394 pairs, controlled by construction) it is four 
 on the *consequence* — so it is written down with its numbers rather than merged into the
 generation engine on the strength of one measurement.
 
-**The narrower version, if the full change is not wanted.** Capping fusion below
-`MAX_ENTRY_CONDITIONS` removes only the band measured at zero yield: 0 of 22 current-basis
-mints at 8 conditions are judgeable, and 0 of 25 across the whole store. That band is small
-and its yield is not "low", it is none.
+**The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
+only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
+judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
+to `MAX_ENTRY_CONDITIONS`, which stays at source S3's 8 because it answers a different
+question: that one is rule legality, this one is whether the child can produce evidence
+anyone can judge. Both refusals fire and carry different reasons (`too_many_conditions`,
+`holdout_unjudgeable`), so a later reader cannot mistake the tighter number for a revision of
+the validator and raise it back to match.
+
+Measured against the store it would have refused **25 of 394** fusions (6.3%), whose median
+child closed **7** in-sample and **5** holdout trades, and the judgeable share of surviving
+fusions moves 50% → 53%. That is the honest size of it: this buys back a band that was
+producing nothing, not the 41–47% problem. **What reopens it** is a mint at 8 conditions that
+reaches `MIN_HOLDOUT_TRADES`, which cannot happen at these signal rates without a longer
+replay window — so re-measure `market_data.factory_candle_target` first, not this number.
 
 **Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for another
 `stop_atr` tweak — the floor has now been credited with what it was worth and the next multiple
