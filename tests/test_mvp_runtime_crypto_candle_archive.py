@@ -117,6 +117,54 @@ def test_a_row_edited_after_the_write_stops_being_believed(tmp_path):
     assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
 
 
+def _tamper(path, *, open_time):
+    """Edit one stored row's price and leave its hash alone."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = []
+    for line in lines:
+        row = json.loads(line)
+        if row.get("open_time") == open_time:
+            row["close"] = 999_999.0
+        out.append(json.dumps(row))
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_an_edited_newest_row_does_not_get_to_set_the_refresh_horizon(tmp_path):
+    """`newest_open_time` verifies from the newest candidate down, and the direction is the
+    safety-relevant part.
+
+    Trusting an unverified maximum would let one edited row claim a future `open_time`, and a
+    refresh sized from that asks for a single bar forever while the venue's window rolls past
+    everything it is not asking for. Skipping to the newest INTACT row over-fetches at worst,
+    and `append_candles` drops the overlap.
+    """
+    archive.append_candles([_candle(1), _candle(2), _candle(3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-03T00:00:00Z")
+
+    assert archive.newest_open_time(VENUE, SYMBOL, "1h", tmp_path) == "2026-08-02T00:00:00Z"
+
+
+def test_a_refetch_repairs_an_edited_row_instead_of_skipping_it(tmp_path):
+    """A row that fails verification is deliberately not counted as already-held.
+
+    It is skipped on read either way, so letting the re-fetch append a good copy lets
+    latest-wins repair the book rather than leaving a hole the archive can never fill.
+    """
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-01T00:00:00Z")
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []      # nothing believable held
+
+    written = archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL,
+                                     timeframe="1h", root=tmp_path)
+    assert written == 1
+    rows = archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)
+    assert len(rows) == 1 and rows[0]["close"] == 59.3
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
+
+
 def test_a_row_carrying_no_hash_is_kept_because_absence_is_not_a_mismatch(tmp_path):
     """Every row written before the check existed carries no hash. Treating that as tampering
     would empty every book on this machine the first time the new code ran."""
