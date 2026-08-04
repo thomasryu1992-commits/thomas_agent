@@ -107,6 +107,26 @@ _FUNDING_SOURCE_STRENGTH = {
     FUNDING_SOURCE_VENUE: 3,
 }
 
+# How many equal-bar slices the tail is subtotalled into, so a confirmation can be judged on
+# market periods instead of on trades. Five, and the number is bounded on both sides:
+#
+# - **Below**, by the test being possible at all. A one-sided t at 95% needs a spread, so four
+#   periods is the floor `robustness.MIN_HOLDOUT_PERIODS` enforces; five leaves one period of
+#   headroom for a slice that closes nothing.
+# - **Above**, by what the window can supply. The tail is `HOLDOUT_FRACTION` of the replay
+#   span — 150 days at every routed timeframe today — so five slices are 30 days each, and the
+#   block-to-block measurement that motivated this used 50-day blocks. Cutting finer does not
+#   buy independence; it buys correlated slices that LOOK like more evidence, which is the
+#   error this whole change exists to stop making.
+#
+# The honest consequence, stated here rather than discovered later: at today's 500-day window
+# this is not enough periods to confirm anything. Simulated over the store 2026-08-04, a
+# period-based interval returns **0 CONFIRMED of 421** judgeable blocks, against 1 under the
+# trade-based test — and that one is PROVISIONAL, so `promotable_backlog` was already 0 and
+# does not move. The door does not get stricter in effect; it gets honest about having been
+# shut. What reopens it is a deeper window, not a smaller number here.
+HOLDOUT_PERIODS = 5
+
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
 _MAX_ATTEMPTS_PER_SPEC = 12
@@ -2166,6 +2186,12 @@ def _holdout_evidence(
     fees = maker_fees = slippage = carry = 0.0
     uneconomic = 0
     bars: list[int] = []
+    # Pooled by period INDEX, not by frame: every frame here is the same timeframe over the
+    # same window, so period k is the same calendar slice on each symbol. That is the point —
+    # what makes the shared tail one observation rather than many is that the market is the
+    # same in it, so the symbols must be summed inside a period, never treated as extra ones.
+    period_r = [0.0] * HOLDOUT_PERIODS
+    period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
         part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
@@ -2177,7 +2203,16 @@ def _holdout_evidence(
         slippage += part_slip
         carry += part_carry
         uneconomic += part_uneconomic
-        bars.append(len(frame.rows) - frame.split)
+        tail_bars = len(frame.rows) - frame.split
+        bars.append(tail_bars)
+        width = max(1, tail_bars // HOLDOUT_PERIODS)
+        for outcome in part:
+            closed_at = outcome.get("closed_at_bar")
+            if not isinstance(closed_at, int):
+                continue
+            index = min(HOLDOUT_PERIODS - 1, max(0, (closed_at - frame.split) // width))
+            period_r[index] += float(outcome["result_R"])
+            period_trades[index] += 1
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
@@ -2199,6 +2234,20 @@ def _holdout_evidence(
         # undefined; the trade floor refuses that block anyway, and a stored 0.0 reads as
         # INSUFFICIENT rather than as a zero-width interval that excludes zero for free.
         "stdev_r": round(statistics.stdev(results), 8) if closed >= 2 else 0.0,
+        # **The spread above is drawn over TRADES, and trades are not independent draws.**
+        # Measured 2026-08-04 over 700 frozen specs and 113,127 replayed trades: the same
+        # market periods are good or bad for everything at once — mean pairwise correlation of
+        # per-block gross across the ten routed contexts is **+0.459**, and block-to-block
+        # dispersion of gross is 0.1087R against an effect being hunted at 0.01-0.05R. So the
+        # unit of independence is the market PERIOD, and `stdev_r / sqrt(closed_count)`
+        # overstates precision by roughly sqrt(trades / periods).
+        #
+        # These two lists are what makes the honest interval computable at all: the tail's R,
+        # subtotalled over equal-bar slices. `robustness.holdout_status` draws its interval
+        # over them; nothing else can, because the per-trade timestamps are not stored.
+        # See `HOLDOUT_PERIODS` for why the count is what it is.
+        "period_r": [round(value, 8) for value in period_r],
+        "period_trades": period_trades,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
