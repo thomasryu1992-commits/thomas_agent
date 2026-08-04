@@ -2016,3 +2016,76 @@ def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
     assert {"macd_cross_up", "macd_cross_down"} <= minted, (
         "the state form was retired as redundant against an event form that is no longer minted"
     )
+
+
+# --- a retirement has to reach the fusion path too (2026-08-04) --------------------------------
+#
+# `RETIRED_FAMILIES` is enforced by de-listing from `TEMPLATES`, which stops the DIRECT mint path
+# and nothing else. Fusion draws its parents from the candidate STORE, which still holds every row
+# the family produced before it was retired — so a retired lineage kept breeding under a compound
+# name. Measured on the 08:09Z fire of 2026-08-04, the first after `macd_momentum_*` and
+# `xs_momentum_*` were retired: 3 of 80 children carried a retired parent.
+
+def _retired_parent_record(cid, family, score=0.9):
+    return {"candidate_id": cid, "champion_score": score,
+            "strategy_spec": _spec_dict(strategy_family=family)}
+
+
+def test_a_retired_family_cannot_parent_a_fusion_child():
+    """The direct mint path and the fusion path are two doors, and the retirement set was only
+    on one of them. A row whose family left the rotation carries the entry conditions the
+    retirement was about, so it may not pass them on."""
+    retired = sorted(factory.RETIRED_FAMILIES)[0]
+    records = [
+        {"candidate_id": "cand-live", "champion_score": 0.5,
+         "strategy_spec": _spec_dict(strategy_family="breakout")},
+        _retired_parent_record("cand-retired", retired),
+    ]
+    ranked = rank_fusion_parents(records)
+    assert [r["candidate_id"] for r in ranked] == ["cand-live"], (
+        f"{retired} is retired but still ranked as a fusion parent"
+    )
+
+
+def test_a_compound_family_is_retired_when_any_component_is():
+    """The form the leak actually took. A fused family is "a+b", so a child of a retired parent
+    is stored under a name that matches no entry in the set — `macd_momentum_short+
+    xs_momentum_short` was built from two retired families and nothing else, and an exact-name
+    check would have re-admitted it as a grandparent."""
+    retired = sorted(factory.RETIRED_FAMILIES)[0]
+    assert factory.carries_retired_family(_retired_parent_record("c", f"breakout+{retired}"))
+    assert factory.carries_retired_family(_retired_parent_record("c", f"{retired}+breakout"))
+    assert factory.carries_retired_family(
+        _retired_parent_record("c", f"{retired}+{sorted(factory.RETIRED_FAMILIES)[1]}"))
+    assert not factory.carries_retired_family(
+        _retired_parent_record("c", "breakout+trend_pullback"))
+    # A name that merely CONTAINS a retired name as a substring is not a component of it.
+    assert not factory.carries_retired_family(
+        _retired_parent_record("c", f"{retired}_extended"))
+
+
+def test_a_row_without_a_readable_family_is_not_treated_as_retired():
+    """Fail-open here rather than closed, and deliberately: the other eligibility rules in
+    `rank_fusion_parents` already refuse a row with no parseable spec, so this predicate only
+    has to answer about rows that survived them. Refusing an unreadable name would silently
+    narrow the parent pool for a reason unrelated to retirement."""
+    assert not factory.carries_retired_family({"strategy_spec": {"strategy_family": None}})
+    assert not factory.carries_retired_family({"strategy_spec": {}})
+    assert not factory.carries_retired_family({})
+
+
+def test_retired_parents_are_gone_from_every_bucket_not_just_the_ranking():
+    """`fusion_parent_buckets` is what `_fuse_batch` actually consumes, so the filter has to
+    survive the grouping. Two live rows plus two retired ones in the same context: the bucket
+    must form from the live pair alone, and a bucket of one is dropped entirely."""
+    live = [_bucket_record(f"live-{i}", 0.9 - i * 0.1,
+                           _parent_spec(f"L{i}", [_CLOSE_OVER_MA20], strategy_family="breakout"))
+            for i in range(2)]
+    retired_name = sorted(factory.RETIRED_FAMILIES)[0]
+    dead = [_bucket_record(f"dead-{i}", 0.99,
+                           _parent_spec(f"D{i}", [_MA20_OVER_MA50], strategy_family=retired_name))
+            for i in range(2)]
+    buckets = factory.fusion_parent_buckets(
+        [*dead, *live], symbol="BTCUSDT", timeframe="1d")
+    seen = {r["candidate_id"] for bucket in buckets for r in bucket}
+    assert seen == {"live-0", "live-1"}, f"retired rows reached a bucket: {sorted(seen)}"

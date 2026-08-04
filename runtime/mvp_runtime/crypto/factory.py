@@ -2804,6 +2804,20 @@ def fuse_specs(
     return child
 
 
+def carries_retired_family(record: Mapping[str, Any]) -> bool:
+    """Does any component of this row's family name name a family that left the rotation?
+
+    Component-wise, because a fused family is ``"a+b"``: a child of a retired parent carries
+    that parent's entry conditions, so treating only the exact name as retired lets the
+    lineage keep breeding under a compound name.
+    """
+    spec = record.get("strategy_spec")
+    family = spec.get("strategy_family") if isinstance(spec, Mapping) else None
+    if not isinstance(family, str):
+        return False
+    return any(part in RETIRED_FAMILIES for part in family.split("+"))
+
+
 def rank_fusion_parents(
     existing_candidates: list[Mapping[str, Any]], *, top_n: int = FUSION_PARENT_POOL,
 ) -> list[dict[str, Any]]:
@@ -2836,13 +2850,36 @@ def rank_fusion_parents(
     a rule hash are one strategy measured over two windows, and taking the higher score
     would pick whichever window happened to flatter it — the max-of-many-draws selection
     this store is already full of (see ``robustness.MIN_HOLDOUT_TRADES``). File order
-    puts the freshest evidence last, and fresh beats flattering."""
+    puts the freshest evidence last, and fresh beats flattering.
+
+    **A retired family may not parent, and that was leaking until 2026-08-04.**
+    ``RETIRED_FAMILIES`` is enforced by de-listing from ``TEMPLATES``, which stops the
+    DIRECT mint path and nothing else — fusion draws its parents from the candidate STORE,
+    which still holds every row the family produced before it was retired. Measured on the
+    08:09Z fire, the first one after `macd_momentum_*` and `xs_momentum_*` were retired:
+    three of eighty children carried a retired parent, one of them
+    (``macd_momentum_short+xs_momentum_short``) built from two retired families and nothing
+    else. Their holdouts read -0.467R, -0.471R and -0.122R, which is what the retirement
+    said they would.
+
+    This is the leak that makes every retirement note in this file false as written — each
+    says re-listing one line is the whole of re-enabling, and the mirror of that claim is
+    that de-listing is the whole of disabling. It was not. 229 of the store's 1,556 rows
+    (14.7%) carry a retired component today, so this narrows the parent pool measurably
+    rather than cosmetically; ``_fuse_batch`` simply draws fewer pairs, which is its
+    documented behaviour when a bucket runs dry.
+
+    Filtered HERE rather than in ``fusion_parent_buckets`` because this is the function that
+    answers *"which stored rows may parent"* — the bucketing below is about compatibility,
+    and a second eligibility rule there would split one question across two places."""
     best: dict[str, dict[str, Any]] = {}
     for record in existing_candidates:
         score = record.get("champion_score")
         if isinstance(score, bool) or not isinstance(score, (int, float)):
             continue
         if not isinstance(record.get("strategy_spec"), Mapping):
+            continue
+        if carries_retired_family(record):
             continue
         cid = candidate_id(record)
         rule_hash = record.get("strategy_rule_hash")
