@@ -34,9 +34,11 @@ part.
 And a new **section H**, added because the equity-perp lane was **not in this file at all**
 while three PRs of it merged — a reader starting here, which is what this file tells them to
 do, could not have learned it exists. It is code-complete as far as it goes and **runs
-nothing**: `S0` is unratified with its two `〔확인 필요〕` markers untouched since 2026-08-03, no
-`hyperliquid` grant exists on this machine, and the selector fails closed at selection. What
-that costs while it waits is measured there, because the venue's window rolls.
+nothing**: no `hyperliquid` grant exists on this machine and the selector fails closed at
+selection. **`S0`'s two `〔확인 필요〕` markers were answered the same day** — the strength stays
+provisional by decision, which draws the line at live orders and leaves read-only S1 untouched,
+and the question-reduction holds. So the grant is the only step left that is not minutes of
+work. What waiting costs is measured there, because the venue's window rolls.
 
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
@@ -1635,7 +1637,7 @@ would be cheap and is the thing missing, not fewer codes.
 the doc, not a proposal to restructure the code.
 
 ---
-## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, **S0 unratified**, nothing runs
+## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on one grant**
 
 **This section exists because the lane was not in this file at all**, while three PRs of it
 merged. A reader arriving on a fresh machine and starting here — which is what this file tells
@@ -1671,20 +1673,25 @@ does **not** take this path at all — Thomas moved it to `safety_gate.select_en
 2026-07-28, the environment opt-in alone, no per-machine grant and no expiry. So "gated by a
 grant" describes the archive and every other capability, and not the one that moves real money.
 
-**S0 is unratified and is what blocks the lane.** It is Appendix A of
-`EQUITY_PERP_LANE_V0.1.md`, whose own title says **미비준**. Three commits have touched that
-file (#441 wrote it, #451, #478) and **none touched Appendix A** — the two `〔확인 필요〕`
-markers stand exactly as written 2026-08-03. Carried here verbatim rather than summarised,
-because the judgment is Thomas's and a paraphrase would be a second version of it:
+**S0's record is complete as of 2026-08-04 — and it no longer blocks S1.** Both `〔확인 필요〕`
+markers in Appendix A of `EQUITY_PERP_LANE_V0.1.md` were answered by Thomas, so the appendix is
+no longer a draft and this file may cite it. Read the appendix for the wording; the two answers
+in short:
 
-1. **The strength of the statement.** The original was *"문제는 안 될 것 같다"* — recorded in
-   the draft itself as a provisional judgment, not a legally verified conclusion. The marker is
-   the place to say whether it has been promoted to settled.
-2. **Whether the question was reduced correctly.** The draft argues the opening question is not
-   "may this project trade offshore perps" — already answered in practice by live Binance
-   futures — but only **"does the underlying being US equities change that judgment"**. The
-   marker sits on that reduction, and the draft says the reduction *is* the core of the
-   paragraph.
+1. **Strength: provisional, deliberately.** No legal check has happened and the record still
+   rests on *"문제는 안 될 것 같다"*. The answer makes that the lane's operating condition rather
+   than an open question — and draws the line it implies: **live orders (S3 and later) do not
+   open until this is promoted to settled.** S1 is read-only with no order path, so it is
+   unaffected.
+2. **The reduction holds.** Offshore own-account derivatives trading is answered by this
+   project's own practice — Binance USD-M live, and as of 2026-08-04 a held position with both
+   protective legs — so the remaining question is the US-equity underlying alone. The venue-shape
+   asymmetry (a builder-deployed DEX whose deployer holds `haltTrading` and `setOracle` against a
+   centralized exchange account) is classed as **counterparty risk rather than a regulatory
+   question**, and re-review conditions 1 and 2 already cover that axis.
+
+**So what blocks archiving is now the grant alone**, and the ordering below is unchanged in
+substance: it is one step shorter.
 
 **No approval record names this lane.** 53 records in
 `.runtime_governance_state/approvals/approvals.jsonl`, zero mentioning equity / Hyperliquid /
@@ -1698,9 +1705,10 @@ commitment, and no record ties the grant to S0, so a grant issued later for any 
 not reveal that S0 had been skipped. If that link should be durable, it is a line in the grant's
 own record, not a new gate.
 
-**In order, what is still needed to archive a single candle:** S0 ratified → the `hyperliquid`
-grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service → a
-registered `candle_archive` schedule. The first two are Thomas's; the last two are minutes.
+**In order, what is still needed to archive a single candle:** ~~S0 ratified~~ (done 2026-08-04)
+→ the `hyperliquid` grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
+scheduler service → a registered `candle_archive` schedule. **Only the grant is Thomas's now**;
+the last two are minutes.
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
