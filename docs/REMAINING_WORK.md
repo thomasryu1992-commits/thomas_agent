@@ -15,10 +15,14 @@ candidates carrying the current basis survive their own holdout, and the promoti
 
 Also 2026-08-04: the board can now say it (#477 — `promotable_backlog` returns a refusal
 partition), and **section F1** diagnoses why nothing survives. Three explanations are ruled out
-by measurement; what is left is that **41% of mints produce a holdout too shallow to confirm**,
-56% of them among the bred half of every generation. The change that implies is written out
-there with its numbers and deliberately not made — it trades exploration for judgeability and
-rests on four days of mints.
+by measurement; what is left is that **41–47% of mints produce a holdout too shallow to
+confirm**. Paired against its own parents — 394 pairs, every one resolvable — a fused child
+closes **0.51×** their trades and is indistinguishable from them in and out of sample, so
+fusion reproduces its parents and halves their evidence. The change that implies is written
+out there with its numbers and deliberately not made: it trades exploration for judgeability.
+Two claims from F1's first pass are corrected in place rather than deleted — both were
+population comparisons the paired test overturned, and the way they were wrong is the useful
+part.
 
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
@@ -1289,7 +1293,7 @@ factory's in-sample edge has not yet reproduced forward at any timeframe.
    scope note 2026-08-02, three preconditions unstarted. Its premise (a resting entry selects
    against momentum/breakout) is untouched by anything above.
 
-### F1. Why nothing survives its holdout — measured 2026-08-04 over 480 current-basis rows
+### F1. Why nothing survives its holdout — measured 2026-08-04, 480 current-basis rows and 394 parent-child pairs
 
 **Four candidate explanations were tested and three are ruled out.** *Not a one-sided regime:*
 long and short both degrade and both end negative out of sample (long HO −0.1694, short
@@ -1303,38 +1307,63 @@ clear the uncorrected 1.96 do so on 3–95 closed trades with holdouts of 2–24
 population `trades_per_parameter` and `MIN_HOLDOUT_TRADES` exist to refuse, and both refuse
 them.
 
-**What is left is that the search produces evidence it cannot confirm.** Crossover is half of
-every generation, and matched on holdout depth it buys in-sample expectancy and no
-out-of-sample expectancy at all:
+**What is left is that the search produces evidence it cannot confirm.** The first pass at this
+compared the crossover population against the seeded one, which two stronger tests then
+corrected — both are recorded below with what they replaced, because the corrected claim is
+the sharper one and the way the first was wrong is worth not repeating.
 
-| tf | seeded IS → HO | crossover IS → HO |
-|---|---|---|
-| 15m | −0.2493 → −0.3459 | −0.0529 → −0.2853 |
-| 1h | −0.0858 → −0.1625 | +0.0459 → **−0.2101** |
-| 4h | −0.0102 → −0.0661 | +0.1218 → **−0.0779** |
+**Paired against its own parents, fusion reproduces them and halves their evidence.** Every
+crossover row in the store resolves both parents (394 of 394), so family, symbol, timeframe
+and direction are controlled by construction rather than by matching:
 
-On the raw population crossover looks *better* out of sample (−0.0404 against seeded's
-−0.1993). That advantage is an artifact of depth: bred children hold a median of **17** holdout
-trades against seeded's **59**, so 134 of the 240 sit below the depth at which anything can be
-judged, and their medians are noise around zero (+0.0006, 51% positive). Read only where the
-tail can be judged, the advantage inverts at two of three timeframes. Degradation by
-derivation is 2–3× and holds within every mint date, so it is not the cost change: seeded
-+0.0784R, crossover +0.2241R.
-
-**The mechanism is selectivity, and it is monotone.** Fusion unions two parents' conditions
-under AND, so a child is strictly more selective than either parent — median 6 conditions
-against a seeded template's 3, and 49 in-sample trades against 139:
-
-| entry conditions | in-sample trades | holdout trades | share judgeable |
+| child vs its own parents | child | parent median | child lower |
 |---|---|---|---|
-| 3 | 249 | 92 | 85% |
-| 5 | 72 | 31 | 64% |
-| 6 | 48 | 14 | 30% |
-| 7 | 18 | 6 | 16% |
-| 8 | 7 | 5 | **0%** |
+| entry conditions | 5 | 4 | **0%** |
+| in-sample trades | 54 | 104 | 91% |
+| holdout trades | 25 | 35 | 71% |
 
-**41% of all mints (198 of 480) produce a holdout that can never be confirmed** — 27% of
-seeded draws and **56%** of crossover children.
+The child closes **0.51×** the parent median's trades (p25 0.26, p75 0.81), fewer than *both*
+parents in 66% of pairs and fewer than at least one in 94% — which is what a deduplicated
+union under AND has to do, measured rather than assumed. Where both parents were judgeable,
+**28%** of pairs produce a child that is not.
+
+**And it buys nothing for that.** Restricted to the 131 pairs where the child and both parents
+clear `MIN_HOLDOUT_TRADES`, the child is indistinguishable from its parents on both sides —
+in-sample **−0.0034** (95% CI [−0.0097, +0.0031], child better in 47%), holdout **−0.0062**
+(95% CI [−0.0200, +0.0114], 46%). Note the direction of the conditioning: this subset is the
+one *most* favourable to fusion, since the children cut on depth are excluded from it, and
+fusion still adds nothing there.
+
+> **Corrects the earlier claim** that crossover "buys in-sample expectancy and no out-of-sample
+> expectancy". That read the population difference (crossover IS +0.1385 against seeded
+> −0.1049) as an effect of breeding. It is **parent selection**: rows used as a fusion parent
+> already sit at IS +0.0450 / HO −0.1170 against the never-used seeded population's −0.1370 /
+> −0.2137. Fusion starts from better rows and reproduces them.
+
+**The condition count is monotone against judgeability — read within crossover, not pooled.**
+
+| entry conditions (crossover) | n | in-sample trades | holdout trades | share judgeable |
+|---|---|---|---|---|
+| 4 | 42 | 74 | 32 | 81% |
+| 5 | 72 | 72 | 31 | 64% |
+| 6 | 66 | 48 | 14 | 30% |
+| 7 | 38 | 19 | 6 | 16% |
+| 8 | 22 | 7 | 5 | **0%** |
+
+> **Corrects the earlier table**, which pooled both derivations and read as though condition
+> count were the variable. It was not: on this population 2–3 conditions is **100% seeded** and
+> 4–8 is **100% crossover**, so the pooled rows compared derivations wearing a condition
+> count's label. The within-crossover series above is the real evidence and carries the same
+> conclusion. Seeded draws span only 2–4 conditions and are not monotone there (53%, 85%, and
+> too few rows above), which is the other half of why the pooled table could not mean what it
+> appeared to.
+
+**Between 41% and 47% of all mints produce a holdout that can never be confirmed** — 198 of the
+480 current-basis rows, and 541 of all 1,140. The split by derivation is much wider on the
+current basis (27% seeded / 56% crossover) than on the whole store (43% / 50%), so the
+current-basis figure is the one that describes *today's* factory and the store figure is the
+one that describes the population a reader will actually meet. Both are given because quoting
+either alone overstates what it measures.
 
 **The change this implies, stated so it can be decided rather than re-measured.** `fuse_specs`
 bounds a child at `MAX_ENTRY_CONDITIONS = 8`, which is a validator bound copied verbatim from
@@ -1347,11 +1376,28 @@ one notch weaker. Refusal is cheap: `mint_fusions` draws from `combinations(buck
 `pairs` children carry evidence, so a rejected pair redirects the draw instead of costing a
 mint, and the rejection-reason list already exists to record it.
 
-**Not done here, deliberately.** Refusing on holdout depth would reject 56% of crossover
+**Not done here, deliberately.** Refusing on holdout depth would reject 50–56% of crossover
 children, which is a change to what the factory explores and trades exploration for
-judgeability. That is a decision about the search space and it rests on four days of mints —
-so it is written down with its numbers rather than merged into the generation engine on the
-strength of one measurement.
+judgeability. That is a decision about the search space, and while the paired evidence above
+is strong on the *mechanism* (394 pairs, controlled by construction) it is four days of mints
+on the *consequence* — so it is written down with its numbers rather than merged into the
+generation engine on the strength of one measurement.
+
+**The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
+only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
+judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
+to `MAX_ENTRY_CONDITIONS`, which stays at source S3's 8 because it answers a different
+question: that one is rule legality, this one is whether the child can produce evidence
+anyone can judge. Both refusals fire and carry different reasons (`too_many_conditions`,
+`holdout_unjudgeable`), so a later reader cannot mistake the tighter number for a revision of
+the validator and raise it back to match.
+
+Measured against the store it would have refused **25 of 394** fusions (6.3%), whose median
+child closed **7** in-sample and **5** holdout trades, and the judgeable share of surviving
+fusions moves 50% → 53%. That is the honest size of it: this buys back a band that was
+producing nothing, not the 41–47% problem. **What reopens it** is a mint at 8 conditions that
+reaches `MIN_HOLDOUT_TRADES`, which cannot happen at these signal rates without a longer
+replay window — so re-measure `market_data.factory_candle_target` first, not this number.
 
 **Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for another
 `stop_atr` tweak — the floor has now been credited with what it was worth and the next multiple

@@ -108,6 +108,36 @@ MAX_RISK_PER_TRADE_R = 2.0
 MIN_REWARD_RISK = 1.0
 MAX_ENTRY_CONDITIONS = 8
 
+# What a FUSED child may carry, which is a different question from the line above and has to be
+# a different number.
+#
+# `MAX_ENTRY_CONDITIONS` is source S3's, verbatim, and it answers "is this rule legal". It says
+# nothing about whether the child can produce evidence anyone can judge, and measured
+# 2026-08-04 that is where the band at its own boundary lands: of the mints carrying exactly 8
+# entry conditions, **0 of 22 on the current cost basis and 0 of 25 across the whole store**
+# closed enough holdout trades to reach `robustness.MIN_HOLDOUT_TRADES`. Not a low yield — none.
+#
+# The mechanism is fusion's own: entry conditions are the deduplicated union under AND, so a
+# child fires only where BOTH parents would. Measured over all 394 parent-child pairs in the
+# store (every one resolvable, so family/symbol/timeframe/direction are controlled by
+# construction rather than by matching), a child closes **0.51x** its parent median's trades —
+# fewer than both parents in 66% of pairs — and where both parents were judgeable, 28% of pairs
+# produce a child that is not. The share with a judgeable holdout falls monotonically with the
+# count: 4 conditions 81%, 5 64%, 6 30%, 7 16%, 8 **0%**.
+#
+# **Only the zero band is cut, and that is the whole of the decision taken here.** Refusing at
+# 7 or 6 would reject 50-56% of all fusions, which trades exploration for judgeability and is a
+# claim about the search space this measurement does not settle — see `REMAINING_WORK.md`
+# section F1, which carries the wider version and deliberately does not take it. This one
+# removes a band with no measured yield at all, and it is cheap to be wrong about: `mint_fusions`
+# draws from `combinations(bucket, 2)` until `pairs` children carry evidence, so a refusal
+# redirects the draw instead of costing a mint.
+#
+# **What reopens it:** a mint at 8 conditions that reaches `MIN_HOLDOUT_TRADES`. That cannot come
+# from this timeframe ladder at these signal rates without the replay window growing, so the
+# thing to re-measure first is `market_data.factory_candle_target`, not this number.
+MAX_FUSION_ENTRY_CONDITIONS = 7
+
 # The features a generated spec may reference — exactly what build_feature_rows
 # computes. Membership IS the look-ahead guard (the schema has no forward-shift
 # operator and every row column is point-in-time).
@@ -2117,8 +2147,12 @@ def fuse_specs(
 
     Entry conditions are the **deduplicated union** under AND, so the child is by
     construction at least as selective as either parent — a crossover can never
-    loosen an entry. Exits are the midpoint of the parents'; risk takes the
-    stricter (minimum) cap. Everything the parents must agree on (schema, **venue**,
+    loosen an entry. Measured over all 394 parent-child pairs in the store, that costs
+    roughly half the evidence: a child closes **0.51x** its parent median's trades, and
+    past a point it closes too few for its holdout to be judged at all. Hence the second
+    condition bound, ``MAX_FUSION_ENTRY_CONDITIONS``, which refuses the band where that
+    has never once come out judgeable. Exits are the midpoint of the parents'; risk takes
+    the stricter (minimum) cap. Everything the parents must agree on (schema, **venue**,
     direction, timeframe, symbol scope, stop model, AND-operator) is a fail-closed
     precondition, not something to reconcile: unioning an OR parent's conditions
     into an AND would silently change what that parent meant.
@@ -2180,6 +2214,12 @@ def fuse_specs(
     conditions = [merged[key] for key in sorted(merged)]
     if len(conditions) > MAX_ENTRY_CONDITIONS:
         raise FusionRefused("too_many_conditions")
+    # Both branches fire, and they are kept apart because they refuse for unrelated reasons: the
+    # one above is source S3's legality bound, this one is evidence judgeability (see
+    # `MAX_FUSION_ENTRY_CONDITIONS`). A single check would make the tighter number look like a
+    # revision of the validator, and the next reader would raise it back toward 8 to "match".
+    if len(conditions) > MAX_FUSION_ENTRY_CONDITIONS:
+        raise FusionRefused("holdout_unjudgeable")
 
     # "breakout+mean_reversion", stable and order-independent; a shared component
     # collapses so re-fusing a lineage does not grow the name without adding meaning.
