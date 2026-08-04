@@ -25,8 +25,13 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import positioning_store
-from runtime.mvp_runtime.crypto.cycle import attach_feeds
+from runtime.mvp_runtime.crypto.cycle import (
+    accumulate_positioning_cohort,
+    attach_feeds,
+    pool_cycle_status_line,
+)
 from runtime.mvp_runtime.crypto.market_data import (
+    CROSS_SECTION_UNIVERSE,
     POSITIONING_SERIES,
     BinanceFuturesCollector,
     MockMarketDataCollector,
@@ -321,6 +326,161 @@ def test_opted_in_accumulation_writes_and_feeds_nothing(tmp_path):
     assert set(snapshot) - before == {"funding"}, "the positioning store must feed no feature"
 
 
+# --- how far back one refresh reaches -------------------------------------------
+#
+# The module docstring promises "a gap shorter than the retention window self-heals on the next
+# refresh instead of needing a repair path". A fixed `REFRESH_ROWS` delivered that only for gaps
+# under 72 hours; `BNBUSDT` on the live host was 91 (2026-08-04), and the 19 hours a 72-row
+# refresh could not reach were unrecoverable — append-only with latest-wins means a row never
+# fetched once is never fetched at all.
+
+def test_the_ordinary_refresh_still_asks_for_the_cheap_overlap():
+    """Sizing to the gap must not make the hourly case more expensive. One period behind the
+    clock is the normal state of this store, and it keeps the three-day floor."""
+    newest = "2026-07-30T11:00:00Z"
+    assert positioning_store.refresh_rows_for(newest, NOW) == positioning_store.REFRESH_ROWS
+
+
+def test_a_gap_longer_than_the_floor_is_asked_for_in_full():
+    """The BNB case: reach past the hole, not up to it. Two periods of margin over the raw gap,
+    so the fetch overlaps the newest row held rather than abutting it."""
+    newest = "2026-07-26T17:00:00Z"  # 91h before NOW, the measured BNBUSDT gap
+    rows = positioning_store.refresh_rows_for(newest, NOW)
+    assert rows == 93 > positioning_store.REFRESH_ROWS
+
+
+def test_the_ask_is_capped_at_what_retention_can_serve():
+    """`SEED_ROWS` is the vendor's 30-day window, so a longer gap cannot be closed by asking
+    harder — and a store this far behind must not turn one refusal into an unbounded request."""
+    assert positioning_store.refresh_rows_for("2025-01-01T00:00:00Z", NOW) == positioning_store.SEED_ROWS
+    assert positioning_store.refresh_rows_for(None, NOW) == positioning_store.SEED_ROWS
+
+
+def test_an_unreadable_timestamp_asks_for_more_rather_than_less():
+    """The `read_refresh_marks` posture: state this store cannot read must never shrink what it
+    asks for, because under-asking is the failure that becomes permanent."""
+    assert positioning_store.refresh_rows_for("not-a-timestamp", NOW) == positioning_store.SEED_ROWS
+
+
+def test_a_gap_wider_than_the_floor_reaches_past_it_through_the_throttled_door(tmp_path):
+    """The measured case, end to end: a store 91 hours stale asks for 93 rows where it used to
+    ask for 72 — and the 19 rows in that difference are the ones that were being orphaned."""
+    asked: list[int] = []
+
+    class _RecordingCollector(MockMarketDataCollector):
+        def positioning_history(self, symbol, *, series, period, limit, timeout_seconds):
+            asked.append(limit)
+            return super().positioning_history(
+                symbol, series=series, period=period, limit=limit, timeout_seconds=timeout_seconds
+            )
+
+    for series in sorted(POSITIONING_SERIES):
+        positioning_store.append_rows(
+            [{"timestamp": "2026-07-26T17:00:00Z", "long_ratio": 0.5, "short_ratio": 0.5}],
+            root=tmp_path, symbol="BNBUSDT", series=series,
+        )
+    positioning_store.record_positioning(
+        symbol="BNBUSDT", collector=_RecordingCollector(), now=NOW, root=tmp_path,
+    )
+    assert set(asked) == {93}, "the ask must cover the gap, not the floor"
+
+
+# --- the accumulator's SCOPE ----------------------------------------------------
+#
+# Opting in (above) decides WHETHER a caller accumulates. These decide WHICH symbols, which
+# used to be answered by accident: accumulation rode on the per-context feed step, so the
+# store covered whatever the fan-out visited and a cohort member the pool stopped routing
+# stopped being recorded. Measured on the live host 2026-08-04 — `XRPUSDT` at zero rows since
+# the store shipped, `BNBUSDT` frozen since 2026-07-31 — and unrecoverable in both cases,
+# because the vendor serves 30 days and these tests guard a 500-day accumulation.
+
+class _CountingCollector:
+    """A real mock collector that also counts what reached the venue."""
+
+    def __init__(self, broken: str | None = None):
+        self._inner = MockMarketDataCollector()
+        self._broken = broken
+        self.calls = 0
+
+    def positioning_history(self, symbol, **kwargs):
+        self.calls += 1
+        if self._broken is not None and symbol == self._broken:
+            raise ToolError("POSITIONING_UNAVAILABLE", "the venue refused this symbol")
+        return self._inner.positioning_history(symbol, **kwargs)
+
+
+def test_the_cohort_is_recorded_where_the_pool_routes_nothing(tmp_path):
+    """**The load-bearing case.** One visited context, and every cohort member still gets its
+    hour. Before this, a member the pool did not route was never asked for — and one such
+    member is enough to hold `coverage_summary`'s AND shut forever, however long the rest
+    accumulate."""
+    status = accumulate_positioning_cohort(
+        collector=MockMarketDataCollector(), now=NOW, root=tmp_path,
+        contexts=[("BTCUSDT", "4h")],
+    )
+    assert set(status) == set(CROSS_SECTION_UNIVERSE)
+    for symbol in CROSS_SECTION_UNIVERSE:
+        assert positioning_store.read_rows(tmp_path, symbol=symbol), symbol
+
+
+def test_a_routed_symbol_outside_the_cohort_is_not_dropped(tmp_path):
+    """Union, not substitution. The cohort is the floor; a pool that grows past it must keep
+    its own positioning rather than trade one coverage hole for another."""
+    status = accumulate_positioning_cohort(
+        collector=MockMarketDataCollector(), now=NOW, root=tmp_path,
+        contexts=[("ADAUSDT", "1h")],
+    )
+    assert "ADAUSDT" in status and set(CROSS_SECTION_UNIVERSE) <= set(status)
+    assert positioning_store.read_rows(tmp_path, symbol="ADAUSDT")
+
+
+def test_the_sweep_pays_the_throttle_not_the_fan_out_rate(tmp_path):
+    """Six symbols × three series once an hour, whoever asks. The 15-minute fan-out calls this
+    four times an hour and three of those must open no socket — otherwise widening the scope
+    would have quadrupled the request bill it was meant to leave alone."""
+    collector = _CountingCollector()
+    accumulate_positioning_cohort(collector=collector, now=NOW, root=tmp_path, contexts=[])
+    first = collector.calls
+    assert first == len(CROSS_SECTION_UNIVERSE) * len(POSITIONING_SERIES)
+    accumulate_positioning_cohort(collector=collector, now=NOW, root=tmp_path, contexts=[])
+    assert collector.calls == first, "the hourly throttle must answer the second fire"
+
+
+def test_one_symbol_refusing_does_not_cost_the_others_their_hour(tmp_path):
+    """Per-symbol isolation, for the reason `run_pool_cycle` isolates contexts: the sweep runs
+    over six symbols against one venue, and an hour lost to somebody else's outage is an hour
+    lost permanently."""
+    collector = _CountingCollector(broken="XRPUSDT")
+    status = accumulate_positioning_cohort(
+        collector=collector, now=NOW, root=tmp_path, contexts=[],
+    )
+    assert status["XRPUSDT"] == "degraded"
+    assert not positioning_store.read_rows(tmp_path, symbol="XRPUSDT")
+    for symbol in (s for s in CROSS_SECTION_UNIVERSE if s != "XRPUSDT"):
+        assert positioning_store.read_rows(tmp_path, symbol=symbol), symbol
+
+
+def test_a_lost_hour_is_named_on_the_fire_that_lost_it():
+    """Silence is what made this defect cost four days on one symbol and everything on
+    another, and an hour missed here is not retryable — so a degraded symbol reaches the
+    fan-out's own status line, named."""
+    line = pool_cycle_status_line({
+        "cycles": [], "skipped": [], "unvisited": [],
+        "positioning": {"BTCUSDT": "appended", "XRPUSDT": "degraded", "BNBUSDT": "degraded"},
+    })
+    assert "positioning-degraded=BNBUSDT,XRPUSDT" in line
+
+
+def test_a_clean_sweep_says_nothing():
+    """`cycle_status_line`'s rule: a token on every quiet fire is a token an operator learns
+    to skip, and this one has to still be readable the day it matters."""
+    line = pool_cycle_status_line({
+        "cycles": [], "skipped": [], "unvisited": [],
+        "positioning": {s: "skipped_fresh" for s in CROSS_SECTION_UNIVERSE},
+    })
+    assert "positioning" not in line
+
+
 # The predecessor of the two tests below asserted that NO feature column read this store — a
 # tripwire whose stated job was to turn red the day someone wired it and make them read this
 # module's docstring first. It did exactly that, and reading it changed the shape of the wiring
@@ -564,7 +724,16 @@ def test_marks_are_per_series_not_per_symbol(tmp_path):
 
 def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
     """Whether a call is a seed is a property of the STORE, not of the marks: a machine whose
-    marks file was deleted must not re-request 30 days it already holds."""
+    marks file was deleted must not re-request 30 days it already holds.
+
+    What "already holds" means got sharper when the ask started following the gap: it is no
+    longer "has any rows" but "is up to date". A store six months behind SHOULD re-request the
+    retention window — that is the healing, not a regression — so the second call here runs at
+    a clock two hours past the seeded rows rather than at ``NOW``, which is what makes this a
+    test of the marks file and not of staleness.
+    """
+    # The mock lays its rows forward from a fixed anchor, so a 720-row seed ends here.
+    just_after_the_seed = "2026-01-31T01:00:00Z"
     asked: list[int] = []
 
     class _RecordingCollector(MockMarketDataCollector):
@@ -583,6 +752,6 @@ def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
     positioning_store.refresh_marks_path(tmp_path).unlink()
     asked.clear()
     positioning_store.record_positioning(
-        symbol="BTCUSDT", collector=collector, now="2026-07-30T14:00:00Z", root=tmp_path
+        symbol="BTCUSDT", collector=collector, now=just_after_the_seed, root=tmp_path
     )
-    assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that already had rows"
+    assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that was up to date"

@@ -71,9 +71,18 @@ RECORD_TYPE = "positioning_ratio.v0"
 # align onto every timeframe the pool trades without a feature having to interpolate.
 POSITIONING_PERIOD = "1h"
 
-# How much history one refresh asks for. Three days rather than one, for ``oi_store``'s reason: a
-# service down overnight must heal on the next tick without a separate backfill path, and 72
-# hourly rows is small enough that over-asking costs nothing.
+# The FLOOR on how much history one refresh asks for. Three days rather than one, for
+# ``oi_store``'s reason: a service down overnight must heal on the next tick without a separate
+# backfill path, and 72 hourly rows is small enough that over-asking costs nothing.
+#
+# A floor rather than the answer, because as the answer it did not deliver the guarantee this
+# module's docstring states — "a gap shorter than the retention window self-heals on the next
+# refresh". It healed gaps shorter than *72 hours*; anything longer left rows the refresh could
+# never reach again, and being append-only with latest-wins on read, never reaching them once is
+# never reaching them at all. Measured on the live host 2026-08-04: ``BNBUSDT`` stopped being
+# recorded on 2026-07-31T08:00Z and was found 91 hours later, so a 72-row refresh would have
+# closed 72 of those hours and orphaned 19 — inside the retention window, and permanently lost.
+# :func:`refresh_rows_for` sizes the ask to the gap instead, and this is where it starts.
 REFRESH_ROWS = 3 * 24
 
 # What a seed asks for. The venue keeps 30 days; asking for the full window means the seed takes
@@ -288,6 +297,35 @@ def is_due(last_attempt: str | None, now: str) -> bool:
     return elapsed >= REFRESH_AFTER_SECONDS
 
 
+def refresh_rows_for(newest: str | None, now: str) -> int:
+    """How many rows one refresh asks for, given the newest reading already held.
+
+    The gap decides, bounded on both sides. :data:`REFRESH_ROWS` is the floor, so the ordinary
+    hourly refresh keeps asking for the same cheap three-day overlap it always did.
+    :data:`SEED_ROWS` is the ceiling, because it *is* the vendor's retention window — asking
+    past it buys nothing, and a gap that long cannot be closed by any request.
+
+    Never attempted (no rows) is a seed. So is a timestamp that cannot be parsed, which is the
+    :func:`read_refresh_marks` posture for the same reason: state this store cannot read must
+    never be able to make it ask for *less* than it would otherwise, because under-asking is
+    the failure that is permanent.
+
+    The two-period margin is what keeps the boundary case from being short by one. The venue's
+    newest complete period is always a period behind the clock (the forming one is dropped), so
+    a request sized to the raw elapsed time reaches back to exactly the newest row already held
+    rather than past it, and one row of overlap is what proves the join was contiguous. Costing
+    two extra rows to know that is the cheapest evidence in this module.
+    """
+    if not newest:
+        return SEED_ROWS
+    try:
+        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(newest)).total_seconds()
+    except (ValueError, TypeError):
+        return SEED_ROWS
+    periods = int(max(0.0, elapsed) // REFRESH_AFTER_SECONDS) + 2
+    return max(REFRESH_ROWS, min(SEED_ROWS, periods))
+
+
 def record_positioning(
     *,
     symbol: str,
@@ -324,13 +362,14 @@ def record_positioning(
             continue
         # Whether this is a seed is a property of the STORE, not of the marks: a machine whose
         # marks file was deleted must still refresh rather than re-seed 30 days it already holds.
-        seeding = newest_timestamp(root, symbol=name, series=series) is None
+        newest = newest_timestamp(root, symbol=name, series=series)
+        seeding = newest is None
         # Stamped BEFORE the request, so a fetch that hangs or raises still counts as an attempt.
         record_refresh_attempt(name, series, now=now, root=root)
         try:
             rows = collector.positioning_history(
                 name, series=series, period=POSITIONING_PERIOD,
-                limit=SEED_ROWS if seeding else REFRESH_ROWS,
+                limit=refresh_rows_for(newest, now),
                 timeout_seconds=timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 — a collection miss must not fail a cycle
@@ -434,5 +473,5 @@ __all__ = [
     "POSITIONING_FILENAME", "POSITIONING_PERIOD", "RECORD_TYPE", "REFRESH_MARKS_FILENAME",
     "REQUIRED_COVERAGE_DAYS", "append_rows", "coverage", "coverage_summary", "is_due",
     "newest_timestamp", "positioning_path", "read_refresh_marks", "read_rows",
-    "record_positioning", "record_refresh_attempt", "refresh_marks_path",
+    "record_positioning", "record_refresh_attempt", "refresh_marks_path", "refresh_rows_for",
 ]
