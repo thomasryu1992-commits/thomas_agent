@@ -302,6 +302,55 @@ _EXIT_PARAMS = {
 }
 _EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 
+# The exit geometry above is a TREND geometry, and until now every family shared it. A target
+# reaching 8x ATR over a 48-bar hold is "ride it while it runs" — which is the right shape for
+# a breakout and the wrong one for a fade, whose thesis is that price returns to a mean and is
+# COMPLETE when it gets there. The search could draw a mean-reversion spec entering at RSI 30
+# with an 8x target and a 48-bar hold, and such a spec's entry and exit argue with each other:
+# the entry says "this is stretched", the exit says "hold for a trend".
+#
+# Measured 2026-08-04 on the holdout at the current cost basis, by mechanism class rather than
+# by family (fused rows excluded, lineage-collapsed): TREND is +0.0071R GROSS *negative* over
+# 32,847 out-of-sample trades (t = -2.54), while FADE reads +0.0707R over 966 and PULLBACK
+# +0.0726R over 2,017. **The fade figure is not a finding and this change does not rest on it**
+# — an adversarial pass returned WEAKENED (the gap halves under an unweighted median, flips sign
+# on 2 of 5 symbols, and 58% of it is a cost add-back artifact of fade's tighter stops). What the
+# measurement does establish is the asymmetry: the well-sampled class is the one confidently at
+# zero, and the class that might not be has never been given a geometry matching its premise.
+#
+# Three bounds, each doing one thing:
+#
+# - ``stop_atr`` floors HIGHER than the trend space (1.4 vs 1.2). A fade enters at an extreme,
+#   which is exactly where the next bar's noise is largest, and cost-in-R is `fee_bps/stop_bps`
+#   so a wider 1R is directly cheaper. Nothing here is free: a wider stop is a bigger loss when
+#   the mean does not come back.
+# - ``target_atr`` ceilings at 3.4 instead of 8.0. The premise completes at the mean.
+# - ``max_holding_bars`` runs 4-16 against the trend's 12-48 — a bounce that has not happened
+#   in sixteen bars was not a bounce, and holding it for forty-eight is paying carry to find out.
+#
+# **The lower target bound is 2.0 because it must equal the upper stop bound, not because 2.0
+# was chosen.** ``validate_strategy`` enforces ``target_atr / stop_atr >= MIN_REWARD_RISK`` (1.0),
+# and `mutate_params` draws the two independently, so any space with ``target.lo < stop.hi`` mints
+# a fraction of specs the validator then refuses — burning attempts and biasing the accepted
+# population toward the high-target corner, which is the opposite of the intent. This is also the
+# binding reason the classic fade geometry (RR below 1 carried by a high hit rate) cannot be
+# expressed here at all; widening MIN_REWARD_RISK is a separate, explicit decision.
+#
+# Bases sit mid-range for the reason recorded above the trend base: a base ON a bound pins ~50%
+# of draws to that bound. At 1.7/2.7/10 no draw clamps at all (spans are +/-0.21, +/-0.49, +/-4.2),
+# so the whole interval stays reachable and the worst-case drawn R:R is 2.21/1.91 = 1.16.
+_FADE_EXIT_PARAMS = {
+    "stop_atr": ParamSpec(1.4, 2.0),
+    "target_atr": ParamSpec(2.0, 3.4),
+    "max_holding_bars": ParamSpec(4, 16, integer=True),
+}
+_FADE_EXIT_BASE = {"stop_atr": 1.7, "target_atr": 2.7, "max_holding_bars": 10}
+
+# Every generation space the factory mints from. `_fused_exit_param` clamps against the UNION
+# of these rather than against `_EXIT_PARAMS` alone — see there for why the union is the honest
+# bound once more than one space exists.
+_GENERATION_SPACES = (_EXIT_PARAMS, _FADE_EXIT_PARAMS)
+
 
 def _trend_pullback_entry(p: dict) -> list[dict]:
     return [
@@ -575,6 +624,46 @@ def _xs_momentum_short_entry(p: dict) -> list[dict]:
     ]
 
 
+# The same two columns, read with the opposite sign: buy the cohort's laggards, sell its
+# leaders. Cross-sectional REVERSION, the hypothesis the momentum pair could not express.
+#
+# **This is a swap and not an addition, and the reason is structural rather than budgetary.**
+# `xs_momentum_short` fires on `xs_rank_pct <= edge` and `xs_reversion_long` fires on the same
+# condition — so with both in the library one bar can match a LONG and a SHORT on the same
+# feature row, which `paper.route_entries` refuses as `BLOCK_DIRECTION_CONFLICT`. The pair would
+# fail closed on exactly the bars both families were minted for. Momentum and reversion over one
+# ranking are mutually exclusive claims about the same number, and the library may hold one.
+#
+# Which one, measured 2026-08-04 on the holdout at the current cost basis: `xs_momentum_long`
+# reads -0.0177R GROSS over 3,040 out-of-sample trades and `xs_momentum_short` -0.0048R over
+# 2,626. That is 5,666 trades saying the momentum reading of this column is not positive before
+# costs; it is not evidence that the reversion reading is, and nothing here claims otherwise.
+# The claim is narrower: one of the two signs gets the slot, the measured one has had 5,666
+# trades to show something and has not, and the other has never been minted.
+#
+# Exit parameters are deliberately UNCHANGED from the momentum pair (`_EXIT_PARAMS`, not
+# `_FADE_EXIT_PARAMS`, despite the reversion premise). The point of a swap is to isolate ONE
+# change so a difference in score is attributable to it — the same discipline the crossover
+# families keep against their state siblings. Handing this pair a new geometry at the same time
+# would make the comparison say nothing.
+#
+# Disjointness is preserved by construction, exactly as in the momentum pair: the long leg takes
+# `rank <= edge` and the short leg `rank >= 1 - edge`, so with `xs_rank_edge` capped at 0.4 the
+# two can never match the same row.
+def _xs_reversion_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "xs_rank_pct", "comparison": "<=", "value": p["xs_rank_edge"]},
+        {"feature": "xs_dispersion_ratio", "comparison": ">=", "value": p["xs_dispersion_min"]},
+    ]
+
+
+def _xs_reversion_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "xs_rank_pct", "comparison": ">=", "value": 1.0 - p["xs_rank_edge"]},
+        {"feature": "xs_dispersion_ratio", "comparison": ">=", "value": p["xs_dispersion_min"]},
+    ]
+
+
 def _premium_fade_short_entry(p: dict) -> list[dict]:
     # The funding_fade premise, timed properly. `funding_fade_short` reads `funding_zscore`,
     # which is an 8h event carried forward, so on a 1h frame it decides an entry on a value
@@ -771,17 +860,14 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"adx_min": ParamSpec(18.0, 35.0), **_EXIT_PARAMS},
                      {"adx_min": 25.0, **_EXIT_BASE}, _breakdown_short_entry),
     StrategyTemplate("mean_reversion", "long", "1h",
-                     {"rsi_max": ParamSpec(20.0, 40.0), **_EXIT_PARAMS},
-                     {"rsi_max": 30.0, **_EXIT_BASE}, _mean_reversion_long_entry),
+                     {"rsi_max": ParamSpec(20.0, 40.0), **_FADE_EXIT_PARAMS},
+                     {"rsi_max": 30.0, **_FADE_EXIT_BASE}, _mean_reversion_long_entry),
     StrategyTemplate("mean_reversion_short", "short", "1h",
-                     {"rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
-                     {"rsi_min": 70.0, **_EXIT_BASE}, _mean_reversion_short_entry),
-    StrategyTemplate("macd_momentum", "long", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_momentum_entry),
-    StrategyTemplate("macd_momentum_short", "short", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _macd_momentum_short_entry),
+                     {"rsi_min": ParamSpec(60.0, 80.0), **_FADE_EXIT_PARAMS},
+                     {"rsi_min": 70.0, **_FADE_EXIT_BASE}, _mean_reversion_short_entry),
+    # `macd_momentum` / `_short` are RETIRED from the rotation — 2026-08-04. Their builders
+    # are kept below and re-listing them here is the whole of re-enabling; see RETIRED_FAMILIES
+    # for the measurement and for what would justify it.
     StrategyTemplate("bollinger_breakout", "long", "1h",
                      {"percent_b_min": ParamSpec(0.9, 1.1), "volume_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"percent_b_min": 1.0, "volume_z_min": 1.0, **_EXIT_BASE}, _bollinger_breakout_entry),
@@ -789,11 +875,11 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"percent_b_max": ParamSpec(-0.1, 0.1), "volume_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"percent_b_max": 0.0, "volume_z_min": 1.0, **_EXIT_BASE}, _bollinger_breakdown_short_entry),
     StrategyTemplate("funding_fade_long", "long", "1h",
-                     {"funding_z_max": ParamSpec(-2.5, -1.0), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
-                     {"funding_z_max": -1.5, "rsi_max": 38.0, **_EXIT_BASE}, _funding_fade_long_entry),
+                     {"funding_z_max": ParamSpec(-2.5, -1.0), "rsi_max": ParamSpec(25.0, 45.0), **_FADE_EXIT_PARAMS},
+                     {"funding_z_max": -1.5, "rsi_max": 38.0, **_FADE_EXIT_BASE}, _funding_fade_long_entry),
     StrategyTemplate("funding_fade_short", "short", "1h",
-                     {"funding_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
-                     {"funding_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _funding_fade_short_entry),
+                     {"funding_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_FADE_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, "rsi_min": 62.0, **_FADE_EXIT_BASE}, _funding_fade_short_entry),
     # HTF families (Thomas 2026-07-25). Ported now that every timeframe in the ladder
     # is collected — the "untimeable" objection that held them back was that the
     # higher leg's data was not there to time against, and it now is.
@@ -813,11 +899,11 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"oi_change_min": ParamSpec(0.01, 0.08), "oi_z_min": ParamSpec(0.5, 2.0), **_EXIT_PARAMS},
                      {"oi_change_min": 0.03, "oi_z_min": 1.0, **_EXIT_BASE}, _oi_squeeze_short_entry),
     StrategyTemplate("oi_unwind_long", "long", "1h",
-                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_max": ParamSpec(20.0, 40.0), **_EXIT_PARAMS},
-                     {"oi_change_min": 0.03, "rsi_max": 30.0, **_EXIT_BASE}, _oi_unwind_long_entry),
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_max": ParamSpec(20.0, 40.0), **_FADE_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_max": 30.0, **_FADE_EXIT_BASE}, _oi_unwind_long_entry),
     StrategyTemplate("oi_unwind_short", "short", "1h",
-                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_EXIT_PARAMS},
-                     {"oi_change_min": 0.03, "rsi_min": 70.0, **_EXIT_BASE}, _oi_unwind_short_entry),
+                     {"oi_change_min": ParamSpec(0.01, 0.08), "rsi_min": ParamSpec(60.0, 80.0), **_FADE_EXIT_PARAMS},
+                     {"oi_change_min": 0.03, "rsi_min": 70.0, **_FADE_EXIT_BASE}, _oi_unwind_short_entry),
     StrategyTemplate("htf_pullback_short", "short", "1h",
                      {"rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
                      {"rsi_min": 62.0, **_EXIT_BASE}, _htf_pullback_short_entry),
@@ -830,18 +916,18 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                      {"flow_ma_min": ParamSpec(0.02, 0.20), **_EXIT_PARAMS},
                      {"flow_ma_min": 0.06, **_EXIT_BASE}, _taker_flow_short_entry),
     StrategyTemplate("taker_absorption_long", "long", "1h",
-                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
-                     {"flow_z_min": 1.3, "rsi_max": 38.0, **_EXIT_BASE}, _taker_absorption_long_entry),
+                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_FADE_EXIT_PARAMS},
+                     {"flow_z_min": 1.3, "rsi_max": 38.0, **_FADE_EXIT_BASE}, _taker_absorption_long_entry),
     StrategyTemplate("taker_absorption_short", "short", "1h",
-                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
-                     {"flow_z_min": 1.3, "rsi_min": 62.0, **_EXIT_BASE}, _taker_absorption_short_entry),
+                     {"flow_z_min": ParamSpec(0.8, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_FADE_EXIT_PARAMS},
+                     {"flow_z_min": 1.3, "rsi_min": 62.0, **_FADE_EXIT_BASE}, _taker_absorption_short_entry),
     # Premium index — the funding_fade premise at bar resolution instead of 8h steps.
     StrategyTemplate("premium_fade_long", "long", "1h",
-                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
-                     {"premium_z_min": 1.5, "rsi_max": 38.0, **_EXIT_BASE}, _premium_fade_long_entry),
+                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_max": ParamSpec(25.0, 45.0), **_FADE_EXIT_PARAMS},
+                     {"premium_z_min": 1.5, "rsi_max": 38.0, **_FADE_EXIT_BASE}, _premium_fade_long_entry),
     StrategyTemplate("premium_fade_short", "short", "1h",
-                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_EXIT_PARAMS},
-                     {"premium_z_min": 1.5, "rsi_min": 62.0, **_EXIT_BASE}, _premium_fade_short_entry),
+                     {"premium_z_min": ParamSpec(1.0, 2.5), "rsi_min": ParamSpec(55.0, 75.0), **_FADE_EXIT_PARAMS},
+                     {"premium_z_min": 1.5, "rsi_min": 62.0, **_FADE_EXIT_BASE}, _premium_fade_short_entry),
     # Cross-asset relative strength. Not minted for the reference symbol itself — see
     # REFERENCE_FAMILIES and `templates_for_timeframe`.
     StrategyTemplate("rel_strength_long", "long", "1h",
@@ -850,12 +936,16 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("rel_strength_short", "short", "1h",
                      {"rel_min": ParamSpec(0.005, 0.05), **_EXIT_PARAMS},
                      {"rel_min": 0.015, **_EXIT_BASE}, _rel_strength_short_entry),
-    # Cross-sectional momentum — the first families whose entry depends on symbols the cycle
+    # Cross-sectional REVERSION — the first families whose entry depends on symbols the cycle
     # is not trading. Both param ranges are bounded by construction rather than by a guess:
     # `xs_rank_edge` at 0.4 is the widest value that keeps the long and short legs disjoint
-    # (see `_xs_momentum_long_entry`), and `xs_dispersion_min` is a ratio against the cohort's
+    # (see `_xs_reversion_long_entry`), and `xs_dispersion_min` is a ratio against the cohort's
     # own recent dispersion, so 1.0 means "normal" on every symbol and every timeframe and
     # there is no level anybody had to authorize.
+    #
+    # This pair REPLACED `xs_momentum_long` / `_short` on 2026-08-04 rather than joining them —
+    # the two readings of `xs_rank_pct` are mutually exclusive by construction and the library
+    # may hold one. The builders above record why, and the retired pair's are kept.
     # Positioning divergence — minted only where the store's coverage reaches the replay span
     # (see POSITIONING_FAMILIES). The z threshold matches the funding and premium fade families,
     # because all three mine "how unusual is this crowding reading" over the same window.
@@ -865,16 +955,16 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("positioning_divergence_short", "short", "1h",
                      {"divergence_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
                      {"divergence_z_min": 1.5, **_EXIT_BASE}, _positioning_divergence_short_entry),
-    StrategyTemplate("xs_momentum_long", "long", "1h",
+    StrategyTemplate("xs_reversion_long", "long", "1h",
                      {"xs_rank_edge": ParamSpec(0.0, 0.4),
                       "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
                      {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
-                     _xs_momentum_long_entry),
-    StrategyTemplate("xs_momentum_short", "short", "1h",
+                     _xs_reversion_long_entry),
+    StrategyTemplate("xs_reversion_short", "short", "1h",
                      {"xs_rank_edge": ParamSpec(0.0, 0.4),
                       "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
                      {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
-                     _xs_momentum_short_entry),
+                     _xs_reversion_short_entry),
     # Session context. `session_index` is mutated like any other parameter, so WHICH session
     # a spec claims is part of the seeded search and is charged as a free parameter.
     StrategyTemplate("session_trend_long", "long", "1h",
@@ -919,7 +1009,37 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
 # paying for it with a risk unit too small to clear the fees. Re-list it if the entry gains a
 # compensating widener (a target scaled to the squeeze, an ATR floor), or if the cost structure
 # moves far enough that a narrow 1R stops being decisive.
-RETIRED_FAMILIES = frozenset({"volatility_squeeze_long", "volatility_squeeze_short"})
+#
+# `macd_momentum` / `_short`, retired 2026-08-04, and this one is a **redundancy** finding rather
+# than a cost one. The pair gates on `macd > macd_signal` plus `macd_hist > 0` — a STATE, true for
+# the whole of a trend, which is precisely the defect the `lag` vocabulary was added to fix (see
+# `strategy.PREVIOUS_BAR_PREFIX`'s note: a state family re-fires on every bar of a move rather than
+# on the bar the relationship changed). The EVENT version of the same hypothesis is already in the
+# library as `macd_cross_up` / `_down`, minted from the same `macd`/`macd_signal` pair with the
+# same `adx_min` filter. So the rotation was spending two of its slots restating a hypothesis it
+# already holds in a strictly better form.
+#
+# The evidence agrees and is well-sampled: measured on the holdout at the current cost basis,
+# lineage-collapsed, `macd_momentum` reads **-0.0578R GROSS over 2,979 out-of-sample trades**
+# (t_gross -2.97) and `macd_momentum_short` -0.0106R over 3,258. Six thousand out-of-sample
+# trades is more evidence than any other retirement in this file has rested on.
+#
+# Re-list it if the crossover pair is itself retired (the state form is then the only form of
+# the hypothesis left), or if a measurement ever separates them in the state form's favour.
+#
+# `xs_momentum_long` / `_short`, retired 2026-08-04, and this one is a **swap** — the slots went
+# to `xs_reversion_long` / `_short`, which read the same `xs_rank_pct` column with the opposite
+# sign. They cannot coexist: `xs_momentum_short` and `xs_reversion_long` fire on the identical
+# condition, so both in the library means one bar matching a LONG and a SHORT on the same feature
+# row, which `paper.route_entries` fails closed as `BLOCK_DIRECTION_CONFLICT`. The builders above
+# carry the full reasoning. Measured: -0.0177R and -0.0048R GROSS over 3,040 and 2,626 holdout
+# trades — 5,666 trades in which the momentum reading has not been positive before costs.
+# Re-list it only by swapping the reversion pair back out.
+RETIRED_FAMILIES = frozenset({
+    "volatility_squeeze_long", "volatility_squeeze_short",
+    "macd_momentum", "macd_momentum_short",
+    "xs_momentum_long", "xs_momentum_short",
+})
 
 # Families whose entry rules read the open-interest columns — mintable only where the
 # feed is configured; with no feed their conditions are indeterminate and never match,
@@ -951,7 +1071,12 @@ REFERENCE_FAMILIES = frozenset({"rel_strength_long", "rel_strength_short"})
 # `xs_*` column becomes permanently None, so these families would still mint, still backtest,
 # still take zero trades, and be retired as FRAGILE — the family blamed for a cohort that was
 # too small to rank.
-CROSS_SECTION_FAMILIES = frozenset({"xs_momentum_long", "xs_momentum_short"})
+#
+# Both the minted pair and the retired one are named. The gate asks "may a family that reads
+# `xs_*` be minted here", which is a property of the COLUMNS and not of which sign reads them —
+# so leaving the retired pair out would silently un-gate it the day somebody re-listed it.
+CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short",
+                                    "xs_momentum_long", "xs_momentum_short"})
 
 # Families whose entry rules read the positioning columns — mintable only where the store has
 # accumulated enough history to answer the whole replay window
@@ -2189,12 +2314,29 @@ def _fused_exit_param(name: str, first: float, second: float) -> float | int:
     minted under an older generation space, clamp. The two bounds answer different questions —
     *"is this a legal strategy"* and *"is this what the factory currently explores"* — and only
     the second is a preference.
+
+    **The clamp is the UNION of the generation spaces, not `_EXIT_PARAMS` alone**, because since
+    2026-08-04 there is more than one: `_FADE_EXIT_PARAMS` holds fade families to a shorter hold
+    (4-16) than the trend space (12-48). Clamping a fused child to the trend space would take the
+    midpoint of two fade parents holding 6 and 8 bars and push it to 12 — silently restoring the
+    geometry the fade space exists to avoid, on exactly the children of the families it applies
+    to. The union answers the question the docstring above states ("is this what the factory
+    currently explores") correctly once the answer is a set of spaces rather than one.
+
+    It changes nothing for any pre-existing case: the unions for `stop_atr` and `target_atr` are
+    identical to `_EXIT_PARAMS` (the fade space is strictly inside them), and for
+    `max_holding_bars` only the floor moves, 12 -> 4, which cannot bind on two trend parents
+    since the midpoint of two values at or above 12 is at or above 12. The one behaviour that
+    does move is an imported parent below 12 bars, which used to be lifted to 12 and now passes
+    through — correctly, because 4-16 is now a region the factory does mint.
     """
     spec = _EXIT_PARAMS[name]
     low, high = _EXIT_LEGAL_RANGE[name]
+    lo = min(space[name].lo for space in _GENERATION_SPACES)
+    hi = max(space[name].hi for space in _GENERATION_SPACES)
     midpoint = (first + second) / 2
     if low <= first <= high and low <= second <= high:
-        midpoint = max(spec.lo, min(spec.hi, midpoint))
+        midpoint = max(lo, min(hi, midpoint))
     return int(round(midpoint)) if spec.integer else round(midpoint, 4)
 
 

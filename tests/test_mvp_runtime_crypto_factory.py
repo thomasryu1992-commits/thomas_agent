@@ -1654,3 +1654,155 @@ def test_generation_mints_nothing_its_own_venue_would_refuse():
             assert verdict["approved_for_backtest"], (
                 venue, spec["strategy_family"], verdict["block_reasons"]
             )
+
+
+# --- the fade families get their own exit geometry (2026-08-04) --------------------------------
+#
+# Until now every family shared `_EXIT_PARAMS`, which is a TREND geometry: a target reaching 8x
+# ATR over a 48-bar hold is "ride it while it runs". For a fade — whose thesis is that price
+# returns to a mean and is COMPLETE when it gets there — that lets the search draw a spec whose
+# entry says "this is stretched" and whose exit says "hold for a trend".
+
+_FADE_FAMILIES = frozenset({
+    "mean_reversion", "mean_reversion_short", "funding_fade_long", "funding_fade_short",
+    "premium_fade_long", "premium_fade_short", "oi_unwind_long", "oi_unwind_short",
+    "taker_absorption_long", "taker_absorption_short",
+})
+
+
+def test_every_fade_family_mints_from_the_fade_space_and_no_other_family_does():
+    """The set is asserted in BOTH directions on purpose. A family added to the library later
+    with a fade premise and the trend space is the silent half of this — it would mint the very
+    geometry mismatch this space exists to remove, and nothing else in the suite would notice."""
+    got = {t.family for t in factory.TEMPLATES
+           if t.param_space["max_holding_bars"] is factory._FADE_EXIT_PARAMS["max_holding_bars"]}
+    assert got == _FADE_FAMILIES, (
+        f"fade space on the wrong set: unexpected {sorted(got - _FADE_FAMILIES)}, "
+        f"missing {sorted(_FADE_FAMILIES - got)}"
+    )
+
+
+def test_the_fade_space_can_never_draw_a_reward_risk_the_validator_refuses():
+    """`validate_strategy` enforces `target_atr / stop_atr >= MIN_REWARD_RISK`, and
+    `mutate_params` draws the two INDEPENDENTLY. So a space with `target.lo < stop.hi` mints a
+    fraction of specs the validator then refuses — burning attempts against
+    `_MAX_ATTEMPTS_PER_SPEC` and biasing whatever survives toward the high-target corner, which
+    is the opposite of what a fade geometry is for.
+
+    This is why the fade target floor is 2.0: it equals the stop ceiling, and the property is
+    arithmetic rather than lucky. It is asserted on the BOUNDS first, because a draw-based test
+    alone would pass on a space that is merely unlikely to violate it."""
+    stop = factory._FADE_EXIT_PARAMS["stop_atr"]
+    target = factory._FADE_EXIT_PARAMS["target_atr"]
+    assert target.lo >= stop.hi * factory.MIN_REWARD_RISK, (
+        f"target floor {target.lo} is below stop ceiling {stop.hi} — some draws are unmintable"
+    )
+
+    rng = random.Random(5)
+    for _ in range(2000):
+        drawn = factory.mutate_params(factory._FADE_EXIT_BASE, factory._FADE_EXIT_PARAMS, rng)
+        assert drawn["target_atr"] / drawn["stop_atr"] >= factory.MIN_REWARD_RISK
+
+
+def test_the_fade_bases_sit_strictly_inside_their_bounds():
+    """The pinning trap `_EXIT_BASE` already documents, restated for the second space: a base ON
+    a bound sends ~half of every draw to exactly that value, collapsing the parameter instead of
+    shifting it. Checked for all three, not just the stop, because the fade space moved all
+    three and a mid-range base is cheap insurance on each."""
+    rng = random.Random(17)
+    draws = [factory.mutate_params(factory._FADE_EXIT_BASE, factory._FADE_EXIT_PARAMS, rng)
+             for _ in range(2000)]
+    for name, spec in factory._FADE_EXIT_PARAMS.items():
+        base = factory._FADE_EXIT_BASE[name]
+        assert spec.lo < base < spec.hi, f"{name}: base {base} is on a bound of its own range"
+        values = [d[name] for d in draws]
+        assert min(values) >= spec.lo and max(values) <= spec.hi
+        pinned = sum(1 for v in values if v <= spec.lo + 1e-9 or v >= spec.hi - 1e-9) / len(values)
+        assert pinned < 0.10, f"{name}: {pinned:.1%} of draws pinned to a bound"
+
+
+def test_a_fade_hold_survives_fusion_instead_of_being_clamped_back_to_the_trend_floor():
+    """`_fused_exit_param` holds a child inside "the space the factory currently explores", and
+    that is now a SET of spaces. Clamping to `_EXIT_PARAMS` alone would take the midpoint of two
+    fade parents holding 6 and 8 bars and push it to 12 — silently restoring the geometry the
+    fade space exists to remove, on exactly the children of the families it applies to."""
+    a = _parent_spec("S1", [_CLOSE_OVER_MA20],
+                     exit_rules={"stop_model": "atr", "stop_atr": 1.6, "target_atr": 2.4,
+                                 "max_holding_bars": 6})
+    b = _parent_spec("S2", [_MA20_OVER_MA50],
+                     exit_rules={"stop_model": "atr", "stop_atr": 1.8, "target_atr": 2.6,
+                                 "max_holding_bars": 8})
+    child = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert child.exit_rules.max_holding_bars == 7
+    assert factory.validate_strategy(child)["approved_for_backtest"]
+
+
+def test_two_trend_parents_still_clamp_exactly_as_they_did():
+    """The union widened only the `max_holding_bars` floor, 12 -> 4, and it cannot bind on two
+    trend parents: the midpoint of two values at or above 12 is at or above 12. Pinned so the
+    widening cannot be read as a licence to loosen the trend space."""
+    stale = _parent_spec("S1", [_CLOSE_OVER_MA20],
+                         exit_rules={"stop_model": "atr", "stop_atr": 0.9, "target_atr": 3.0,
+                                     "max_holding_bars": 20})
+    fresh = _parent_spec("S2", [_MA20_OVER_MA50],
+                         exit_rules={"stop_model": "atr", "stop_atr": 1.3, "target_atr": 3.0,
+                                     "max_holding_bars": 30})
+    child = fuse_specs(stale, fresh, strategy_id="S9", generation_id="GEN-9")
+    assert child.exit_rules.stop_atr == factory._EXIT_PARAMS["stop_atr"].lo  # 1.1 -> clamped to 1.2
+    assert child.exit_rules.max_holding_bars == 25
+
+
+# --- xs_momentum -> xs_reversion is a swap, not an addition (2026-08-04) -----------------------
+
+def test_the_cross_sectional_legs_stay_disjoint_so_a_row_cannot_match_both():
+    """`paper.route_entries` fails a bar closed (`BLOCK_DIRECTION_CONFLICT`) when a LONG and a
+    SHORT match the same feature row. The reversion pair keeps the momentum pair's construction
+    — long takes `rank <= edge`, short `rank >= 1 - edge` — so with `xs_rank_edge` capped at 0.4
+    the two conditions can never both hold. Mined over the whole parameter range rather than at
+    the base, because the cap is what makes this true and a base-only test would not see it."""
+    space = {t.family: t.param_space for t in factory.TEMPLATES}
+    edge = space["xs_reversion_long"]["xs_rank_edge"]
+    assert edge.hi <= 0.5, "edge above 0.5 lets the two legs overlap"
+    for value in (edge.lo, (edge.lo + edge.hi) / 2, edge.hi):
+        long_max = value                    # long fires at rank <= value
+        short_min = 1.0 - value             # short fires at rank >= 1 - value
+        assert long_max < short_min or value == 0.5
+
+
+def test_the_momentum_pair_is_retired_rather_than_deleted_and_cannot_return_alongside_reversion():
+    """Retired, so the builders stay and re-listing one line is the whole of re-enabling. But the
+    pair is mutually exclusive with the reversion families rather than merely superseded:
+    `xs_momentum_short` and `xs_reversion_long` fire on the IDENTICAL condition, so a library
+    holding both makes every qualifying bar a direction conflict."""
+    minted = {t.family for t in factory.TEMPLATES}
+    for family in ("xs_momentum_long", "xs_momentum_short"):
+        assert family in factory.RETIRED_FAMILIES
+        assert hasattr(factory, f"_{family}_entry"), "retirement kept no builder — that is a deletion"
+        assert family not in minted
+    assert {"xs_reversion_long", "xs_reversion_short"} <= minted
+
+    params = {"xs_rank_edge": 0.3, "xs_dispersion_min": 1.0}
+    assert factory._xs_momentum_short_entry(params) == factory._xs_reversion_long_entry(params), (
+        "the two fire on different conditions now — the exclusivity argument for the swap is "
+        "gone and both could be minted"
+    )
+
+    # And the gate that decides whether an xs_* family may be minted at all names both pairs,
+    # so re-listing the retired one cannot silently escape it.
+    assert {"xs_momentum_long", "xs_momentum_short",
+            "xs_reversion_long", "xs_reversion_short"} <= factory.CROSS_SECTION_FAMILIES
+
+
+def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
+    """The retirement is a REDUNDANCY finding: `macd_momentum` gates on a STATE (`macd > signal`
+    plus `hist > 0`), true for the whole of a trend, which is the defect the `lag` vocabulary was
+    added to fix — and the EVENT form of the same hypothesis is already minted as `macd_cross_*`.
+    Retiring the state form is only defensible while the event form remains, so that is pinned
+    here rather than left to the comment."""
+    minted = {t.family for t in factory.TEMPLATES}
+    for family in ("macd_momentum", "macd_momentum_short"):
+        assert family in factory.RETIRED_FAMILIES and family not in minted
+        assert hasattr(factory, f"_{family}_entry")
+    assert {"macd_cross_up", "macd_cross_down"} <= minted, (
+        "the state form was retired as redundant against an event form that is no longer minted"
+    )
