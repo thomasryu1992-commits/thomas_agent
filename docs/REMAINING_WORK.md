@@ -1615,9 +1615,16 @@ MVP_CANDLE_ARCHIVE='hyperliquid' -> SafetyGateBlocked: ACTIVATION_MISSING
 ```
 
 The second line is the one worth knowing: **the env alone fails at selection**, before any
-collector is constructed. This machine holds grants for `binance_futures`,
-`binance_futures_account`, `coinalyze_market_data`, `google_ai_studio`, `groq` and
-`live_trading` — and no `hyperliquid`.
+collector is constructed. This machine holds **eleven** grants and no `hyperliquid`; the count
+is given rather than the list, because an inventory in this file goes stale the first time one
+is issued or removed — which it did, within the hour of this section being written. Ask the
+directory, or the board's 권한 line.
+
+**One grant this section named is gone, and why is worth reading before assuming the grant model
+is uniform: see section C, *"An expired grant pinned the board's expiry warning"*.** `live_trading`
+does **not** take this path at all — Thomas moved it to `safety_gate.select_env_gated` on
+2026-07-28, the environment opt-in alone, no per-machine grant and no expiry. So "gated by a
+grant" describes the archive and every other capability, and not the one that moves real money.
 
 **S0 is unratified and is what blocks the lane.** It is Appendix A of
 `EQUITY_PERP_LANE_V0.1.md`, whose own title says **미비준**. Three commits have touched that
