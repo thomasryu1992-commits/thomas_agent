@@ -1696,6 +1696,62 @@ The pullback variant is **not** shipped and should not be on this evidence: it h
 hurts at 1h, and its one good number does not reproduce. `htf_pullback_long/short` remain in the
 rotation producing 0 and 1 judgeable holdouts out of 60 at 4h — an open item, not a resolved one.
 
+#### The pullback family's problem is not its rule — measured 2026-08-04
+
+Two different replacements were tried and both say the same thing, so the item above is closed
+in a direction it was not pointed at. **The rule was never what made it unjudgeable; one
+symbol's evidence was too thin for a conjunction this rare.** Replayed pooled across the cohort
+with `factory.backtest_spec_pooled` and the rule *unchanged*, at 4h:
+
+| 4h, same rule | specs | IS trades | HO trades | judgeable | HO exp | pos | t max | z bar |
+|---|---|---|---|---|---|---|---|---|
+| `htf_pullback_long` single | 60 | 21 | 5 | **0/60** | n/a | n/a | n/a | 3.34 |
+| `htf_pullback_long` pooled | 12 | 124 | 38 | **8/12** | −0.0823 | 25% | 1.25 | 2.87 |
+| `htf_pullback_short` single | 60 | 22 | 6 | **1/60** | +0.4399 | 100% | 2.24 | 3.34 |
+| `htf_pullback_short` pooled | 12 | 112 | 38 | **12/12** | **+0.1748** | **100%** | 1.87 | 2.87 |
+
+So the judgeability defect is fully removed without touching a condition. That also answers, for
+one family, the question F2 leaves open — a pooled *re-score* (not yet a pooled *mint*) turns
+un-judgeable into judged, and what it judges is **not confirmed**: nothing clears the
+selection-adjusted bar, and 1h is negative on both legs (long −0.1661, short −0.3332, 0% of
+draws positive).
+
+**The one result worth a second look, and the control that undercuts it.** 4h
+`htf_pullback_short` is the only positive figure this investigation has produced twice. Walking
+the holdout backwards in **adjacent, non-overlapping** windows (truncating the series by 0.7 each
+step makes window *k+1* end exactly where window *k* begins):
+
+| holdout window (4h) | bars | HO trades | judgeable | HO exp | pos | t max |
+|---|---|---|---|---|---|---|
+| `[2100,3000)` | 900 | 38 | 12/12 | +0.1748 | 100% | 1.87 |
+| `[1470,2100)` | 630 | 62 | 12/12 | +0.1539 | 100% | **2.08** |
+| `[1029,1470)` | 441 | 20 | 2/12 | +0.0338 | 100% | 0.16 |
+| `[720,1029)` | 309 | 2 | 0/12 | — | — | — |
+
+No negative window, and the two deep ones agree on magnitude. Its long sibling over the same
+windows is uniformly negative (−0.0823, −0.7568, −0.5062, −0.1579), so the result is not an
+artifact of the windowing.
+
+**And it still does not clear.** `t max` peaks at 2.08 against a selection-adjusted 2.87, the 12
+draws are correlated (one rule, adjacent parameters, one cohort, one window set) so "100% of
+draws positive" is nearer one observation than twelve, and only two windows carry real depth.
+
+The control is in the table above it. The **same rule at 1h** produces `[4116,5880)` at
+**+0.4052 with t max 3.91** — clearing even a selection-adjusted bar — surrounded by
+−0.3332, −0.2676 and −0.3338. If that window had been the only one sampled it would read as a
+confirmed edge. It is the cleanest demonstration this record has that **one strong window is not
+evidence here**, and it is why the 4h rows above are reported as suggestive rather than found.
+
+**What would settle it** is more independent evidence, not more draws of the same twelve: a
+replay window long enough to yield four non-overlapping tails that all reach
+`MIN_HOLDOUT_TRADES` at 4h (today the third is 2/12 and the fourth 0/12), or forward paper
+outcomes. **What would not:** loosening the rule to raise its trade count, which changes the
+hypothesis rather than testing it.
+
+**So the open item changes shape.** `htf_pullback_*` should not be replaced, and its
+unjudgeability at 4h is a *sampling* fact rather than a rule defect — which makes it evidence
+for the pooled-mint experiment F2 defers, not an argument for another template edit.
+
 **What is still owed.** A mint-time change is judged over generations rather than days (the
 `#420` error), so the shipped half is a *bet placed*, not a result: the check is the next fire's
 `strategy_family` distribution, and a few generations later whether 4h `htf_trend_strength_*`
