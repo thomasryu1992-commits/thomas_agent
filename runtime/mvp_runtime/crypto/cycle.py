@@ -45,6 +45,7 @@ from .guards import (
 from .market_data import (
     CROSS_SECTION_DEGRADED,
     CROSS_SECTION_UNIVERSE,
+    DERIVATIVE_HISTORY_DAYS,
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
     INDEX_PRICE_DEGRADED,
@@ -102,7 +103,10 @@ LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
 _FUNDING_RECORDS = 1600
-_LIQUIDATION_DAYS = 520
+# Read from `market_data` rather than restated here: `factory.templates_for_timeframe` now gates
+# the oi_* families on the same depth, and two numbers for one fetch would let the gate and the
+# fetch drift apart silently.
+_LIQUIDATION_DAYS = DERIVATIVE_HISTORY_DAYS
 
 
 def attach_feeds(
