@@ -250,9 +250,27 @@ POSITIONING_DEGRADED = "POSITIONING_DEGRADED"
 DERIVATIVE_PAGE_LIMIT = 1000
 DERIVATIVE_MAX_PAGES = 60
 
+# How much derivative history (liquidations, open interest) the runtime asks the feed for.
+#
+# Lived in `cycle._LIQUIDATION_DAYS` until 2026-08-04, where it was one consumer's private
+# number. It is moved here because a SECOND consumer now needs it and they must not disagree:
+# `factory.templates_for_timeframe` gates the oi_* families on whether this depth reaches the
+# replay window, and a gate reading a different number than the fetch would either mint
+# families the data cannot answer or refuse ones it can.
+#
+# 520 covers the 500-day calendar replay with head-room — see the interval comment below, which
+# states that premise — and it does NOT cover 1d, whose window is a 2,000-BAR floor
+# (`MIN_FACTORY_BARS`) rather than a calendar span, i.e. 2,000 days. That gap is what the gate
+# in the factory exists for.
+DERIVATIVE_HISTORY_DAYS = 520
+
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
-# stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
+# stops ~84 days back (measured on the vendor 2026-07-29). **"The factory's 500-day replay" is
+# true of every timeframe except 1d**, which replays `MIN_FACTORY_BARS` = 2,000 daily bars, so
+# the daily series answers about a quarter of it; `DERIVATIVE_HISTORY_DAYS` above and the oi_*
+# gate in `factory.templates_for_timeframe` are where that exception is handled. `1hour` exists
+# for `oi_store`, which
 # retains the hourly series itself against the day it is deep enough to replace the daily one.
 # A closed set rather than a pass-through string: an unknown interval would be answered by the
 # vendor with a series of some other cadence, and the store would count it as hours.
@@ -850,25 +868,58 @@ class NoCandleArchiveCollector:
         raise ToolBlocked("ARCHIVE_NOT_ENABLED", "candle archiving is off")
 
 
+# --- the archive's env-only gate — the second and last such exception -----------------------
+#
+# Thomas decision, 2026-08-04: the candle archive is gated by its environment opt-in ALONE,
+# joining `live_trading` as the only capabilities that skip the per-machine grant.
+#
+# Why: the grant is TTL-capped at 30 days and archiving is worth nothing unless it runs for
+# months. What it races is a ROLLING window — 52 days at 15m and moving — so an archive stopped
+# for a renewal gap does not resume where it left off. It resumes with a hole nothing can fill.
+#
+# **Half of `live_trading`'s reasoning does not transfer, and that is written down rather than
+# glossed over.** Its sharper reason was that a grant expiring while a position is OPEN blocks
+# the close path and traps the position; nothing here can be trapped. Its compensating control
+# — a file-based kill switch the order guard re-checks — has no counterpart either: revoking
+# this means unsetting the env and restarting the service, which is slower and coarser.
+#
+# What makes the trade acceptable is the other side of the ledger, and it is the side
+# `live_trading` did not have. This reads PUBLIC candles over HTTPS with no key, sends nothing,
+# orders nothing, and **feeds nothing** — `candle_archive` has no consumer in the feature or
+# routing path and a test pins that. The worst outcome of an unintended opt-in is an outbound
+# read of public prices.
+#
+# What is given up, stated so a future reader restoring the grant knows what they are
+# restoring: a second factor, an expiry, and an audited per-machine record of scope and
+# authority level.
+#
+# What is NOT given up: the egress re-check. `select_env_gated` still hands the collector a
+# real `Authorization`, so `collect` re-verifies immediately before opening a socket — this
+# removes the grant, not the chokepoint. And the failure that made a 30-day TTL dangerous here
+# is fixed on its own terms rather than by removing the control: the scheduler now RAISES when
+# archiving is on and not working, so an outage reaches the operator through the existing
+# failure alert instead of sitting inside a COMPLETED fire nobody is told about.
 def select_candle_archive_collector(
     *, now: str | None = None, root: Path | None = None
 ) -> MarketDataCollector:
-    """Choose the archive's collector — its own axis, the same gate, the same provider grant.
+    """Choose the archive's collector — its own axis, **environment-gated** (see above).
 
     Independent of :func:`select_market_data_collector` on purpose: the pipeline and the
     archive read different venues at the same time, and a single-valued env cannot say that.
     Not opted in returns :class:`NoCandleArchiveCollector`, which writes nothing rather than
     writing something synthetic.
+
+    ``now`` and ``root`` are accepted and unused. The signature matches the grant-gated
+    selector this replaced, so no caller or test has to know which kind of gate is behind it —
+    and restoring the grant is a change here rather than at every call site.
     """
-    return safety_gate.select_gated(
+    return safety_gate.select_env_gated(
         env_var=CANDLE_ARCHIVE_ENV,
         opt_in_value=HYPERLIQUID,
         flags=_NETWORK_FLAGS,
         provider_id=HYPERLIQUID,
         default_factory=NoCandleArchiveCollector,
         gated_factory=lambda authorization: HyperliquidCollector(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

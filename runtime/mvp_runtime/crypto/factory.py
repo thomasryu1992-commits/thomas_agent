@@ -57,7 +57,7 @@ import random
 import statistics
 from dataclasses import dataclass, field, replace
 from itertools import combinations
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -1096,6 +1096,41 @@ def template_features(template: StrategyTemplate) -> frozenset[str]:
     return frozenset(names)
 
 
+def _oi_feed_reaches(timeframe: str) -> bool:
+    """Does the derivative feed's history span what the factory replays at ``timeframe``?
+
+    **The premise `market_data` states beside the OI interval — "the only depth that covers the
+    factory's 500-day replay" — is true of every timeframe except 1d, and nothing noticed for
+    six days.** `MIN_FACTORY_BARS` (2026-07-29) floored 1d at 2,000 BARS to buy it enough trades
+    to be scoreable, and at 1d a bar is a day, so the window stopped being a 500-day calendar
+    span and became a 2,000-day one. The daily open-interest series is
+    :data:`market_data.DERIVATIVE_HISTORY_DAYS` = 520 days, so it answers about a quarter of it.
+
+    It went unseen because the 1d contexts left the factory rotation on 2026-07-23, six days
+    BEFORE the floor landed — the floor and this premise never both applied to a minting context
+    until 1d was put back on 2026-08-04. Measured that day on live frames: with the feed
+    configured, all four oi_* families are determinate on ~26% of the 1d replay rows and on 100%
+    of the 15m/1h/4h ones.
+
+    A quarter-covered window is not merely thin, it is the failure `POSITIONING_FAMILIES`
+    documents: the walk-forward split puts every trade in the newest slice and none in the older
+    ones, so ``temporal_consistency`` is 0 by construction, no edge can clear the robustness bar,
+    and the family is retired as FRAGILE for a window that had no data in it. `unsuppliable_features`
+    does not catch it — that refuses a column None on EVERY row, and this one is populated on the
+    newest quarter.
+
+    Arithmetic rather than a measured parameter, unlike ``positioning_eligible``: that store
+    accumulates and its coverage genuinely changes day to day, while this is the depth this
+    runtime *asks* for against the window it *chose* to replay. Both are constants here, so a
+    caller has nothing to measure and cannot get it wrong by omission.
+    """
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return False
+    replay_days = market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+    return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1116,7 +1151,9 @@ def templates_for_timeframe(
     - the xs_* families need a cohort that still reaches
       ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it;
     - the positioning_* families need a store whose accumulated coverage spans the replay
-      window, which the caller measures and passes as ``positioning_eligible``.
+      window, which the caller measures and passes as ``positioning_eligible``;
+    - the oi_* families need a derivative feed whose history reaches the replay window, which
+      is pure arithmetic here rather than a parameter — see ``_oi_feed_reaches``.
 
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
@@ -1157,6 +1194,7 @@ def templates_for_timeframe(
         1 for member in market_data.CROSS_SECTION_UNIVERSE if member != str(symbol)
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
+    has_oi_history = _oi_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1172,6 +1210,8 @@ def templates_for_timeframe(
         if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
             return False
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
+            return False
+        if template.family in OI_FAMILIES and not has_oi_history:
             return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.
@@ -1435,10 +1475,20 @@ def build_spec_dict(
     template: StrategyTemplate, params: dict[str, float], *,
     strategy_id: str, generation_id: str, symbol: str = "BTCUSDT",
     venue: str = market_data.BINANCE_FUTURES,
+    symbol_scope: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     # `venue` is recorded here rather than left to `StrategySpec`'s default because this is
     # where the fact exists: a spec mined by this function was mined on that venue's data.
     # The default agrees with the dataclass's for the same reason it has one.
+    #
+    # `symbol_scope` defaults to `[symbol]`, which is what every one of the 1,140 stored
+    # candidates carries and what `run_factory` still mints. A caller may widen it for a spec
+    # backtested by `backtest_spec_pooled` over that same set — the two have to agree or the
+    # evidence describes a different strategy than the record claims, which is why the scope is
+    # an argument here rather than something the pooled backtest infers. Sorted, because
+    # `symbol_scope` is inside `strategy_rule_fingerprint`: the same spec reached by a different
+    # caller ordering must be the same rule hash.
+    scope = sorted({str(s) for s in symbol_scope}) if symbol_scope else [symbol]
     return {
         "schema_version": SCHEMA_VERSION,
         "strategy_id": strategy_id,
@@ -1446,7 +1496,7 @@ def build_spec_dict(
         "generation_id": generation_id,
         "strategy_family": template.family,
         "status": "GENERATED",
-        "symbol_scope": [symbol],
+        "symbol_scope": scope,
         "timeframe": template.timeframe,
         "direction": template.direction,
         "entry_rules": {"operator": "AND", "conditions": template.entry_builder(params)},
@@ -1937,23 +1987,49 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
 
 
 def _holdout_evidence(
-    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
-    *, cost: CostModel, offset: int, funding: list[float] | None = None,
-    funding_source: str = FUNDING_SOURCE_VENUE,
+    spec: StrategySpec, frames: Sequence["ReplayFrame"],
+    *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
 ) -> dict[str, Any]:
     """What the spec did on bars that never touched its score. Compact by design.
 
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
-    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
-        spec, rows, candles, cost=cost, funding=funding, offset=offset
-    )
+    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing.
+
+    Takes **frames**, plural, and pools their tails into one block. A spec scoped to
+    several symbols is one hypothesis fitted on all of them, so its tail is all of their
+    tails — which is the whole reason a pooled spec can reach ``MIN_HOLDOUT_TRADES``
+    where a single-symbol one at the same timeframe cannot. ``bars`` stays the
+    PER-SYMBOL depth (the shallowest frame's, so the claim is bounded by the leg that
+    saw least) because `pool.evidence_depth_of` reads it as a calendar span: five
+    symbols over 150 days is still 150 days of market, seen five times. ``symbols``
+    says how many times.
+    """
+    outcomes: list[dict[str, Any]] = []
+    fees = maker_fees = slippage = carry = 0.0
+    uneconomic = 0
+    bars: list[int] = []
+    for frame in frames:
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[frame.split:], frame.candles[frame.split:],
+            cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
+        )
+        outcomes.extend(part)
+        fees += part_fees
+        maker_fees += part_maker
+        slippage += part_slip
+        carry += part_carry
+        uneconomic += part_uneconomic
+        bars.append(len(frame.rows) - frame.split)
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
     return {
-        "bars": len(rows),
+        "bars": min(bars) if bars else 0,
+        # Absent on every block minted before pooling existed, and 1 is what those mean —
+        # `pool` and `robustness` read the count only to describe the evidence, never to
+        # gate on it, so a missing field degrades to the single-symbol reading it had.
+        "symbols": len(frames),
         "closed_count": closed,
         "win_count": sum(1 for r in results if r > 0),
         "total_R": total_r,
@@ -2044,7 +2120,11 @@ def backtest_spec(
     spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
     frame: ReplayFrame | None = None,
 ) -> dict[str, Any]:
-    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+    """Replay ``spec`` over one snapshot's history. Deterministic, pure.
+
+    The single-symbol form of :func:`backtest_spec_pooled`, and byte-identical to what
+    this function returned before pooling existed — every caller that mines one
+    ``(symbol, timeframe)`` context keeps exactly the evidence it had.
 
     Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
     the position opens at row i's close with the spec's ATR exits, and every later
@@ -2056,28 +2136,84 @@ def backtest_spec(
     ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
     outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
     NET R after costs; ``gross_R`` rides alongside for transparency."""
+    return backtest_spec_pooled(
+        spec, [snapshot], cost=cost, frames=None if frame is None else [frame]
+    )
+
+
+def backtest_spec_pooled(
+    spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
+    cost: CostModel | None = None, frames: Sequence[ReplayFrame] | None = None,
+) -> dict[str, Any]:
+    """Replay one spec across several symbols' histories and pool the result.
+
+    **One hypothesis, N symbols' worth of evidence.** Every spec in the store is scoped
+    to a single symbol (``build_spec_dict`` defaults to ``[symbol]``), so the factory's
+    evidence-per-hypothesis ratio is fixed by how often one symbol signals — and at 4h
+    and 1d that is below `robustness.MIN_HOLDOUT_TRADES`, which is why
+    `REMAINING_WORK.md` F1 finds the search producing evidence it cannot confirm.
+    Pooling moves the ratio the only way that helps: adding a family costs +1 hypothesis
+    at the same data, adding a symbol as its own context costs +N hypotheses at +N data,
+    and this is +0 hypotheses at +N data.
+
+    It is also the harder thing to overfit, which is the second reason: one parameter set
+    has to hold on BTC and DOGE at once. The feature vocabulary was already built for
+    that — ``NUMERIC_FEATURES`` admits only normalized columns precisely so "a mined
+    threshold carries the same meaning on BTC and on SOL" — and nothing had used it.
+
+    Preconditions, fail-closed rather than reconciled: every frame must carry the same
+    cost model (a pooled figure mixing rates describes no book), and the caller is
+    responsible for handing frames of ONE timeframe, since the walk-forward slices below
+    index by bar and bar *i* only names the same calendar window across symbols when the
+    bar length is the same.
+
+    ``bars_replayed`` stays the per-symbol scored depth for the reason ``holdout.bars``
+    does; ``symbols_replayed`` is how many legs are behind it. This does **not** decide
+    what the factory mints — ``run_factory`` is untouched, and moving the rotation onto
+    pooled specs is a separate decision that wants generations of evidence, not this
+    function landing.
+    """
+    if not snapshots and not frames:
+        raise ValueError("a pooled backtest needs at least one snapshot or frame")
     cost = cost or CostModel()
-    # Reused when the caller already built it (`run_factory` builds one per fire and replays
+    # Reused when the caller already built them (`run_factory` builds one per fire and replays
     # every spec and fusion child through it), rebuilt when it did not. A frame from a different
     # cost model is refused rather than used: see `ReplayFrame`.
-    if frame is None:
-        frame = build_replay_frame(snapshot, cost=cost)
-    elif frame.cost != cost:
-        raise ValueError(
-            "replay frame was built under a different cost model than this backtest charges; "
-            "the carry series would price trades at rates they never faced"
+    if frames is None:
+        frames = [build_replay_frame(snapshot, cost=cost) for snapshot in snapshots]
+    else:
+        for frame in frames:
+            if frame.cost != cost:
+                raise ValueError(
+                    "replay frame was built under a different cost model than this backtest "
+                    "charges; the carry series would price trades at rates they never faced"
+                )
+    # The weaker label wins when the legs disagree: a pooled carry is only as well-sourced as
+    # its worst leg, and reporting `venue_history` over a book where one symbol fell back to
+    # the modelled rate would overstate what the funding figure is evidence of.
+    funding_source = (
+        FUNDING_SOURCE_VENUE
+        if all(f.funding_source == FUNDING_SOURCE_VENUE for f in frames)
+        else FUNDING_SOURCE_FALLBACK
+    )
+    outcomes: list[dict[str, Any]] = []
+    total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
+    uneconomic_entries = 0
+    scored_bars: list[int] = []
+    for frame in frames:
+        split = frame.split
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[:split], frame.candles[:split],
+            cost=cost, funding=frame.funding[:split],
         )
-    all_rows, all_candles = frame.rows, frame.candles
-    all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
-    rows, candles = all_rows[:split], all_candles[:split]
-    (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-     total_funding_cost_r, uneconomic_entries) = _replay(
-        spec, rows, candles, cost=cost, funding=all_funding[:split]
-    )
-    holdout = _holdout_evidence(
-        spec, all_rows[split:], all_candles[split:], cost=cost, offset=split,
-        funding=all_funding[split:], funding_source=funding_source,
-    )
+        outcomes.extend(part)
+        total_fee_cost_r += part_fees
+        total_maker_fee_cost_r += part_maker
+        total_slippage_cost_r += part_slip
+        total_funding_cost_r += part_carry
+        uneconomic_entries += part_uneconomic
+        scored_bars.append(split)
+    holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
     summary = summarize_outcomes(outcomes)
 
@@ -2109,7 +2245,11 @@ def backtest_spec(
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
     # with enough trades. temporal_stability stays None (the source walk-forward
     # module was not ported) — the scorer treats that as absent evidence, not skip.
-    window_bars = max(1, len(rows) // BACKTEST_WINDOWS)
+    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
+    # into the last window rather than opening a window the other legs never reached. Bar *i*
+    # is the same calendar window on every leg — that is the one-timeframe precondition above,
+    # and it is what makes pooling by `closed_at_bar` mean anything.
+    window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
         window_r.setdefault(min(outcome["closed_at_bar"] // window_bars, BACKTEST_WINDOWS - 1), []).append(
@@ -2225,7 +2365,14 @@ def backtest_spec(
         # robustness score (C8b), with raw expectancy kept alongside.
         "champion_score": robustness["robustness_score"],
         "score_basis": "robustness_score_v1",
-        "bars_replayed": len(rows),
+        # PER SYMBOL, and the shallowest leg's — `pool.evidence_depth_of` turns this into a
+        # calendar span, and five symbols over 350 days is 350 days of market seen five times,
+        # not 1,750 days of it. Summing would tier a pooled candidate as though it had been
+        # shown history that does not exist.
+        "bars_replayed": min(scored_bars),
+        # How many legs are behind every figure above. Absent on evidence minted before pooling,
+        # which is exactly what 1 means, so a reader needs no migration to interpret an old row.
+        "symbols_replayed": len(frames),
     }
 
 

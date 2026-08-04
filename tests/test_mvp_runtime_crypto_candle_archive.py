@@ -17,6 +17,7 @@ import pytest
 from runtime.mvp_runtime.crypto import candle_archive as archive
 from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError
+from runtime.mvp_runtime.safety_gate import Authorization
 
 VENUE = "hyperliquid"
 SYMBOL = "xyz:XLE"
@@ -426,10 +427,26 @@ def test_the_inert_default_is_not_the_mock(monkeypatch):
     assert exc.value.reason_code == "ARCHIVE_NOT_ENABLED"
 
 
-def test_opting_in_without_a_grant_fails_closed(monkeypatch, tmp_path):
+def test_opting_in_needs_no_grant_but_still_carries_an_authorization(monkeypatch, tmp_path):
+    # Thomas decision 2026-08-04: env-only, joining `live_trading`. The grant's 30-day TTL
+    # cannot bound a job that has to run for months against a rolling window — a renewal gap
+    # is not a pause, it is a hole nothing can fill.
     monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
+    collector = market_data.select_candle_archive_collector(
+        now="2026-08-04T00:00:00Z", root=tmp_path
+    )
+    assert isinstance(collector, market_data.HyperliquidCollector)
+    # The grant is what was removed; the egress re-check is not. A real Authorization means
+    # `collect` still re-verifies immediately before opening a socket.
+    assert isinstance(collector._authorization, Authorization)
+
+
+def test_the_pipeline_still_needs_its_grant(monkeypatch, tmp_path):
+    # The exception is scoped to the archive. Nothing about it may loosen the gate that
+    # governs the venue the money path collects from.
+    monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
     with pytest.raises(Exception) as exc:
-        market_data.select_candle_archive_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
+        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
     assert exc.value.reason_code == "ACTIVATION_MISSING"
 
 
@@ -491,3 +508,88 @@ def test_the_scheduler_knows_the_kind():
     from runtime.mvp_runtime import scheduler
 
     assert scheduler.KIND_CANDLE_ARCHIVE in scheduler.KINDS
+
+
+# --- off vs broken: the defect this increment fixes --------------------------
+#
+# `_notify_status_change` alerts on a FAILED fire and on recovery from one. A summary string
+# is a COMPLETED fire and reaches nobody. Reporting "blocked" for both states — which the
+# handler did until 2026-08-04 — meant an archive that stopped working announced it only
+# inside a completion nobody is told about, while the window it races kept rolling.
+
+def _fire(schedule_kind, tmp_path, monkeypatch):
+    from runtime.mvp_runtime import scheduler
+
+    monkeypatch.setattr("time.time", lambda: NOW_MS / 1000.0)
+    schedule = scheduler.Schedule(
+        schedule_id="s1", kind=schedule_kind, request="", interval_seconds=86400,
+        enabled=True, created_by="test", created_at="2026-08-04T00:00:00Z",
+        next_run_at="2026-08-04T00:00:00Z",
+    )
+    return scheduler._execute(
+        schedule, now="2026-08-04T00:00:00Z", ledger=None, working_memory=None,
+        programization=None, registry=None, provider=None, search_tool=None,
+        repo_root=tmp_path, executor=None,
+    )
+
+
+def test_archiving_switched_off_is_a_quiet_completion(tmp_path, monkeypatch):
+    # Off on purpose must NOT alert. A machine that never enabled archiving would otherwise
+    # raise a failure every cadence, and an alert that always fires stops being read.
+    monkeypatch.delenv(market_data.CANDLE_ARCHIVE_ENV, raising=False)
+    from runtime.mvp_runtime import scheduler
+
+    assert _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch) == "candle_archive=off"
+
+
+def test_archiving_on_but_unable_to_read_the_universe_raises(tmp_path, monkeypatch):
+    # The state the old handler hid. Enabled, not working, and the window keeps rolling —
+    # so this has to become a FAILED fire, which is the only thing the alert path carries.
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import market_data as md
+
+    monkeypatch.setenv(md.CANDLE_ARCHIVE_ENV, md.HYPERLIQUID)
+
+    class _Unreachable(md.HyperliquidCollector):
+        def live_symbols(self, *, dexes, timeout_seconds=20):
+            raise ToolError("TOOL_TRANSPORT", "venue unreachable")
+
+    monkeypatch.setattr(
+        md, "select_candle_archive_collector",
+        lambda **kwargs: _Unreachable(authorization=None),
+    )
+    with pytest.raises(Exception) as exc:
+        _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch)
+    assert exc.value.reason_code == "ARCHIVE_UNIVERSE_UNREADABLE"
+
+
+def test_a_universe_that_answers_but_no_book_that_does_raises(tmp_path, monkeypatch):
+    # An outage rather than a slow day: every symbol degraded. Silence here costs exactly
+    # what this store exists to prevent.
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import market_data as md
+
+    monkeypatch.setenv(md.CANDLE_ARCHIVE_ENV, md.HYPERLIQUID)
+    monkeypatch.setattr(
+        md, "select_candle_archive_collector",
+        lambda **kwargs: _FakeVenue(fail_on=("xyz:XLE", "xyz:SMH")),
+    )
+    with pytest.raises(Exception) as exc:
+        _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch)
+    assert exc.value.reason_code == "ARCHIVE_ALL_BOOKS_DEGRADED"
+
+
+def test_a_partial_outage_reports_without_raising(tmp_path, monkeypatch):
+    # One symbol down is not an incident — the next pass refills it inside the ceiling, and
+    # raising here would spend the operator's attention on something that self-heals.
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import market_data as md
+
+    monkeypatch.setenv(md.CANDLE_ARCHIVE_ENV, md.HYPERLIQUID)
+    monkeypatch.setattr(
+        md, "select_candle_archive_collector",
+        lambda **kwargs: _FakeVenue(fail_on=("xyz:SMH",)),
+    )
+    summary = _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch)
+    assert summary.startswith("candle_archive symbols=2")
+    assert "degraded=4" in summary

@@ -53,6 +53,13 @@ from .paper import state_dir
 ARCHIVE_DIRNAME = "candle_archive"
 RECORD_TYPE = "archived_candle.v0"
 
+# The reason code a pass reports when archiving is simply OFF. Named rather than spelled at the
+# caller, because the scheduler branches on it: off-on-purpose is a quiet completion and every
+# other blocked reason is a FAILED fire that the operator is alerted about. A string literal in
+# two files would eventually mean two different strings, and the failure of that drift is an
+# outage reported as a normal day.
+NOT_ENABLED_REASON = "ARCHIVE_NOT_ENABLED"
+
 # The venue's per-request ceiling, and the reason this module exists. Not a page size: there is
 # nothing behind it to page to.
 VENUE_CANDLE_CEILING = 5_000
