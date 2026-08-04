@@ -322,6 +322,65 @@ def test_opted_in_accumulation_writes_and_feeds_nothing(tmp_path):
     assert set(snapshot) - before == {"funding"}, "the positioning store must feed no feature"
 
 
+# --- how far back one refresh reaches -------------------------------------------
+#
+# The module docstring promises "a gap shorter than the retention window self-heals on the next
+# refresh instead of needing a repair path". A fixed `REFRESH_ROWS` delivered that only for gaps
+# under 72 hours; `BNBUSDT` on the live host was 91 (2026-08-04), and the 19 hours a 72-row
+# refresh could not reach were unrecoverable — append-only with latest-wins means a row never
+# fetched once is never fetched at all.
+
+def test_the_ordinary_refresh_still_asks_for_the_cheap_overlap():
+    """Sizing to the gap must not make the hourly case more expensive. One period behind the
+    clock is the normal state of this store, and it keeps the three-day floor."""
+    newest = "2026-07-30T11:00:00Z"
+    assert positioning_store.refresh_rows_for(newest, NOW) == positioning_store.REFRESH_ROWS
+
+
+def test_a_gap_longer_than_the_floor_is_asked_for_in_full():
+    """The BNB case: reach past the hole, not up to it. Two periods of margin over the raw gap,
+    so the fetch overlaps the newest row held rather than abutting it."""
+    newest = "2026-07-26T17:00:00Z"  # 91h before NOW, the measured BNBUSDT gap
+    rows = positioning_store.refresh_rows_for(newest, NOW)
+    assert rows == 93 > positioning_store.REFRESH_ROWS
+
+
+def test_the_ask_is_capped_at_what_retention_can_serve():
+    """`SEED_ROWS` is the vendor's 30-day window, so a longer gap cannot be closed by asking
+    harder — and a store this far behind must not turn one refusal into an unbounded request."""
+    assert positioning_store.refresh_rows_for("2025-01-01T00:00:00Z", NOW) == positioning_store.SEED_ROWS
+    assert positioning_store.refresh_rows_for(None, NOW) == positioning_store.SEED_ROWS
+
+
+def test_an_unreadable_timestamp_asks_for_more_rather_than_less():
+    """The `read_refresh_marks` posture: state this store cannot read must never shrink what it
+    asks for, because under-asking is the failure that becomes permanent."""
+    assert positioning_store.refresh_rows_for("not-a-timestamp", NOW) == positioning_store.SEED_ROWS
+
+
+def test_a_gap_wider_than_the_floor_reaches_past_it_through_the_throttled_door(tmp_path):
+    """The measured case, end to end: a store 91 hours stale asks for 93 rows where it used to
+    ask for 72 — and the 19 rows in that difference are the ones that were being orphaned."""
+    asked: list[int] = []
+
+    class _RecordingCollector(MockMarketDataCollector):
+        def positioning_history(self, symbol, *, series, period, limit, timeout_seconds):
+            asked.append(limit)
+            return super().positioning_history(
+                symbol, series=series, period=period, limit=limit, timeout_seconds=timeout_seconds
+            )
+
+    for series in sorted(POSITIONING_SERIES):
+        positioning_store.append_rows(
+            [{"timestamp": "2026-07-26T17:00:00Z", "long_ratio": 0.5, "short_ratio": 0.5}],
+            root=tmp_path, symbol="BNBUSDT", series=series,
+        )
+    positioning_store.record_positioning(
+        symbol="BNBUSDT", collector=_RecordingCollector(), now=NOW, root=tmp_path,
+    )
+    assert set(asked) == {93}, "the ask must cover the gap, not the floor"
+
+
 # --- the accumulator's SCOPE ----------------------------------------------------
 #
 # Opting in (above) decides WHETHER a caller accumulates. These decide WHICH symbols, which
@@ -640,7 +699,16 @@ def test_marks_are_per_series_not_per_symbol(tmp_path):
 
 def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
     """Whether a call is a seed is a property of the STORE, not of the marks: a machine whose
-    marks file was deleted must not re-request 30 days it already holds."""
+    marks file was deleted must not re-request 30 days it already holds.
+
+    What "already holds" means got sharper when the ask started following the gap: it is no
+    longer "has any rows" but "is up to date". A store six months behind SHOULD re-request the
+    retention window — that is the healing, not a regression — so the second call here runs at
+    a clock two hours past the seeded rows rather than at ``NOW``, which is what makes this a
+    test of the marks file and not of staleness.
+    """
+    # The mock lays its rows forward from a fixed anchor, so a 720-row seed ends here.
+    just_after_the_seed = "2026-01-31T01:00:00Z"
     asked: list[int] = []
 
     class _RecordingCollector(MockMarketDataCollector):
@@ -659,6 +727,6 @@ def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
     positioning_store.refresh_marks_path(tmp_path).unlink()
     asked.clear()
     positioning_store.record_positioning(
-        symbol="BTCUSDT", collector=collector, now="2026-07-30T14:00:00Z", root=tmp_path
+        symbol="BTCUSDT", collector=collector, now=just_after_the_seed, root=tmp_path
     )
-    assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that already had rows"
+    assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that was up to date"
