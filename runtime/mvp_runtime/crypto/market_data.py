@@ -35,7 +35,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -57,6 +57,14 @@ BINANCE_FUTURES = "binance_futures"
 # between the two, never a chain — the model provider's ordered failover is the wrong shape
 # here and `select_market_data_collector` says why.
 HYPERLIQUID = "hyperliquid"
+# The candle archive opts in on its OWN axis. `MVP_MARKET_DATA` names the single venue the
+# pipeline collects from, so pointing it at Hyperliquid would take the crypto pipeline off
+# Binance — including the leg that can place a real order. Archiving is a second consumer with
+# a different venue, which that axis cannot express. The liquidation feed set this precedent
+# (`MVP_LIQUIDATION_FEED`): a second data consumer gets its own env and its own selector, and
+# shares the PROVIDER grant, because one grant per provider is the rule and this is the same
+# provider making the same egress to the same host.
+CANDLE_ARCHIVE_ENV = "MVP_CANDLE_ARCHIVE"
 # Public-endpoint reads cross the network but invoke no model — network_access only.
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
@@ -815,6 +823,55 @@ def select_market_data_collector(
     )
 
 
+class NoCandleArchiveCollector:
+    """The archive's inert default. Refuses, rather than fabricating.
+
+    **The Mock is deliberately not the default here**, and that is the whole point of this
+    class existing. `MockMarketDataCollector` is the right inert default for the pipeline —
+    deterministic, offline, and honestly marked `is_synthetic=True` so health checks refuse to
+    trade on it. But the archive's entire value is that it holds what the venue really served
+    at a moment that cannot be revisited, and a synthetic bar written into it is
+    indistinguishable from a real one a year later. An empty archive is recoverable by turning
+    the archive on; a poisoned one is not.
+    """
+
+    tool_id = MARKET_DATA_TOOL_ID
+    tool_version = f"{MARKET_DATA_TOOL_VERSION}-no-archive"
+    network_egress = False
+    source = "no_candle_archive"
+
+    def collect(self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int) -> MarketSnapshot:
+        raise ToolBlocked(
+            "ARCHIVE_NOT_ENABLED",
+            f"candle archiving is off; set {CANDLE_ARCHIVE_ENV} and grant the provider to enable it",
+        )
+
+    def live_symbols(self, *, dexes: Sequence[str], timeout_seconds: int = 20) -> list[str]:
+        raise ToolBlocked("ARCHIVE_NOT_ENABLED", "candle archiving is off")
+
+
+def select_candle_archive_collector(
+    *, now: str | None = None, root: Path | None = None
+) -> MarketDataCollector:
+    """Choose the archive's collector — its own axis, the same gate, the same provider grant.
+
+    Independent of :func:`select_market_data_collector` on purpose: the pipeline and the
+    archive read different venues at the same time, and a single-valued env cannot say that.
+    Not opted in returns :class:`NoCandleArchiveCollector`, which writes nothing rather than
+    writing something synthetic.
+    """
+    return safety_gate.select_gated(
+        env_var=CANDLE_ARCHIVE_ENV,
+        opt_in_value=HYPERLIQUID,
+        flags=_NETWORK_FLAGS,
+        provider_id=HYPERLIQUID,
+        default_factory=NoCandleArchiveCollector,
+        gated_factory=lambda authorization: HyperliquidCollector(authorization=authorization),
+        now=now,
+        root=root,
+    )
+
+
 class BinanceFuturesCollector:
     """Real OHLCV via Binance USD-M Futures public klines (read-only, no API key).
 
@@ -1400,6 +1457,64 @@ class HyperliquidCollector:
         # gmtime rejects far-future epochs and a venue-supplied timestamp is input.
         epoch = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=epoch_ms)
         return timeutil.format_iso(epoch)
+
+    def live_symbols(self, *, dexes: Sequence[str], timeout_seconds: int = 20) -> list[str]:
+        """Every non-delisted symbol on the named builder dexes, sorted.
+
+        Read at run time rather than declared, because a symbol that lists and is not archived
+        loses history nobody can recover. The DEX list is the declared part — see
+        ``candle_archive.ARCHIVE_DEXES`` for why that asymmetry is the safe one.
+
+        ``perpDexs`` and ``allPerpMetas`` are index-aligned (entry *i* of one describes the dex
+        whose universe is entry *i* of the other), and the main perp dex occupies slot 0 with a
+        null name. Verified against the venue 2026-08-03. A length mismatch is refused rather
+        than zipped short: pairing a universe with the wrong dex would archive symbols under a
+        deployer that does not list them.
+        """
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        wanted = {str(d) for d in dexes}
+        listings = self._info({"type": "perpDexs"}, timeout_seconds=timeout_seconds)
+        metas = self._info({"type": "allPerpMetas"}, timeout_seconds=timeout_seconds)
+        if not isinstance(listings, list) or not isinstance(metas, list):
+            raise ToolError("MALFORMED_RESULT", "venue metadata returned an unparseable response")
+        if len(listings) != len(metas):
+            raise ToolError("MALFORMED_RESULT", "venue metadata is not index-aligned")
+        names: list[str] = []
+        for listing, block in zip(listings, metas):
+            name = listing.get("name") if isinstance(listing, dict) else None
+            if name not in wanted:
+                continue
+            universe = (block or {}).get("universe") if isinstance(block, dict) else None
+            for asset in universe or []:
+                if not isinstance(asset, dict) or asset.get("isDelisted"):
+                    continue
+                symbol = asset.get("name")
+                if isinstance(symbol, str) and self.symbol_pattern.fullmatch(symbol):
+                    names.append(symbol)
+        return sorted(set(names))
+
+    def _info(self, body: dict[str, Any], *, timeout_seconds: int) -> Any:
+        """One POST to the info endpoint, decoded. Transport failures classify like collect's."""
+        request = urllib.request.Request(
+            self._ENDPOINT,
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise classify_transport_error(exc, "market-data") from None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "venue metadata returned an unparseable response") from None
 
 
 # --- C9 liquidation feed (Coinalyze — its own provider, key, and grant) -------

@@ -10,12 +10,13 @@ arithmetic that says which timeframes are exposed.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from runtime.mvp_runtime.crypto import candle_archive as archive
 from runtime.mvp_runtime.crypto import market_data
-from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.errors import ToolBlocked, ToolError
 
 VENUE = "hyperliquid"
 SYMBOL = "xyz:XLE"
@@ -99,6 +100,157 @@ def test_a_later_line_wins_so_a_correction_can_be_appended(tmp_path):
     assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)[0]["close"] == 99.0
 
 
+def test_a_row_edited_after_the_write_stops_being_believed(tmp_path):
+    """The hash was written and never read, which made it a field rather than evidence.
+
+    Skipped rather than raised on: `pool.read_candidates` raises because it gates a promotion
+    ask, and this store's consumer is a coverage number where reporting less than exists is the
+    safe direction.
+    """
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    path = archive.archive_path(VENUE, SYMBOL, "1h", tmp_path)
+    row = json.loads(path.read_text(encoding="utf-8").strip())
+    row["close"] = 999_999.0                      # edit the price, leave the stored hash alone
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
+
+
+def _tamper(path, *, open_time):
+    """Edit one stored row's price and leave its hash alone."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = []
+    for line in lines:
+        row = json.loads(line)
+        if row.get("open_time") == open_time:
+            row["close"] = 999_999.0
+        out.append(json.dumps(row))
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_an_edited_newest_row_does_not_get_to_set_the_refresh_horizon(tmp_path):
+    """`newest_open_time` verifies from the newest candidate down, and the direction is the
+    safety-relevant part.
+
+    Trusting an unverified maximum would let one edited row claim a future `open_time`, and a
+    refresh sized from that asks for a single bar forever while the venue's window rolls past
+    everything it is not asking for. Skipping to the newest INTACT row over-fetches at worst,
+    and `append_candles` drops the overlap.
+    """
+    archive.append_candles([_candle(1), _candle(2), _candle(3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-03T00:00:00Z")
+
+    assert archive.newest_open_time(VENUE, SYMBOL, "1h", tmp_path) == "2026-08-02T00:00:00Z"
+
+
+def test_a_refetch_repairs_an_edited_row_instead_of_skipping_it(tmp_path):
+    """A row that fails verification is deliberately not counted as already-held.
+
+    It is skipped on read either way, so letting the re-fetch append a good copy lets
+    latest-wins repair the book rather than leaving a hole the archive can never fill.
+    """
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-01T00:00:00Z")
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []      # nothing believable held
+
+    written = archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL,
+                                     timeframe="1h", root=tmp_path)
+    assert written == 1
+    rows = archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)
+    assert len(rows) == 1 and rows[0]["close"] == 59.3
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
+
+
+def test_a_row_carrying_no_hash_is_kept_because_absence_is_not_a_mismatch(tmp_path):
+    """Every row written before the check existed carries no hash. Treating that as tampering
+    would empty every book on this machine the first time the new code ran."""
+    path = archive.archive_path(VENUE, SYMBOL, "1h", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"open_time": "2026-08-01T00:00:00Z", "close": 59.3}) + "\n",
+                    encoding="utf-8")
+    assert len(archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)) == 1
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 0
+
+
+def test_an_unreadable_line_is_counted_as_well_as_skipped(tmp_path):
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    with open(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path), "a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+    cov = archive.coverage(VENUE, SYMBOL, "1h", tmp_path)
+    assert cov["rows"] == 1 and cov["unreadable_rows"] == 1
+
+
+def test_coverage_names_the_hole_the_row_count_cannot_show(tmp_path):
+    """`rows`, `oldest` and `newest` are identical for a contiguous book and one missing a
+    month out of its middle — so the failure this module exists to prevent was the one thing
+    its report could not show."""
+    archive.append_candles([_candle(d) for d in (1, 2, 3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    archive.append_candles([_candle(d) for d in (28, 29, 30)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    cov = archive.coverage(VENUE, SYMBOL, "1d", tmp_path)
+    assert cov["rows"] == 6
+    assert cov["missing_bars"] == 24
+    assert cov["largest_gap_bars"] == 24
+
+
+def test_a_contiguous_book_reports_zero_and_a_book_too_small_reports_none(tmp_path):
+    """Zero gap and no measurement are different answers, and the second must not read as the
+    first on the number an operator watches to see a hole is not forming."""
+    archive.append_candles([_candle(d) for d in (1, 2, 3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    assert archive.coverage(VENUE, SYMBOL, "1d", tmp_path)["largest_gap_bars"] == 0
+
+    empty = archive.coverage(VENUE, "xyz:EWY", "1d", tmp_path)
+    assert empty["missing_bars"] is None and empty["largest_gap_bars"] is None
+
+
+def _hour(offset_hours: int) -> str:
+    base = datetime(2026, 8, 4, tzinfo=timezone.utc) + timedelta(hours=offset_hours)
+    return base.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_permanence_is_a_question_about_when_not_about_size(tmp_path):
+    """A ten-bar hole from a year ago is as gone as a ten-thousand-bar one, while a large
+    recent hole still refills — so no boolean is derived from gap size alone.
+
+    The venue serves the newest `VENUE_CANDLE_CEILING` bars and nothing behind them.
+    """
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    beyond = archive.VENUE_CANDLE_CEILING + 1000       # 1h bars, so hours
+
+    # A SMALL gap, entirely older than the window: one missing bar, unreachable.
+    archive.append_candles(
+        [_candle(1, open_time=_hour(-beyond)), _candle(1, open_time=_hour(-beyond + 2))],
+        venue=VENUE, symbol="xyz:OLD", timeframe="1h", root=tmp_path,
+    )
+    old = archive.coverage(VENUE, "xyz:OLD", "1h", tmp_path, now_ms=now_ms)
+    assert old["largest_gap_bars"] == 1
+    assert old["unreachable_missing_bars"] == 1
+
+    # A MUCH LARGER gap, entirely inside the window: nothing lost, the next refresh closes it.
+    archive.append_candles(
+        [_candle(1, open_time=_hour(-100)), _candle(1, open_time=_hour(-1))],
+        venue=VENUE, symbol="xyz:NEW", timeframe="1h", root=tmp_path,
+    )
+    new = archive.coverage(VENUE, "xyz:NEW", "1h", tmp_path, now_ms=now_ms)
+    assert new["largest_gap_bars"] == 98
+    assert new["unreachable_missing_bars"] == 0
+
+
+def test_without_a_clock_permanence_is_not_guessed(tmp_path):
+    archive.append_candles([_candle(d) for d in (1, 30)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    cov = archive.coverage(VENUE, SYMBOL, "1d", tmp_path)
+    assert cov["largest_gap_bars"] == 28
+    assert cov["unreachable_missing_bars"] is None
+
+
 def test_the_dex_prefix_survives_into_the_filename(tmp_path):
     # `AVGO` is listed on both `xyz` and `para`. A name that dropped the prefix would merge
     # two different books into one file.
@@ -146,8 +298,46 @@ def test_coverage_reports_an_empty_book_without_inventing_one(tmp_path):
     assert coverage["newest_open_time"] is None
 
 
+class _RealisticCollector:
+    """A non-synthetic stand-in. The Mock cannot be used here — the archive refuses
+    `is_synthetic` snapshots on purpose, which the test below pins."""
+
+    def __init__(self, bars: int = 400):
+        self._bars = bars
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        step = market_data.TIMEFRAMES[timeframe]
+        candles = [
+            market_data.Candle(
+                open_time=f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:00:00Z",
+                open=1.0, high=2.0, low=0.5, close=1.5, volume=10.0,
+                close_time=f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:59:59Z",
+                trade_count=7.0,
+            )
+            for i in range(min(limit, self._bars))
+        ]
+        return market_data.MarketSnapshot(
+            symbol=symbol, timeframe=timeframe, candles=candles,
+            source="test", is_synthetic=False,
+        )
+        # `step` is unused deliberately: the grid only has to be unique and ordered.
+
+
+def test_the_archive_refuses_a_synthetic_snapshot(tmp_path):
+    # The one store whose entire value is holding what the venue really served. A synthetic
+    # bar in it is indistinguishable from a real one a year later, and an empty archive is
+    # recoverable where a poisoned one is not.
+    result = archive.refresh_book(
+        market_data.MockMarketDataCollector(),
+        venue=VENUE, symbol=SYMBOL, timeframe="1h", now_ms=NOW_MS, root=tmp_path,
+    )
+    assert result["degraded"] is True
+    assert result["reason_code"] == "ARCHIVE_REFUSES_SYNTHETIC"
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []
+
+
 def test_refresh_is_incremental_after_the_first_run(tmp_path):
-    collector = market_data.MockMarketDataCollector()
+    collector = _RealisticCollector()
     first = archive.refresh_book(
         collector, venue=VENUE, symbol=SYMBOL, timeframe="1h", now_ms=NOW_MS, root=tmp_path
     )
@@ -180,16 +370,124 @@ def test_refresh_degrades_on_a_backend_failure_rather_than_raising(tmp_path):
     assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []
 
 
-def test_the_archive_feeds_nothing():
-    # `oi_store`'s posture, kept deliberately: this store accumulates and reports, and nothing
-    # in the feature or routing path reads it. Re-basing a feature source under strategies that
-    # can route is an explicit change, not one a depth threshold makes while nobody is looking.
+def test_nothing_in_the_feature_or_routing_path_reads_the_archive():
+    # `oi_store`'s posture, kept deliberately. The scheduler MAY import this module — it runs
+    # the job — but re-basing a feature source under strategies that can route is an explicit
+    # change, not one a depth threshold makes while nobody is looking.
+    #
+    # Keyed on IMPORTS rather than on the substring: `market_data` legitimately names
+    # `select_candle_archive_collector`, and a test that tripped on that would be pinning
+    # spelling instead of dependency.
     import pathlib
+    import re
 
     runtime_dir = pathlib.Path(__file__).resolve().parents[1] / "runtime"
-    hits = sorted(
-        path.name
-        for path in runtime_dir.rglob("*.py")
-        if "candle_archive" in path.read_text(encoding="utf-8")
+    importers = set()
+    pattern = re.compile(r"^\s*(?:from\s+\.*\S*\s+import\s+[^\n]*\bcandle_archive\b"
+                         r"|from\s+\S*candle_archive\s+import\b"
+                         r"|import\s+\S*candle_archive\b)", re.MULTILINE)
+    for path in runtime_dir.rglob("*.py"):
+        if path.name == "candle_archive.py":
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            importers.add(path.name)
+    assert importers <= {"scheduler.py"}, f"the archive gained a feature-path consumer: {sorted(importers)}"
+
+
+# --- the archive's own selector axis, and the scheduler kind ------------------
+
+def test_the_archive_axis_does_not_move_the_pipeline_venue(monkeypatch):
+    # The property this whole axis exists for. `MVP_MARKET_DATA` names the ONE venue the
+    # pipeline collects from, and the crypto pipeline's leg can place a real order — so
+    # enabling the archive must not take it off Binance.
+    monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
+    monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
+    # The pipeline still asks for Binance (and fails closed here only for want of a grant,
+    # which is the Binance path being chosen, not the Hyperliquid one).
+    with pytest.raises(Exception) as exc:
+        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z")
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+
+def test_archiving_is_off_unless_its_own_env_names_the_venue(monkeypatch):
+    monkeypatch.delenv(market_data.CANDLE_ARCHIVE_ENV, raising=False)
+    collector = market_data.select_candle_archive_collector()
+    assert isinstance(collector, market_data.NoCandleArchiveCollector)
+
+
+def test_the_inert_default_is_not_the_mock(monkeypatch):
+    # Deliberate: the Mock is the right inert default for the PIPELINE, and the wrong one
+    # here. A synthetic bar written into this store cannot be told from a real one later.
+    monkeypatch.delenv(market_data.CANDLE_ARCHIVE_ENV, raising=False)
+    collector = market_data.select_candle_archive_collector()
+    assert not isinstance(collector, market_data.MockMarketDataCollector)
+    with pytest.raises(ToolBlocked) as exc:
+        collector.collect("xyz:XLE", "1h", limit=5, timeout_seconds=5)
+    assert exc.value.reason_code == "ARCHIVE_NOT_ENABLED"
+
+
+def test_opting_in_without_a_grant_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
+    with pytest.raises(Exception) as exc:
+        market_data.select_candle_archive_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
+    assert exc.value.reason_code == "ACTIVATION_MISSING"
+
+
+class _FakeVenue:
+    def __init__(self, symbols=("xyz:XLE", "xyz:SMH"), fail_on=()):
+        self._symbols = list(symbols)
+        self._fail_on = set(fail_on)
+
+    def live_symbols(self, *, dexes, timeout_seconds=20):
+        return list(self._symbols)
+
+    def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        if symbol in self._fail_on:
+            raise ToolError("TOOL_TRANSPORT", "venue unreachable")
+        candles = [
+            market_data.Candle(
+                open_time=f"2026-01-01T{i:02d}:00:00Z", open=1.0, high=2.0, low=1.0,
+                close=1.5, volume=9.0, close_time=f"2026-01-01T{i:02d}:59:59Z",
+            )
+            for i in range(min(limit, 5))
+        ]
+        return market_data.MarketSnapshot(
+            symbol=symbol, timeframe=timeframe, candles=candles,
+            source="test", is_synthetic=False,
+        )
+
+
+def test_a_pass_covers_every_symbol_and_timeframe(tmp_path):
+    summary = archive.run_candle_archive(
+        _FakeVenue(), venue=VENUE, now_ms=NOW_MS, root=tmp_path
     )
-    assert hits == ["candle_archive.py"], f"the archive gained a runtime consumer: {hits}"
+    assert summary["symbols"] == 2
+    assert summary["books"] == 2 * len(archive.ARCHIVE_TIMEFRAMES)
+    assert summary["written"] == summary["books"] * 5
+    assert summary["blocked"] is False
+
+
+def test_one_unreachable_symbol_does_not_cost_the_others(tmp_path):
+    summary = archive.run_candle_archive(
+        _FakeVenue(fail_on=("xyz:SMH",)), venue=VENUE, now_ms=NOW_MS, root=tmp_path
+    )
+    assert summary["degraded"] == len(archive.ARCHIVE_TIMEFRAMES)
+    assert summary["written"] == len(archive.ARCHIVE_TIMEFRAMES) * 5  # the other symbol kept
+    assert archive.read_rows(VENUE, "xyz:XLE", "1h", tmp_path)
+    assert archive.read_rows(VENUE, "xyz:SMH", "1h", tmp_path) == []
+
+
+def test_a_pass_with_archiving_off_writes_nothing_and_says_why(tmp_path, monkeypatch):
+    monkeypatch.delenv(market_data.CANDLE_ARCHIVE_ENV, raising=False)
+    summary = archive.run_candle_archive(
+        market_data.select_candle_archive_collector(), venue=VENUE, now_ms=NOW_MS, root=tmp_path
+    )
+    assert summary["blocked"] is True
+    assert summary["reason_code"] == "ARCHIVE_NOT_ENABLED"
+    assert summary["written"] == 0
+
+
+def test_the_scheduler_knows_the_kind():
+    from runtime.mvp_runtime import scheduler
+
+    assert scheduler.KIND_CANDLE_ARCHIVE in scheduler.KINDS

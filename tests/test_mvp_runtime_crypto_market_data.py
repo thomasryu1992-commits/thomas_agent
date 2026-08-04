@@ -16,7 +16,7 @@ import urllib.parse
 import pytest
 
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.crypto import factory, market_data
+from runtime.mvp_runtime.crypto import cycle, factory, market_data
 from runtime.mvp_runtime.crypto.market_data import (
     BINANCE_FUTURES,
     FACTORY_DEPTH_DAYS,
@@ -214,17 +214,37 @@ def test_a_venue_a_collector_invents_stops_at_the_factory():
 
 
 def test_the_factory_mines_the_venue_the_snapshot_came_from():
-    """End to end: collector → snapshot → minted spec, with nothing to pass by hand."""
+    """End to end: collector → snapshot → minted spec, with nothing to pass by hand.
+
+    **The HTF leg is attached because the snapshot has to support whichever block the rotation
+    lands on**, and this test does not choose that block — `factory.context_rotation_phase`
+    does. It used to land on `ma_cross_*`/`macd_cross_*`, which a bare snapshot mints, so the
+    dependency was invisible; the rotation phase moved it to `htf_trend_*`/`htf_pullback_*` and
+    every spec was refused with `UNSUPPLIABLE_FEATURE: htf_market_regime` — a snapshot the
+    scheduler would never hand the factory, since it attaches this leg (and three more) before
+    every fire. Attaching it here makes the fixture the shape production actually mines.
+
+    If this fails again on a family whose leg is missing rather than on the venue, the rotation
+    has moved once more: attach that leg too rather than pinning the block, which would make
+    this test stop covering the families it happens to skip."""
     class HyperliquidLike(MockMarketDataCollector):
         provider_id = market_data.HYPERLIQUID
         source = "hyperliquid_public"
 
+    collector = HyperliquidLike()
     snapshot, _ = collect_market_data(
-        "BTCUSDT", "1h", collector=HyperliquidLike(), now=NOW, limit=400
+        "BTCUSDT", "1h", collector=collector, now=NOW, limit=400
+    )
+    assert cycle.attach_htf(snapshot, collector=collector, now=NOW) is None, (
+        "the higher-timeframe leg degraded, so this test would be asserting on a snapshot "
+        "thinner than the one the scheduler mines"
     )
     result = factory.run_factory(snapshot, active_pool={"active_strategies": []},
                                  existing_candidates=[], now=NOW, count=4)
-    assert result["candidates"]
+    assert result["candidates"], (
+        f"nothing minted; rejections were "
+        f"{[(r.get('strategy_family'), r.get('reason')) for r in result.get('rejected') or []]}"
+    )
     assert {c["strategy_spec"]["venue"] for c in result["candidates"]} == {
         market_data.HYPERLIQUID}
 
