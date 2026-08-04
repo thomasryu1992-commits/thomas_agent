@@ -517,6 +517,128 @@ def test_backtest_never_enters_on_indeterminate_features():
     assert result["closed_count"] == 0
 
 
+# --- pooled backtest: one hypothesis, several symbols' evidence ----------------
+#
+# The ratio F1 says is binding: a spec scoped to one symbol gets as much evidence as that
+# symbol signals, which at 4h and 1d is under MIN_HOLDOUT_TRADES. Pooling adds legs without
+# adding hypotheses. These pin the two halves of that claim — the evidence really does pool,
+# and the DEPTH claim does not, because depth is a calendar span and five symbols over the
+# same 350 days is not 1,750 days of market.
+
+def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0):
+    """The trending fixture at a different price level, so its trades are its own."""
+    snapshot = dict(_trending_snapshot(n))
+    snapshot["symbol"] = symbol
+    snapshot["candles"] = [
+        {**c, "open": c["open"] * scale, "high": c["high"] * scale,
+         "low": c["low"] * scale, "close": c["close"] * scale}
+        for c in snapshot["candles"]
+    ]
+    return snapshot
+
+
+def test_a_single_frame_pool_is_the_single_symbol_backtest():
+    """`backtest_spec` delegates here, so the one-leg answer must not have moved."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    snapshot = _trending_snapshot()
+    assert factory.backtest_spec_pooled(spec, [snapshot]) == backtest_spec(spec, snapshot)
+    assert backtest_spec(spec, snapshot)["symbols_replayed"] == 1
+
+
+def test_pooling_adds_the_legs_trades_and_its_holdout():
+    spec = StrategySpec.from_dict(_spec_dict())
+    first, second = _trending_snapshot(), _shifted_snapshot()
+    one, two = backtest_spec(spec, first), backtest_spec(spec, second)
+    assert one["closed_count"] > 0 and two["closed_count"] > 0
+
+    pooled = factory.backtest_spec_pooled(spec, [first, second])
+    assert pooled["symbols_replayed"] == 2
+    assert pooled["closed_count"] == one["closed_count"] + two["closed_count"]
+    # The whole point: the tail that decides CONFIRMED grows with the legs.
+    assert pooled["holdout"]["closed_count"] == (
+        one["holdout"]["closed_count"] + two["holdout"]["closed_count"]
+    )
+    assert pooled["holdout"]["symbols"] == 2
+    # ...and so does the sample the overfitting veto reads.
+    assert pooled["robustness"]["trade_count"] == pooled["closed_count"]
+
+
+def test_pooled_depth_is_per_symbol_and_never_the_sum():
+    """`pool.evidence_depth_of` reads `bars_replayed` as a CALENDAR span, so summing legs
+    would tier a pooled candidate as though shown history that does not exist."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(spec, [_trending_snapshot(), _shifted_snapshot()])
+    assert pooled["bars_replayed"] == factory.holdout_split_index(200) == 140
+    assert pooled["holdout"]["bars"] == 200 - 140
+
+
+def test_pooled_depth_takes_the_shallowest_leg():
+    """A short leg bounds the claim: the depth every symbol actually contributed."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(
+        spec, [_trending_snapshot(200), _shifted_snapshot(120)]
+    )
+    assert pooled["bars_replayed"] == factory.holdout_split_index(120)
+
+
+def test_pooling_refuses_frames_from_a_different_cost_model():
+    """The single-frame refusal, which must not weaken by being pooled: a figure mixing
+    rates describes no book."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    snapshot = _trending_snapshot()
+    cheap = factory.CostModel(taker_fee_bps=1.0)
+    frames = [factory.build_replay_frame(snapshot, cost=cheap)]
+    with pytest.raises(ValueError, match="different cost model"):
+        factory.backtest_spec_pooled(spec, [snapshot], frames=frames, cost=factory.CostModel())
+
+
+def test_a_pooled_backtest_needs_something_to_replay():
+    spec = StrategySpec.from_dict(_spec_dict())
+    with pytest.raises(ValueError, match="at least one"):
+        factory.backtest_spec_pooled(spec, [])
+
+
+def test_the_mint_scope_still_defaults_to_the_symbol_being_mined():
+    """Every one of the stored candidates carries a single-symbol scope, and `run_factory`
+    is untouched — widening is a caller's decision, never a default."""
+    template = templates_for_timeframe("1d")[0]
+    spec = factory.build_spec_dict(
+        template, dict(template.base_params), strategy_id="S1",
+        generation_id="GEN-001", symbol="SOLUSDT",
+    )
+    assert spec["symbol_scope"] == ["SOLUSDT"]
+
+
+def test_a_widened_mint_scope_is_sorted_and_deduplicated():
+    """`symbol_scope` is inside `strategy_rule_fingerprint`, so two callers naming the same
+    set in different orders must reach the same rule hash."""
+    template = templates_for_timeframe("1d")[0]
+    build = lambda scope: factory.build_spec_dict(
+        template, dict(template.base_params), strategy_id="S1",
+        generation_id="GEN-001", symbol="BTCUSDT", symbol_scope=scope,
+    )
+    widened = build(["SOLUSDT", "BTCUSDT", "BTCUSDT"])
+    assert widened["symbol_scope"] == ["BTCUSDT", "SOLUSDT"]
+    assert (StrategySpec.from_dict(widened).strategy_rule_hash
+            == StrategySpec.from_dict(build(["BTCUSDT", "SOLUSDT"])).strategy_rule_hash)
+
+
+def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
+    """Reporting `venue_history` over a book where one leg fell back to the modelled rate
+    would overstate what the funding figure is evidence of."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    with_funding = dict(_trending_snapshot())
+    with_funding["funding"] = [
+        {"timestamp": c["close_time"], "funding_rate": 0.0001}
+        for c in with_funding["candles"]
+    ]
+    frames = [factory.build_replay_frame(with_funding), factory.build_replay_frame(_shifted_snapshot())]
+    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == factory.FUNDING_SOURCE_FALLBACK
+    pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_FALLBACK
+
+
 # --- run_factory --------------------------------------------------------------
 
 def test_run_factory_produces_evidence_backed_candidates():
