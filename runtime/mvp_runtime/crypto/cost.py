@@ -185,6 +185,16 @@ FUNDING_INTERVALS_PER_DAY = 3
 
 FUNDING_SOURCE_VENUE = "venue_history"
 FUNDING_SOURCE_FALLBACK = "modelled_constant"
+# A venue series that does not reach the start of the replay window. The bars it covers are
+# charged from it; the bars before its first settlement are charged the modelled rate, exactly
+# as `FUNDING_SOURCE_FALLBACK` would charge all of them. The label exists because the two are
+# NOT the same claim: a partial series is evidence for part of a window and silence about the
+# rest, and reporting `venue_history` over that would say the whole window was measured.
+#
+# Latent while the replay window fits inside the vendor's history — 500 days against the ~533
+# `market_data.DEFAULT_FUNDING_RECORDS` buys at three settlements a day — and load-bearing the
+# moment the window is deepened past it.
+FUNDING_SOURCE_PARTIAL = "venue_history_partial"
 # No funding accounted for at all. Not produced by this module — it is what `pool.cost_basis_of`
 # reports for evidence minted before funding was charged, so the store can say which candidates
 # carry the omission rather than having it inferred from a rate that is simply missing.

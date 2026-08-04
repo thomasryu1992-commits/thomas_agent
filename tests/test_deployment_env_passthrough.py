@@ -222,3 +222,31 @@ def test_the_list_covers_the_whole_live_surface():
     assert len(LIVE_TRADING_SURFACE) == 8
     for env_var in LIVE_TRADING_SURFACE:
         assert env_var.startswith(("MVP_", "BINANCE_")), env_var
+
+
+# --- the candle archive's own axis ---------------------------------------------------------
+
+def test_the_scheduler_receives_the_candle_archive_switch():
+    """The whole gate, so a missing line here is the whole failure.
+
+    Every other selector in this file fails closed twice — the env var AND a mounted grant —
+    so a variable Compose never forwarded still left a second thing visibly absent. The candle
+    archive has no second thing: Thomas moved it to the env-only gate on 2026-08-04 (#496)
+    because a 30-day TTL cannot bound a job that races a rolling window for months. So an
+    unforwarded name here does not fail closed loudly; it reads as configured on the host and
+    archives nothing, while the window it exists to outrun keeps moving.
+
+    That is not hypothetical: the code shipped in #486 and this block did not name the
+    variable until #512.
+    """
+    environment = _service_environment("scheduler")
+    assert "MVP_CANDLE_ARCHIVE" in environment, (
+        "the scheduler never receives MVP_CANDLE_ARCHIVE, so archiving cannot be switched on"
+    )
+    assert environment["MVP_CANDLE_ARCHIVE"] == "${MVP_CANDLE_ARCHIVE:-}"
+
+
+def test_the_operator_does_not_receive_the_candle_archive_switch():
+    """Scheduler-only, like every other collection selector. The operator loop reads no market
+    data; handing it an archive switch would add egress for nothing."""
+    assert "MVP_CANDLE_ARCHIVE" not in _service_environment("operator")

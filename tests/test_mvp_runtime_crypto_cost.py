@@ -15,6 +15,7 @@ import math
 from runtime.mvp_runtime.crypto.cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_PARTIAL,
     FUNDING_SOURCE_VENUE,
     CostModel,
     apply_cost_model,
@@ -327,24 +328,56 @@ def test_a_settlement_at_a_bar_open_belongs_to_that_bar():
     opened at bar `entry`'s CLOSE actually sat through — no double count at a boundary."""
     from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
 
+    # The leading event only puts bar 0 inside the series' coverage, so this stays a test about
+    # the boundary rather than about the partial-coverage fallback below.
     charges, _ = funding_charges_per_bar(
         _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
-        _events([("2026-07-02T00:00:00Z", 0.0005)]),
+        _events([("2026-06-30T16:00:00Z", 0.0), ("2026-07-02T00:00:00Z", 0.0005)]),
         timeframe="1d", cost=CostModel(),
     )
     assert charges == [0.0, 0.0005, 0.0]
     assert math.isclose(sum(charges), 0.0005), "a settlement is billed once, to one bar"
 
 
-def test_bars_before_the_first_settlement_are_free():
+def test_bars_before_the_series_starts_are_charged_the_modelled_rate():
+    """**They used to be free, and a deeper replay window is what makes that expensive.**
+    A series that starts inside the window leaves the earlier bars UNMEASURED, and the
+    bucketing scores unmeasured as zero — free carry on exactly the deep history a longer
+    window is bought for. `market_data.DERIVATIVE_HISTORY_DAYS` is 520, so a 1500-day window
+    would charge nothing on roughly two thirds of its bars.
+
+    Same number the empty-series case charges, and the label says the difference: a partial
+    series measured part of the window and is silent about the rest."""
     from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
 
-    charges, _ = funding_charges_per_bar(
-        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]),
-        _events([("2026-07-02T08:00:00Z", 0.0005)]),
+    charges, source = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
+        _events([("2026-07-03T00:00:00Z", 0.0005)]),
         timeframe="1d", cost=CostModel(),
     )
-    assert charges[0] == 0.0
+    assert source == FUNDING_SOURCE_PARTIAL
+    assert charges[0] > 0.0 and charges[1] > 0.0, "uncovered bars are not free"
+    assert charges[0] == charges[1], "the modelled rate, not a per-bar guess"
+    assert math.isclose(charges[2], 0.0005), "covered bars still come from the venue"
+
+    modelled, _ = funding_charges_per_bar(
+        _bars(["2026-07-01T00:00:00Z"]), None, timeframe="1d", cost=CostModel(),
+    )
+    assert math.isclose(charges[0], modelled[0]), "one fallback rate, not two"
+
+
+def test_a_fully_covered_series_is_not_labelled_partial():
+    """The label has to be able to say no, or it says nothing. Today's 500-day window sits
+    inside the ~533 days `DEFAULT_FUNDING_RECORDS` buys, so every candidate minted now must
+    still read `venue_history` — this guard is latent until the window is deepened."""
+    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+
+    _, source = funding_charges_per_bar(
+        _bars(["2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
+        _events([("2026-07-01T00:00:00Z", 0.0001), ("2026-07-02T08:00:00Z", 0.0002)]),
+        timeframe="1d", cost=CostModel(),
+    )
+    assert source == FUNDING_SOURCE_VENUE
 
 
 def test_a_missing_series_falls_back_to_the_base_rate_not_to_zero():
