@@ -1839,19 +1839,43 @@ FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivale
 would walk into exactly that failure — one code change an extension requires either way, since
 it is a defect independent of the window.
 
-**And `oi_*` is not a rounding error in that trade.** The corrected pooled-mint batch in F2 finds
-`oi_squeeze_long` and `oi_unwind_short` reaching CONFIRMED at **both** 1h and 4h, with positive
-in-sample *and* out-of-sample expectancy — the only families in this record to do it, and the
-only confirmations of any kind. So the extension's price is not "four families of unknown value";
-it is **every signal the search has produced**, in exchange for depth on the price-only families
-that have produced none. Stated as of 2026-08-04 and not as a settled verdict: those
-confirmations do not clear the selection correction at the attempt count they were drawn from
-(z = 3.74 against a best `t` of 3.34), so the right order is to establish whether they survive
-before pricing a window against them — not the reverse.
+**There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
+to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
 
-`FUNDING_MAX_PAGES` is worth separating from this: at 1,000 rows per call and an 8-hour cadence
-it is ~333 days a page, so 6–7 pages would cover 2,000 days. Funding is **our constant, not a
-vendor limit**, and unlike OI it does not force the trade above.
+| series | configured | vendor actually serves |
+|---|---|---|
+| OI daily (Coinalyze) | `DERIVATIVE_HISTORY_DAYS = 520` d | **2,200 d**, back to 2020-07-26 — returns exactly what is asked |
+| funding (Binance) | `FUNDING_MAX_PAGES = 4` ≈ 1,314 d | ~333 d per page; 6–7 pages reach 2,000 d |
+
+So a 2,000-day window is coverable on every axis at once — candles to 2,150 (SOL binding), OI to
+2,200, funding to whatever `FUNDING_MAX_PAGES` is set to. Lengthening the replay costs the
+`oi_*` families **only if `DERIVATIVE_HISTORY_DAYS` is left behind**, and it is a constant in
+this repo. The gate in `_oi_feed_reaches` stays exactly as it is — it is the thing that makes
+forgetting to raise them *safe* rather than silent.
+
+**Which matters because `oi_*` is where the only confirmations are, and they are not yet
+verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
+1h and 4h. Walked backwards through the same adjacent, non-overlapping windows F3 uses, at 4h:
+
+| window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
+|---|---|---|---|
+| `[2100,3000)` | +0.4240, **4 CONF**, 7/8 judgeable | +0.2565, **3 CONF**, 4/8 | −0.0761, 0 CONF, 6/8 |
+| `[1470,2100)` | +0.0946, 0 CONF, 6/8 | +0.1133, 0 CONF, 3/8 | −0.1485, 0 CONF, 6/8 |
+| `[1029,1470)` | +0.1024, 0 CONF, 2/8 | +0.2954, 1 CONF, 3/8 | −0.3189, 0 CONF, 5/8 |
+| `[720,1029)` | +0.2781, 0 CONF, 3/8 | +0.6172, 1 CONF, 1/8 | −0.1388, 0 CONF, 2/8 |
+
+**The confirmations concentrate in the newest window** — `oi_squeeze_long` confirms 4 of 8 there
+and 0 in every older one — which is the shape F3's 1h control showed is not evidence. What does
+hold is the *sign*: both confirmers are positive in all four windows on 83–100% of judgeable
+draws, while the control is negative in all four. So there is a consistent direction and no
+confirmed magnitude.
+
+**And the reason the older windows cannot decide it is the window itself.** The 0.7 chain
+shrinks geometrically, so on a 3,000-bar series the last two tails are 441 and 309 bars — 2/8 and
+3/8 draws judgeable, medians of 16 and 22 holdout trades. At 12,000 bars the same chain gives
+3,600 / 2,520 / 1,764 / 1,235-bar tails, all deep. **The measurement that would verify `oi_*` is
+the one this section proposes**, which inverts the ordering the previous paragraph asserted: the
+window is not priced *against* `oi_*`, it is what `oi_*` needs.
 
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
@@ -1877,6 +1901,14 @@ and ranking them together is the defect `EDGE_COST_BASIS_UNRECORDED` exists to m
 over. So an extension needs the same treatment the cost basis got — the window recorded **with**
 each candidate's evidence, and `promotable_backlog` refusing to compare across bases — or it
 silently invalidates 1,595 rows. That is a larger change than the constant it turns on.
+
+**What an extension is, then, in full.** Not one constant — four, plus the basis machinery:
+`FACTORY_DEPTH_DAYS` 500 → 2,000; `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 (or the `oi_*` families
+leave the rotation, which is now the expensive outcome rather than the bookkeeping one);
+`FUNDING_MAX_PAGES` 4 → 7; a `funding_fade_*` gate mirroring `_oi_feed_reaches`, which is owed
+regardless; backoff and spacing on the factory's fetches; and the replay window recorded with
+each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
+2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
