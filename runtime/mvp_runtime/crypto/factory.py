@@ -998,6 +998,41 @@ def template_features(template: StrategyTemplate) -> frozenset[str]:
     return frozenset(names)
 
 
+def _oi_feed_reaches(timeframe: str) -> bool:
+    """Does the derivative feed's history span what the factory replays at ``timeframe``?
+
+    **The premise `market_data` states beside the OI interval — "the only depth that covers the
+    factory's 500-day replay" — is true of every timeframe except 1d, and nothing noticed for
+    six days.** `MIN_FACTORY_BARS` (2026-07-29) floored 1d at 2,000 BARS to buy it enough trades
+    to be scoreable, and at 1d a bar is a day, so the window stopped being a 500-day calendar
+    span and became a 2,000-day one. The daily open-interest series is
+    :data:`market_data.DERIVATIVE_HISTORY_DAYS` = 520 days, so it answers about a quarter of it.
+
+    It went unseen because the 1d contexts left the factory rotation on 2026-07-23, six days
+    BEFORE the floor landed — the floor and this premise never both applied to a minting context
+    until 1d was put back on 2026-08-04. Measured that day on live frames: with the feed
+    configured, all four oi_* families are determinate on ~26% of the 1d replay rows and on 100%
+    of the 15m/1h/4h ones.
+
+    A quarter-covered window is not merely thin, it is the failure `POSITIONING_FAMILIES`
+    documents: the walk-forward split puts every trade in the newest slice and none in the older
+    ones, so ``temporal_consistency`` is 0 by construction, no edge can clear the robustness bar,
+    and the family is retired as FRAGILE for a window that had no data in it. `unsuppliable_features`
+    does not catch it — that refuses a column None on EVERY row, and this one is populated on the
+    newest quarter.
+
+    Arithmetic rather than a measured parameter, unlike ``positioning_eligible``: that store
+    accumulates and its coverage genuinely changes day to day, while this is the depth this
+    runtime *asks* for against the window it *chose* to replay. Both are constants here, so a
+    caller has nothing to measure and cannot get it wrong by omission.
+    """
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return False
+    replay_days = market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+    return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1018,7 +1053,9 @@ def templates_for_timeframe(
     - the xs_* families need a cohort that still reaches
       ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it;
     - the positioning_* families need a store whose accumulated coverage spans the replay
-      window, which the caller measures and passes as ``positioning_eligible``.
+      window, which the caller measures and passes as ``positioning_eligible``;
+    - the oi_* families need a derivative feed whose history reaches the replay window, which
+      is pure arithmetic here rather than a parameter — see ``_oi_feed_reaches``.
 
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
@@ -1059,6 +1096,7 @@ def templates_for_timeframe(
         1 for member in market_data.CROSS_SECTION_UNIVERSE if member != str(symbol)
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
+    has_oi_history = _oi_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1074,6 +1112,8 @@ def templates_for_timeframe(
         if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
             return False
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
+            return False
+        if template.family in OI_FAMILIES and not has_oi_history:
             return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.

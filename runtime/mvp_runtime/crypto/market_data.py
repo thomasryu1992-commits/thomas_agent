@@ -250,9 +250,27 @@ POSITIONING_DEGRADED = "POSITIONING_DEGRADED"
 DERIVATIVE_PAGE_LIMIT = 1000
 DERIVATIVE_MAX_PAGES = 60
 
+# How much derivative history (liquidations, open interest) the runtime asks the feed for.
+#
+# Lived in `cycle._LIQUIDATION_DAYS` until 2026-08-04, where it was one consumer's private
+# number. It is moved here because a SECOND consumer now needs it and they must not disagree:
+# `factory.templates_for_timeframe` gates the oi_* families on whether this depth reaches the
+# replay window, and a gate reading a different number than the fetch would either mint
+# families the data cannot answer or refuse ones it can.
+#
+# 520 covers the 500-day calendar replay with head-room — see the interval comment below, which
+# states that premise — and it does NOT cover 1d, whose window is a 2,000-BAR floor
+# (`MIN_FACTORY_BARS`) rather than a calendar span, i.e. 2,000 days. That gap is what the gate
+# in the factory exists for.
+DERIVATIVE_HISTORY_DAYS = 520
+
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
-# stops ~84 days back (measured on the vendor 2026-07-29). `1hour` exists for `oi_store`, which
+# stops ~84 days back (measured on the vendor 2026-07-29). **"The factory's 500-day replay" is
+# true of every timeframe except 1d**, which replays `MIN_FACTORY_BARS` = 2,000 daily bars, so
+# the daily series answers about a quarter of it; `DERIVATIVE_HISTORY_DAYS` above and the oi_*
+# gate in `factory.templates_for_timeframe` are where that exception is handled. `1hour` exists
+# for `oi_store`, which
 # retains the hourly series itself against the day it is deep enough to replace the daily one.
 # A closed set rather than a pass-through string: an unknown interval would be answered by the
 # vendor with a series of some other cadence, and the store would count it as hours.
