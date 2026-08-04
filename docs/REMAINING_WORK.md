@@ -4,7 +4,16 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
+Last updated: **2026-08-04** (`main` = `9c45d16`), re-measuring **section F** on a candidate store
+that has doubled since it was written. Its question — whether this venue's fee schedule permits a
+fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
+−0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
+finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
+candidates carrying the current basis survive their own holdout, and the promotion board reports
+`0 promotable` without being able to say that. Section F carries the numbers and what is open.
+**It does not outrank the paragraph below**, which is still the thing to fix on arrival.
+
+Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
 first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
 therefore **cannot hold a position** — every entry fills and is closed again. Nobody lost money
@@ -46,9 +55,10 @@ Decomposed, **taker fee plus slippage is 94% of all cost at every timeframe and 
 0.2–4%**, which corrects this file's own emphasis below. Four changes followed: the factory stopped
 minting into the two bands that cannot pay for themselves (#420), the judgeability cap stopped
 hiding the operator's own pool (#422), and the Gate 0 board learned to say *why* its sample is zero
-and to warn before an acknowledgement lapses (#416). What did **not** change is the thing worth
-carrying forward — at 15m friction is 0.28R against 0.09R of gross edge, a 3× gap no stop multiple
-closes; see the new **section F**.
+and to warn before an acknowledgement lapses (#416). The conclusion drawn here — that friction at
+15m is 0.28R against 0.09R of gross edge, a gap no stop multiple closes — was judged on the day
+#420 merged and **did not survive the generations minted after it**; see **section F**, re-measured
+2026-08-04.
 
 Earlier: **2026-07-31** (`main` = `128ed20`), adding **section E** — deferrals that were
 measured and then deliberately left alone, so the measurement does not have to be redone by the
@@ -1175,9 +1185,10 @@ same answer.
       defence instead of documentation, and the measurement above is the thing to re-run first.
 
 ---
-## F. The fast timeframes do not pay for themselves — open, and nothing here has fixed it
+## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
 
-Measured 2026-08-02 across the 240 candidates carrying the current cost basis, per trade:
+**As first measured, 2026-08-02**, across the 240 candidates then carrying the current cost
+basis, per trade:
 
 | tf | gross | taker fee | slippage | maker | funding | **total cost** | **net** |
 |---|---|---|---|---|---|---|---|
@@ -1185,31 +1196,95 @@ Measured 2026-08-02 across the 240 candidates carrying the current cost basis, p
 | 1h | +0.1368 | 0.0939 | 0.0532 | 0.0058 | 0.0024 | **0.1553** | −0.0185 |
 | 4h | +0.1517 | 0.0370 | 0.0207 | 0.0026 | 0.0025 | **0.0628** | **+0.0889** |
 
-**Gross edge is nearly flat and cost varies 4.4×.** Signal quality is not what separates the
-timeframes; 1R is `stop_atr` × ATR and friction is a fixed ~10–16 bps, so the shorter the bar the
-larger the share of the risk unit friction takes. At 15m that share is ~3× the whole gross edge.
+**The mechanism from that day is the one thing here that has not changed.** Gross edge is nearly
+flat across the ladder; 1R is `stop_atr` × ATR and friction is a fixed ~10–16 bps, so the shorter
+the bar the larger the share of the risk unit friction takes. Everything below is that mechanism
+being fed a different denominator.
 
-**What has been done, and why it is not enough.** #420 raised the `stop_atr` floor 0.8 → 1.2 and
-retired `volatility_squeeze_*`; both are real and both are second-order. Within families the stop
-floor is worth ~0.05–0.15R at 15m, against a gap of ~0.18R at the median — it stops wasting half
-of every mint on a band that is negative, and it does not make 15m viable. #422 then stopped the
-board hiding 4h, which is the timeframe that *does* pay. Neither touched the friction.
+**Re-measured 2026-08-04** (`main` = `9c45d16`) over the **474** candidates now carrying that
+basis — the population has doubled, and two of this section's three claims did not survive it:
 
-**The lever that would, and why it is not available.** Entry is taker (5 bps) plus slippage
-(3 bps); the take-profit leg already rests as a maker LIMIT since 2026-07-28. Converting the
-*entry* is worth roughly 6 of a ~16 bps round trip — enough to flip 1h clearly positive, not
-enough to save 15m. It is **deferred with recorded preconditions**, three of them unstarted, and
-the fourth is not a clock: see `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`, scope note 2026-08-02. The
-deferral's premise — that a resting entry selects against momentum/breakout strategies — has
-*hardened*, because every lineage that reached ROBUST or the promotable board is momentum or
-breakout while the families a limit entry would suit have never produced a ROBUST candidate.
+| tf | gross | taker | slippage | maker | funding | **total cost** | **net** | was |
+|---|---|---|---|---|---|---|---|---|
+| 15m | +0.1037 | 0.1232 | 0.0739 | 0.0087 | +0.0006 | **0.2041** | **−0.0866** | −0.1845 |
+| 1h | +0.1495 | 0.0730 | 0.0438 | 0.0057 | +0.0026 | **0.1230** | **+0.0241** | −0.0185 |
+| 4h | +0.1661 | 0.0321 | 0.0193 | 0.0027 | +0.0005 | **0.0562** | **+0.1083** | +0.0889 |
 
-**So the open question is not "which knob".** It is whether this venue's fee schedule permits a
-15m strategy at all, and if it does not, whether the ladder's 20-trade window and the
-`MAX_DAYS_TO_LIFECYCLE_WINDOW` horizon should be stated in trades-per-lineage at 4h rather than
-in days. **Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for
-another `stop_atr` tweak — both were measured and both are small. What is unmeasured is the
-*maker* rate, which the item in section C is waiting on a live fill for.
+- **1h pays.** The table above said it did not. Cost varies 3.6× now, not 4.4×.
+- **The `stop_atr` floor was not second-order, and one day of evidence is why it read that way.**
+  #420 landed 2026-08-02 and this section judged it the same day — against a store in which
+  almost nothing had yet been minted at the new floor.
+- **15m still does not pay at the median.** That claim survives, and only that one.
+
+**By mint date, which is where #420 actually shows up** (`stop_atr` is the 15m median; the cost
+and net columns are per trade):
+
+| minted | `stop_atr` | 15m cost | 15m net | 1h net | 4h net |
+|---|---|---|---|---|---|
+| 2026-07-31 | 1.20 | 0.2625 | −0.2143 | +0.0085 | +0.1070 |
+| 2026-08-01 | 1.20 | 0.2574 | −0.1449 | +0.0094 | +0.0880 |
+| 2026-08-02 | 1.36 | 0.2218 | −0.0711 | +0.0479 | +0.1181 |
+| 2026-08-03 | 1.33 | **0.1615** | −0.0693 | **+0.0783** | **+0.1320** |
+
+15m friction fell **38%** across those four days while 15m gross stayed flat (+0.0772 → +0.0913),
+so the move is the denominator and not the signal — the same mechanism, now running in the
+favourable direction. A generational parameter change cannot be judged on the day it merges.
+
+**Out of sample the fast end is the strongest rung, not the weakest.** Selecting on in-sample net
+is not comparable across timeframes — at 4h it keeps 69% of the population and at 15m 36% — so
+this cuts each timeframe at the same quantile and reads its holdout (median holdout expectancy,
+share positive):
+
+| cut by in-sample net | 15m | 1h | 4h |
+|---|---|---|---|
+| top 50% | −0.0006 (50%) | −0.0829 (39%) | −0.1539 (38%) |
+| top 36% | **+0.0664 (67%)** | +0.0015 (50%) | −0.1565 (35%) |
+| top 25% | +0.0947 (61%) | +0.1019 (58%) | −0.0678 (43%) |
+
+Cuts tighter than 25% are not reported: below n≈16 per cell the numbers swing by more than the
+effect (1h reads +1.17 at the top decile), which is noise wearing a trend's clothes.
+
+**So the open question is answered, and its follow-on flips.** This venue's fee schedule does
+permit a fast strategy — 1h clears it at the median today and 15m's deficit has more than halved
+without the maker-entry lever being touched. And the proposal to restate the ladder's 20-trade
+window and `MAX_DAYS_TO_LIFECYCLE_WINDOW` in trades-per-lineage **at 4h** would tighten the wrong
+rung: 4h is the timeframe whose holdout holds a median of **23** closed trades against
+`MIN_HOLDOUT_TRADES = 25`, where 15m holds 52 and 1h 44. Stated in trades, 4h is the rung that
+cannot be judged.
+
+**What binds instead: none of it reaches the door.** Of the 474, **zero** are ROBUST on the
+verdict `pool.candidate_quality` recomputes — the stored `ROBUST` labels (26 of them) are the
+stale kind `holdout_status` already documents, and every one recomputes to PROVISIONAL. The
+holdout gate is where they stop:
+
+- **216** carry no `stdev_r` on the holdout block, so no interval can be drawn. **Self-draining:**
+  every mint before 2026-08-03 lacks it and all 120 mints on 2026-08-03 carry it.
+- **192** hold fewer than `MIN_HOLDOUT_TRADES` closed trades.
+- **66** compute an interval, and **all 66 are CONTRADICTED**.
+
+**Do not read that last line as a threshold that is too strict.** The rows deep enough to be
+judged are genuinely negative out of sample — the closest any candidate in the store comes to
+confirmation is short by **0.1973R**, and the three deepest holdouts (n = 262, 428, 687) all
+carry negative expectancy, which is not a sample-size complaint. The honest summary is that the
+factory's in-sample edge has not yet reproduced forward at any timeframe.
+
+**What is open, in the order it binds:**
+
+1. **Nothing in this store survives its own holdout.** That is the item, and it is upstream of
+   every timeframe question in this section. The cost work is done; the edge is what is missing.
+2. **The board cannot say so.** `promotable_backlog` returns `count: 0` with an empty
+   `deferred_unjudgeable`, because everything is eliminated by the verdict filter *upstream* of
+   the judgeability filter that exists to name what it dropped. "0 promotable" currently reads
+   as "nothing waiting" when what is true is "474 waiting, all stopped at one gate" — the exact
+   failure the deferred list was added to prevent, one filter earlier.
+3. **The maker-entry lever is unchanged and still deferred** — `LP4_ORDER_ADAPTER_DESIGN_V0.1.md`,
+   scope note 2026-08-02, three preconditions unstarted. Its premise (a resting entry selects
+   against momentum/breakout) is untouched by anything above.
+
+**Do not re-open funding** (0.2–4% of cost; see the correction in section C) or reach for another
+`stop_atr` tweak — the floor has now been credited with what it was worth and the next multiple
+is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
+in section C is waiting on a live fill for.
 
 ---
 

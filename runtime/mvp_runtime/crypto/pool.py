@@ -1514,13 +1514,23 @@ LIFECYCLE_MIN_WINDOW_TRADES = 20
 # argument — *"at current rates a 1d lineage needs 122d and a 1h lineage 29d to reach the
 # 20-trade WARNING window, so neither can ever be auto-demoted."*
 #
-# **That value's premise was that 15m is the workhorse, and the cost model has since killed it.**
+# **That value's premise was that 15m is the workhorse, and the cost model had killed it.**
 # Measured over the 240 candidates carrying the current basis (2026-08-02), net per trade:
 # **15m −0.1845R, 1h −0.0185R, 4h +0.0889R** — friction at 15m is 0.2768R against 0.0923R of
 # gross edge, and gross is nearly flat across the ladder, so what separates the timeframes is
 # the denominator (1R = `stop_atr` × ATR) and not the signal. A cap admitting only 15m
 # therefore admitted only the timeframe that cannot pay for itself, and the board read
 # `0 promotable` with 900 candidates on file.
+#
+# **Re-measured 2026-08-04 over 474 candidates, and the economics half of that has moved:**
+# **15m −0.0866R, 1h +0.0241R, 4h +0.1083R** — 1h pays now and 15m's deficit has more than
+# halved, because #420's `stop_atr` floor only reaches the numbers through the generations
+# minted after it (15m friction 0.2625R → 0.1615R over four days of mints). It does **not**
+# move this constant: 130 is anchored on the horizon the operator actually promoted at, not on
+# which timeframe pays, and the two were never the same argument. What it does retire is the
+# reading that this cap must lean slow — see `REMAINING_WORK.md` section F, which also measures
+# why restating this horizon in TRADES would bind 4h hardest (median holdout 23 trades against
+# `robustness.MIN_HOLDOUT_TRADES` = 25) rather than 15m.
 #
 # **What settles the new number is that the old one was hiding the operator's own decision.**
 # Every one of the five lineages promoted 2026-07-31 sits above 14 days — 40.5, 50.4, 81.4,
