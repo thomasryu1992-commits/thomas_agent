@@ -1763,7 +1763,7 @@ would be cheap and is the thing missing, not fewer codes.
 the doc, not a proposal to restructure the code.
 
 ---
-## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on one grant**
+## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on two env-level steps**
 
 **This section exists because the lane was not in this file at all**, while three PRs of it
 merged. A reader arriving on a fresh machine and starting here — which is what this file tells
@@ -1778,26 +1778,32 @@ own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (
 correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
 are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
 
-**Nothing runs.** No schedule is registered, and the gate is closed twice over — verified by
-running it rather than by reading the code, 2026-08-04:
+**Nothing runs.** No schedule is registered, and the gate is closed **once** — re-measured by
+running it rather than by reading the code, after #496:
 
 ```
 MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
-MVP_CANDLE_ARCHIVE='hyperliquid' -> SafetyGateBlocked: ACTIVATION_MISSING
-                                    (no safety_flag_activations/hyperliquid.json)
+MVP_CANDLE_ARCHIVE='hyperliquid' -> HyperliquidCollector          # no grant required
 ```
 
-The second line is the one worth knowing: **the env alone fails at selection**, before any
-collector is constructed. This machine holds **eleven** grants and no `hyperliquid`; the count
-is given rather than the list, because an inventory in this file goes stale the first time one
-is issued or removed — which it did, within the hour of this section being written. Ask the
-directory, or the board's 권한 line.
+> **This block previously read `SafetyGateBlocked: ACTIVATION_MISSING` on the second line, and
+> the paragraph under it said "gated by a grant" describes the archive "and not the one that
+> moves real money".** #496 (Thomas, 2026-08-04) moved the archive to
+> `safety_gate.select_env_gated` — the same env-only door `live_trading` took on 2026-07-28 —
+> so the contrast that sentence drew no longer exists. The archive is the **second** capability
+> on that door and the first that is not live trading.
+>
+> Why: the grant is TTL-capped at 30 days and archiving is worth nothing unless it runs for
+> months against a window that rolls, so a renewal gap is not a pause — it is a hole nothing
+> can fill. Half of `live_trading`'s argument does not transfer (nothing here can be trapped
+> open) and neither does its kill-switch counterpart; what makes the trade acceptable is the
+> side live trading did not have — public candles, no key, sends nothing, orders nothing, and
+> **feeds nothing**. The full reasoning is at `select_candle_archive_collector`, and
+> `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` pins the caller set at two.
 
-**One grant this section named is gone, and why is worth reading before assuming the grant model
-is uniform: see section C, *"An expired grant pinned the board's expiry warning"*.** `live_trading`
-does **not** take this path at all — Thomas moved it to `safety_gate.select_env_gated` on
-2026-07-28, the environment opt-in alone, no per-machine grant and no expiry. So "gated by a
-grant" describes the archive and every other capability, and not the one that moves real money.
+This machine's grant inventory is no longer part of this lane's answer. The count is given
+elsewhere and goes stale the first time one is issued or removed; ask the directory, or the
+board's 권한 line.
 
 **S0's record is complete as of 2026-08-04 — and it no longer blocks S1.** Both `〔확인 필요〕`
 markers in Appendix A of `EQUITY_PERP_LANE_V0.1.md` were answered by Thomas, so the appendix is
@@ -1816,31 +1822,47 @@ in short:
    centralized exchange account) is classed as **counterparty risk rather than a regulatory
    question**, and re-review conditions 1 and 2 already cover that axis.
 
-**So what blocks archiving is now the grant alone**, and the ordering below is unchanged in
-substance: it is one step shorter.
+**So nothing governance-shaped blocks archiving any more.** What remains is two environment
+steps, both minutes long and both the operator's.
 
 **No approval record names this lane.** 53 records in
 `.runtime_governance_state/approvals/approvals.jsonl`, zero mentioning equity / Hyperliquid /
 HIP-3 in any human-readable field; they are runtime action approvals
 (`crypto.strategy_pool.retirement` and kin), which is a different thing from a lane decision.
 
-**Nothing in code references S0, and that is the design rather than a gap.** S0 is enforced
-*through* the grant — Thomas does not issue `hyperliquid` until it is ratified, and without the
-grant the selector fails closed. What that leaves is worth stating: the enforcement is a human
-commitment, and no record ties the grant to S0, so a grant issued later for any reason would
-not reveal that S0 had been skipped. If that link should be durable, it is a line in the grant's
-own record, not a new gate.
+**Nothing in code references S0, and the mechanism this section said enforced it is gone.** It
+read: *"S0 is enforced through the grant — Thomas does not issue `hyperliquid` until it is
+ratified."* #496 removed that grant, so that sentence no longer describes anything. It cost
+nothing here only because S0 was answered the same day (#505) and S1 is read-only — but a
+reader should not carry away that a grant is holding this lane shut.
+
+**What still holds the line that matters is a different mechanism, and it is a real one.** S0's
+answer draws it at live orders, not at collection: *"live orders (S3 and later) do not open
+until this is promoted to settled."* That is enforced by the budget, not by any archive gate —
+`schemas/live_trading_budget.v0.1.schema.json` pins `venue` to `enum: ["binance_futures"]` and
+`live_budget.SUPPORTED_VENUE` refuses anything else with `BUDGET_INVALID`. **An equity live
+order cannot register a budget at all**, and widening that enum is a schema bump that has to be
+argued for. Collection is ungated by governance and the money path is gated by a schema — which
+is the right way round, and worth stating because this section previously implied the reverse.
 
 **In order, what is still needed to archive a single candle:** ~~S0 ratified~~ (done 2026-08-04)
-→ the `hyperliquid` grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
-scheduler service → a registered `candle_archive` schedule. **Only the grant is Thomas's now**;
-the last two are minutes.
+→ ~~the `hyperliquid` grant~~ (no longer exists, #496) → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
+scheduler service → a registered `candle_archive` schedule. **Both remaining steps are the
+operator's and both are minutes.**
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
 unrecoverable once it rolls — measured, not projected: `xyz:SP500` listed 2026-03-18 and the
-venue already returns only 52 days of its 15m bars. Every day before the grant is a day of the
-two timeframes the factory can otherwise never reach.
+venue already returns only 52 days of its 15m bars.
+
+**Of those two, 1h is the one that still matters, and the reason changed on 2026-08-04.** This
+paragraph used to lean on section F's "the holdout is strongest at the fast end"; #487 measured
+the full 426 holdout blocks and 15m came out **net −0.2691R, the worst rung rather than the
+best**, so #501 withdrew that argument from the lane's proposals. The factory rotation has also
+moved off 15m onto {1h, 4h, 1d}. What survives is narrower and does not depend on any strategy
+being right: **1h is both inside the rotation and permanently unservable at factory depth
+(208-day ceiling against 500), and its window rolls every day.** Archiving is the only path to
+depth there.
 
 ---
 
