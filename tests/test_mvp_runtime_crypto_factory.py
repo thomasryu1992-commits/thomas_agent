@@ -1019,6 +1019,8 @@ def _parent_spec(strategy_id, conditions, **overrides):
 
 _CLOSE_OVER_MA20 = {"feature": "close", "comparison": ">", "value_from": "ma20"}
 _MA20_OVER_MA50 = {"feature": "ma20", "comparison": ">", "value_from": "ma50"}
+_RSI_OVER_50 = {"feature": "rsi", "comparison": ">=", "value": 50.0}
+_RSI_UNDER_60 = {"feature": "rsi", "comparison": "<=", "value": 60.0}
 
 
 def test_fusion_is_order_independent():
@@ -1295,8 +1297,25 @@ def _durable_parent(tmp_path, candidate_id, spec, score):
 
 
 def _two_durable_parents(tmp_path):
+    """A structurally fusable pair whose child does NOT clear the improvement bar.
+
+    On ``_trending_snapshot`` the child earns +0.092R over 6 trades against a better parent's
+    +0.574R over 17 — the ordinary case, and what fusion stored by default before the bar
+    existed (9.8% of the store's children out-score their best parent)."""
     _durable_parent(tmp_path, "cand-aaa", _parent_spec("S1", [_CLOSE_OVER_MA20]), 99.0)
     _durable_parent(tmp_path, "cand-bbb", _parent_spec("S2", [_MA20_OVER_MA50]), 98.0)
+    return pool.read_candidates(tmp_path)
+
+
+def _two_improving_parents(tmp_path):
+    """The rarer pair whose child does clear it: both parents lose on this snapshot
+    (-0.485R over 8 trades, -0.546R over 18) and their union turns positive at +0.099R
+    without dropping ``champion_score`` below either (0.396 against 0.191 and 0.333).
+
+    Deliberately not a flattering fixture — it is one of only 1 pair in 78 tried over this
+    snapshot's feature grid that passes, which is the yield the bar actually has."""
+    _durable_parent(tmp_path, "cand-aaa", _parent_spec("S1", [_RSI_OVER_50]), 99.0)
+    _durable_parent(tmp_path, "cand-bbb", _parent_spec("S2", [_RSI_UNDER_60]), 98.0)
     return pool.read_candidates(tmp_path)
 
 
@@ -1309,7 +1328,7 @@ def test_factory_default_mints_nothing_fused():
 
 
 def test_fused_child_carries_lineage_own_evidence_and_appends(tmp_path):
-    parents = _two_durable_parents(tmp_path)
+    parents = _two_improving_parents(tmp_path)
     result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
                          existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
     fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
@@ -1326,7 +1345,7 @@ def test_fused_child_carries_lineage_own_evidence_and_appends(tmp_path):
 
 
 def test_fusion_is_deterministic(tmp_path):
-    parents = _two_durable_parents(tmp_path)
+    parents = _two_improving_parents(tmp_path)
     kwargs = dict(active_pool={"active_strategies": []}, existing_candidates=parents,
                   now=NOW, count=1, fusion_pairs=1)
     assert run_factory(_trending_snapshot(), **kwargs) == run_factory(_trending_snapshot(), **kwargs)
@@ -1345,6 +1364,129 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
     assert result["fusion_rejected"] == [
         {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
     ]
+
+
+# --- the improvement bar: a child is stored only when it beats its parents -----
+
+_PARENTS_ONE = [{"expectancy": 0.40, "champion_score": 0.50}]
+
+
+def test_a_child_must_out_earn_the_best_parent_not_merely_one_of_them():
+    """Beating the weaker parent answers the wrong question: fusion is worth recording only
+    if it beat KEEPING either parent, and keeping the stronger one was free."""
+    parents = [{"expectancy": 0.40, "champion_score": 0.50},
+               {"expectancy": 0.60, "champion_score": 0.50}]
+    assert factory._fusion_improvement(
+        {"expectancy": 0.50, "champion_score": 0.90}, parents) == "no_expectancy_gain"
+    assert factory._fusion_improvement(
+        {"expectancy": 0.61, "champion_score": 0.90}, parents) is None
+
+
+def test_an_equal_return_is_not_an_improvement():
+    assert factory._fusion_improvement(
+        {"expectancy": 0.40, "champion_score": 0.90}, _PARENTS_ONE) == "no_expectancy_gain"
+
+
+def test_the_score_leg_refuses_a_regression_but_admits_a_tie():
+    """A fused child carries more conditions on fewer trades than either parent, so
+    ``parameter_parsimony`` and ``sample_adequacy`` — 45% of the score — move against it by
+    construction. The leg asks it not to FALL, not to rise, or fusion would be refused on its
+    own arithmetic rather than on the child's merit."""
+    earns_more = {"expectancy": 0.90, "champion_score": 0.49}
+    assert factory._fusion_improvement(earns_more, _PARENTS_ONE) == "champion_score_regression"
+    assert factory._fusion_improvement({**earns_more, "champion_score": 0.50}, _PARENTS_ONE) is None
+
+
+@pytest.mark.parametrize("broken", [
+    {"champion_score": 0.9},                          # expectancy absent entirely
+    {"expectancy": 0.9},                              # champion_score absent entirely
+    {"expectancy": None, "champion_score": 0.9},
+    {"expectancy": "0.9", "champion_score": 0.9},
+    {"expectancy": 0.9, "champion_score": True},      # bool is not a reading
+])
+def test_an_unreadable_metric_refuses_rather_than_passes(broken):
+    """Fail-closed: an absent number is not a zero, and treating it as one would admit exactly
+    the children whose evidence is malformed."""
+    good = {"expectancy": 0.10, "champion_score": 0.10}
+    assert factory._fusion_improvement(broken, [good]) == "improvement_unmeasurable"
+    assert factory._fusion_improvement(
+        {"expectancy": 9.0, "champion_score": 9.0}, [broken]) == "improvement_unmeasurable"
+
+
+def test_no_parent_to_compare_against_is_unmeasurable_not_a_pass():
+    assert factory._fusion_improvement(
+        {"expectancy": 9.0, "champion_score": 9.0}, []) == "improvement_unmeasurable"
+
+
+def test_a_child_that_does_not_out_earn_its_parents_is_refused_rather_than_stored(tmp_path):
+    """The ordinary pair, and the whole reason for the bar: the union of two profitable trend
+    conditions earns +0.092R over 6 trades where the better parent earned +0.574R over 17.
+    Before the bar this was appended, ranked, and available to parent a further generation."""
+    parents = _two_durable_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    assert result["fused_count"] == 0
+    assert not [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert result["fusion_rejected"] == [
+        {"parent_candidate_ids": ["cand-aaa", "cand-bbb"], "reason": "no_expectancy_gain"}
+    ]
+
+
+def test_every_minted_child_records_beating_both_parents_on_one_window(tmp_path):
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert fused, "the fixture's pair must still mint, or this asserts nothing"
+    for child in fused:
+        comparison = child["fusion_improvement"]
+        # One window for both sides — the whole point of replaying the parents here.
+        assert comparison["measured_on_evidence_sha256"] == result["evidence_input_sha256"]
+        assert set(comparison["parents"]) == set(child["parent_candidate_ids"])
+        assert (comparison["child"]["expectancy"]
+                > max(p["expectancy"] for p in comparison["parents"].values()))
+        assert (comparison["child"]["champion_score"]
+                >= max(p["champion_score"] for p in comparison["parents"].values()))
+        # The recorded child figures are the child's own evidence, not a second measurement.
+        assert comparison["child"]["expectancy"] == child["backtest_evidence"]["expectancy"]
+
+
+def test_the_bar_is_the_parents_replayed_here_not_the_row_they_were_stored_with(tmp_path):
+    """890 of the store's 894 parent/child evidence links are on DIFFERENT candle windows, so a
+    bar read off a parent's stored row would score the market's drift between two windows and
+    call it lineage improvement.
+
+    The fixture makes that visible without mocking: ``_durable_parent`` stores an evidence
+    block holding neither ``expectancy`` nor ``champion_score``, so a gate reading the stored
+    row could only answer ``improvement_unmeasurable`` and would refuse every pair. Minting at
+    all is therefore proof the comparison came from a replay on the child's own snapshot."""
+    parents = _two_improving_parents(tmp_path)
+    assert all("expectancy" not in p["backtest_evidence"] for p in parents)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    assert result["fused_count"] == 1
+    assert not any(r["reason"] == "improvement_unmeasurable" for r in result["fusion_rejected"])
+
+
+def test_a_parent_is_replayed_once_per_fire_however_many_pairs_cite_it(monkeypatch):
+    """`FUSION_PARENT_POOL` parents offer 15 pairs, so an unmemoised bar would replay each
+    parent up to 5 times for an answer that cannot change between them."""
+    seen = []
+    original = factory.backtest_spec
+
+    def counting(spec, snapshot, **kwargs):
+        seen.append(spec.strategy_rule_hash)
+        return original(spec, snapshot, **kwargs)
+
+    monkeypatch.setattr(factory, "backtest_spec", counting)
+    specs = [_parent_spec(f"S{i}", [{"feature": "adx", "comparison": ">=", "value": 20.0 + i}])
+             for i in range(4)]
+    bucket = [{"candidate_id": f"cand-{i}", "strategy_spec": s.to_dict(), "champion_score": 1.0}
+              for i, s in enumerate(specs)]
+    factory._fuse_batch([bucket], _trending_snapshot(), generation_id="GEN-9", start_index=1,
+                        pairs=99, seen_hashes=set(), evidence_sha="sha256:x", now=NOW)
+    parent_replays = [h for h in seen if h in {s.strategy_rule_hash for s in specs}]
+    assert len(parent_replays) == len(set(parent_replays)) == 4
 
 
 # --- M4a: promotion ranking (robustness first-pass, win-rate + reward:risk) ----

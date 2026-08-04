@@ -3056,6 +3056,76 @@ def fusion_parent_buckets(
     return ordered
 
 
+# --- the improvement bar: a child is stored only when it beats the parents it came from -------
+#
+# Until 2026-08-04 the only thing a child had to do to become a candidate was close one trade.
+# Measured over the 447 stored crossover children whose parents both resolve, that admitted a
+# population where **9.8% out-score their best parent and 1.1% close more trades** (median -67),
+# and 101 of the children scoring at or below their best parent went on to parent a further
+# generation themselves. Fusion was accumulation, not selection: the pressure sat entirely at the
+# promotion door, which is lineage-blind, so a child strictly worse than both parents on every
+# measure was stored, ranked, and bred from exactly like one that improved on them.
+#
+# **The comparison has to be re-measured, and this is the reason it could not simply be read off
+# the store.** A parent is minted in an earlier fire and carries the evidence of an earlier candle
+# window: of the 894 parent/child evidence links in the store, **890 are on different windows and
+# 0 on the same one**. Comparing a child's stored numbers against its parents' would therefore
+# score the market's drift between two windows and call the result lineage improvement. Both
+# sides are replayed on the SAME snapshot here, which is also why the replays are memoised — a
+# bucket of ``FUSION_PARENT_POOL`` parents offers 15 pairs and would otherwise replay each parent
+# up to 5 times for one answer that cannot change between them.
+#
+# **Two legs, deliberately asymmetric.** ``expectancy`` must strictly improve: it is the return
+# per trade, and a crossover that does not raise it has no reason to exist when keeping the better
+# parent was free. ``champion_score`` is only required not to REGRESS, because it is
+# `robustness.score_robustness` — sample adequacy, temporal consistency, regime breadth,
+# parsimony, cost survival — and 45% of its weight (``sample_adequacy`` + ``parameter_parsimony``)
+# moves against a fused child by construction: the AND-union closes 0.51x its parent median's
+# trades while carrying more conditions. Requiring it to strictly improve would refuse on the
+# arithmetic of fusion rather than on the child's merit. Requiring it not to fall stops the one
+# case the expectancy leg cannot see alone — a higher return read off a handful of trades — since
+# that is precisely what drives ``sample_adequacy`` down.
+#
+# Compared against the MAXIMUM over the parents on each metric independently, not against the
+# better parent picked once: the question this gate answers is "was fusing these two worth more
+# than keeping either of them", and a child that beats the weaker parent while losing to the
+# stronger one has not answered it.
+FUSION_IMPROVEMENT_METRICS = ("expectancy", "champion_score")
+
+
+def _fusion_improvement(
+    child: Mapping[str, Any], parents: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """``None`` if the child clears the bar above, else a stable refusal reason.
+
+    Every reading is taken from evidence replayed on one snapshot — the caller's job, since
+    this function cannot see which window produced what it is handed.
+
+    Fail-closed on an unreadable metric: a missing or non-numeric ``expectancy`` /
+    ``champion_score`` on either side means the comparison was never made, which is not the
+    same as passing it, and silently treating an absent number as zero would admit exactly the
+    children whose evidence is malformed."""
+    def readings(evidence: Mapping[str, Any]) -> list[float] | None:
+        out: list[float] = []
+        for name in FUSION_IMPROVEMENT_METRICS:
+            value = evidence.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            out.append(float(value))
+        return out
+
+    child_reading = readings(child)
+    parent_readings = [readings(evidence) for evidence in parents]
+    if child_reading is None or not parent_readings or any(r is None for r in parent_readings):
+        return "improvement_unmeasurable"
+    child_expectancy, child_score = child_reading
+    if child_expectancy <= max(r[0] for r in parent_readings):
+        return "no_expectancy_gain"
+    if child_score < max(r[1] for r in parent_readings):
+        return "champion_score_regression"
+    return None
+
+
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
@@ -3072,18 +3142,34 @@ def _fuse_batch(
     A child that closed **no** trades is refused rather than stored: an unsatisfiable
     union (``rsi <= 30`` from one parent, ``rsi >= 70`` from the other) parses and
     validates perfectly well and would otherwise sit in the store as a scored
-    candidate that can never trade."""
+    candidate that can never trade.
+
+    A child that traded but did not IMPROVE on its parents is refused the same way — see
+    :data:`FUSION_IMPROVEMENT_METRICS` for the bar and why the parents are replayed here
+    rather than read from their stored rows. That refusal is ordered last because it is the
+    only one costing a replay, so the cheap structural checks drop the pairs that would
+    waste it; and it costs no mint, because the pair stream simply draws again."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    replayed: dict[str, dict[str, Any]] = {}
+
+    def on_this_window(spec: StrategySpec) -> dict[str, Any]:
+        """This parent's evidence on the CHILD's snapshot, replayed once per fire."""
+        cached = replayed.get(spec.strategy_rule_hash)
+        if cached is None:
+            cached = replayed[spec.strategy_rule_hash] = backtest_spec(spec, snapshot, frame=frame)
+        return cached
+
     pair_stream = (pair for bucket in buckets for pair in combinations(bucket, 2))
     for left, right in pair_stream:
         if len(minted) >= pairs:
             break
         parent_ids = sorted([left["candidate_id"], right["candidate_id"]])
         try:
+            first = StrategySpec.from_dict(dict(left["strategy_spec"]))
+            second = StrategySpec.from_dict(dict(right["strategy_spec"]))
             child = fuse_specs(
-                StrategySpec.from_dict(dict(left["strategy_spec"])),
-                StrategySpec.from_dict(dict(right["strategy_spec"])),
+                first, second,
                 strategy_id=f"S{start_index + len(minted):03d}",
                 generation_id=generation_id,
             )
@@ -3098,6 +3184,12 @@ def _fuse_batch(
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
             continue
+        parent_evidence = {left["candidate_id"]: on_this_window(first),
+                           right["candidate_id"]: on_this_window(second)}
+        refusal = _fusion_improvement(evidence, [parent_evidence[pid] for pid in parent_ids])
+        if refusal is not None:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
+            continue
         seen_hashes.add(child.strategy_rule_hash)
         record = {
             "strategy_id": child.strategy_id,
@@ -3111,6 +3203,16 @@ def _fuse_batch(
             "provenance": "mvp_factory_fusion",
             "derivation_type": "crossover",
             "parent_candidate_ids": parent_ids,
+            # What the child had to beat, on the window it was beaten on. Recorded because the
+            # parents' own rows carry a DIFFERENT window's numbers, so nothing downstream could
+            # reconstruct this comparison from the store — and without it "the gate passed" is
+            # an assertion rather than evidence.
+            "fusion_improvement": {
+                "measured_on_evidence_sha256": evidence_sha,
+                "child": {m: evidence[m] for m in FUSION_IMPROVEMENT_METRICS},
+                "parents": {pid: {m: parent_evidence[pid][m] for m in FUSION_IMPROVEMENT_METRICS}
+                            for pid in parent_ids},
+            },
             "created_at_utc": now,
         }
         record["candidate_id"] = derive_candidate_id(record)

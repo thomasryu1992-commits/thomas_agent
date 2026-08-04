@@ -260,8 +260,7 @@ def main(
             )
             store.add(sched)
             ledger.append_scheduler_event(
-                scheduler._scheduler_event("created", sched, now=stamp,
-                                           status="enabled" if sched.enabled else "disabled")
+                scheduler.mutation_event(scheduler.ACTION_CREATED, sched, now=stamp)
             )
             sys.stdout.write(f"added schedule {sched.schedule_id} ({sched.kind}, every {sched.interval_seconds}s, "
                              f"next {sched.next_run_at})\n")
@@ -278,13 +277,27 @@ def main(
             return EXIT_OK
 
         if args.command in ("remove", "enable", "disable"):
+            # Mutate, then record — the same order `add` above uses. A ledger write that
+            # fails after the store one leaves the gap this whole change closes, so the
+            # ordering is only defensible because `assert_state_writable` above already
+            # refused the unwritable case at the door, for the store and ledger alike.
+            stamp = now or timeutil.utc_now_iso()
+            enabling = args.command == "enable"
             if args.command == "remove":
-                ok = store.remove(args.schedule_id)
+                affected = store.remove(args.schedule_id)
             else:
-                ok = store.set_enabled(args.schedule_id, args.command == "enable")
-            if not ok:
+                affected = store.set_enabled(args.schedule_id, enabling)
+            if affected is None:
                 sys.stderr.write(f"BLOCKED NOT_FOUND: no schedule {args.schedule_id}\n")
                 return EXIT_BLOCKED
+            # `affected` is the PRE-mutation record, so its own `enabled` is the previous
+            # state — carried explicitly because a re-issued command is a real operator
+            # action that changed nothing, and the event has to be able to say so.
+            action = {"remove": scheduler.ACTION_REMOVED,
+                      "enable": scheduler.ACTION_ENABLED,
+                      "disable": scheduler.ACTION_DISABLED}[args.command]
+            ledger.append_scheduler_event(scheduler.mutation_event(
+                action, affected, now=stamp, previously_enabled=affected.enabled))
             sys.stdout.write(f"{args.command}d {args.schedule_id}\n")
             return EXIT_OK
 
