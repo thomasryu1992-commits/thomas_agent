@@ -4,14 +4,21 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-04** (`main` = `9c45d16`), re-measuring **section F** on a candidate store
+Last updated: **2026-08-04** — **the live leg holds a position again.** The stop refusal that has
+headed section C since 2026-08-02 is resolved (#460, the confirm race); observed 05:00Z, an
+ETHUSDT SHORT opened 00:13:57Z with both bracket legs `placed: true, status: NEW`. Section C is
+rewritten around what that leaves: **no live trade has ever closed** — `live_outcomes.jsonl` does
+not exist — so the exit path and the #470–#472 naked-close accounting are both undemonstrated,
+and the first live close is the next thing that answers anything.
+
+Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
 fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
 −0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
 finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
 candidates carrying the current basis survive their own holdout, and the promotion board reports
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
-**It does not outrank the paragraph below**, which is still the thing to fix on arrival.
+**It does not outrank section C**, which is still what to read first on arrival.
 
 Also 2026-08-04: the board can now say it (#477 — `promotable_backlog` returns a refusal
 partition), and **section F1** diagnoses why nothing survives. Three explanations are ruled out
@@ -24,14 +31,23 @@ Two claims from F1's first pass are corrected in place rather than deleted — b
 population comparisons the paired test overturned, and the way they were wrong is the useful
 part.
 
+And a new **section H**, added because the equity-perp lane was **not in this file at all**
+while three PRs of it merged — a reader starting here, which is what this file tells them to
+do, could not have learned it exists. It is code-complete as far as it goes and **runs
+nothing**: `S0` is unratified with its two `〔확인 필요〕` markers untouched since 2026-08-03, no
+`hyperliquid` grant exists on this machine, and the selector fails closed at selection. What
+that costs while it waits is measured there, because the venue's window rolls.
+
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
-first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
-therefore **cannot hold a position** — every entry fills and is closed again. Nobody lost money
-(0.12 USDT of fees, no adverse price) and the safety path worked exactly as written; what is open
-is *why the venue refused the stop*, which the next attempt will answer now that #426 is deployed.
-The one build item in it — **nothing counted repeated bracket failures** — is closed by #439: the
-loop now stops itself after two, instead of running on the daily order budget's midnight refill.
+first two autonomous live orders on 2026-08-02 and the protective stop was refused both times, so
+it could not hold a position. **That is resolved as of 2026-08-04** — the cause was the confirm
+race (#460), and the runtime is holding an ETHUSDT SHORT opened 00:13:57Z with both bracket legs
+`placed: true, status: NEW`. What is open moved with it: **no live trade has ever closed**
+(`live_outcomes.jsonl` does not exist), so the exit path and the naked-close accounting from
+#470–#472 are both undemonstrated. The one build item — **nothing counted repeated bracket
+failures** — is closed by #439: the loop stops itself after two, instead of running on the daily
+order budget's midnight refill.
 Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
 
 This paragraph said "the deployed image is `320475b`" when it was written and that was already
@@ -301,11 +317,41 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 
 ## C. Crypto live execution — the governance packet + the order code
 
-> ### ⚠️ THE FIRST AUTONOMOUS LIVE ORDERS RAN ON 2026-08-02, AND THE PROTECTIVE STOP WAS REFUSED BOTH TIMES
+> ### ⚠️ LIVE TRADING IS ARMED, AND AS OF 2026-08-04 IT HOLDS A POSITION WITH BOTH PROTECTIVE LEGS RESTING
 >
-> **Read this before anything else in this section.** Live trading is armed and reachable, it has
-> now placed real orders without a person present, and it **cannot currently hold a position** —
-> every entry fills and is immediately closed again.
+> **Read this before anything else in this section.** Live trading is armed and reachable and has
+> placed real orders without a person present. **The stop refusal that opened this section is
+> resolved** — the paragraph below said the next attempt would answer it, and it did.
+>
+> Observed on the host 2026-08-04T05:00Z, from local records only:
+>
+> | | |
+> |---|---|
+> | position | ETHUSDT **SHORT** 0.022 @ 1859.14, notional 40.90 USDT |
+> | opened | 2026-08-04T00:13:57Z — **held ~4.75h**, `holding_candles: 2` of a 4h spec |
+> | `live_opened.bracket[0]` | SL @ 1900.5 — **`placed: true`, `status: NEW`** |
+> | `live_opened.bracket[1]` | TP @ 1776.71 — **`placed: true`, `status: NEW`** |
+> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z |
+>
+> The breaker was cleared 2026-08-03T15:51:37Z with the written reason *"#460 confirm-race fix
+> deployed; cause addressed"*, and nothing has tripped it since. `placed: true` on the stop leg is
+> the exact field that read `false` in the incident below, so this is the measurement that
+> paragraph asked for rather than an inference from silence.
+>
+> **What this does NOT yet show, and the distinction is the whole remaining risk.** No live trade
+> has ever *closed*: `live_outcomes.jsonl` **does not exist** on this machine. The entry and the
+> bracket are demonstrated; the **exit** path — a stop or a target actually filling, and the
+> outcome reaching the ledger — has never run end to end. Nor has the naked-close accounting from
+> #470–#472, which merged *after* the last naked close, so it has never fired on a real one. The
+> first live close is the next thing that answers something, and it is the one to watch for.
+>
+> **One position is not a fixed system.** The cause was addressed and one bracket rests; that is
+> evidence, not a warranty. Two consecutive naked entries still shut the door
+> (`LIVE_ENTRY_BRACKET_BREAKER_TRIPPED`), which is what makes it safe to let the next one run.
+>
+> ---
+>
+> **The incident this section was written for — 2026-08-02, kept as history:**
 >
 > Two entries, both ETHUSDT 4h SHORT, both `status: ENTRY_NAKED_CLOSED`:
 >
@@ -334,9 +380,13 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > since been recreated, so the logs are gone. #426 closed exactly that gap (`error_detail`, the
 > venue's numeric code and text) and **is deployed as of 2026-08-02T15:59Z**.
 >
-> **So the next attempt answers it.** That is the agreed next step, chosen over guessing. On the
-> host, watch `.runtime_governance_state/crypto/live_order_counter.json` for a new date key, then
-> read the `live_opened.bracket[].error_detail` on that cycle record.
+> **So the next attempt answers it — and it did.** That was the agreed next step, chosen over
+> guessing, and it is the reason this section could be closed by reading a record rather than by
+> re-deriving a cause. The answer was the confirm race, fixed in #460; the bracket has rested
+> since (see the block at the top of this section). The instruction that produced it, kept
+> because it is the reusable part: watch
+> `.runtime_governance_state/crypto/live_order_counter.json` for a new date key, then read
+> `live_opened.bracket[].placed` and `.error_detail` on that cycle record.
 >
 > **This path had never run before.** The four canary orders are entry-only MARKET by
 > construction (`place_canary_order`), so `STOP_MARKET closePosition` was executed for the first
@@ -360,9 +410,11 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > venue's own `error_detail` (#426) is copied onto the breaker record, which outlives the
 > container that holds the logs. Shown on the readiness board as `bracket_breaker`.
 >
-> **This does not fix the rejection**, and is not meant to: the cause is still unknown and the
-> next attempt is still what answers it. What changed is that the next attempt is now the *last*
-> one that costs anything if the answer is "it is still broken".
+> **This did not fix the rejection**, and was not meant to — #460 did. What this bought was that
+> the next attempt was the *last* one that could cost anything if the answer had been "still
+> broken", and it is why letting that attempt run was the cheap move rather than the brave one.
+> The breaker stays exactly as it is: it is what makes the position at the top of this section
+> something to observe rather than something to worry about.
 >
 > Evidence lives on the Docker host only (gitignored): the cycle records in
 > `.runtime_governance_state/runtime_ledger/records.jsonl` (search `live_opened`), the audit
@@ -885,6 +937,44 @@ scopes at different levels, so nothing was owed to it.
       explicit change with Thomas reading the diff. An automatic flip would silently re-base
       the evidence under live-capable strategies mid-flight — the same class of silent widening
       this section spent two other items closing.
+
+### An expired grant pinned the board's expiry warning, and named the wrong thing — closed 2026-08-04
+
+**Found while answering "does the archive need a grant".** It does; `live_trading` does **not**,
+and the file left over from when it did was still on disk and still being read — by the board, not
+by the gate.
+
+`.runtime_governance_state/safety_flag_activations/live_trading.json` was minted 2026-07-27T08:00
+with a **four-hour** TTL (`expires_at: 2026-07-27T12:00:19Z`), one day before Thomas moved live
+trading onto `safety_gate.select_env_gated` — the environment opt-in alone, no per-machine grant,
+`expires_at` far-future by design. From that decision on, nothing in the live path read the file:
+`select_env_gated` never calls `authorize`, and `assert_authorization` re-reads the **environment**
+for an `env_gate` authorization rather than a record. Verified rather than assumed.
+
+**`dashboard._grants` reads the directory, though**, and it takes `min()` by `expires_at` for the
+"soonest expiry" line. So an inert file 8 days expired was the permanent minimum:
+
+```
+권한   12건 · 가장 이른 만료 2026-07-27 (live_trading) ⚠ -8일 남음      <- before
+권한   11건 · 가장 이른 만료 2026-08-18 (telegram)                       <- after
+```
+
+Two failures from one file, and the second is the one that matters. The **warning was dead** —
+past `GRANT_EXPIRY_WARNING_DAYS` forever, hiding every real grant's expiry behind it, which is how
+a board teaches its reader to skip the block. And the row it named said **live_trading expired**,
+which reads as live trading being off while `MVP_LIVE_TRADING=real` is set in the running
+scheduler and the code path needs no grant at all — wrong in the **permissive** direction, and the
+same shape as the Gate 0 acknowledgement #474 removed: inert, and it reads like live authority.
+
+Removed as uid 10001 through the container, never as root on the host. **Deleting it revokes
+nothing** — the code says so directly: for an env-gated authorization there is no record to
+re-read, so "stopping a live scheduler means restarting it". That property is unchanged by this
+and is worth knowing on its own.
+
+**What this leaves open:** the board still has no row that says live trading is armed. It reports
+grants, and live trading is not one, so its status is now absent rather than wrong — an
+improvement, and not the fix. That belongs with the readiness board, which already learned this
+lesson once (#382, process-scoped readings).
 
 ### Review findings — raised and closed 2026-07-26
 
@@ -1412,7 +1502,48 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
 
-### The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
+### F2. "Cannot confirm" was hiding a negative, not a positive — measured 2026-08-04
+
+F1 above ends on *"the search produces evidence it cannot confirm"*, which leaves the decisive
+question open: is the edge real and merely un-provable at these sample sizes, or is there no
+edge to prove? **Give the same rules five times the evidence and they are refuted, not
+confirmed.** `factory.backtest_spec_pooled` replays one spec across several symbols' frames and
+pools the outcomes, the tail and the cost legs; the stored single-symbol specs were re-scoped to
+all five mined symbols and replayed against live frames (12 top-ranked single-family candidates
+per timeframe, current cost basis, read-only — nothing appended):
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| median holdout expectancy | −0.2694 → −0.2146 | −0.1173 → −0.1374 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+| INSUFFICIENT | 3 → **0** | 0 → 0 |
+| verdicts | — → 0 ROBUST / 12 PROVISIONAL / **0 FRAGILE** | — → 0 / 12 / 0 |
+
+**Two things happen and only one was in doubt.** The arithmetic works exactly as it must: the
+tail multiplies by ~5.3× and `INSUFFICIENT` disappears, because a spec scoped to N symbols is one
+hypothesis fitted on all of them and its tail is all of their tails. `FRAGILE` disappears too —
+`trades_per_parameter` clears the critical ratio once the sample pools, so the overfitting veto
+stops firing. **And every row that stopped being unjudgeable became CONTRADICTED, not CONFIRMED.**
+The estimate barely moves; what changes is that it stops being deniable.
+
+**What this settles and what it does not.** It settles the reading of F1: the un-confirmability
+was concealing a negative, so "re-mint deeper / wait for more evidence" is not a path to a
+promotable candidate on these rules. It does **not** rule out pooled *minting* — these specs were
+fitted on one symbol and then asked to transfer, which is strictly harder than searching for
+parameters that hold across five from the start. A pooled mint is a different experiment and is
+not run here; what is now cheap is running it, because the capability exists and
+`build_spec_dict` takes a `symbol_scope`.
+
+**`run_factory` is deliberately untouched.** Moving the rotation onto pooled specs would change
+what the factory explores on the strength of one afternoon's measurement, and a mint-time change
+is judged over generations, not days (the `#420` error). The capability landed; the decision did
+not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
+the single-symbol search of the same family produced none.
+
+### F3. The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
 
 F1 attributes the unjudgeable half of the store to fusion's AND-union. **The seeded templates
 have the same defect from a different cause**, and `htf_trend_*` shows it exactly: the family
@@ -1508,11 +1639,15 @@ judgeable holdouts out of 60** at 4h, and `htf_pullback_short` does it while car
 never be confirmed, at the timeframe where four of the five routable strategies live — F1's
 mechanism, in a seeded template rather than a fused child.
 
-**What it composes with.** Giving these rules more evidence makes them judgeably negative rather
-than confirmable — the same result the pooled measurement reaches one level up. So the value of
-a template change like this is **diagnostic speed**, not a promotable candidate: it buys a
-verdict at 4h in weeks instead of never. That is worth something and it is not an edge, and the
-two should not be traded for each other in whatever decides this.
+**What it composes with, and the pair is worth more than either half.** F2 gives one set of rules
+five times the evidence; this gives a different set of rules the evidence its own gate was
+throwing away. Both arrive at CONTRADICTED rather than CONFIRMED. So the un-confirmability F1
+found is not a property of how much evidence a spec carries, and it is not a property of which
+rules were asked — two independent ways of removing it both remove it and leave a negative
+behind. The value of a template change like this is therefore **diagnostic speed**, not a
+promotable candidate: it buys a verdict at 4h in weeks instead of never. That is worth
+something, it is not an edge, and the two should not be traded for each other in whatever
+decides this.
 
 **The trend half shipped in #497; the pullback half deliberately did not.** Shipping means
 *replacing* rather than adding — a family is +1 hypothesis on the same data and
@@ -1624,6 +1759,80 @@ would be cheap and is the thing missing, not fewer codes.
 "governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
 **1,938**. The description has not matched the shape for some time. That is an observation about
 the doc, not a proposal to restructure the code.
+
+---
+## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, **S0 unratified**, nothing runs
+
+**This section exists because the lane was not in this file at all**, while three PRs of it
+merged. A reader arriving on a fresh machine and starting here — which is what this file tells
+them to do — would not learn that the lane exists, that `runtime/mvp_runtime/crypto/
+candle_archive.py` is on `main`, or that a regulatory decision is what stands between it and
+running. Its status lived only in `docs/proposals/`, and this file's own header warns that a
+proposal is not the authority for status.
+
+**What is merged** (2026-08-04): the archive store and `refresh_book` (#484), a
+`record_sha256` check on read plus gap reporting (#488), a bounded-hash read path (#490), its
+own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (#486), and the
+correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
+are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
+
+**Nothing runs.** No schedule is registered, and the gate is closed twice over — verified by
+running it rather than by reading the code, 2026-08-04:
+
+```
+MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
+MVP_CANDLE_ARCHIVE='hyperliquid' -> SafetyGateBlocked: ACTIVATION_MISSING
+                                    (no safety_flag_activations/hyperliquid.json)
+```
+
+The second line is the one worth knowing: **the env alone fails at selection**, before any
+collector is constructed. This machine holds **eleven** grants and no `hyperliquid`; the count
+is given rather than the list, because an inventory in this file goes stale the first time one
+is issued or removed — which it did, within the hour of this section being written. Ask the
+directory, or the board's 권한 line.
+
+**One grant this section named is gone, and why is worth reading before assuming the grant model
+is uniform: see section C, *"An expired grant pinned the board's expiry warning"*.** `live_trading`
+does **not** take this path at all — Thomas moved it to `safety_gate.select_env_gated` on
+2026-07-28, the environment opt-in alone, no per-machine grant and no expiry. So "gated by a
+grant" describes the archive and every other capability, and not the one that moves real money.
+
+**S0 is unratified and is what blocks the lane.** It is Appendix A of
+`EQUITY_PERP_LANE_V0.1.md`, whose own title says **미비준**. Three commits have touched that
+file (#441 wrote it, #451, #478) and **none touched Appendix A** — the two `〔확인 필요〕`
+markers stand exactly as written 2026-08-03. Carried here verbatim rather than summarised,
+because the judgment is Thomas's and a paraphrase would be a second version of it:
+
+1. **The strength of the statement.** The original was *"문제는 안 될 것 같다"* — recorded in
+   the draft itself as a provisional judgment, not a legally verified conclusion. The marker is
+   the place to say whether it has been promoted to settled.
+2. **Whether the question was reduced correctly.** The draft argues the opening question is not
+   "may this project trade offshore perps" — already answered in practice by live Binance
+   futures — but only **"does the underlying being US equities change that judgment"**. The
+   marker sits on that reduction, and the draft says the reduction *is* the core of the
+   paragraph.
+
+**No approval record names this lane.** 53 records in
+`.runtime_governance_state/approvals/approvals.jsonl`, zero mentioning equity / Hyperliquid /
+HIP-3 in any human-readable field; they are runtime action approvals
+(`crypto.strategy_pool.retirement` and kin), which is a different thing from a lane decision.
+
+**Nothing in code references S0, and that is the design rather than a gap.** S0 is enforced
+*through* the grant — Thomas does not issue `hyperliquid` until it is ratified, and without the
+grant the selector fails closed. What that leaves is worth stating: the enforcement is a human
+commitment, and no record ties the grant to S0, so a grant issued later for any reason would
+not reveal that S0 had been skipped. If that link should be durable, it is a line in the grant's
+own record, not a new gate.
+
+**In order, what is still needed to archive a single candle:** S0 ratified → the `hyperliquid`
+grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service → a
+registered `candle_archive` schedule. The first two are Thomas's; the last two are minutes.
+
+**The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
+and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
+unrecoverable once it rolls — measured, not projected: `xyz:SP500` listed 2026-03-18 and the
+venue already returns only 52 days of its 15m bars. Every day before the grant is a day of the
+two timeframes the factory can otherwise never reach.
 
 ---
 

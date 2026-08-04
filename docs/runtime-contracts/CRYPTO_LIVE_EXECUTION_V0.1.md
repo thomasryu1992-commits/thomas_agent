@@ -101,9 +101,14 @@ The consequences are deliberate:
 * Clearing the variable is **not** a mid-flight revocation. A running process keeps its
   environment; the egress re-check catches an authorization built earlier in the same process,
   but stopping a live scheduler means the runtime `kill` or a restart.
-* Nothing else may use this weaker door. `select_env_gated` is a separate function from
-  `select_gated` — not a flag on it — so moving another capability onto it takes a deliberate
-  edit at the call site, and `test_only_live_trading_uses_the_env_only_gate` fails if one does.
+* Nothing else may use this weaker door without a decision. `select_env_gated` is a separate
+  function from `select_gated` — not a flag on it — so moving another capability onto it takes
+  a deliberate edit at the call site, and
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` fails if one does.
+  It has fired once as designed: the candle archive joined this door on **2026-08-04** (Thomas),
+  and is the only non-live-trading capability on it. That one is read-only public candles with
+  no key that feed nothing, so it does not widen this contract's blast radius — see
+  `select_candle_archive_collector` for the reasoning and for what was given up.
 
 The account read (LP1) deliberately keeps its **own** grant, `binance_futures_account`, and
 **kept it through the 2026-07-28 change** — reading balances needs a key with a wider blast

@@ -95,9 +95,25 @@ KIND_ROTATE = "ledger_rotate"
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
 # Keeps candles the equity venue will stop serving. Its own kind rather than a leg of
-# `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence and must keep
-# running when the pipeline is paused — the data it is racing is lost by the clock, not by
-# anything the pipeline does.
+# `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence, and a per-book
+# failure has to cost that book alone — losing one symbol must not cost the other eighty-seven.
+#
+# **It is NOT exempt from the kill switch, and the comment here used to say it was.** `run_due`
+# skips every due schedule while PAUSED/KILLED and *drops* the occurrence rather than queueing
+# it; there is no per-kind exemption and this kind does not have one. The original rationale —
+# "must keep running when the pipeline is paused, because the data it races is lost by the
+# clock" — described a property nothing implements, which is worse than not claiming it: an
+# operator reading it would issue a halt believing archiving continued.
+#
+# What is true is that the exposure is BOUNDED by the same ceiling the archive exists for. A
+# refresh sizes its request from the newest bar it holds and may ask for up to
+# `VENUE_CANDLE_CEILING`, so a halt shorter than that window costs nothing — the next fire
+# refills it, which is `candle_archive`'s own "a gap shorter than the ceiling self-heals". Only
+# a halt outlasting **52 days at 15m or 208 at 1h** loses bars permanently.
+#
+# Exempting it would be a change to `run_due` and a different safety claim — a kill switch with
+# an exception is not a kill switch — so it is argued there or not at all. A test pins that this
+# kind stops with everything else, so the exemption cannot arrive by comment.
 KIND_CANDLE_ARCHIVE = "candle_archive"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
@@ -879,23 +895,39 @@ def _execute(
         # again: at 15m the venue's window is 52 days deep and moving, so a pass that does
         # not run is a hole no later pass can fill.
         #
-        # Off unless BOTH the archive's own env names the venue and the Safety-Flag Gate
-        # holds a grant for it. Not opted in, the selector returns the inert collector and
-        # this reports `blocked` rather than writing anything — deliberately not the Mock,
-        # whose synthetic bars would be indistinguishable from real ones a year later.
+        # Off unless the archive's own env names the venue (`select_env_gated` — the second
+        # env-only exception, argued where it is written). Not opted in, the selector returns
+        # the inert collector — deliberately not the Mock, whose synthetic bars would be
+        # indistinguishable from real ones a year later.
+        #
+        # **OFF and BROKEN are reported differently, and that distinction is the point.**
+        # `_notify_status_change` alerts on a FAILED fire and on recovery from one; a summary
+        # string is a COMPLETED fire and reaches nobody. Returning "blocked" for both states —
+        # which this did until 2026-08-04 — meant an archive that stopped working announced it
+        # only inside a completion nobody is told about, while the window it races kept
+        # rolling. Off on purpose is quiet; on and not working RAISES, so the existing failure
+        # alert carries it within one cadence.
         from .crypto import candle_archive
         from .crypto.market_data import HYPERLIQUID, select_candle_archive_collector
 
-        try:
-            collector = select_candle_archive_collector(now=now, root=repo_root)
-        except MvpRuntimeError as exc:
-            # An opted-in-but-ungranted machine must say so once per fire, not crash the tick.
-            return f"candle_archive=blocked:{exc.reason_code}"
+        collector = select_candle_archive_collector(now=now, root=repo_root)
         summary = candle_archive.run_candle_archive(
             collector, venue=HYPERLIQUID, now_ms=int(time.time() * 1000), root=repo_root,
         )
         if summary["blocked"]:
-            return f"candle_archive=blocked:{summary['reason_code']}"
+            if summary["reason_code"] == candle_archive.NOT_ENABLED_REASON:
+                return "candle_archive=off"  # the normal disabled state, not an incident
+            raise SchedulerBlocked("ARCHIVE_UNIVERSE_UNREADABLE", (
+                f"candle archiving is on but could not read the universe: {summary['reason_code']}"
+            ))
+        if summary["books"] and summary["degraded"] == summary["books"]:
+            # Enabled, the universe answered, and not one book did. That is an outage rather
+            # than a slow day, and a silent one would cost exactly what this store exists to
+            # prevent.
+            raise SchedulerBlocked("ARCHIVE_ALL_BOOKS_DEGRADED", (
+                f"candle archiving reached no book of {summary['books']}: "
+                f"{', '.join(summary['degraded_sample'])}"
+            ))
         return (f"candle_archive symbols={summary['symbols']} books={summary['books']} "
                 f"kept={summary['written']} degraded={summary['degraded']}")
     if schedule.kind != KIND_TASK:

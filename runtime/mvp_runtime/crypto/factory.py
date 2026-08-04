@@ -52,11 +52,12 @@ real instead of always zero.
 
 from __future__ import annotations
 
+import math
 import random
 import statistics
 from dataclasses import dataclass, field, replace
 from itertools import combinations
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -384,6 +385,9 @@ def _breakdown_short_entry(p: dict) -> list[dict]:
 
 
 def _htf_trend_long_entry(p: dict) -> list[dict]:
+    # NOT MINTED — see RETIRED_FAMILIES. Superseded by `htf_trend_strength_long` below, which
+    # asks the same question of a continuous column instead of a label that cannot answer it
+    # on the bars that matter most.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
         {"feature": "close", "comparison": ">", "value_from": "ma20"},
@@ -392,8 +396,52 @@ def _htf_trend_long_entry(p: dict) -> list[dict]:
 
 
 def _htf_trend_short_entry(p: dict) -> list[dict]:
+    # NOT MINTED — see RETIRED_FAMILIES.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_strength_long_entry(p: dict) -> list[dict]:
+    # The same premise as `htf_trend_long` — only go long while the timeframe ABOVE is
+    # trending up — asked of the separation itself rather than of the label built from it.
+    #
+    # **What the label could not say.** `classify_market_regime` tests volatility FIRST and
+    # returns `HIGH_VOLATILITY` before it ever reaches its trend branch, so
+    # `htf_market_regime == "TREND_UP"` is false on every higher-timeframe bar in the top
+    # quintile of its own ATR range however cleanly it is trending. Those are the bars where
+    # 1R (`stop_atr` x ATR) is largest against a fixed-bps round trip — the premise
+    # `volatility_expansion_*` exists on — so the retired pair was excluded from precisely the
+    # bars whose friction it could best afford.
+    #
+    # `htf_ma20_distance_ma50` is `(ma20 - ma50) / ma50`, so ONE condition carries both the
+    # direction the label carried and the strength it discarded (a 0.1% separation and an 8%
+    # one were the same label), and the ADX floor stops being `ADX_TREND_THRESHOLD = 20.0`
+    # hard-coded inside the classifier — where 19.9 and 20.1 switched the family off and on —
+    # and becomes a bound the search can move.
+    #
+    # Free parameters are unchanged at 5: `count_free_parameters` charges literals and not
+    # `value_from`, and this trades one literal for another. Measured 2026-08-04 (see
+    # `docs/REMAINING_WORK.md`, section F): at 4h the share of draws reaching
+    # `MIN_HOLDOUT_TRADES` goes 20% -> 48% long and 17% -> 77% short. It buys no edge — 0 of
+    # 960 specs cleared the selection-adjusted bar, and that is the point of the retirement
+    # note rather than of this one.
+    return [
+        {"feature": "htf_ma20_distance_ma50", "comparison": ">=", "value": p["htf_sep_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_strength_short_entry(p: dict) -> list[dict]:
+    # The mirror, and the sign is negated on the VALUE rather than expressed by flipping the
+    # comparison against a positive bound: `htf_sep_min` means "this far apart" in both
+    # directions, so one parameter range describes both families and a draw that is a weak
+    # long signal is an equally weak short one.
+    return [
+        {"feature": "htf_ma20_distance_ma50", "comparison": "<=", "value": -p["htf_sep_min"]},
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
         {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
     ]
@@ -796,12 +844,26 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # HTF families (Thomas 2026-07-25). Ported now that every timeframe in the ladder
     # is collected — the "untimeable" objection that held them back was that the
     # higher leg's data was not there to time against, and it now is.
-    StrategyTemplate("htf_trend_long", "long", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_long_entry),
-    StrategyTemplate("htf_trend_short", "short", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
+    #
+    # `htf_trend_long` / `_short` are RETIRED from the rotation — 2026-08-04 — and REPLACED
+    # rather than merely dropped: the pair below asks their question of a continuous column.
+    # Their builders are kept and re-listing them here is the whole of re-enabling; see
+    # RETIRED_FAMILIES for the measurement.
+    #
+    # The upper bound is 3% rather than open-ended: `htf_ma20_distance_ma50` above ~3% selects
+    # a tail of bars thin enough that the family arrives unjudgeable for want of trades, which
+    # is the failure this replacement exists to fix rather than to re-create at the other end
+    # of the range. Same reasoning as `volatility_expansion_*`'s 0.9 percentile ceiling.
+    StrategyTemplate("htf_trend_strength_long", "long", "1h",
+                     {"htf_sep_min": ParamSpec(0.0, 0.030),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"htf_sep_min": 0.008, "adx_min": 20.0, **_EXIT_BASE},
+                     _htf_trend_strength_long_entry),
+    StrategyTemplate("htf_trend_strength_short", "short", "1h",
+                     {"htf_sep_min": ParamSpec(0.0, 0.030),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"htf_sep_min": 0.008, "adx_min": 20.0, **_EXIT_BASE},
+                     _htf_trend_strength_short_entry),
     StrategyTemplate("htf_pullback_long", "long", "1h",
                      {"rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
                      {"rsi_max": 38.0, **_EXIT_BASE}, _htf_pullback_long_entry),
@@ -918,7 +980,38 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
 # paying for it with a risk unit too small to clear the fees. Re-list it if the entry gains a
 # compensating widener (a target scaled to the squeeze, an ATR floor), or if the cost structure
 # moves far enough that a narrow 1R stops being decisive.
-RETIRED_FAMILIES = frozenset({"volatility_squeeze_long", "volatility_squeeze_short"})
+#
+# `htf_trend_long` / `_short`, retired 2026-08-04 and **replaced in the same commit** by
+# `htf_trend_strength_*` — which is the difference from the retirement above. This pair is not
+# stopped for producing bad evidence; it is stopped for producing evidence nobody can judge,
+# and its premise moves to a family that can.
+#
+# The mechanism is one `return` in `features.classify_market_regime`: it tests volatility before
+# it tests trend, so `htf_market_regime == "TREND_UP"` is false on every higher-timeframe bar in
+# the top quintile of its own ATR range, however cleanly that bar is trending. 1R is
+# `stop_atr` x ATR against a fixed-bps round trip, so those excluded bars are exactly the ones
+# whose friction the family could best afford — the premise `volatility_expansion_*` was added
+# on. Two lesser losses ride along: the ADX floor is `ADX_TREND_THRESHOLD = 20.0` hard-coded
+# inside the classifier rather than a bound the search can move, and trend STRENGTH is discarded
+# (a 0.1% ma20/ma50 separation and an 8% one are one label).
+#
+# Measured 2026-08-04 over 960 specs, 5 symbols x 12 paired draws x long/short, exits drawn from
+# their own rng so the entry rule is the only difference between arms
+# (`docs/REMAINING_WORK.md`, section F): at 4h the share of draws reaching `MIN_HOLDOUT_TRADES`
+# goes **20% -> 48%** long and **17% -> 77%** short, at identical `free_parameters` (5).
+#
+# **This buys no edge and the retirement does not claim one.** Nothing in that measurement
+# cleared the selection-adjusted bar (0 of 960; one spec cleared the uncorrected 1.96 where ~24
+# are expected by chance), and the newly judgeable rows are judgeably NEGATIVE — the same result
+# the pooled backtest reaches from the other direction. What the replacement buys is that a
+# verdict on this premise becomes reachable at 4h, where four of the five routable strategies
+# live and where the retired pair could not produce one. Re-list the old pair only if the
+# regime label stops folding volatility over trend; the premise itself is unrefuted and is
+# carried by the replacement.
+RETIRED_FAMILIES = frozenset({
+    "volatility_squeeze_long", "volatility_squeeze_short",
+    "htf_trend_long", "htf_trend_short",
+})
 
 # Families whose entry rules read the open-interest columns — mintable only where the
 # feed is configured; with no feed their conditions are indeterminate and never match,
@@ -928,7 +1021,13 @@ OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
+#
+# Both the minted pair and the retired one are named, for the reason CROSS_SECTION_FAMILIES
+# states below: the gate asks whether a family that reads `htf_*` may be minted here, which is
+# a property of the COLUMNS and not of which pair currently reads them — so leaving the retired
+# pair out would silently un-gate it the day somebody re-listed it.
 HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
+                          "htf_trend_strength_long", "htf_trend_strength_short",
                           "htf_pullback_long", "htf_pullback_short"})
 
 # Families whose entry rules read ``session`` — mintable only where a bar is short enough
@@ -997,6 +1096,41 @@ def template_features(template: StrategyTemplate) -> frozenset[str]:
     return frozenset(names)
 
 
+def _oi_feed_reaches(timeframe: str) -> bool:
+    """Does the derivative feed's history span what the factory replays at ``timeframe``?
+
+    **The premise `market_data` states beside the OI interval — "the only depth that covers the
+    factory's 500-day replay" — is true of every timeframe except 1d, and nothing noticed for
+    six days.** `MIN_FACTORY_BARS` (2026-07-29) floored 1d at 2,000 BARS to buy it enough trades
+    to be scoreable, and at 1d a bar is a day, so the window stopped being a 500-day calendar
+    span and became a 2,000-day one. The daily open-interest series is
+    :data:`market_data.DERIVATIVE_HISTORY_DAYS` = 520 days, so it answers about a quarter of it.
+
+    It went unseen because the 1d contexts left the factory rotation on 2026-07-23, six days
+    BEFORE the floor landed — the floor and this premise never both applied to a minting context
+    until 1d was put back on 2026-08-04. Measured that day on live frames: with the feed
+    configured, all four oi_* families are determinate on ~26% of the 1d replay rows and on 100%
+    of the 15m/1h/4h ones.
+
+    A quarter-covered window is not merely thin, it is the failure `POSITIONING_FAMILIES`
+    documents: the walk-forward split puts every trade in the newest slice and none in the older
+    ones, so ``temporal_consistency`` is 0 by construction, no edge can clear the robustness bar,
+    and the family is retired as FRAGILE for a window that had no data in it. `unsuppliable_features`
+    does not catch it — that refuses a column None on EVERY row, and this one is populated on the
+    newest quarter.
+
+    Arithmetic rather than a measured parameter, unlike ``positioning_eligible``: that store
+    accumulates and its coverage genuinely changes day to day, while this is the depth this
+    runtime *asks* for against the window it *chose* to replay. Both are constants here, so a
+    caller has nothing to measure and cannot get it wrong by omission.
+    """
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return False
+    replay_days = market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+    return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1017,7 +1151,9 @@ def templates_for_timeframe(
     - the xs_* families need a cohort that still reaches
       ``features.MIN_CROSS_SECTION_MEMBERS`` after this symbol is taken out of it;
     - the positioning_* families need a store whose accumulated coverage spans the replay
-      window, which the caller measures and passes as ``positioning_eligible``.
+      window, which the caller measures and passes as ``positioning_eligible``;
+    - the oi_* families need a derivative feed whose history reaches the replay window, which
+      is pure arithmetic here rather than a parameter — see ``_oi_feed_reaches``.
 
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
@@ -1058,6 +1194,7 @@ def templates_for_timeframe(
         1 for member in market_data.CROSS_SECTION_UNIVERSE if member != str(symbol)
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
+    has_oi_history = _oi_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1073,6 +1210,8 @@ def templates_for_timeframe(
         if template.family in CROSS_SECTION_FAMILIES and not has_cross_section:
             return False
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
+            return False
+        if template.family in OI_FAMILIES and not has_oi_history:
             return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.
@@ -1336,10 +1475,20 @@ def build_spec_dict(
     template: StrategyTemplate, params: dict[str, float], *,
     strategy_id: str, generation_id: str, symbol: str = "BTCUSDT",
     venue: str = market_data.BINANCE_FUTURES,
+    symbol_scope: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     # `venue` is recorded here rather than left to `StrategySpec`'s default because this is
     # where the fact exists: a spec mined by this function was mined on that venue's data.
     # The default agrees with the dataclass's for the same reason it has one.
+    #
+    # `symbol_scope` defaults to `[symbol]`, which is what every one of the 1,140 stored
+    # candidates carries and what `run_factory` still mints. A caller may widen it for a spec
+    # backtested by `backtest_spec_pooled` over that same set — the two have to agree or the
+    # evidence describes a different strategy than the record claims, which is why the scope is
+    # an argument here rather than something the pooled backtest infers. Sorted, because
+    # `symbol_scope` is inside `strategy_rule_fingerprint`: the same spec reached by a different
+    # caller ordering must be the same rule hash.
+    scope = sorted({str(s) for s in symbol_scope}) if symbol_scope else [symbol]
     return {
         "schema_version": SCHEMA_VERSION,
         "strategy_id": strategy_id,
@@ -1347,7 +1496,7 @@ def build_spec_dict(
         "generation_id": generation_id,
         "strategy_family": template.family,
         "status": "GENERATED",
-        "symbol_scope": [symbol],
+        "symbol_scope": scope,
         "timeframe": template.timeframe,
         "direction": template.direction,
         "entry_rules": {"operator": "AND", "conditions": template.entry_builder(params)},
@@ -1403,8 +1552,49 @@ def context_rotation_index(
     return len(seen)
 
 
+def context_rotation_phase(symbol: str, timeframe: str, *, count: int, total: int) -> int:
+    """Where in the rotation this context STARTS, so two contexts do not march in lockstep.
+
+    :func:`context_rotation_index` fixed which families a context can reach; this fixes how
+    many the factory reaches per fire. Its docstring already names the missing half — "the
+    absolute value does not matter at all, it only sets the PHASE" — and the phase it was
+    relying on is the count of generations already in the store, which every context acquires
+    at the same rate because they all fire on the same schedule. So they converge, and
+    measured 2026-08-04 they had: **13 of 20 contexts sat on rotation_index 11**, all four
+    non-BTC symbols identical across 15m/1h/4h, and the only contexts off the block were the
+    1d ones whose imported row counts happened to differ. The phases that existed were an
+    accident of history rather than the design.
+
+    What that costs is breadth per day. A fire mints ``count`` consecutive families, so 20
+    synchronised contexts mint the SAME four — measured in the candidate store, 2026-08-03's
+    seeded mints were ``bollinger_breakout`` 14, ``bollinger_breakdown_short`` 14,
+    ``macd_momentum`` 13, ``macd_momentum_short`` 13, i.e. one block of four drawn 14 times
+    over. The library is 36-38 families and a fire advances by 4, so any given family gets one
+    day of mints roughly every ten, and ``htf_trend_long`` — the only family in the store with
+    a positive median holdout — had not been minted since 2026-07-30.
+
+    The phase is a stable hash of the context rather than a counter, because it must not move
+    when the store is pruned, re-imported, or read on another machine: a phase that drifts
+    would re-synchronise the contexts it exists to separate. Taken modulo the number of
+    distinct offsets the walk actually visits (``total // gcd(count, total)``) — a phase past
+    that lands on an offset the rotation already covers and buys nothing.
+
+    **Coverage is unchanged and that is the property to preserve on any edit here.** A fire at
+    ``k`` reads offsets ``(k + phase) * count``, which steps by ``count`` exactly as before, so
+    ``ceil(total / count)`` consecutive fires still tile the whole library whatever the phase
+    is. This shifts WHERE a context starts, never how much it eventually sees.
+    """
+    if total <= 0:
+        return 0
+    cycle = total // math.gcd(max(count, 1), total)
+    digest = integrity.short_id(
+        "crypto_rotation_phase", {"symbol": str(symbol), "timeframe": str(timeframe)}
+    )
+    return int(digest.rsplit("_", 1)[1][:8], 16) % max(cycle, 1)
+
+
 def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
-                     rotation_index: int | None = None) -> int:
+                     rotation_index: int | None = None, phase: int = 0) -> int:
     """The first family index this run mints. Deterministic, marches forward.
 
     ``rotation_index`` is the caller's per-context cursor
@@ -1426,7 +1616,13 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
     out: that one selected `templates[0..3]` on every run, this one selects one of three
     fixed blocks. The fix then made *consecutive* generations rotate, and the test written
     for it walks GEN-000, GEN-001, ... — a rotation production never performs. A test that
-    strides is in the suite now beside it."""
+    strides is in the suite now beside it.
+
+    ``phase`` is :func:`context_rotation_phase` — a per-context constant that separates
+    contexts firing the same fire number. It is applied on BOTH paths, including the
+    generation-number fallback: a constant shift changes neither the stride nor the residues
+    a strided walk can reach, so the fallback's behaviour (and the test pinning it) is
+    unaffected, and one code path is worth more than a branch that would need its own."""
     if total <= 0:
         return 0
     if rotation_index is not None:
@@ -1436,7 +1632,7 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
             step = int(str(generation_id).rsplit("-", 1)[1])
         except (ValueError, IndexError):
             step = int(seed)
-    return (step * max(count, 1)) % total
+    return ((step + int(phase)) * max(count, 1)) % total
 
 
 def generate_batch(
@@ -1481,8 +1677,18 @@ def generate_batch(
     # is the correction of 2026-07-31: the step used to be the global generation number,
     # which advances once per fire across every context and so strides — see
     # `_rotation_offset` for what that cost.
-    offset = _rotation_offset(generation_id, seed, count, len(templates),
-                              rotation_index=rotation_index)
+    #
+    # The phase is the second half of that correction: the cursor decides how far a context
+    # has walked, the phase decides where it started, and without one every context walks in
+    # step and the whole factory explores `count` families a day. See
+    # `context_rotation_phase`. Derived here from this batch's own symbol/timeframe rather
+    # than taken as a parameter — the caller would have to compute it from the two arguments
+    # it already passes, which is a chance for a caller to pass a phase from a different
+    # context than the batch it is minting.
+    offset = _rotation_offset(
+        generation_id, seed, count, len(templates), rotation_index=rotation_index,
+        phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
+    )
     accepted: list[StrategySpec] = []
     accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
@@ -1781,23 +1987,49 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
 
 
 def _holdout_evidence(
-    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
-    *, cost: CostModel, offset: int, funding: list[float] | None = None,
-    funding_source: str = FUNDING_SOURCE_VENUE,
+    spec: StrategySpec, frames: Sequence["ReplayFrame"],
+    *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
 ) -> dict[str, Any]:
     """What the spec did on bars that never touched its score. Compact by design.
 
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
-    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
-        spec, rows, candles, cost=cost, funding=funding, offset=offset
-    )
+    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing.
+
+    Takes **frames**, plural, and pools their tails into one block. A spec scoped to
+    several symbols is one hypothesis fitted on all of them, so its tail is all of their
+    tails — which is the whole reason a pooled spec can reach ``MIN_HOLDOUT_TRADES``
+    where a single-symbol one at the same timeframe cannot. ``bars`` stays the
+    PER-SYMBOL depth (the shallowest frame's, so the claim is bounded by the leg that
+    saw least) because `pool.evidence_depth_of` reads it as a calendar span: five
+    symbols over 150 days is still 150 days of market, seen five times. ``symbols``
+    says how many times.
+    """
+    outcomes: list[dict[str, Any]] = []
+    fees = maker_fees = slippage = carry = 0.0
+    uneconomic = 0
+    bars: list[int] = []
+    for frame in frames:
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[frame.split:], frame.candles[frame.split:],
+            cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
+        )
+        outcomes.extend(part)
+        fees += part_fees
+        maker_fees += part_maker
+        slippage += part_slip
+        carry += part_carry
+        uneconomic += part_uneconomic
+        bars.append(len(frame.rows) - frame.split)
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
     return {
-        "bars": len(rows),
+        "bars": min(bars) if bars else 0,
+        # Absent on every block minted before pooling existed, and 1 is what those mean —
+        # `pool` and `robustness` read the count only to describe the evidence, never to
+        # gate on it, so a missing field degrades to the single-symbol reading it had.
+        "symbols": len(frames),
         "closed_count": closed,
         "win_count": sum(1 for r in results if r > 0),
         "total_R": total_r,
@@ -1888,7 +2120,11 @@ def backtest_spec(
     spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
     frame: ReplayFrame | None = None,
 ) -> dict[str, Any]:
-    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+    """Replay ``spec`` over one snapshot's history. Deterministic, pure.
+
+    The single-symbol form of :func:`backtest_spec_pooled`, and byte-identical to what
+    this function returned before pooling existed — every caller that mines one
+    ``(symbol, timeframe)`` context keeps exactly the evidence it had.
 
     Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
     the position opens at row i's close with the spec's ATR exits, and every later
@@ -1900,28 +2136,84 @@ def backtest_spec(
     ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
     outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
     NET R after costs; ``gross_R`` rides alongside for transparency."""
+    return backtest_spec_pooled(
+        spec, [snapshot], cost=cost, frames=None if frame is None else [frame]
+    )
+
+
+def backtest_spec_pooled(
+    spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
+    cost: CostModel | None = None, frames: Sequence[ReplayFrame] | None = None,
+) -> dict[str, Any]:
+    """Replay one spec across several symbols' histories and pool the result.
+
+    **One hypothesis, N symbols' worth of evidence.** Every spec in the store is scoped
+    to a single symbol (``build_spec_dict`` defaults to ``[symbol]``), so the factory's
+    evidence-per-hypothesis ratio is fixed by how often one symbol signals — and at 4h
+    and 1d that is below `robustness.MIN_HOLDOUT_TRADES`, which is why
+    `REMAINING_WORK.md` F1 finds the search producing evidence it cannot confirm.
+    Pooling moves the ratio the only way that helps: adding a family costs +1 hypothesis
+    at the same data, adding a symbol as its own context costs +N hypotheses at +N data,
+    and this is +0 hypotheses at +N data.
+
+    It is also the harder thing to overfit, which is the second reason: one parameter set
+    has to hold on BTC and DOGE at once. The feature vocabulary was already built for
+    that — ``NUMERIC_FEATURES`` admits only normalized columns precisely so "a mined
+    threshold carries the same meaning on BTC and on SOL" — and nothing had used it.
+
+    Preconditions, fail-closed rather than reconciled: every frame must carry the same
+    cost model (a pooled figure mixing rates describes no book), and the caller is
+    responsible for handing frames of ONE timeframe, since the walk-forward slices below
+    index by bar and bar *i* only names the same calendar window across symbols when the
+    bar length is the same.
+
+    ``bars_replayed`` stays the per-symbol scored depth for the reason ``holdout.bars``
+    does; ``symbols_replayed`` is how many legs are behind it. This does **not** decide
+    what the factory mints — ``run_factory`` is untouched, and moving the rotation onto
+    pooled specs is a separate decision that wants generations of evidence, not this
+    function landing.
+    """
+    if not snapshots and not frames:
+        raise ValueError("a pooled backtest needs at least one snapshot or frame")
     cost = cost or CostModel()
-    # Reused when the caller already built it (`run_factory` builds one per fire and replays
+    # Reused when the caller already built them (`run_factory` builds one per fire and replays
     # every spec and fusion child through it), rebuilt when it did not. A frame from a different
     # cost model is refused rather than used: see `ReplayFrame`.
-    if frame is None:
-        frame = build_replay_frame(snapshot, cost=cost)
-    elif frame.cost != cost:
-        raise ValueError(
-            "replay frame was built under a different cost model than this backtest charges; "
-            "the carry series would price trades at rates they never faced"
+    if frames is None:
+        frames = [build_replay_frame(snapshot, cost=cost) for snapshot in snapshots]
+    else:
+        for frame in frames:
+            if frame.cost != cost:
+                raise ValueError(
+                    "replay frame was built under a different cost model than this backtest "
+                    "charges; the carry series would price trades at rates they never faced"
+                )
+    # The weaker label wins when the legs disagree: a pooled carry is only as well-sourced as
+    # its worst leg, and reporting `venue_history` over a book where one symbol fell back to
+    # the modelled rate would overstate what the funding figure is evidence of.
+    funding_source = (
+        FUNDING_SOURCE_VENUE
+        if all(f.funding_source == FUNDING_SOURCE_VENUE for f in frames)
+        else FUNDING_SOURCE_FALLBACK
+    )
+    outcomes: list[dict[str, Any]] = []
+    total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
+    uneconomic_entries = 0
+    scored_bars: list[int] = []
+    for frame in frames:
+        split = frame.split
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[:split], frame.candles[:split],
+            cost=cost, funding=frame.funding[:split],
         )
-    all_rows, all_candles = frame.rows, frame.candles
-    all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
-    rows, candles = all_rows[:split], all_candles[:split]
-    (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-     total_funding_cost_r, uneconomic_entries) = _replay(
-        spec, rows, candles, cost=cost, funding=all_funding[:split]
-    )
-    holdout = _holdout_evidence(
-        spec, all_rows[split:], all_candles[split:], cost=cost, offset=split,
-        funding=all_funding[split:], funding_source=funding_source,
-    )
+        outcomes.extend(part)
+        total_fee_cost_r += part_fees
+        total_maker_fee_cost_r += part_maker
+        total_slippage_cost_r += part_slip
+        total_funding_cost_r += part_carry
+        uneconomic_entries += part_uneconomic
+        scored_bars.append(split)
+    holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
     summary = summarize_outcomes(outcomes)
 
@@ -1953,7 +2245,11 @@ def backtest_spec(
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
     # with enough trades. temporal_stability stays None (the source walk-forward
     # module was not ported) — the scorer treats that as absent evidence, not skip.
-    window_bars = max(1, len(rows) // BACKTEST_WINDOWS)
+    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
+    # into the last window rather than opening a window the other legs never reached. Bar *i*
+    # is the same calendar window on every leg — that is the one-timeframe precondition above,
+    # and it is what makes pooling by `closed_at_bar` mean anything.
+    window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
         window_r.setdefault(min(outcome["closed_at_bar"] // window_bars, BACKTEST_WINDOWS - 1), []).append(
@@ -2069,7 +2365,14 @@ def backtest_spec(
         # robustness score (C8b), with raw expectancy kept alongside.
         "champion_score": robustness["robustness_score"],
         "score_basis": "robustness_score_v1",
-        "bars_replayed": len(rows),
+        # PER SYMBOL, and the shallowest leg's — `pool.evidence_depth_of` turns this into a
+        # calendar span, and five symbols over 350 days is 350 days of market seen five times,
+        # not 1,750 days of it. Summing would tier a pooled candidate as though it had been
+        # shown history that does not exist.
+        "bars_replayed": min(scored_bars),
+        # How many legs are behind every figure above. Absent on evidence minted before pooling,
+        # which is exactly what 1 means, so a reader needs no migration to interpret an old row.
+        "symbols_replayed": len(frames),
     }
 
 
