@@ -570,6 +570,32 @@ def test_killed_or_paused_skips_execution(tmp_path, command, status):
     event = json.loads((ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip())
     assert event["action"] == "skipped" and event["status"] == status
 
+def test_the_candle_archive_is_not_exempt_from_the_kill_switch(tmp_path):
+    """The kind's comment claimed it kept running while the pipeline was paused. Nothing
+    implements that, and an operator reading it would halt believing archiving continued.
+
+    Pinned as a test rather than corrected in prose alone, because an exemption arriving by
+    comment is exactly how the claim got there. If archiving ever should survive a halt, it is
+    a change to `run_due` and a different safety claim — a kill switch with an exception is not
+    a kill switch — and this assertion is where that argument has to be had.
+    """
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, "kill", actor="op", now=T0)
+    store.add(build_schedule(kind=scheduler.KIND_CANDLE_ARCHIVE, request="",
+                             interval_seconds=60, created_by="op", now=T0))
+    ex = FakeExecutor()
+
+    summary = run_due(store, now=T1, control_store=control_store, ledger=ledger, executor=ex)
+
+    assert summary["fired"] == 0 and summary["skipped"] == 1
+    assert ex.calls == []
+    # The occurrence is DROPPED, not queued — so a halt does not release into a burst, and the
+    # bars that rolled out of the venue's window during it are simply gone.
+    assert store.list()[0].next_run_at == T2
+
+
 def test_kill_mid_batch_stops_the_remaining_schedules(tmp_path):
     """The control state is re-read before EACH fire, not once per batch: a /kill issued
     while schedule 1 holds the tick (a pipeline run takes minutes) must stop schedules 2
