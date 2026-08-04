@@ -434,6 +434,9 @@ def _breakdown_short_entry(p: dict) -> list[dict]:
 
 
 def _htf_trend_long_entry(p: dict) -> list[dict]:
+    # NOT MINTED — see RETIRED_FAMILIES. Superseded by `htf_trend_strength_long` below, which
+    # asks the same question of a continuous column instead of a label that cannot answer it
+    # on the bars that matter most.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_UP"},
         {"feature": "close", "comparison": ">", "value_from": "ma20"},
@@ -442,8 +445,52 @@ def _htf_trend_long_entry(p: dict) -> list[dict]:
 
 
 def _htf_trend_short_entry(p: dict) -> list[dict]:
+    # NOT MINTED — see RETIRED_FAMILIES.
     return [
         {"feature": "htf_market_regime", "comparison": "==", "value": "TREND_DOWN"},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_strength_long_entry(p: dict) -> list[dict]:
+    # The same premise as `htf_trend_long` — only go long while the timeframe ABOVE is
+    # trending up — asked of the separation itself rather than of the label built from it.
+    #
+    # **What the label could not say.** `classify_market_regime` tests volatility FIRST and
+    # returns `HIGH_VOLATILITY` before it ever reaches its trend branch, so
+    # `htf_market_regime == "TREND_UP"` is false on every higher-timeframe bar in the top
+    # quintile of its own ATR range however cleanly it is trending. Those are the bars where
+    # 1R (`stop_atr` x ATR) is largest against a fixed-bps round trip — the premise
+    # `volatility_expansion_*` exists on — so the retired pair was excluded from precisely the
+    # bars whose friction it could best afford.
+    #
+    # `htf_ma20_distance_ma50` is `(ma20 - ma50) / ma50`, so ONE condition carries both the
+    # direction the label carried and the strength it discarded (a 0.1% separation and an 8%
+    # one were the same label), and the ADX floor stops being `ADX_TREND_THRESHOLD = 20.0`
+    # hard-coded inside the classifier — where 19.9 and 20.1 switched the family off and on —
+    # and becomes a bound the search can move.
+    #
+    # Free parameters are unchanged at 5: `count_free_parameters` charges literals and not
+    # `value_from`, and this trades one literal for another. Measured 2026-08-04 (see
+    # `docs/REMAINING_WORK.md`, section F): at 4h the share of draws reaching
+    # `MIN_HOLDOUT_TRADES` goes 20% -> 48% long and 17% -> 77% short. It buys no edge — 0 of
+    # 960 specs cleared the selection-adjusted bar, and that is the point of the retirement
+    # note rather than of this one.
+    return [
+        {"feature": "htf_ma20_distance_ma50", "comparison": ">=", "value": p["htf_sep_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+        {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
+    ]
+
+
+def _htf_trend_strength_short_entry(p: dict) -> list[dict]:
+    # The mirror, and the sign is negated on the VALUE rather than expressed by flipping the
+    # comparison against a positive bound: `htf_sep_min` means "this far apart" in both
+    # directions, so one parameter range describes both families and a draw that is a weak
+    # long signal is an equally weak short one.
+    return [
+        {"feature": "htf_ma20_distance_ma50", "comparison": "<=", "value": -p["htf_sep_min"]},
         {"feature": "close", "comparison": "<", "value_from": "ma20"},
         {"feature": "adx", "comparison": ">=", "value": p["adx_min"]},
     ]
@@ -883,12 +930,26 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # HTF families (Thomas 2026-07-25). Ported now that every timeframe in the ladder
     # is collected — the "untimeable" objection that held them back was that the
     # higher leg's data was not there to time against, and it now is.
-    StrategyTemplate("htf_trend_long", "long", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_long_entry),
-    StrategyTemplate("htf_trend_short", "short", "1h",
-                     {"adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
-                     {"adx_min": 20.0, **_EXIT_BASE}, _htf_trend_short_entry),
+    #
+    # `htf_trend_long` / `_short` are RETIRED from the rotation — 2026-08-04 — and REPLACED
+    # rather than merely dropped: the pair below asks their question of a continuous column.
+    # Their builders are kept and re-listing them here is the whole of re-enabling; see
+    # RETIRED_FAMILIES for the measurement.
+    #
+    # The upper bound is 3% rather than open-ended: `htf_ma20_distance_ma50` above ~3% selects
+    # a tail of bars thin enough that the family arrives unjudgeable for want of trades, which
+    # is the failure this replacement exists to fix rather than to re-create at the other end
+    # of the range. Same reasoning as `volatility_expansion_*`'s 0.9 percentile ceiling.
+    StrategyTemplate("htf_trend_strength_long", "long", "1h",
+                     {"htf_sep_min": ParamSpec(0.0, 0.030),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"htf_sep_min": 0.008, "adx_min": 20.0, **_EXIT_BASE},
+                     _htf_trend_strength_long_entry),
+    StrategyTemplate("htf_trend_strength_short", "short", "1h",
+                     {"htf_sep_min": ParamSpec(0.0, 0.030),
+                      "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
+                     {"htf_sep_min": 0.008, "adx_min": 20.0, **_EXIT_BASE},
+                     _htf_trend_strength_short_entry),
     StrategyTemplate("htf_pullback_long", "long", "1h",
                      {"rsi_max": ParamSpec(25.0, 45.0), **_EXIT_PARAMS},
                      {"rsi_max": 38.0, **_EXIT_BASE}, _htf_pullback_long_entry),
@@ -1035,10 +1096,39 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
 # carry the full reasoning. Measured: -0.0177R and -0.0048R GROSS over 3,040 and 2,626 holdout
 # trades — 5,666 trades in which the momentum reading has not been positive before costs.
 # Re-list it only by swapping the reversion pair back out.
+#
+# `htf_trend_long` / `_short`, retired 2026-08-04 and **replaced in the same commit** by
+# `htf_trend_strength_*` — which is the difference from the retirement above. This pair is not
+# stopped for producing bad evidence; it is stopped for producing evidence nobody can judge,
+# and its premise moves to a family that can.
+#
+# The mechanism is one `return` in `features.classify_market_regime`: it tests volatility before
+# it tests trend, so `htf_market_regime == "TREND_UP"` is false on every higher-timeframe bar in
+# the top quintile of its own ATR range, however cleanly that bar is trending. 1R is
+# `stop_atr` x ATR against a fixed-bps round trip, so those excluded bars are exactly the ones
+# whose friction the family could best afford — the premise `volatility_expansion_*` was added
+# on. Two lesser losses ride along: the ADX floor is `ADX_TREND_THRESHOLD = 20.0` hard-coded
+# inside the classifier rather than a bound the search can move, and trend STRENGTH is discarded
+# (a 0.1% ma20/ma50 separation and an 8% one are one label).
+#
+# Measured 2026-08-04 over 960 specs, 5 symbols x 12 paired draws x long/short, exits drawn from
+# their own rng so the entry rule is the only difference between arms
+# (`docs/REMAINING_WORK.md`, section F): at 4h the share of draws reaching `MIN_HOLDOUT_TRADES`
+# goes **20% -> 48%** long and **17% -> 77%** short, at identical `free_parameters` (5).
+#
+# **This buys no edge and the retirement does not claim one.** Nothing in that measurement
+# cleared the selection-adjusted bar (0 of 960; one spec cleared the uncorrected 1.96 where ~24
+# are expected by chance), and the newly judgeable rows are judgeably NEGATIVE — the same result
+# the pooled backtest reaches from the other direction. What the replacement buys is that a
+# verdict on this premise becomes reachable at 4h, where four of the five routable strategies
+# live and where the retired pair could not produce one. Re-list the old pair only if the
+# regime label stops folding volatility over trend; the premise itself is unrefuted and is
+# carried by the replacement.
 RETIRED_FAMILIES = frozenset({
     "volatility_squeeze_long", "volatility_squeeze_short",
     "macd_momentum", "macd_momentum_short",
     "xs_momentum_long", "xs_momentum_short",
+    "htf_trend_long", "htf_trend_short",
 })
 
 # Families whose entry rules read the open-interest columns — mintable only where the
@@ -1049,7 +1139,13 @@ OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
+#
+# Both the minted pair and the retired one are named, for the reason CROSS_SECTION_FAMILIES
+# states below: the gate asks whether a family that reads `htf_*` may be minted here, which is
+# a property of the COLUMNS and not of which pair currently reads them — so leaving the retired
+# pair out would silently un-gate it the day somebody re-listed it.
 HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
+                          "htf_trend_strength_long", "htf_trend_strength_short",
                           "htf_pullback_long", "htf_pullback_short"})
 
 # Families whose entry rules read ``session`` — mintable only where a bar is short enough
