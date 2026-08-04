@@ -755,3 +755,63 @@ def test_a_lost_marks_file_refreshes_rather_than_reseeding(tmp_path):
         symbol="BTCUSDT", collector=collector, now=just_after_the_seed, root=tmp_path
     )
     assert set(asked) == {positioning_store.REFRESH_ROWS}, "re-seeded a store that was up to date"
+
+
+# --- the other accumulating store, on the same scope rule ---------------------
+
+class _OiFeed:
+    """One hourly reading per ask, counting the asks — the throttle is what the tests measure."""
+
+    feed_id = "counting_oi"
+
+    def __init__(self):
+        self.calls = 0
+
+    def open_interest_history(self, symbol, *, days, timeout_seconds, **kwargs):
+        self.calls += 1
+        return [{"timestamp": "2026-08-04T00:00:00Z", "open_interest": 1234.5}]
+
+def test_the_open_interest_cohort_covers_a_symbol_the_pool_never_routes(tmp_path):
+    """The defect this closes, measured 2026-08-04: the hourly OI store held 10,644 rows across
+    exactly five symbols and XRPUSDT held **zero and always had** — a cohort member no context
+    ever carried, because the store rode `attach_feeds` (once per VISITED context) while
+    positioning had already moved to the declared cohort. Vendor retention is ~84 days against a
+    500-day replay, so an hour not recorded is gone, and `coverage_summary`'s AND stays shut on
+    the one permanently-empty member however long the rest accumulate."""
+    from runtime.mvp_runtime.crypto import oi_store
+    from runtime.mvp_runtime.crypto.cycle import accumulate_open_interest_cohort
+
+    status = accumulate_open_interest_cohort(
+        liquidation_feed=_OiFeed(), now=NOW, root=tmp_path, contexts=[("BTCUSDT", "4h")],
+    )
+    assert set(status) == set(CROSS_SECTION_UNIVERSE)
+    for symbol in CROSS_SECTION_UNIVERSE:
+        assert oi_store.read_rows(tmp_path, symbol=symbol), symbol
+
+
+def test_the_open_interest_sweep_pays_the_throttle_not_the_fan_out_rate(tmp_path):
+    """Widening the scope must not widen the request bill: the store measures from the last
+    ATTEMPT, so the second fire of the same hour opens no socket."""
+    from runtime.mvp_runtime.crypto.cycle import accumulate_open_interest_cohort
+
+    feed = _OiFeed()
+    accumulate_open_interest_cohort(
+        liquidation_feed=feed, now=NOW, root=tmp_path, contexts=[],
+    )
+    first = feed.calls
+    assert first == len(CROSS_SECTION_UNIVERSE)
+    accumulate_open_interest_cohort(
+        liquidation_feed=feed, now=NOW, root=tmp_path, contexts=[],
+    )
+    assert feed.calls == first, "the hourly throttle must answer the second fire"
+
+
+def test_both_accumulating_stores_read_one_scope_rule(tmp_path):
+    """One concept, one authority. The two sweeps disagreed for a week because each computed
+    its own cohort; they now share `retention_cohort`, so a symbol can never be in one store's
+    scope and outside the other's."""
+    from runtime.mvp_runtime.crypto.cycle import retention_cohort
+
+    cohort = retention_cohort([("ADAUSDT", "1h")])
+    assert set(CROSS_SECTION_UNIVERSE) <= set(cohort) and "ADAUSDT" in cohort
+    assert cohort == sorted(cohort)

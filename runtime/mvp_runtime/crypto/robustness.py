@@ -323,6 +323,72 @@ def holdout_expectancy(holdout: Mapping[str, Any]) -> float:
     return _f(holdout.get("total_R")) / closed if closed else 0.0
 
 
+# The unit of independence is the market PERIOD, not the trade. Measured 2026-08-04 over 700
+# frozen specs and 113,127 replayed trades: mean pairwise correlation of per-block gross across
+# the ten routed contexts is **+0.459** — the same weeks are good or bad for everything at once
+# — and block-to-block dispersion of gross is 0.1087R against an effect being hunted at
+# 0.01-0.05R. `stdev_r / sqrt(closed_count)` therefore overstates precision by roughly
+# sqrt(trades / periods): about 2.4x for the single block that passed on this store.
+#
+# Four, because that is the smallest sample a two-sided 95% t can be drawn over and still be
+# able to fail; `factory.HOLDOUT_PERIODS` writes five so one empty slice is survivable.
+MIN_HOLDOUT_PERIODS = 4
+
+# Two-sided 95% Student-t critical values by degrees of freedom. A table rather than a
+# computed quantile because the runtime carries no statistics dependency and this needs six
+# numbers; `CONFIDENCE_Z` is the large-sample limit the last row approaches. Using the NORMAL
+# 1.96 over four or five observations is the error this constant exists to avoid — at df=3 the
+# true bar is 3.182, 62% wider.
+_T_CRITICAL_95: dict[int, float] = {
+    3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+    11: 2.201, 12: 2.179, 15: 2.131, 20: 2.086, 30: 2.042,
+}
+
+
+def t_critical_95(degrees_of_freedom: int) -> float:
+    """The two-sided 95% t bar for this many degrees of freedom, erring WIDE.
+
+    Between tabulated rows it returns the next larger row's value rather than interpolating —
+    a wider bar refuses more, which is the direction a fail-closed gate must round."""
+    if degrees_of_freedom <= 0:
+        return float("inf")
+    for df in sorted(_T_CRITICAL_95):
+        if degrees_of_freedom <= df:
+            return _T_CRITICAL_95[df]
+    return CONFIDENCE_Z
+
+
+def _periods_confirm(holdout: Mapping[str, Any]) -> bool:
+    """Whether the tail's PERIOD subtotals clear zero on their own dispersion.
+
+    Fail-closed on absence: a block minted before ``period_r`` existed cannot compute this and
+    therefore cannot CONFIRM. That is the ``stdev_r`` precedent applied again, and for the same
+    reason — letting a record buy the weaker test by omitting a field is the failure mode
+    ``cost.outcome_net_r`` names in the other direction.
+
+    Periods that closed no trade are dropped rather than counted as 0.0: a slice the spec never
+    traded in is absence of evidence, and scoring it as a break-even observation would shrink
+    the spread with data nobody measured."""
+    periods = holdout.get("period_r")
+    counts = holdout.get("period_trades")
+    if not isinstance(periods, (list, tuple)) or not isinstance(counts, (list, tuple)):
+        return False
+    if len(periods) != len(counts):
+        return False
+    values = [
+        float(r) for r, n in zip(periods, counts)
+        if isinstance(r, (int, float)) and not isinstance(r, bool)
+        and isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0
+    ]
+    if len(values) < MIN_HOLDOUT_PERIODS:
+        return False
+    spread = statistics.stdev(values)
+    if spread <= 0:
+        return False
+    stderr = spread / math.sqrt(len(values))
+    return statistics.mean(values) - t_critical_95(len(values) - 1) * stderr > 0
+
+
 def holdout_status(holdout: Mapping[str, Any] | None) -> str:
     """Classify what the untouched tail showed. Fail-closed toward not-confirmed.
 
@@ -358,11 +424,13 @@ def holdout_status(holdout: Mapping[str, Any] | None) -> str:
     if not isinstance(stdev, (int, float)) or isinstance(stdev, bool) or stdev <= 0:
         return HOLDOUT_INSUFFICIENT
     stderr = float(stdev) / math.sqrt(float(closed))
-    return (
-        HOLDOUT_CONFIRMED
-        if holdout_expectancy(holdout) - CONFIDENCE_Z * stderr > 0
-        else HOLDOUT_CONTRADICTED
-    )
+    if holdout_expectancy(holdout) - CONFIDENCE_Z * stderr <= 0:
+        # The weaker test already failed. A block that cannot clear the trade-level interval
+        # cannot clear the period-level one either — the period interval is strictly wider —
+        # so this stays CONTRADICTED without needing the period data, and legacy blocks keep
+        # the verdict they always had.
+        return HOLDOUT_CONTRADICTED
+    return HOLDOUT_CONFIRMED if _periods_confirm(holdout) else HOLDOUT_INSUFFICIENT
 
 
 def classify_verdict(score: float, trades_per_parameter: float, holdout_state: str) -> str:

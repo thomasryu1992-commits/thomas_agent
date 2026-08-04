@@ -1578,7 +1578,7 @@ is judged over generations, not days (the `#420` error). The capability landed; 
 not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
 the single-symbol search of the same family produced none.
 
-#### That batch was run, and it produces none — measured 2026-08-04
+#### That batch was run, and it confirms — measured 2026-08-04, corrected the same day
 
 The condition above is the whole of the decision, so it was tested rather than left standing.
 Every mintable family at a timeframe, 8 freshly drawn parameter sets each, minted **pooled** —
@@ -1588,33 +1588,59 @@ are `robustness.holdout_status`, not a re-implementation of it. Read-only; nothi
 
 | pooled mint | specs | CONFIRMED | CONTRADICTED | INSUFFICIENT |
 |---|---|---|---|---|
-| 4h, 34 families × 8 | 272 | **0** | 160 | 112 |
-| 1h, 34 families × 8 | 272 | **0** | 174 | 98 |
+| 4h, 34 families × 8 | 272 | **11** (4.0%) | 218 | 43 |
+| 1h, 34 families × 8 | 272 | **4** (1.5%) | 247 | 21 |
 
-**544 pooled mints, zero confirmations.** The condition F2 set is not met, so the argument for
-moving `run_factory` onto pooled specs does not have the evidence it named. The single-symbol
-baseline it would have to beat is 1 CONFIRMED in 1,595 stored rows — and that one is PROVISIONAL
-on the recomputed verdict, so `promotable_backlog` is still 0.
+> **This replaces a first pass that reported 0 and 0, and the way it was wrong is the reusable
+> part.** That run built its frames with `attach_htf` alone. The scheduler attaches four legs
+> before a fire, so ten feed-dependent families — all four `oi_*`, `funding_fade_*`,
+> `premium_fade_*`, `xs_reversion_*` — were scored over columns that were `None` on **every**
+> row. They took no trades, returned INSUFFICIENT, and were written up as *"pooling does not fix
+> judgeability everywhere"*. It was not a verdict on them; it was a frame with their inputs
+> missing. With the legs attached those columns are 100% populated over the 4h replay
+> (`open_interest_zscore` 3000/3000, `funding_zscore` 2990/3000). `unsuppliable_features` would
+> have caught it inside `run_factory` — calling `backtest_spec_pooled` directly walked around
+> the guard that exists for exactly this.
 
-**Read CONTRADICTED correctly.** `holdout_status` returns it whenever the tail is deep enough to
-judge and `expectancy - 1.96 x stderr <= 0` — which includes rows whose expectancy is *positive*
-but not separable from zero. 4h `htf_pullback_short` is the worked example: F3 records it at
-+0.1748 with 100% of draws positive, and it lands CONTRADICTED 8/8 here because its best `t` is
-1.87 against the 1.96 the verdict needs. The label means "not shown", not "lost money".
+**F2's condition is met.** A pooled mint batch does produce CONFIRMED holdouts where the
+single-symbol search produced none — 1 CONFIRMED in 1,595 stored single-symbol rows, and that
+one PROVISIONAL, against 15 in 544 pooled mints.
 
-**Pooling does not fix judgeability everywhere, which is new.** 112 of 272 at 4h are still
-INSUFFICIENT after pooling, and it is not scattered — it is whole families: `mean_reversion*`,
-`funding_fade_*`, all four `oi_*`, `premium_fade_*`, `xs_reversion_*` return INSUFFICIENT on
-every draw, while `taker_flow_*` and `taker_absorption_short` split. Five symbols is not enough
-data for those signal rates, so for them the depth problem F1 describes survives the fix that
-resolves it for `htf_pullback_*` (F3).
+**Two families do it at both timeframes, and they are the same two.**
+
+| family | tf | HO trades | HO exp | t | IS exp |
+|---|---|---|---|---|---|
+| `oi_unwind_short` | 4h | 33 | +0.5347 | 3.15 | +0.4768 |
+| `oi_unwind_short` | 1h | 28 | +0.6303 | 3.34 | +0.1702 |
+| `oi_squeeze_long` | 4h | 38 | +0.5042 | 2.79 | +0.4234 |
+| `oi_squeeze_long` | 1h | 74 | +0.3027 | 2.75 | +0.3054 |
+
+Positive in-sample **and** out-of-sample, at two timeframes — which is the property every prior
+candidate in this record failed. `premium_fade_short` also confirms 4 of 8 at 4h and is
+**dismissed**: its in-sample expectancy is *negative* (−0.09 to −0.13) against a positive
+holdout, which is the signature of an artifact rather than an edge, and it is CONTRADICTED 8/8
+at 1h.
+
+**And none of it clears the selection correction, because the attempt count is not per family.**
+`SELECTION_CONTEXT` is `symbol_scope + timeframe`, and this batch is one symbol scope at one
+timeframe — so the honest count is **272 attempts**, not 8 per family. That puts the bar at
+**z = 3.74**, above the best `t` here (3.34). Reporting it per family, as the first pass did,
+charges 2.73 and lets two rows read as clearing. They do not.
+
+**So the finding is narrow and specific:** pooled minting reaches CONFIRMED where single-symbol
+minting does not, and the confirmations concentrate in the `oi_*` families rather than being
+spread across the library. What is *not* established is that they survive the attempt count they
+were drawn from.
 
 **What this does not test.** The draws are `mutate_params` around each template's own base;
-`elite_base_params` steering was not reproduced, so this is an *unsteered* pooled mint. That is
-unlikely to be what is missing — F1 measured that `champion_score` steering predicts the holdout
-monotonically and every quintile is negative — but it is the one difference from what
-`run_factory` would actually do, and it is stated rather than glossed. Eight draws per family is
-also modest; 0/544 is consistent with the 1/1,595 base rate rather than a sharper claim than it.
+`elite_base_params` steering was not reproduced, so this is an *unsteered* pooled mint — the one
+difference from what `run_factory` would actually do. Eight draws per family is also modest.
+
+**And it changes the price of a longer replay window.** The two families that confirm are
+`oi_*`, which `factory._oi_feed_reaches` gates out of any rotation whose replay exceeds
+`DERIVATIVE_HISTORY_DAYS = 520` days. Lengthening the window therefore removes **exactly the
+families that produced the only confirmations this record has** — a cost that reads as
+bookkeeping until these numbers exist, and as decisive once they do.
 
 ### F3. The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
 

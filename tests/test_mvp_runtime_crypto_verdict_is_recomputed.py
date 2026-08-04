@@ -109,7 +109,9 @@ def test_a_stored_confirmed_does_not_survive_a_block_with_no_recorded_spread():
 def test_a_block_that_clears_the_current_rule_is_confirmed_whatever_the_label_says():
     """It recomputes in both directions, or it is a demotion rather than a rule."""
     understated = _with_block("cand_good", {"closed_count": 400, "total_R": 90.0,
-                                            "expectancy": 0.225, "stdev_r": 1.4},
+                                            "expectancy": 0.225, "stdev_r": 1.4,
+                                            "period_r": [12.0, 15.0, 21.0, 18.0, 24.0],
+                                            "period_trades": [80, 80, 80, 80, 80]},
                               stored_holdout="CONTRADICTED")
     assert candidate_quality(understated)["holdout_status"] == "CONFIRMED"
     assert candidate_quality(understated)["verdict"] == ROBUST
