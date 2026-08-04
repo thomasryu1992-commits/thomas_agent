@@ -1500,6 +1500,32 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # stays exactly as manual as it was.
 PROMOTION_BACKLOG_ALERT_THRESHOLD = 5
 
+# The axes `promotable_backlog` reports its refusals under, in the order the loop applies them.
+#
+# Ordered, and the order is the contract: each judged row is charged to the FIRST axis that
+# drops it, so these buckets plus the promotable count partition `candidates_read` exactly.
+# Read top to bottom, they are also the chain the promotion door applies, which is why a new
+# filter must be added HERE as well as in the loop — an axis that refuses without a bucket is
+# a row that leaves the partition, and the sum stops adding up with nothing saying which
+# filter took it.
+#
+# `holdout_other` has no filter of its own: it catches a holdout status this list does not
+# name, so a new state added to `robustness` surfaces as an unread bucket instead of being
+# folded into a label that does not describe it.
+BACKLOG_REFUSAL_AXES = (
+    "already_active",
+    "cost_basis",
+    "evidence_depth",
+    "holdout_insufficient",
+    "holdout_contradicted",
+    "holdout_unconfirmed",
+    "holdout_other",
+    "verdict",
+    "expectancy",
+    "lineage_already_counted",
+    "unjudgeable",
+)
+
 # The smallest rolling window any lifecycle rule can act on (`lifecycle.DEFAULT_WINDOWS[0]`).
 # Restated rather than imported because `lifecycle` reaches back into this module and the
 # existing precedent here is a local import inside the one function that needs it; a test pins
@@ -1633,6 +1659,35 @@ def promotable_backlog(
     Read-only, and it decides nothing: the count exists so the daily board can say a
     queue formed. Ids come back in :func:`rank_candidates` order, so the first one named
     is the first one an operator would read.
+
+    **``refused`` says why the rest are not here, and exists because a count of zero was
+    unreadable.** ``deferred_unjudgeable`` already named one axis — and that axis is the LAST
+    one, so once an earlier filter took everything the deferred list went empty too and the
+    board fell silent with a full store behind it. Measured 2026-08-04: 474 candidates at the
+    current cost basis, ``count: 0``, ``deferred_unjudgeable: []``, and the reason (every one
+    of them stopped at the holdout gate) appeared nowhere. That is the same failure the
+    deferred list was added to prevent, one filter earlier — "nothing is waiting" rendered
+    over "everything is waiting on one thing".
+
+    Two properties make the breakdown readable rather than merely present:
+
+    - **It is a partition.** Each judged row is counted exactly ONCE, at the FIRST axis that
+      drops it, so ``sum(refused.values()) + count == candidates_read`` — pinned by a test.
+      Overlapping tallies would be worse than no tally: two axes reporting 400 of 474 invites
+      the reader to add them.
+    - **``verdict`` and ``holdout`` are separate buckets** although one ``if`` refuses on both.
+      They are different findings about the factory — "the score is not high enough" and "it
+      scored well and did not reproduce forward" — and collapsing them is what let a store in
+      which *nothing survives its own holdout* read as ordinary attrition.
+
+    ``already_active`` and ``lineage_already_counted`` are collapses rather than quality
+    refusals (the slot is filled, or a sibling re-mint of the same lineage is already in the
+    list). They are in the same dict because the question it answers is "where did the store
+    go", and a bucket missing from that answer is a number that does not add up.
+
+    ``candidates_read`` is the count AFTER :func:`rank_candidates` collapses re-appends of a
+    lineage to their latest row — the population this loop actually judged, so it is the
+    denominator the partition sums to and not the store's line count.
     """
     records = candidates if candidates is not None else read_candidates(root)
     pool_doc = active_pool if active_pool is not None else load_active_pool(root)
@@ -1648,13 +1703,21 @@ def promotable_backlog(
 
     candidate_ids: list[str] = []
     deferred: list[dict[str, Any]] = []
+    # Every key is present at zero on every call. A breakdown whose keys appear only when they
+    # fire cannot be read as a partition — the absent axis and the axis that refused nothing
+    # look identical, and the sum stops being checkable against `candidates_read`.
+    refused: dict[str, int] = {axis: 0 for axis in BACKLOG_REFUSAL_AXES}
+    judged = 0
     for record in rank_candidates(list(records)):
+        judged += 1
         if record.get("strategy_rule_hash") in active_hashes:
+            refused["already_active"] += 1
             continue
         quality = candidate_quality(
             record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
         )
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
+            refused["cost_basis"] += 1
             continue
         # The same rule for the other axis the door refuses on. It was missing here for seven
         # minutes' worth of merge ordering — the depth gate landed just after this counter —
@@ -1664,14 +1727,42 @@ def promotable_backlog(
         # the store holds 41 rows the depth gate refuses, and one of them becoming ROBUST is a
         # matter of time rather than of possibility.
         if quality["evidence_depth_rank"] not in PROMOTABLE_EVIDENCE_DEPTH_RANKS:
+            refused["evidence_depth"] += 1
             continue
-        if quality["verdict"] != ROBUST or quality["holdout_status"] != HOLDOUT_CONFIRMED:
+        # One condition in the original, split into buckets, and the HOLDOUT is asked first —
+        # which is the opposite of the order the condition was written in, for a reason worth
+        # stating. `candidate_quality` recomputes the verdict THROUGH the holdout state
+        # (`classify_verdict` returns ROBUST only when it is CONFIRMED), so asking the verdict
+        # first charges every forward failure to `verdict` and the holdout bucket becomes
+        # unreachable — a breakdown that reports the collapse it was built to expose.
+        #
+        # The bucket key is the holdout's own status rather than a flat `holdout`, because the
+        # three are different findings and the store currently holds all three: INSUFFICIENT is
+        # "the tail cannot be judged" (too few trades, or minted before `stdev_r` existed),
+        # CONTRADICTED is "judged, and it lost", UNCONFIRMED is "never evaluated". Reporting one
+        # number over them would say attrition where the record says something specific.
+        holdout_state = quality["holdout_status"]
+        if holdout_state != HOLDOUT_CONFIRMED:
+            key = f"holdout_{str(holdout_state).lower()}"
+            # An unrecognised status is charged to its own axis rather than silently to a known
+            # one: a new holdout state must show up as a bucket nobody has read yet, not as a
+            # count under a label that no longer describes it.
+            refused[key if key in refused else "holdout_other"] += 1
+            continue
+        # Reached only by a row that DID confirm forward — so this is "survived unseen bars,
+        # still not ROBUST in-sample" (score or trades-per-parameter), plus the one case
+        # `candidate_quality` documents where a record missing its components keeps a stale
+        # stored verdict.
+        if quality["verdict"] != ROBUST:
+            refused["verdict"] += 1
             continue
         expectancy = quality["expectancy_at_current_costs"]
         if not isinstance(expectancy, (int, float)) or expectancy <= 0:
+            refused["expectancy"] += 1
             continue
         lineage = _lineage_key(record.get("strategy_spec") or {})
         if lineage in seen_lineages:
+            refused["lineage_already_counted"] += 1
             continue
         seen_lineages.add(lineage)
         # Last, and only after everything the door itself checks: can the runtime ever JUDGE
@@ -1689,6 +1780,7 @@ def promotable_backlog(
             continue
         candidate_ids.append(candidate_id(record))
 
+    refused["unjudgeable"] = len(deferred)
     return {
         "count": len(candidate_ids),
         "threshold": PROMOTION_BACKLOG_ALERT_THRESHOLD,
@@ -1697,4 +1789,9 @@ def promotable_backlog(
         # waiting" when what is true is "nothing the runtime could grade is waiting".
         "deferred_unjudgeable": deferred,
         "max_days_to_lifecycle_window": MAX_DAYS_TO_LIFECYCLE_WINDOW,
+        # The denominator the breakdown partitions, and the one number that separates "the
+        # store is empty" from "the store is full and every row was refused" — the two states
+        # `count: 0` used to render identically.
+        "candidates_read": judged,
+        "refused": refused,
     }

@@ -28,7 +28,7 @@ from runtime.mvp_runtime.crypto.cost import (
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_VENUE,
 )
-from runtime.mvp_runtime.crypto.dashboard import build_status
+from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
 
 NOW = "2026-07-29T12:00:00Z"
 
@@ -138,6 +138,93 @@ def test_the_backlog_counts_only_what_the_promotion_door_would_accept():
     assert result["candidate_ids"] == ["cand_ok"]
 
 
+def test_the_breakdown_charges_each_row_to_the_axis_that_actually_dropped_it():
+    """The same five rows, read from the other side: one promotable and four named reasons."""
+    result = _backlog([
+        _candidate("cand_ok"),
+        _candidate("cand_cheap", taker=2.5, family="breakout"),
+        _candidate("cand_unproven", verdict="PROVISIONAL", family="macd_momentum"),
+        _candidate("cand_failed_forward", holdout="CONTRADICTED", family="htf_trend_long"),
+        _candidate("cand_negative", net_r=-8.0, family="oi_squeeze_long"),
+    ])
+    assert result["refused"]["cost_basis"] == 1            # cand_cheap
+    assert result["refused"]["verdict"] == 1               # cand_unproven
+    assert result["refused"]["holdout_contradicted"] == 1  # cand_failed_forward
+    assert result["refused"]["expectancy"] == 1            # cand_negative
+
+
+def test_the_breakdown_is_a_partition_so_its_numbers_can_be_added():
+    """`sum(refused) + count == candidates_read`, over a store hitting every axis at once.
+
+    The property is the whole point of charging a row to the FIRST axis that drops it. Two
+    axes each reporting most of the store would invite the reader to add them and get a
+    number larger than the store — worse than reporting nothing, because it looks like data.
+    """
+    candidates = [
+        _candidate("cand_ok"),
+        _candidate("cand_live", rule_hash="hash-live", family="breakout"),
+        _candidate("cand_cheap", taker=2.5, family="macd_momentum"),
+        _candidate("cand_shallow", bars_replayed=10, family="htf_trend_long"),
+        _candidate("cand_unproven", verdict="PROVISIONAL", family="oi_squeeze_long"),
+        _candidate("cand_failed_forward", holdout="CONTRADICTED", family="session_trend_short"),
+        _candidate("cand_unjudged", holdout="INSUFFICIENT", family="xs_momentum_short"),
+        _candidate("cand_no_holdout", holdout="UNCONFIRMED", family="bollinger_breakdown_short"),
+        _candidate("cand_negative", net_r=-8.0, family="trend_pullback_short"),
+        _candidate("cand_sibling", family="trend_pullback", rule_hash="hash-sibling"),
+        _candidate("cand_slow", timeframe="1d", closed=4, family="breakdown_short"),
+    ]
+    result = _backlog(candidates, active=["hash-live"])
+
+    assert result["candidates_read"] == len(candidates)
+    assert sum(result["refused"].values()) + result["count"] == result["candidates_read"]
+    # Every axis the constant names is present even at zero, or the sum above is only
+    # accidentally checkable and a missing axis reads the same as one that refused nothing.
+    assert set(result["refused"]) == set(pool.BACKLOG_REFUSAL_AXES)
+    assert result["refused"]["already_active"] == 1
+    assert result["refused"]["lineage_already_counted"] == 1   # cand_sibling, same lineage as cand_ok
+    assert result["refused"]["unjudgeable"] == len(result["deferred_unjudgeable"]) == 1
+
+
+def test_a_zero_backlog_over_a_full_store_says_which_gate_took_it():
+    """The defect this breakdown exists for: `count: 0` that means the opposite of empty.
+
+    Measured on the real store 2026-08-04 — 474 candidates at the current cost basis, every
+    one of them stopped at the holdout gate, `deferred_unjudgeable` empty because an earlier
+    filter had already taken them, and nothing anywhere saying so. A zero that cannot be told
+    apart from an empty store is the same failure the deferred list was added to prevent.
+    """
+    result = _backlog([
+        _candidate(f"cand_{n}", family=f"family_{n}", holdout="CONTRADICTED")
+        for n in range(12)
+    ])
+    assert result["count"] == 0
+    assert result["deferred_unjudgeable"] == []
+    assert result["candidates_read"] == 12
+    assert result["refused"]["holdout_contradicted"] == 12
+
+
+def test_the_holdout_axis_is_reachable_at_all():
+    """Asking the verdict first would make it unreachable, and the breakdown would then hide
+    exactly the finding it was built to surface.
+
+    `candidate_quality` recomputes the verdict THROUGH the holdout state — `classify_verdict`
+    returns ROBUST only when it is CONFIRMED — so a row that failed forward is also not
+    ROBUST. Charge it to the verdict and every forward failure in the store reports as
+    "scored too low", which is a different claim about the factory and a false one.
+    """
+    result = _backlog([_candidate("cand_failed_forward", holdout="CONTRADICTED")])
+    assert result["refused"]["holdout_contradicted"] == 1
+    assert result["refused"]["verdict"] == 0
+
+
+def test_an_unrecognised_holdout_state_gets_its_own_bucket():
+    """A new state in `robustness` must surface as a bucket nobody has read, never as a count
+    folded under a label that does not describe it."""
+    result = _backlog([_candidate("cand_odd", holdout="SOMETHING_NEW")])
+    assert result["refused"]["holdout_other"] == 1
+    assert sum(result["refused"].values()) + result["count"] == result["candidates_read"]
+
+
 def test_conservative_evidence_is_backlog_because_the_door_promotes_it():
     """The gate refuses evidence scored CHEAPER than the venue charges, not evidence
     scored dearer. A backlog that dropped conservative rows would disagree with the door."""
@@ -234,6 +321,56 @@ def test_the_board_names_a_promotion_backlog_at_the_threshold(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert status["promotion_backlog"]["count"] == pool.PROMOTION_BACKLOG_ALERT_THRESHOLD
     assert any("승격 대기" in w for w in status["warnings"])
+
+
+def test_the_board_says_why_the_queue_is_zero_instead_of_printing_nothing(tmp_path):
+    """A full store that promotes nothing used to render as an absence.
+
+    `count` was falsy so the backlog line was skipped, and `deferred_unjudgeable` was empty
+    because an earlier filter had taken everything, so that line was skipped too — the daily
+    report went out with no mention of a store in which every candidate had failed forward.
+    """
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        _candidate(f"cand_{n}", family=f"family_{n}", holdout="CONTRADICTED") for n in range(9)
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    text = render_status_text(build_status(tmp_path, now=NOW))
+    line = next(ln for ln in text.splitlines() if "승격 대기" in ln)
+    assert "승격 대기 0" in line
+    assert "9" in line and "holdout_contradicted" in line
+
+
+def test_the_zero_line_names_the_second_reason_too(tmp_path):
+    """One axis would be true and would point away from the finding.
+
+    On the real store the largest bucket is `cost_basis` (legacy mints, self-draining) while
+    the second is the entire current basis failing forward. A line naming only the largest
+    reads as "old evidence, it will clear".
+    """
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        *[_candidate(f"cand_old_{n}", family=f"old_{n}", taker=2.5) for n in range(7)],
+        *[_candidate(f"cand_fwd_{n}", family=f"fwd_{n}", holdout="CONTRADICTED") for n in range(4)],
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    line = next(ln for ln in render_status_text(build_status(tmp_path, now=NOW)).splitlines()
+                if "승격 대기" in ln)
+    assert "cost_basis 7건" in line
+    assert "holdout_contradicted 4건" in line
+
+
+def test_an_empty_store_does_not_get_the_zero_line(tmp_path):
+    """The line exists to separate "full store, all refused" from "nothing minted yet". A
+    board that printed it for both would have replaced one unreadable zero with another."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    text = render_status_text(build_status(tmp_path, now=NOW))
+    assert "승격 대기" not in text
 
 
 def test_the_board_stays_quiet_below_the_threshold(tmp_path):
