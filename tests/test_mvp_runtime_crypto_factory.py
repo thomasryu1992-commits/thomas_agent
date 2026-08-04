@@ -16,7 +16,7 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import factory, market_data, pool
+from runtime.mvp_runtime.crypto import factory, market_data, pool, robustness
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -851,6 +851,12 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     factory result carries fused children (parent lineage attached) or explicit
     ``fusion_rejected`` reasons — dormant fusion produced neither."""
     monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    # This test is about the WIRING — does a scheduled fire reach the fusion path at all.
+    # `holdout_permits_parenting` is a separate rule with its own tests, and no first-fire
+    # candidate on this synthetic history survives it (they close too few holdout trades, and
+    # what they do close loses), so leaving it in would assert "fusion was never attempted" for
+    # a reason that has nothing to do with what this test names.
+    monkeypatch.setattr(factory, "holdout_permits_parenting", lambda record: True)
     schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-22T10:00:00Z")
     store = ScheduleStore(tmp_path)
@@ -1023,6 +1029,15 @@ _RSI_OVER_50 = {"feature": "rsi", "comparison": ">=", "value": 50.0}
 _RSI_UNDER_60 = {"feature": "rsi", "comparison": "<=", "value": 60.0}
 
 
+def _parenting_evidence(expectancy=0.20, closed=30, **extra):
+    """Evidence carrying a holdout deep enough to judge and not losing.
+
+    Every parent fixture carries one, so that a test asserting a row was EXCLUDED excludes it
+    for the reason that test is about (no score, no spec, retired family) rather than
+    incidentally through :func:`factory.holdout_permits_parenting`."""
+    return {**extra, "holdout": {"closed_count": closed, "expectancy": expectancy}}
+
+
 def test_fusion_is_order_independent():
     a = _parent_spec("S1", [_CLOSE_OVER_MA20])
     b = _parent_spec("S2", [{"feature": "adx", "comparison": ">=", "value": 25.0}])
@@ -1174,14 +1189,75 @@ def test_fusion_validates_the_child_even_when_a_parent_never_was():
 
 def test_rank_fusion_parents_orders_by_score_and_skips_the_unscorable():
     spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    ev = _parenting_evidence()
     records = [
-        {"candidate_id": "cand-low", "champion_score": 0.1, "strategy_spec": spec},
-        {"candidate_id": "cand-high", "champion_score": 0.9, "strategy_spec": spec},
-        {"candidate_id": "cand-unscored", "strategy_spec": spec},          # no evidence to pass on
-        {"candidate_id": "cand-specless", "champion_score": 0.5},          # nothing to fuse
+        {"candidate_id": "cand-low", "champion_score": 0.1, "strategy_spec": spec,
+         "backtest_evidence": ev},
+        {"candidate_id": "cand-high", "champion_score": 0.9, "strategy_spec": spec,
+         "backtest_evidence": ev},
+        {"candidate_id": "cand-unscored", "strategy_spec": spec,           # no evidence to pass on
+         "backtest_evidence": ev},
+        {"candidate_id": "cand-specless", "champion_score": 0.5,           # nothing to fuse
+         "backtest_evidence": ev},
     ]
     ranked = rank_fusion_parents(records)
     assert [r["candidate_id"] for r in ranked] == ["cand-high", "cand-low"]
+
+
+@pytest.mark.parametrize("holdout, why", [
+    (None, "no holdout block at all — a row predating holdouts has no out-of-sample evidence"),
+    ({"closed_count": 24, "expectancy": 0.9}, "one trade short of judgeable, however it earned"),
+    ({"closed_count": 40, "expectancy": -0.001}, "judgeable and it lost"),
+    ({"expectancy": 0.9}, "no closed_count to read"),
+    ({"closed_count": 40}, "no expectancy to read"),
+    ({"closed_count": True, "expectancy": 0.9}, "a bool is not a reading"),
+])
+def test_a_lineage_without_surviving_out_of_sample_evidence_may_not_parent(holdout, why):
+    """`champion_score` carries no out-of-sample term — holdout "never moves the score" — so
+    without this the holdout could refuse a candidate at the promotion door and still have no
+    say in which lineages bred. Fail-closed: absence is not a pass."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    evidence = {} if holdout is None else {"holdout": holdout}
+    record = {"candidate_id": "cand-x", "champion_score": 0.9, "strategy_spec": spec,
+              "backtest_evidence": evidence}
+    assert rank_fusion_parents([record]) == [], why
+
+
+@pytest.mark.parametrize("expectancy", [0.0, 0.4])
+def test_a_judgeable_holdout_at_or_above_zero_may_parent(expectancy):
+    """The bar is one bit at zero, not a ranking on magnitude: the unit of independence is the
+    market period and this store carries about ten, so ordering lineages by the SIZE of a
+    holdout edge would mine a quantity below what is resolvable. Breaking even qualifies."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    record = {"candidate_id": "cand-x", "champion_score": 0.9, "strategy_spec": spec,
+              "backtest_evidence": _parenting_evidence(expectancy=expectancy, closed=25)}
+    assert [r["candidate_id"] for r in rank_fusion_parents([record])] == ["cand-x"]
+
+
+def test_the_holdout_floor_is_the_one_the_promotion_door_uses():
+    """One authority for "is this tail deep enough to judge" — reusing the constant rather than
+    restating 25 keeps parent eligibility moving with it."""
+    assert factory.MIN_HOLDOUT_TRADES == robustness.MIN_HOLDOUT_TRADES
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    at_floor = {"candidate_id": "cand-x", "champion_score": 0.9, "strategy_spec": spec,
+                "backtest_evidence": _parenting_evidence(closed=robustness.MIN_HOLDOUT_TRADES)}
+    assert len(rank_fusion_parents([at_floor])) == 1
+
+
+def test_ranking_still_orders_by_score_not_by_holdout_size():
+    """Eligibility moved; the ranking currency did not. Ranking by holdout magnitude would be
+    the max-of-many-draws selection this store is already full of."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-big-holdout", "champion_score": 0.1, "strategy_spec": spec,
+         "strategy_rule_hash": "hash-a",
+         "backtest_evidence": _parenting_evidence(expectancy=5.0)},
+        {"candidate_id": "cand-high-score", "champion_score": 0.9, "strategy_spec": spec,
+         "strategy_rule_hash": "hash-b",
+         "backtest_evidence": _parenting_evidence(expectancy=0.01)},
+    ]
+    assert [r["candidate_id"] for r in rank_fusion_parents(records)] == [
+        "cand-high-score", "cand-big-holdout"]
 
 
 def test_a_rescored_lineage_parents_once_not_twice():
@@ -1196,12 +1272,13 @@ def test_a_rescored_lineage_parents_once_not_twice():
     """
     spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
     other = _parent_spec("S2", [_MA20_OVER_MA50]).to_dict()
+    ev = _parenting_evidence()
     records = [
-        {"candidate_id": "cand-source", "champion_score": 0.9,
+        {"candidate_id": "cand-source", "champion_score": 0.9, "backtest_evidence": ev,
          "strategy_rule_hash": "hash-a", "strategy_spec": spec},
-        {"candidate_id": "cand-rescored", "champion_score": 0.4,
+        {"candidate_id": "cand-rescored", "champion_score": 0.4, "backtest_evidence": ev,
          "strategy_rule_hash": "hash-a", "strategy_spec": spec},   # same rules, new window
-        {"candidate_id": "cand-other", "champion_score": 0.5,
+        {"candidate_id": "cand-other", "champion_score": 0.5, "backtest_evidence": ev,
          "strategy_rule_hash": "hash-b", "strategy_spec": other},
     ]
     ranked = rank_fusion_parents(records)
@@ -1216,8 +1293,10 @@ def test_the_surviving_twin_is_the_freshest_not_the_best_scoring():
     spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
     records = [
         {"candidate_id": "cand-flattering", "champion_score": 0.95,
+         "backtest_evidence": _parenting_evidence(),
          "strategy_rule_hash": "hash-a", "strategy_spec": spec},
         {"candidate_id": "cand-fresh", "champion_score": 0.10,
+         "backtest_evidence": _parenting_evidence(),
          "strategy_rule_hash": "hash-a", "strategy_spec": spec},
     ]
     assert [r["candidate_id"] for r in rank_fusion_parents(records)] == ["cand-fresh"]
@@ -1228,9 +1307,12 @@ def test_hashless_legacy_rows_do_not_collapse_into_one_parent():
     bucket entry and delete real lineages. Absent hash falls back to the candidate id."""
     spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
     records = [
-        {"candidate_id": "cand-1", "champion_score": 0.9, "strategy_spec": spec},
-        {"candidate_id": "cand-2", "champion_score": 0.8, "strategy_spec": spec},
+        {"candidate_id": "cand-1", "champion_score": 0.9, "strategy_spec": spec,
+         "backtest_evidence": _parenting_evidence()},
+        {"candidate_id": "cand-2", "champion_score": 0.8, "strategy_spec": spec,
+         "backtest_evidence": _parenting_evidence()},
         {"candidate_id": "cand-3", "champion_score": 0.7,
+         "backtest_evidence": _parenting_evidence(),
          "strategy_rule_hash": "", "strategy_spec": spec},          # empty is not an identity
     ]
     assert len(rank_fusion_parents(records)) == 3
@@ -1239,7 +1321,8 @@ def test_hashless_legacy_rows_do_not_collapse_into_one_parent():
 # --- fusion parent bucketing --------------------------------------------------
 
 def _bucket_record(candidate_id, score, spec):
-    return {"candidate_id": candidate_id, "champion_score": score, "strategy_spec": spec.to_dict()}
+    return {"candidate_id": candidate_id, "champion_score": score, "strategy_spec": spec.to_dict(),
+            "backtest_evidence": _parenting_evidence()}
 
 
 def test_buckets_group_only_structurally_fusable_lineages():
@@ -1289,7 +1372,8 @@ def _durable_parent(tmp_path, candidate_id, spec, score):
         "candidate_id": candidate_id, "strategy_id": spec.strategy_id,
         "strategy_rule_hash": spec.strategy_rule_hash, "generation_id": "GEN-000",
         "status": "BACKTESTED", "champion_score": score, "strategy_spec": spec.to_dict(),
-        "backtest_evidence": {"closed_count": 9}, "evidence_input_sha256": "sha256:parentwindow",
+        "backtest_evidence": _parenting_evidence(closed_count=9),
+        "evidence_input_sha256": "sha256:parentwindow",
         "provenance": "test", "created_at_utc": NOW,
     }
     pool.append_candidates([record], root=tmp_path)
@@ -2170,6 +2254,7 @@ def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
 
 def _retired_parent_record(cid, family, score=0.9):
     return {"candidate_id": cid, "champion_score": score,
+            "backtest_evidence": _parenting_evidence(),
             "strategy_spec": _spec_dict(strategy_family=family)}
 
 
@@ -2180,6 +2265,7 @@ def test_a_retired_family_cannot_parent_a_fusion_child():
     retired = sorted(factory.RETIRED_FAMILIES)[0]
     records = [
         {"candidate_id": "cand-live", "champion_score": 0.5,
+         "backtest_evidence": _parenting_evidence(),
          "strategy_spec": _spec_dict(strategy_family="breakout")},
         _retired_parent_record("cand-retired", retired),
     ]
