@@ -850,6 +850,40 @@ def test_fusion_refuses_when_the_union_exceeds_the_condition_cap():
     assert exc.value.reason == "too_many_conditions"
 
 
+def _conditions(*features):
+    return [{"feature": f, "comparison": ">=", "value": 1.0} for f in features]
+
+
+def test_fusion_refuses_the_band_that_has_never_produced_a_judgeable_holdout():
+    """Exactly 8 conditions is legal and worthless: 0 of 22 such mints on the current cost
+    basis, and 0 of 25 across the whole store, closed enough holdout trades to be judged.
+
+    A union under AND only narrows, so this is the end of a monotone slide the store measures
+    at 4 conditions 81% judgeable, 5 64%, 6 30%, 7 16%, 8 zero.
+    """
+    a = _parent_spec("S1", _conditions("close", "ma20", "ma50", "adx"))
+    b = _parent_spec("S2", _conditions("macd", "atr", "volume", "roc_4"))
+    with pytest.raises(FusionRefused) as exc:
+        fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert exc.value.reason == "holdout_unjudgeable"
+
+
+def test_the_band_below_it_is_still_minted():
+    """Only the zero-yield band is cut. 7 conditions yields 16% and 16% is not none — cutting
+    there would be the wider decision F1 states and does not take."""
+    a = _parent_spec("S1", _conditions("close", "ma20", "ma50", "adx"))
+    b = _parent_spec("S2", _conditions("macd", "atr", "volume"))
+    child = fuse_specs(a, b, strategy_id="S9", generation_id="GEN-9")
+    assert len(child.entry_rules.conditions) == factory.MAX_FUSION_ENTRY_CONDITIONS == 7
+
+
+def test_the_fusion_bound_can_never_be_looser_than_the_validator_bound():
+    """The two answer different questions — rule legality (source S3) and whether the child can
+    produce judgeable evidence — and only one ordering of them means anything. Raised above the
+    validator's, the fusion bound would refuse nothing and read as though it did."""
+    assert factory.MAX_FUSION_ENTRY_CONDITIONS <= factory.MAX_ENTRY_CONDITIONS
+
+
 def test_fusion_validates_the_child_even_when_a_parent_never_was():
     """An imported parent may sit outside the validator's bounds; the blend is
     checked, never clamped."""
