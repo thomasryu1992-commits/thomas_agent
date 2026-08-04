@@ -633,7 +633,22 @@ def test_run_factory_produces_evidence_backed_candidates():
     result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
                          existing_candidates=[], now=NOW)
     assert result["generation_id"] == "GEN-001"
-    assert result["accepted_count"] == len(result["candidates"]) == 4
+    # `accepted_count` is a MINT-time count (generated + validated) and `candidates` is what
+    # survived the supply check that runs after it, so the two are equal only when this fixture
+    # happens to supply every column the rotation's block reads. It is a bare OHLCV snapshot, so
+    # a block containing an `xs_*` family yields fewer candidates than specs — correctly, and
+    # `unsuppliable_features` records each one in `rejected`. That was a coincidence of where the
+    # cursor landed rather than a promise, and it stopped holding on 2026-08-04 when retiring two
+    # families shifted every later index by two.
+    #
+    # So the invariant is asserted instead of the coincidence: the two counts must RECONCILE
+    # through `rejected`, which is the property that would actually be broken by a candidate
+    # going missing silently — the failure the equality was standing in for.
+    assert result["accepted_count"] == 4
+    starved = [r for r in result["rejected"] if "never supplies" in r.get("reason", "")]
+    seeded = len(result["candidates"]) - result["fused_count"]
+    assert seeded + len(starved) == result["accepted_count"]
+    assert seeded >= 1, "the fixture must still exercise the evidence path"
     for c in result["candidates"]:
         assert c["provenance"] == "mvp_factory" and c["status"] == "BACKTESTED"
         assert c["backtest_evidence"]["strategy_rule_hash"] == c["strategy_rule_hash"]
@@ -1336,16 +1351,25 @@ def test_fusion_leaves_an_in_space_blend_exactly_where_the_midpoint_falls():
 def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
     """One answer to "where may a minted parameter land". The clamp is not a second policy
     beside `mutate_params`; it is the same constants applied at the other mint path — but only
-    to inputs the validator already accepts, so it cannot launder an illegal parent."""
+    to inputs the validator already accepts, so it cannot launder an illegal parent.
+
+    "The same constants" is the UNION of the generation spaces since 2026-08-04, when the fade
+    families got their own (`_FADE_EXIT_PARAMS`, a 4-16 bar hold against the trend space's
+    12-48). A mutated fade parameter may legally be 6, so a fused one may be 6 — clamping to
+    `_EXIT_PARAMS` alone would make the two mint paths disagree, which is the exact property
+    this test exists to deny. Only the `max_holding_bars` floor actually moves; the fade space
+    is strictly inside the trend space on the other two."""
     rng = random.Random(4)
     for name, spec in factory._EXIT_PARAMS.items():
         low, high = factory._EXIT_LEGAL_RANGE[name]
-        # Legal but below the generation space: clamped up to it.
+        union_lo = min(space[name].lo for space in factory._GENERATION_SPACES)
+        union_hi = max(space[name].hi for space in factory._GENERATION_SPACES)
+        # Legal but below every generation space: clamped up to the union floor.
         assert factory._fused_exit_param(name, low, low) == (
-            int(round(spec.lo)) if spec.integer else round(spec.lo, 4))
-        # Legal but above it: clamped down.
+            int(round(union_lo)) if spec.integer else round(union_lo, 4))
+        # Legal but above it: clamped down to the union ceiling.
         assert factory._fused_exit_param(name, high, high) == (
-            int(round(spec.hi)) if spec.integer else round(spec.hi, 4))
+            int(round(union_hi)) if spec.integer else round(union_hi, 4))
         # ILLEGAL: passed through untouched so `validate_strategy` gets to refuse the child.
         illegal = high * 10
         assert factory._fused_exit_param(name, illegal, illegal) == (
