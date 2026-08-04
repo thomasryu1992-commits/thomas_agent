@@ -577,9 +577,10 @@ def test_env_gated_authorization_is_still_bound_to_its_provider_and_flags(monkey
     assert missing_flag.value.reason_code == "FLAG_NOT_ENABLED"
 
 
-def test_only_live_trading_uses_the_env_only_gate():
+def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
     """The containment test, and the reason this is a separate function rather than a flag on
-    `select_gated`. Thomas relaxed the gate for ONE capability; a later change that quietly
+    `select_gated`. Thomas has relaxed the gate for TWO capabilities — live trading
+    (2026-07-28) and the candle archive (2026-08-04); a later change that quietly
     moves model_invocation or a search tool onto the same weaker door would be invisible in
     review. Every call site is listed here, so adding one is a decision someone has to make on
     purpose.
@@ -620,6 +621,17 @@ def test_only_live_trading_uses_the_env_only_gate():
         "runtime/mvp_runtime/crypto/live_position.py",    # the position book
         "runtime/mvp_runtime/crypto/live_order.py",       # the daily submission counter
         "runtime/mvp_runtime/crypto/live_promotion.py",   # the canary evidence registry
+        # The candle archive (Thomas, 2026-08-04) — the second capability, and the first that
+        # is not live trading. Added on purpose, which is what this test exists to force.
+        #
+        # The grant's 30-day TTL cannot bound a job that must run for months against a ROLLING
+        # window: a renewal gap is not a pause, it is a hole nothing can fill. Half of live
+        # trading's argument does not transfer (nothing here can be trapped open) and neither
+        # does its compensating control (no kill switch) — but the other side of the ledger is
+        # the side live trading did not have. This reads PUBLIC candles with no key, sends
+        # nothing, orders nothing, and feeds nothing. `select_candle_archive_collector` carries
+        # the full reasoning.
+        "runtime/mvp_runtime/crypto/market_data.py",      # the candle archive collector
     }, callers
 
 
