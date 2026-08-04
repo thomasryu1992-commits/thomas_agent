@@ -107,18 +107,91 @@ def _require_timeframe(timeframe: Any) -> str:
     return str(timeframe)
 
 
+def _scan(path: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """One book's rows plus what had to be discarded to produce them.
+
+    Split from :func:`read_rows` so the damage can be *reported* without changing what every
+    existing caller gets back. Discarding quietly and counting nothing is how a store that
+    never raises becomes a store nobody can tell is broken.
+    """
+    damage = {"unreadable_rows": 0, "tampered_rows": 0}
+    latest: dict[str, dict[str, Any]] = {}
+    if not path.exists():
+        return [], damage
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                damage["unreadable_rows"] += 1
+                continue
+            if not isinstance(row, dict):
+                damage["unreadable_rows"] += 1
+                continue
+            open_time = row.get("open_time")
+            if not isinstance(open_time, str) or not open_time:
+                damage["unreadable_rows"] += 1
+                continue
+            # The hash was written and never read, which made it a field rather than evidence:
+            # a row whose `close` was edited came back as written. Checked here, and the row is
+            # SKIPPED rather than raised on — `pool.read_candidates` raises `CANDIDATES_TAMPERED`
+            # because it gates a promotion ask, while this store's consumer is a coverage number
+            # and reporting less than exists is the safe direction (module docstring). A row
+            # carrying no hash at all is a row from before this check and is kept: absence is
+            # not a mismatch, and treating it as one would empty every book written until now.
+            stored = row.get("record_sha256")
+            if stored is not None:
+                body = {k: v for k, v in row.items() if k != "record_sha256"}
+                if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+                    damage["tampered_rows"] += 1
+                    continue
+            latest[open_time] = row  # later line wins
+    return [latest[k] for k in sorted(latest)], damage
+
+
 def read_rows(
     venue: str, symbol: str, timeframe: str, root: Path | None = None
 ) -> list[dict[str, Any]]:
     """Every archived candle for one book, oldest first, latest-wins per ``open_time``.
 
-    Never raises on a damaged file — see the module docstring. A line that will not parse, or
-    that carries no usable ``open_time``, is skipped.
+    Never raises on a damaged file — see the module docstring. A line that will not parse, that
+    carries no usable ``open_time``, or whose ``record_sha256`` does not match its own body is
+    skipped. :func:`coverage` reports how many of each, because a skip nobody counts is
+    indistinguishable from a row that was never written.
     """
-    path = archive_path(venue, symbol, _require_timeframe(timeframe), root)
+    rows, _ = _scan(archive_path(venue, symbol, _require_timeframe(timeframe), root))
+    return rows
+
+
+def _intact(row: Mapping[str, Any]) -> bool:
+    """Whether this row still matches the hash it was written with.
+
+    A row carrying no hash predates the check and is intact by definition — see :func:`_scan`
+    for why absence cannot be treated as a mismatch.
+    """
+    stored = row.get("record_sha256")
+    if stored is None:
+        return True
+    body = {k: v for k, v in row.items() if k != "record_sha256"}
+    return isinstance(stored, str) and integrity.sha256_record(body) == stored
+
+
+def _parsed(path: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Every readable row as ``(open_time, row)`` — parsed, deliberately **not** verified.
+
+    Hashing every row costs about **3.6x** the parse on a year-long 15m book (measured
+    2026-08-04: 35,040 rows, 14.8 MB, 0.68s verified against 0.19s parsed), and
+    ``refresh_book`` reads a book twice on every pass. The callers below need a hash decision
+    about a handful of rows, not about all of them, so they verify what they are about to
+    trust and no more. :func:`read_rows` and :func:`coverage` still verify everything, because
+    what they hand back is the data itself.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
     if not path.exists():
-        return []
-    latest: dict[str, dict[str, Any]] = {}
+        return out
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -131,10 +204,9 @@ def read_rows(
             if not isinstance(row, dict):
                 continue
             open_time = row.get("open_time")
-            if not isinstance(open_time, str) or not open_time:
-                continue
-            latest[open_time] = row  # later line wins
-    return [latest[k] for k in sorted(latest)]
+            if isinstance(open_time, str) and open_time:
+                out.append((open_time, row))
+    return out
 
 
 def newest_open_time(
@@ -144,9 +216,23 @@ def newest_open_time(
 
     This is what makes a refresh incremental: a caller asks the venue only for what it does not
     already hold, so steady-state runs return a handful of candles instead of five thousand.
+
+    Verified from the newest candidate **downward**, stopping at the first row that is intact —
+    one hash in the ordinary case instead of one per row. The direction is the safety-relevant
+    part: trusting an unverified maximum would let a single edited row claim a future
+    ``open_time``, and a refresh sized from that asks for one bar forever while the venue's
+    window rolls past everything it is not asking for. Skipping down to the newest row that
+    still matches its own hash costs an over-fetch at worst, which `append_candles` drops.
+
+    The file is not globally sorted — a run that refills a gap appends older bars after newer
+    ones — so this cannot be a tail read, which is why the scan stays whole and only the
+    hashing is made proportional to what is actually used.
     """
-    rows = read_rows(venue, symbol, timeframe, root)
-    return rows[-1]["open_time"] if rows else None
+    path = archive_path(venue, symbol, _require_timeframe(timeframe), root)
+    for open_time, row in sorted(_parsed(path), key=lambda pair: pair[0], reverse=True):
+        if _intact(row):
+            return open_time
+    return None
 
 
 def append_candles(
@@ -168,8 +254,20 @@ def append_candles(
         raise ToolError("ARCHIVE_SYMBOL_MISSING", "an archived candle needs a symbol")
     path = archive_path(venue, symbol, timeframe, root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    candles = list(candles)
     with locked(path.with_suffix(".lock"), code="ARCHIVE_LOCKED", label="candle archive"):
-        known = {row["open_time"] for row in read_rows(venue, symbol, timeframe, root)}
+        # Only the incoming bars need a "do we already hold this" answer, and the fetch that
+        # produced them is capped at `VENUE_CANDLE_CEILING` — so hash-verify that many rows at
+        # most, rather than the whole book on every pass (see `_parsed`).
+        #
+        # A row that FAILS verification is deliberately not counted as known: it is skipped on
+        # read anyway, so letting the re-fetch append a good copy lets latest-wins repair the
+        # book instead of leaving a hole the archive can never fill.
+        incoming = {c.get("open_time") for c in candles}
+        known = {
+            open_time for open_time, row in _parsed(path)
+            if open_time in incoming and _intact(row)
+        }
         fresh: list[dict[str, Any]] = []
         for candle in candles:
             open_time = candle.get("open_time")
@@ -225,18 +323,70 @@ def ceiling_days(timeframe: str) -> float:
     return TIMEFRAMES[_require_timeframe(timeframe)] * VENUE_CANDLE_CEILING / 1440.0
 
 
+def _bar_index(open_time: str, minutes: int) -> int | None:
+    """``open_time`` as a bar number, so two of them subtract into a bar count."""
+    try:
+        return int(timeutil.parse_iso(open_time).timestamp() // (minutes * 60))
+    except Exception:  # noqa: BLE001 — an unparseable stamp is simply not measurable
+        return None
+
+
+def _gaps(rows: list[Mapping[str, Any]], minutes: int) -> dict[str, Any]:
+    """Missing bars between the oldest and newest row held, and the worst single run of them.
+
+    ``None`` rather than ``0`` on a book too small or too damaged to measure: "no gap" and "no
+    measurement" are different answers, and the second must not read as the first on the number
+    an operator watches to see that a hole is not forming.
+    """
+    indexes = [i for i in (_bar_index(str(r.get("open_time")), minutes) for r in rows) if i is not None]
+    if len(indexes) < 2:
+        return {"missing_bars": None, "largest_gap_bars": None}
+    indexes.sort()
+    largest = max(b - a - 1 for a, b in zip(indexes, indexes[1:]))
+    expected = indexes[-1] - indexes[0] + 1
+    return {"missing_bars": expected - len(indexes), "largest_gap_bars": largest}
+
+
 def coverage(
-    venue: str, symbol: str, timeframe: str, root: Path | None = None
+    venue: str, symbol: str, timeframe: str, root: Path | None = None,
+    *, now_ms: int | None = None,
 ) -> dict[str, Any]:
-    """What this book holds, and whether the venue could still supply it.
+    """What this book holds, whether the venue could still supply it, and what is missing.
 
     ``venue_can_serve`` is the load-bearing field: where it is False the archive is the only
     path to factory depth, so a gap there is permanent and a coverage number that is merely
     "not yet deep enough" means something different from one that is still fillable.
+
+    **The gap fields exist because the rest of this dict cannot see a hole.** ``rows``,
+    ``oldest_open_time`` and ``newest_open_time`` are identical for a contiguous book and for
+    one with a month missing out of its middle — so the failure this module was built to
+    prevent was the one thing its report could not show. ``missing_bars`` counts every absent
+    bar between the ends held; ``largest_gap_bars`` is the worst single run, which is the one
+    that decides whether a refresh can still close it.
+
+    ``unreachable_missing_bars`` needs ``now_ms`` and is ``None`` without it, because
+    permanence is a question about *when*, not about size: the venue serves the newest
+    ``VENUE_CANDLE_CEILING`` bars and nothing behind them, so a ten-bar hole from a year ago is
+    as gone as a ten-thousand-bar one, while a large recent hole still refills. A single
+    boolean derived from gap size alone would be wrong in the reassuring direction, which is
+    why there is not one.
     """
     timeframe = _require_timeframe(timeframe)
-    rows = read_rows(venue, symbol, timeframe, root)
+    minutes = TIMEFRAMES[timeframe]
+    rows, damage = _scan(archive_path(venue, symbol, timeframe, root))
     span = ceiling_days(timeframe)
+    gaps = _gaps(rows, minutes)
+    unreachable: int | None = None
+    if now_ms is not None and gaps["missing_bars"] is not None:
+        # The oldest bar the venue can still answer for. Everything missing before it is gone
+        # whatever its size, and everything missing after it is what the next refresh recovers.
+        floor = int(now_ms // (minutes * 60_000)) - VENUE_CANDLE_CEILING
+        held = sorted(i for i in (_bar_index(str(r.get("open_time")), minutes) for r in rows) if i is not None)
+        # A gap holds bars `a+1 .. b-1`; those below `floor` are the unreachable ones, so the
+        # count is `min(b-1, floor-1) - a` clamped at zero.
+        unreachable = sum(
+            max(0, min(b - 1, floor - 1) - a) for a, b in zip(held, held[1:])
+        )
     return {
         "venue": str(venue),
         "symbol": str(symbol),
@@ -245,6 +395,11 @@ def coverage(
         "oldest_open_time": rows[0]["open_time"] if rows else None,
         "newest_open_time": rows[-1]["open_time"] if rows else None,
         "ceiling_days": span,
+        **gaps,
+        "unreachable_missing_bars": unreachable,
+        # Skipped on read and counted here, so a book that is quietly shrinking is visible as
+        # something other than a book that was never filled.
+        **damage,
         # False => the venue's rolling window is shallower than the factory needs, so whatever
         # is not archived before it rolls is unrecoverable.
         "venue_can_serve_factory_depth": span >= FACTORY_DEPTH_DAYS,

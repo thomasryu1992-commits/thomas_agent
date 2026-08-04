@@ -10,6 +10,7 @@ arithmetic that says which timeframes are exposed.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -97,6 +98,157 @@ def test_a_later_line_wins_so_a_correction_can_be_appended(tmp_path):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps({"open_time": "2026-08-01T00:00:00Z", "close": 99.0}) + "\n")
     assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)[0]["close"] == 99.0
+
+
+def test_a_row_edited_after_the_write_stops_being_believed(tmp_path):
+    """The hash was written and never read, which made it a field rather than evidence.
+
+    Skipped rather than raised on: `pool.read_candidates` raises because it gates a promotion
+    ask, and this store's consumer is a coverage number where reporting less than exists is the
+    safe direction.
+    """
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    path = archive.archive_path(VENUE, SYMBOL, "1h", tmp_path)
+    row = json.loads(path.read_text(encoding="utf-8").strip())
+    row["close"] = 999_999.0                      # edit the price, leave the stored hash alone
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
+
+
+def _tamper(path, *, open_time):
+    """Edit one stored row's price and leave its hash alone."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = []
+    for line in lines:
+        row = json.loads(line)
+        if row.get("open_time") == open_time:
+            row["close"] = 999_999.0
+        out.append(json.dumps(row))
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_an_edited_newest_row_does_not_get_to_set_the_refresh_horizon(tmp_path):
+    """`newest_open_time` verifies from the newest candidate down, and the direction is the
+    safety-relevant part.
+
+    Trusting an unverified maximum would let one edited row claim a future `open_time`, and a
+    refresh sized from that asks for a single bar forever while the venue's window rolls past
+    everything it is not asking for. Skipping to the newest INTACT row over-fetches at worst,
+    and `append_candles` drops the overlap.
+    """
+    archive.append_candles([_candle(1), _candle(2), _candle(3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-03T00:00:00Z")
+
+    assert archive.newest_open_time(VENUE, SYMBOL, "1h", tmp_path) == "2026-08-02T00:00:00Z"
+
+
+def test_a_refetch_repairs_an_edited_row_instead_of_skipping_it(tmp_path):
+    """A row that fails verification is deliberately not counted as already-held.
+
+    It is skipped on read either way, so letting the re-fetch append a good copy lets
+    latest-wins repair the book rather than leaving a hole the archive can never fill.
+    """
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    _tamper(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path),
+            open_time="2026-08-01T00:00:00Z")
+    assert archive.read_rows(VENUE, SYMBOL, "1h", tmp_path) == []      # nothing believable held
+
+    written = archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL,
+                                     timeframe="1h", root=tmp_path)
+    assert written == 1
+    rows = archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)
+    assert len(rows) == 1 and rows[0]["close"] == 59.3
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 1
+
+
+def test_a_row_carrying_no_hash_is_kept_because_absence_is_not_a_mismatch(tmp_path):
+    """Every row written before the check existed carries no hash. Treating that as tampering
+    would empty every book on this machine the first time the new code ran."""
+    path = archive.archive_path(VENUE, SYMBOL, "1h", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"open_time": "2026-08-01T00:00:00Z", "close": 59.3}) + "\n",
+                    encoding="utf-8")
+    assert len(archive.read_rows(VENUE, SYMBOL, "1h", tmp_path)) == 1
+    assert archive.coverage(VENUE, SYMBOL, "1h", tmp_path)["tampered_rows"] == 0
+
+
+def test_an_unreadable_line_is_counted_as_well_as_skipped(tmp_path):
+    archive.append_candles([_candle(1)], venue=VENUE, symbol=SYMBOL, timeframe="1h", root=tmp_path)
+    with open(archive.archive_path(VENUE, SYMBOL, "1h", tmp_path), "a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+    cov = archive.coverage(VENUE, SYMBOL, "1h", tmp_path)
+    assert cov["rows"] == 1 and cov["unreadable_rows"] == 1
+
+
+def test_coverage_names_the_hole_the_row_count_cannot_show(tmp_path):
+    """`rows`, `oldest` and `newest` are identical for a contiguous book and one missing a
+    month out of its middle — so the failure this module exists to prevent was the one thing
+    its report could not show."""
+    archive.append_candles([_candle(d) for d in (1, 2, 3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    archive.append_candles([_candle(d) for d in (28, 29, 30)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    cov = archive.coverage(VENUE, SYMBOL, "1d", tmp_path)
+    assert cov["rows"] == 6
+    assert cov["missing_bars"] == 24
+    assert cov["largest_gap_bars"] == 24
+
+
+def test_a_contiguous_book_reports_zero_and_a_book_too_small_reports_none(tmp_path):
+    """Zero gap and no measurement are different answers, and the second must not read as the
+    first on the number an operator watches to see a hole is not forming."""
+    archive.append_candles([_candle(d) for d in (1, 2, 3)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    assert archive.coverage(VENUE, SYMBOL, "1d", tmp_path)["largest_gap_bars"] == 0
+
+    empty = archive.coverage(VENUE, "xyz:EWY", "1d", tmp_path)
+    assert empty["missing_bars"] is None and empty["largest_gap_bars"] is None
+
+
+def _hour(offset_hours: int) -> str:
+    base = datetime(2026, 8, 4, tzinfo=timezone.utc) + timedelta(hours=offset_hours)
+    return base.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_permanence_is_a_question_about_when_not_about_size(tmp_path):
+    """A ten-bar hole from a year ago is as gone as a ten-thousand-bar one, while a large
+    recent hole still refills — so no boolean is derived from gap size alone.
+
+    The venue serves the newest `VENUE_CANDLE_CEILING` bars and nothing behind them.
+    """
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    beyond = archive.VENUE_CANDLE_CEILING + 1000       # 1h bars, so hours
+
+    # A SMALL gap, entirely older than the window: one missing bar, unreachable.
+    archive.append_candles(
+        [_candle(1, open_time=_hour(-beyond)), _candle(1, open_time=_hour(-beyond + 2))],
+        venue=VENUE, symbol="xyz:OLD", timeframe="1h", root=tmp_path,
+    )
+    old = archive.coverage(VENUE, "xyz:OLD", "1h", tmp_path, now_ms=now_ms)
+    assert old["largest_gap_bars"] == 1
+    assert old["unreachable_missing_bars"] == 1
+
+    # A MUCH LARGER gap, entirely inside the window: nothing lost, the next refresh closes it.
+    archive.append_candles(
+        [_candle(1, open_time=_hour(-100)), _candle(1, open_time=_hour(-1))],
+        venue=VENUE, symbol="xyz:NEW", timeframe="1h", root=tmp_path,
+    )
+    new = archive.coverage(VENUE, "xyz:NEW", "1h", tmp_path, now_ms=now_ms)
+    assert new["largest_gap_bars"] == 98
+    assert new["unreachable_missing_bars"] == 0
+
+
+def test_without_a_clock_permanence_is_not_guessed(tmp_path):
+    archive.append_candles([_candle(d) for d in (1, 30)],
+                           venue=VENUE, symbol=SYMBOL, timeframe="1d", root=tmp_path)
+    cov = archive.coverage(VENUE, SYMBOL, "1d", tmp_path)
+    assert cov["largest_gap_bars"] == 28
+    assert cov["unreachable_missing_bars"] is None
 
 
 def test_the_dex_prefix_survives_into_the_filename(tmp_path):
