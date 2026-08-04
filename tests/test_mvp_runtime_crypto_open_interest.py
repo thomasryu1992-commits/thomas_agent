@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory
+from runtime.mvp_runtime.crypto import cycle, factory, market_data
 from runtime.mvp_runtime.crypto.cycle import attach_feeds
 from runtime.mvp_runtime.crypto.features import build_feature_rows, latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
@@ -153,6 +153,38 @@ def test_oi_families_are_present_and_generate_valid_specs():
     assert batch["accepted_count"] == batch["requested_count"]
     for spec_dict in batch["specs"]:
         assert factory.validate_strategy(StrategySpec.from_dict(spec_dict))["approved_for_backtest"] is True
+
+
+# --- the feed has to reach the window being replayed --------------------------
+
+def test_oi_families_drop_where_the_feed_cannot_reach_the_replay_window():
+    """1d replays a 2,000-BAR floor, i.e. 2,000 days, against 520 days of feed. Minting there
+    scores the family on a window ~74% blind in its own feature — `unsuppliable_features` does
+    not catch that, because the column is populated on the newest quarter."""
+    for timeframe in ("15m", "1h", "4h"):
+        families = {t.family for t in factory.templates_for_timeframe(timeframe)}
+        assert factory.OI_FAMILIES <= families, timeframe
+    assert not (factory.OI_FAMILIES & {t.family for t in factory.templates_for_timeframe("1d")})
+
+
+def test_the_oi_gate_reads_the_same_depth_the_fetch_asks_for():
+    """The property whose absence made this reachable: the gate and the fetch were two numbers.
+
+    `cycle` asked the feed for its own private 520 and `factory` had no opinion at all, so the
+    day `MIN_FACTORY_BARS` pushed 1d past that depth there was nothing to notice it. If a future
+    edit moves the fetch, this fails rather than silently re-opening the window."""
+    assert cycle._LIQUIDATION_DAYS is market_data.DERIVATIVE_HISTORY_DAYS
+    # ...and the gate is that constant against the window, not a hardcoded timeframe list.
+    assert factory._oi_feed_reaches("4h") is True
+    assert factory._oi_feed_reaches("1d") is False
+    assert factory._oi_feed_reaches("nonsense") is False
+
+
+def test_the_oi_gate_would_reopen_if_the_feed_got_deeper(monkeypatch):
+    """Stated as a property of the depth, so nobody has to re-derive which timeframes bind."""
+    monkeypatch.setattr(market_data, "DERIVATIVE_HISTORY_DAYS", 2_000)
+    assert factory._oi_feed_reaches("1d") is True
+    assert factory.OI_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1d")}
 
 
 # --- the feed seam ------------------------------------------------------------
