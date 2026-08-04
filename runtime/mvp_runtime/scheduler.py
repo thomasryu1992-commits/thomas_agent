@@ -94,9 +94,30 @@ KIND_ROTATE = "ledger_rotate"
 # daily buries the day it flipped among the days it did not. It speaks only on a change, so a
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
+# Keeps candles the equity venue will stop serving. Its own kind rather than a leg of
+# `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence, and a per-book
+# failure has to cost that book alone — losing one symbol must not cost the other eighty-seven.
+#
+# **It is NOT exempt from the kill switch, and the comment here used to say it was.** `run_due`
+# skips every due schedule while PAUSED/KILLED and *drops* the occurrence rather than queueing
+# it; there is no per-kind exemption and this kind does not have one. The original rationale —
+# "must keep running when the pipeline is paused, because the data it races is lost by the
+# clock" — described a property nothing implements, which is worse than not claiming it: an
+# operator reading it would issue a halt believing archiving continued.
+#
+# What is true is that the exposure is BOUNDED by the same ceiling the archive exists for. A
+# refresh sizes its request from the newest bar it holds and may ask for up to
+# `VENUE_CANDLE_CEILING`, so a halt shorter than that window costs nothing — the next fire
+# refills it, which is `candle_archive`'s own "a gap shorter than the ceiling self-heals". Only
+# a halt outlasting **52 days at 15m or 208 at 1h** loses bars permanently.
+#
+# Exempting it would be a change to `run_due` and a different safety claim — a kill switch with
+# an exception is not a kill switch — so it is argued there or not at all. A test pins that this
+# kind stops with everything else, so the exemption cannot arrive by comment.
+KIND_CANDLE_ARCHIVE = "candle_archive"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
-                   KIND_BREAKER_WATCH})
+                   KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE})
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -868,6 +889,31 @@ def _execute(
             delivery = f" sheet_not_sent:{type(exc).__name__}"
         return (f"data_review={record['accepted_count']}/{record['suggested_count']} "
                 f"review={record['review_id']}{delivery}")
+    if schedule.kind == KIND_CANDLE_ARCHIVE:
+        # Read-only, and the archive feeds nothing — so this fire cannot change what the
+        # runtime trades. What it can do is fail to keep a bar that will not be offered
+        # again: at 15m the venue's window is 52 days deep and moving, so a pass that does
+        # not run is a hole no later pass can fill.
+        #
+        # Off unless BOTH the archive's own env names the venue and the Safety-Flag Gate
+        # holds a grant for it. Not opted in, the selector returns the inert collector and
+        # this reports `blocked` rather than writing anything — deliberately not the Mock,
+        # whose synthetic bars would be indistinguishable from real ones a year later.
+        from .crypto import candle_archive
+        from .crypto.market_data import HYPERLIQUID, select_candle_archive_collector
+
+        try:
+            collector = select_candle_archive_collector(now=now, root=repo_root)
+        except MvpRuntimeError as exc:
+            # An opted-in-but-ungranted machine must say so once per fire, not crash the tick.
+            return f"candle_archive=blocked:{exc.reason_code}"
+        summary = candle_archive.run_candle_archive(
+            collector, venue=HYPERLIQUID, now_ms=int(time.time() * 1000), root=repo_root,
+        )
+        if summary["blocked"]:
+            return f"candle_archive=blocked:{summary['reason_code']}"
+        return (f"candle_archive symbols={summary['symbols']} books={summary['books']} "
+                f"kept={summary['written']} degraded={summary['degraded']}")
     if schedule.kind != KIND_TASK:
         # Every branch above tests one kind, and this used to be a bare fall-through: a
         # schedule of ANY unrecognised kind ran the analysis pipeline below — a real model

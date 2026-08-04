@@ -215,6 +215,116 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
     )
 
 
+def test_contexts_firing_together_do_not_mint_the_same_block():
+    """The half the cursor did not fix: contexts marching in step explore `count` families a day.
+
+    `context_rotation_index` decides how far a context has walked. Every context fires on the
+    same schedule, so they all acquire generations at the same rate and the cursor converges —
+    measured on the store 2026-08-04, **13 of 20 contexts sat on rotation_index 11**, every
+    non-BTC symbol identical across its timeframes. A fire mints `count` CONSECUTIVE families,
+    so the whole factory drew one block of four: 2026-08-03's seeded mints were
+    `bollinger_breakout` 14, `bollinger_breakdown_short` 14, `macd_momentum` 13,
+    `macd_momentum_short` 13 — four families, drawn fourteen times over.
+
+    Grouped by the template LIBRARY rather than by timeframe, which is the honest unit: the
+    offset is taken modulo the library's size, so two contexts collapse onto one block only when
+    they draw from the same list. BTCUSDT is the standing example — it is the reference symbol,
+    so `rel_strength_*` cannot be minted on it and its 1h library is 36 against the other four
+    symbols' 38. Grouping by timeframe read that difference as the phase working, and the first
+    version of this test asserted a collapse to `count` that BTC's odd library already broke.
+
+    The phased bound is `> count` rather than an exact number — how many distinct families the
+    phases reach depends on the library's size and on the hash, and pinning it would make this
+    fail on a family being added rather than on the property being broken."""
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT")
+    count, fire = 4, 11  # one fire number, the way the scheduler fires them
+    groups: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+
+    for timeframe in ("1h", "4h", "1d"):
+        for symbol in symbols:
+            library = tuple(t.family for t in templates_for_timeframe(timeframe, symbol=symbol))
+            groups.setdefault((timeframe, library), []).append(symbol)
+
+    shared = {key: members for key, members in groups.items() if len(members) > 1}
+    assert shared, "no two contexts share a library — this test would be measuring nothing"
+
+    for (timeframe, library), members in shared.items():
+        total = len(library)
+        families, unphased = set(), set()
+        for symbol in members:
+            phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+            for offset, sink in (
+                (factory._rotation_offset("GEN-999", 0, count, total,
+                                          rotation_index=fire, phase=phase), families),
+                (factory._rotation_offset("GEN-999", 0, count, total,
+                                          rotation_index=fire, phase=0), unphased),
+            ):
+                sink.update(library[(offset + i) % total] for i in range(count))
+
+        # The defect, pinned so it cannot come back unnoticed: with no phase, every symbol
+        # sharing a library mints the identical block.
+        assert len(unphased) == count, (
+            f"{timeframe}/{members}: expected the unphased rotation to collapse onto one block "
+            f"of {count}, got {len(unphased)} — if this no longer holds the phase may be "
+            f"redundant, but check WHY before deleting it"
+        )
+        assert len(families) > count, (
+            f"{timeframe}/{members}: still one block of {count} between them "
+            f"({sorted(families)}) — the phase is not separating them"
+        )
+
+
+def test_the_rotation_phase_preserves_library_coverage():
+    """The property the phase must not buy its breadth with.
+
+    A phase shifts WHERE a context starts; `ceil(total / count)` of its own fires must still
+    tile the whole library, because that is what `context_rotation_index` exists to guarantee
+    and what an operator depends on when they add a family. It holds for any phase — the walk
+    still steps by `count` — and this pins it against an edit that made the phase multiply or
+    stride instead of offset."""
+    count = 4
+    for symbol, timeframe in (("BTCUSDT", "1h"), ("SOLUSDT", "4h"), ("ETHUSDT", "1d")):
+        templates = templates_for_timeframe(timeframe, symbol=symbol)
+        total = len(templates)
+        phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+        seen = set()
+        for fire in range(-(-total // count)):
+            offset = factory._rotation_offset(
+                "GEN-999", 0, count, total, rotation_index=fire, phase=phase
+            )
+            seen.update(templates[(offset + i) % total].family for i in range(count))
+        assert seen == {t.family for t in templates}, (
+            f"{symbol} {timeframe}: the phase cost this context coverage — unreachable in one "
+            f"pass: {sorted({t.family for t in templates} - seen)}"
+        )
+
+
+def test_the_rotation_phase_is_a_stable_property_of_the_context():
+    """It must not move when the store does.
+
+    The phase separates contexts; one derived from anything that changes — a candidate count,
+    a timestamp, a machine — would re-synchronise them on the next prune or re-import, which is
+    the failure it exists to prevent. So: a pure function of (symbol, timeframe), and bounded by
+    the number of offsets the walk actually visits, since a larger phase only names an offset
+    the rotation already reaches."""
+    import math
+
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) == \
+        factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38)
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) != \
+        factory.context_rotation_phase("BTCUSDT", "4h", count=4, total=38)
+
+    for total in (30, 32, 36, 38):
+        cycle = total // math.gcd(4, total)
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"):
+            phase = factory.context_rotation_phase(symbol, "1h", count=4, total=total)
+            assert 0 <= phase < cycle, f"{symbol}/{total}: phase {phase} outside [0, {cycle})"
+
+    # An empty library is the degenerate case the offset helper already guards; the phase must
+    # not raise on it either (a factory with no mintable family is a refusal, not a crash).
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=0) == 0
+
+
 def test_the_rotation_cursor_counts_fires_not_candidates():
     """One fire mints a whole batch under a single generation id, so a batch is one step
     of the rotation and not `count` steps. Fused children ride the same id and must not

@@ -52,6 +52,7 @@ real instead of always zero.
 
 from __future__ import annotations
 
+import math
 import random
 import statistics
 from dataclasses import dataclass, field, replace
@@ -1413,8 +1414,49 @@ def context_rotation_index(
     return len(seen)
 
 
+def context_rotation_phase(symbol: str, timeframe: str, *, count: int, total: int) -> int:
+    """Where in the rotation this context STARTS, so two contexts do not march in lockstep.
+
+    :func:`context_rotation_index` fixed which families a context can reach; this fixes how
+    many the factory reaches per fire. Its docstring already names the missing half — "the
+    absolute value does not matter at all, it only sets the PHASE" — and the phase it was
+    relying on is the count of generations already in the store, which every context acquires
+    at the same rate because they all fire on the same schedule. So they converge, and
+    measured 2026-08-04 they had: **13 of 20 contexts sat on rotation_index 11**, all four
+    non-BTC symbols identical across 15m/1h/4h, and the only contexts off the block were the
+    1d ones whose imported row counts happened to differ. The phases that existed were an
+    accident of history rather than the design.
+
+    What that costs is breadth per day. A fire mints ``count`` consecutive families, so 20
+    synchronised contexts mint the SAME four — measured in the candidate store, 2026-08-03's
+    seeded mints were ``bollinger_breakout`` 14, ``bollinger_breakdown_short`` 14,
+    ``macd_momentum`` 13, ``macd_momentum_short`` 13, i.e. one block of four drawn 14 times
+    over. The library is 36-38 families and a fire advances by 4, so any given family gets one
+    day of mints roughly every ten, and ``htf_trend_long`` — the only family in the store with
+    a positive median holdout — had not been minted since 2026-07-30.
+
+    The phase is a stable hash of the context rather than a counter, because it must not move
+    when the store is pruned, re-imported, or read on another machine: a phase that drifts
+    would re-synchronise the contexts it exists to separate. Taken modulo the number of
+    distinct offsets the walk actually visits (``total // gcd(count, total)``) — a phase past
+    that lands on an offset the rotation already covers and buys nothing.
+
+    **Coverage is unchanged and that is the property to preserve on any edit here.** A fire at
+    ``k`` reads offsets ``(k + phase) * count``, which steps by ``count`` exactly as before, so
+    ``ceil(total / count)`` consecutive fires still tile the whole library whatever the phase
+    is. This shifts WHERE a context starts, never how much it eventually sees.
+    """
+    if total <= 0:
+        return 0
+    cycle = total // math.gcd(max(count, 1), total)
+    digest = integrity.short_id(
+        "crypto_rotation_phase", {"symbol": str(symbol), "timeframe": str(timeframe)}
+    )
+    return int(digest.rsplit("_", 1)[1][:8], 16) % max(cycle, 1)
+
+
 def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
-                     rotation_index: int | None = None) -> int:
+                     rotation_index: int | None = None, phase: int = 0) -> int:
     """The first family index this run mints. Deterministic, marches forward.
 
     ``rotation_index`` is the caller's per-context cursor
@@ -1436,7 +1478,13 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
     out: that one selected `templates[0..3]` on every run, this one selects one of three
     fixed blocks. The fix then made *consecutive* generations rotate, and the test written
     for it walks GEN-000, GEN-001, ... — a rotation production never performs. A test that
-    strides is in the suite now beside it."""
+    strides is in the suite now beside it.
+
+    ``phase`` is :func:`context_rotation_phase` — a per-context constant that separates
+    contexts firing the same fire number. It is applied on BOTH paths, including the
+    generation-number fallback: a constant shift changes neither the stride nor the residues
+    a strided walk can reach, so the fallback's behaviour (and the test pinning it) is
+    unaffected, and one code path is worth more than a branch that would need its own."""
     if total <= 0:
         return 0
     if rotation_index is not None:
@@ -1446,7 +1494,7 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
             step = int(str(generation_id).rsplit("-", 1)[1])
         except (ValueError, IndexError):
             step = int(seed)
-    return (step * max(count, 1)) % total
+    return ((step + int(phase)) * max(count, 1)) % total
 
 
 def generate_batch(
@@ -1491,8 +1539,18 @@ def generate_batch(
     # is the correction of 2026-07-31: the step used to be the global generation number,
     # which advances once per fire across every context and so strides — see
     # `_rotation_offset` for what that cost.
-    offset = _rotation_offset(generation_id, seed, count, len(templates),
-                              rotation_index=rotation_index)
+    #
+    # The phase is the second half of that correction: the cursor decides how far a context
+    # has walked, the phase decides where it started, and without one every context walks in
+    # step and the whole factory explores `count` families a day. See
+    # `context_rotation_phase`. Derived here from this batch's own symbol/timeframe rather
+    # than taken as a parameter — the caller would have to compute it from the two arguments
+    # it already passes, which is a chance for a caller to pass a phase from a different
+    # context than the batch it is minting.
+    offset = _rotation_offset(
+        generation_id, seed, count, len(templates), rotation_index=rotation_index,
+        phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
+    )
     accepted: list[StrategySpec] = []
     accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
