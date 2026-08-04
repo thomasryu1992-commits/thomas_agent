@@ -52,11 +52,12 @@ real instead of always zero.
 
 from __future__ import annotations
 
+import math
 import random
 import statistics
 from dataclasses import dataclass, field, replace
 from itertools import combinations
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -1376,10 +1377,20 @@ def build_spec_dict(
     template: StrategyTemplate, params: dict[str, float], *,
     strategy_id: str, generation_id: str, symbol: str = "BTCUSDT",
     venue: str = market_data.BINANCE_FUTURES,
+    symbol_scope: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     # `venue` is recorded here rather than left to `StrategySpec`'s default because this is
     # where the fact exists: a spec mined by this function was mined on that venue's data.
     # The default agrees with the dataclass's for the same reason it has one.
+    #
+    # `symbol_scope` defaults to `[symbol]`, which is what every one of the 1,140 stored
+    # candidates carries and what `run_factory` still mints. A caller may widen it for a spec
+    # backtested by `backtest_spec_pooled` over that same set — the two have to agree or the
+    # evidence describes a different strategy than the record claims, which is why the scope is
+    # an argument here rather than something the pooled backtest infers. Sorted, because
+    # `symbol_scope` is inside `strategy_rule_fingerprint`: the same spec reached by a different
+    # caller ordering must be the same rule hash.
+    scope = sorted({str(s) for s in symbol_scope}) if symbol_scope else [symbol]
     return {
         "schema_version": SCHEMA_VERSION,
         "strategy_id": strategy_id,
@@ -1387,7 +1398,7 @@ def build_spec_dict(
         "generation_id": generation_id,
         "strategy_family": template.family,
         "status": "GENERATED",
-        "symbol_scope": [symbol],
+        "symbol_scope": scope,
         "timeframe": template.timeframe,
         "direction": template.direction,
         "entry_rules": {"operator": "AND", "conditions": template.entry_builder(params)},
@@ -1443,8 +1454,49 @@ def context_rotation_index(
     return len(seen)
 
 
+def context_rotation_phase(symbol: str, timeframe: str, *, count: int, total: int) -> int:
+    """Where in the rotation this context STARTS, so two contexts do not march in lockstep.
+
+    :func:`context_rotation_index` fixed which families a context can reach; this fixes how
+    many the factory reaches per fire. Its docstring already names the missing half — "the
+    absolute value does not matter at all, it only sets the PHASE" — and the phase it was
+    relying on is the count of generations already in the store, which every context acquires
+    at the same rate because they all fire on the same schedule. So they converge, and
+    measured 2026-08-04 they had: **13 of 20 contexts sat on rotation_index 11**, all four
+    non-BTC symbols identical across 15m/1h/4h, and the only contexts off the block were the
+    1d ones whose imported row counts happened to differ. The phases that existed were an
+    accident of history rather than the design.
+
+    What that costs is breadth per day. A fire mints ``count`` consecutive families, so 20
+    synchronised contexts mint the SAME four — measured in the candidate store, 2026-08-03's
+    seeded mints were ``bollinger_breakout`` 14, ``bollinger_breakdown_short`` 14,
+    ``macd_momentum`` 13, ``macd_momentum_short`` 13, i.e. one block of four drawn 14 times
+    over. The library is 36-38 families and a fire advances by 4, so any given family gets one
+    day of mints roughly every ten, and ``htf_trend_long`` — the only family in the store with
+    a positive median holdout — had not been minted since 2026-07-30.
+
+    The phase is a stable hash of the context rather than a counter, because it must not move
+    when the store is pruned, re-imported, or read on another machine: a phase that drifts
+    would re-synchronise the contexts it exists to separate. Taken modulo the number of
+    distinct offsets the walk actually visits (``total // gcd(count, total)``) — a phase past
+    that lands on an offset the rotation already covers and buys nothing.
+
+    **Coverage is unchanged and that is the property to preserve on any edit here.** A fire at
+    ``k`` reads offsets ``(k + phase) * count``, which steps by ``count`` exactly as before, so
+    ``ceil(total / count)`` consecutive fires still tile the whole library whatever the phase
+    is. This shifts WHERE a context starts, never how much it eventually sees.
+    """
+    if total <= 0:
+        return 0
+    cycle = total // math.gcd(max(count, 1), total)
+    digest = integrity.short_id(
+        "crypto_rotation_phase", {"symbol": str(symbol), "timeframe": str(timeframe)}
+    )
+    return int(digest.rsplit("_", 1)[1][:8], 16) % max(cycle, 1)
+
+
 def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
-                     rotation_index: int | None = None) -> int:
+                     rotation_index: int | None = None, phase: int = 0) -> int:
     """The first family index this run mints. Deterministic, marches forward.
 
     ``rotation_index`` is the caller's per-context cursor
@@ -1466,7 +1518,13 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
     out: that one selected `templates[0..3]` on every run, this one selects one of three
     fixed blocks. The fix then made *consecutive* generations rotate, and the test written
     for it walks GEN-000, GEN-001, ... — a rotation production never performs. A test that
-    strides is in the suite now beside it."""
+    strides is in the suite now beside it.
+
+    ``phase`` is :func:`context_rotation_phase` — a per-context constant that separates
+    contexts firing the same fire number. It is applied on BOTH paths, including the
+    generation-number fallback: a constant shift changes neither the stride nor the residues
+    a strided walk can reach, so the fallback's behaviour (and the test pinning it) is
+    unaffected, and one code path is worth more than a branch that would need its own."""
     if total <= 0:
         return 0
     if rotation_index is not None:
@@ -1476,7 +1534,7 @@ def _rotation_offset(generation_id: str, seed: int, count: int, total: int,
             step = int(str(generation_id).rsplit("-", 1)[1])
         except (ValueError, IndexError):
             step = int(seed)
-    return (step * max(count, 1)) % total
+    return ((step + int(phase)) * max(count, 1)) % total
 
 
 def generate_batch(
@@ -1521,8 +1579,18 @@ def generate_batch(
     # is the correction of 2026-07-31: the step used to be the global generation number,
     # which advances once per fire across every context and so strides — see
     # `_rotation_offset` for what that cost.
-    offset = _rotation_offset(generation_id, seed, count, len(templates),
-                              rotation_index=rotation_index)
+    #
+    # The phase is the second half of that correction: the cursor decides how far a context
+    # has walked, the phase decides where it started, and without one every context walks in
+    # step and the whole factory explores `count` families a day. See
+    # `context_rotation_phase`. Derived here from this batch's own symbol/timeframe rather
+    # than taken as a parameter — the caller would have to compute it from the two arguments
+    # it already passes, which is a chance for a caller to pass a phase from a different
+    # context than the batch it is minting.
+    offset = _rotation_offset(
+        generation_id, seed, count, len(templates), rotation_index=rotation_index,
+        phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
+    )
     accepted: list[StrategySpec] = []
     accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
@@ -1821,23 +1889,49 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
 
 
 def _holdout_evidence(
-    spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
-    *, cost: CostModel, offset: int, funding: list[float] | None = None,
-    funding_source: str = FUNDING_SOURCE_VENUE,
+    spec: StrategySpec, frames: Sequence["ReplayFrame"],
+    *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
 ) -> dict[str, Any]:
     """What the spec did on bars that never touched its score. Compact by design.
 
     Only the few numbers a confirmation needs: how many trades the unseen tail
     produced and whether they were profitable in aggregate. The verdict layer turns
-    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing."""
-    outcomes, fees, maker_fees, slippage, carry, uneconomic = _replay(
-        spec, rows, candles, cost=cost, funding=funding, offset=offset
-    )
+    that into CONFIRMED / CONTRADICTED / INSUFFICIENT — this function judges nothing.
+
+    Takes **frames**, plural, and pools their tails into one block. A spec scoped to
+    several symbols is one hypothesis fitted on all of them, so its tail is all of their
+    tails — which is the whole reason a pooled spec can reach ``MIN_HOLDOUT_TRADES``
+    where a single-symbol one at the same timeframe cannot. ``bars`` stays the
+    PER-SYMBOL depth (the shallowest frame's, so the claim is bounded by the leg that
+    saw least) because `pool.evidence_depth_of` reads it as a calendar span: five
+    symbols over 150 days is still 150 days of market, seen five times. ``symbols``
+    says how many times.
+    """
+    outcomes: list[dict[str, Any]] = []
+    fees = maker_fees = slippage = carry = 0.0
+    uneconomic = 0
+    bars: list[int] = []
+    for frame in frames:
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[frame.split:], frame.candles[frame.split:],
+            cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
+        )
+        outcomes.extend(part)
+        fees += part_fees
+        maker_fees += part_maker
+        slippage += part_slip
+        carry += part_carry
+        uneconomic += part_uneconomic
+        bars.append(len(frame.rows) - frame.split)
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
     return {
-        "bars": len(rows),
+        "bars": min(bars) if bars else 0,
+        # Absent on every block minted before pooling existed, and 1 is what those mean —
+        # `pool` and `robustness` read the count only to describe the evidence, never to
+        # gate on it, so a missing field degrades to the single-symbol reading it had.
+        "symbols": len(frames),
         "closed_count": closed,
         "win_count": sum(1 for r in results if r > 0),
         "total_R": total_r,
@@ -1928,7 +2022,11 @@ def backtest_spec(
     spec: StrategySpec, snapshot: Mapping[str, Any], *, cost: CostModel | None = None,
     frame: ReplayFrame | None = None,
 ) -> dict[str, Any]:
-    """Replay ``spec`` over the snapshot's history. Deterministic, pure.
+    """Replay ``spec`` over one snapshot's history. Deterministic, pure.
+
+    The single-symbol form of :func:`backtest_spec_pooled`, and byte-identical to what
+    this function returned before pooling existed — every caller that mines one
+    ``(symbol, timeframe)`` context keeps exactly the evidence it had.
 
     Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
     the position opens at row i's close with the spec's ATR exits, and every later
@@ -1940,28 +2038,84 @@ def backtest_spec(
     ``cost.apply_cost_model`` (fees + slippage, source S4b). ``result_R`` on each
     outcome — and therefore ``expectancy``/``champion_score`` for this spec — is the
     NET R after costs; ``gross_R`` rides alongside for transparency."""
+    return backtest_spec_pooled(
+        spec, [snapshot], cost=cost, frames=None if frame is None else [frame]
+    )
+
+
+def backtest_spec_pooled(
+    spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
+    cost: CostModel | None = None, frames: Sequence[ReplayFrame] | None = None,
+) -> dict[str, Any]:
+    """Replay one spec across several symbols' histories and pool the result.
+
+    **One hypothesis, N symbols' worth of evidence.** Every spec in the store is scoped
+    to a single symbol (``build_spec_dict`` defaults to ``[symbol]``), so the factory's
+    evidence-per-hypothesis ratio is fixed by how often one symbol signals — and at 4h
+    and 1d that is below `robustness.MIN_HOLDOUT_TRADES`, which is why
+    `REMAINING_WORK.md` F1 finds the search producing evidence it cannot confirm.
+    Pooling moves the ratio the only way that helps: adding a family costs +1 hypothesis
+    at the same data, adding a symbol as its own context costs +N hypotheses at +N data,
+    and this is +0 hypotheses at +N data.
+
+    It is also the harder thing to overfit, which is the second reason: one parameter set
+    has to hold on BTC and DOGE at once. The feature vocabulary was already built for
+    that — ``NUMERIC_FEATURES`` admits only normalized columns precisely so "a mined
+    threshold carries the same meaning on BTC and on SOL" — and nothing had used it.
+
+    Preconditions, fail-closed rather than reconciled: every frame must carry the same
+    cost model (a pooled figure mixing rates describes no book), and the caller is
+    responsible for handing frames of ONE timeframe, since the walk-forward slices below
+    index by bar and bar *i* only names the same calendar window across symbols when the
+    bar length is the same.
+
+    ``bars_replayed`` stays the per-symbol scored depth for the reason ``holdout.bars``
+    does; ``symbols_replayed`` is how many legs are behind it. This does **not** decide
+    what the factory mints — ``run_factory`` is untouched, and moving the rotation onto
+    pooled specs is a separate decision that wants generations of evidence, not this
+    function landing.
+    """
+    if not snapshots and not frames:
+        raise ValueError("a pooled backtest needs at least one snapshot or frame")
     cost = cost or CostModel()
-    # Reused when the caller already built it (`run_factory` builds one per fire and replays
+    # Reused when the caller already built them (`run_factory` builds one per fire and replays
     # every spec and fusion child through it), rebuilt when it did not. A frame from a different
     # cost model is refused rather than used: see `ReplayFrame`.
-    if frame is None:
-        frame = build_replay_frame(snapshot, cost=cost)
-    elif frame.cost != cost:
-        raise ValueError(
-            "replay frame was built under a different cost model than this backtest charges; "
-            "the carry series would price trades at rates they never faced"
+    if frames is None:
+        frames = [build_replay_frame(snapshot, cost=cost) for snapshot in snapshots]
+    else:
+        for frame in frames:
+            if frame.cost != cost:
+                raise ValueError(
+                    "replay frame was built under a different cost model than this backtest "
+                    "charges; the carry series would price trades at rates they never faced"
+                )
+    # The weaker label wins when the legs disagree: a pooled carry is only as well-sourced as
+    # its worst leg, and reporting `venue_history` over a book where one symbol fell back to
+    # the modelled rate would overstate what the funding figure is evidence of.
+    funding_source = (
+        FUNDING_SOURCE_VENUE
+        if all(f.funding_source == FUNDING_SOURCE_VENUE for f in frames)
+        else FUNDING_SOURCE_FALLBACK
+    )
+    outcomes: list[dict[str, Any]] = []
+    total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
+    uneconomic_entries = 0
+    scored_bars: list[int] = []
+    for frame in frames:
+        split = frame.split
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+            spec, frame.rows[:split], frame.candles[:split],
+            cost=cost, funding=frame.funding[:split],
         )
-    all_rows, all_candles = frame.rows, frame.candles
-    all_funding, funding_source, split = frame.funding, frame.funding_source, frame.split
-    rows, candles = all_rows[:split], all_candles[:split]
-    (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-     total_funding_cost_r, uneconomic_entries) = _replay(
-        spec, rows, candles, cost=cost, funding=all_funding[:split]
-    )
-    holdout = _holdout_evidence(
-        spec, all_rows[split:], all_candles[split:], cost=cost, offset=split,
-        funding=all_funding[split:], funding_source=funding_source,
-    )
+        outcomes.extend(part)
+        total_fee_cost_r += part_fees
+        total_maker_fee_cost_r += part_maker
+        total_slippage_cost_r += part_slip
+        total_funding_cost_r += part_carry
+        uneconomic_entries += part_uneconomic
+        scored_bars.append(split)
+    holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
     summary = summarize_outcomes(outcomes)
 
@@ -1993,7 +2147,11 @@ def backtest_spec(
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
     # with enough trades. temporal_stability stays None (the source walk-forward
     # module was not ported) — the scorer treats that as absent evidence, not skip.
-    window_bars = max(1, len(rows) // BACKTEST_WINDOWS)
+    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
+    # into the last window rather than opening a window the other legs never reached. Bar *i*
+    # is the same calendar window on every leg — that is the one-timeframe precondition above,
+    # and it is what makes pooling by `closed_at_bar` mean anything.
+    window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
         window_r.setdefault(min(outcome["closed_at_bar"] // window_bars, BACKTEST_WINDOWS - 1), []).append(
@@ -2109,7 +2267,14 @@ def backtest_spec(
         # robustness score (C8b), with raw expectancy kept alongside.
         "champion_score": robustness["robustness_score"],
         "score_basis": "robustness_score_v1",
-        "bars_replayed": len(rows),
+        # PER SYMBOL, and the shallowest leg's — `pool.evidence_depth_of` turns this into a
+        # calendar span, and five symbols over 350 days is 350 days of market seen five times,
+        # not 1,750 days of it. Summing would tier a pooled candidate as though it had been
+        # shown history that does not exist.
+        "bars_replayed": min(scored_bars),
+        # How many legs are behind every figure above. Absent on evidence minted before pooling,
+        # which is exactly what 1 means, so a reader needs no migration to interpret an old row.
+        "symbols_replayed": len(frames),
     }
 
 

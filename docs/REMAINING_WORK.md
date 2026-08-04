@@ -24,6 +24,13 @@ Two claims from F1's first pass are corrected in place rather than deleted — b
 population comparisons the paired test overturned, and the way they were wrong is the useful
 part.
 
+And a new **section H**, added because the equity-perp lane was **not in this file at all**
+while three PRs of it merged — a reader starting here, which is what this file tells them to
+do, could not have learned it exists. It is code-complete as far as it goes and **runs
+nothing**: `S0` is unratified with its two `〔확인 필요〕` markers untouched since 2026-08-03, no
+`hyperliquid` grant exists on this machine, and the selector fails closed at selection. What
+that costs while it waits is measured there, because the venue's window rolls.
+
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
 first two autonomous live orders on 2026-08-02, the protective stop was refused both times, and it
@@ -1412,6 +1419,47 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
 
+### F2. "Cannot confirm" was hiding a negative, not a positive — measured 2026-08-04
+
+F1 above ends on *"the search produces evidence it cannot confirm"*, which leaves the decisive
+question open: is the edge real and merely un-provable at these sample sizes, or is there no
+edge to prove? **Give the same rules five times the evidence and they are refuted, not
+confirmed.** `factory.backtest_spec_pooled` replays one spec across several symbols' frames and
+pools the outcomes, the tail and the cost legs; the stored single-symbol specs were re-scoped to
+all five mined symbols and replayed against live frames (12 top-ranked single-family candidates
+per timeframe, current cost basis, read-only — nothing appended):
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| median holdout expectancy | −0.2694 → −0.2146 | −0.1173 → −0.1374 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+| INSUFFICIENT | 3 → **0** | 0 → 0 |
+| verdicts | — → 0 ROBUST / 12 PROVISIONAL / **0 FRAGILE** | — → 0 / 12 / 0 |
+
+**Two things happen and only one was in doubt.** The arithmetic works exactly as it must: the
+tail multiplies by ~5.3× and `INSUFFICIENT` disappears, because a spec scoped to N symbols is one
+hypothesis fitted on all of them and its tail is all of their tails. `FRAGILE` disappears too —
+`trades_per_parameter` clears the critical ratio once the sample pools, so the overfitting veto
+stops firing. **And every row that stopped being unjudgeable became CONTRADICTED, not CONFIRMED.**
+The estimate barely moves; what changes is that it stops being deniable.
+
+**What this settles and what it does not.** It settles the reading of F1: the un-confirmability
+was concealing a negative, so "re-mint deeper / wait for more evidence" is not a path to a
+promotable candidate on these rules. It does **not** rule out pooled *minting* — these specs were
+fitted on one symbol and then asked to transfer, which is strictly harder than searching for
+parameters that hold across five from the start. A pooled mint is a different experiment and is
+not run here; what is now cheap is running it, because the capability exists and
+`build_spec_dict` takes a `symbol_scope`.
+
+**`run_factory` is deliberately untouched.** Moving the rotation onto pooled specs would change
+what the factory explores on the strength of one afternoon's measurement, and a mint-time change
+is judged over generations, not days (the `#420` error). The capability landed; the decision did
+not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
+the single-symbol search of the same family produced none.
+
 ---
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
@@ -1502,6 +1550,73 @@ would be cheap and is the thing missing, not fewer codes.
 "governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
 **1,938**. The description has not matched the shape for some time. That is an observation about
 the doc, not a proposal to restructure the code.
+
+---
+## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, **S0 unratified**, nothing runs
+
+**This section exists because the lane was not in this file at all**, while three PRs of it
+merged. A reader arriving on a fresh machine and starting here — which is what this file tells
+them to do — would not learn that the lane exists, that `runtime/mvp_runtime/crypto/
+candle_archive.py` is on `main`, or that a regulatory decision is what stands between it and
+running. Its status lived only in `docs/proposals/`, and this file's own header warns that a
+proposal is not the authority for status.
+
+**What is merged** (2026-08-04): the archive store and `refresh_book` (#484), a
+`record_sha256` check on read plus gap reporting (#488), a bounded-hash read path (#490), its
+own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (#486), and the
+correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
+are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
+
+**Nothing runs.** No schedule is registered, and the gate is closed twice over — verified by
+running it rather than by reading the code, 2026-08-04:
+
+```
+MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
+MVP_CANDLE_ARCHIVE='hyperliquid' -> SafetyGateBlocked: ACTIVATION_MISSING
+                                    (no safety_flag_activations/hyperliquid.json)
+```
+
+The second line is the one worth knowing: **the env alone fails at selection**, before any
+collector is constructed. This machine holds grants for `binance_futures`,
+`binance_futures_account`, `coinalyze_market_data`, `google_ai_studio`, `groq` and
+`live_trading` — and no `hyperliquid`.
+
+**S0 is unratified and is what blocks the lane.** It is Appendix A of
+`EQUITY_PERP_LANE_V0.1.md`, whose own title says **미비준**. Three commits have touched that
+file (#441 wrote it, #451, #478) and **none touched Appendix A** — the two `〔확인 필요〕`
+markers stand exactly as written 2026-08-03. Carried here verbatim rather than summarised,
+because the judgment is Thomas's and a paraphrase would be a second version of it:
+
+1. **The strength of the statement.** The original was *"문제는 안 될 것 같다"* — recorded in
+   the draft itself as a provisional judgment, not a legally verified conclusion. The marker is
+   the place to say whether it has been promoted to settled.
+2. **Whether the question was reduced correctly.** The draft argues the opening question is not
+   "may this project trade offshore perps" — already answered in practice by live Binance
+   futures — but only **"does the underlying being US equities change that judgment"**. The
+   marker sits on that reduction, and the draft says the reduction *is* the core of the
+   paragraph.
+
+**No approval record names this lane.** 53 records in
+`.runtime_governance_state/approvals/approvals.jsonl`, zero mentioning equity / Hyperliquid /
+HIP-3 in any human-readable field; they are runtime action approvals
+(`crypto.strategy_pool.retirement` and kin), which is a different thing from a lane decision.
+
+**Nothing in code references S0, and that is the design rather than a gap.** S0 is enforced
+*through* the grant — Thomas does not issue `hyperliquid` until it is ratified, and without the
+grant the selector fails closed. What that leaves is worth stating: the enforcement is a human
+commitment, and no record ties the grant to S0, so a grant issued later for any reason would
+not reveal that S0 had been skipped. If that link should be durable, it is a line in the grant's
+own record, not a new gate.
+
+**In order, what is still needed to archive a single candle:** S0 ratified → the `hyperliquid`
+grant issued on this machine → `MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service → a
+registered `candle_archive` schedule. The first two are Thomas's; the last two are minutes.
+
+**The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
+and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
+unrecoverable once it rolls — measured, not projected: `xyz:SP500` listed 2026-03-18 and the
+venue already returns only 52 days of its 15m bars. Every day before the grant is a day of the
+two timeframes the factory can otherwise never reach.
 
 ---
 

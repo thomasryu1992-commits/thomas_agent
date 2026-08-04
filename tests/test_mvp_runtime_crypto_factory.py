@@ -215,6 +215,116 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
     )
 
 
+def test_contexts_firing_together_do_not_mint_the_same_block():
+    """The half the cursor did not fix: contexts marching in step explore `count` families a day.
+
+    `context_rotation_index` decides how far a context has walked. Every context fires on the
+    same schedule, so they all acquire generations at the same rate and the cursor converges —
+    measured on the store 2026-08-04, **13 of 20 contexts sat on rotation_index 11**, every
+    non-BTC symbol identical across its timeframes. A fire mints `count` CONSECUTIVE families,
+    so the whole factory drew one block of four: 2026-08-03's seeded mints were
+    `bollinger_breakout` 14, `bollinger_breakdown_short` 14, `macd_momentum` 13,
+    `macd_momentum_short` 13 — four families, drawn fourteen times over.
+
+    Grouped by the template LIBRARY rather than by timeframe, which is the honest unit: the
+    offset is taken modulo the library's size, so two contexts collapse onto one block only when
+    they draw from the same list. BTCUSDT is the standing example — it is the reference symbol,
+    so `rel_strength_*` cannot be minted on it and its 1h library is 36 against the other four
+    symbols' 38. Grouping by timeframe read that difference as the phase working, and the first
+    version of this test asserted a collapse to `count` that BTC's odd library already broke.
+
+    The phased bound is `> count` rather than an exact number — how many distinct families the
+    phases reach depends on the library's size and on the hash, and pinning it would make this
+    fail on a family being added rather than on the property being broken."""
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT")
+    count, fire = 4, 11  # one fire number, the way the scheduler fires them
+    groups: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+
+    for timeframe in ("1h", "4h", "1d"):
+        for symbol in symbols:
+            library = tuple(t.family for t in templates_for_timeframe(timeframe, symbol=symbol))
+            groups.setdefault((timeframe, library), []).append(symbol)
+
+    shared = {key: members for key, members in groups.items() if len(members) > 1}
+    assert shared, "no two contexts share a library — this test would be measuring nothing"
+
+    for (timeframe, library), members in shared.items():
+        total = len(library)
+        families, unphased = set(), set()
+        for symbol in members:
+            phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+            for offset, sink in (
+                (factory._rotation_offset("GEN-999", 0, count, total,
+                                          rotation_index=fire, phase=phase), families),
+                (factory._rotation_offset("GEN-999", 0, count, total,
+                                          rotation_index=fire, phase=0), unphased),
+            ):
+                sink.update(library[(offset + i) % total] for i in range(count))
+
+        # The defect, pinned so it cannot come back unnoticed: with no phase, every symbol
+        # sharing a library mints the identical block.
+        assert len(unphased) == count, (
+            f"{timeframe}/{members}: expected the unphased rotation to collapse onto one block "
+            f"of {count}, got {len(unphased)} — if this no longer holds the phase may be "
+            f"redundant, but check WHY before deleting it"
+        )
+        assert len(families) > count, (
+            f"{timeframe}/{members}: still one block of {count} between them "
+            f"({sorted(families)}) — the phase is not separating them"
+        )
+
+
+def test_the_rotation_phase_preserves_library_coverage():
+    """The property the phase must not buy its breadth with.
+
+    A phase shifts WHERE a context starts; `ceil(total / count)` of its own fires must still
+    tile the whole library, because that is what `context_rotation_index` exists to guarantee
+    and what an operator depends on when they add a family. It holds for any phase — the walk
+    still steps by `count` — and this pins it against an edit that made the phase multiply or
+    stride instead of offset."""
+    count = 4
+    for symbol, timeframe in (("BTCUSDT", "1h"), ("SOLUSDT", "4h"), ("ETHUSDT", "1d")):
+        templates = templates_for_timeframe(timeframe, symbol=symbol)
+        total = len(templates)
+        phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+        seen = set()
+        for fire in range(-(-total // count)):
+            offset = factory._rotation_offset(
+                "GEN-999", 0, count, total, rotation_index=fire, phase=phase
+            )
+            seen.update(templates[(offset + i) % total].family for i in range(count))
+        assert seen == {t.family for t in templates}, (
+            f"{symbol} {timeframe}: the phase cost this context coverage — unreachable in one "
+            f"pass: {sorted({t.family for t in templates} - seen)}"
+        )
+
+
+def test_the_rotation_phase_is_a_stable_property_of_the_context():
+    """It must not move when the store does.
+
+    The phase separates contexts; one derived from anything that changes — a candidate count,
+    a timestamp, a machine — would re-synchronise them on the next prune or re-import, which is
+    the failure it exists to prevent. So: a pure function of (symbol, timeframe), and bounded by
+    the number of offsets the walk actually visits, since a larger phase only names an offset
+    the rotation already reaches."""
+    import math
+
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) == \
+        factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38)
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) != \
+        factory.context_rotation_phase("BTCUSDT", "4h", count=4, total=38)
+
+    for total in (30, 32, 36, 38):
+        cycle = total // math.gcd(4, total)
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"):
+            phase = factory.context_rotation_phase(symbol, "1h", count=4, total=total)
+            assert 0 <= phase < cycle, f"{symbol}/{total}: phase {phase} outside [0, {cycle})"
+
+    # An empty library is the degenerate case the offset helper already guards; the phase must
+    # not raise on it either (a factory with no mintable family is a refusal, not a crash).
+    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=0) == 0
+
+
 def test_the_rotation_cursor_counts_fires_not_candidates():
     """One fire mints a whole batch under a single generation id, so a batch is one step
     of the rotation and not `count` steps. Fused children ride the same id and must not
@@ -515,6 +625,128 @@ def test_backtest_never_enters_on_indeterminate_features():
     }))
     result = backtest_spec(spec, _trending_snapshot(30))
     assert result["closed_count"] == 0
+
+
+# --- pooled backtest: one hypothesis, several symbols' evidence ----------------
+#
+# The ratio F1 says is binding: a spec scoped to one symbol gets as much evidence as that
+# symbol signals, which at 4h and 1d is under MIN_HOLDOUT_TRADES. Pooling adds legs without
+# adding hypotheses. These pin the two halves of that claim — the evidence really does pool,
+# and the DEPTH claim does not, because depth is a calendar span and five symbols over the
+# same 350 days is not 1,750 days of market.
+
+def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0):
+    """The trending fixture at a different price level, so its trades are its own."""
+    snapshot = dict(_trending_snapshot(n))
+    snapshot["symbol"] = symbol
+    snapshot["candles"] = [
+        {**c, "open": c["open"] * scale, "high": c["high"] * scale,
+         "low": c["low"] * scale, "close": c["close"] * scale}
+        for c in snapshot["candles"]
+    ]
+    return snapshot
+
+
+def test_a_single_frame_pool_is_the_single_symbol_backtest():
+    """`backtest_spec` delegates here, so the one-leg answer must not have moved."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    snapshot = _trending_snapshot()
+    assert factory.backtest_spec_pooled(spec, [snapshot]) == backtest_spec(spec, snapshot)
+    assert backtest_spec(spec, snapshot)["symbols_replayed"] == 1
+
+
+def test_pooling_adds_the_legs_trades_and_its_holdout():
+    spec = StrategySpec.from_dict(_spec_dict())
+    first, second = _trending_snapshot(), _shifted_snapshot()
+    one, two = backtest_spec(spec, first), backtest_spec(spec, second)
+    assert one["closed_count"] > 0 and two["closed_count"] > 0
+
+    pooled = factory.backtest_spec_pooled(spec, [first, second])
+    assert pooled["symbols_replayed"] == 2
+    assert pooled["closed_count"] == one["closed_count"] + two["closed_count"]
+    # The whole point: the tail that decides CONFIRMED grows with the legs.
+    assert pooled["holdout"]["closed_count"] == (
+        one["holdout"]["closed_count"] + two["holdout"]["closed_count"]
+    )
+    assert pooled["holdout"]["symbols"] == 2
+    # ...and so does the sample the overfitting veto reads.
+    assert pooled["robustness"]["trade_count"] == pooled["closed_count"]
+
+
+def test_pooled_depth_is_per_symbol_and_never_the_sum():
+    """`pool.evidence_depth_of` reads `bars_replayed` as a CALENDAR span, so summing legs
+    would tier a pooled candidate as though shown history that does not exist."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(spec, [_trending_snapshot(), _shifted_snapshot()])
+    assert pooled["bars_replayed"] == factory.holdout_split_index(200) == 140
+    assert pooled["holdout"]["bars"] == 200 - 140
+
+
+def test_pooled_depth_takes_the_shallowest_leg():
+    """A short leg bounds the claim: the depth every symbol actually contributed."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(
+        spec, [_trending_snapshot(200), _shifted_snapshot(120)]
+    )
+    assert pooled["bars_replayed"] == factory.holdout_split_index(120)
+
+
+def test_pooling_refuses_frames_from_a_different_cost_model():
+    """The single-frame refusal, which must not weaken by being pooled: a figure mixing
+    rates describes no book."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    snapshot = _trending_snapshot()
+    cheap = factory.CostModel(taker_fee_bps=1.0)
+    frames = [factory.build_replay_frame(snapshot, cost=cheap)]
+    with pytest.raises(ValueError, match="different cost model"):
+        factory.backtest_spec_pooled(spec, [snapshot], frames=frames, cost=factory.CostModel())
+
+
+def test_a_pooled_backtest_needs_something_to_replay():
+    spec = StrategySpec.from_dict(_spec_dict())
+    with pytest.raises(ValueError, match="at least one"):
+        factory.backtest_spec_pooled(spec, [])
+
+
+def test_the_mint_scope_still_defaults_to_the_symbol_being_mined():
+    """Every one of the stored candidates carries a single-symbol scope, and `run_factory`
+    is untouched — widening is a caller's decision, never a default."""
+    template = templates_for_timeframe("1d")[0]
+    spec = factory.build_spec_dict(
+        template, dict(template.base_params), strategy_id="S1",
+        generation_id="GEN-001", symbol="SOLUSDT",
+    )
+    assert spec["symbol_scope"] == ["SOLUSDT"]
+
+
+def test_a_widened_mint_scope_is_sorted_and_deduplicated():
+    """`symbol_scope` is inside `strategy_rule_fingerprint`, so two callers naming the same
+    set in different orders must reach the same rule hash."""
+    template = templates_for_timeframe("1d")[0]
+    build = lambda scope: factory.build_spec_dict(
+        template, dict(template.base_params), strategy_id="S1",
+        generation_id="GEN-001", symbol="BTCUSDT", symbol_scope=scope,
+    )
+    widened = build(["SOLUSDT", "BTCUSDT", "BTCUSDT"])
+    assert widened["symbol_scope"] == ["BTCUSDT", "SOLUSDT"]
+    assert (StrategySpec.from_dict(widened).strategy_rule_hash
+            == StrategySpec.from_dict(build(["BTCUSDT", "SOLUSDT"])).strategy_rule_hash)
+
+
+def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
+    """Reporting `venue_history` over a book where one leg fell back to the modelled rate
+    would overstate what the funding figure is evidence of."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    with_funding = dict(_trending_snapshot())
+    with_funding["funding"] = [
+        {"timestamp": c["close_time"], "funding_rate": 0.0001}
+        for c in with_funding["candles"]
+    ]
+    frames = [factory.build_replay_frame(with_funding), factory.build_replay_frame(_shifted_snapshot())]
+    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == factory.FUNDING_SOURCE_FALLBACK
+    pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_FALLBACK
 
 
 # --- run_factory --------------------------------------------------------------
