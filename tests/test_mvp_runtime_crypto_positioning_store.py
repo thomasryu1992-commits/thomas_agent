@@ -25,8 +25,9 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import positioning_store
-from runtime.mvp_runtime.crypto.cycle import attach_feeds
+from runtime.mvp_runtime.crypto.cycle import accumulate_positioning_cohort, attach_feeds
 from runtime.mvp_runtime.crypto.market_data import (
+    CROSS_SECTION_UNIVERSE,
     POSITIONING_SERIES,
     BinanceFuturesCollector,
     MockMarketDataCollector,
@@ -319,6 +320,81 @@ def test_opted_in_accumulation_writes_and_feeds_nothing(tmp_path):
     assert status["positioning"] == "seeded"
     assert positioning_store.read_rows(tmp_path), "nothing was accumulated"
     assert set(snapshot) - before == {"funding"}, "the positioning store must feed no feature"
+
+
+# --- the accumulator's SCOPE ----------------------------------------------------
+#
+# Opting in (above) decides WHETHER a caller accumulates. These decide WHICH symbols, which
+# used to be answered by accident: accumulation rode on the per-context feed step, so the
+# store covered whatever the fan-out visited and a cohort member the pool stopped routing
+# stopped being recorded. Measured on the live host 2026-08-04 — `XRPUSDT` at zero rows since
+# the store shipped, `BNBUSDT` frozen since 2026-07-31 — and unrecoverable in both cases,
+# because the vendor serves 30 days and these tests guard a 500-day accumulation.
+
+class _CountingCollector:
+    """A real mock collector that also counts what reached the venue."""
+
+    def __init__(self, broken: str | None = None):
+        self._inner = MockMarketDataCollector()
+        self._broken = broken
+        self.calls = 0
+
+    def positioning_history(self, symbol, **kwargs):
+        self.calls += 1
+        if self._broken is not None and symbol == self._broken:
+            raise ToolError("POSITIONING_UNAVAILABLE", "the venue refused this symbol")
+        return self._inner.positioning_history(symbol, **kwargs)
+
+
+def test_the_cohort_is_recorded_where_the_pool_routes_nothing(tmp_path):
+    """**The load-bearing case.** One visited context, and every cohort member still gets its
+    hour. Before this, a member the pool did not route was never asked for — and one such
+    member is enough to hold `coverage_summary`'s AND shut forever, however long the rest
+    accumulate."""
+    status = accumulate_positioning_cohort(
+        collector=MockMarketDataCollector(), now=NOW, root=tmp_path,
+        contexts=[("BTCUSDT", "4h")],
+    )
+    assert set(status) == set(CROSS_SECTION_UNIVERSE)
+    for symbol in CROSS_SECTION_UNIVERSE:
+        assert positioning_store.read_rows(tmp_path, symbol=symbol), symbol
+
+
+def test_a_routed_symbol_outside_the_cohort_is_not_dropped(tmp_path):
+    """Union, not substitution. The cohort is the floor; a pool that grows past it must keep
+    its own positioning rather than trade one coverage hole for another."""
+    status = accumulate_positioning_cohort(
+        collector=MockMarketDataCollector(), now=NOW, root=tmp_path,
+        contexts=[("ADAUSDT", "1h")],
+    )
+    assert "ADAUSDT" in status and set(CROSS_SECTION_UNIVERSE) <= set(status)
+    assert positioning_store.read_rows(tmp_path, symbol="ADAUSDT")
+
+
+def test_the_sweep_pays_the_throttle_not_the_fan_out_rate(tmp_path):
+    """Six symbols × three series once an hour, whoever asks. The 15-minute fan-out calls this
+    four times an hour and three of those must open no socket — otherwise widening the scope
+    would have quadrupled the request bill it was meant to leave alone."""
+    collector = _CountingCollector()
+    accumulate_positioning_cohort(collector=collector, now=NOW, root=tmp_path, contexts=[])
+    first = collector.calls
+    assert first == len(CROSS_SECTION_UNIVERSE) * len(POSITIONING_SERIES)
+    accumulate_positioning_cohort(collector=collector, now=NOW, root=tmp_path, contexts=[])
+    assert collector.calls == first, "the hourly throttle must answer the second fire"
+
+
+def test_one_symbol_refusing_does_not_cost_the_others_their_hour(tmp_path):
+    """Per-symbol isolation, for the reason `run_pool_cycle` isolates contexts: the sweep runs
+    over six symbols against one venue, and an hour lost to somebody else's outage is an hour
+    lost permanently."""
+    collector = _CountingCollector(broken="XRPUSDT")
+    status = accumulate_positioning_cohort(
+        collector=collector, now=NOW, root=tmp_path, contexts=[],
+    )
+    assert status["XRPUSDT"] == "degraded"
+    assert not positioning_store.read_rows(tmp_path, symbol="XRPUSDT")
+    for symbol in (s for s in CROSS_SECTION_UNIVERSE if s != "XRPUSDT"):
+        assert positioning_store.read_rows(tmp_path, symbol=symbol), symbol
 
 
 # The predecessor of the two tests below asserted that NO feature column read this store — a

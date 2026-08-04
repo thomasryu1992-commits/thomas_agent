@@ -127,6 +127,15 @@ def attach_feeds(
     for. ``oi_store`` needs no such flag — its own accumulation is already gated behind a
     liquidation feed that a caller must supply.
 
+    **This covers only THIS call's symbol, and that is no longer where the store's scope is
+    decided.** It was, and what that cost is measured in :func:`accumulate_positioning_cohort`:
+    per-context accumulation records whatever the fan-out visited, so a cohort member the pool
+    stopped routing stopped being recorded, permanently and silently. The fan-out now sweeps
+    the declared cohort itself, and this flag covers what that sweep cannot reach — the
+    operator's single-symbol cycle, which has one context and no fan-out. The overlap costs
+    nothing: the store's hourly throttle answers the second asker ``skipped_fresh`` without
+    opening a socket.
+
     Funding comes from the market-data collector when it has the capability (the
     same grant); liquidations from the separately-gated feed. Semantics per feed:
     fetched → real series; fetch FAILED → the key is present and empty, so the
@@ -946,6 +955,60 @@ def pool_cycle_contexts(
     return sorted(contexts, key=rank)
 
 
+def accumulate_positioning_cohort(
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    root: Path | None,
+    contexts: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Refresh the positioning store for the DECLARED cohort, not for what the pool traded.
+
+    **The scope of a retention store cannot be a side effect of routing.** Accumulation used
+    to ride on ``attach_feeds(accumulate=True)``, which runs once per *visited* context — so
+    the store covered whatever ``pool_cycle_contexts`` happened to yield that fire, and a
+    symbol leaving the routable set stopped being recorded with nothing saying so. Measured
+    2026-08-04 on this host: the fan-out was visiting six contexts across four symbols, and
+
+    - ``BNBUSDT`` had been frozen since 2026-07-31T09:20Z — 31 days recorded, then nothing,
+      from the day it dropped out of the routable set while still holding 17 pool entries;
+    - ``XRPUSDT`` held **zero** rows and always had, because it is a cohort member that the
+      pool has never traded, so no context ever carried it.
+
+    That is fatal in a way an ordinary outage is not: the vendor serves 30 days and the
+    factory replays 500, so an hour not recorded today is not late, it is **gone**. And it
+    compounds — ``coverage_summary`` reports ``eligible`` as the AND over cells, so one
+    permanently-empty member holds the gate shut however long the other five accumulate.
+
+    The cohort is the right scope because :data:`CROSS_SECTION_UNIVERSE` is already declared
+    for exactly this reason — "not whichever symbols the pool happens to route today" — and a
+    store that must cover the cohort was the one thing still following the pool. Visited
+    symbols are unioned in rather than assumed to be a subset, so a pool that grows past the
+    cohort keeps its own positioning rather than silently losing it.
+
+    Cost is bounded by the store's own hourly throttle, not by this call: at most one request
+    per (symbol, series) per hour whoever asks, so a 15-minute fan-out over six symbols costs
+    18 requests an hour and the other three fires return ``skipped_fresh`` having opened no
+    socket. Never raises — ``record_positioning`` reports per-series degradation instead, and
+    a collection miss must not cost a fire its cycles.
+
+    Runs after the context loop, and after a ``live_halt`` too. The halt exists to stop this
+    runtime *acting* on a picture of real money it no longer trusts; this opens no order path,
+    writes only a local append-only store, and its data is unrecoverable if skipped — so
+    deferring it to the next fire would trade a real loss for no safety.
+    """
+    symbols = {str(symbol).strip().upper() for symbol, _timeframe in contexts}
+    symbols.update(CROSS_SECTION_UNIVERSE)
+    return {
+        symbol: str(
+            positioning_store.record_positioning(
+                symbol=symbol, collector=collector, now=now, root=root,
+            )["status"]
+        )
+        for symbol in sorted(s for s in symbols if s)
+    }
+
+
 def run_pool_cycle(
     *,
     collector: MarketDataCollector,
@@ -982,7 +1045,11 @@ def run_pool_cycle(
     runtime's picture of real money is now wrong, and opening positions in *other*
     contexts under that uncertainty is the failure the isolation would cause. So a
     cycle reporting ``live_halt`` stops the fan-out, and the contexts that never ran
-    are named in ``unvisited`` rather than silently missing."""
+    are named in ``unvisited`` rather than silently missing.
+
+    The fan-out is also where the positioning store is accumulated, over the declared cohort
+    rather than over the contexts this fire visited — see
+    :func:`accumulate_positioning_cohort` for why that distinction was costing coverage."""
     contexts = pool_cycle_contexts(root, default_timeframe=default_timeframe) or [
         (default_symbol, default_timeframe)
     ]
@@ -1035,6 +1102,10 @@ def run_pool_cycle(
                 "at_index": index,
             }
 
+    positioning = accumulate_positioning_cohort(
+        collector=collector, now=now, root=root, contexts=contexts,
+    )
+
     summary = {
         "pool_cycle_version": POOL_CYCLE_VERSION,
         "contexts": [{"symbol": s, "timeframe": t} for s, t in contexts],
@@ -1042,6 +1113,7 @@ def run_pool_cycle(
         "skipped": skipped,
         "live_halt": halted,
         "unvisited": unvisited,
+        "positioning": positioning,
         "created_at": now,
     }
     summary["pool_cycle_id"] = integrity.short_id(
@@ -1124,6 +1196,7 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "accumulate_positioning_cohort",
     "attach_cross_section",
     "attach_positioning",
     "cycle_status_line",
