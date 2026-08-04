@@ -893,6 +893,44 @@ scopes at different levels, so nothing was owed to it.
       the evidence under live-capable strategies mid-flight — the same class of silent widening
       this section spent two other items closing.
 
+### An expired grant pinned the board's expiry warning, and named the wrong thing — closed 2026-08-04
+
+**Found while answering "does the archive need a grant".** It does; `live_trading` does **not**,
+and the file left over from when it did was still on disk and still being read — by the board, not
+by the gate.
+
+`.runtime_governance_state/safety_flag_activations/live_trading.json` was minted 2026-07-27T08:00
+with a **four-hour** TTL (`expires_at: 2026-07-27T12:00:19Z`), one day before Thomas moved live
+trading onto `safety_gate.select_env_gated` — the environment opt-in alone, no per-machine grant,
+`expires_at` far-future by design. From that decision on, nothing in the live path read the file:
+`select_env_gated` never calls `authorize`, and `assert_authorization` re-reads the **environment**
+for an `env_gate` authorization rather than a record. Verified rather than assumed.
+
+**`dashboard._grants` reads the directory, though**, and it takes `min()` by `expires_at` for the
+"soonest expiry" line. So an inert file 8 days expired was the permanent minimum:
+
+```
+권한   12건 · 가장 이른 만료 2026-07-27 (live_trading) ⚠ -8일 남음      <- before
+권한   11건 · 가장 이른 만료 2026-08-18 (telegram)                       <- after
+```
+
+Two failures from one file, and the second is the one that matters. The **warning was dead** —
+past `GRANT_EXPIRY_WARNING_DAYS` forever, hiding every real grant's expiry behind it, which is how
+a board teaches its reader to skip the block. And the row it named said **live_trading expired**,
+which reads as live trading being off while `MVP_LIVE_TRADING=real` is set in the running
+scheduler and the code path needs no grant at all — wrong in the **permissive** direction, and the
+same shape as the Gate 0 acknowledgement #474 removed: inert, and it reads like live authority.
+
+Removed as uid 10001 through the container, never as root on the host. **Deleting it revokes
+nothing** — the code says so directly: for an env-gated authorization there is no record to
+re-read, so "stopping a live scheduler means restarting it". That property is unchanged by this
+and is worth knowing on its own.
+
+**What this leaves open:** the board still has no row that says live trading is armed. It reports
+grants, and live trading is not one, so its status is now absent rather than wrong — an
+improvement, and not the fix. That belongs with the readiness board, which already learned this
+lesson once (#382, process-scoped readings).
+
 ### Review findings — raised and closed 2026-07-26
 
 A full review of the live stack raised six items. Recording them here because each is a rule with a
