@@ -1182,6 +1182,58 @@ def test_rank_fusion_parents_orders_by_score_and_skips_the_unscorable():
     assert [r["candidate_id"] for r in ranked] == ["cand-high", "cand-low"]
 
 
+def test_a_rescored_lineage_parents_once_not_twice():
+    """A re-score is the same strategy at a new evidence window, not a second lineage.
+
+    `derive_candidate_id` keys on (generation, rules, evidence_input_sha256), so re-scoring
+    mints a new id for identical rules — and dedup on the id then admitted both. Measured on
+    the store the day the 336-row backfill landed: 348 rule hashes in more than one row, twins
+    in 20 of 27 fusable buckets. Every twin pair dies in `_fuse_batch` as `duplicate_rule_hash`
+    and `(twin_a, X)` / `(twin_b, X)` propose the same child twice, so the bucket loses both
+    parent diversity and pair draws.
+    """
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    other = _parent_spec("S2", [_MA20_OVER_MA50]).to_dict()
+    records = [
+        {"candidate_id": "cand-source", "champion_score": 0.9,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+        {"candidate_id": "cand-rescored", "champion_score": 0.4,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},   # same rules, new window
+        {"candidate_id": "cand-other", "champion_score": 0.5,
+         "strategy_rule_hash": "hash-b", "strategy_spec": other},
+    ]
+    ranked = rank_fusion_parents(records)
+    assert [r["candidate_id"] for r in ranked] == ["cand-other", "cand-rescored"]
+
+
+def test_the_surviving_twin_is_the_freshest_not_the_best_scoring():
+    """Latest-wins, deliberately. Two rows sharing a rule hash are one strategy measured over
+    two windows; taking the higher score would pick whichever window flattered it, which is the
+    max-of-many-draws selection the holdout gate exists to refuse. File order puts the freshest
+    evidence last."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-flattering", "champion_score": 0.95,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+        {"candidate_id": "cand-fresh", "champion_score": 0.10,
+         "strategy_rule_hash": "hash-a", "strategy_spec": spec},
+    ]
+    assert [r["candidate_id"] for r in rank_fusion_parents(records)] == ["cand-fresh"]
+
+
+def test_hashless_legacy_rows_do_not_collapse_into_one_parent():
+    """The fallback matters: keying on a missing hash would merge every legacy row into a single
+    bucket entry and delete real lineages. Absent hash falls back to the candidate id."""
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20]).to_dict()
+    records = [
+        {"candidate_id": "cand-1", "champion_score": 0.9, "strategy_spec": spec},
+        {"candidate_id": "cand-2", "champion_score": 0.8, "strategy_spec": spec},
+        {"candidate_id": "cand-3", "champion_score": 0.7,
+         "strategy_rule_hash": "", "strategy_spec": spec},          # empty is not an identity
+    ]
+    assert len(rank_fusion_parents(records)) == 3
+
+
 # --- fusion parent bucketing --------------------------------------------------
 
 def _bucket_record(candidate_id, score, spec):

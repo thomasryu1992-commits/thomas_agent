@@ -2763,7 +2763,31 @@ def rank_fusion_parents(
     Only rows carrying a numeric ``champion_score`` and a parseable spec can parent
     — an unscored or legacy-shaped row has no evidence to pass on. Ordering is
     (score desc, candidate_id asc) so a tie never depends on file order, and a
-    lineage appears once however many times it was appended (latest-wins)."""
+    lineage appears once however many times it was appended (latest-wins).
+
+    **"Once per lineage" was keyed on the wrong identity, and a re-score is what
+    exposed it.** ``candidate_id`` derives from (generation, rules, *evidence window*)
+    — see :func:`pool.derive_candidate_id` — so re-scoring a spec at a new window mints
+    a DIFFERENT id for the SAME strategy, and both rows then entered the pool as if
+    they were two lineages. `scripts/rescore_stale_holdout_candidates.py` appended 336
+    such rows on 2026-08-04; measured on the store that day, **348 rule hashes appeared
+    in more than one row (709 rows, up to 3 per hash)**, and rebuilding
+    :func:`fusion_parent_buckets` over the live contexts put twins in 20 of 27 fusable
+    buckets, occupying 36 of their top slots. Every twin pair then dies in
+    ``_fuse_batch`` as ``duplicate_rule_hash``, and ``(twin_a, X)`` and ``(twin_b, X)``
+    propose the identical child twice — so the bucket's parent diversity and its pair
+    draws are both silently halved.
+
+    ``strategy_rule_hash`` is the identity that answers "is this the same strategy",
+    which is the question this dedup is asking; the id falls back to ``candidate_id``
+    only for a row carrying no usable hash, so hash-less legacy rows collapse into each
+    other rather than into one bucket.
+
+    **Latest-wins is kept deliberately, rather than best-score-wins.** Two rows sharing
+    a rule hash are one strategy measured over two windows, and taking the higher score
+    would pick whichever window happened to flatter it — the max-of-many-draws selection
+    this store is already full of (see ``robustness.MIN_HOLDOUT_TRADES``). File order
+    puts the freshest evidence last, and fresh beats flattering."""
     best: dict[str, dict[str, Any]] = {}
     for record in existing_candidates:
         score = record.get("champion_score")
@@ -2772,7 +2796,9 @@ def rank_fusion_parents(
         if not isinstance(record.get("strategy_spec"), Mapping):
             continue
         cid = candidate_id(record)
-        best[cid] = {**record, "candidate_id": cid}
+        rule_hash = record.get("strategy_rule_hash")
+        key = rule_hash if isinstance(rule_hash, str) and rule_hash else cid
+        best[key] = {**record, "candidate_id": cid}
     ranked = sorted(best.values(), key=lambda r: (-float(r["champion_score"]), r["candidate_id"]))
     return ranked[:top_n]
 
