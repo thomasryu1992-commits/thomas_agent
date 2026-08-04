@@ -2317,3 +2317,153 @@ def test_retired_parents_are_gone_from_every_bucket_not_just_the_ranking():
         [*dead, *live], symbol="BTCUSDT", timeframe="1d")
     seen = {r["candidate_id"] for bucket in buckets for r in bucket}
     assert seen == {"live-0", "live-1"}, f"retired rows reached a bucket: {sorted(seen)}"
+
+
+def test_no_generation_space_can_draw_a_reward_risk_the_validator_refuses():
+    """`validate_strategy` refuses `target_atr / stop_atr < MIN_REWARD_RISK` and `mutate_params`
+    draws every other parameter independently, so before 2026-08-04 the trend space proposed
+    pairs the validator then refused: 4.71% of 200,000 draws at `_EXIT_BASE`, minimum drawn R:R
+    0.925. Each one spends an attempt against `_MAX_ATTEMPTS_PER_SPEC` and biases what survives
+    toward the high-target corner, the only corner never refused.
+
+    Asserted over EVERY space in `_GENERATION_SPACES` rather than the trend one, because the
+    property belongs to `mutate_params` now and the next space added must inherit it.
+
+    The adverse centres are the point of the test, not decoration. `generate_batch` centres half
+    of every batch on `elite_base_params`, which returns a prior ACCEPTED candidate's params, so
+    any accepted draw is a reachable centre — and measured over 400 of them the refusal rate ran
+    to 36.9% at the worst (centre stop=1.7185, target=1.7627) with 9.5% of centres above 20%.
+    A test that only draws from the template base would have called that space clean."""
+    rng = random.Random(23)
+    for space in factory._GENERATION_SPACES:
+        stop, target = space["stop_atr"], space["target_atr"]
+        centres = [
+            {"stop_atr": stop.hi, "target_atr": target.lo},          # the worst legal corner
+            {"stop_atr": stop.hi, "target_atr": target.hi},
+            {"stop_atr": stop.lo, "target_atr": target.lo},
+            {"stop_atr": (stop.lo + stop.hi) / 2, "target_atr": (target.lo + target.hi) / 2},
+        ]
+        for centre in centres:
+            for _ in range(1500):
+                drawn = factory.mutate_params(centre, {k: space[k] for k in ("stop_atr", "target_atr")}, rng)
+                assert drawn["target_atr"] / drawn["stop_atr"] >= factory.MIN_REWARD_RISK, (
+                    f"drew R:R {drawn['target_atr'] / drawn['stop_atr']:.4f} from centre {centre}"
+                )
+                assert target.lo <= drawn["target_atr"] <= target.hi, (
+                    "the repair pushed the target outside the space it is drawn from"
+                )
+
+
+def test_the_reward_risk_floor_redraws_the_target_instead_of_pinning_it_to_the_stop():
+    """The cheaper repair — clamp the target up to the stop — satisfies the validator and puts
+    **4.71%** of trend draws on R:R exactly 1.0, the worst ratio the space is allowed to hold.
+    Measured over 40 generations of the elite loop that concentration holds at ~4.2% rather than
+    compounding, so it is a standing bias and not a spiral; it is still the whole of the refused
+    mass parked on one edge. Redrawing leaves 0.005%.
+
+    Pinned as a distribution, because both repairs pass an assertion that only checks the ratio
+    is legal — which is exactly what makes the difference between them easy to lose later."""
+    rng = random.Random(29)
+    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+             for _ in range(20000)]
+    ratios = [d["target_atr"] / d["stop_atr"] for d in draws]
+    at_floor = sum(1 for r in ratios if abs(r - factory.MIN_REWARD_RISK) < 1e-9) / len(ratios)
+    assert at_floor < 0.005, (
+        f"{at_floor:.2%} of draws sit on R:R exactly {factory.MIN_REWARD_RISK} — the target is "
+        "being clamped to the stop rather than redrawn above it"
+    )
+
+
+def test_the_reward_risk_floor_keeps_the_low_target_region_it_could_have_deleted():
+    """The obvious fix was `target_atr.lo = stop_atr.hi`, as `_FADE_EXIT_PARAMS` is built. It was
+    NOT taken for the trend space and this pins that, because it is one edit to undo by accident.
+
+    Two measured reasons. The region is not dead: bucketed on the candidate store by holdout
+    R/trade, target<2.0 is the least negative band (-0.2642 pinned at 1.6, -0.2502 in 1.6-2.0,
+    against -0.3059 at 2.0-3.0 and -0.3216 above 3.0), and paired within (family, timeframe,
+    symbol) it runs +0.0174R median in favour of the low band, 34 of 58 cells — weak, but not the
+    direction that justifies deleting it. And the bound cannot move alone: at `target.lo` 2.0 the
+    base 3.0 pins 26.2% of draws on the new floor, and clearing that needs base 4.1, which moves
+    the median target 3.00 -> 4.10 and the median R:R 2.07 -> 2.83. That is a re-aiming of the
+    trend geometry, not a consistency fix."""
+    target = factory._EXIT_PARAMS["target_atr"]
+    assert target.lo < factory._EXIT_PARAMS["stop_atr"].hi, (
+        "the trend target floor was raised to the stop ceiling — that deletes target<2.0, which "
+        "measures as the least negative band in the store; see the note above `_EXIT_PARAMS`"
+    )
+
+    rng = random.Random(31)
+    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+             for _ in range(20000)]
+    low = sum(1 for d in draws if d["target_atr"] < 2.0) / len(draws)
+    assert low > 0.15, f"only {low:.1%} of draws reach target<2.0 — the region is being squeezed out"
+
+
+def test_the_reward_risk_floor_leaves_an_unsatisfiable_draw_alone_for_the_validator():
+    """A space whose target CEILING sits below `MIN_REWARD_RISK x` the drawn stop has no legal
+    answer inside its own bounds. The repair must not invent one: handing `validate_strategy` a
+    target above the space it was drawn from is the laundering `_fused_exit_param` refuses at the
+    other mint path, and the refusal is the correct outcome.
+
+    Two distinct claims, and the second is the one worth a test. That no target escapes the
+    ceiling is guaranteed by the final clamp and holds however the branch is written. That the
+    draw is left ALONE is not: drop the early return and every unsatisfiable pair comes back as
+    `target_spec.hi` exactly — still refused, so still "safe", but a value the search never chose,
+    written into `mint_params` and read back later by `elite_base_params` as a centre. So the
+    assertion is on the DISTRIBUTION, not on legality.
+
+    No shipped space can reach this — both put the target ceiling well above the stop ceiling —
+    so it is constructed rather than waited for."""
+    impossible = {"stop_atr": ParamSpec(3.0, 3.0), "target_atr": ParamSpec(1.0, 1.5)}
+    rng = random.Random(37)
+    draws = [factory.mutate_params({"stop_atr": 3.0, "target_atr": 1.2}, impossible, rng)
+             for _ in range(500)]
+    targets = [d["target_atr"] for d in draws]
+
+    assert max(targets) <= 1.5, "the repair invented a target above the space's ceiling"
+    at_ceiling = sum(1 for t in targets if t == 1.5) / len(targets)
+    assert at_ceiling < 0.20, (
+        f"{at_ceiling:.0%} of unsatisfiable draws returned the ceiling — the repair is rewriting "
+        "a draw it cannot help instead of leaving it for the validator"
+    )
+    for drawn in draws:
+        assert drawn["target_atr"] / drawn["stop_atr"] < factory.MIN_REWARD_RISK
+    spec = _parent_spec("S1", [_CLOSE_OVER_MA20], exit_rules={
+        "stop_model": "atr", "stop_atr": draws[0]["stop_atr"],
+        "target_atr": draws[0]["target_atr"], "max_holding_bars": 24})
+    verdict = validate_strategy(spec)
+    assert not verdict["approved_for_backtest"]
+    assert "BLOCK_INVALID_RISK_REWARD" in verdict["block_reasons"]
+
+
+def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
+    """The end-to-end form of the property, through the path that actually amplifies it.
+
+    `run_factory` centres half of each batch on `elite_base_params`, so a family whose most
+    ROBUST prior candidate happens to sit beside the R:R diagonal used to refuse up to a third of
+    its own draws — `champion_score` selects that centre and knows nothing about the ratio. The
+    batch does not fail (it retries against `_MAX_ATTEMPTS_PER_SPEC`), which is why this went
+    unnoticed; it just spends the attempts and keeps the high-target survivors.
+
+    Swept over seeds rather than asserted on one, and that is load-bearing: only HALF a batch is
+    drawn around the elite centre (`len(accepted) % 2`), so with the floor removed a single
+    4-spec batch shows the defect on 25 of 40 seeds. One seed is a coin flip; twenty is not."""
+    families = {t.family for t in templates_for_timeframe("1h", symbol="BTCUSDT")}
+    adverse = {f: {"stop_atr": 1.7185, "target_atr": 1.7627, "max_holding_bars": 24}
+               for f in families}
+    refused_seeds = []
+    for seed in range(20):
+        batch = generate_batch(f"GEN-rr-{seed}", seed=seed, count=4, timeframe="1h",
+                               elite_params=adverse)
+        assert batch["batch_complete"], f"seed {seed}: elite centre exhausted the attempt budget"
+        if any("BLOCK_INVALID_RISK_REWARD" in (r.get("block_reasons") or [])
+               for r in batch["rejected"]):
+            refused_seeds.append(seed)
+        for spec in batch["specs"]:
+            exit_rules = spec["exit_rules"]
+            assert exit_rules["target_atr"] / exit_rules["stop_atr"] >= factory.MIN_REWARD_RISK
+    assert not refused_seeds, (
+        f"seeds {refused_seeds} spent attempts on risk:reward refusals from an elite centre"
+    )
+
+

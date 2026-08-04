@@ -59,6 +59,78 @@ def test_disable_enable_remove(tmp_path, capsys):
     assert "NOT_FOUND" in capsys.readouterr().err
 
 
+# --- schedule-set mutations are audited ------------------------------------------
+#
+# Until 2026-08-04 only `add` wrote an event, so a schedule turned off left no trace in the
+# ledger, none in the store (a disable rewrites `enabled` in place), and none in the repo
+# (`schedules.jsonl` is per-machine). Why six `crypto_factory` schedules were off could only
+# be answered by reading the REPLACEMENT schedules' `reason` text and inferring from a gap
+# in fire timestamps. These tests pin that the answer is now recorded rather than inferred.
+
+def _events(ledger):
+    text = (ledger.root / "scheduler_events.jsonl").read_text(encoding="utf-8").strip()
+    return [json.loads(line) for line in text.splitlines() if line]
+
+
+def test_disable_enable_remove_each_record_one_event(tmp_path):
+    store, ledger = _stores(tmp_path)
+    s = build_schedule(kind=KIND_TASK, request="x", interval_seconds=3600, created_by="op", now=T0)
+    store.add(s)  # added through the store, so the ledger holds only what the verbs write
+    for verb in ("disable", "enable", "remove"):
+        assert main([verb, s.schedule_id], store=store, ledger=ledger, now=T0) == 0
+
+    events = _events(ledger)
+    assert [e["action"] for e in events] == ["disabled", "enabled", "removed"]
+    assert [e["status"] for e in events] == ["disabled", "enabled", "removed"]
+    # `previously_enabled` is the state BEFORE each verb: on, then off, then on again.
+    assert [e["previously_enabled"] for e in events] == [True, False, True]
+    for e in events:
+        assert e["schedule_id"] == s.schedule_id and e["kind"] == KIND_TASK
+        assert e["created_at"] == T0
+        # Not runs: `find_abandoned_runs` pairs starts to terminals by this field alone, so
+        # its absence is what keeps a mutation from ever being read as an unfinished fire.
+        assert "schedule_run_id" not in e
+
+
+def test_a_reissued_disable_is_recorded_and_says_nothing_changed(tmp_path):
+    """A no-op is still an operator action, and the event has to be able to say which it was."""
+    store, ledger = _stores(tmp_path)
+    s = build_schedule(kind=KIND_TASK, request="x", interval_seconds=3600, created_by="op", now=T0)
+    store.add(s)
+    assert main(["disable", s.schedule_id], store=store, ledger=ledger, now=T0) == 0
+    assert main(["disable", s.schedule_id], store=store, ledger=ledger, now=T0) == 0
+
+    first, second = _events(ledger)
+    assert first["previously_enabled"] is True     # a real transition
+    assert second["previously_enabled"] is False   # the same command, already in effect
+    assert first["status"] == second["status"] == "disabled"
+
+
+def test_removed_event_is_the_only_surviving_copy_of_the_record(tmp_path):
+    """After the rewrite the store has nothing left, so the event carries what it destroyed."""
+    store, ledger = _stores(tmp_path)
+    s = build_schedule(kind=KIND_TASK, request="BTCUSDT 15m", interval_seconds=3600,
+                       created_by="op", now=T0, reason="mining tier retired for cost")
+    store.add(s)
+    store.record_result(s.schedule_id, last_run_at=T0, last_status="generated=4 fused=4")
+    assert main(["remove", s.schedule_id], store=store, ledger=ledger, now=T0) == 0
+
+    assert store.list() == []
+    event = _events(ledger)[0]
+    assert event["request"] == "BTCUSDT 15m"
+    assert event["reason"] == "mining tier retired for cost"
+    assert event["last_run_at"] == T0 and event["last_status"] == "generated=4 fused=4"
+
+
+def test_a_blocked_mutation_records_nothing(tmp_path, capsys):
+    """NOT_FOUND changed no state, so an event claiming it did would be a false record."""
+    store, ledger = _stores(tmp_path)
+    for verb in ("disable", "enable", "remove"):
+        assert main([verb, "nope"], store=store, ledger=ledger, now=T0) == 2
+    capsys.readouterr()
+    assert not (ledger.root / "scheduler_events.jsonl").exists()
+
+
 def test_tick_runs_due_prune(tmp_path, capsys):
     store, ledger = _stores(tmp_path)
     control_store = ControlStore(tmp_path)

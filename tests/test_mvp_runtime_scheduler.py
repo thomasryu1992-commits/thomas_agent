@@ -109,11 +109,16 @@ def test_store_add_list_remove_toggle(tmp_path):
     assert store.list() == []
     s = _task_schedule(store)
     assert [x.schedule_id for x in store.list()] == [s.schedule_id]
-    assert store.set_enabled(s.schedule_id, False) is True
+    # Both return the record as it was BEFORE the mutation, so the caller can audit what it
+    # changed or destroyed; None is the not-found signal that used to be False.
+    previous = store.set_enabled(s.schedule_id, False)
+    assert previous is not None and previous.enabled is True
     assert store.list()[0].enabled is False
-    assert store.remove(s.schedule_id) is True
+    removed = store.remove(s.schedule_id)
+    assert removed is not None and removed.schedule_id == s.schedule_id
     assert store.list() == []
-    assert store.remove("nope") is False
+    assert store.remove("nope") is None
+    assert store.set_enabled("nope", False) is None
 
 @pytest.mark.parametrize("row, why", [
     ({"kind": KIND_TASK, "interval_seconds": 60, "next_run_at": T1}, "missing schedule_id"),
@@ -661,7 +666,7 @@ def test_operator_remove_mid_batch_survives_and_wins(tmp_path):
         def __call__(self, request, **kwargs):
             self.calls.append(request)
             if request == "first":
-                assert store.remove(second.schedule_id) is True
+                assert store.remove(second.schedule_id) is not None
             return {"status": "COMPLETED"}
 
     ex = _RemovesSecondDuringFirst()

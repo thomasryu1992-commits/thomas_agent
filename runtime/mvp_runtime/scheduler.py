@@ -65,6 +65,29 @@ ACTION_STARTED = "started"
 ACTION_ABANDONED = "abandoned"
 TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
 
+# Mutations of the schedule SET, as opposed to the run lifecycle above. ``created`` was the
+# only one recorded until 2026-08-04, so a schedule turned off left no trace anywhere: the
+# store keeps no history (a disable rewrites `enabled` in place), the ledger held nothing,
+# and `schedules.jsonl` is per-machine, so the repo had none either. Six disabled
+# `crypto_factory` schedules could be explained only by reading the REPLACEMENT schedules'
+# `reason` text and inferring from a gap in fire timestamps — an answer reconstructed from
+# circumstance, in a runtime whose whole posture is that authority is recorded, not inferred.
+#
+# These carry no ``schedule_run_id``: they are not runs, and `find_abandoned_runs` pairs
+# starts to terminals by that field alone, so a mutation event cannot be mistaken for either.
+ACTION_CREATED = "created"
+ACTION_ENABLED = "enabled"
+ACTION_DISABLED = "disabled"
+ACTION_REMOVED = "removed"
+MUTATION_ACTIONS = frozenset({ACTION_CREATED, ACTION_ENABLED, ACTION_DISABLED, ACTION_REMOVED})
+# The post-mutation state each action leaves behind. ``created`` is deliberately absent: it
+# can leave EITHER state (`add --disabled`), so its status comes from the schedule itself.
+_MUTATION_STATUS = {
+    ACTION_ENABLED: "enabled",
+    ACTION_DISABLED: "disabled",
+    ACTION_REMOVED: "removed",
+}
+
 # Schedule kinds. A task template is a request string (analysis_task), a maintenance action
 # (memory_prune), or a governed crypto cycle (crypto_pipeline) — never a shell command.
 KIND_TASK = "analysis_task"
@@ -327,29 +350,43 @@ class ScheduleStore:
         with self._lock():
             self._save([*self.list(), schedule])
 
-    def remove(self, schedule_id: str) -> bool:
-        with self._lock():
-            schedules = self.list()
-            kept = [s for s in schedules if s.schedule_id != schedule_id]
-            if len(kept) == len(schedules):
-                return False
-            self._save(kept)
-            return True
+    def remove(self, schedule_id: str) -> Schedule | None:
+        """Remove one schedule. Returns it as it was, or None if there was nothing to remove.
 
-    def set_enabled(self, schedule_id: str, enabled: bool) -> bool:
+        Returns the record rather than a bool so the caller can audit what it destroyed —
+        after the rewrite the only copy is gone, and an event naming just the id could not
+        say what kind it was or whether it had ever run."""
         with self._lock():
             schedules = self.list()
-            found = False
+            removed = next((s for s in schedules if s.schedule_id == schedule_id), None)
+            if removed is None:
+                return None
+            self._save([s for s in schedules if s.schedule_id != schedule_id])
+            return removed
+
+    def set_enabled(self, schedule_id: str, enabled: bool) -> Schedule | None:
+        """Flip one schedule's ``enabled``. Returns its state BEFORE the change, else None.
+
+        The pre-state is read under the same lock that writes the new one, which is what
+        makes it auditable: read outside the lock, the "was it already off?" an event
+        records is a guess that the tick loop or a concurrent ``docker exec`` can have
+        invalidated between the read and the write. A no-op (already in the target state)
+        still returns the record — the caller decides whether that is worth recording,
+        because refusing here would make an operator's repeated ``disable`` look like a
+        missing schedule."""
+        with self._lock():
+            schedules = self.list()
+            previous: Schedule | None = None
             updated: list[Schedule] = []
             for s in schedules:
                 if s.schedule_id == schedule_id:
-                    found = True
+                    previous = s
                     updated.append(replace(s, enabled=enabled))
                 else:
                     updated.append(s)
-            if found:
+            if previous is not None:
                 self._save(updated)
-            return found
+            return previous
 
     def claim_due(self, schedule_id: str, *, now: str) -> Schedule | None:
         """Atomically re-check and claim one due occurrence.
@@ -511,7 +548,8 @@ def _scheduler_event(
     action: str, schedule: Schedule, *, now: str, status: str,
     run_id: str | None = None, **extra: Any,
 ) -> dict[str, Any]:
-    # actions: started | fired | failed | abandoned | skipped | created | gap_detected.
+    # actions: started | fired | failed | abandoned | skipped | gap_detected (run lifecycle),
+    # created | enabled | disabled | removed (`MUTATION_ACTIONS`, the schedule set changing).
     # run_id/extra are omitted when absent so non-run events keep their original shape.
     fields = dict(extra)
     if run_id is not None:
@@ -521,6 +559,37 @@ def _scheduler_event(
         schedule_id=schedule.schedule_id, kind=schedule.kind, status=status, created_at=now,
         **fields,
     )
+
+
+def mutation_event(
+    action: str, schedule: Schedule, *, now: str, previously_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """One ``MUTATION_ACTIONS`` event: the schedule SET changed, and what it was before.
+
+    ``status`` is the state the schedule is in AFTER the mutation, which is the same
+    convention the run events use. ``previously_enabled`` is carried alongside rather than
+    folded into it, because only the pair distinguishes a real transition from an operator
+    re-issuing a command that was already in effect — and a record that cannot tell those
+    apart invites the reader to infer, which is the failure this event exists to end.
+
+    ``request`` and ``reason`` ride along on every mutation because they are what actually
+    identifies a schedule to a human: ``crypto_factory`` alone does not separate
+    ``BTCUSDT 15m`` from the generic factory it replaced. For ``removed`` the last run is
+    carried too — after the rewrite this event is the only surviving copy of that record.
+    """
+    if action not in MUTATION_ACTIONS:
+        raise SchedulerBlocked(
+            "SCHEDULER_EVENT_INVALID",
+            f"{action!r} is not a schedule-set mutation; expected one of {sorted(MUTATION_ACTIONS)}",
+        )
+    status = _MUTATION_STATUS.get(action) or ("enabled" if schedule.enabled else "disabled")
+    extra: dict[str, Any] = {"request": schedule.request, "reason": schedule.reason}
+    if previously_enabled is not None:
+        extra["previously_enabled"] = previously_enabled
+    if action == ACTION_REMOVED:
+        extra["last_run_at"] = schedule.last_run_at
+        extra["last_status"] = schedule.last_status
+    return _scheduler_event(action, schedule, now=now, status=status, **extra)
 
 
 def abandoned_event(started: Mapping[str, Any], *, now: str) -> dict[str, Any]:
