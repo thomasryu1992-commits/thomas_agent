@@ -1483,6 +1483,39 @@ is strong on the *mechanism* (394 pairs, controlled by construction) it is four 
 on the *consequence* — so it is written down with its numbers rather than merged into the
 generation engine on the strength of one measurement.
 
+**What that decision costs is half the mint budget, and the number was not written down.**
+Everything above measures fusion's *effect*; this is its *share*. A fire mints
+`DEFAULT_BATCH_SIZE = 4` seeded specs and `FACTORY_FUSION_PAIRS = 4` fused ones per context, so
+it is **exactly half by construction** — not an emergent ratio. `scheduler.py` chose 4 knowing
+it: *"4 makes the fire half-crossover; past that the seeded rotation — the only path by which a
+NEWLY ADDED family ever enters the store — starts losing its share of each fire."* Measured over
+the store, the share is a policy history rather than a constant:
+
+| minted | total | crossover | share |
+|---|---|---|---|
+| 2026-07-23 → 07-25 | 4 / 64 / 64 | 0 | 0% |
+| 2026-07-26 → 07-30 | 90–115 | 30–32 | 33% |
+| 2026-07-31 → 08-03 | 120 | 60 | **50%** |
+| 2026-08-04 (fire only) | 80 | 40 | **50%** |
+
+The store-wide figure is **434 of 1,556 (28%)** and should not be quoted as the policy — it
+averages in the three days that ran at 0%. The 2026-08-04 row is the fire alone: that day's raw
+count is 416, of which **336 are `provenance: mvp_rescore`** appended by #503 and not mints at
+all, so a naive by-day count reads 10% and understates the policy fivefold.
+
+**Why the share belongs beside the effect.** The paired test says a child reproduces its parents
+(IS −0.0034, HO −0.0062, both CIs spanning zero) while closing 0.51× their trades — so half the
+budget buys no measured edge and costs judgeability. And the cost falls on the one path that
+cannot be substituted: seeded draws are how a NEW family enters the store at all, which the
+rotation fix (#489) has just made matter more. The first fire on the phased rotation minted 20
+distinct base families across 10 contexts — but at 1–3 candidates each, because the seeded half
+is what those 20 families were sharing.
+
+**Still not a recommendation.** `FACTORY_FUSION_PAIRS = 4 → 2` would move the share to 33% and
+roughly double the seeded supply per family, and that is the same kind of mint-time decision as
+the depth refusal above — judged over generations, not days (the `#420` error). What is recorded
+here is only the number the decision needs and did not have.
+
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
 judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
