@@ -1798,7 +1798,56 @@ measured — opening the high-volatility bars means trading where `DEFAULT_SLIPP
 constant, is most likely optimistic, so the new family's backtest carries a favourable bias of
 unknown size. Live is partly covered by `volatility_size_multiplier`; the backtest is not.
 
----
+### F4. The replay window is our constant, not the venue's limit — measured 2026-08-04
+
+F1 and F3 both end pointing at the same place. F1: *"What reopens it is a mint at 8 conditions
+that reaches `MIN_HOLDOUT_TRADES`, which cannot happen at these signal rates without a longer
+replay window — so re-measure `market_data.factory_candle_target` first."* F3: settling 4h
+`htf_pullback_short` needs four non-overlapping tails that all reach the same floor, and today
+only two do. So it was re-measured, against the live venue:
+
+| BTCUSDT | asked | returned | span | oldest bar | fetch |
+|---|---|---|---|---|---|
+| 4h (today's window) | 3,000 | 3,000 | 500 d | 2025-03-22 | 0.4 s |
+| 4h | 12,000 | 12,000 | 2,000 d | 2021-02-11 | 1.6 s |
+| 4h | 24,000 | **15,130** | **2,522 d** | 2019-09-08 | 2.0 s |
+| 1h (today's window) | 12,000 | 12,000 | 500 d | 2025-03-22 | 1.7 s |
+| 1h | 48,000 | 48,000 | 2,000 d | 2021-02-11 | 6.1 s |
+
+**Nothing external is binding.** 4h returns less than asked only at 15,130 bars, which is
+BTCUSDT's own listing date — the true floor, and **5.0×** the window the factory replays. 1h
+gives at least 4×. `MAX_CANDLES = 60,000` is nowhere near (its own comment already says it is
+head-room, not a live limit). The window is set by **`FACTORY_DEPTH_DAYS = 500`**, a constant of
+ours, and nothing else.
+
+**What 5× would resolve.** The 0.7-truncation chain F3 uses gives 4h holdout tails of
+900 / 630 / 441 / 309 bars today, of which two carry depth; at 15,130 bars the same chain gives
+**4,539 / 3,177 / 2,224 / 1,557**, so all four clear `MIN_HOLDOUT_TRADES` comfortably and F3's
+open item is decidable rather than merely open. For F1: an 8-condition mint closing 7 in-sample
+and 5 holdout trades scales to roughly **35 / 25**, which lands on the floor rather than far
+under it — the reopening condition F1 names becomes reachable.
+
+**What it costs, and one gap.** `DERIVATIVE_HISTORY_DAYS = 520` does not follow the window: at
+2,000 days the OI and liquidation series would cover **26%** of the replay, and funding — capped
+by `FUNDING_MAX_PAGES = 4` at ~1,314 days — about 66%. `factory._oi_feed_reaches` already
+computes this dynamically (`replay_days <= DERIVATIVE_HISTORY_DAYS`), so lengthening the window
+**auto-gates the four `oi_*` families out of the rotation** rather than mining them over a window
+that is three-quarters empty; its docstring records why that matters (every trade lands in the
+newest walk-forward slice, `temporal_consistency` is 0 by construction, and the family is retired
+FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivalent gate** and
+would walk into exactly that failure. That is the one code change a window extension requires,
+and it is not optional.
+
+Compute is not the obstacle: ~7 fetches per context (own + reference + 5 cohort peers) at 2.0 s
+each is ~14 s per context, ~2.5 minutes added to a daily fire over 10 contexts, and
+`build_feature_rows` is 6.0 s at 48,000 bars.
+
+**The real reason this is written down rather than done.** A longer window re-bases every number
+in the store: candidates scored on 500 days and candidates scored on 2,522 are not comparable,
+and ranking them together is the defect `EDGE_COST_BASIS_UNRECORDED` exists to mark, one axis
+over. So an extension needs the same treatment the cost basis got — the window recorded **with**
+each candidate's evidence, and `promotable_backlog` refusing to compare across bases — or it
+silently invalidates 1,595 rows. That is a larger change than the constant it turns on.
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
