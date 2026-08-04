@@ -256,8 +256,18 @@ def test_a_snapshot_without_a_venue_still_mines_as_binance():
         "BTCUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=400
     )
     del snapshot["venue"]
+    # A batch wide enough that the assertion cannot be silently vacuous. This is a bare OHLCV
+    # snapshot, so a family reading an HTF or open-interest column is refused by
+    # `unsuppliable_features` — and the rotation picks a CONSECUTIVE block, so a batch of four
+    # can land entirely inside one such run and mint nothing at all. It did on 2026-08-04, when
+    # retiring two families shifted every later index by two: the block became htf_* + oi_* and
+    # the venue set compared empty-to-nonempty rather than failing on a venue.
     result = factory.run_factory(snapshot, active_pool={"active_strategies": []},
-                                 existing_candidates=[], now=NOW, count=4)
+                                 existing_candidates=[], now=NOW, count=8)
+    assert result["candidates"], (
+        f"nothing minted; rejections were "
+        f"{[(r.get('strategy_family'), r.get('reason')) for r in result.get('rejected') or []]}"
+    )
     assert {c["strategy_spec"]["venue"] for c in result["candidates"]} == {
         market_data.BINANCE_FUTURES}
 
