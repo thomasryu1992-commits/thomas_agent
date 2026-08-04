@@ -1255,6 +1255,14 @@ share positive):
 Cuts tighter than 25% are not reported: below n≈16 per cell the numbers swing by more than the
 effect (1h reads +1.17 at the top decile), which is noise wearing a trend's clothes.
 
+**This whole section is Binance USD-M perps** (BTC/ETH/BNB/DOGE/SOL) and none of it transfers to
+another venue on its own. Said here because the table above has already been cited across lanes
+once — `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md` (a) reads the 15m row as a reason to prioritise a
+Hyperliquid HIP-3 equity-perp timeframe, where the fee schedule, the asset class and the funding
+cadence (24/day against 3) are all different. That is the inference #461–#466 exist to prevent:
+*a spec is judged against the venue it was mined on*. Cite the row with its venue attached, or
+the argument it supports is about a market nobody measured.
+
 **So the open question is answered, and its follow-on flips.** This venue's fee schedule does
 permit a fast strategy — 1h clears it at the median today and 15m's deficit has more than halved
 without the maker-entry lever being touched. And the proposal to restate the ladder's 20-trade
