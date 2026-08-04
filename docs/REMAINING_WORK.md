@@ -1419,6 +1419,47 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
 
+### F2. "Cannot confirm" was hiding a negative, not a positive — measured 2026-08-04
+
+F1 above ends on *"the search produces evidence it cannot confirm"*, which leaves the decisive
+question open: is the edge real and merely un-provable at these sample sizes, or is there no
+edge to prove? **Give the same rules five times the evidence and they are refuted, not
+confirmed.** `factory.backtest_spec_pooled` replays one spec across several symbols' frames and
+pools the outcomes, the tail and the cost legs; the stored single-symbol specs were re-scoped to
+all five mined symbols and replayed against live frames (12 top-ranked single-family candidates
+per timeframe, current cost basis, read-only — nothing appended):
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| median holdout expectancy | −0.2694 → −0.2146 | −0.1173 → −0.1374 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+| INSUFFICIENT | 3 → **0** | 0 → 0 |
+| verdicts | — → 0 ROBUST / 12 PROVISIONAL / **0 FRAGILE** | — → 0 / 12 / 0 |
+
+**Two things happen and only one was in doubt.** The arithmetic works exactly as it must: the
+tail multiplies by ~5.3× and `INSUFFICIENT` disappears, because a spec scoped to N symbols is one
+hypothesis fitted on all of them and its tail is all of their tails. `FRAGILE` disappears too —
+`trades_per_parameter` clears the critical ratio once the sample pools, so the overfitting veto
+stops firing. **And every row that stopped being unjudgeable became CONTRADICTED, not CONFIRMED.**
+The estimate barely moves; what changes is that it stops being deniable.
+
+**What this settles and what it does not.** It settles the reading of F1: the un-confirmability
+was concealing a negative, so "re-mint deeper / wait for more evidence" is not a path to a
+promotable candidate on these rules. It does **not** rule out pooled *minting* — these specs were
+fitted on one symbol and then asked to transfer, which is strictly harder than searching for
+parameters that hold across five from the start. A pooled mint is a different experiment and is
+not run here; what is now cheap is running it, because the capability exists and
+`build_spec_dict` takes a `symbol_scope`.
+
+**`run_factory` is deliberately untouched.** Moving the rotation onto pooled specs would change
+what the factory explores on the strength of one afternoon's measurement, and a mint-time change
+is judged over generations, not days (the `#420` error). The capability landed; the decision did
+not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
+the single-symbol search of the same family produced none.
+
 ---
 
 ## G. Codebase review backlog — measured 2026-08-02, three items open
