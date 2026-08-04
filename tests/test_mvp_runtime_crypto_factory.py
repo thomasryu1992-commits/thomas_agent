@@ -738,8 +738,12 @@ def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
     would overstate what the funding figure is evidence of."""
     spec = StrategySpec.from_dict(_spec_dict())
     with_funding = dict(_trending_snapshot())
+    # At the bar OPEN, which is where the venue actually settles (00:00/08:00/16:00 UTC against
+    # a daily bar opening at 00:00). Stamping them at the close would leave the first bar's
+    # whole span before the series' first settlement, i.e. a genuinely partial series — which
+    # is a different property from the one this test pins.
     with_funding["funding"] = [
-        {"timestamp": c["close_time"], "funding_rate": 0.0001}
+        {"timestamp": c["open_time"], "funding_rate": 0.0001}
         for c in with_funding["candles"]
     ]
     frames = [factory.build_replay_frame(with_funding), factory.build_replay_frame(_shifted_snapshot())]
@@ -747,6 +751,29 @@ def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
     assert frames[1].funding_source == factory.FUNDING_SOURCE_FALLBACK
     pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
     assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_FALLBACK
+
+
+def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled():
+    """Three answers now, and the middle one has to survive pooling. A leg whose series covers
+    most of its window measured most of it — calling that `modelled_constant` understates it
+    exactly as `venue_history` overstated it, and an ordered strength is what keeps both from
+    happening."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    covered = dict(_trending_snapshot())
+    covered["funding"] = [
+        {"timestamp": c["open_time"], "funding_rate": 0.0001} for c in covered["candles"]
+    ]
+    partial = dict(_trending_snapshot())
+    # Starts a third of the way in: the bars before it are unmeasured, not free.
+    partial["funding"] = [
+        {"timestamp": c["open_time"], "funding_rate": 0.0001}
+        for c in partial["candles"][len(partial["candles"]) // 3:]
+    ]
+    frames = [factory.build_replay_frame(covered), factory.build_replay_frame(partial)]
+    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == factory.FUNDING_SOURCE_PARTIAL
+    pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
 
 
 # --- run_factory --------------------------------------------------------------

@@ -66,6 +66,7 @@ from ..errors import ToolBlocked
 from .cost import (
     FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_PARTIAL,
     FUNDING_SOURCE_VENUE,
     MAX_ENTRY_COST_R,
     CostModel,
@@ -96,6 +97,15 @@ MIN_TRADES_PER_WINDOW = 3
 # because that is the regime a promoted strategy trades next.
 HOLDOUT_FRACTION = 0.30
 MIN_BARS_FOR_HOLDOUT = 60
+
+# How well-sourced each funding label is, for pooling legs that disagree. Higher is stronger;
+# an unknown label sorts below every known one, so a future source this table has not been
+# taught about can only ever weaken a pooled claim, never strengthen it.
+_FUNDING_SOURCE_STRENGTH = {
+    FUNDING_SOURCE_FALLBACK: 1,
+    FUNDING_SOURCE_PARTIAL: 2,
+    FUNDING_SOURCE_VENUE: 3,
+}
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -1923,13 +1933,15 @@ def funding_charges_per_bar(
         except (ValueError, TypeError):
             continue
 
+    # Settlements per bar, from the bar's own span. Sub-8h timeframes get a fraction, which
+    # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
+    # one per bar would price a scalper like a swing trader.
+    minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
+    per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    modelled = cost.funding_bps_per_interval / 10000.0 * per_bar
+
     if not events:
-        # Settlements per bar, from the bar's own span. Sub-8h timeframes get a fraction, which
-        # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
-        # one per bar would price a scalper like a swing trader.
-        minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
-        per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
-        return [cost.funding_bps_per_interval / 10000.0 * per_bar] * len(candles), FUNDING_SOURCE_FALLBACK
+        return [modelled] * len(candles), FUNDING_SOURCE_FALLBACK
 
     events.sort(key=lambda pair: pair[0])
     bar_opens: list[Any] = []
@@ -1939,13 +1951,34 @@ def funding_charges_per_bar(
         except (ValueError, TypeError):
             bar_opens.append(None)
 
+    # **A series that starts inside the window leaves the bars before it UNMEASURED, and the
+    # bucketing below scores unmeasured as zero.** The empty-series guard above is the same
+    # rule for the all-or-nothing case; this is the partial one, and it is the case a deeper
+    # replay window creates. `market_data.DERIVATIVE_HISTORY_DAYS` is 520, so a 1500-day window
+    # would leave roughly two thirds of its bars charged nothing while `FUNDING_SOURCE_VENUE`
+    # claimed the venue had priced them — free carry on exactly the deep history a longer
+    # window is bought for, and in the direction that flatters it.
+    #
+    # Uncovered means the bar's WHOLE span predates the series, not merely its open. A bar
+    # opening at 00:00 against a first settlement at 08:00 is covered — that settlement is
+    # inside it — and testing the open alone would label a fully-covered window partial and
+    # over-charge its first bar. The bar's span is `[open, next_open)`, so the test is against
+    # the same upper bound the bucketing below uses.
+    first_event = events[0][0]
+    uncovered = 0
+
     cursor = 0
     for i, opened in enumerate(bar_opens):
         if opened is None:
             continue
-        # The next parseable bar open bounds this bar; the last bar is bounded by nothing, so it
-        # takes every remaining settlement. A trade cannot close after the last bar anyway.
+        # The next parseable bar open bounds this bar; the last bar is bounded by nothing.
         upper = next((b for b in bar_opens[i + 1:] if b is not None), None)
+        if upper is not None and upper <= first_event:
+            charges[i] = modelled
+            uncovered += 1
+            continue
+        # The last bar is bounded by nothing, so it takes every remaining settlement — a trade
+        # cannot close after it anyway.
         while cursor < len(events) and events[cursor][0] < opened:
             cursor += 1  # before this bar (only reachable for leading events)
         total = 0.0
@@ -1955,7 +1988,7 @@ def funding_charges_per_bar(
             scan += 1
         charges[i] = total
         cursor = scan
-    return charges, FUNDING_SOURCE_VENUE
+    return charges, (FUNDING_SOURCE_PARTIAL if uncovered else FUNDING_SOURCE_VENUE)
 
 
 def _replay(
@@ -2315,10 +2348,15 @@ def backtest_spec_pooled(
     # The weaker label wins when the legs disagree: a pooled carry is only as well-sourced as
     # its worst leg, and reporting `venue_history` over a book where one symbol fell back to
     # the modelled rate would overstate what the funding figure is evidence of.
-    funding_source = (
-        FUNDING_SOURCE_VENUE
-        if all(f.funding_source == FUNDING_SOURCE_VENUE for f in frames)
-        else FUNDING_SOURCE_FALLBACK
+    #
+    # Ordered rather than a VENUE/not-VENUE test, because there are three answers now and
+    # collapsing the middle one loses the distinction it was added to carry: a leg with a
+    # PARTIAL series measured most of its window, and calling that `modelled_constant` would
+    # understate it exactly as calling it `venue_history` overstated it.
+    funding_source = min(
+        (f.funding_source for f in frames),
+        key=lambda source: _FUNDING_SOURCE_STRENGTH.get(source, 0),
+        default=FUNDING_SOURCE_VENUE,
     )
     outcomes: list[dict[str, Any]] = []
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
