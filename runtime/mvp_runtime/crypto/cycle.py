@@ -1001,15 +1001,67 @@ def accumulate_positioning_cohort(
     writes only a local append-only store, and its data is unrecoverable if skipped — so
     deferring it to the next fire would trade a real loss for no safety.
     """
-    symbols = {str(symbol).strip().upper() for symbol, _timeframe in contexts}
-    symbols.update(CROSS_SECTION_UNIVERSE)
     return {
         symbol: str(
             positioning_store.record_positioning(
                 symbol=symbol, collector=collector, now=now, root=root,
             )["status"]
         )
-        for symbol in sorted(s for s in symbols if s)
+        for symbol in retention_cohort(contexts)
+    }
+
+
+def retention_cohort(contexts: list[tuple[str, str]]) -> list[str]:
+    """The symbols a retention store must cover: the declared cohort, unioned with what the
+    pool actually visited. Sorted, so a sweep is deterministic.
+
+    One function because it is one rule. Both accumulating stores answer the same question and
+    got different answers when only one of them was fixed — see
+    :func:`accumulate_open_interest_cohort`."""
+    symbols = {str(symbol).strip().upper() for symbol, _timeframe in contexts}
+    symbols.update(CROSS_SECTION_UNIVERSE)
+    return sorted(s for s in symbols if s)
+
+
+def accumulate_open_interest_cohort(
+    *,
+    liquidation_feed: Any | None,
+    now: str,
+    root: Path | None,
+    contexts: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Refresh the hourly open-interest store for the DECLARED cohort, not for what the pool
+    traded. The positioning sweep's rule, applied to the store that still followed routing.
+
+    :func:`accumulate_positioning_cohort` fixed this for positioning on 2026-08-04 and recorded
+    why: a retention store's scope cannot be a side effect of routing, because the vendor serves
+    ~84 days of hourly history and the factory replays 500 — an hour not recorded today is not
+    late, it is **gone**. The hourly OI store was left on the old footing, riding
+    :func:`attach_feeds`, which runs once per *visited* context.
+
+    Measured on this host 2026-08-04, the same day the positioning sweep landed: the store held
+    **10,644 rows across exactly five symbols** — BTC, ETH, SOL, BNB, DOGE — and **XRPUSDT held
+    zero and always had**, because it is a cohort member the pool has never routed, so no
+    context ever carried it. That is the identical footprint the positioning docstring reports
+    for XRP, on the store nobody moved.
+
+    Cost is the store's own hourly throttle, not this call: ``record_intraday_oi`` measures from
+    the last ATTEMPT, so widening the scope to six symbols costs at most six vendor requests an
+    hour whoever asks, and the other three fires of a 15-minute fan-out return ``skipped_fresh``
+    having opened no socket. Never raises — the store is degrade-only and reports per-symbol
+    instead, because a collection miss must not cost a fire its cycles.
+
+    Left deliberately ALONGSIDE the ``attach_feeds`` call rather than replacing it: removing
+    that write is a separate change (it is the one that makes ``attach_feeds`` a pure read), and
+    the throttle means the extra call site costs nothing. Adding coverage first is the half that
+    cannot regress anything."""
+    return {
+        symbol: str(
+            oi_store.record_intraday_oi(
+                symbol=symbol, feed=liquidation_feed, now=now, root=root,
+            )["status"]
+        )
+        for symbol in retention_cohort(contexts)
     }
 
 
@@ -1109,6 +1161,10 @@ def run_pool_cycle(
     positioning = accumulate_positioning_cohort(
         collector=collector, now=now, root=root, contexts=contexts,
     )
+    # Same scope rule, the other accumulating store. Cheap because both throttle hourly.
+    open_interest_1h = accumulate_open_interest_cohort(
+        liquidation_feed=liquidation_feed, now=now, root=root, contexts=contexts,
+    )
 
     summary = {
         "pool_cycle_version": POOL_CYCLE_VERSION,
@@ -1118,6 +1174,7 @@ def run_pool_cycle(
         "live_halt": halted,
         "unvisited": unvisited,
         "positioning": positioning,
+        "open_interest_1h": open_interest_1h,
         "created_at": now,
     }
     summary["pool_cycle_id"] = integrity.short_id(
@@ -1213,12 +1270,14 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "accumulate_open_interest_cohort",
     "accumulate_positioning_cohort",
     "attach_cross_section",
     "attach_positioning",
     "cycle_status_line",
     "pool_cycle_contexts",
     "pool_cycle_status_line",
+    "retention_cohort",
     "run_crypto_cycle",
     "run_pool_cycle",
 ]
