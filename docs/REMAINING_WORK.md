@@ -1827,20 +1827,49 @@ open item is decidable rather than merely open. For F1: an 8-condition mint clos
 and 5 holdout trades scales to roughly **35 / 25**, which lands on the floor rather than far
 under it — the reopening condition F1 names becomes reachable.
 
-**What it costs, and one gap.** `DERIVATIVE_HISTORY_DAYS = 520` does not follow the window: at
-2,000 days the OI and liquidation series would cover **26%** of the replay, and funding — capped
-by `FUNDING_MAX_PAGES = 4` at ~1,314 days — about 66%. `factory._oi_feed_reaches` already
-computes this dynamically (`replay_days <= DERIVATIVE_HISTORY_DAYS`), so lengthening the window
-**auto-gates the four `oi_*` families out of the rotation** rather than mining them over a window
-that is three-quarters empty; its docstring records why that matters (every trade lands in the
-newest walk-forward slice, `temporal_consistency` is 0 by construction, and the family is retired
+**What it costs, and the cost is the reason not to take it.**
+`DERIVATIVE_HISTORY_DAYS = 520` does not follow the window: at 2,000 days the OI and liquidation
+series would cover **26%** of the replay, and funding — capped by `FUNDING_MAX_PAGES = 4` at
+~1,314 days — about 66%. `factory._oi_feed_reaches` already computes this dynamically
+(`replay_days <= DERIVATIVE_HISTORY_DAYS`), so lengthening the window **auto-gates the four
+`oi_*` families out of the rotation** rather than mining them over a window that is
+three-quarters empty; its docstring records why that matters (every trade lands in the newest
+walk-forward slice, `temporal_consistency` is 0 by construction, and the family is retired
 FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivalent gate** and
-would walk into exactly that failure. That is the one code change a window extension requires,
-and it is not optional.
+would walk into exactly that failure — one code change an extension requires either way, since
+it is a defect independent of the window.
 
-Compute is not the obstacle: ~7 fetches per context (own + reference + 5 cohort peers) at 2.0 s
-each is ~14 s per context, ~2.5 minutes added to a daily fire over 10 contexts, and
-`build_feature_rows` is 6.0 s at 48,000 bars.
+**And `oi_*` is not a rounding error in that trade.** The corrected pooled-mint batch in F2 finds
+`oi_squeeze_long` and `oi_unwind_short` reaching CONFIRMED at **both** 1h and 4h, with positive
+in-sample *and* out-of-sample expectancy — the only families in this record to do it, and the
+only confirmations of any kind. So the extension's price is not "four families of unknown value";
+it is **every signal the search has produced**, in exchange for depth on the price-only families
+that have produced none. Stated as of 2026-08-04 and not as a settled verdict: those
+confirmations do not clear the selection correction at the attempt count they were drawn from
+(z = 3.74 against a best `t` of 3.34), so the right order is to establish whether they survive
+before pricing a window against them — not the reverse.
+
+`FUNDING_MAX_PAGES` is worth separating from this: at 1,000 rows per call and an 8-hour cadence
+it is ~333 days a page, so 6–7 pages would cover 2,000 days. Funding is **our constant, not a
+vendor limit**, and unlike OI it does not force the trade above.
+
+Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
+cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
+contexts, and `build_feature_rows` is 6.0 s at 48,000 bars. What the arithmetic misses is the
+venue's rate limiter — measuring the depths in this table **hit HTTP 429** (the venue asked for
+17 s), and the factory shares an IP with the 15-minute cycle that trades. The live cycle was
+unaffected that time (no `MARKET_DATA_DEGRADED` in the 400 ledger rows around it), but a 4×
+fetch volume on the same address is the pattern that produced it, so an extension needs explicit
+backoff and spacing rather than the same call pattern run four times as hard.
+
+**The cohort's own history bounds the window before the venue does.** `backtest_spec_pooled`
+pools by bar INDEX and states its precondition — "bar *i* is the same calendar window on every
+leg" — which holds only while every leg is at least as long as the window. Measured per symbol
+at 4h: SOLUSDT 12,901 bars (2,150 d, listed 2020-09-14) is the binding leg, then DOGEUSDT 13,296,
+BNBUSDT 14,202, XRPUSDT 14,412, ETHUSDT 14,653, BTCUSDT 15,130. **2,150 days is the deepest
+window that keeps every leg equal-length**; past it the pooled walk-forward slices start mixing
+calendar windows across symbols. A 2,000-day target sits under that with head-room and makes the
+whole ladder uniform, since 1d already replays 2,000 days via `MIN_FACTORY_BARS`.
 
 **The real reason this is written down rather than done.** A longer window re-bases every number
 in the store: candidates scored on 500 days and candidates scored on 2,522 are not comparable,
