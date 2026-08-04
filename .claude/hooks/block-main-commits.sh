@@ -32,7 +32,26 @@ fi
 # was denied while the rule was already satisfied. Those cases are now left to
 # .githooks/pre-commit, which git runs IN the committing worktree and which therefore
 # knows the answer instead of inferring it.
-if [[ $payload =~ (^|[^a-zA-Z0-9_])cd[[:space:]] ]] || [[ $payload =~ git[[:space:]]+-C[[:space:]] ]]; then
+#
+# **The separator class has to admit an ESCAPED newline, and missing that reopened the
+# hole for the commonest shape there is.** `payload` is the RAW JSON (line 18 — jq is not
+# guaranteed here), so a newline inside the command arrives as the two characters `\` and
+# `n`. In the ordinary multi-line form
+#
+#     SP=/tmp/…
+#     cd "$SP/wt" && git add f && git commit …
+#
+# the character immediately before `cd` is therefore the letter **n**, which `[^a-zA-Z0-9_]`
+# rejects — so the decline failed, the hook judged by the primary checkout's branch, and a
+# legitimate worktree commit was denied the moment an external sync parked that checkout on
+# main. Measured 2026-08-04 by replaying this regex: single-line `cd /tmp/wt && git commit`
+# declined, `git -C …` declined, the multi-line form above JUDGED. It reads as intermittent
+# because it only DENIES while the primary checkout happens to sit on main.
+#
+# `pushd` is admitted for the same reason `cd` is, and `env -C` for the same reason
+# `git -C` is: all four move the commit somewhere this process cannot see.
+if [[ $payload =~ (^|[^a-zA-Z0-9_]|\\n)(cd|pushd)[[:space:]] ]] \
+  || [[ $payload =~ (git|env)[[:space:]]+-C[[:space:]] ]]; then
   exit 0
 fi
 

@@ -79,6 +79,20 @@ echo "== ...and it declines what it cannot see =="
 check "cd elsewhere then commit"        allow  "$(coarse "$BASE/repo" "cd $BASE/wt \&\& git commit -m x")"
 check "git -C elsewhere"                allow  "$(coarse "$BASE/repo" "git -C $BASE/wt commit -m x")"
 
+# The separator class has to admit an ESCAPED newline. `payload` is the RAW JSON, so a
+# newline inside the command arrives as the two characters \ and n — which put the LETTER n
+# immediately before `cd`, and `[^a-zA-Z0-9_]` rejected it. Every one of these denied a
+# legitimate worktree commit while the primary checkout sat on main, and the shape is the
+# commonest one an agent writes: a variable on line one, the `cd` on line two.
+check "multi-line, cd on its own line"  allow  "$(coarse "$BASE/repo" "SP=$BASE/wt\ncd \\\"\$SP\\\" \&\& git commit -m x")"
+check "multi-line, pushd"               allow  "$(coarse "$BASE/repo" "a=1\npushd $BASE/wt \&\& git commit -m x")"
+check "pushd inline"                    allow  "$(coarse "$BASE/repo" "pushd $BASE/wt \&\& git commit -m x")"
+check "env -C elsewhere"                allow  "$(coarse "$BASE/repo" "env -C $BASE/wt git commit -m x")"
+# ...without letting a multi-line command smuggle a LOCAL commit past the net: nothing on
+# these lines moves the commit anywhere, so the coarse net must still answer for them.
+check "multi-line, commit lands here"   deny   "$(coarse "$BASE/repo" "a=1\ngit add -A \&\& git commit -m x")"
+check "a word ending in cd is not cd"   deny   "$(coarse "$BASE/repo" "abcd \&\& git commit -m x")"
+
 echo "== not a commit at all =="
 check "git status on main"              allow  "$(coarse "$BASE/repo" "git status")"
 check "the word commit in a pipe"       allow  "$(coarse "$BASE/repo" "git log | grep commit")"
