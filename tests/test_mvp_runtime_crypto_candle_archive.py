@@ -450,15 +450,24 @@ def test_the_pipeline_still_needs_its_grant(monkeypatch, tmp_path):
     assert exc.value.reason_code == "ACTIVATION_MISSING"
 
 
+def _no_sleep(_seconds):
+    """Pacing is real time; every pass in this file injects it away and asserts on the calls."""
+
+
 class _FakeVenue:
-    def __init__(self, symbols=("xyz:XLE", "xyz:SMH"), fail_on=()):
+    def __init__(self, symbols=("xyz:XLE", "xyz:SMH"), fail_on=(), rate_limit_after=None):
         self._symbols = list(symbols)
         self._fail_on = set(fail_on)
+        self._rate_limit_after = rate_limit_after
+        self.reads = []
 
     def live_symbols(self, *, dexes, timeout_seconds=20):
         return list(self._symbols)
 
     def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+        self.reads.append((symbol, timeframe))
+        if self._rate_limit_after is not None and len(self.reads) > self._rate_limit_after:
+            raise ToolError(market_data.TOOL_RATE_LIMITED, "asking too often")
         if symbol in self._fail_on:
             raise ToolError("TOOL_TRANSPORT", "venue unreachable")
         candles = [
@@ -476,17 +485,19 @@ class _FakeVenue:
 
 def test_a_pass_covers_every_symbol_and_timeframe(tmp_path):
     summary = archive.run_candle_archive(
-        _FakeVenue(), venue=VENUE, now_ms=NOW_MS, root=tmp_path
+        _FakeVenue(), venue=VENUE, now_ms=NOW_MS, root=tmp_path, sleep=_no_sleep
     )
     assert summary["symbols"] == 2
     assert summary["books"] == 2 * len(archive.ARCHIVE_TIMEFRAMES)
     assert summary["written"] == summary["books"] * 5
     assert summary["blocked"] is False
+    assert summary["deferred"] == 0 and summary["skipped"] == 0
 
 
 def test_one_unreachable_symbol_does_not_cost_the_others(tmp_path):
     summary = archive.run_candle_archive(
-        _FakeVenue(fail_on=("xyz:SMH",)), venue=VENUE, now_ms=NOW_MS, root=tmp_path
+        _FakeVenue(fail_on=("xyz:SMH",)), venue=VENUE, now_ms=NOW_MS, root=tmp_path,
+        sleep=_no_sleep,
     )
     assert summary["degraded"] == len(archive.ARCHIVE_TIMEFRAMES)
     assert summary["written"] == len(archive.ARCHIVE_TIMEFRAMES) * 5  # the other symbol kept
@@ -497,11 +508,79 @@ def test_one_unreachable_symbol_does_not_cost_the_others(tmp_path):
 def test_a_pass_with_archiving_off_writes_nothing_and_says_why(tmp_path, monkeypatch):
     monkeypatch.delenv(market_data.CANDLE_ARCHIVE_ENV, raising=False)
     summary = archive.run_candle_archive(
-        market_data.select_candle_archive_collector(), venue=VENUE, now_ms=NOW_MS, root=tmp_path
+        market_data.select_candle_archive_collector(), venue=VENUE, now_ms=NOW_MS, root=tmp_path,
+        sleep=_no_sleep,
     )
     assert summary["blocked"] is True
     assert summary["reason_code"] == "ARCHIVE_NOT_ENABLED"
     assert summary["written"] == 0
+
+
+# --- the venue will not answer a burst, and the tail must not pay for it -----------------
+#
+# Measured on the first real pass (2026-08-04T14:59:57Z): 352 reads issued as fast as the loop
+# could manage, ~70 answered, 282 came back TOOL_RATE_LIMITED — and the fire still reported
+# COMPLETED, because 282 != 352. The books that landed were the first twenty symbols
+# alphabetically, every hour, forever: the tail was not slow to fill, it was unreachable.
+
+def test_reads_are_paced_rather_than_burst(tmp_path):
+    slept = []
+    venue = _FakeVenue()
+    summary = archive.run_candle_archive(
+        venue, venue=VENUE, now_ms=NOW_MS, root=tmp_path,
+        request_interval_seconds=0.25, sleep=slept.append,
+    )
+    # One wait BETWEEN each pair of reads, and none before the first — a pass of n reads
+    # waits n-1 times, not n.
+    assert len(slept) == summary["books"] - 1
+    assert set(slept) == {0.25}
+
+
+def test_a_rate_limited_book_latches_and_the_pass_stops(tmp_path):
+    """A 429 is the step before a ban, so the answer is to stop asking — `PerRunFeedCache`'s
+    posture. Retrying the other books would be the one response that escalates it."""
+    venue = _FakeVenue(symbols=[f"xyz:S{i}" for i in range(10)], rate_limit_after=3)
+    summary = archive.run_candle_archive(
+        venue, venue=VENUE, now_ms=NOW_MS, root=tmp_path, sleep=_no_sleep,
+    )
+    assert summary["rate_limited"] is True
+    assert summary["books"] == 4          # three answered, the fourth latched
+    assert len(venue.reads) == 4          # and nothing was asked after it
+    # 10 symbols x 4 timeframes fits the default budget, so all 40 were planned and 36 of them
+    # never got asked. Not folded into `degraded`: "we never asked" is not evidence about a book.
+    assert summary["skipped"] == 10 * len(archive.ARCHIVE_TIMEFRAMES) - 4
+    assert summary["degraded"] == 1
+
+
+def test_a_pass_is_bounded_so_it_cannot_hold_the_tick(tmp_path):
+    """`run_due` is sequential and shares its tick with the live leg's `_settle_or_protect`,
+    so an unbounded 352-book pass would trade position protection for archive latency."""
+    venue = _FakeVenue(symbols=[f"xyz:S{i}" for i in range(10)])
+    summary = archive.run_candle_archive(
+        venue, venue=VENUE, now_ms=NOW_MS, root=tmp_path, books_per_pass=8, sleep=_no_sleep,
+    )
+    assert summary["books"] == 8
+    assert len(venue.reads) == 8
+    assert summary["deferred"] == 10 * len(archive.ARCHIVE_TIMEFRAMES) - 8
+    assert summary["skipped"] == 0        # bounded on purpose is not the same as cut short
+
+
+def test_successive_passes_do_not_starve_the_same_tail(tmp_path):
+    """The defect itself. A bounded pass that always started at the venue's first symbol
+    reached symbols 0-1 every time and the rest never — so the fix is that the START moves."""
+    symbols = [f"xyz:S{i}" for i in range(10)]
+    touched = set()
+    first_symbol_each_pass = []
+    for minute in range(10):
+        venue = _FakeVenue(symbols=symbols)
+        archive.run_candle_archive(
+            venue, venue=VENUE, now_ms=NOW_MS + minute * 60_000, root=tmp_path,
+            books_per_pass=8, sleep=_no_sleep,
+        )
+        touched.update(symbol for symbol, _ in venue.reads)
+        first_symbol_each_pass.append(venue.reads[0][0])
+    assert touched == set(symbols)                 # nobody is unreachable any more
+    assert len(set(first_symbol_each_pass)) > 1    # and the start really does move
 
 
 def test_the_scheduler_knows_the_kind():
@@ -521,6 +600,9 @@ def _fire(schedule_kind, tmp_path, monkeypatch):
     from runtime.mvp_runtime import scheduler
 
     monkeypatch.setattr("time.time", lambda: NOW_MS / 1000.0)
+    # The archive paces its reads in real seconds. Resolved at call time inside
+    # `run_candle_archive`, so patching it here is what keeps these fires instant.
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
     schedule = scheduler.Schedule(
         schedule_id="s1", kind=schedule_kind, request="", interval_seconds=86400,
         enabled=True, created_by="test", created_at="2026-08-04T00:00:00Z",
@@ -593,3 +675,25 @@ def test_a_partial_outage_reports_without_raising(tmp_path, monkeypatch):
     summary = _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch)
     assert summary.startswith("candle_archive symbols=2")
     assert "degraded=4" in summary
+
+
+def test_a_rate_limited_pass_reaches_the_operator(tmp_path, monkeypatch):
+    """The gap that let the real 80% loss pass as a completed day.
+
+    `ARCHIVE_ALL_BOOKS_DEGRADED` needs degraded == books, and a rate-limited pass never gets
+    there: it STOPS, so most books are `skipped` rather than degraded. 282 of 352 lost, and the
+    fire reported COMPLETED — reaching nobody, while the window it races kept rolling."""
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import market_data as md
+
+    monkeypatch.setenv(md.CANDLE_ARCHIVE_ENV, md.HYPERLIQUID)
+    monkeypatch.setattr(
+        md, "select_candle_archive_collector",
+        lambda **kwargs: _FakeVenue(symbols=[f"xyz:S{i}" for i in range(10)],
+                                    rate_limit_after=3),
+    )
+    with pytest.raises(Exception) as exc:
+        _fire(scheduler.KIND_CANDLE_ARCHIVE, tmp_path, monkeypatch)
+    assert exc.value.reason_code == "ARCHIVE_RATE_LIMITED"
+    # The all-degraded check cannot be what caught it: only one book actually degraded.
+    assert "not attempted" in str(exc.value)
