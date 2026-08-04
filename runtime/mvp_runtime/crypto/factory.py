@@ -77,7 +77,7 @@ from .feedback import summarize_outcomes
 from .features import build_feature_rows
 from .paper import settle_trade_plan
 from .pool import candidate_id, derive_candidate_id
-from .robustness import score_robustness
+from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
 
 # Walk-forward-lite: the replay window splits into this many equal-bar slices; a
@@ -2818,15 +2818,78 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
     return any(part in RETIRED_FAMILIES for part in family.split("+"))
 
 
+# --- the holdout has to reach parent SELECTION, not just the child's own gate -----------------
+#
+# `champion_score` is what ranks the breeding pool, and it is `robustness.score_robustness` —
+# sample adequacy, temporal consistency, regime breadth, parsimony, cost survival. By design it
+# carries **no out-of-sample term at all**: holdout "never moves the score — it gates the ROBUST
+# verdict" (`robustness.score_robustness`). So until now the holdout could refuse a candidate at
+# the promotion door and still have no say in which lineages got to breed. Measured 2026-08-04
+# over the 961 stored rows with a judgeable holdout, `champion_score` correlates with holdout
+# expectancy at only **r = +0.37**, and its top decile has a median holdout of **-0.161R against
+# -0.179R for all of them** — a rank order that barely distinguishes the population it sorts.
+#
+# **`holdout_status` is the wrong authority to filter on, which is the trap here.** Of the 1,366
+# rows eligible to parent today, **0 read CONFIRMED** — requiring it would take fusion from 40
+# fusable buckets to 0 and end the crossover path outright. And 854 read INSUFFICIENT, mostly for
+# a missing `stdev_r`, which is a schema vintage rather than a shallow sample (`holdout_status`
+# documents that cost deliberately). Filtering on the status would therefore select by when a row
+# was minted. The two holdout FACTS a row of any vintage carries are its depth and its return,
+# and those are what this predicate reads.
+#
+# **Depth alone is not enough, and measuring it is what settles the shape.** Filtering to a
+# judgeable holdout while still ranking by `champion_score` makes the selected pool *worse* out
+# of sample — median holdout of the chosen parents moves -0.098R -> **-0.164R** — because within
+# the judgeable subset the score is mildly anti-selective. Adding the non-negative bit and
+# leaving the ranking alone moves it to **+0.091R** with every selected parent non-negative.
+#
+# **A one-bit filter at zero, deliberately, rather than ranking by holdout magnitude.** The unit
+# of independence here is the market period, not the trade, and this store carries roughly ten of
+# them — so ordering lineages by the SIZE of a holdout edge would mine a quantity the repo has
+# already established is not resolvable below 0.05R. What this predicate claims is only the
+# coarse thing the evidence supports: a lineage that demonstrably lost on unseen bars should not
+# breed. Ranking stays `champion_score`, so the pool keeps one ranking currency.
+#
+# **What it costs, stated because it is not free.** On today's store 3 of the 15 live
+# (symbol, timeframe) contexts — BTCUSDT 1d, SOLUSDT 1d, SOLUSDT 1h — lose every fusable bucket,
+# and the 1d tier halves. Those fires mint seeded candidates only until rows carrying a judgeable
+# non-negative holdout accumulate there, which is `_fuse_batch`'s documented dry-bucket behaviour
+# rather than a new failure mode. Re-measure before tightening further: with the child-side bar
+# (`FUSION_IMPROVEMENT_METRICS`) also reducing crossover supply, the parent pool now refills from
+# the seeded rotation more slowly than it did.
+def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
+    """May this row breed, on its out-of-sample evidence alone?
+
+    Reads the two facts a holdout block of any vintage carries: enough closed trades to be
+    judged at all (``robustness.MIN_HOLDOUT_TRADES``, the same floor the promotion door uses),
+    and a return that is not negative.
+
+    Fail-closed on absence: no holdout block, an unreadable ``closed_count``/``expectancy``, or
+    a block predating holdouts entirely means no out-of-sample evidence exists, which is not
+    the same as passing — the rule `robustness.holdout_status` applies for UNCONFIRMED, applied
+    here to the question of breeding rather than of verdict."""
+    holdout = (record.get("backtest_evidence") or {}).get("holdout")
+    if not isinstance(holdout, Mapping):
+        return False
+    closed, expectancy = holdout.get("closed_count"), holdout.get("expectancy")
+    if isinstance(closed, bool) or not isinstance(closed, (int, float)):
+        return False
+    if isinstance(expectancy, bool) or not isinstance(expectancy, (int, float)):
+        return False
+    return closed >= MIN_HOLDOUT_TRADES and expectancy >= 0
+
+
 def rank_fusion_parents(
     existing_candidates: list[Mapping[str, Any]], *, top_n: int = FUSION_PARENT_POOL,
 ) -> list[dict[str, Any]]:
     """The best-scoring distinct lineages available as parents, deterministically.
 
     Only rows carrying a numeric ``champion_score`` and a parseable spec can parent
-    — an unscored or legacy-shaped row has no evidence to pass on. Ordering is
-    (score desc, candidate_id asc) so a tie never depends on file order, and a
-    lineage appears once however many times it was appended (latest-wins).
+    — an unscored or legacy-shaped row has no evidence to pass on — and only rows whose
+    out-of-sample tail both can be judged and did not lose (:func:`holdout_permits_parenting`,
+    which carries the measurement). Ordering is (score desc, candidate_id asc) so a tie never
+    depends on file order, and a lineage appears once however many times it was appended
+    (latest-wins).
 
     **"Once per lineage" was keyed on the wrong identity, and a re-score is what
     exposed it.** ``candidate_id`` derives from (generation, rules, *evidence window*)
@@ -2880,6 +2943,10 @@ def rank_fusion_parents(
         if not isinstance(record.get("strategy_spec"), Mapping):
             continue
         if carries_retired_family(record):
+            continue
+        # Applied BEFORE the latest-wins collapse below, so a lineage is judged on the row being
+        # considered rather than on whichever of its re-scores happened to carry a holdout.
+        if not holdout_permits_parenting(record):
             continue
         cid = candidate_id(record)
         rule_hash = record.get("strategy_rule_hash")
