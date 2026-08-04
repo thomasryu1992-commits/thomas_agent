@@ -1578,6 +1578,44 @@ is judged over generations, not days (the `#420` error). The capability landed; 
 not. What would justify taking it: a pooled *mint* batch that produces a CONFIRMED holdout where
 the single-symbol search of the same family produced none.
 
+#### That batch was run, and it produces none — measured 2026-08-04
+
+The condition above is the whole of the decision, so it was tested rather than left standing.
+Every mintable family at a timeframe, 8 freshly drawn parameter sets each, minted **pooled** —
+one spec with `symbol_scope` set to the whole cohort, replayed across all five legs, so each is
+ONE hypothesis at five symbols' data rather than five hypotheses at one symbol's each. Verdicts
+are `robustness.holdout_status`, not a re-implementation of it. Read-only; nothing appended.
+
+| pooled mint | specs | CONFIRMED | CONTRADICTED | INSUFFICIENT |
+|---|---|---|---|---|
+| 4h, 34 families × 8 | 272 | **0** | 160 | 112 |
+| 1h, 34 families × 8 | 272 | **0** | 174 | 98 |
+
+**544 pooled mints, zero confirmations.** The condition F2 set is not met, so the argument for
+moving `run_factory` onto pooled specs does not have the evidence it named. The single-symbol
+baseline it would have to beat is 1 CONFIRMED in 1,595 stored rows — and that one is PROVISIONAL
+on the recomputed verdict, so `promotable_backlog` is still 0.
+
+**Read CONTRADICTED correctly.** `holdout_status` returns it whenever the tail is deep enough to
+judge and `expectancy - 1.96 x stderr <= 0` — which includes rows whose expectancy is *positive*
+but not separable from zero. 4h `htf_pullback_short` is the worked example: F3 records it at
++0.1748 with 100% of draws positive, and it lands CONTRADICTED 8/8 here because its best `t` is
+1.87 against the 1.96 the verdict needs. The label means "not shown", not "lost money".
+
+**Pooling does not fix judgeability everywhere, which is new.** 112 of 272 at 4h are still
+INSUFFICIENT after pooling, and it is not scattered — it is whole families: `mean_reversion*`,
+`funding_fade_*`, all four `oi_*`, `premium_fade_*`, `xs_reversion_*` return INSUFFICIENT on
+every draw, while `taker_flow_*` and `taker_absorption_short` split. Five symbols is not enough
+data for those signal rates, so for them the depth problem F1 describes survives the fix that
+resolves it for `htf_pullback_*` (F3).
+
+**What this does not test.** The draws are `mutate_params` around each template's own base;
+`elite_base_params` steering was not reproduced, so this is an *unsteered* pooled mint. That is
+unlikely to be what is missing — F1 measured that `champion_score` steering predicts the holdout
+monotonically and every quintile is negative — but it is the one difference from what
+`run_factory` would actually do, and it is stated rather than glossed. Eight draws per family is
+also modest; 0/544 is consistent with the 1/1,595 base rate rather than a sharper claim than it.
+
 ### F3. The htf families refuse evidence they could produce — measured 2026-08-04, 960 specs
 
 F1 attributes the unjudgeable half of the store to fusion's AND-union. **The seeded templates
