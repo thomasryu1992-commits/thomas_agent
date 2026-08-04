@@ -1514,14 +1514,25 @@ a template change like this is **diagnostic speed**, not a promotable candidate:
 verdict at 4h in weeks instead of never. That is worth something and it is not an edge, and the
 two should not be traded for each other in whatever decides this.
 
-**Not done here, deliberately.** Shipping it means *replacing* rather than adding — a new family
-is +1 hypothesis on the same data, which raises the selection bar for everything else, so the
-shape would be `htf_trend_strength_*` minted and `htf_trend_*` moved to `RETIRED_FAMILIES`
-(the `volatility_squeeze_*` precedent: builder kept, rotation entry removed, old evidence still
-readable under its own name). The pullback variant should **not** ship on this evidence: it helps
-only at 4h, hurts at 1h, and its one good number does not reproduce. Both are mint-time changes
-and are judged over generations rather than days (the `#420` error), which is why the numbers are
-recorded here instead.
+**The trend half shipped in #497; the pullback half deliberately did not.** Shipping means
+*replacing* rather than adding — a family is +1 hypothesis on the same data and
+`selection_adjusted_z` charges every attempt, so adding one would raise the bar for every other
+family in the store to buy this one's judgeability. So `htf_trend_strength_*` is minted and
+`htf_trend_*` moved to `RETIRED_FAMILIES` on the `volatility_squeeze_*` precedent (builder kept,
+rotation entry removed, the 11 existing candidates still readable under their own name), leaving
+the library at 40 families and `free_parameters` at 5.
+
+The pullback variant is **not** shipped and should not be on this evidence: it helps only at 4h,
+hurts at 1h, and its one good number does not reproduce. `htf_pullback_long/short` remain in the
+rotation producing 0 and 1 judgeable holdouts out of 60 at 4h — an open item, not a resolved one.
+
+**What is still owed.** A mint-time change is judged over generations rather than days (the
+`#420` error), so the shipped half is a *bet placed*, not a result: the check is the next fire's
+`strategy_family` distribution, and a few generations later whether 4h `htf_trend_strength_*`
+rows reach `MIN_HOLDOUT_TRADES` at the measured 48%/77%. One risk rides with it and is not
+measured — opening the high-volatility bars means trading where `DEFAULT_SLIPPAGE_BPS = 3.0`, a
+constant, is most likely optimistic, so the new family's backtest carries a favourable bias of
+unknown size. Live is partly covered by `volatility_size_multiplier`; the backtest is not.
 
 ---
 
