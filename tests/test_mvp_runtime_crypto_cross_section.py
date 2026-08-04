@@ -17,7 +17,7 @@ What these tests are guarding, in rough order of how quietly each would fail:
 - **the exact open-time join.** Same rule as the reference and derivative legs, and picking
   wrongly is silent: an as-of join would rank this symbol against a peer's stale bar and every
   column would still look populated.
-- **long/short disjointness.** ``xs_momentum_long`` and ``xs_momentum_short`` share one
+- **long/short disjointness.** ``xs_reversion_long`` and ``xs_reversion_short`` share one
   ``xs_rank_edge`` parameter precisely so the two can never match on the same row, which would
   be ``paper.BLOCK_DIRECTION_CONFLICT`` on exactly the bars the families exist for. That is a
   property of the param SPACE, so a test on one mined value would not establish it.
@@ -346,21 +346,26 @@ def test_the_long_and_short_legs_are_disjoint_across_the_whole_param_space():
     be mined into an overlap (long >= 0.4 while short <= 0.6), and a long and a short matching
     on one feature row is `paper.BLOCK_DIRECTION_CONFLICT` — the pair failing closed on
     exactly the bars it was minted for. One shared ``xs_rank_edge`` capped below 0.5 is what
-    makes that unreachable."""
-    long_template = next(t for t in factory.TEMPLATES if t.family == "xs_momentum_long")
-    short_template = next(t for t in factory.TEMPLATES if t.family == "xs_momentum_short")
+    makes that unreachable.
+
+    The families became ``xs_reversion_*`` on 2026-08-04 (the momentum pair reads the same
+    column with the opposite sign and was swapped out). The construction is unchanged and so is
+    this property — what MIRRORED is which leg sits at which end: reversion buys the cohort's
+    laggards, so the LONG leg is the one with the ceiling and the short leg the floor."""
+    long_template = next(t for t in factory.TEMPLATES if t.family == "xs_reversion_long")
+    short_template = next(t for t in factory.TEMPLATES if t.family == "xs_reversion_short")
     for template in (long_template, short_template):
         edge = template.param_space["xs_rank_edge"]
         assert edge.lo >= 0.0 and edge.hi < 0.5, "an edge at or above 0.5 admits an overlap"
 
     widest = long_template.param_space["xs_rank_edge"].hi
-    long_floor = long_template.entry_builder(
+    long_ceiling = long_template.entry_builder(
         {**long_template.base_params, "xs_rank_edge": widest}
     )[0]["value"]
-    short_ceiling = short_template.entry_builder(
+    short_floor = short_template.entry_builder(
         {**short_template.base_params, "xs_rank_edge": widest}
     )[0]["value"]
-    assert long_floor > short_ceiling
+    assert long_ceiling < short_floor
 
 
 def test_the_families_are_minted_and_reach_a_real_trade_count():
