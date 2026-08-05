@@ -297,11 +297,33 @@ financial:
   # API-spend scope so the two risks stay separately capped and revocable. This flag says the
   # PERMISSION side exists (a live-order decision is buildable). Flipped true 2026-07-25 when
   # LP4's order adapter merged: the CODE that can place a live order now exists (the signed
-  # transport + the reconcile read). It says nothing about whether THIS machine may act —
-  # authority remains the per-machine `live_trading` safety-flag grant, which is Thomas-minted,
-  # TTL-capped and revocable, plus the canary confirmation phrase, a registered trading budget,
-  # both kill switches, and (for the autonomous path) >= 3 clean canary orders. The R8/R10
-  # precedent: "the code exists" and "this machine may act" are separate facts.
+  # transport + the reconcile read). It says nothing about whether THIS machine may act. The
+  # R8/R10 precedent: "the code exists" and "this machine may act" are separate facts.
+  #
+  # !! What authorizes a machine CHANGED on 2026-07-28, and this block said otherwise until
+  # 2026-08-05. It named "the per-machine `live_trading` safety-flag grant, which is
+  # Thomas-minted, TTL-capped and revocable" as the authority. There is no such grant.
+  # `live_trading` is not in `safety_gate._KNOWN_FLAGS`, and `safety_gate.env_only_authorization`
+  # (see "the live-trading exception") states the decision that removed it: the environment
+  # opt-in `MVP_LIVE_TRADING=real` is the whole gate, with no grant behind it. The reason it was
+  # removed is worth carrying here rather than only there — a 30-day TTL expiring while a
+  # position is OPEN blocks the CLOSE path too, and a halt that traps an open position is the
+  # failure the close-guard exemptions exist to prevent.
+  #
+  # Naming a revoked control as the authority is the specific way this file could do harm: a
+  # reader failing closed off THIS block would look for a grant file to delete in order to
+  # revoke, find none, and conclude live trading was never armed on the machine. So state what
+  # is actually load-bearing now, and where each is computed rather than asserted:
+  #   - `MVP_LIVE_TRADING=real` in the trading process's environment — a DEPLOY action, not a
+  #     runtime one, and NOT revocable by clearing it (it takes effect on restart and shuts the
+  #     close path, stranding open positions). The runtime stop is `console_cli kill`.
+  #   - the canary confirmation phrase, a registered trading budget, both kill switches, the
+  #     loss breaker, and (for the autonomous path) >= 3 clean canary orders.
+  # Every one of those is a computed row on `python -m runtime.mvp_runtime.crypto.live_readiness`,
+  # which is the authority for what is live on a machine — this file is not, and cannot be:
+  # it is committed, and the answer is per-machine. Read the board on the process that CAN
+  # trade; `live_readiness._recorded_gate` exists because a board read anywhere else answers
+  # "can THIS process trade" and renders live trading off while the scheduler is trading.
   # financial_executor_enabled stays false and untouched: "Executor" is the deferred handoff
   # component, which this does not use — the runtime acts directly (R8/R10).
   financial_transaction_execution_implemented: true
