@@ -577,9 +577,18 @@ def test_a_pass_is_bounded_so_it_cannot_hold_the_tick(tmp_path):
 # symbols all four timeframes and the rest nothing — spending the budget on 1d books that
 # cannot lose anything while unarchived 15m books shed ~12 bars an hour, permanently.
 
+def _fill(tmp_path, symbol, timeframe):
+    """Give a book a file, so `plan_pass` sees it as a refresh rather than a first fill."""
+    archive.append_candles(
+        [{"open_time": "2026-01-01T00:00:00Z", "close_time": "2026-01-01T00:14:59Z",
+          "open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5, "volume": 9.0}],
+        venue=VENUE, symbol=symbol, timeframe=timeframe, root=tmp_path,
+    )
+
+
 def test_a_fresh_archive_takes_every_symbols_fastest_timeframe_first(tmp_path):
     order = archive.plan_pass(["S0", "S1", "S2"], archive.ARCHIVE_TIMEFRAMES,
-                              venue=VENUE, root=tmp_path)
+                              venue=VENUE, now_ms=NOW_MS, root=tmp_path)
     assert [tf for _, tf in order[:3]] == ["15m"] * 3       # every symbol's 15m...
     assert order[3][1] == "1h"                              # ...before anyone's 1h
     assert [tf for _, tf in order] == sorted(
@@ -591,20 +600,79 @@ def test_a_first_fill_outranks_a_refresh_even_of_a_faster_timeframe(tmp_path):
     """The priority is loss, not size. An archived 15m book sheds nothing while it waits — its
     next refresh sizes from the newest bar it holds. An unarchived 1d book is not losing either,
     but it is the only one of the two that has never been captured at all."""
-    archive.append_candles(
-        [{"open_time": "2026-01-01T00:00:00Z", "close_time": "2026-01-01T00:14:59Z",
-          "open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5, "volume": 9.0}],
-        venue=VENUE, symbol="HELD", timeframe="15m", root=tmp_path,
-    )
-    order = archive.plan_pass(["HELD"], ("15m", "1d"), venue=VENUE, root=tmp_path)
+    _fill(tmp_path, "HELD", "15m")
+    order = archive.plan_pass(["HELD"], ("15m", "1d"), venue=VENUE, now_ms=NOW_MS, root=tmp_path)
     assert order == [("HELD", "1d"), ("HELD", "15m")]
 
 
-def test_the_rotating_symbol_order_survives_the_ranking(tmp_path):
-    # Stable sort: ranking decides the groups, the caller's rotation decides order inside them.
+def test_the_rotating_symbol_order_survives_the_first_fill_ranking(tmp_path):
+    # Stable: ranking decides the groups, the caller's rotation decides order inside them.
     rotated = ["S2", "S0", "S1"]
-    order = archive.plan_pass(rotated, ("15m",), venue=VENUE, root=tmp_path)
+    order = archive.plan_pass(rotated, ("15m",), venue=VENUE, now_ms=NOW_MS, root=tmp_path)
     assert [symbol for symbol, _ in order] == rotated
+
+
+# --- the slow timeframes must not fall off the end of the budget forever ------------------
+#
+# Ranking refreshes by timeframe as well put 4h at work-list index 176 and 1d at 264, past a
+# 100-book budget whatever the symbol rotation did — that rotation moves symbols INSIDE a
+# timeframe and never crosses the boundary between them. Measured on the live store
+# 2026-08-05, from the deployed code:
+#     within budget   : {'15m': 88, '1h': 12}
+#     never attempted : {'1h': 76, '4h': 88, '1d': 88}
+
+def test_a_fully_archived_store_still_reaches_its_slowest_timeframe(tmp_path):
+    """The regression, at the size it actually happened: 88 symbols x 4 timeframes, budget 100.
+
+    Every book exists, so every book is a refresh — which is exactly the state the live store
+    reached, and exactly when ranking refreshes stops being an ordering and becomes an exclusion.
+    """
+    symbols = [f"S{i:02d}" for i in range(88)]
+    for timeframe in archive.ARCHIVE_TIMEFRAMES:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+
+    reached = set()
+    for minute in range(24):                      # a day of the registered hourly cadence
+        order = archive.plan_pass(symbols, archive.ARCHIVE_TIMEFRAMES, venue=VENUE,
+                                  now_ms=NOW_MS + minute * 60 * 60_000, root=tmp_path)
+        reached.update(tf for _, tf in order[:archive.ARCHIVE_BOOKS_PER_PASS])
+    assert reached == set(archive.ARCHIVE_TIMEFRAMES)
+
+
+def test_no_book_sits_permanently_past_the_budget(tmp_path):
+    """Stronger than "4h appears sometimes": the union of the windows must cover every book.
+
+    The offset advances one book per minute, so consecutive windows of a cadence shorter than
+    the budget overlap instead of leaving gaps."""
+    symbols = [f"S{i}" for i in range(10)]
+    timeframes = ("15m", "1h", "4h", "1d")
+    for timeframe in timeframes:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+
+    budget, seen = 8, set()
+    for minute in range(60):
+        order = archive.plan_pass(symbols, timeframes, venue=VENUE,
+                                  now_ms=NOW_MS + minute * 60_000, root=tmp_path)
+        seen.update(order[:budget])
+    assert seen == {(s, tf) for tf in timeframes for s in symbols}
+
+
+def test_refreshes_rotate_but_first_fills_never_do(tmp_path):
+    """A first fill is losing history now, so it holds the front no matter what the clock says.
+    A refresh is not, so it takes its turn."""
+    symbols = [f"S{i}" for i in range(6)]
+    for symbol in symbols:                    # every 1h book archived, every 15m book missing
+        _fill(tmp_path, symbol, "1h")
+
+    heads = set()
+    for minute in range(6):
+        order = archive.plan_pass(symbols, ("15m", "1h"), venue=VENUE,
+                                  now_ms=NOW_MS + minute * 60_000, root=tmp_path)
+        assert [tf for _, tf in order[:6]] == ["15m"] * 6      # the first fills, always first
+        heads.add(order[6][0])                                 # the refresh half rotates
+    assert len(heads) > 1
 
 
 def test_a_bounded_pass_on_a_fresh_store_covers_every_symbols_15m(tmp_path):
