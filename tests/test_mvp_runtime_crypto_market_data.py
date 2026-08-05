@@ -393,9 +393,11 @@ def test_binance_malformed_response_fails_closed(monkeypatch, payload):
 
 def test_factory_candle_target_is_calendar_depth_not_a_bar_count():
     # The calendar span alone governs every timeframe deeper than the bar floor.
-    assert factory_candle_target("4h") == 3_000
-    assert factory_candle_target("1h") == 12_000
-    assert factory_candle_target("15m") == 48_000
+    # Doubled with `FACTORY_DEPTH_DAYS` 500 -> 1,000 on 2026-08-04; 15m at 96k is what
+    # forced `MAX_CANDLES` up in the same change rather than being clamped to 625 days.
+    assert factory_candle_target("4h") == 6_000
+    assert factory_candle_target("1h") == 24_000
+    assert factory_candle_target("15m") == 96_000
 
 
 def test_factory_candle_target_floors_the_slowest_timeframe():

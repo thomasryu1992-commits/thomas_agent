@@ -129,6 +129,22 @@ HOLDOUT_PERIODS = 5
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
+
+# What its name says, and it did not until 2026-08-05: the retry budget is `count x` this, and
+# `generate_batch` re-drew the SAME template on every refusal because the template is picked by
+# the ACCEPT index, which a refusal does not move. So the number bounded the fire and not the
+# spec, and a family that could not produce an acceptable draw spent all 48 attempts alone while
+# the three slots behind it were never tried — the fire minted nothing rather than three.
+#
+# **Never observed, and the guard is not a claim that it was.** Every one of the 185 fires in the
+# store minted exactly `count`, and the loop is byte-identical on that path (the cursor advances
+# only on acceptance, so it equals `len(accepted)`). What makes it worth closing anyway is the
+# failure MODE rather than its rate: the cost is the whole fire, the cause is invisible in
+# `generated=N` unless N is compared with what was asked, and the one time this mechanism did
+# bite — an adverse elite centre refusing a third of its own draws on the reward:risk floor — it
+# was found by measuring the store, not by anything reporting it. See
+# `test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals`, which records that the
+# batch "does not fail ... which is why this went unnoticed".
 _MAX_ATTEMPTS_PER_SPEC = 12
 
 # Validator bounds (source S3, verbatim). Outside = rejected, never clamped.
@@ -291,6 +307,18 @@ class ParamSpec:
     lo: float
     hi: float
     integer: bool = False
+    # Whether "near" means anything for this parameter, which decides how it is DRAWN rather
+    # than what it may be. Everything in the library is ordered except `session_index`, whose
+    # values index ASIA/EUROPE/US — three labels with no order, no midpoint and no neighbour, so
+    # perturbing one by a fraction of its range is an operation on a number that is standing in
+    # for a name. See :func:`mutate_params` for what the perturbation did to it.
+    ordered: bool = True
+
+    def __post_init__(self) -> None:
+        # An unordered CONTINUOUS parameter has no meaning the draw below could serve, and it
+        # would be truncated to an integer silently rather than refused. Fail closed at import.
+        if not self.ordered and not self.integer:
+            raise ValueError("an unordered ParamSpec must be integer")
 
 
 @dataclass(frozen=True)
@@ -390,6 +418,29 @@ _FADE_EXIT_BASE = {"stop_atr": 1.7, "target_atr": 2.7, "max_holding_bars": 10}
 # Every generation space the factory mints from. `_fused_exit_param` clamps against the UNION
 # of these rather than against `_EXIT_PARAMS` alone — see there for why the union is the honest
 # bound once more than one space exists.
+#
+# **Neither space is a function of the TIMEFRAME, and measured 2026-08-05 neither should be.**
+# The question is fair to ask and this note exists so it is asked once: `templates_for_timeframe`
+# retimes every template by rewriting one field, so `max_holding_bars` 4-16 is four to sixteen
+# HOURS at 1h and four to sixteen DAYS at 1d, while the fade space's own reasoning above is
+# stated in time ("a bounce that has not happened in sixteen bars was not a bounce"). Cost-in-R
+# meanwhile varies ninefold across the ladder — 0.3065R per trade at 15m, 0.1530 at 1h, 0.0790 at
+# 4h, 0.0348 at 1d, holdout, trade-weighted — so a geometry that is right at one end has no
+# reason to be right at the other.
+#
+# It does not separate. Holdout net R per trade by timeframe x holding band, seeded rows, reads
+# a spread of at most 0.04R inside every timeframe (15m -0.362 long-hold against -0.381 short,
+# 1h -0.168/-0.201, 1d +0.068/+0.075) — under the 0.05R nothing in this store resolves. The one
+# apparent exception is 4h, where short-hold trend rows read **-0.1571R over 3,070 trades against
+# -0.0418R over 8,896** — and it is the confound the `_EXIT_PARAMS` note warns about, not a
+# finding: paired within (family, timeframe, symbol) the 4h gap **reverses** to +0.0133R with 11
+# of 20 cells favouring the short hold. Over all 51 paired cells the median is -0.0223R and 24
+# favour short, which is a coin flip at a magnitude nothing here can resolve.
+#
+# So the ninefold cost spread is real and the holding period is not the lever on it — the
+# denominator is, which is what the `_EXIT_PARAMS` note already records and what
+# `docs/BUILD_HISTORY.md` carries for the ladder as a whole. What would reopen this is a
+# measurement separating the bands INSIDE a cell, not another aggregate.
 _GENERATION_SPACES = (_EXIT_PARAMS, _FADE_EXIT_PARAMS)
 
 
@@ -1067,14 +1118,18 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                       "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
                      {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
                      _xs_reversion_short_entry),
-    # Session context. `session_index` is mutated like any other parameter, so WHICH session
-    # a spec claims is part of the seeded search and is charged as a free parameter.
+    # Session context. WHICH session a spec claims is part of the seeded search and is charged as
+    # a free parameter — `ordered=False` is what makes that true rather than merely intended. The
+    # values index ASIA/EUROPE/US, so the perturbation every other parameter gets was operating on
+    # a number standing in for a name and pinned 71% of draws on the base; see `mutate_params`.
     StrategyTemplate("session_trend_long", "long", "1h",
-                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1,
+                                                 integer=True, ordered=False),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_long_entry),
     StrategyTemplate("session_trend_short", "short", "1h",
-                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1,
+                                                 integer=True, ordered=False),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_short_entry),
     # Volatility regime — the expansion side only; the squeeze pair that shipped beside it is
@@ -1556,9 +1611,29 @@ def mutate_params(
     """Perturb each parameter within a fraction of its range, clamped to bounds.
 
     Every parameter is drawn independently EXCEPT the exit pair — see
-    :func:`_apply_reward_risk_floor` for the one coupling and why it lives here."""
+    :func:`_apply_reward_risk_floor` for the one coupling and why it lives here.
+
+    **An UNORDERED parameter is drawn uniformly instead, and ignores the centre.** Perturbing
+    one is a category error with a measurable cost: `session_index` spans [0, 2] and the
+    perturbation is `base +/- (hi - lo) * 0.35` = `1 +/- 0.7`, so rounding put **71.3%** of draws
+    on the base's own value and 14.3% on each of the others. The store agrees almost exactly —
+    of 67 `session_trend_*` specs ever minted, **EUROPE 76.1%, ASIA 14.9%, US 9.0%**, which is
+    six specs of evidence for the US session against fifty-one for Europe. The comment on
+    `CATEGORICAL_FEATURES["session"]` says which session a spec claims is "part of the seeded
+    search and is charged as a free parameter"; it was charged as one and searched as an eighth
+    of one.
+
+    Uniform rather than centred, because a centre is a claim about a NEIGHBOURHOOD and these
+    values have none — "near EUROPE" is not a session. That also removes a ratchet: the elite
+    centre reads the best prior candidate, the oversampled label wins on volume, and centring on
+    it would re-spend the next generation in the same place for a reason that is an artifact of
+    the draw. The robustness scorer charges the parameter either way.
+    """
     out: dict[str, float] = {}
     for name, spec in param_space.items():
+        if not spec.ordered:
+            out[name] = rng.randint(int(spec.lo), int(spec.hi))
+            continue
         base = base_params[name]
         span = (spec.hi - spec.lo) * scale
         val = base + rng.uniform(-span, span)
@@ -1679,10 +1754,43 @@ def _apply_reward_risk_floor(
 # score; a region that scores well there has more trades per parameter and broader regimes
 # behind it, which is what "worth looking near" should mean.
 #
-# **Half the draws stay home.** Even-indexed mints use the elite centre, odd-indexed use the
-# template's own base. The search cannot collapse onto one point however good that point looks,
-# and the region the template was written for is never abandoned. Deterministic — it is the
-# accept index, not a coin flip.
+# **And never a region the holdout already refuted**, which this rule did not say until
+# 2026-08-05 and needed to: `champion_score` is computed on the SCORED window, so it is blind to
+# the tail by construction, and the maximum over a growing store therefore landed on a row the
+# tail had refuted in **227 of 461 contexts (49.2%)**, median holdout expectancy -0.2529R. An
+# anti-overfit score that cannot see the out-of-sample evidence is not a defence against
+# out-of-sample failure. `holdout_permits_centring` is the filter and records why it fails OPEN
+# on an unjudged tail where `holdout_permits_parenting` fails closed.
+#
+# **Half the draws stay home.** Half of every batch draws around the elite centre and half around
+# the template's own base, so the search cannot collapse onto one point however good that point
+# looks, and the region the template was written for is never abandoned.
+#
+# **WHICH half is decided per fire, and it has to be, because the accept index alone locked it.**
+# The rule was `len(accepted) % 2 == 0`, and the template is picked with
+# `templates[(offset + len(accepted)) % total]` — the same counter. `offset` is always a multiple
+# of `count` (4), and `total` is always EVEN because every family is minted as a long/short pair,
+# so `offset` is always even and a template's index parity equals its accept parity. The
+# assignment was therefore FIXED for the life of the context instead of alternating. Measured
+# 2026-08-05 over 60 consecutive fires: **no family of any context ever saw both centres** — 1h
+# ETHUSDT 18 elite-only against 18 base-only, 4h ETHUSDT 18/18, 1h BTCUSDT 17/17, 1d ETHUSDT
+# 13/13, and BOTH = 0 everywhere.
+#
+# Both halves lost their guarantee, in opposite directions. The elite half had no anchor left and
+# hill-climbed with nothing holding it to the template's region. The base half could not learn at
+# all — and could not reach its own space either: `mutate_params` spans `base +/- 0.35 * (hi - lo)`
+# from a fixed centre, so from `_EXIT_BASE` a draw stops at `stop_atr` 1.73 of [1.2, 2.0] and
+# `target_atr` 5.24 of [1.6, 8.0]. Half the library could never mint the outer third of the exit
+# geometry, and the only thing that would have shown it is the measurement above.
+#
+# :func:`_elite_flip` is the fix — a stable hash of the generation id chooses which parity takes
+# the elite centre this fire. Still deterministic, still reproducible from a recorded input (the
+# generation id is on every candidate), still exactly half of each batch, and it does not consume
+# from the rng, so a family drawing around its base draws what it drew before. What it removes is
+# the arithmetic coincidence: the flip depends on neither `count` nor `total` nor their gcd, so no
+# library size can re-lock it. Repairing this with parity arithmetic instead — stepping the split
+# on `rotation_index` — re-locks at `total = 24`, which is 1d/BTCUSDT with positioning ineligible
+# and therefore a live context, not a hypothetical one.
 #
 # What keeps this honest is the two gates that landed first: #438's holdout interval and #440's
 # selection-adjusted ranking, which charges the attempt count that concentrating the search will
@@ -1690,6 +1798,106 @@ def _apply_reward_risk_floor(
 # be confirmed repeatedly. That is not closed here and concentrating the search makes it matter
 # more, which is the honest reason it is written down rather than left implicit.
 ELITE_EVIDENCE_MIN_TRADES = 20
+
+
+def holdout_permits_centring(record: Mapping[str, Any]) -> bool:
+    """May this row say where the search looks next for its family and context?
+
+    Everything except a holdout that is judgeable and NEGATIVE. `champion_score` is the
+    anti-overfit score but it is computed on the SCORED window, so it cannot see the tail — and
+    taking the maximum over a growing store lands on a row the tail refuted about half the time.
+    Measured 2026-08-05 over the 461 (family, timeframe, symbol) contexts the store can centre:
+    **227 of them, 49.2%, were centred by a candidate whose out-of-sample expectancy is
+    judgeably negative**, median -0.2529R and reaching -0.8225R. Only 43 were centred by a row
+    with a positive holdout. Concentrating the next generation's draws on a region the tail has
+    already refuted is the "hill-climbing converges on the noise" hazard the note above
+    :data:`ELITE_EVIDENCE_MIN_TRADES` names, arriving through the one input nobody checked.
+
+    **Fail-OPEN on absence, which is the opposite of :func:`holdout_permits_parenting`, and the
+    asymmetry is the point.** A fused child CITES its parents' evidence, so breeding from a row
+    whose tail nobody could judge propagates a claim nobody made — fail closed. A centre claims
+    nothing: it says where to look, and whatever is minted there earns its own evidence and
+    passes every gate unchanged. Refusing the unjudged here would cost the mechanism rather than
+    protect it — the same store keeps 273 of 461 contexts centred under this rule and **67 under
+    the parenting one**, and a context with no centre is the repeated sampling the elite search
+    exists to end.
+
+    So the two doors read the same field and answer different questions, which is why this is a
+    second predicate rather than an argument on the first.
+    """
+    holdout = (record.get("backtest_evidence") or {}).get("holdout")
+    if not isinstance(holdout, Mapping):
+        return True
+    closed, expectancy = holdout.get("closed_count"), holdout.get("expectancy")
+    if isinstance(closed, bool) or not isinstance(closed, (int, float)):
+        return True
+    if isinstance(expectancy, bool) or not isinstance(expectancy, (int, float)):
+        return True
+    if closed < MIN_HOLDOUT_TRADES:
+        return True
+    return expectancy >= 0
+
+
+def _best_mint_params(
+    candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+) -> dict[str, dict[str, Any]]:
+    """The most ROBUST prior candidate's ``mint_params``, per family, in ONE pass.
+
+    The shared half of :func:`elite_base_params` and :func:`elite_centres`, which differ only in
+    how many families they are asked about. Kept as one function because the filter IS the
+    definition of "what may move a search centre" — a second copy of it is a second thing that
+    can be wrong, and it would be wrong silently, since a centre that failed to move looks
+    exactly like a family with nothing to learn from.
+
+    Raw params, unprojected: which keys survive is the caller's question, because only the
+    caller holds the template whose base supplies the missing ones.
+    """
+    best_score: dict[str, float] = {}
+    best_params: dict[str, dict[str, Any]] = {}
+    for record in candidates:
+        spec = record.get("strategy_spec")
+        # A malformed row is skipped rather than fatal (the `count_unreviewed_backlog` posture):
+        # `.get` on a non-Mapping raises, and a factory fire must not die on one bad stored row.
+        if not isinstance(spec, Mapping):
+            continue
+        family = spec.get("strategy_family")
+        if not isinstance(family, str) or not family:
+            continue
+        if spec.get("timeframe") != timeframe:
+            continue
+        if symbol not in (spec.get("symbol_scope") or []):
+            continue
+        params = record.get("mint_params")
+        if not isinstance(params, Mapping) or not params:
+            continue
+        evidence = record.get("backtest_evidence") or {}
+        closed = evidence.get("closed_count")
+        if not isinstance(closed, (int, float)) or closed < ELITE_EVIDENCE_MIN_TRADES:
+            continue
+        score = record.get("champion_score")
+        if not isinstance(score, (int, float)):
+            continue
+        # `champion_score` cannot see the holdout, so the maximum over the store lands on a row
+        # the tail refuted about half the time. See `holdout_permits_centring`.
+        if not holdout_permits_centring(record):
+            continue
+        # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
+        # store order among equals.
+        if family not in best_score or score > best_score[family]:
+            best_score[family] = float(score)
+            best_params[family] = {str(k): v for k, v in params.items()}
+    return best_params
+
+
+def _project(best: Mapping[str, Any] | None, fallback: Mapping[str, float]) -> dict[str, float]:
+    """A stored centre reduced to the keys the template still declares.
+
+    A param the family dropped must not be resurrected from an old record, and one it gained
+    must come from the template's own base.
+    """
+    if not best:
+        return dict(fallback)
+    return {name: best.get(name, fallback[name]) for name in fallback}
 
 
 def elite_base_params(
@@ -1704,34 +1912,50 @@ def elite_base_params(
 
     Pure and deterministic given the store, which is what keeps a replay reproducible — the
     centre is derived from recorded evidence, never from wall-clock or draw order.
+
+    The single-family form. A caller wanting centres for a whole rotation wants
+    :func:`elite_centres`, which answers the same question for every family at once and reads
+    the store once to do it.
     """
-    best_score = None
-    best_params: dict[str, float] | None = None
-    for record in candidates:
-        spec = record.get("strategy_spec") or {}
-        if spec.get("strategy_family") != family or spec.get("timeframe") != timeframe:
-            continue
-        if symbol not in (spec.get("symbol_scope") or []):
-            continue
-        params = record.get("mint_params")
-        if not isinstance(params, Mapping) or not params:
-            continue
-        evidence = record.get("backtest_evidence") or {}
-        closed = evidence.get("closed_count")
-        if not isinstance(closed, (int, float)) or closed < ELITE_EVIDENCE_MIN_TRADES:
-            continue
-        score = record.get("champion_score")
-        if not isinstance(score, (int, float)):
-            continue
-        # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
-        # store order among equals.
-        if best_score is None or score > best_score:
-            best_score, best_params = float(score), {str(k): v for k, v in params.items()}
-    if best_params is None:
-        return dict(fallback)
-    # Only keys the template still declares: a param the family dropped must not be resurrected
-    # from an old record, and one it gained must come from the template's own base.
-    return {name: best_params.get(name, fallback[name]) for name in fallback}
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    return _project(best.get(family), fallback)
+
+
+def elite_centres(
+    candidates: list[Mapping[str, Any]], templates: Sequence[StrategyTemplate], *,
+    symbol: str, timeframe: str,
+) -> dict[str, dict[str, float]]:
+    """Every template's search centre, keyed by family, from ONE pass over the store.
+
+    Same answer as calling :func:`elite_base_params` per template and the same fallback rule;
+    what changes is the cost. `run_factory` needs a centre for the whole rotation, and the
+    per-family form re-read the entire candidate store for each one — 38 full passes over a
+    1,140-row store per fire, of which the batch then uses at most `count`.
+
+    The templates are passed rather than re-derived here so this stays pure and so the caller
+    cannot end up centring on a rotation different from the one it mints — `run_factory` used to
+    build its centres from an unnarrowed `templates_for_timeframe`, which returned families
+    `generate_batch` would never reach for that symbol.
+    """
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    return {t.family: _project(best.get(t.family), t.base_params) for t in templates}
+
+
+def _elite_flip(generation_id: str) -> int:
+    """Which parity of this batch draws around the elite centre — 0 or 1.
+
+    A stable hash of the fire's own identity, for the reason recorded above
+    :data:`ELITE_EVIDENCE_MIN_TRADES`: the accept index alone is the SAME counter the template
+    is picked with, so using it for both fixed each family's centre permanently instead of
+    alternating it. This depends on neither `count` nor `total`, so no library size re-locks it.
+
+    Deterministic and reproducible from a recorded input — `generation_id` rides on every
+    candidate — so a replay of a fire reproduces its split exactly. The `context_rotation_phase`
+    construction, and stable for the same reason: a counter would drift when the store is pruned
+    or re-imported, and this must not.
+    """
+    digest = integrity.short_id("crypto_elite_split", {"generation_id": str(generation_id)})
+    return int(digest.rsplit("_", 1)[1][:8], 16) % 2
 
 
 def build_spec_dict(
@@ -1952,24 +2176,47 @@ def generate_batch(
         generation_id, seed, count, len(templates), rotation_index=rotation_index,
         phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
     )
+    # Which parity of this batch takes the elite centre. Per FIRE rather than fixed, because
+    # `offset` is a multiple of `count` and `total` is always even, so the accept index alone
+    # gave every family the same centre forever — see `_elite_flip` and the note above
+    # `ELITE_EVIDENCE_MIN_TRADES` for the measurement.
+    flip = _elite_flip(generation_id)
     accepted: list[StrategySpec] = []
     accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen_hashes: set[str] = set(known_rule_hashes)
 
+    # The rotation cursor for THIS fire, and it is deliberately not `len(accepted)`. A family
+    # that cannot produce an acceptable spec has to be steppable past: the accept index does not
+    # move on a refusal, so the loop re-drew the SAME template until the whole budget was gone
+    # and the slots behind it were never tried at all. One stuck family therefore cost the fire
+    # every candidate, not one. See `_MAX_ATTEMPTS_PER_SPEC`.
+    cursor = 0
+    misses = 0
+
+    def _refused(entry: dict[str, Any]) -> None:
+        """Record a refusal, and step the cursor once a family has spent its own share."""
+        nonlocal cursor, misses
+        rejected.append(entry)
+        misses += 1
+        if misses >= _MAX_ATTEMPTS_PER_SPEC:
+            cursor += 1
+            misses = 0
+
     attempts = 0
     while len(accepted) < count and attempts < count * _MAX_ATTEMPTS_PER_SPEC:
         attempts += 1
-        template = templates[(offset + len(accepted)) % len(templates)]
+        template = templates[(offset + cursor) % len(templates)]
         # Half the draws around what this family has already learned, half around where it
-        # started. The index, not a coin flip, so the split is reproducible — and so the search
-        # cannot collapse onto one point however good that point looks. See `elite_base_params`.
+        # started, so the search cannot collapse onto one point however good that point looks.
+        # Derived, not drawn — the split is reproducible from the generation id and consumes
+        # nothing from `rng`. See `elite_base_params`.
         elite = (elite_params or {}).get(template.family)
         centre = (
             {name: float(elite.get(name, template.base_params[name]))
              for name in template.base_params}
-            if elite and len(accepted) % 2 == 0 else template.base_params
+            if elite and (len(accepted) + flip) % 2 == 0 else template.base_params
         )
         params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
@@ -1978,19 +2225,23 @@ def generate_batch(
         try:
             spec = StrategySpec.from_dict(spec_dict)
         except SpecParseError as exc:
-            rejected.append({"strategy_family": template.family, "reason": f"parse: {exc}"})
+            _refused({"strategy_family": template.family, "reason": f"parse: {exc}"})
             continue
         verdict = validate_strategy(spec)
         if not verdict["approved_for_backtest"]:
-            rejected.append({"strategy_family": template.family, "block_reasons": verdict["block_reasons"]})
+            _refused({"strategy_family": template.family, "block_reasons": verdict["block_reasons"]})
             continue
         if spec.strategy_rule_hash in seen_hashes:
-            rejected.append({"strategy_family": template.family, "reason": "duplicate_rule_hash"})
+            _refused({"strategy_family": template.family, "reason": "duplicate_rule_hash"})
             continue
         seen_hashes.add(spec.strategy_rule_hash)
         accepted.append(spec)
         accepted_params[spec.strategy_id] = dict(params)
         validations.append(verdict)
+        # Only on acceptance, which is what keeps this identical to `len(accepted)` for every
+        # fire that never exhausts a family — the 185 of 185 in the store today.
+        cursor += 1
+        misses = 0
 
     return {
         "generation_id": generation_id,
@@ -2949,8 +3200,22 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # **Depth alone is not enough, and measuring it is what settles the shape.** Filtering to a
 # judgeable holdout while still ranking by `champion_score` makes the selected pool *worse* out
 # of sample — median holdout of the chosen parents moves -0.098R -> **-0.164R** — because within
-# the judgeable subset the score is mildly anti-selective. Adding the non-negative bit and
-# leaving the ranking alone moves it to **+0.091R** with every selected parent non-negative.
+# the judgeable subset the score is mildly anti-selective.
+#
+# **The evidence for adding the non-negative bit is the children already bred, and the obvious
+# reading is circular.** That this predicate selects a pool whose median holdout is +0.091R, 100%
+# of it non-negative, computes both figures over the very quantity the predicate filters on — it
+# is arithmetic, not a finding, and it cannot show that the rows it keeps will BREED better. The
+# test that can uses different rows on both sides: selection reads the PARENT's holdout, while the
+# outcome measured is the CHILD's. Over the 447 already-bred children (#525 review), paired within
+# (symbol, timeframe) because the groups do not share a tier — the qualifying side is 4h-heavy,
+# the rest 1h-heavy, and R scale differs by tier — children of parents that pass this predicate
+# beat children of parents that fail it by **+0.1151R median-based and +0.1674R trade-weighted,
+# 5 of 6 comparable cells each way**. What bounds that: 6 cells at 2-8 rows per group; 38 of 330
+# resolved parents are `mvp_rescore` rows, so "holdout as stored today" is not exactly the holdout
+# the fusion saw at breeding time; and the smallest cell (BNBUSDT 15m) disagrees in sign between
+# the two statistics. Against ~10 independent market periods it clears the resolution floor, but
+# not by much.
 #
 # **A one-bit filter at zero, deliberately, rather than ranking by holdout magnitude.** The unit
 # of independence here is the market period, not the trade, and this store carries roughly ten of
@@ -2966,6 +3231,12 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # rather than a new failure mode. Re-measure before tightening further: with the child-side bar
 # (`FUSION_IMPROVEMENT_METRICS`) also reducing crossover supply, the parent pool now refills from
 # the seeded rotation more slowly than it did.
+#
+# **Still owed: the split-half test**, which selects on the first half of the holdout periods and
+# measures the last three — disjoint slices of the same tail, so no row is scored on the bars that
+# selected it. It could not run when this landed: `period_r` / `period_trades` arrived with #518
+# hours after the last factory fire, so no stored row carried a per-period breakdown to split. It
+# becomes measurable once the store holds rows minted on that code.
 def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
     """May this row breed, on its out-of-sample evidence alone?
 
@@ -2976,7 +3247,11 @@ def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
     Fail-closed on absence: no holdout block, an unreadable ``closed_count``/``expectancy``, or
     a block predating holdouts entirely means no out-of-sample evidence exists, which is not
     the same as passing — the rule `robustness.holdout_status` applies for UNCONFIRMED, applied
-    here to the question of breeding rather than of verdict."""
+    here to the question of breeding rather than of verdict.
+
+    :func:`holdout_permits_centring` reads the same field for the search centre and fails OPEN;
+    read the two together before changing either — the difference is that a child cites its
+    parents' evidence and a centre cites nothing."""
     holdout = (record.get("backtest_evidence") or {}).get("holdout")
     if not isinstance(holdout, Mapping):
         return False
@@ -3353,20 +3628,24 @@ def run_factory(
     # predate `mint_params`, which is every one of them today — so the first generation after
     # this lands still draws around the template base, and the one after it has something to
     # move toward. Same shape as every other "record it before you can use it" step here.
-    elite_centres = {
-        template.family: elite_base_params(
-            existing_candidates, family=template.family, symbol=symbol, timeframe=timeframe,
-            fallback=template.base_params,
-        )
-        for template in templates_for_timeframe(
-            timeframe, positioning_eligible=positioning_eligible, venue=venue
-        )
-    }
+    #
+    # `symbol=` reaches the rotation here for the same reason `generate_batch` passes it: without
+    # it this centred families that batch will never mint for this symbol (the rel_strength_*
+    # pair on the market proxy), which was work spent on an answer nobody could read. One store
+    # pass for the whole rotation rather than one per family — see `elite_centres`.
+    centres = elite_centres(
+        existing_candidates,
+        templates_for_timeframe(
+            timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue
+        ),
+        symbol=symbol,
+        timeframe=timeframe,
+    )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
         timeframe=timeframe,
-        elite_params=elite_centres,
+        elite_params=centres,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         venue=venue,
@@ -3446,6 +3725,10 @@ def run_factory(
         "seed": seed,
         "requested_count": batch["requested_count"],
         "accepted_count": batch["accepted_count"],
+        # Forwarded because the generator's own answer to "did this fire deliver what was asked"
+        # stopped here and nothing downstream could reconstruct it: `accepted_count` alone reads
+        # as a quantity rather than as a shortfall. The scheduler's status line compares the two.
+        "batch_complete": batch["batch_complete"],
         # Mint-time refusals and score-time ones together: a caller reading "why did this fire
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the

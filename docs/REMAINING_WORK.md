@@ -1516,6 +1516,25 @@ roughly double the seeded supply per family, and that is the same kind of mint-t
 the depth refusal above — judged over generations, not days (the `#420` error). What is recorded
 here is only the number the decision needs and did not have.
 
+**And it should not be taken, because #523 solved it better — measured on the first full day,
+2026-08-05.** `_fusion_improvement` refuses a child that does not beat the **maximum over its
+parents** on `expectancy` *and* `champion_score`, so the budget is untouched and only the
+children that earned their slot are stored. The first fire under it went 59 fused → **6**, and
+the two new reasons account for the whole drop:
+
+| fired | fused | rejections |
+|---|---|---|
+| 2026-08-03 | 60 | `duplicate_rule_hash` 31, `too_many_conditions` 3, `no_trades` 8 |
+| 2026-08-04 | 59 | `duplicate_rule_hash` 65, `no_trades` 18, `too_many_conditions` 4, `holdout_unjudgeable` 3 |
+| **2026-08-05** | **6** | **`no_expectancy_gain` 46, `champion_score_regression` 11**, `duplicate_rule_hash` 22, `holdout_unjudgeable` 7, `no_trades` 6 |
+
+**~79% of fusion attempts (57 of 72) fail to improve on a parent** — the paired test in this
+section, arriving as a production yield rather than a study. The effective crossover share of a
+mint is now **13%** (6 of 46) against the 50% the constant still nominally allocates, so the
+budget number above is now a ceiling that no longer binds. Lowering the constant would cut good
+fusions with bad ones; this cuts only the ones that lost to a parent, which is what the
+measurement actually said to do.
+
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
 judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
@@ -1536,6 +1555,88 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 `stop_atr` tweak — the floor has now been credited with what it was worth and the next multiple
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
+
+#### What landed on the strength of this section — two selection rules, merged 2026-08-04
+
+F1's finding is that fusion **reproduces** its parents (IS −0.0034, HO −0.0062) and that the
+apparent crossover advantage is **parent selection** rather than breeding. Nothing acted on that
+at either end: the child side had no bar at all, and the parent side ranked on a score carrying
+no out-of-sample term. Both ends now have a rule.
+
+**The child must beat what it came from** — #523, `FUSION_IMPROVEMENT_METRICS` /
+`_fusion_improvement`. `expectancy` strictly above the maximum over the parents, `champion_score`
+not below it. Compared against the maximum on each metric **independently**, because the question
+is "was fusing these two worth more than keeping either", which a child that beats the weaker
+parent while losing to the stronger has not answered. The two legs are asymmetric on purpose: 45%
+of the score's weight (`sample_adequacy` + `parameter_parsimony`) moves against a fused child by
+construction — it is the same AND-union that produces the 0.51× above — so requiring it to *rise*
+would refuse on the arithmetic of fusion rather than on merit, while requiring it not to *fall*
+stops the one case expectancy cannot see alone, a higher return read off a handful of trades.
+Both sides are **replayed on the child's own snapshot**: 890 of the 894 parent/child evidence
+links in the store sit on different candle windows and 0 on the same one, so comparing stored
+numbers would have scored the market's drift between two windows and called it lineage
+improvement. Refusals are `no_expectancy_gain`, `champion_score_regression`,
+`improvement_unmeasurable` — fail-closed on an unreadable metric, never a silent zero.
+
+What that refuses, over the 447 stored children whose parents both resolve:
+
+| child better than its best parent | share |
+|---|---|
+| `champion_score` | **9.8%** |
+| `expectancy` | 30.9% |
+| `closed_count` | **1.1%** (median −67 trades) |
+
+and **101** of the children scoring at or below their best parent had already gone on to parent a
+further generation.
+
+**A parent must have survived out of sample** — #525, `holdout_permits_parenting`. A judgeable
+holdout (`MIN_HOLDOUT_TRADES`, the promotion door's own floor) that did not lose
+(`expectancy >= 0`), fail-closed on absence. `rank_fusion_parents` still orders by
+`champion_score`, so the pool keeps one ranking currency: this is **one bit at zero**, deliberately
+not a ranking on holdout magnitude, since the unit of independence is the market period and this
+store carries about ten of them. Two measurements settled that shape. `holdout_status` is the
+wrong authority — 0 of the 1,366 eligible rows read CONFIRMED, and 854 read INSUFFICIENT for a
+missing `stdev_r`, which is a schema vintage, so filtering on it would select by mint date and
+take fusion to zero fusable buckets. And **depth alone makes the pool worse**: filtering to a
+judgeable holdout while still ranking by score moves the selected parents' median holdout
+−0.098R → **−0.164R**, because within the judgeable subset `champion_score` is mildly
+anti-selective.
+
+**The evidence for the parent rule is not the table in its PR.** That table reported the selected
+pool's median holdout and its share ≥ 0 — both computed over the very quantity the rule filters
+on, so "100% non-negative" is arithmetic rather than a finding. The non-circular test is the
+**children already bred**: selection reads the *parent's* holdout while the outcome measured is
+the *child's*, which are different rows. Paired within `(symbol, timeframe)` to control the tier
+confound — the qualifying group is 4h-heavy and the rest 1h-heavy, and R scale differs by tier:
+
+| statistic | cells | selected − other | cells positive |
+|---|---|---|---|
+| median-based | 6 | **+0.1151R** | 5/6 |
+| trade-weighted | 6 | **+0.1674R** | 5/6 |
+
+Limits, because they bound the claim: 6 comparable cells at 2–8 rows per group; 38 of 330
+resolved parents are `mvp_rescore` rows, so "parent holdout as stored today" is not exactly the
+holdout the fusion saw at breeding time; and the smallest cell (BNBUSDT 15m) disagrees in sign
+between the two statistics. Against ~10 independent market periods the gap clears the resolution
+floor, but not by much.
+
+**What is still owed.**
+
+- **The split-half test has not run.** Select on the first half of the holdout periods and measure
+  the last three — disjoint slices, so no row is scored on the bars that selected it. It could not
+  run when #525 was reviewed: `period_r` / `period_trades` arrived with #518 at 10:46 UTC and the
+  store's last write was 08:53 UTC, so **0 of its 1,595 rows carry a per-period breakdown**. It
+  becomes measurable after the first fire on the new code.
+- **Neither rule has been through a fire.** Both merged after the 2026-08-04 08:09 UTC fire, so
+  the store this section measures is entirely pre-rule and the yield cost is predicted rather than
+  observed: #523 puts **1 pair in 78** past the child bar over `_trending_snapshot`'s feature grid,
+  and #525 empties every fusable bucket in **3 of the 15 live contexts** (BTCUSDT 1d, SOLUSDT 1d,
+  SOLUSDT 1h). They compound — the parent pool refills from the seeded rotation more slowly than
+  either change assumed alone — and this is a mint-time change, judged over generations rather
+  than days (the `#420` error).
+- **`factory.py`'s comment for the parent rule still rests on the circular table**, because the
+  correction arrived on the PR at the moment it merged. It should be replaced by the
+  paired-children figures above, in the change that carries the split-half result.
 
 ### F2. "Cannot confirm" was hiding a negative, not a positive — measured 2026-08-04
 
@@ -1880,7 +1981,8 @@ this repo. The gate in `_oi_feed_reaches` stays exactly as it is — it is the t
 forgetting to raise them *safe* rather than silent.
 
 **Which matters because `oi_*` is where the only confirmations are, and they are not yet
-verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
+verified.** Everything measured below predates #529 and was taken at the **500-day**
+window; see the closing paragraph for why that basis is load-bearing rather than incidental. F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
 1h and 4h. Walked backwards through the same adjacent, non-overlapping windows F3 uses, at 4h:
 
 | window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
@@ -1891,17 +1993,71 @@ verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CON
 | `[720,1029)` | +0.2781, 0 CONF, 3/8 | +0.6172, 1 CONF, 1/8 | −0.1388, 0 CONF, 2/8 |
 
 **The confirmations concentrate in the newest window** — `oi_squeeze_long` confirms 4 of 8 there
-and 0 in every older one — which is the shape F3's 1h control showed is not evidence. What does
-hold is the *sign*: both confirmers are positive in all four windows on 83–100% of judgeable
-draws, while the control is negative in all four. So there is a consistent direction and no
-confirmed magnitude.
+and 0 in every older one — which is the shape F3's 1h control showed is not evidence. At 4h the
+*sign* still held everywhere, which looked like something. **The 1h leg says it does not:**
 
-**And the reason the older windows cannot decide it is the window itself.** The 0.7 chain
-shrinks geometrically, so on a 3,000-bar series the last two tails are 441 and 309 bars — 2/8 and
-3/8 draws judgeable, medians of 16 and 22 holdout trades. At 12,000 bars the same chain gives
-3,600 / 2,520 / 1,764 / 1,235-bar tails, all deep. **The measurement that would verify `oi_*` is
-the one this section proposes**, which inverts the ordering the previous paragraph asserted: the
-window is not priced *against* `oi_*`, it is what `oi_*` needs.
+| window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
+|---|---|---|---|
+| `[8400,12000)` | +0.1829, 3 CONF, 8/8 | **+0.0039**, 0 CONF, 8/8 | −0.3453, 0 CONF, 8/8 |
+| `[5880,8400)` | +0.1691, 0 CONF, 8/8 | **−0.0606**, 0 CONF, 5/8 | −0.1836, 0 CONF, 8/8 |
+| `[4116,5880)` | **−0.1082**, 0 CONF, 8/8 | +0.1047, 0 CONF, 4/8 | −0.3801, 0 CONF, 8/8 |
+| `[2881,4116)` | +0.5983, 4 CONF, 7/8 | +0.4014, 0 CONF, 3/8 | −0.0520, 0 CONF, 7/8 |
+
+`oi_squeeze_long` turns **negative** in one window; `oi_unwind_short` is indistinguishable from
+zero in the newest, negative in the second, and confirms in **none** of the four. Only
+`oi_unwind_long` behaves consistently, and it is the negative control.
+
+**The cross-timeframe agreement was never two observations.** The 0.7 chain is applied to series
+that both span 500 days, so its windows are the *same calendar periods* at both timeframes —
+checked, not assumed:
+
+| tail | 4h bars | 1h bars | calendar |
+|---|---|---|---|
+| deepest | `[720,1029)` | `[2881,4116)` | 2025-07-20 → 2025-09-10 |
+| third | `[1029,1470)` | `[4116,5880)` | 2025-09-10 → 2025-11-22 |
+
+The largest positive at **both** timeframes — `oi_squeeze_long` +0.5983 (t = 4.12) at 1h and
++0.2781 at 4h, `oi_unwind_short` +0.4014 and +0.6172 — is one **52-day market period** sampled at
+two resolutions. F2's "CONFIRMED at both 1h and 4h" is the same artifact one level up: a 30%
+holdout is the last 150 days on either series, so that agreement is one period counted twice.
+The unit of independence is the market period, not the trade, and not the timeframe either.
+
+**These confirmations are not the defect `_periods_confirm` was built to catch, which is worth
+saying because a reader who knows that gate landed will assume otherwise.** Fresh pooled mints
+carry `period_r` and are judged by the period-level interval — verified directly: a CONFIRMED
+4h `oi_squeeze_long` draw carries `period_r` with **n = 5**, so it cleared a t at 4 degrees of
+freedom rather than a z over 43 trades. They pass that gate. What they do not survive is being
+asked the same question about a *different* stretch of time.
+
+**Verdict: `oi_*` is not verified.** Consistent direction at 4h, a sign flip at 1h, every
+confirmation single-draw and window-local, and the strongest evidence at both timeframes
+traceable to one 52-day window.
+
+**And it says something specific about why, which #529 has since acted on.** The obvious
+complaint is depth — the 0.7 chain shrinks geometrically, so on 3,000 bars the last two tails are
+441 and 309 bars at 2/8 and 3/8 draws judgeable. That is the lesser problem. `HOLDOUT_PERIODS`
+is a **fixed 5** and stays 5 at any window (bounded below by `MIN_HOLDOUT_PERIODS = 4`, the
+smallest sample a two-sided t can fail on; bounded above because finer slices buy correlation,
+not evidence). So a deeper window does not add periods — **it lengthens them**, and that is
+exactly what was wrong:
+
+| window | holdout tail | slice = tail / 5 | vs the ~50-day block scale the period test was built on |
+|---|---|---|---|
+| 500 d (when everything above was measured) | 150 d | **30 d** | below it — five slices that look independent and are not |
+| 1,000 d (#529) | 300 d | **60 d** | above it |
+
+**So every `oi_*` verdict on this page was drawn on slices finer than the correlation scale.**
+That is a cleaner statement of the same defect the calendar table shows: the confirmations were
+counted as five observations when the market was not offering five. `factory.HOLDOUT_PERIODS`'
+own comment reached the conclusion first — *"at today's 500-day window this is not enough periods
+to confirm anything… what reopens it is a deeper window, not a smaller number here"* — and #529
+then doubled the window with `DERIVATIVE_HISTORY_DAYS` and `FUNDING_MAX_PAGES` moved to match.
+
+**The open item, therefore, is a re-run rather than a new argument.** Every measurement in this
+section predates #529 and should be repeated at 1,000 days before `oi_*` is called either way.
+The prediction it would test is specific: if the confirmations were slice-correlation artifacts
+they should thin out at 60-day slices, and if they are not they should survive with a wider
+interval and fewer of them.
 
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
@@ -2126,6 +2282,106 @@ moved off 15m onto {1h, 4h, 1d}. What survives is narrower and does not depend o
 being right: **1h is both inside the rotation and permanently unservable at factory depth
 (208-day ceiling against 500), and its window rolls every day.** Archiving is the only path to
 depth there.
+
+---
+
+## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
+
+Nothing here is built. It is a design with its costs named, recorded because the alternative is
+that the same reasoning gets re-derived from scratch, and because **the choice it turns on is
+explicitly not the runtime's to make** (`proposer.py`: "Adding a family to `factory.TEMPLATES`
+stays a human code change in Thomas's PR").
+
+### I0. Why this matters now, and the number that says so
+
+The promotion door yields zero — 0 of 1,140 candidates confirm out of sample (F1, F2) — and the
+generator is the only lever left. Measured 2026-08-05 over the 461 `(family, timeframe, symbol)`
+contexts the store can centre: only **43 are centred by a row with a positive holdout**, 227 by
+one the tail judgeably refuted (#532 closed the second half of that). The library is what the
+search searches, and the library only grows through this door.
+
+### I1. The bottleneck is not typing, it is that the decision has no evidence behind it
+
+Every other decision in this system is made on accumulated out-of-sample evidence. Promotion
+reads holdouts; fusion reads parent evidence; retirement reads thousands of trades. **Family
+installation is the only one made from a rationale sentence and one backtest on one snapshot** —
+which is all `evaluate_proposal` can produce, because a proposal is a single spec rather than a
+family with a parameter space.
+
+`MAX_UNREVIEWED_BACKLOG = 12` exists because of this ("proposals accumulate faster than anyone
+reviews", 2026-07-24). The cap is a symptom: the queue does not drain because draining one entry
+means authoring a `StrategyTemplate` — an `entry_builder` callable, a parameter space, tests —
+on the strength of a paragraph.
+
+**An option that does not work, recorded so it is not re-proposed:** "let an accepted proposal
+be minted as a candidate and accrue evidence." A candidate's evidence is computed once at mint
+and never accumulates. Family-level evidence only exists because a family is minted repeatedly
+across contexts and generations, and that requires the rotation. A proposal that is not in the
+rotation can never earn the evidence its own install decision needs.
+
+### I2. Design — trial rotation slots
+
+**Piece 1: a declarative family.** Every `entry_builder` in `TEMPLATES` is "fixed conditions with
+param-substituted thresholds", which is expressible as data:
+
+```python
+@dataclass(frozen=True)
+class ConditionPattern:
+    feature: str
+    comparison: str
+    param: str | None = None            # threshold comes from this param
+    value: float | str | None = None    # or it is a literal
+    value_from: str | None = None       # or another feature
+```
+
+`entry_builder` becomes pattern rendering. **Data does not become code**: what the data chooses
+is a feature name, a comparison and which param feeds the threshold — three closed sets
+`known_features(venue)` and `_NUMERIC_COMPARISONS` already judge. Builders doing arithmetic on a
+param (`_xs_reversion_long_entry`'s `0.5 - p[...]`, `_session_trend_long_entry`'s label lookup)
+are **not** expressible and stay code; an LLM proposal is always the simple shape, so this does
+not bind.
+
+**Piece 2: admission reuses the approval machinery, and adds no Gate.** A trial family file
+carries the declaration and its content hash; the runtime loads it only when an approval record
+for that hash exists in `THOMAS_CORE/approvals/` and is unrevoked. Absent, mismatched or revoked
+→ not in the rotation. Thomas still decides; the decision becomes *approve this hash* instead of
+*author this family*.
+
+**Piece 3: quarantine from the live path — the load-bearing part.**
+
+- A slot cap (4 is the suggested start), so trials can never crowd out the proven library.
+- Minted rows carry `derivation_type: "trial_family"`, registered in
+  `pool.DERIVATION_TYPES` — a **closed set** (`seeded_template`, `crossover`, `mutation`) that
+  `validate_candidate_lineage` refuses at the append door, with its parent-count rule in
+  `_PARENT_COUNT_RULES` (a trial family is fresh generation, so `(0, 0)` like a seeded row).
+  This is a feature, not an obstacle: the quarantine tag is schema-enforced at the store's own
+  door rather than being a convention a writer can forget.
+- **`scripts/promote_strategy_candidates.py` must refuse them by default.** Verified 2026-08-05:
+  it names `provenance` only in a report line (`:516`) and filters on neither it nor
+  `derivation_type`, so without this clause an LLM-authored rule reaches the live pool through
+  the ordinary door. This is the one piece that is not optional.
+- A trial graduates into `TEMPLATES` — real code, Thomas's PR — only after producing confirmable
+  holdout evidence. The builder gets written for a family that has already earned it.
+
+### I3. What it costs, stated rather than discovered later
+
+- **A declarative family is a SECOND authority for "what a family is"**, against the standing
+  "one concept = one authority" guardrail. The mitigation is that `TEMPLATES` remains the
+  authority for *proven* families and trials are a capped staging area with no live path — but
+  that is a judgement about the guardrail, which is why this section asks rather than proposes.
+- It widens what the model influences: still never code, but now what gets **mined**, not only
+  what gets suggested.
+- **It will almost certainly confirm nothing.** 0 of 1,140 confirm out of sample and a random
+  entry loses 0.13R here. What this buys is that failure becomes cheap and legible, not edge.
+  Any version of this pitched as "more families will find an edge" is misreading F1.
+
+### I4. The smaller alternative, if I2 is too much
+
+The proposer renders an accepted proposal into `StrategyTemplate` code plus a test and opens a
+PR. No new authority, no declarative form, buildable today; Thomas reviews a diff instead of
+authoring one. **Weaker on the actual problem** — the decision is still made on one backtest, and
+review is still per-proposal, so the queue still does not drain. It removes the typing, which
+I1 argues is not what is blocking.
 
 ---
 
