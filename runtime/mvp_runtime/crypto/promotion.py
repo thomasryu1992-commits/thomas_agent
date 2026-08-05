@@ -47,12 +47,13 @@ def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], k
     })
 
 
-def _resolve_candidates(
-    selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
-    allow_unrecorded_evidence_depth: bool = False,
-    allow_quarantined_derivation: bool = False,
-) -> list[dict[str, Any]]:
-    """Selector resolution via the store's single authority, as approval refusals."""
+def _resolve_identity(selectors: list[str], root: Path | None) -> list[dict[str, Any]]:
+    """Selector resolution via the store's single authority, as approval refusals.
+
+    Exactly what ``promotion_content_sha256`` is a function of, and nothing else: which
+    lineages the selectors name, and the rule hash each one carries. The hash check is not a
+    quality gate — an unhashed row cannot be hashed at all, so both callers need it.
+    """
     try:
         resolved = pool_store.resolve_candidates(selectors, root)
     except ToolError as exc:
@@ -60,6 +61,20 @@ def _resolve_candidates(
     for c in resolved:
         if not (isinstance(c.get("strategy_rule_hash"), str) and c["strategy_rule_hash"]):
             raise ApprovalBlocked("CANDIDATE_UNHASHED", f"candidate {c['candidate_id']} has no rule hash")
+    return resolved
+
+
+def _resolve_candidates(
+    selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
+    allow_unrecorded_evidence_depth: bool = False,
+    allow_quarantined_derivation: bool = False,
+) -> list[dict[str, Any]]:
+    """Identity resolution plus the quality gates the ASK owes the install door.
+
+    Backs ``request_promotion`` only. Verification deliberately resolves identity alone —
+    see ``verify_promotion_approval``.
+    """
+    resolved = _resolve_identity(selectors, root)
     # Checked at the ASK, not only at the install. The execution door refuses stale-basis
     # evidence too, and an ask that cannot execute is worse than no ask: it spends Thomas's
     # answer on a promotion the next step was always going to block.
@@ -122,9 +137,10 @@ def request_promotion(
     )
     # Same rule again, one door earlier. Incumbents matter only when the batch ADDS to
     # the pool: a replace promotion installs exactly this batch, so yesterday's pool
-    # cannot collide with it. Checked here rather than in ``_resolve_candidates``
-    # because that helper also backs verification, where the pool has already changed
-    # by design and re-running this would refuse an approval Thomas legitimately gave.
+    # cannot collide with it. Kept out of ``_resolve_candidates`` because it reads state
+    # the selectors do not name — the pool as it stands right now — where the three gates
+    # in that helper are pure functions of the rows being promoted. Both are ask-and-install
+    # checks either way; neither belongs on the verification path.
     if not allow_duplicates:
         try:
             pool_store.assert_no_semantic_duplicates(
@@ -178,7 +194,20 @@ def verify_promotion_approval(
     action type, and its content hash matches the promotion re-derived from the
     CURRENT candidate store — a candidate whose rules changed since Thomas approved
     mints a different hash and is refused (the R10 hot-path revalidation posture,
-    without the spend). Returns the verified approval."""
+    without the spend). Returns the verified approval.
+
+    Resolves identity ONLY — no cost-basis, evidence-depth or derivation gate. Those are
+    checked at the ask (``request_promotion``, so Thomas is never asked a question the next
+    step was always going to block) and at the install (``promote_strategy_candidates.run_promotion``,
+    where evidence turns into money), both of which honour the operator's escapes. This door
+    honours none, because it is answering a different question: the escapes are deliberately
+    kept OUT of ``promotion_content_sha256``, so a check that recomputes that hash cannot also
+    be a place where an escape applies. Running them here refused every promotion Thomas
+    explicitly approved WITH an escape: verification resolved first, without the flag, and the
+    install door's own guard block — which has the flag — was never reached. That is the same
+    argument that already kept ``assert_no_semantic_duplicates`` out of the shared resolve, and
+    it generalises: a gate belongs at the ask and the install, never at the identity check
+    between them."""
     now = now or timeutil.utc_now_iso()
     if approval is None:
         raise ApprovalBlocked("APPROVAL_MISSING", "no approval record with that id")
@@ -194,7 +223,7 @@ def verify_promotion_approval(
         raise ApprovalBlocked(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a promotion"
         )
-    candidates = _resolve_candidates(selectors, root)
+    candidates = _resolve_identity(selectors, root)
     expected = promotion_content_sha256(
         [c["candidate_id"] for c in candidates],
         [c["strategy_rule_hash"] for c in candidates],

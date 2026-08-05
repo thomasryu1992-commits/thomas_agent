@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL
+from runtime.mvp_runtime.approval_store import ApprovalStore
 from runtime.mvp_runtime.crypto import cost, paper, pool
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.promotion import (
@@ -32,8 +34,9 @@ from tests._helpers import requires_local_core
 
 NOW = timeutil.utc_now_iso()
 
-# Sentinel: `cost_summary=None` means "seed a candidate with no recorded cost model", which is
-# a case under test, so it cannot double as "caller said nothing".
+# Sentinel: `cost_summary=None` / `bars_replayed=None` mean "seed a candidate that records no
+# cost model / no replay window", which are cases under test, so neither can double as "caller
+# said nothing".
 _MISSING = object()
 
 
@@ -80,12 +83,15 @@ def _current_bars_replayed(spec):
     return pool.expected_replayed_bars(spec.timeframe)
 
 
-def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MISSING):
+def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MISSING,
+                     bars_replayed=_MISSING):
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = {"closed_count": 20, "expectancy": 0.5,
-                    "bars_replayed": _current_bars_replayed(spec)}
+        evidence = {"closed_count": 20, "expectancy": 0.5}
+        bars = _current_bars_replayed(spec) if bars_replayed is _MISSING else bars_replayed
+        if bars is not None:
+            evidence["bars_replayed"] = bars
         summary = _current_cost_summary() if cost_summary is _MISSING else cost_summary
         if summary is not None:
             evidence["cost_summary"] = summary
@@ -329,6 +335,113 @@ def test_the_ask_refuses_stale_evidence_too(tmp_path):
     with pytest.raises(ApprovalBlocked) as exc:
         request_promotion(["S1"], keep_active=False, now=NOW, candidates_root=tmp_path)
     assert exc.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
+
+
+# --- which door owns the quality gates, and which one owns the approval ---------
+#
+# `run_promotion` resolves the selection TWICE: once inside `verify_promotion_approval`, which
+# re-derives the content hash from the CURRENT store, and once in its own guard block, which
+# runs the quality gates. Only the second call can see the operator's escape flags — so while
+# verification ran the gates too, an approval Thomas had explicitly answered for a promotion
+# WITH an escape could never install: the escape was passed, the approval was valid, and the
+# first resolve refused before the second one was reached.
+#
+# The fix is the division these tests pin: verification answers "does this approval authorize
+# exactly this promotion", which is a question about ids, rules and add-vs-replace — the three
+# fields in `promotion_content_sha256`. Whether the evidence behind those ids is believable is
+# asked at the ASK (so Thomas is never asked a question that cannot execute) and at the
+# INSTALL (where evidence turns into money), both of which honour the escapes.
+
+
+def _store_approval(tmp_path, approval):
+    """Put a real record in the store the door reads, not a hand-passed dict: the defect lives
+    in `run_promotion`, which fetches its own approval by id."""
+    ApprovalStore(tmp_path / APPROVAL_STORE_REL).append([approval])
+    return approval["approval_id"]
+
+
+def test_an_approved_promotion_can_still_use_the_stale_basis_escape(tmp_path):
+    """The headline case. Thomas approved this exact promotion and the operator passed the
+    documented escape; the door must install it, not refuse it in the half of itself that
+    cannot see the flag."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW,
+                            approval_id=approval_id, allow_stale_cost_basis=True)
+    assert summary["approval_verified"] is True and summary["stale_cost_basis_escape"] is True
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+def test_an_approved_promotion_can_still_use_the_unrecorded_depth_escape(tmp_path):
+    """Second axis, same defect: the escape is per-axis, so each one needs its own pin."""
+    _seed_candidates(tmp_path, _spec_dict(), bars_replayed=None)
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW,
+                            approval_id=approval_id, allow_unrecorded_evidence_depth=True)
+    assert summary["approval_verified"] is True
+    assert summary["unrecorded_evidence_depth_escape"] is True
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(tmp_path, monkeypatch):
+    """Third axis, reached through the store's reader because it cannot be reached through its
+    writer: `PROMOTABLE_DERIVATION_TYPES` equals the set the append door admits, so no row this
+    gate refuses can be written into a real store today. That is the gate working as designed —
+    it stands before the first row it must stop — and it is exactly why this axis would
+    otherwise carry the defect silently until the day someone starts minting one."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    row = {
+        "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
+        "generation_id": "GEN-001", "status": "BACKTESTED", "champion_score": 0.5,
+        "strategy_spec": spec.to_dict(),
+        "backtest_evidence": {"closed_count": 20, "expectancy": 0.5,
+                              "bars_replayed": _current_bars_replayed(spec),
+                              "cost_summary": _current_cost_summary()},
+        "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
+        "derivation_type": "trial_family",
+    }
+    monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW,
+                            approval_id=approval_id, allow_quarantined_derivation=True)
+    assert summary["approval_verified"] is True
+    assert summary["quarantined_derivation_escape"] is True
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+@pytest.mark.parametrize("seed,code", [
+    (dict(cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0)),
+     "CANDIDATE_COST_BASIS_STALE"),
+    (dict(bars_replayed=None), "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED"),
+])
+def test_an_approved_promotion_without_the_escape_still_refuses(tmp_path, seed, code):
+    """The other half of the division, and the reason moving the gates off the verification
+    path is safe: an approval is Thomas's yes to a set of ids, never a waiver of the evidence
+    checks. Without the flag the install door refuses on its own authority."""
+    _seed_candidates(tmp_path, _spec_dict(), **seed)
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                      keep_active=False, root=tmp_path, now=NOW, approval_id=approval_id)
+    assert code in str(exc.value)
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
+
+
+def test_verification_judges_the_approval_and_not_the_evidence(tmp_path):
+    """Stated directly at the function, because `run_promotion` alone cannot distinguish "the
+    gates moved" from "the gates ran and passed". Verification is a hash-identity check: the
+    escapes are deliberately kept OUT of `promotion_content_sha256`, so a door that recomputes
+    that hash has no business deciding whether the evidence behind it is believable."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
+    verified = verify_promotion_approval(
+        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
+    )
+    assert verified["approval_id"] == "approval_test"
 
 
 def test_promotion_derives_unique_display_id_on_collision(tmp_path):
