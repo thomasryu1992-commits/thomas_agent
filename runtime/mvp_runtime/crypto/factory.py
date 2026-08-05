@@ -1679,10 +1679,35 @@ def _apply_reward_risk_floor(
 # score; a region that scores well there has more trades per parameter and broader regimes
 # behind it, which is what "worth looking near" should mean.
 #
-# **Half the draws stay home.** Even-indexed mints use the elite centre, odd-indexed use the
-# template's own base. The search cannot collapse onto one point however good that point looks,
-# and the region the template was written for is never abandoned. Deterministic — it is the
-# accept index, not a coin flip.
+# **Half the draws stay home.** Half of every batch draws around the elite centre and half around
+# the template's own base, so the search cannot collapse onto one point however good that point
+# looks, and the region the template was written for is never abandoned.
+#
+# **WHICH half is decided per fire, and it has to be, because the accept index alone locked it.**
+# The rule was `len(accepted) % 2 == 0`, and the template is picked with
+# `templates[(offset + len(accepted)) % total]` — the same counter. `offset` is always a multiple
+# of `count` (4), and `total` is always EVEN because every family is minted as a long/short pair,
+# so `offset` is always even and a template's index parity equals its accept parity. The
+# assignment was therefore FIXED for the life of the context instead of alternating. Measured
+# 2026-08-05 over 60 consecutive fires: **no family of any context ever saw both centres** — 1h
+# ETHUSDT 18 elite-only against 18 base-only, 4h ETHUSDT 18/18, 1h BTCUSDT 17/17, 1d ETHUSDT
+# 13/13, and BOTH = 0 everywhere.
+#
+# Both halves lost their guarantee, in opposite directions. The elite half had no anchor left and
+# hill-climbed with nothing holding it to the template's region. The base half could not learn at
+# all — and could not reach its own space either: `mutate_params` spans `base +/- 0.35 * (hi - lo)`
+# from a fixed centre, so from `_EXIT_BASE` a draw stops at `stop_atr` 1.73 of [1.2, 2.0] and
+# `target_atr` 5.24 of [1.6, 8.0]. Half the library could never mint the outer third of the exit
+# geometry, and the only thing that would have shown it is the measurement above.
+#
+# :func:`_elite_flip` is the fix — a stable hash of the generation id chooses which parity takes
+# the elite centre this fire. Still deterministic, still reproducible from a recorded input (the
+# generation id is on every candidate), still exactly half of each batch, and it does not consume
+# from the rng, so a family drawing around its base draws what it drew before. What it removes is
+# the arithmetic coincidence: the flip depends on neither `count` nor `total` nor their gcd, so no
+# library size can re-lock it. Repairing this with parity arithmetic instead — stepping the split
+# on `rotation_index` — re-locks at `total = 24`, which is 1d/BTCUSDT with positioning ineligible
+# and therefore a live context, not a hypothetical one.
 #
 # What keeps this honest is the two gates that landed first: #438's holdout interval and #440's
 # selection-adjusted ranking, which charges the attempt count that concentrating the search will
@@ -1692,24 +1717,32 @@ def _apply_reward_risk_floor(
 ELITE_EVIDENCE_MIN_TRADES = 20
 
 
-def elite_base_params(
-    candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
-    fallback: dict[str, float],
-) -> dict[str, float]:
-    """The params of the most ROBUST prior candidate for this family and context.
+def _best_mint_params(
+    candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+) -> dict[str, dict[str, Any]]:
+    """The most ROBUST prior candidate's ``mint_params``, per family, in ONE pass.
 
-    ``fallback`` (the template's own base) whenever there is nothing better to say: no prior
-    candidate here, none carrying `mint_params`, or none with enough closed trades for its score
-    to mean anything. A centre moved on three trades is not a lesson.
+    The shared half of :func:`elite_base_params` and :func:`elite_centres`, which differ only in
+    how many families they are asked about. Kept as one function because the filter IS the
+    definition of "what may move a search centre" — a second copy of it is a second thing that
+    can be wrong, and it would be wrong silently, since a centre that failed to move looks
+    exactly like a family with nothing to learn from.
 
-    Pure and deterministic given the store, which is what keeps a replay reproducible — the
-    centre is derived from recorded evidence, never from wall-clock or draw order.
+    Raw params, unprojected: which keys survive is the caller's question, because only the
+    caller holds the template whose base supplies the missing ones.
     """
-    best_score = None
-    best_params: dict[str, float] | None = None
+    best_score: dict[str, float] = {}
+    best_params: dict[str, dict[str, Any]] = {}
     for record in candidates:
-        spec = record.get("strategy_spec") or {}
-        if spec.get("strategy_family") != family or spec.get("timeframe") != timeframe:
+        spec = record.get("strategy_spec")
+        # A malformed row is skipped rather than fatal (the `count_unreviewed_backlog` posture):
+        # `.get` on a non-Mapping raises, and a factory fire must not die on one bad stored row.
+        if not isinstance(spec, Mapping):
+            continue
+        family = spec.get("strategy_family")
+        if not isinstance(family, str) or not family:
+            continue
+        if spec.get("timeframe") != timeframe:
             continue
         if symbol not in (spec.get("symbol_scope") or []):
             continue
@@ -1725,13 +1758,79 @@ def elite_base_params(
             continue
         # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
         # store order among equals.
-        if best_score is None or score > best_score:
-            best_score, best_params = float(score), {str(k): v for k, v in params.items()}
-    if best_params is None:
+        if family not in best_score or score > best_score[family]:
+            best_score[family] = float(score)
+            best_params[family] = {str(k): v for k, v in params.items()}
+    return best_params
+
+
+def _project(best: Mapping[str, Any] | None, fallback: Mapping[str, float]) -> dict[str, float]:
+    """A stored centre reduced to the keys the template still declares.
+
+    A param the family dropped must not be resurrected from an old record, and one it gained
+    must come from the template's own base.
+    """
+    if not best:
         return dict(fallback)
-    # Only keys the template still declares: a param the family dropped must not be resurrected
-    # from an old record, and one it gained must come from the template's own base.
-    return {name: best_params.get(name, fallback[name]) for name in fallback}
+    return {name: best.get(name, fallback[name]) for name in fallback}
+
+
+def elite_base_params(
+    candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
+    fallback: dict[str, float],
+) -> dict[str, float]:
+    """The params of the most ROBUST prior candidate for this family and context.
+
+    ``fallback`` (the template's own base) whenever there is nothing better to say: no prior
+    candidate here, none carrying `mint_params`, or none with enough closed trades for its score
+    to mean anything. A centre moved on three trades is not a lesson.
+
+    Pure and deterministic given the store, which is what keeps a replay reproducible — the
+    centre is derived from recorded evidence, never from wall-clock or draw order.
+
+    The single-family form. A caller wanting centres for a whole rotation wants
+    :func:`elite_centres`, which answers the same question for every family at once and reads
+    the store once to do it.
+    """
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    return _project(best.get(family), fallback)
+
+
+def elite_centres(
+    candidates: list[Mapping[str, Any]], templates: Sequence[StrategyTemplate], *,
+    symbol: str, timeframe: str,
+) -> dict[str, dict[str, float]]:
+    """Every template's search centre, keyed by family, from ONE pass over the store.
+
+    Same answer as calling :func:`elite_base_params` per template and the same fallback rule;
+    what changes is the cost. `run_factory` needs a centre for the whole rotation, and the
+    per-family form re-read the entire candidate store for each one — 38 full passes over a
+    1,140-row store per fire, of which the batch then uses at most `count`.
+
+    The templates are passed rather than re-derived here so this stays pure and so the caller
+    cannot end up centring on a rotation different from the one it mints — `run_factory` used to
+    build its centres from an unnarrowed `templates_for_timeframe`, which returned families
+    `generate_batch` would never reach for that symbol.
+    """
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    return {t.family: _project(best.get(t.family), t.base_params) for t in templates}
+
+
+def _elite_flip(generation_id: str) -> int:
+    """Which parity of this batch draws around the elite centre — 0 or 1.
+
+    A stable hash of the fire's own identity, for the reason recorded above
+    :data:`ELITE_EVIDENCE_MIN_TRADES`: the accept index alone is the SAME counter the template
+    is picked with, so using it for both fixed each family's centre permanently instead of
+    alternating it. This depends on neither `count` nor `total`, so no library size re-locks it.
+
+    Deterministic and reproducible from a recorded input — `generation_id` rides on every
+    candidate — so a replay of a fire reproduces its split exactly. The `context_rotation_phase`
+    construction, and stable for the same reason: a counter would drift when the store is pruned
+    or re-imported, and this must not.
+    """
+    digest = integrity.short_id("crypto_elite_split", {"generation_id": str(generation_id)})
+    return int(digest.rsplit("_", 1)[1][:8], 16) % 2
 
 
 def build_spec_dict(
@@ -1952,6 +2051,11 @@ def generate_batch(
         generation_id, seed, count, len(templates), rotation_index=rotation_index,
         phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
     )
+    # Which parity of this batch takes the elite centre. Per FIRE rather than fixed, because
+    # `offset` is a multiple of `count` and `total` is always even, so the accept index alone
+    # gave every family the same centre forever — see `_elite_flip` and the note above
+    # `ELITE_EVIDENCE_MIN_TRADES` for the measurement.
+    flip = _elite_flip(generation_id)
     accepted: list[StrategySpec] = []
     accepted_params: dict[str, dict[str, float]] = {}
     validations: list[dict[str, Any]] = []
@@ -1963,13 +2067,14 @@ def generate_batch(
         attempts += 1
         template = templates[(offset + len(accepted)) % len(templates)]
         # Half the draws around what this family has already learned, half around where it
-        # started. The index, not a coin flip, so the split is reproducible — and so the search
-        # cannot collapse onto one point however good that point looks. See `elite_base_params`.
+        # started, so the search cannot collapse onto one point however good that point looks.
+        # Derived, not drawn — the split is reproducible from the generation id and consumes
+        # nothing from `rng`. See `elite_base_params`.
         elite = (elite_params or {}).get(template.family)
         centre = (
             {name: float(elite.get(name, template.base_params[name]))
              for name in template.base_params}
-            if elite and len(accepted) % 2 == 0 else template.base_params
+            if elite and (len(accepted) + flip) % 2 == 0 else template.base_params
         )
         params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
@@ -3353,20 +3458,24 @@ def run_factory(
     # predate `mint_params`, which is every one of them today — so the first generation after
     # this lands still draws around the template base, and the one after it has something to
     # move toward. Same shape as every other "record it before you can use it" step here.
-    elite_centres = {
-        template.family: elite_base_params(
-            existing_candidates, family=template.family, symbol=symbol, timeframe=timeframe,
-            fallback=template.base_params,
-        )
-        for template in templates_for_timeframe(
-            timeframe, positioning_eligible=positioning_eligible, venue=venue
-        )
-    }
+    #
+    # `symbol=` reaches the rotation here for the same reason `generate_batch` passes it: without
+    # it this centred families that batch will never mint for this symbol (the rel_strength_*
+    # pair on the market proxy), which was work spent on an answer nobody could read. One store
+    # pass for the whole rotation rather than one per family — see `elite_centres`.
+    centres = elite_centres(
+        existing_candidates,
+        templates_for_timeframe(
+            timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue
+        ),
+        symbol=symbol,
+        timeframe=timeframe,
+    )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
         timeframe=timeframe,
-        elite_params=elite_centres,
+        elite_params=centres,
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         venue=venue,

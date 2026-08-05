@@ -2446,8 +2446,10 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     unnoticed; it just spends the attempts and keeps the high-target survivors.
 
     Swept over seeds rather than asserted on one, and that is load-bearing: only HALF a batch is
-    drawn around the elite centre (`len(accepted) % 2`), so with the floor removed a single
-    4-spec batch shows the defect on 25 of 40 seeds. One seed is a coin flip; twenty is not."""
+    drawn around the elite centre (`(len(accepted) + _elite_flip(generation_id)) % 2`), so with
+    the floor removed a single 4-spec batch shows the defect on 25 of 40 seeds. One seed is a
+    coin flip; twenty is not. Which half moves per fire, but every family here carries the same
+    adverse centre, so the sweep does not depend on which."""
     families = {t.family for t in templates_for_timeframe("1h", symbol="BTCUSDT")}
     adverse = {f: {"stop_atr": 1.7185, "target_atr": 1.7627, "max_holding_bars": 24}
                for f in families}
