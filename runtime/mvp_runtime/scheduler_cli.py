@@ -351,6 +351,7 @@ def main(
         total_fired = 0
         total_skipped = 0
         total_failed = 0
+        total_deferred = 0
         tick = 0
         try:
             while args.max_ticks == 0 or tick < args.max_ticks:
@@ -368,6 +369,7 @@ def main(
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]
                 total_failed += summary["failed"]
+                total_deferred += summary["deferred"]
                 for r in summary["results"]:
                     sys.stderr.write(f"  {r['action']} {r['schedule_id']} -> {r['status']}\n")
                 tick += 1
@@ -377,8 +379,13 @@ def main(
         except KeyboardInterrupt:
             sys.stderr.write("\nSCHEDULER: stopped.\n")
         alerts = f", alerts {alerter.sent} sent/{alerter.failed} failed" if alerter is not None else ""
-        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped}, failed {total_failed} "
-                         f"over {tick} tick(s){alerts}\n")
+        # `deferred` is APPENDED rather than woven in: `.github/workflows/docker-image.yml`
+        # asserts a clean tick by grepping the literal "fired 0, skipped 0, failed 0", so the
+        # three counters have to stay adjacent and in that order. A pass that bounded itself must
+        # still say so — a budget that silently drops work off the end of a summary line reads as
+        # "nothing was due".
+        sys.stdout.write(f"fired {total_fired}, skipped {total_skipped}, failed {total_failed}, "
+                         f"deferred {total_deferred} over {tick} tick(s){alerts}\n")
         return EXIT_OK
 
     except MvpRuntimeError as exc:
