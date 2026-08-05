@@ -136,8 +136,36 @@ is the existing asymmetry and the right direction.
 | **D1** | What does an **absent** `trading_armed` mean on a state file written before this change? | (a) ARMED — machine predates the split, behave as before; (b) DISARMED — fail-closed | **(a)**. It mirrors `control.py`'s existing split exactly: a *missing* thing is not a stop order (missing file means ACTIVE), while a *malformed* one fails closed. (b) would silently stop entries on this machine at deploy time. Exits are unaffected either way, so (b) strands nothing — it is a surprise, not a hazard. |
 | **D2** | What does a **present but non-boolean** `trading_armed` mean? | fail-closed, i.e. DISARMED | **fail-closed**, matching `_corrupt_killed`. Not really an open question; listed so the pair with D1 is explicit. |
 | **D3** | Does DISARMED block **paper** trading (`paper.py:1465`)? | (a) no — paper is not money, keep it on `execution_allowed`; (b) yes — one switch for all trading | **(a)**. Paper touches no counterparty, and blocking it would stop the research loop the assistant is most likely to want running. But it makes "trading disarmed" mean *live* trading, which must be said in the reply text or it will be misread. |
-| **D4** | Who can re-arm? | (a) the RED approval only (as today); (b) also the local operator console (`console_cli arm`), host access being operator authentication | **(a) for now.** (b) is defensible on the existing precedent but adds a second door to the money path, and this proposal's whole point is to *reduce* the number of ways the money path opens. |
+| **D4** | Does the local operator console's `resume` keep re-arming live entries, as it does today? | (a) yes — unchanged; the only new thing is that the *assistant* gains a resume that does not arm; (b) no — the console resume stops arming too, and re-arming becomes its own verb | **(a).** See the correction below — this row asked the wrong question in the first draft. |
 | **D5** | Is ORANGE right for `runtime.resume.nonfinancial`? | ORANGE / YELLOW | **ORANGE.** It restores model calls, file writes and memory writes. It is not GREEN, and pricing it below the door it opens is the failure §10 warns about. |
+
+### D4 was asked wrong the first time — the correction is the useful part
+
+The first draft of this document offered *"(a) the RED approval only (**as today**)"*. The
+parenthesis is false, and it was found while implementing rather than while writing.
+
+**Today, `console_cli resume` restores trading**, because resume is global and there is nothing
+else it could do. So there are already two doors that re-arm — the assistant's RED approval and
+the host operator's console — and "the RED approval only" would not have *preserved* today's
+behaviour, it would have quietly **removed** the operator's. That contradicts this document's own
+governing claim two sections up: *strictly additive, no existing semantic changes*.
+
+Rewritten, D4 asks the question that is actually open: does the console keep what it has?
+
+**(a) is recommended, and it is the same answer the principle already forces.** The operator is
+the authenticated human whose host access *is* the authentication; narrowing what their resume
+does buys very little and surprises the one person who is supposed to be able to fix things at
+03:00. What this proposal adds is a resume the **assistant** can be given that does not arm —
+which is the actual gap. It does not need to take anything away from the console to do that.
+
+**(b) is what the first draft accidentally described.** It is still a coherent option — one
+arming door instead of two — but it is a *change* to the operator path and should be chosen
+deliberately, not inherited from a mis-worded row.
+
+Mechanically this is one default: `control.apply_command(..., resume_arms: bool = True)`. True is
+what all six pre-existing call sites get without being touched, so the console and the RED path
+keep arming; only the new `enable scope=runtime` passes False. Under (b), the default flips and
+the six call sites each need a decision.
 
 ---
 
