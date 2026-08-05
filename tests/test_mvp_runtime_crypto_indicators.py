@@ -71,12 +71,19 @@ def test_warmup_rows_marked_and_final_rows_ok():
     assert all(s == "OK" for s in statuses[first_ok:])
 
 
-def test_no_feed_fallbacks_match_source_absent_feed_semantics():
-    # Feeds NOT configured (keys absent): the source's legacy constants, for the two
-    # columns that still have them.
+def test_an_unconfigured_feed_is_indeterminate_like_a_failed_one():
+    """The last three fabricated constants, removed 2026-08-05.
+
+    A key ABSENT from the snapshot used to keep the source's pre-C9 0-fill while a key present
+    and EMPTY was already None — the reasoning being that an unconfigured feed is not a degraded
+    one. True, and it does not survive what these columns are for: all three are in
+    `factory.NUMERIC_FEATURES`, so a literal against a value that is always exactly zero does
+    not select, it decides, and `unsuppliable_features` cannot see it because the column is
+    populated rather than missing. `NoLiquidationFeed` is the DEFAULT, so this was every machine
+    without a Coinalyze grant, on every row."""
     last = features.build_feature_rows({"candles": CANDLES})[-1]
-    assert last["liquidation_spike_ratio"] == 0.0  # legacy 0-fill without a series
-    assert last["funding_rate"] == 0.0 and last["funding_zscore"] == 0.0
+    assert last["liquidation_spike_ratio"] is None
+    assert last["funding_rate"] is None and last["funding_zscore"] is None
 
 
 def test_absent_derivative_prices_are_indeterminate_not_the_old_constants():
@@ -91,8 +98,12 @@ def test_absent_derivative_prices_are_indeterminate_not_the_old_constants():
 
     Now that the series are collected (`market_data.derivative_price_klines`), absence means
     the venue did not answer, and the honest reading of that is None — no basis, no entry.
-    The ``liquidation_spike_ratio`` 0-fill above is the same class of hazard and survives
-    only because changing it is a separate decision about a separate feed."""
+
+    The ``liquidation_spike_ratio`` and funding 0-fills were the same class of hazard and
+    survived this change only because they were "a separate decision about a separate feed".
+    That decision was taken 2026-08-05 the same way and on the same condition — both feeds are
+    collected now — so the test above asserts None rather than the constants, and this
+    vocabulary no longer fabricates a value anywhere."""
     last = features.build_feature_rows({"candles": CANDLES})[-1]
     assert last["mark_price"] is None
     assert last["index_price"] is None

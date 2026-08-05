@@ -63,8 +63,39 @@ def _spec_dict(**overrides):
     return base
 
 
-def _trending_snapshot(n=200):
-    """Rising closes with a mid-series dip: entries and both exit kinds occur."""
+def _funding_series(candles, *, hours=8):
+    """A settlement series spanning ``candles`` — the leg a real snapshot always carries.
+
+    Not decoration. Funding rides the binance_futures grant, so every production snapshot has
+    it; a bare-OHLCV fixture only looked adequate while an ABSENT feed fabricated
+    ``funding_rate = 0.0``. Once absence became indeterminate (2026-08-05) every
+    ``funding_fade_*`` spec minted against this fixture was correctly refused as unsuppliable —
+    and at 1d/BTCUSDT that pair is half the rotation's first block, with ``taker_flow_*`` (which
+    this bare snapshot also cannot supply) being the other half. The fixture stopped exercising
+    the evidence path at all, which is the failure this closes.
+
+    Rates oscillate rather than hold flat: a constant series has zero deviation, so
+    ``funding_zscore`` would be undefined and the column indeterminate again.
+    """
+    if not candles:
+        return []
+    moment = timeutil.parse_iso(candles[0]["open_time"])
+    end = timeutil.parse_iso(candles[-1]["close_time"])
+    events = []
+    while moment <= end:
+        events.append({"timestamp": timeutil.format_iso(moment),
+                       "funding_rate": 0.0001 * ((len(events) % 7) - 3)})
+        moment += timedelta(hours=hours)
+    return events
+
+
+def _trending_snapshot(n=200, *, funding=True):
+    """Rising closes with a mid-series dip: entries and both exit kinds occur.
+
+    ``funding`` defaults ON because a production snapshot always carries it. Pass False for the
+    tests that are ABOUT an unsourced carry — see :func:`_funding_series` for why the default
+    had to move.
+    """
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
     candles = []
@@ -79,7 +110,11 @@ def _trending_snapshot(n=200):
             "close": price, "volume": 10.0 + (i % 7),
             "close_time": timeutil.format_iso(close_time),
         })
-    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles, "is_synthetic": False}
+    snapshot = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles,
+                "is_synthetic": False}
+    if funding:
+        snapshot["funding"] = _funding_series(candles)
+    return snapshot
 
 
 # --- generator ----------------------------------------------------------------
@@ -581,13 +616,16 @@ def test_the_three_added_liquidation_features_fail_closed_without_a_feed():
             }))
             assert evaluate_spec(spec, row).matched is False, f"{feature} {comparison} matched"
 
-    # The pre-existing exception, asserted rather than left as folklore.
-    assert row["liquidation_spike_ratio"] == 0.0
+    # The exception, closed 2026-08-05. This assertion is the reason it is worth having had:
+    # it stated the hazard as fact rather than folklore — a `< 1.0` condition matching a value
+    # nobody measured, on the DEFAULT feed configuration, on every row — and so it is the
+    # assertion that had to flip when the 0-fill went.
+    assert row["liquidation_spike_ratio"] is None
     permissive = StrategySpec.from_dict(_spec_dict(entry_rules={
         "operator": "AND",
         "conditions": [{"feature": "liquidation_spike_ratio", "comparison": "<", "value": 1.0}],
     }))
-    assert evaluate_spec(permissive, row).matched is True  # matches the constant, not data
+    assert evaluate_spec(permissive, row).matched is False  # no measurement, no match
 
 
 def test_bad_reward_risk_blocks():
@@ -654,7 +692,8 @@ def _volatility_regime_snapshot(n=600):
             "close": price, "volume": 10.0 + (i % 7),
             "close_time": timeutil.format_iso(close_time),
         })
-    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles, "is_synthetic": False}
+    return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles, "is_synthetic": False,
+            "funding": _funding_series(candles)}
 
 
 def _template_spec(template, timeframe="1d"):
@@ -773,9 +812,14 @@ def test_backtest_never_enters_on_indeterminate_features():
 # and the DEPTH claim does not, because depth is a calendar span and five symbols over the
 # same 350 days is not 1,750 days of market.
 
-def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0):
-    """The trending fixture at a different price level, so its trades are its own."""
-    snapshot = dict(_trending_snapshot(n))
+def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0, funding=False):
+    """The trending fixture at a different price level, so its trades are its own.
+
+    ``funding`` defaults OFF, the opposite of the base fixture: this one exists for the pooled
+    carry tests, where its job is to be the leg that FELL BACK so a pool can be shown taking its
+    worst leg's sourcing. It never reaches `run_factory`, so it needs no mintable columns.
+    """
+    snapshot = dict(_trending_snapshot(n, funding=funding))
     snapshot["symbol"] = symbol
     snapshot["candles"] = [
         {**c, "open": c["open"] * scale, "high": c["high"] * scale,

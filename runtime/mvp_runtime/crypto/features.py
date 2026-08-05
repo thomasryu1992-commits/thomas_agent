@@ -894,11 +894,31 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         atr_pct_of_price, PERCENTILE_WINDOW, ATR_REFERENCE_MIN_PERIODS
     )
 
-    # C9 derivative feeds. Key PRESENT in the snapshot = series semantics (even when
-    # the fetch failed and the list is empty): values are NaN-honest — indeterminate,
-    # never a constant, so a spec referencing them fails closed to no-entry on outage.
-    # Key ABSENT = the feed is not configured: the source's legacy constants apply
-    # (funding 0-fill, spike ratio 0.0), the exact pre-C9 behavior.
+    # C9 derivative feeds. Absent, present-and-empty, or fetched — every one of them yields
+    # None where there is no measurement. Indeterminate, never a constant, so a spec
+    # referencing them fails closed to no-entry.
+    #
+    # **The key-ABSENT branch used to be the exception, and it was the last fabricated constant
+    # in this vocabulary.** It kept the source's pre-C9 0-fill for `funding_rate`,
+    # `funding_zscore` and `liquidation_spike_ratio` on the reasoning that an unconfigured feed
+    # is not a degraded one. That distinction is real and it does not survive contact with what
+    # the columns are used for: all three are in `factory.NUMERIC_FEATURES`, so a mined literal
+    # against a value that is always exactly zero does not SELECT, it DECIDES — every
+    # `spike_ratio < x` was true on every bar of a machine that never measured it, and
+    # `unsuppliable_features` cannot catch it because the column is populated, just fabricated.
+    #
+    # It was live rather than theoretical: `market_data.NoLiquidationFeed` is the DEFAULT, so
+    # any machine without a Coinalyze grant took the branch on every replay row.
+    # `test_a_missing_feed_cannot_satisfy_a_condition` asserted the hazard as folklore-made-fact
+    # — a `< 1.0` condition matching the constant — and now asserts that it cannot.
+    #
+    # This is the `mark_index_basis_bps` decision, applied to the feeds it was deferred on. That
+    # one removed `mark == index == close` and `basis == 0.0` for exactly this reason once the
+    # series were collected; funding and liquidations are both collected now, so the condition
+    # that justified deferring is gone. Behaviour is unchanged for every spec in the store: the
+    # one that names `liquidation_spike_ratio` reads `> 0.580805` and the `funding_fade_*`
+    # families gate on |z| >= 1.0, all of which were false against 0.0 and are indeterminate
+    # now — no entry either way. What changes is the direction nobody had minted yet.
     bar_times = [c["open_time"] for c in candles]
     # HTF context. Key ABSENT (or empty) = no higher timeframe supplied — every HTF
     # column is None, so an htf_* spec is indeterminate and never matches. That is
@@ -912,8 +932,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         funding_rate = _asof_align(bar_times, snapshot.get("funding") or [], ("funding_rate",))["funding_rate"]
         funding_zscore = indicators.zscore(funding_rate, FUNDING_Z_WINDOW, FUNDING_Z_MIN_PERIODS)
     else:
-        funding_rate = [0.0] * len(candles)
-        funding_zscore = [0.0] * len(candles)
+        funding_rate = [None] * len(candles)
+        funding_zscore = [None] * len(candles)
 
     has_liq_series = "liquidations" in snapshot
     if has_liq_series:
@@ -931,7 +951,9 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     else:
         long_liq = short_liq = liq_total = [None] * len(candles)
-        liquidation_spike_ratio = [0.0] * len(candles)  # legacy constant, pre-C9
+        # Was `[0.0] * len(candles)` — the last fabricated constant in the vocabulary, and the
+        # only column here that an absent feed left MATCHABLE. See the note above.
+        liquidation_spike_ratio = [None] * len(candles)
 
     # Open interest — how much position is OUTSTANDING, the third leg beside what it
     # costs to hold (funding) and what was forcibly closed (liquidations). Raw OI is a

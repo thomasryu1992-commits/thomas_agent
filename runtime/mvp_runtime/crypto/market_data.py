@@ -1792,8 +1792,13 @@ class PeerCandleCache:
 
 
 class NoLiquidationFeed:
-    """Default: the feed is ABSENT (not degraded) — features keep the source's
-    legacy no-series constants, exactly the pre-C9 behavior."""
+    """Default: the feed is ABSENT (not degraded) — every column it would fill reads None.
+
+    Absent and degraded produce the same features now, and the distinction survives only in
+    what it says about the machine. It used to decide semantics: an absent feed kept the
+    source's pre-C9 constants, which meant this default — the one every machine without a
+    Coinalyze grant runs — fabricated ``liquidation_spike_ratio = 0.0`` on every replay row,
+    and a mined ``< x`` condition matched it. See ``features.build_feature_rows``."""
 
     feed_id = "none"
     network_egress = False
