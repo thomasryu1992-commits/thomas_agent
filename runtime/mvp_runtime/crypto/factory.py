@@ -3200,8 +3200,22 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # **Depth alone is not enough, and measuring it is what settles the shape.** Filtering to a
 # judgeable holdout while still ranking by `champion_score` makes the selected pool *worse* out
 # of sample — median holdout of the chosen parents moves -0.098R -> **-0.164R** — because within
-# the judgeable subset the score is mildly anti-selective. Adding the non-negative bit and
-# leaving the ranking alone moves it to **+0.091R** with every selected parent non-negative.
+# the judgeable subset the score is mildly anti-selective.
+#
+# **The evidence for adding the non-negative bit is the children already bred, and the obvious
+# reading is circular.** That this predicate selects a pool whose median holdout is +0.091R, 100%
+# of it non-negative, computes both figures over the very quantity the predicate filters on — it
+# is arithmetic, not a finding, and it cannot show that the rows it keeps will BREED better. The
+# test that can uses different rows on both sides: selection reads the PARENT's holdout, while the
+# outcome measured is the CHILD's. Over the 447 already-bred children (#525 review), paired within
+# (symbol, timeframe) because the groups do not share a tier — the qualifying side is 4h-heavy,
+# the rest 1h-heavy, and R scale differs by tier — children of parents that pass this predicate
+# beat children of parents that fail it by **+0.1151R median-based and +0.1674R trade-weighted,
+# 5 of 6 comparable cells each way**. What bounds that: 6 cells at 2-8 rows per group; 38 of 330
+# resolved parents are `mvp_rescore` rows, so "holdout as stored today" is not exactly the holdout
+# the fusion saw at breeding time; and the smallest cell (BNBUSDT 15m) disagrees in sign between
+# the two statistics. Against ~10 independent market periods it clears the resolution floor, but
+# not by much.
 #
 # **A one-bit filter at zero, deliberately, rather than ranking by holdout magnitude.** The unit
 # of independence here is the market period, not the trade, and this store carries roughly ten of
@@ -3217,6 +3231,12 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # rather than a new failure mode. Re-measure before tightening further: with the child-side bar
 # (`FUSION_IMPROVEMENT_METRICS`) also reducing crossover supply, the parent pool now refills from
 # the seeded rotation more slowly than it did.
+#
+# **Still owed: the split-half test**, which selects on the first half of the holdout periods and
+# measures the last three — disjoint slices of the same tail, so no row is scored on the bars that
+# selected it. It could not run when this landed: `period_r` / `period_trades` arrived with #518
+# hours after the last factory fire, so no stored row carried a per-period breakdown to split. It
+# becomes measurable once the store holds rows minted on that code.
 def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
     """May this row breed, on its out-of-sample evidence alone?
 
