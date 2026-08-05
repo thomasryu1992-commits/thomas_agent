@@ -159,6 +159,13 @@ def run_promotion(
         # After the approval check, not before: a promotion that Thomas never approved should
         # say so first. Both refusals are absolute; this is only about which one an operator
         # reads when a selection fails on both counts.
+        #
+        # And this is the ONLY place they run on the execution path. `verify_promotion_approval`
+        # above resolves identity alone — it recomputes the approval's content hash and judges
+        # nothing else — because the escapes below are deliberately not part of that hash, so a
+        # door that recomputes it cannot honour them. While it ran these too, every promotion
+        # approved WITH an escape refused there before reaching this block. The gates live at
+        # the ask (`promotion.request_promotion`) and here; not in between.
         if not allow_stale_cost_basis:
             pool_store.assert_promotable_cost_basis(candidates)
         # After the basis, because a row that records neither is more usefully reported as the
