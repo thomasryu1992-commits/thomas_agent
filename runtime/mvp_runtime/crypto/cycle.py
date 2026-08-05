@@ -45,6 +45,7 @@ from .guards import (
 from .market_data import (
     CROSS_SECTION_DEGRADED,
     CROSS_SECTION_UNIVERSE,
+    DEFAULT_FUNDING_RECORDS,
     DERIVATIVE_HISTORY_DAYS,
     FUNDING_DEGRADED,
     HIGHER_TIMEFRAME,
@@ -102,7 +103,12 @@ HTF_DEGRADED = "HTF_DEGRADED"
 LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
-_FUNDING_RECORDS = 1600
+#
+# Read from `market_data` for the reason stated one line below about the liquidation depth, which
+# this constant did not follow: it was a second literal 1,600 beside `DEFAULT_FUNDING_RECORDS`,
+# and the two would have parted the moment either moved. They nearly did — the replay window
+# doubled on 2026-08-04 and only the `market_data` copy was written down as depending on it.
+_FUNDING_RECORDS = DEFAULT_FUNDING_RECORDS
 # Read from `market_data` rather than restated here: `factory.templates_for_timeframe` now gates
 # the oi_* families on the same depth, and two numbers for one fetch would let the gate and the
 # fetch drift apart silently.
