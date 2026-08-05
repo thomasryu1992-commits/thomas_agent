@@ -1891,17 +1891,53 @@ verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CON
 | `[720,1029)` | +0.2781, 0 CONF, 3/8 | +0.6172, 1 CONF, 1/8 | −0.1388, 0 CONF, 2/8 |
 
 **The confirmations concentrate in the newest window** — `oi_squeeze_long` confirms 4 of 8 there
-and 0 in every older one — which is the shape F3's 1h control showed is not evidence. What does
-hold is the *sign*: both confirmers are positive in all four windows on 83–100% of judgeable
-draws, while the control is negative in all four. So there is a consistent direction and no
-confirmed magnitude.
+and 0 in every older one — which is the shape F3's 1h control showed is not evidence. At 4h the
+*sign* still held everywhere, which looked like something. **The 1h leg says it does not:**
 
-**And the reason the older windows cannot decide it is the window itself.** The 0.7 chain
-shrinks geometrically, so on a 3,000-bar series the last two tails are 441 and 309 bars — 2/8 and
-3/8 draws judgeable, medians of 16 and 22 holdout trades. At 12,000 bars the same chain gives
-3,600 / 2,520 / 1,764 / 1,235-bar tails, all deep. **The measurement that would verify `oi_*` is
-the one this section proposes**, which inverts the ordering the previous paragraph asserted: the
-window is not priced *against* `oi_*`, it is what `oi_*` needs.
+| window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
+|---|---|---|---|
+| `[8400,12000)` | +0.1829, 3 CONF, 8/8 | **+0.0039**, 0 CONF, 8/8 | −0.3453, 0 CONF, 8/8 |
+| `[5880,8400)` | +0.1691, 0 CONF, 8/8 | **−0.0606**, 0 CONF, 5/8 | −0.1836, 0 CONF, 8/8 |
+| `[4116,5880)` | **−0.1082**, 0 CONF, 8/8 | +0.1047, 0 CONF, 4/8 | −0.3801, 0 CONF, 8/8 |
+| `[2881,4116)` | +0.5983, 4 CONF, 7/8 | +0.4014, 0 CONF, 3/8 | −0.0520, 0 CONF, 7/8 |
+
+`oi_squeeze_long` turns **negative** in one window; `oi_unwind_short` is indistinguishable from
+zero in the newest, negative in the second, and confirms in **none** of the four. Only
+`oi_unwind_long` behaves consistently, and it is the negative control.
+
+**The cross-timeframe agreement was never two observations.** The 0.7 chain is applied to series
+that both span 500 days, so its windows are the *same calendar periods* at both timeframes —
+checked, not assumed:
+
+| tail | 4h bars | 1h bars | calendar |
+|---|---|---|---|
+| deepest | `[720,1029)` | `[2881,4116)` | 2025-07-20 → 2025-09-10 |
+| third | `[1029,1470)` | `[4116,5880)` | 2025-09-10 → 2025-11-22 |
+
+The largest positive at **both** timeframes — `oi_squeeze_long` +0.5983 (t = 4.12) at 1h and
++0.2781 at 4h, `oi_unwind_short` +0.4014 and +0.6172 — is one **52-day market period** sampled at
+two resolutions. F2's "CONFIRMED at both 1h and 4h" is the same artifact one level up: a 30%
+holdout is the last 150 days on either series, so that agreement is one period counted twice.
+The unit of independence is the market period, not the trade, and not the timeframe either.
+
+**These confirmations are not the defect `_periods_confirm` was built to catch, which is worth
+saying because a reader who knows that gate landed will assume otherwise.** Fresh pooled mints
+carry `period_r` and are judged by the period-level interval — verified directly: a CONFIRMED
+4h `oi_squeeze_long` draw carries `period_r` with **n = 5**, so it cleared a t at 4 degrees of
+freedom rather than a z over 43 trades. They pass that gate. What they do not survive is being
+asked the same question about a *different* stretch of time.
+
+**Verdict: `oi_*` is not verified.** Consistent direction at 4h, a sign flip at 1h, every
+confirmation single-draw and window-local, and the strongest evidence at both timeframes
+traceable to one 52-day window.
+
+**And that sharpens what a longer window is for.** The 0.7 chain shrinks geometrically, so on
+3,000 bars the last two tails are 441 and 309 bars — 2/8 and 3/8 draws judgeable. Depth is the
+obvious complaint and it is the lesser one: at n = 5 periods per holdout, **500 days simply does
+not contain enough independent market periods to confirm anything**, however many trades are
+packed into them. A 2,000-day window is worth taking for the periods, not the bars — roughly 20
+where there are now 5 — and that is the form the argument should take rather than the
+trades-per-tail one this section opened with.
 
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
