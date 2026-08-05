@@ -2092,6 +2092,36 @@ regardless; backoff and spacing on the factory's fetches; and the replay window 
 each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
 2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
+### F5. The clamp collected the draws it was meant to bound — fixed 2026-08-05, owed a generation
+
+`mutate_params` drew `base ± (hi − lo) × 0.35` and **clamped**, so any centre nearer a bound than
+its own span sent every overshoot to exactly that bound: one value, one rule hash, a parameter
+that had stopped varying rather than shifted. Measured across the library, **16 (parameter,
+space, base) combinations do it from their own template base, covering 114 of 170 template
+parameter slots** — `target_atr` 18.8%, `flow_ma_min` / `rel_min` 18.3%, `xs_dispersion_min`
+14.3%, `htf_sep_min` 11.9%, `oi_change_min` 9.2%, `flow_z_min` 8.0%, `stop_atr` 5.4%, nine more
+at 2.4%.
+
+**The half that matters is the half nobody measured.** `generate_batch` centres half of every
+batch on `elite_base_params`, so a pinned row becomes a centre ON the bound and re-pins half its
+own children. Of the 48 real elite centres this store supplies for the trend space, **7 (14.6%)
+sit exactly on `target_atr`'s 1.6 floor**, two re-pin >50%, sixteen more 20–50%, mean 15.0%.
+
+That is what makes the previously recorded fix wrong rather than merely partial. `_EXIT_BASE`'s
+note proposed raising the target base; measured from both centres it fixes the template half
+(14.5% → 0.0%), leaves the elite half at 15.0%, and moves the median drawn target 3.12 → 3.86 —
+half the effect, paid for by re-aiming the trend geometry toward the band F1's own table calls
+its worst. `_fold_into_bounds` reflects instead: **both halves to 0.0%**, median target
+3.12 → 3.03 and 3.22 → 3.25, median R:R 2.14 → 2.08 and 2.13 → 2.18 — inside the 0.05R nothing
+in this store resolves.
+
+**What is owed.** A mint-time change is judged over generations, not days (the `#420` error), and
+this one is placed against a store whose 1,507 non-fade rows carry the old draw. The check is the
+next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
+fall from ~12% toward zero, and the elite centres those rows become should stop reproducing it.
+Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
+random entry loses 0.13R here. What this buys is that the search covers the space it is given.
+
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
