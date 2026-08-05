@@ -287,7 +287,13 @@ DERIVATIVE_MAX_PAGES = 60
 # against -0.1428 over the other 422). Six rows is not evidence of an edge; it is a reason not
 # to drop the lane by accident. The two constants move together or the gain is paid for in the
 # one place the store had something to show.
-DERIVATIVE_HISTORY_DAYS = 520
+#
+# **They moved together on 2026-08-04**: 520 → 1,020 alongside `FACTORY_DEPTH_DAYS` 500 → 1,000,
+# keeping the same +20 of head-room over the window and staying inside the 1,500 the vendor was
+# measured to serve. `_oi_feed_reaches` therefore still answers True at 1h and 4h, and still
+# False at 1d — whose window is a 2,000-BAR floor, not a calendar span, and which no reachable
+# depth covers.
+DERIVATIVE_HISTORY_DAYS = 1020
 
 # Open-interest aggregation intervals the feed will request. `daily` is what every feature path
 # reads — it is the only depth that covers the factory's 500-day replay, since hourly history
@@ -304,9 +310,21 @@ OI_INTERVAL_1H = "1hour"
 OI_INTERVAL_SECONDS = {OI_INTERVAL_DAILY: 86_400, OI_INTERVAL_1H: 3_600}
 OI_INTERVALS = frozenset(OI_INTERVAL_SECONDS)
 COINALYZE = "coinalyze_market_data"
-FUNDING_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/fundingRate call
-FUNDING_MAX_PAGES = 4      # 8h cadence: 4 pages ≈ 3.6 years — beyond any window we replay
-DEFAULT_FUNDING_RECORDS = 1600  # ≥ 3 events/day × FACTORY_DEPTH_DAYS, with head-room
+FUNDING_PAGE_LIMIT = 1000  # what we ASK for per /fapi/v1/fundingRate call
+# **The venue serves 500 per call, not the 1,000 asked for, and the comment here did the
+# arithmetic with the wrong one.** It read "4 pages ≈ 3.6 years — beyond any window we replay",
+# which is precisely the claim that stops a reader from checking. Measured 2026-08-04 on
+# BTCUSDT, varying this constant alone: 4 pages → 2,000 events (667 d), 8 → 4,000 (1,333 d),
+# 12 → 6,000 (2,000 d). Linear at 500 a page, so the depth is ours to choose, and 4 bought 1.8
+# years rather than 3.6. 8 covers `FACTORY_DEPTH_DAYS` below with head-room, and the whole walk
+# measured 0.7 s against the 10 s `cycle.attach_feeds` allows it.
+FUNDING_MAX_PAGES = 8
+# ≥ 3 events/day × FACTORY_DEPTH_DAYS, with head-room: 1,000 d × 3 = 3,000, asked as 3,200
+# (1,067 d). The RECORD count is what binds the fetch — `FUNDING_MAX_PAGES` only has to be large
+# enough to serve it — so both have to move when the window does. Three a day is the venue's
+# settlement cadence, the same number `cost.FUNDING_INTERVALS_PER_DAY` states; restated rather
+# than imported because `cost` imports THIS module and the reverse would be a cycle.
+DEFAULT_FUNDING_RECORDS = 3200
 
 # Closed vocabulary, identical on both collectors and on Binance's interval strings.
 TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
@@ -368,7 +386,16 @@ _SYMBOL_PATTERN = re.compile(r"\A[A-Z0-9]{5,20}\Z")  # e.g. BTCUSDT; anchored (Q
 # all: a symbol that is well-formed for the WRONG venue must not reach that venue's endpoint.
 _HIP3_SYMBOL_PATTERN = re.compile(r"\A[a-z0-9]{2,10}:[A-Z0-9]{2,20}\Z")
 
-MAX_CANDLES = 60_000
+# Doubled with `FACTORY_DEPTH_DAYS` on 2026-08-04, and it had to be. At 1,000 days 15m computes
+# 96,000 bars, so 60,000 would have clamped it to 625 days — the one thing
+# `test_every_authorable_timeframe_gets_its_full_depth` exists to refuse, in its own words "the
+# clamp would silently shorten a window the factory depends on". 15m is off the factory rotation
+# today but still in `strategy.ALLOWED_TIMEFRAMES`, so it is authorable and the invariant is
+# live; leaving the clamp to bind would have made the window silently timeframe-dependent.
+#
+# It stays head-room rather than becoming a live limit: the vocabulary this bounds is a widening
+# DOWNWARD, and 5m at this depth would be 288,000 bars, still far above.
+MAX_CANDLES = 120_000
 DEFAULT_CANDLES = 120
 
 # Factory replay depth, expressed in CALENDAR days rather than a constant bar count.
@@ -376,11 +403,34 @@ DEFAULT_CANDLES = 120
 # factory's walk-forward slices land in the same session, so every candidate mined
 # there is single-regime by construction and cannot clear the robustness score.
 #
-# Every timeframe a strategy can actually be authored at (strategy.ALLOWED_TIMEFRAMES,
-# which is narrower than TIMEFRAMES above) fits under MAX_CANDLES at this depth — 15m
-# is the deepest at 48k bars. The clamp is therefore head-room, not a live limit; it
-# bounds egress and memory if the strategy vocabulary is ever widened downward.
-FACTORY_DEPTH_DAYS = 500
+# **1,000 rather than 500 since 2026-08-04, and the reason is judgeability, not edge.** Nothing
+# external ever bound this — the venue serves 2,522 days at 4h — so what 500 bought was a
+# holdout too short to judge what was mined against it: `MIN_HOLDOUT_TRADES` is an absolute
+# floor of 25 closed trades, and 41-47% of mints could never reach it. Measured on ETHUSDT and
+# BTCUSDT 4h, 10 re-scored specs each, replaying the same specs at three depths:
+#
+#   | depth | holdout bars | median holdout trades | judgeable |
+#   |-------|--------------|-----------------------|-----------|
+#   | 3,000 |          900 |            30  /   42 | 9/10, 10/10 |
+#   | 6,000 |        1,800 |            65  /   78 | 10/10, 10/10 |
+#   | 9,000 |        2,700 |            85  /  117 | 10/10, 10/10 |
+#
+# Trades scale ~linearly with depth; expectancy does not move in a consistent direction at
+# either cell, which is why this doubles rather than going to the 5x the venue would serve —
+# 3x was where the two cells stopped agreeing, and depth past the point that buys judgeability
+# is bought with regime relevance (the holdout extends BACKWARD; the newest bar is unchanged).
+#
+# **Three other constants have to move with it and did.** `DERIVATIVE_HISTORY_DAYS` (or the
+# `oi_*` families gate themselves out of 1h/4h — see there), `FUNDING_MAX_PAGES` and
+# `DEFAULT_FUNDING_RECORDS` (or `funding_fade_*`, which has no depth gate at all, mines a
+# two-thirds-covered window). Each was measured against its own feed before being turned; none
+# was limited by anything outside this repo.
+#
+# Every timeframe a strategy can actually be authored at (strategy.ALLOWED_TIMEFRAMES, which is
+# narrower than TIMEFRAMES above) must still fit under MAX_CANDLES — 15m is the deepest at 96k
+# bars here, which is why that clamp doubled in the same change rather than being left to shorten
+# 15m to 625 days behind a passing test suite.
+FACTORY_DEPTH_DAYS = 1000
 
 # The floor the calendar span does not provide. Expressing depth in days fixed the fast
 # timeframes and left the slow ones starved in the mirror-image way: 500 days is 48k bars

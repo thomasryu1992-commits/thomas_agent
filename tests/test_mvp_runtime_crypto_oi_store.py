@@ -139,9 +139,13 @@ def test_coverage_is_a_span_not_a_row_count(tmp_path):
 
 
 def test_an_empty_store_is_not_eligible_and_says_what_it_needs(tmp_path):
+    # 1,000 since `FACTORY_DEPTH_DAYS` doubled on 2026-08-04 — this store's target IS the
+    # replay window, deliberately, so the accumulation it is waiting on doubled with it. The
+    # live store held ~88 days when that happened; the wait it is reporting got longer, and
+    # that is a real cost of the deeper window rather than a number to pin independently.
     cov = oi_store.coverage(tmp_path, symbol="BTCUSDT")
     assert cov["rows"] == 0 and cov["eligible"] is False
-    assert cov["required_days"] == oi_store.REQUIRED_COVERAGE_DAYS == 500
+    assert cov["required_days"] == oi_store.REQUIRED_COVERAGE_DAYS == 1000
 
 
 def test_eligibility_takes_the_weakest_symbol(tmp_path):
