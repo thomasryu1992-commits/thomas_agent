@@ -278,9 +278,14 @@ def test_an_unknown_timeframe_is_refused(tmp_path):
     assert exc.value.reason_code == "ARCHIVE_TIMEFRAME_INVALID"
 
 
+# `servable` moved for 4h when `FACTORY_DEPTH_DAYS` doubled to 1,000 on 2026-08-04: the venue's
+# own 5,000-candle window is 833 days there, which cleared a 500-day factory and does not clear
+# a 1,000-day one. So the archive is now the only path at 15m, 1h **and 4h** — three of four
+# timeframes rather than two — and 1d is the only one the venue can still serve outright. The
+# ceilings themselves are properties of the venue and did not move.
 @pytest.mark.parametrize(
     "timeframe,days,servable",
-    [("15m", 52, False), ("1h", 208, False), ("4h", 833, True), ("1d", 5000, True)],
+    [("15m", 52, False), ("1h", 208, False), ("4h", 833, False), ("1d", 5000, True)],
 )
 def test_the_ceiling_says_which_timeframes_the_venue_can_never_serve(timeframe, days, servable):
     # The load-bearing arithmetic of this whole module. Below FACTORY_DEPTH_DAYS the venue's

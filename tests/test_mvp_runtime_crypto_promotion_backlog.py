@@ -503,10 +503,15 @@ def test_the_smallest_lifecycle_window_is_the_one_this_measures_against():
 
 
 def test_days_to_the_window_comes_from_the_candidates_own_evidence():
-    """1,500 trades over the 15m replay window is ~4 a day — under a week to twenty. Close to
-    the measured median for 15m on the real store, which is why the fixture uses it."""
+    """1,500 trades over the 15m replay window is ~2 a day — under a fortnight to twenty. Close
+    to the measured median for 15m on the real store, which is why the fixture uses it.
+
+    The fixture's trade count is held and the DAYS moved when `FACTORY_DEPTH_DAYS` doubled on
+    2026-08-04: the same 1,500 trades now describe twice the calendar, so the implied rate halves
+    and the wait doubles. That is the function reading the window rather than assuming one, which
+    is what its name claims and what this asserts."""
     fast = _candidate("cand_fast", timeframe="15m", closed=1500)
-    assert pool.days_to_lifecycle_window(fast) == pytest.approx(4.7, abs=0.2)
+    assert pool.days_to_lifecycle_window(fast) == pytest.approx(9.3, abs=0.2)
 
     # 27 trades over a 350-day 4h replay is 0.08 a day: 259 days — the real 4h store's 75th
     # percentile, and the fixture moved there when the cap moved to 130 (2026-08-02). The
