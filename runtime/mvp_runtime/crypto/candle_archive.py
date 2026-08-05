@@ -517,42 +517,66 @@ def refresh_book(
 
 
 def plan_pass(
-    symbols: Sequence[str], timeframes: Sequence[str], *, venue: str, root: Path | None = None
+    symbols: Sequence[str], timeframes: Sequence[str], *, venue: str, now_ms: int,
+    root: Path | None = None,
 ) -> list[tuple[str, str]]:
-    """The (symbol, timeframe) work list for one pass, most-perishable first.
+    """The (symbol, timeframe) work list for one pass: first fills first, then a rotating sweep.
 
-    A pass is bounded, so its ORDER decides what gets kept and what is lost — the books that
-    fall past the budget are the books that pay. Two facts set the priority, and neither is
-    about how much data a book would return:
+    A pass is bounded, so its ORDER decides what gets refreshed and what waits — and, if the
+    order never changes, what waits *forever*.
 
     **A book with no file yet is the only kind that is losing history right now.** The venue
     serves a rolling window, so an unarchived 15m book sheds roughly twelve of its oldest bars
     every hour, permanently. An already-archived book that goes a few passes without a refresh
     sheds nothing: its next refresh sizes itself from the newest bar it holds and refills the
     gap, which is `run_candle_archive`'s "a gap shorter than the ceiling self-heals". So every
-    first fill outranks every refresh — the loss is real on one side and zero on the other.
+    first fill outranks every refresh — the loss is real on one side and zero on the other, and
+    within the first fills the fast timeframes go first because only their clock is running.
 
-    **Within that, the fast timeframes go first**, in ``timeframes`` order. Measured 2026-08-04,
-    the archive holds ~4,753 bars of 15m (≈49 days against a 52-day ceiling) and 134 of 1d
-    (the symbols' entire listed history). 15m is days from the edge; 1d has nothing to lose at
-    all. Ordering by urgency rather than by symbol is the difference between losing the oldest
-    hour of one timeframe and losing it across all four.
+    **The refreshes then ROTATE, and that half is a bug fix.** This function shipped ordering
+    refreshes by timeframe too, which put 4h at work-list index 176 and 1d at 264 — permanently
+    past a 100-book budget, whatever the symbol rotation did, because that rotation moves
+    symbols inside a timeframe and never crosses the boundary between them. Measured on the
+    live store 2026-08-05, straight from the deployed code:
 
-    Stable, so the rotating symbol order the caller passes in survives inside each group.
+        within budget    : {'15m': 88, '1h': 12}
+        never attempted  : {'1h': 76, '4h': 88, '1d': 88}
+
+    176 books would never have been refreshed again. That is the same defect a fixed order plus
+    a finite budget produced on the symbol axis one PR earlier, rebuilt on the timeframe axis —
+    and worse for being silent: the pass reports `degraded=0` and a `deferred` count that reads
+    like "next time".
+
+    Refreshes rotate as one list rather than being ranked, because **no refresh is near its
+    ceiling.** 15m is the tightest and a refresh every fourth pass still accrues sixteen bars
+    against fifty-two days. Ranking them would be optimising a quantity with no deadline while
+    reintroducing the starvation this exists to prevent. The urgency ordering that does matter
+    is kept exactly where the deadline is real: the first fills.
+
+    The offset advances one book per minute, so with a window of ``books_per_pass`` the
+    consecutive windows of any cadence up to that many minutes OVERLAP rather than leaving
+    gaps, and a full sweep takes ``ceil(len / cadence_minutes)`` passes — four hours or so at
+    the registered hourly cadence. Minutes rather than a per-pass counter for the reason the
+    symbol rotation uses them: a counter would need state, and an hour-derived index is
+    identical for every pass of any sub-hourly schedule.
+
     Existence is a `stat`, deliberately not `newest_open_time` — that parses and hashes a whole
     book, and 352 of them at the top of every pass would cost more than the pass.
     """
-    ranked: list[tuple[str, str]] = [
-        (symbol, timeframe) for timeframe in timeframes for symbol in symbols
-    ]
     urgency = {timeframe: index for index, timeframe in enumerate(timeframes)}
-    return sorted(
-        ranked,
-        key=lambda book: (
-            archive_path(venue, book[0], _require_timeframe(book[1]), root).exists(),
-            urgency[book[1]],
-        ),
-    )
+    first_fills: list[tuple[str, str]] = []
+    refreshes: list[tuple[str, str]] = []
+    for timeframe in timeframes:
+        for symbol in symbols:
+            target = archive_path(venue, symbol, _require_timeframe(timeframe), root)
+            (refreshes if target.exists() else first_fills).append((symbol, timeframe))
+    # Already timeframe-major, so this only restates the intent; stable, so the caller's
+    # rotated symbol order survives inside each timeframe.
+    first_fills.sort(key=lambda book: urgency[book[1]])
+    if refreshes:
+        offset = (now_ms // 60_000) % len(refreshes)
+        refreshes = refreshes[offset:] + refreshes[:offset]
+    return first_fills + refreshes
 
 
 def run_candle_archive(
@@ -589,10 +613,12 @@ def run_candle_archive(
     Folding them together is what let an 80% loss read like a completed day.
 
     **The pass is ordered by what is perishing, not by symbol** — `plan_pass` decides, and
-    carries the reasoning. Briefly: every first fill before every refresh, and inside each of
-    those, the fast timeframes first. A bounded pass that walked symbol-major gave a quarter of
-    the symbols all four of their timeframes and the rest nothing, which spends the budget on
-    1d books that cannot lose anything while 15m books that shed twelve bars an hour wait.
+    carries the reasoning. Briefly: every first fill before every refresh, fast timeframes first
+    inside the first fills, and then the refreshes as one ROTATING sweep so that no book can sit
+    permanently past the budget. A bounded pass that walked symbol-major gave a quarter of the
+    symbols all four of their timeframes and the rest nothing; ranking the refreshes too then
+    put 4h and 1d past the budget forever. Both are the same failure — a fixed order and a
+    finite budget — and `plan_pass` records the measurement for each.
 
     **Iteration starts at a rotating offset.** Every pass used to walk the venue's order from
     the top, so a pass that ended early always ended in the same place: the first real pass
@@ -623,7 +649,7 @@ def run_candle_archive(
         offset = (now_ms // 60_000) % len(order)
         order = order[offset:] + order[:offset]
 
-    work = plan_pass(order, timeframes, venue=venue, root=root)
+    work = plan_pass(order, timeframes, venue=venue, now_ms=now_ms, root=root)
 
     planned = min(len(work), max(1, books_per_pass))
     written = 0
