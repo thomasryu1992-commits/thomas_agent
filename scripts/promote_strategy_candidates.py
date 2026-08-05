@@ -66,7 +66,8 @@ EXIT_BLOCKED = 3
 def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
                 allow_duplicates: bool = False,
-                allow_unrecorded_evidence_depth: bool = False) -> dict:
+                allow_unrecorded_evidence_depth: bool = False,
+                allow_quarantined_derivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
@@ -74,6 +75,7 @@ def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = 
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
         allow_duplicates=allow_duplicates,
+        allow_quarantined_derivation=allow_quarantined_derivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -95,6 +97,7 @@ def run_promotion(
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False, allow_oversized_pool: bool = False,
+    allow_quarantined_derivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -112,7 +115,10 @@ def run_promotion(
     never refused (see ``pool.assert_promotable_evidence_depth``). A batch that would put
     the same strategy in the pool twice under different rule hashes refuses with
     ``CANDIDATE_SEMANTIC_DUPLICATE`` unless ``allow_duplicates`` says otherwise — see
-    ``pool.assert_no_semantic_duplicates``. A promotion that would leave the pool with more
+    ``pool.assert_no_semantic_duplicates``. A candidate minted by a derivation the live pool
+    does not take refuses with ``CANDIDATE_DERIVATION_NOT_PROMOTABLE`` unless
+    ``allow_quarantined_derivation`` says otherwise; a row that names no derivation at all is
+    legacy and passes — see ``pool.assert_promotable_derivation``. A promotion that would leave the pool with more
     routable strategies than the lifecycle can ever judge refuses with
     ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED`` unless ``allow_oversized_pool``
     says otherwise — see ``pool.assert_pool_within_size_cap``. Every escape stays out of
@@ -169,6 +175,12 @@ def run_promotion(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
             )
+        # And last of all, the axis that is about neither the evidence nor the pool but about
+        # the ROW: what minted it. Ordered last because it is the only one of the four that
+        # refuses nothing today — it stands here so that an experimental derivation cannot
+        # reach the live pool through the ordinary door on the day someone starts minting one.
+        if not allow_quarantined_derivation:
+            pool_store.assert_promotable_derivation(candidates)
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -285,6 +297,11 @@ def run_promotion(
         # attribution that is not written down is just a listing nobody kept.
         "evidence_depths": [pool_store.evidence_depth_of(c) for c in candidates],
         "unrecorded_evidence_depth_escape": bool(allow_unrecorded_evidence_depth),
+        # How each promoted row was minted, and whether the door that reads it was stepped
+        # around. Recorded for the same reason the basis and the depth are: an escape that
+        # leaves no trace is indistinguishable, a month later, from a door that never refused.
+        "derivations": [c.get("derivation_type") for c in candidates],
+        "quarantined_derivation_escape": bool(allow_quarantined_derivation),
         "created_at": now,
     }
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
@@ -321,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
                              "how much market its verdict was earned on cannot be read and cannot "
                              "be re-derived (recorded as such). A KNOWN shallow window needs no "
                              "escape — it is ranked, not refused.")
+    parser.add_argument("--allow-quarantined-derivation", action="store_true",
+                        help="explicit escape: promote a candidate minted by a derivation the "
+                             "live pool does not take (recorded as such). Refuses nothing on "
+                             "today's store — every derivation minted so far is promotable.")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -427,6 +448,22 @@ def main(argv: list[str] | None = None) -> int:
                   "factory, or")
             print("      pass --allow-unrecorded-evidence-depth. A merely SHALLOW row needs no "
                   "escape.")
+        # The axis that refuses on how a row was MADE rather than on what it measured, reported
+        # here for the same reason as the one above: an operator picking from this list should
+        # never meet a refusal for the first time at the door. Silent on today's store, where
+        # every derivation minted so far is promotable.
+        quarantined = [
+            pool_store.candidate_id(c) for c in candidates
+            if "derivation_type" in c
+            and c.get("derivation_type") not in pool_store.PROMOTABLE_DERIVATION_TYPES
+        ]
+        if quarantined:
+            print(f"      {len(quarantined)} row(s) were minted by a derivation the live pool "
+                  "does NOT take and are")
+            print("      REFUSED at the promotion door (CANDIDATE_DERIVATION_NOT_PROMOTABLE); "
+                  "these rows exist to")
+            print("      accrue evidence, not to trade. Pass --allow-quarantined-derivation "
+                  "only deliberately.")
         # The mixing is reported, but it is also fixable for the number that matters most:
         # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
         # is exactly derivable from what its evidence already records. `exp@` below is that
@@ -537,7 +574,8 @@ def main(argv: list[str] | None = None) -> int:
                 selectors=selectors, keep_active=args.keep_active,
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
                 allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
-                allow_duplicates=args.allow_duplicates)
+                allow_duplicates=args.allow_duplicates,
+                allow_quarantined_derivation=args.allow_quarantined_derivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
             return EXIT_BLOCKED
@@ -564,6 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
         allow_duplicates=args.allow_duplicates,
         allow_oversized_pool=args.allow_oversized_pool,
+        allow_quarantined_derivation=args.allow_quarantined_derivation,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "

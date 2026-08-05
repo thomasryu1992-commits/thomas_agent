@@ -51,6 +51,7 @@ def _candidate(
     net_r=16.0,
     rule_hash=None,
     bars_replayed=_MISSING,
+    derivation=None,
 ):
     """One candidate row. Defaults describe a lineage the door would accept today.
 
@@ -82,7 +83,12 @@ def _candidate(
     # refuses it, correctly, because rescaling a share whose old rate is unknown is a guess.
     if maker is not None:
         cost_summary["total_maker_fee_cost_r"] = 0.5
+    # Absent by default, because that is what the store's own history looks like: the field
+    # arrived with lineage and 402 rows predate it. A case that means to exercise the
+    # derivation axis says which derivation it means.
+    lineage = {"derivation_type": derivation} if derivation is not None else {}
     return {
+        **lineage,
         "candidate_id": cid,
         "strategy_id": "S001",
         "generation_id": "GEN-001",
@@ -473,6 +479,29 @@ def test_the_backlog_does_not_count_what_the_depth_gate_refuses():
         _candidate("cand_no_window", family="breakout", bars_replayed=None),
     ])
     assert result["candidate_ids"] == ["cand_windowed"]
+
+
+def test_the_backlog_does_not_count_what_the_derivation_gate_refuses():
+    """The third axis, added at the door and here in the same change rather than seven
+    minutes later. A row whose derivation the pool does not take cannot become promotable by
+    scoring better, so advertising it would be worse than advertising a fixable failure.
+
+    Refuses nothing on today's real store — every derivation minted so far is promotable —
+    which is exactly why the axis has to be pinned by a fixture instead of by the store."""
+    result = _backlog([
+        _candidate("cand_seeded", derivation="seeded_template"),
+        _candidate("cand_trial", family="breakout", derivation="trial_family"),
+    ])
+    assert result["candidate_ids"] == ["cand_seeded"]
+    assert result["refused"]["derivation"] == 1
+    assert sum(result["refused"].values()) + result["count"] == result["candidates_read"]
+
+
+def test_a_row_that_names_no_derivation_is_still_backlog():
+    """402 rows in the real store predate the field. Refusing them would be a schema vintage
+    acting as a quality judgement — the legacy rule `validate_candidate_lineage` applies."""
+    result = _backlog([_candidate("cand_legacy")])
+    assert result["count"] == 1
 
 
 def test_a_shallow_row_is_still_backlog_because_the_door_still_promotes_it():
