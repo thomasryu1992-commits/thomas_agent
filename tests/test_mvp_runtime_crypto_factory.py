@@ -189,6 +189,103 @@ def test_an_ordered_parameter_still_centres_on_its_base():
     assert 22 <= statistics.median(drawn) <= 26
 
 
+# --- the bound bounds the draw, it does not collect it --------------------------
+#
+# `mutate_params` clamped until 2026-08-05, so a centre nearer a bound than its own span sent
+# every overshoot to exactly that bound. That is not a bounded distribution, it is a delta on
+# the edge — one value, one rule hash — and it RATCHETED: `generate_batch` centres half of every
+# batch on `elite_base_params`, so a pinned row becomes a centre on the bound and a centre on
+# the bound sends half its own children back to it.
+
+def test_no_parameter_in_the_library_stacks_draws_on_its_own_bound():
+    """The property, asserted over the whole library rather than over one space, because it was
+    diagnosed as one parameter's problem and it never was: measured 2026-08-05, 16 (parameter,
+    space, base) combinations pinned from their own template base — covering 114 of 170 template
+    parameter slots — led by `target_atr` 18.8%, `flow_ma_min` and `rel_min` 18.3%,
+    `xs_dispersion_min` 14.3%, `htf_sep_min` 11.9%."""
+    for template in factory.TEMPLATES:
+        rng = random.Random(17)
+        draws = [mutate_params(template.base_params, template.param_space, rng)
+                 for _ in range(2000)]
+        for name, spec in template.param_space.items():
+            if not spec.ordered:
+                continue
+            on_bound = sum(1 for d in draws
+                           if abs(d[name] - spec.lo) < 1e-9 or abs(d[name] - spec.hi) < 1e-9)
+            # An integer parameter legitimately lands on its bound — 12 and 48 are values, not
+            # overflow — so it is judged against a uniform's share of one grid point, generously.
+            ceiling = 0.08 if spec.integer else 0.01
+            assert on_bound / len(draws) < ceiling, (
+                f"{template.family}.{name}: {on_bound / len(draws):.1%} of draws sit on a bound "
+                f"of {[spec.lo, spec.hi]} from base {template.base_params[name]}"
+            )
+
+
+def test_a_centre_on_the_bound_does_not_send_half_its_children_back_to_it():
+    """The ratchet, in isolation. Under the clamp a centre sitting exactly on `target_atr`'s
+    floor re-pinned ~50% of its own draws; the store's real elite centres included seven such
+    rows (14.6% of the 48 it supplies for the trend space), two of them re-pinning above 50%."""
+    rng = random.Random(19)
+    centre = {**factory._EXIT_BASE, "target_atr": factory._EXIT_PARAMS["target_atr"].lo}
+    draws = [mutate_params(centre, factory._EXIT_PARAMS, rng)["target_atr"] for _ in range(8000)]
+    on_floor = sum(1 for d in draws if abs(d - factory._EXIT_PARAMS["target_atr"].lo) < 1e-9)
+    assert on_floor / len(draws) < 0.01, f"{on_floor / len(draws):.1%} re-pinned on the floor"
+    assert max(draws) > 3.0, "the fold must spread the overshoot INTO the space, not delete it"
+
+
+def test_the_fold_keeps_the_aim_where_truncating_would_move_it():
+    """Why a fold and not a redraw inside the surviving window. Truncating is the other obvious
+    repair — it is what `_apply_reward_risk_floor` correctly does for a hard floor — but it
+    answers a different question near a bound: from a centre ON `target_atr`'s 1.6 floor a
+    truncated draw means 2.72, where the fold holds the median near the centre it was given.
+
+    A mutation is a claim about a NEIGHBOURHOOD. The point of this change was to fix the shape
+    of the draw without moving where it aims, and that is the half that is easy to lose."""
+    rng = random.Random(23)
+    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["target_atr"]
+             for _ in range(20000)]
+    assert abs(statistics.median(draws) - factory._EXIT_BASE["target_atr"]) < 0.25, (
+        f"median {statistics.median(draws):.3f} against a base of "
+        f"{factory._EXIT_BASE['target_atr']} — the draw has been re-aimed, not reshaped"
+    )
+
+
+def test_the_low_target_region_survives_as_a_region_rather_than_a_spike():
+    """What the fold did to the band `_apply_reward_risk_floor` refuses to delete. It was 23.5%
+    of draws with 14.4pp of that stacked on the single value 1.6; it is now ~17% spread across
+    [1.6, 2.0). The store's own numbers say that is not a loss: the pinned value measured
+    -0.2642R against -0.2502R for the rest of the band, so the spike was the WORSE half of the
+    region it was standing in."""
+    rng = random.Random(37)
+    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["target_atr"]
+             for _ in range(20000)]
+    low = [d for d in draws if d < 2.0]
+    assert len(low) / len(draws) > 0.15, "the low band has been squeezed out, not un-spiked"
+    on_floor = sum(1 for d in low if abs(d - 1.6) < 1e-9)
+    assert on_floor / len(low) < 0.05, (
+        f"{on_floor / len(low):.1%} of the low band is still the single pinned value"
+    )
+
+
+def test_the_fold_holds_for_a_span_wider_than_its_own_interval():
+    """No space in the library reaches this (the widest is `max_holding_bars`, span 12.6 against
+    a width of 36), and a single reflection would land outside the bounds when one does."""
+    assert factory._fold_into_bounds(100.0, 0.0, 1.0) == pytest.approx(0.0)
+    assert factory._fold_into_bounds(-100.5, 0.0, 1.0) == pytest.approx(0.5)
+    rng = random.Random(41)
+    space = {"x": ParamSpec(0.0, 1.0)}
+    for _ in range(2000):
+        # scale 8.0 puts the window at ±8 against an interval of width 1
+        out = mutate_params({"x": 0.5}, space, rng, scale=8.0)
+        assert 0.0 <= out["x"] <= 1.0
+
+
+def test_the_fold_leaves_a_draw_that_never_left_the_space_alone():
+    """It must be identity inside the interval, or it is a second perturbation."""
+    for value in (0.0, 0.25, 1.0, 3.999):
+        assert factory._fold_into_bounds(value, 0.0, 4.0) == pytest.approx(value)
+
+
 def test_an_unordered_continuous_parameter_is_refused():
     """Silently truncating it to an integer is the failure this refuses at import."""
     with pytest.raises(ValueError):

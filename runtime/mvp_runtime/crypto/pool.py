@@ -924,6 +924,51 @@ def validate_candidate_lineage(record: Mapping[str, Any], known_ids: frozenset[s
         raise ToolError("UNKNOWN_PARENT_CANDIDATE", f"parents not in the candidate store: {unknown}")
 
 
+# Which of those derivations a candidate may be PROMOTED on. Deliberately a separate literal
+# rather than an alias of :data:`DERIVATION_TYPES`, and the difference is the whole point of
+# the constant: that set answers "may the store hold this row", this one answers "may this row
+# reach the live pool". Aliasing them would make every future addition to the closed set
+# promotable on the day it was added — and the addition `docs/REMAINING_WORK.md` §I2 is
+# designed around is a TRIAL family, whose rows exist to accrue evidence and must never trade.
+# Widening the door is therefore its own edit here, in a diff that says so, rather than a side
+# effect of widening the store.
+PROMOTABLE_DERIVATION_TYPES = frozenset({"seeded_template", "crossover", "mutation"})
+
+
+def assert_promotable_derivation(records: list[Mapping[str, Any]]) -> None:
+    """Refuse a promotion of rows the store admits but the live pool must not take.
+
+    Absence passes, on the same legacy rule :func:`validate_candidate_lineage` applies — 402
+    rows in this store predate the field, and refusing them would be a schema vintage acting
+    as a quality judgement (the `candidate_id` legacy rule, again). What is refused is a row
+    that DOES name a derivation and names one outside
+    :data:`PROMOTABLE_DERIVATION_TYPES`.
+
+    **Today this refuses nothing**, because every derivation the store admits is also
+    promotable. It is written now so that ceasing to be true takes an explicit edit at this
+    door rather than an addition somewhere else: a quarantine is only load-bearing if it is
+    already standing before the first row it must stop is minted, and the alternative — adding
+    it in the same increment that starts minting them — is the shape of change that has
+    historically been merged with one of its two halves missing.
+
+    Raises `CANDIDATE_DERIVATION_NOT_PROMOTABLE`, naming every offending candidate."""
+    refused = [
+        (candidate_id(record), record.get("derivation_type"))
+        for record in records
+        if "derivation_type" in record
+        and record.get("derivation_type") not in PROMOTABLE_DERIVATION_TYPES
+    ]
+    if refused:
+        listed = ", ".join(f"{cid} ({kind!r})" for cid, kind in refused)
+        raise ToolError(
+            "CANDIDATE_DERIVATION_NOT_PROMOTABLE",
+            f"were minted by a derivation the live pool does not take: {listed}. Promotable "
+            f"derivations are {sorted(PROMOTABLE_DERIVATION_TYPES)} — re-mint the lineage "
+            f"through the ordinary factory rotation, or pass the explicit "
+            f"--allow-quarantined-derivation escape.",
+        )
+
+
 def resolve_candidates(selectors: list[str], root: Path | None = None) -> list[dict[str, Any]]:
     """Resolve operator selectors to candidate records, fail-closed.
 
@@ -1514,6 +1559,7 @@ PROMOTION_BACKLOG_ALERT_THRESHOLD = 5
 # folded into a label that does not describe it.
 BACKLOG_REFUSAL_AXES = (
     "already_active",
+    "derivation",
     "cost_basis",
     "evidence_depth",
     "holdout_insufficient",
@@ -1712,6 +1758,18 @@ def promotable_backlog(
         judged += 1
         if record.get("strategy_rule_hash") in active_hashes:
             refused["already_active"] += 1
+            continue
+        # Before every evidence axis, because this is not an evidence question. A row whose
+        # derivation the pool does not take cannot become promotable by scoring better, so
+        # charging it to `cost_basis` or `verdict` would advertise a failure an operator could
+        # act on. Present here rather than left for later on the rule the depth axis below
+        # states: the chain has to name every axis the door refuses on, and that one was
+        # missing for exactly one merge because it was added at the door first and counted
+        # second. Zero on today's store — see `assert_promotable_derivation` for why the axis
+        # exists before the rows it refuses do.
+        if ("derivation_type" in record
+                and record.get("derivation_type") not in PROMOTABLE_DERIVATION_TYPES):
+            refused["derivation"] += 1
             continue
         quality = candidate_quality(
             record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
