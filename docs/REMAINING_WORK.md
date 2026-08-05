@@ -2122,6 +2122,78 @@ fall from ~12% toward zero, and the elite centres those rows become should stop 
 Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
 random entry loses 0.13R here. What this buys is that the search covers the space it is given.
 
+### F6. The regime label folds volatility over trend, and one live family still pays for it — audited 2026-08-05
+
+F3 found the fold in `htf_trend_*` and #497 replaced that pair. **The same audit was never run
+over the rest of the library.** It has been now. `classify_market_regime` tests volatility
+before it tests trend, so every label it emits carries two variables and one hard-coded
+threshold (`ADX_TREND_THRESHOLD = 20.0`, inside the label, where no search can reach it):
+
+```
+RANGE == (0.20 < atr_percentile < 0.80) AND adx < 20      # not "no trend"
+```
+
+Four template pairs gate on a categorical today. Three are already resolved:
+
+| family | gate | verdict |
+|---|---|---|
+| `htf_pullback_long/short` | `htf_market_regime == TREND_UP/DOWN` | open under F3 — measured, and F3's own follow-up says the rule is not the defect |
+| `oi_squeeze_long/short` | `market_regime != TREND_UP/DOWN` | **already fixed by this precedent** — `== "RANGE"` fired the full condition on 0.43% of ETHUSDT 1h bars against 4.88% for `!=`; the builder records it |
+| `session_trend_long/short` | `session == <label>` | not a fold. Three named buckets with no order, deliberately categorical; `CATEGORICAL_FEATURES["session"]` argues it |
+| `mean_reversion` / `_short` | `market_regime == "RANGE"` | **the one still paying** |
+
+**And it is judgeability that it costs, not edge.** Measured on the store (latest-wins,
+1,620 rows), against the fade families that share `_FADE_EXIT_PARAMS` and carry no regime gate
+(`funding_fade_*`, `premium_fade_*`, `taker_absorption_*`, `oi_unwind_*`) as the control:
+
+| timeframe | `mean_reversion_*` median closed | ungated fade median closed |
+|---|---|---|
+| 4h | **3.5** (n=20) | 32.0 (n=35) |
+| 1d | **2.5** (n=2) | 24.5 (n=4) |
+| 1h | 13.0 (n=18) | 78.0 (n=37) |
+| 15m | 68.0 (n=20) | 301.0 (n=18) |
+
+`MIN_HOLDOUT_TRADES` is 25. **At 4h and 1d this family cannot reach a verdict at all**, which
+is F1's mechanism in a seeded template — the same finding F3 reported for `htf_pullback_*`, from
+a different cause. RANGE is 4.3% of the control's traded bars; `HIGH_VOLATILITY`, which the
+label excludes, is **37.9%**.
+
+**The two excluded bands do not measure alike, and neither result is strong.** Paired within
+(family, timeframe) on the control, R/trade:
+
+- RANGE − `HIGH_VOLATILITY` = **−0.0085R**, 5 of 11 cells — a coin flip under the 0.05R floor
+  nothing in this store resolves. So the band carrying 37.9% of the sample costs nothing to admit.
+- RANGE − `LOW_VOLATILITY` = **+0.6454R**, 4 of 5 cells — large, but on 53 trades in total, and
+  `LOW_VOLATILITY` is the worst band in the table (−0.4018R/trade). Excluding it is defensible.
+
+**Limits, stated because they bound the proposal.** These are IN-SAMPLE per-regime breakdowns
+(`backtest_evidence.regime_breakdown`), and the control's entries are z-score and flow rules
+rather than `mean_reversion`'s RSI — so "how a fade performs in HIGH_VOLATILITY" is measured on
+different entries than the one that would move.
+
+**The proposal, and it is not shipped.** Replace the label with the trend test it folds, at
+**identical `free_parameters`** — `count_free_parameters` charges one literal either way
+(verified: `literals = sum(1 for c in conditions if c.value is not None)`), and both `adx` and
+`atr_percentile` are already in `NUMERIC_FEATURES`:
+
+```python
+# mean_reversion_long, today          # proposed
+{"feature": "rsi", "<=": p},          {"feature": "rsi", "<=": p},
+{"market_regime": "== RANGE"},        {"feature": "adx", "<=": p["adx_max"]},
+```
+
+This gives the search the 20.0 the label hard-codes and drops the volatility fold. On the
+`volatility_squeeze_*` / #497 precedent it would REPLACE rather than add, since a family is
++1 hypothesis charged to `selection_adjusted_z` for every other family in the store.
+
+**What is missing is the measurement that would justify it**, and it is the same one #497 ran:
+paired draws, exits from their own rng so the entry rule is the only difference between arms,
+`backtest_spec_pooled` across the cohort at 4h and 1h. **It needs venue frames this host does
+not hold** — `candle_archive` carries hyperliquid equity perps only and has "no consumer in the
+feature or backtest path" by design — so running it means adding fetch volume to the IP the live
+cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
+of a method.
+
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
