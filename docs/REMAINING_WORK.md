@@ -1880,7 +1880,8 @@ this repo. The gate in `_oi_feed_reaches` stays exactly as it is — it is the t
 forgetting to raise them *safe* rather than silent.
 
 **Which matters because `oi_*` is where the only confirmations are, and they are not yet
-verified.** F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
+verified.** Everything measured below predates #529 and was taken at the **500-day**
+window; see the closing paragraph for why that basis is load-bearing rather than incidental. F2's corrected batch has `oi_squeeze_long` and `oi_unwind_short` CONFIRMED at both
 1h and 4h. Walked backwards through the same adjacent, non-overlapping windows F3 uses, at 4h:
 
 | window | `oi_squeeze_long` | `oi_unwind_short` | `oi_unwind_long` (control) |
@@ -1931,13 +1932,31 @@ asked the same question about a *different* stretch of time.
 confirmation single-draw and window-local, and the strongest evidence at both timeframes
 traceable to one 52-day window.
 
-**And that sharpens what a longer window is for.** The 0.7 chain shrinks geometrically, so on
-3,000 bars the last two tails are 441 and 309 bars — 2/8 and 3/8 draws judgeable. Depth is the
-obvious complaint and it is the lesser one: at n = 5 periods per holdout, **500 days simply does
-not contain enough independent market periods to confirm anything**, however many trades are
-packed into them. A 2,000-day window is worth taking for the periods, not the bars — roughly 20
-where there are now 5 — and that is the form the argument should take rather than the
-trades-per-tail one this section opened with.
+**And it says something specific about why, which #529 has since acted on.** The obvious
+complaint is depth — the 0.7 chain shrinks geometrically, so on 3,000 bars the last two tails are
+441 and 309 bars at 2/8 and 3/8 draws judgeable. That is the lesser problem. `HOLDOUT_PERIODS`
+is a **fixed 5** and stays 5 at any window (bounded below by `MIN_HOLDOUT_PERIODS = 4`, the
+smallest sample a two-sided t can fail on; bounded above because finer slices buy correlation,
+not evidence). So a deeper window does not add periods — **it lengthens them**, and that is
+exactly what was wrong:
+
+| window | holdout tail | slice = tail / 5 | vs the ~50-day block scale the period test was built on |
+|---|---|---|---|
+| 500 d (when everything above was measured) | 150 d | **30 d** | below it — five slices that look independent and are not |
+| 1,000 d (#529) | 300 d | **60 d** | above it |
+
+**So every `oi_*` verdict on this page was drawn on slices finer than the correlation scale.**
+That is a cleaner statement of the same defect the calendar table shows: the confirmations were
+counted as five observations when the market was not offering five. `factory.HOLDOUT_PERIODS`'
+own comment reached the conclusion first — *"at today's 500-day window this is not enough periods
+to confirm anything… what reopens it is a deeper window, not a smaller number here"* — and #529
+then doubled the window with `DERIVATIVE_HISTORY_DAYS` and `FUNDING_MAX_PAGES` moved to match.
+
+**The open item, therefore, is a re-run rather than a new argument.** Every measurement in this
+section predates #529 and should be repeated at 1,000 days before `oi_*` is called either way.
+The prediction it would test is specific: if the confirmations were slice-correlation artifacts
+they should thin out at 60-day slices, and if they are not they should survive with a wider
+interval and fewer of them.
 
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
