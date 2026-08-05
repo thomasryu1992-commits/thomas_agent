@@ -857,8 +857,13 @@ def _execute(
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:
             ledger.append_records(result["generation_id"], {"crypto_factory": result})
-        return (f"generated={result['accepted_count']} fused={result.get('fused_count', 0)} "
-                f"gen={result['generation_id']}")
+        # `generated=N/M` rather than `generated=N`: a fire that fell short of what it asked for
+        # recorded the shortfall in the ledger and said nothing here, so the only operator-facing
+        # number read as a quantity. A stuck family is the one way to reach it (see
+        # `factory._MAX_ATTEMPTS_PER_SPEC`) and it has never happened; the point is that it would
+        # be legible if it did.
+        return (f"generated={result['accepted_count']}/{result['requested_count']} "
+                f"fused={result.get('fused_count', 0)} gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
