@@ -34,5 +34,9 @@ workspace/
 # Build/compose output logs (regenerated artifacts; never shared source)
 *.log
 
+# pytest --junitxml report, written by CI for scripts/check_test_skips.py and by anyone
+# reproducing that check locally. A run artifact, not source.
+junit.xml
+
 # Claude Code worktrees: local, per-session working copies of this repo (never source).
 .claude/worktrees/

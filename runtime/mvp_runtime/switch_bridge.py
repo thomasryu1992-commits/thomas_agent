@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from . import approval as approval_mod
-from . import control, socket_door, timeutil
+from . import bridge_idempotency, control, socket_door, timeutil
 from .approval_store import ApprovalStore
 from .binding import bind_task_to_core
 from .control import ControlStore
@@ -88,10 +88,24 @@ _ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISAB
 
 # Every key this door will act on. An unexpected key is refused rather than ignored: a frame
 # carrying something this module does not understand must not be treated as a frame that means
-# what the understood subset says.
+# what the understood subset says. `request_id` is optional and carries no authority — see
+# `_ENABLE_DOOR` for which verb actually uses it and why the other two do not.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"command", "domain", "reason", "mode", "approval_id"}
+    {"command", "domain", "reason", "mode", "approval_id", bridge_idempotency.REQUEST_ID_KEY}
 )
+
+# `enable` is the only verb here with a duplicate worth preventing, and it has two of them. The
+# ask shape mints an APPROVAL_REQUIRED record, so a retried frame puts a SECOND pending approval
+# in front of Thomas for one intent — the failure mode where he answers one and the other sits
+# there spendable. The spend shape is already single-use through the approval itself, but a
+# retry gets `ALREADY_CONSUMED`, which reads like a refusal for something that in fact worked.
+#
+# `status` and `disable` are deliberately NOT wired to this. `status` has no effect. `disable`
+# is idempotent by construction (KILLED applied to a KILLED runtime is the same runtime) and is
+# the emergency stop: putting a file lock on the path a halt takes buys nothing and adds a way
+# for a stop to block. An emergency control you must first acquire a lock for is a worse trade
+# than the duplicate it would prevent.
+_ENABLE_DOOR = "switch.enable"
 
 # Stopping has two shapes and the caller picks; both are already in the policy's
 # `emergency_controls_allowed`. Built from control's own constants so a rename there cannot
@@ -112,10 +126,32 @@ _SWITCH_TARGET_PREFIX = "trading_switch:"
 SOCKET_REL = ".runtime_governance_state/bridge/switch.sock"
 SOCKET_ENV = "MVP_SWITCH_BRIDGE_SOCKET"
 
+# Deliberately not 1. This door carries the stop AND the start, and the start is the slow one
+# (approval store, Core binding, fingerprint). A ceiling of one would let an in-flight `enable`
+# refuse the `disable` behind it — the same failure that made this door its own service in the
+# first place, reproduced inside it. See `socket_door.DEFAULT_MAX_CONCURRENT_REQUESTS`.
+MAX_CONCURRENT_REQUESTS = 4
+
 
 def socket_path(root: Path | None = None) -> Path:
     """The socket path, overridable per-deployment via ``MVP_SWITCH_BRIDGE_SOCKET``."""
     return socket_door.resolve_socket_path(SOCKET_ENV, SOCKET_REL, root)
+
+
+def _echo_request_id(request: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
+    """Say the id back on the two verbs that do not dedup on it.
+
+    This door's rule is that a key it does not act on is refused rather than ignored, because a
+    caller that sent it believed it would be used. ``request_id`` is now a key the door *does*
+    understand, and `status` and `disable` deliberately do nothing with it (see `_ENABLE_DOOR`)
+    — which lands in exactly the gap that rule exists to close. Echoing it is the honest
+    middle: the caller can see the field arrived, and can see from `replayed` being absent that
+    this was a fresh application rather than a repeat.
+    """
+    request_id = request.get(bridge_idempotency.REQUEST_ID_KEY)
+    if request_id is not None:
+        reply[bridge_idempotency.REQUEST_ID_KEY] = request_id
+    return reply
 
 
 def _require_reason(request: dict[str, Any]) -> str:
@@ -255,6 +291,30 @@ def _spend(
             f"the approved domain {domain!r} is not one this door switches",
         )
 
+    # **The effect below is global; the grant above is not.** `control.CMD_RESUME` clears the
+    # one kill switch this runtime has — `ControlState` has no `domain` field and every
+    # consumer (crypto's `live_route`, `paper`, `cycle`, the scheduler) reads that same state.
+    # The approval, meanwhile, is minted per domain: `target_ref` is `trading_switch:<domain>`,
+    # the domain is inside the action fingerprint, and `permission.py` writes the constraint
+    # "Approval is single-use and authorizes this domain's switch only."
+    #
+    # Today those agree, for one reason only: there is exactly one domain. The module comment
+    # above `_ALLOWED_DOMAINS` says `prediction` joins the set "and that is the whole change" —
+    # and on this line, it is not. Adding a second domain would make a `crypto` grant re-arm
+    # `prediction` too, which is the constraint text saying one thing while the effect does
+    # another, in the direction that starts something nobody approved.
+    #
+    # So the mismatch is refused rather than documented. This cannot fire while the set has one
+    # member; it fires the moment someone widens it without giving control state a domain, which
+    # is exactly when it should. A test pins that by widening the set.
+    if len(_ALLOWED_DOMAINS) > 1:
+        raise ControlBlocked(
+            "DOMAIN_EFFECT_MISMATCH",
+            f"this door switches {sorted(_ALLOWED_DOMAINS)} but the runtime has one global "
+            f"kill switch, so re-arming {domain!r} would re-arm the others on a grant that "
+            f"names only {domain!r}. Give control state a domain before widening this door",
+        )
+
     # Single-use under a cross-process lock, the rule R10 established: the stored status is
     # re-read and the CONSUMED record appended inside one exclusion, so two concurrent spends
     # cannot both pass (the loser gets ALREADY_CONSUMED). The effect is applied inside the same
@@ -334,10 +394,10 @@ def apply_switch(
         outcome = control.apply_command(
             control_store, control.CMD_STATUS, actor=ASSISTANT_ACTOR, now=now,
         )
-        return {
+        return _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "action": outcome["action"], "domain": _require_domain(request),
-        }
+        })
 
     reason = _require_reason(request)
 
@@ -360,28 +420,71 @@ def apply_switch(
             control_store, _DISABLE_MODES[mode], actor=ASSISTANT_ACTOR, now=now,
             reason=reason, ledger=ledger,
         )
-        return {
+        return _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "changed": outcome["changed"], "action": outcome["action"],
             "actor": ASSISTANT_ACTOR, "domain": domain,
-        }
+        })
 
     # CMD_ENABLE. Two shapes: without an approval id it opens the ask; with one it spends it.
+    # Both are validated before anything is claimed, so a frame that was going to be refused
+    # never spends its request_id.
     approval_id = request.get("approval_id")
-    if approval_id is None:
-        return _open_ask(
-            _require_domain(request), reason,
-            approval_store=approval_store, now=now, repo_root=repo_root,
-        )
-    if not isinstance(approval_id, str) or not approval_id.strip():
+    if approval_id is not None and (not isinstance(approval_id, str) or not approval_id.strip()):
         raise ControlBlocked(
             "MALFORMED_REQUEST", "'approval_id' must be a non-empty string when given"
         )
-    return _spend(
-        approval_id.strip(), reason,
-        approval_store=approval_store, control_store=control_store, ledger=ledger,
-        now=now, repo_root=repo_root,
-    )
+
+    request_id = bridge_idempotency.request_id_of(request)
+    fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
+    if request_id is not None:
+        prior = bridge_idempotency.claim(
+            ledger, door=_ENABLE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+        )
+        if prior is not None:
+            return bridge_idempotency.replay_reply(prior)
+
+    try:
+        if approval_id is None:
+            reply = _open_ask(
+                _require_domain(request), reason,
+                approval_store=approval_store, now=now, repo_root=repo_root,
+            )
+            # The ask IS the effect here, and its identity is what a retry needs back: the id
+            # to approve, when it lapses, and how. Without these the replay would be correct
+            # and useless — "you already asked" with no way to answer.
+            outcome = {
+                key: reply.get(key)
+                for key in ("approval_id", "expires_at", "approve_with", "domain")
+            }
+        else:
+            reply = _spend(
+                approval_id.strip(), reason,
+                approval_store=approval_store, control_store=control_store, ledger=ledger,
+                now=now, repo_root=repo_root,
+            )
+            outcome = {key: reply.get(key) for key in ("action", "mode", "domain", "approval_id")}
+    except BaseException:
+        # Nothing was applied, so the id names nothing. Note what this does NOT undo: a spend
+        # that raised after `control.apply_command` cannot reach here — that call and the
+        # CONSUMED record share one lock inside `_spend`, and an exception between them is the
+        # window that lock exists to make impossible.
+        if request_id is not None:
+            bridge_idempotency.release(
+                ledger, door=_ENABLE_DOOR, request_id=request_id,
+                request_fingerprint=fingerprint, now=now,
+            )
+        raise
+
+    if request_id is not None:
+        bridge_idempotency.complete(
+            ledger, door=_ENABLE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, outcome=outcome, now=now,
+        )
+    # On the fresh application too, so every reply from this door carries the id it was given
+    # and `replayed` is the only thing that distinguishes the first from the second.
+    return _echo_request_id(request, reply)
 
 
 def open_door(
@@ -393,10 +496,10 @@ def open_door(
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and serve switch actions from it.
 
-    The framing, the deadline, the size cap and the error envelope come from ``socket_door`` —
-    shared with the read and dispatch doors so a malformed frame cannot be answered three
-    different ways. What is specific to *this* door is the apply function, and therefore the
-    verb set and the approval requirement.
+    The framing, the deadline, the size cap, the peer check, the concurrency ceiling and the
+    error envelope come from ``socket_door`` — shared with the read and dispatch doors so a
+    malformed frame cannot be answered three different ways. What is specific to *this* door is
+    the apply function, and therefore the verb set and the approval requirement.
     """
     return socket_door.SocketDoor(
         path,
@@ -404,4 +507,5 @@ def open_door(
             request, control_store=control_store, ledger=ledger,
             approval_store=approval_store,
         ),
+        max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
     )
