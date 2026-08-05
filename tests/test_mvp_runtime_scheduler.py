@@ -5,6 +5,7 @@ A fake executor stands in for the pipeline, so these run without a local Core.
 
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import timedelta as _timedelta
 
@@ -800,3 +801,157 @@ def test_proposer_schedule_skips_when_backlog_full(tmp_path):
     assert summary["results"][0]["status"] == "skipped_backlog_full:12"
     assert len(_proposal_rows(ledger)) == 12               # nothing new appended
     assert store.list()[0].last_status == "skipped_backlog_full:12"
+
+
+# === pass order and the maintenance budget =========================================
+# `run_due` is one sequential pass, and the next tick cannot begin until it ends — so a long
+# pass delays whatever falls due DURING it, in a later tick. Measured on the live ledger
+# (2026-08-05): fifteen `crypto_factory` schedules share a due time each morning and held a
+# pass for 600-664s, and `crypto_pipeline` fired 116s/240s/349s late on the three mornings its
+# occurrence landed inside that window. These pin the two properties that bound it.
+
+class _Clock:
+    """A monotonic stand-in a test can advance by hand — no sleeping."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+_SEQ = itertools.count()
+
+
+def _kind_schedule(store, kind, *, now=T0, interval=60):
+    """A distinct schedule of ``kind``, due at T1.
+
+    ``created_by`` varies because ``schedule_id`` is derived from it — build two rows
+    with identical fields and they collapse to one id, so a test meaning to queue five
+    fires would silently queue one.
+    """
+    s = build_schedule(kind=kind, request=None, interval_seconds=interval,
+                       created_by=f"op{next(_SEQ)}", now=now)
+    store.add(s)
+    return s
+
+
+def _record_order(monkeypatch, order, *, clock=None, cost=0.0):
+    """Stub the dispatch table: record what ran, optionally charging the clock for it."""
+    def _fake_execute(schedule, **kwargs):
+        order.append(schedule.kind)
+        if clock is not None:
+            clock.t += cost
+        return "ok"
+    monkeypatch.setattr(scheduler, "_execute", _fake_execute)
+
+
+def test_risk_kinds_run_before_maintenance_in_the_same_pass(tmp_path, monkeypatch):
+    """Store order decided this before. A pipeline due alongside a factory burst waited behind
+    every one of them; now the money path goes first and the same set still fires."""
+    store = ScheduleStore(tmp_path)
+    for _ in range(3):
+        _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    order = []
+    _record_order(monkeypatch, order)
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    assert summary["fired"] == 5                       # every due occurrence still ran
+    assert order[0] == scheduler.KIND_CRYPTO           # and the risk kind ran first
+    assert order[1:] == [scheduler.KIND_FACTORY] * 4
+
+
+def test_a_pass_stops_starting_maintenance_once_it_is_over_budget(tmp_path, monkeypatch):
+    """The bound: one expensive fire may precede a due risk kind, not fifteen."""
+    store = ScheduleStore(tmp_path)
+    for _ in range(5):
+        _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    # Each fire costs more than the whole budget, so the second one is already over.
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    assert summary["fired"] == 1 and summary["deferred"] == 4
+    assert order == [scheduler.KIND_FACTORY]
+
+
+def test_a_deferred_occurrence_is_not_claimed_and_runs_next_pass(tmp_path, monkeypatch):
+    """A budget that dropped work would be worse than the latency it fixes. Deferral leaves the
+    schedule due — the cadence slips one tick, the occurrence survives."""
+    store = ScheduleStore(tmp_path)
+    for _ in range(2):
+        _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    first = run_due(store, now=T1, executor=FakeExecutor(), control_store=ControlStore(tmp_path))
+    assert first["fired"] == 1 and first["deferred"] == 1
+    deferred_row = [s for s in store.list() if s.last_run_at is None][0]
+    assert deferred_row.next_run_at <= T1              # still due: nothing was claimed
+
+    clock.t = 0.0                                      # a fresh pass gets a fresh budget
+    second = run_due(store, now=T1, executor=FakeExecutor(), control_store=ControlStore(tmp_path))
+    assert second["fired"] == 1 and second["deferred"] == 0
+    assert all(s.last_run_at == T1 for s in store.list())
+
+
+def test_a_risk_kind_is_never_deferred_by_the_budget(tmp_path, monkeypatch):
+    """The budget exists to protect this kind; it must never be its victim."""
+    store = ScheduleStore(tmp_path)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    _kind_schedule(store, scheduler.KIND_BREAKER_WATCH)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    # Both risk kinds ran (first, and over budget by the second), the factory was deferred.
+    assert summary["deferred"] == 1
+    assert set(order) == {scheduler.KIND_CRYPTO, scheduler.KIND_BREAKER_WATCH}
+
+
+def test_the_budget_does_not_change_what_a_kill_does(tmp_path, monkeypatch):
+    """A halted runtime drops its due occurrences exactly as before — the budget check sits
+    after the kill-switch branch so a kill can never be downgraded to a deferral."""
+    store = ScheduleStore(tmp_path)
+    for _ in range(4):
+        _kind_schedule(store, scheduler.KIND_FACTORY)
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, control.CMD_KILL, actor="op", now=T0, reason="halt")
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(), control_store=control_store)
+
+    assert summary["skipped"] == 4 and summary["deferred"] == 0 and order == []
+    assert all(s.next_run_at > T1 for s in store.list())   # claimed and dropped, as before
+
+
+def test_the_risk_set_is_the_two_kinds_that_touch_the_money_path():
+    """A kind joining this set changes what may be deferred, so the set is asserted rather
+    than described. `candle_archive` is deliberately NOT here — it is the longest fire in the
+    system and the one the budget most needs to be able to defer."""
+    assert scheduler.RISK_KINDS == {scheduler.KIND_CRYPTO, scheduler.KIND_BREAKER_WATCH}
+    assert scheduler.KIND_CANDLE_ARCHIVE not in scheduler.RISK_KINDS
+    assert scheduler.KIND_FACTORY not in scheduler.RISK_KINDS
+    assert scheduler.RISK_KINDS <= scheduler.KINDS
