@@ -239,7 +239,13 @@ def test_a_door_survives_more_connections_than_it_has_threads(tmp_path):
         server.server_close()
 
 
+@unix_only
 def test_a_door_must_serve_at_least_one_request(tmp_path):
+    """`unix_only` because the ceiling check is not the FIRST refusal in the constructor and
+    should not be: on a platform with no AF_UNIX the door cannot exist at all, so
+    `UNIX_SOCKETS_UNAVAILABLE` is the more fundamental answer and comes first. Reaching this
+    one therefore requires a platform where a door is possible. (Caught by Windows CI, which
+    is the only place that ordering is observable.)"""
     with pytest.raises(ControlBlocked) as exc:
         socket_door.SocketDoor(tmp_path / "d.sock", lambda request: {"ok": True},
                                max_concurrent_requests=0)
