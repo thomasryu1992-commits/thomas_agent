@@ -107,9 +107,16 @@ def _spec_dict(**overrides):
 
 
 def _trending_snapshot(n=200):
+    """The bare form, deliberately: these tests are about what an UNSOURCED carry costs.
+
+    The base fixture carries a funding series by default since 2026-08-05 — an absent feed no
+    longer fabricates `funding_rate = 0.0`, so a bare snapshot stopped being able to mint the
+    `funding_fade_*` half of its rotation block. Nothing about that is a claim on the cost
+    model, and `FUNDING_SOURCE_FALLBACK` is exactly what several tests below pin.
+    """
     from tests.test_mvp_runtime_crypto_factory import _trending_snapshot as base
 
-    return base(n)
+    return base(n, funding=False)
 
 
 def test_backtest_spec_result_r_is_costed_below_gross():
