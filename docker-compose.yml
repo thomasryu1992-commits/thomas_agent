@@ -251,6 +251,15 @@ services:
       - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+      # Optional second gate, on the peer's uid rather than its group. The socket's mode
+      # grants a GROUP, so every process in that group looks identical to `chmod` and
+      # different to SO_PEERCRED, which the kernel records at connect() and no frame can
+      # choose. Unset (the default) leaves the group as the whole check, exactly as before
+      # this existed; set it to the assistant's uid, comma-separated with the operator's if
+      # a shell needs to reach the door too. A value the door cannot check refuses to serve
+      # rather than serving unchecked. See `resolve_client_uids` in
+      # runtime/mvp_runtime/socket_door.py.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
 
   # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
@@ -301,6 +310,8 @@ services:
     environment:
       # See read-bridge for why the door states the client gid rather than inheriting it.
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+      # See read-bridge for the uid gate this leaves unset by default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
       # Model providers ONLY. This is the one door that runs the pipeline, so it needs the
       # provider chain to return a real analysis instead of the mock. Each member still needs
       # its own mounted safety-flag grant (via the state volume) — the env var alone fails
@@ -332,6 +343,12 @@ services:
   # approval request, and a bridge without an active approved Core fails BRIDGE_ERROR on the
   # missing activation file — the exact way the dispatch door broke when its mounts were
   # dropped (#380). If this door ever fails on a THOMAS_CORE path, look here first.
+  #
+  # Where to look, since that reply no longer carries the path: BRIDGE_ERROR is now a fixed
+  # sentence plus an `error_ref`, and the traceback naming the file goes to this service's log
+  # under the same ref (`docker logs thomas-switch-bridge | grep <ref>`). The reason_code did
+  # NOT change, so the signature above still greps. What changed is that the assistant — which
+  # reads untrusted text — no longer gets the runtime's file layout in an error string.
   #
   # Same absent env as the read and dispatch doors: no provider keys, no venue keys, no MVP_LIVE_*.
   # Flipping the control switch reads and writes control state; it reaches no venue and no
@@ -375,3 +392,5 @@ services:
       - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+      # See read-bridge for the uid gate this leaves unset by default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}

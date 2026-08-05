@@ -17,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import read_bridge
+from . import read_bridge, socket_door
 from .cli_common import EXIT_OK, force_utf8_io, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -62,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     sys.stderr.write(
-        f"READ_BRIDGE: listening on {path} (reads={sorted(read_bridge._READS)})\n"
+        f"READ_BRIDGE: listening on {path} (reads={sorted(read_bridge._READS)}, "
+        f"{socket_door.describe_admission(server)})\n"
     )
     sys.stderr.flush()
     try:

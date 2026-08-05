@@ -42,6 +42,7 @@ from .events import stamped_event
 from .store import (
     AUDIT_FILE,
     BLOCKS_FILE,
+    BRIDGE_REQUESTS_FILE,
     CONTROL_FILE,
     FEEDBACK_FILE,
     MEMORY_FILE,
@@ -59,6 +60,15 @@ RETENTION_EVENT_TYPE = "ledger_retention.v0"
 DEFAULT_KEEP_ROWS = 2000
 
 # Rotating one of these moves rows into an archive beside the active file.
+#
+# `bridge_requests.jsonl` is rotatable and the decision is worth stating, because for this one
+# file rotation and correctness interact. Its rows are the doors' at-most-once bookkeeping, and
+# a row that leaves the active file becomes invisible to the check — which would make a spent
+# `request_id` replayable. That is safe here and only here: every row carries an `expires_at`
+# that `bridge_idempotency` enforces on read, so a row is already inert long before 2000 rows
+# of door traffic can push it out. Rotation is bounding a file whose contents have a shorter
+# life than the bound. If the TTL ever grows past the rotation horizon this belongs in
+# PROTECTED_FILES instead, and `bridge_idempotency` says so beside the TTL.
 ROTATABLE_FILES = (
     RECORDS_FILE,
     BLOCKS_FILE,
@@ -66,6 +76,7 @@ ROTATABLE_FILES = (
     MEMORY_FILE,
     PROGRAMIZATION_FILE,
     FEEDBACK_FILE,
+    BRIDGE_REQUESTS_FILE,
 )
 
 # Never rotated. The reason is per file, not a blanket rule — see the module docstring.
