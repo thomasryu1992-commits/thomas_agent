@@ -31,14 +31,18 @@ Two claims from F1's first pass are corrected in place rather than deleted — b
 population comparisons the paired test overturned, and the way they were wrong is the useful
 part.
 
-And a new **section H**, added because the equity-perp lane was **not in this file at all**
-while three PRs of it merged — a reader starting here, which is what this file tells them to
-do, could not have learned it exists. It is code-complete as far as it goes and **runs
-nothing**: no `hyperliquid` grant exists on this machine and the selector fails closed at
-selection. **`S0`'s two `〔확인 필요〕` markers were answered the same day** — the strength stays
-provisional by decision, which draws the line at live orders and leaves read-only S1 untouched,
-and the question-reduction holds. So the grant is the only step left that is not minutes of
-work. What waiting costs is measured there, because the venue's window rolls.
+And **section H**, added because the equity-perp lane was **not in this file at all** while
+three PRs of it merged — a reader starting here, which is what this file tells them to do,
+could not have learned it exists. **It now runs**: enabled 2026-08-04, archiving 100 books an
+hour, 354 books held. `S0`'s two `〔확인 필요〕` markers were answered the same day — the strength
+stays provisional by decision, which draws the line at live orders and leaves read-only S1
+untouched, and the question-reduction holds.
+
+> **This paragraph said "**runs nothing**: no `hyperliquid` grant exists on this machine and
+> the selector fails closed at selection", and both halves were wrong by then.** The grant had
+> already been removed by #496 — there is no `hyperliquid` grant to be missing — and the lane
+> was two operator steps from running, not blocked. Corrected 2026-08-05. What the day of
+> actually running it cost is in H0, and it is the part no amount of reading the code produced.
 
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
@@ -2284,7 +2288,48 @@ would be cheap and is the thing missing, not fewer codes.
 the doc, not a proposal to restructure the code.
 
 ---
-## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on two env-level steps**
+## H. Equity-perp lane (Hyperliquid HIP-3) — **S1 is running as of 2026-08-04**; next is S2
+
+> **Header rewritten 2026-08-05.** It read *"waiting on two env-level steps"* and both were
+> taken on 2026-08-04: `MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service, and
+> `schedule_62466c9b92a1206c2f82` (`candle_archive`, 3600s). The archive has run every hour
+> since. What that first day cost is recorded below, because **every defect it found was
+> invisible until the thing actually ran** — the code, its tests and this file all described a
+> working archive while the first real pass was losing 80% of its work and reporting COMPLETED.
+>
+> Measured 2026-08-05T16:00Z: **354 books, 89 symbols, 788,553 candles**, 100 books per hourly
+> pass, `degraded=0` for 25 consecutive passes. Depth per book: 15m ≈4,750 bars (~49 days
+> against the 52-day ceiling), 1h ≈3,100 (~125 against 208), 4h ≈840, 1d ≈140. 354 rather than
+> 356 because `xyz:UNITREE` listed today and has no completed 4h or 1d bar yet — not a gap.
+
+### H0. What running it found, and what each fix cost (2026-08-04 → 08-05)
+
+Three defects, all shipped, all live now. They are listed because the shape repeats: **a
+bounded loop with a fixed order silently starves whatever sits past the boundary, and reports
+`degraded=0` while doing it.**
+
+| | Defect | Fix |
+|---|---|---|
+| #524 | The first real pass fired 352 reads as fast as it could; ~70 answered and 282 came back `TOOL_RATE_LIMITED`. It reported COMPLETED, because `ARCHIVE_ALL_BOOKS_DEGRADED` needs *all* books degraded. 80% loss reached nobody. | Pace 1.1s; latch on `TOOL_RATE_LIMITED` and stop (a 429 is the step before a 418 ban); bound a pass to 100 books so it cannot hold the tick the live leg's `_settle_or_protect` runs on; rotate the start offset; raise `ARCHIVE_RATE_LIMITED`. |
+| #526 | A bounded pass walking symbol-major gave 25 symbols all four timeframes and 63 symbols nothing — spending budget on 1d books that cannot lose a bar while unarchived 15m books shed ~12 an hour. | Order by perishability: every first fill before every refresh, fast timeframes first inside the first fills. |
+| #544 | #526 ranked the **whole** list, so once every book had a file, 4h sat at work-list index 176 and 1d at 264 — permanently past a 100-book budget. Measured on deployed code: `within budget {'15m': 88, '1h': 12}`, `never attempted {'1h': 76, '4h': 88, '1d': 88}`. 176 books would never have been refreshed again. | Refreshes rotate as one list; first fills keep absolute priority. Deliberately *not* ranked — no refresh is near its ceiling, so ranking them optimises a quantity with no deadline while reintroducing starvation. |
+
+**#544 is #524's defect rebuilt one PR later on a different axis**, by the same author, in the
+PR that was supposed to improve the ordering. The lesson worth carrying is not "rotate things"
+but **that `degraded=0` is not evidence of coverage** — both bugs were invisible in the pass
+summary and only showed up when the work list was enumerated directly against the live store.
+
+Verified after deploy by running the ordering inside the built image rather than by reading it:
+24 hourly passes reach `['15m', '1h', '4h', '1d']`, where the pre-#544 code reaches
+`['15m', '1h']`.
+
+**One operational note that is not in any commit.** The schedule was disabled by hand for
+~1h on 2026-08-05 (repeated hourly bursts of ~280 rate-limited reads escalate toward a 418 IP
+ban) and re-enabled after the #524 deploy. The disable left **no trace anywhere** — that gap is
+what #522 closed, and the re-enable at 16:10:36Z is the first `enabled` event the scheduler
+ledger has ever carried.
+
+### H1. Original record (kept — the reasoning below is still the authority for *why*)
 
 **This section exists because the lane was not in this file at all**, while three PRs of it
 merged. A reader arriving on a fresh machine and starting here — which is what this file tells
@@ -2299,8 +2344,9 @@ own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (
 correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
 are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
 
-**Nothing runs.** No schedule is registered, and the gate is closed **once** — re-measured by
-running it rather than by reading the code, after #496:
+**~~Nothing runs.~~ Superseded 2026-08-04 — see H0.** The schedule is registered and the gate is
+open. The measurement below still describes the gate correctly and is kept for that; only the
+"no schedule is registered" half is dead:
 
 ```
 MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
@@ -2366,10 +2412,17 @@ order cannot register a budget at all**, and widening that enum is a schema bump
 argued for. Collection is ungated by governance and the money path is gated by a schema — which
 is the right way round, and worth stating because this section previously implied the reverse.
 
-**In order, what is still needed to archive a single candle:** ~~S0 ratified~~ (done 2026-08-04)
-→ ~~the `hyperliquid` grant~~ (no longer exists, #496) → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
-scheduler service → a registered `candle_archive` schedule. **Both remaining steps are the
-operator's and both are minutes.**
+**In order, what was needed to archive a single candle — all of it now done:** ~~S0 ratified~~
+(2026-08-04) → ~~the `hyperliquid` grant~~ (no longer exists, #496) →
+~~`MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service~~ → ~~a registered `candle_archive`
+schedule~~ (both 2026-08-04, `schedule_62466c9b92a1206c2f82`). The estimate that the last two
+were "minutes" was right about the keystrokes and wrong about the work: the two steps took
+minutes and the three defects they exposed took a day (H0).
+
+**What is left in this lane is S2, not S1.** S1 — the venue seam and the read-only collector —
+is running. S2 is the reproducibility gate (`EQUITY_PERP_LANE_V0.1.md` §8b), and nothing in it
+is built. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
+rather than by anything in this lane; that mechanism is unchanged and described below.
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
