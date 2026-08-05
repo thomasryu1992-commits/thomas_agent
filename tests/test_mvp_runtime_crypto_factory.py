@@ -7,8 +7,10 @@ through the explicit operator door (kill-switch bound, audited)."""
 
 from __future__ import annotations
 
+import collections
 import json
 import random
+import statistics
 from itertools import combinations
 from datetime import datetime, timedelta, timezone
 
@@ -115,6 +117,61 @@ def test_mutation_respects_bounds():
         out = mutate_params({"x": 1.5, "n": 7}, space, rng)
         assert 1.0 <= out["x"] <= 2.0
         assert isinstance(out["n"], int) and 5 <= out["n"] <= 10
+
+
+# --- an unordered parameter is a name, not a number -----------------------------
+
+def test_an_unordered_parameter_is_drawn_uniformly_not_perturbed():
+    """`session_index` indexes ASIA/EUROPE/US. Perturbing it by a fraction of its range —
+    `1 ± 0.7` over [0, 2] — put 71.3% of draws on the base's own value, and the store agrees:
+    of 67 `session_trend_*` specs ever minted, EUROPE took 76.1% and the US session 9.0%."""
+    rng = random.Random(11)
+    space = {"s": ParamSpec(0, 2, integer=True, ordered=False)}
+    drawn = collections.Counter(mutate_params({"s": 1}, space, rng)["s"] for _ in range(30000))
+    assert set(drawn) == {0, 1, 2}
+    for value in (0, 1, 2):
+        assert 0.30 < drawn[value] / 30000 < 0.36, dict(drawn)
+
+
+def test_an_unordered_parameter_ignores_the_elite_centre():
+    """A centre is a claim about a neighbourhood and these values have none — and centring on
+    the oversampled label would ratchet the artifact of the draw into the next generation."""
+    space = {"s": ParamSpec(0, 2, integer=True, ordered=False)}
+    from_base = collections.Counter(
+        mutate_params({"s": 1}, space, random.Random(3))["s"] for _ in range(4000))
+    from_elite = collections.Counter(
+        mutate_params({"s": 2}, space, random.Random(3))["s"] for _ in range(4000))
+    assert from_base == from_elite
+
+
+def test_an_ordered_parameter_still_centres_on_its_base():
+    """The regression the change above must not cause: `max_holding_bars` is genuinely ordinal
+    and 24 bars IS nearer 25 than 48."""
+    rng = random.Random(5)
+    space = {"n": ParamSpec(12, 48, integer=True)}
+    drawn = [mutate_params({"n": 24}, space, rng)["n"] for _ in range(4000)]
+    assert min(drawn) >= 12 and max(drawn) <= 37       # base ± 0.35 × range, clamped
+    assert 22 <= statistics.median(drawn) <= 26
+
+
+def test_an_unordered_continuous_parameter_is_refused():
+    """Silently truncating it to an integer is the failure this refuses at import."""
+    with pytest.raises(ValueError):
+        ParamSpec(0.0, 2.0, ordered=False)
+
+
+def test_the_session_families_declare_their_index_unordered():
+    """The fix is only real where it is declared, so the declaration is pinned rather than the
+    behaviour of one template."""
+    for family in ("session_trend_long", "session_trend_short"):
+        template = next(t for t in factory.TEMPLATES if t.family == family)
+        assert not template.param_space["session_index"].ordered
+    assert all(
+        spec.ordered
+        for template in factory.TEMPLATES
+        for name, spec in template.param_space.items()
+        if name != "session_index"
+    )
 
 
 def test_every_family_in_the_library_is_reachable_across_generations():
@@ -391,6 +448,87 @@ def test_the_rotation_is_deterministic():
 def test_generated_specs_carry_generation_lineage():
     batch = generate_batch("GEN-042", seed=9, timeframe="1d")
     assert all(s["generation_id"] == "GEN-042" for s in batch["specs"])
+
+
+# --- a family that cannot mint costs its own slot, not the fire -----------------
+
+def _refuse_family(monkeypatch, family):
+    """Make `validate_strategy` refuse one family and pass everything else through.
+
+    A family cannot be stuck by any input `generate_batch` accepts — `templates_for_timeframe`
+    has already gated its features and `_apply_reward_risk_floor` its exit ratio — so the state
+    is reached through the validator, which is the one thing that can refuse a legal draw."""
+    real = factory.validate_strategy
+
+    def refusing(spec):
+        if spec.strategy_family == family:
+            return {"strategy_id": spec.strategy_id,
+                    "strategy_rule_hash": spec.strategy_rule_hash,
+                    "approved_for_backtest": False,
+                    "block_reasons": ["BLOCK_TEST_REFUSAL"]}
+        return real(spec)
+
+    monkeypatch.setattr(factory, "validate_strategy", refusing)
+
+
+def _first_family(*, symbol="BTCUSDT", timeframe="1h", rotation_index=0, count=4):
+    """The family ``generate_batch`` reaches first for this context — the one to jam."""
+    templates = templates_for_timeframe(timeframe, symbol=symbol)
+    offset = factory._rotation_offset(
+        "x", 0, count, len(templates), rotation_index=rotation_index,
+        phase=factory.context_rotation_phase(symbol, timeframe, count=count,
+                                             total=len(templates)),
+    )
+    return templates[offset].family
+
+
+def test_a_stuck_family_no_longer_takes_the_whole_fire_with_it(monkeypatch):
+    """The template is picked by the ACCEPT index, which a refusal does not move, so the loop
+    re-drew the same family until the shared budget was gone and the three slots behind it were
+    never tried. One family that cannot mint cost every candidate of the fire, not one."""
+    stuck = _first_family()
+    _refuse_family(monkeypatch, stuck)
+
+    batch = generate_batch("GEN-900", seed=5, count=4, symbol="BTCUSDT", timeframe="1h",
+                           rotation_index=0)
+
+    families = [s["strategy_family"] for s in batch["specs"]]
+    assert stuck not in families
+    assert batch["accepted_count"] == 4, f"the fire delivered {families}"
+    assert batch["batch_complete"]
+    # It spent its own share and no more — `_MAX_ATTEMPTS_PER_SPEC`, not the whole budget.
+    assert sum(1 for r in batch["rejected"] if r.get("strategy_family") == stuck) == (
+        factory._MAX_ATTEMPTS_PER_SPEC
+    )
+
+
+def test_every_family_stuck_still_terminates(monkeypatch):
+    """The global budget is still the backstop: nothing here can loop forever."""
+    monkeypatch.setattr(factory, "validate_strategy", lambda spec: {
+        "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
+        "approved_for_backtest": False, "block_reasons": ["BLOCK_TEST_REFUSAL"],
+    })
+    batch = generate_batch("GEN-901", seed=5, count=4, symbol="BTCUSDT", timeframe="1h",
+                           rotation_index=0)
+    assert batch["accepted_count"] == 0
+    assert not batch["batch_complete"]
+    assert len(batch["rejected"]) == 4 * factory._MAX_ATTEMPTS_PER_SPEC
+
+
+def test_the_cursor_is_the_accept_index_when_nothing_is_stuck():
+    """The guard must be invisible on the path every fire in the store has taken — 185 of 185
+    minted exactly `count`, so a cursor that advanced on anything else would move them all."""
+    templates = templates_for_timeframe("1h", symbol="BTCUSDT")
+    phase = factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=len(templates))
+    for rotation_index in range(12):
+        batch = generate_batch(f"GEN-{rotation_index:03d}", seed=rotation_index, count=4,
+                               symbol="BTCUSDT", timeframe="1h", rotation_index=rotation_index)
+        assert batch["batch_complete"]
+        offset = factory._rotation_offset("x", 0, 4, len(templates),
+                                          rotation_index=rotation_index, phase=phase)
+        assert [s["strategy_family"] for s in batch["specs"]] == [
+            templates[(offset + j) % len(templates)].family for j in range(4)
+        ]
 
 
 # --- validator ----------------------------------------------------------------
@@ -2446,8 +2584,10 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     unnoticed; it just spends the attempts and keeps the high-target survivors.
 
     Swept over seeds rather than asserted on one, and that is load-bearing: only HALF a batch is
-    drawn around the elite centre (`len(accepted) % 2`), so with the floor removed a single
-    4-spec batch shows the defect on 25 of 40 seeds. One seed is a coin flip; twenty is not."""
+    drawn around the elite centre (`(len(accepted) + _elite_flip(generation_id)) % 2`), so with
+    the floor removed a single 4-spec batch shows the defect on 25 of 40 seeds. One seed is a
+    coin flip; twenty is not. Which half moves per fire, but every family here carries the same
+    adverse centre, so the sweep does not depend on which."""
     families = {t.family for t in templates_for_timeframe("1h", symbol="BTCUSDT")}
     adverse = {f: {"stop_atr": 1.7185, "target_atr": 1.7627, "max_holding_bars": 24}
                for f in families}
