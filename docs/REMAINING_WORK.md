@@ -1537,6 +1537,88 @@ replay window — so re-measure `market_data.factory_candle_target` first, not t
 is not where the remaining gap is. What is still unmeasured is the *maker* rate, which the item
 in section C is waiting on a live fill for.
 
+#### What landed on the strength of this section — two selection rules, merged 2026-08-04
+
+F1's finding is that fusion **reproduces** its parents (IS −0.0034, HO −0.0062) and that the
+apparent crossover advantage is **parent selection** rather than breeding. Nothing acted on that
+at either end: the child side had no bar at all, and the parent side ranked on a score carrying
+no out-of-sample term. Both ends now have a rule.
+
+**The child must beat what it came from** — #523, `FUSION_IMPROVEMENT_METRICS` /
+`_fusion_improvement`. `expectancy` strictly above the maximum over the parents, `champion_score`
+not below it. Compared against the maximum on each metric **independently**, because the question
+is "was fusing these two worth more than keeping either", which a child that beats the weaker
+parent while losing to the stronger has not answered. The two legs are asymmetric on purpose: 45%
+of the score's weight (`sample_adequacy` + `parameter_parsimony`) moves against a fused child by
+construction — it is the same AND-union that produces the 0.51× above — so requiring it to *rise*
+would refuse on the arithmetic of fusion rather than on merit, while requiring it not to *fall*
+stops the one case expectancy cannot see alone, a higher return read off a handful of trades.
+Both sides are **replayed on the child's own snapshot**: 890 of the 894 parent/child evidence
+links in the store sit on different candle windows and 0 on the same one, so comparing stored
+numbers would have scored the market's drift between two windows and called it lineage
+improvement. Refusals are `no_expectancy_gain`, `champion_score_regression`,
+`improvement_unmeasurable` — fail-closed on an unreadable metric, never a silent zero.
+
+What that refuses, over the 447 stored children whose parents both resolve:
+
+| child better than its best parent | share |
+|---|---|
+| `champion_score` | **9.8%** |
+| `expectancy` | 30.9% |
+| `closed_count` | **1.1%** (median −67 trades) |
+
+and **101** of the children scoring at or below their best parent had already gone on to parent a
+further generation.
+
+**A parent must have survived out of sample** — #525, `holdout_permits_parenting`. A judgeable
+holdout (`MIN_HOLDOUT_TRADES`, the promotion door's own floor) that did not lose
+(`expectancy >= 0`), fail-closed on absence. `rank_fusion_parents` still orders by
+`champion_score`, so the pool keeps one ranking currency: this is **one bit at zero**, deliberately
+not a ranking on holdout magnitude, since the unit of independence is the market period and this
+store carries about ten of them. Two measurements settled that shape. `holdout_status` is the
+wrong authority — 0 of the 1,366 eligible rows read CONFIRMED, and 854 read INSUFFICIENT for a
+missing `stdev_r`, which is a schema vintage, so filtering on it would select by mint date and
+take fusion to zero fusable buckets. And **depth alone makes the pool worse**: filtering to a
+judgeable holdout while still ranking by score moves the selected parents' median holdout
+−0.098R → **−0.164R**, because within the judgeable subset `champion_score` is mildly
+anti-selective.
+
+**The evidence for the parent rule is not the table in its PR.** That table reported the selected
+pool's median holdout and its share ≥ 0 — both computed over the very quantity the rule filters
+on, so "100% non-negative" is arithmetic rather than a finding. The non-circular test is the
+**children already bred**: selection reads the *parent's* holdout while the outcome measured is
+the *child's*, which are different rows. Paired within `(symbol, timeframe)` to control the tier
+confound — the qualifying group is 4h-heavy and the rest 1h-heavy, and R scale differs by tier:
+
+| statistic | cells | selected − other | cells positive |
+|---|---|---|---|
+| median-based | 6 | **+0.1151R** | 5/6 |
+| trade-weighted | 6 | **+0.1674R** | 5/6 |
+
+Limits, because they bound the claim: 6 comparable cells at 2–8 rows per group; 38 of 330
+resolved parents are `mvp_rescore` rows, so "parent holdout as stored today" is not exactly the
+holdout the fusion saw at breeding time; and the smallest cell (BNBUSDT 15m) disagrees in sign
+between the two statistics. Against ~10 independent market periods the gap clears the resolution
+floor, but not by much.
+
+**What is still owed.**
+
+- **The split-half test has not run.** Select on the first half of the holdout periods and measure
+  the last three — disjoint slices, so no row is scored on the bars that selected it. It could not
+  run when #525 was reviewed: `period_r` / `period_trades` arrived with #518 at 10:46 UTC and the
+  store's last write was 08:53 UTC, so **0 of its 1,595 rows carry a per-period breakdown**. It
+  becomes measurable after the first fire on the new code.
+- **Neither rule has been through a fire.** Both merged after the 2026-08-04 08:09 UTC fire, so
+  the store this section measures is entirely pre-rule and the yield cost is predicted rather than
+  observed: #523 puts **1 pair in 78** past the child bar over `_trending_snapshot`'s feature grid,
+  and #525 empties every fusable bucket in **3 of the 15 live contexts** (BTCUSDT 1d, SOLUSDT 1d,
+  SOLUSDT 1h). They compound — the parent pool refills from the seeded rotation more slowly than
+  either change assumed alone — and this is a mint-time change, judged over generations rather
+  than days (the `#420` error).
+- **`factory.py`'s comment for the parent rule still rests on the circular table**, because the
+  correction arrived on the PR at the moment it merged. It should be replaced by the
+  paired-children figures above, in the change that carries the split-half result.
+
 ### F2. "Cannot confirm" was hiding a negative, not a positive — measured 2026-08-04
 
 F1 above ends on *"the search produces evidence it cannot confirm"*, which leaves the decisive
