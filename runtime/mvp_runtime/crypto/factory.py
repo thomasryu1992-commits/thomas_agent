@@ -307,6 +307,18 @@ class ParamSpec:
     lo: float
     hi: float
     integer: bool = False
+    # Whether "near" means anything for this parameter, which decides how it is DRAWN rather
+    # than what it may be. Everything in the library is ordered except `session_index`, whose
+    # values index ASIA/EUROPE/US — three labels with no order, no midpoint and no neighbour, so
+    # perturbing one by a fraction of its range is an operation on a number that is standing in
+    # for a name. See :func:`mutate_params` for what the perturbation did to it.
+    ordered: bool = True
+
+    def __post_init__(self) -> None:
+        # An unordered CONTINUOUS parameter has no meaning the draw below could serve, and it
+        # would be truncated to an integer silently rather than refused. Fail closed at import.
+        if not self.ordered and not self.integer:
+            raise ValueError("an unordered ParamSpec must be integer")
 
 
 @dataclass(frozen=True)
@@ -406,6 +418,29 @@ _FADE_EXIT_BASE = {"stop_atr": 1.7, "target_atr": 2.7, "max_holding_bars": 10}
 # Every generation space the factory mints from. `_fused_exit_param` clamps against the UNION
 # of these rather than against `_EXIT_PARAMS` alone — see there for why the union is the honest
 # bound once more than one space exists.
+#
+# **Neither space is a function of the TIMEFRAME, and measured 2026-08-05 neither should be.**
+# The question is fair to ask and this note exists so it is asked once: `templates_for_timeframe`
+# retimes every template by rewriting one field, so `max_holding_bars` 4-16 is four to sixteen
+# HOURS at 1h and four to sixteen DAYS at 1d, while the fade space's own reasoning above is
+# stated in time ("a bounce that has not happened in sixteen bars was not a bounce"). Cost-in-R
+# meanwhile varies ninefold across the ladder — 0.3065R per trade at 15m, 0.1530 at 1h, 0.0790 at
+# 4h, 0.0348 at 1d, holdout, trade-weighted — so a geometry that is right at one end has no
+# reason to be right at the other.
+#
+# It does not separate. Holdout net R per trade by timeframe x holding band, seeded rows, reads
+# a spread of at most 0.04R inside every timeframe (15m -0.362 long-hold against -0.381 short,
+# 1h -0.168/-0.201, 1d +0.068/+0.075) — under the 0.05R nothing in this store resolves. The one
+# apparent exception is 4h, where short-hold trend rows read **-0.1571R over 3,070 trades against
+# -0.0418R over 8,896** — and it is the confound the `_EXIT_PARAMS` note warns about, not a
+# finding: paired within (family, timeframe, symbol) the 4h gap **reverses** to +0.0133R with 11
+# of 20 cells favouring the short hold. Over all 51 paired cells the median is -0.0223R and 24
+# favour short, which is a coin flip at a magnitude nothing here can resolve.
+#
+# So the ninefold cost spread is real and the holding period is not the lever on it — the
+# denominator is, which is what the `_EXIT_PARAMS` note already records and what
+# `docs/BUILD_HISTORY.md` carries for the ladder as a whole. What would reopen this is a
+# measurement separating the bands INSIDE a cell, not another aggregate.
 _GENERATION_SPACES = (_EXIT_PARAMS, _FADE_EXIT_PARAMS)
 
 
@@ -1083,14 +1118,18 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
                       "xs_dispersion_min": ParamSpec(0.8, 1.6), **_EXIT_PARAMS},
                      {"xs_rank_edge": 0.2, "xs_dispersion_min": 1.0, **_EXIT_BASE},
                      _xs_reversion_short_entry),
-    # Session context. `session_index` is mutated like any other parameter, so WHICH session
-    # a spec claims is part of the seeded search and is charged as a free parameter.
+    # Session context. WHICH session a spec claims is part of the seeded search and is charged as
+    # a free parameter — `ordered=False` is what makes that true rather than merely intended. The
+    # values index ASIA/EUROPE/US, so the perturbation every other parameter gets was operating on
+    # a number standing in for a name and pinned 71% of draws on the base; see `mutate_params`.
     StrategyTemplate("session_trend_long", "long", "1h",
-                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1,
+                                                 integer=True, ordered=False),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_long_entry),
     StrategyTemplate("session_trend_short", "short", "1h",
-                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1, integer=True),
+                     {"session_index": ParamSpec(0, len(features.SESSION_BOUNDS) - 1,
+                                                 integer=True, ordered=False),
                       "adx_min": ParamSpec(15.0, 30.0), **_EXIT_PARAMS},
                      {"session_index": 1, "adx_min": 20.0, **_EXIT_BASE}, _session_trend_short_entry),
     # Volatility regime — the expansion side only; the squeeze pair that shipped beside it is
@@ -1572,9 +1611,29 @@ def mutate_params(
     """Perturb each parameter within a fraction of its range, clamped to bounds.
 
     Every parameter is drawn independently EXCEPT the exit pair — see
-    :func:`_apply_reward_risk_floor` for the one coupling and why it lives here."""
+    :func:`_apply_reward_risk_floor` for the one coupling and why it lives here.
+
+    **An UNORDERED parameter is drawn uniformly instead, and ignores the centre.** Perturbing
+    one is a category error with a measurable cost: `session_index` spans [0, 2] and the
+    perturbation is `base +/- (hi - lo) * 0.35` = `1 +/- 0.7`, so rounding put **71.3%** of draws
+    on the base's own value and 14.3% on each of the others. The store agrees almost exactly —
+    of 67 `session_trend_*` specs ever minted, **EUROPE 76.1%, ASIA 14.9%, US 9.0%**, which is
+    six specs of evidence for the US session against fifty-one for Europe. The comment on
+    `CATEGORICAL_FEATURES["session"]` says which session a spec claims is "part of the seeded
+    search and is charged as a free parameter"; it was charged as one and searched as an eighth
+    of one.
+
+    Uniform rather than centred, because a centre is a claim about a NEIGHBOURHOOD and these
+    values have none — "near EUROPE" is not a session. That also removes a ratchet: the elite
+    centre reads the best prior candidate, the oversampled label wins on volume, and centring on
+    it would re-spend the next generation in the same place for a reason that is an artifact of
+    the draw. The robustness scorer charges the parameter either way.
+    """
     out: dict[str, float] = {}
     for name, spec in param_space.items():
+        if not spec.ordered:
+            out[name] = rng.randint(int(spec.lo), int(spec.hi))
+            continue
         base = base_params[name]
         span = (spec.hi - spec.lo) * scale
         val = base + rng.uniform(-span, span)
@@ -1695,6 +1754,14 @@ def _apply_reward_risk_floor(
 # score; a region that scores well there has more trades per parameter and broader regimes
 # behind it, which is what "worth looking near" should mean.
 #
+# **And never a region the holdout already refuted**, which this rule did not say until
+# 2026-08-05 and needed to: `champion_score` is computed on the SCORED window, so it is blind to
+# the tail by construction, and the maximum over a growing store therefore landed on a row the
+# tail had refuted in **227 of 461 contexts (49.2%)**, median holdout expectancy -0.2529R. An
+# anti-overfit score that cannot see the out-of-sample evidence is not a defence against
+# out-of-sample failure. `holdout_permits_centring` is the filter and records why it fails OPEN
+# on an unjudged tail where `holdout_permits_parenting` fails closed.
+#
 # **Half the draws stay home.** Half of every batch draws around the elite centre and half around
 # the template's own base, so the search cannot collapse onto one point however good that point
 # looks, and the region the template was written for is never abandoned.
@@ -1731,6 +1798,44 @@ def _apply_reward_risk_floor(
 # be confirmed repeatedly. That is not closed here and concentrating the search makes it matter
 # more, which is the honest reason it is written down rather than left implicit.
 ELITE_EVIDENCE_MIN_TRADES = 20
+
+
+def holdout_permits_centring(record: Mapping[str, Any]) -> bool:
+    """May this row say where the search looks next for its family and context?
+
+    Everything except a holdout that is judgeable and NEGATIVE. `champion_score` is the
+    anti-overfit score but it is computed on the SCORED window, so it cannot see the tail — and
+    taking the maximum over a growing store lands on a row the tail refuted about half the time.
+    Measured 2026-08-05 over the 461 (family, timeframe, symbol) contexts the store can centre:
+    **227 of them, 49.2%, were centred by a candidate whose out-of-sample expectancy is
+    judgeably negative**, median -0.2529R and reaching -0.8225R. Only 43 were centred by a row
+    with a positive holdout. Concentrating the next generation's draws on a region the tail has
+    already refuted is the "hill-climbing converges on the noise" hazard the note above
+    :data:`ELITE_EVIDENCE_MIN_TRADES` names, arriving through the one input nobody checked.
+
+    **Fail-OPEN on absence, which is the opposite of :func:`holdout_permits_parenting`, and the
+    asymmetry is the point.** A fused child CITES its parents' evidence, so breeding from a row
+    whose tail nobody could judge propagates a claim nobody made — fail closed. A centre claims
+    nothing: it says where to look, and whatever is minted there earns its own evidence and
+    passes every gate unchanged. Refusing the unjudged here would cost the mechanism rather than
+    protect it — the same store keeps 273 of 461 contexts centred under this rule and **67 under
+    the parenting one**, and a context with no centre is the repeated sampling the elite search
+    exists to end.
+
+    So the two doors read the same field and answer different questions, which is why this is a
+    second predicate rather than an argument on the first.
+    """
+    holdout = (record.get("backtest_evidence") or {}).get("holdout")
+    if not isinstance(holdout, Mapping):
+        return True
+    closed, expectancy = holdout.get("closed_count"), holdout.get("expectancy")
+    if isinstance(closed, bool) or not isinstance(closed, (int, float)):
+        return True
+    if isinstance(expectancy, bool) or not isinstance(expectancy, (int, float)):
+        return True
+    if closed < MIN_HOLDOUT_TRADES:
+        return True
+    return expectancy >= 0
 
 
 def _best_mint_params(
@@ -1771,6 +1876,10 @@ def _best_mint_params(
             continue
         score = record.get("champion_score")
         if not isinstance(score, (int, float)):
+            continue
+        # `champion_score` cannot see the holdout, so the maximum over the store lands on a row
+        # the tail refuted about half the time. See `holdout_permits_centring`.
+        if not holdout_permits_centring(record):
             continue
         # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
         # store order among equals.
@@ -3118,7 +3227,11 @@ def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
     Fail-closed on absence: no holdout block, an unreadable ``closed_count``/``expectancy``, or
     a block predating holdouts entirely means no out-of-sample evidence exists, which is not
     the same as passing — the rule `robustness.holdout_status` applies for UNCONFIRMED, applied
-    here to the question of breeding rather than of verdict."""
+    here to the question of breeding rather than of verdict.
+
+    :func:`holdout_permits_centring` reads the same field for the search centre and fails OPEN;
+    read the two together before changing either — the difference is that a child cites its
+    parents' evidence and a centre cites nothing."""
     holdout = (record.get("backtest_evidence") or {}).get("holdout")
     if not isinstance(holdout, Mapping):
         return False

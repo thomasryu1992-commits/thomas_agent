@@ -7,8 +7,10 @@ through the explicit operator door (kill-switch bound, audited)."""
 
 from __future__ import annotations
 
+import collections
 import json
 import random
+import statistics
 from itertools import combinations
 from datetime import datetime, timedelta, timezone
 
@@ -115,6 +117,61 @@ def test_mutation_respects_bounds():
         out = mutate_params({"x": 1.5, "n": 7}, space, rng)
         assert 1.0 <= out["x"] <= 2.0
         assert isinstance(out["n"], int) and 5 <= out["n"] <= 10
+
+
+# --- an unordered parameter is a name, not a number -----------------------------
+
+def test_an_unordered_parameter_is_drawn_uniformly_not_perturbed():
+    """`session_index` indexes ASIA/EUROPE/US. Perturbing it by a fraction of its range —
+    `1 ± 0.7` over [0, 2] — put 71.3% of draws on the base's own value, and the store agrees:
+    of 67 `session_trend_*` specs ever minted, EUROPE took 76.1% and the US session 9.0%."""
+    rng = random.Random(11)
+    space = {"s": ParamSpec(0, 2, integer=True, ordered=False)}
+    drawn = collections.Counter(mutate_params({"s": 1}, space, rng)["s"] for _ in range(30000))
+    assert set(drawn) == {0, 1, 2}
+    for value in (0, 1, 2):
+        assert 0.30 < drawn[value] / 30000 < 0.36, dict(drawn)
+
+
+def test_an_unordered_parameter_ignores_the_elite_centre():
+    """A centre is a claim about a neighbourhood and these values have none — and centring on
+    the oversampled label would ratchet the artifact of the draw into the next generation."""
+    space = {"s": ParamSpec(0, 2, integer=True, ordered=False)}
+    from_base = collections.Counter(
+        mutate_params({"s": 1}, space, random.Random(3))["s"] for _ in range(4000))
+    from_elite = collections.Counter(
+        mutate_params({"s": 2}, space, random.Random(3))["s"] for _ in range(4000))
+    assert from_base == from_elite
+
+
+def test_an_ordered_parameter_still_centres_on_its_base():
+    """The regression the change above must not cause: `max_holding_bars` is genuinely ordinal
+    and 24 bars IS nearer 25 than 48."""
+    rng = random.Random(5)
+    space = {"n": ParamSpec(12, 48, integer=True)}
+    drawn = [mutate_params({"n": 24}, space, rng)["n"] for _ in range(4000)]
+    assert min(drawn) >= 12 and max(drawn) <= 37       # base ± 0.35 × range, clamped
+    assert 22 <= statistics.median(drawn) <= 26
+
+
+def test_an_unordered_continuous_parameter_is_refused():
+    """Silently truncating it to an integer is the failure this refuses at import."""
+    with pytest.raises(ValueError):
+        ParamSpec(0.0, 2.0, ordered=False)
+
+
+def test_the_session_families_declare_their_index_unordered():
+    """The fix is only real where it is declared, so the declaration is pinned rather than the
+    behaviour of one template."""
+    for family in ("session_trend_long", "session_trend_short"):
+        template = next(t for t in factory.TEMPLATES if t.family == family)
+        assert not template.param_space["session_index"].ordered
+    assert all(
+        spec.ordered
+        for template in factory.TEMPLATES
+        for name, spec in template.param_space.items()
+        if name != "session_index"
+    )
 
 
 def test_every_family_in_the_library_is_reachable_across_generations():

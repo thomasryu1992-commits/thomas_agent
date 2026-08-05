@@ -28,7 +28,10 @@ import pytest
 from runtime.mvp_runtime.crypto.factory import (
     ELITE_EVIDENCE_MIN_TRADES,
     elite_base_params,
+    holdout_permits_centring,
+    holdout_permits_parenting,
 )
+from runtime.mvp_runtime.crypto.robustness import MIN_HOLDOUT_TRADES
 
 FALLBACK = {"adx_min": 22.0, "rsi_max": 55.0}
 
@@ -128,6 +131,53 @@ def test_the_fallback_is_never_mutated():
     _centre([_candidate()])
     _centre([])
     assert FALLBACK == before
+
+
+# --- and never toward a region the tail already refuted -------------------------
+
+def _with_holdout(candidate, *, closed, expectancy):
+    candidate["backtest_evidence"]["holdout"] = {"closed_count": closed, "expectancy": expectancy}
+    return candidate
+
+
+def test_a_refuted_region_does_not_set_the_centre():
+    """`champion_score` is computed on the SCORED window, so it is blind to the tail — and the
+    maximum over a growing store landed on a row the tail had refuted in 227 of 461 contexts."""
+    refuted = _with_holdout(
+        _candidate(score=0.9, params={"adx_min": 28.0, "rsi_max": 45.0}),
+        closed=MIN_HOLDOUT_TRADES, expectancy=-0.25)
+    survived = _with_holdout(
+        _candidate(score=0.4, params={"adx_min": 18.0, "rsi_max": 60.0}),
+        closed=MIN_HOLDOUT_TRADES, expectancy=0.05)
+    assert _centre([refuted, survived]) == {"adx_min": 18.0, "rsi_max": 60.0}
+
+
+def test_a_refuted_best_falls_back_rather_than_being_used():
+    """Nothing left to learn from is the template base, not the least-bad refuted row."""
+    refuted = _with_holdout(_candidate(score=0.9, params={"adx_min": 28.0}),
+                            closed=MIN_HOLDOUT_TRADES, expectancy=-0.01)
+    assert _centre([refuted]) == FALLBACK
+
+
+def test_an_unjudged_tail_still_sets_the_centre():
+    """Fail OPEN, unlike `holdout_permits_parenting`. A child cites its parents' evidence; a
+    centre cites nothing — it says where to look, and what is minted there earns its own. Being
+    strict here costs the mechanism: on this store 273 contexts keep a centre against 67."""
+    thin = _with_holdout(_candidate(score=0.9, params={"adx_min": 28.0, "rsi_max": 45.0}),
+                         closed=MIN_HOLDOUT_TRADES - 1, expectancy=-9.0)
+    assert _centre([thin]) == {"adx_min": 28.0, "rsi_max": 45.0}
+    absent = _candidate(score=0.9, params={"adx_min": 26.0, "rsi_max": 44.0})
+    assert _centre([absent]) == {"adx_min": 26.0, "rsi_max": 44.0}
+
+
+def test_the_two_holdout_doors_disagree_on_absence_by_design():
+    """Pinned as a pair, because the next reader's instinct is to collapse them into one."""
+    unjudged = _candidate()
+    assert holdout_permits_centring(unjudged)
+    assert not holdout_permits_parenting(unjudged)
+    refuted = _with_holdout(_candidate(), closed=MIN_HOLDOUT_TRADES, expectancy=-0.2)
+    assert not holdout_permits_centring(refuted)
+    assert not holdout_permits_parenting(refuted)
 
 
 # --- one store pass, same answer ------------------------------------------------
