@@ -69,19 +69,35 @@ def _apply(request, store, *, approvals=None, ledger=None, now=NOW):
 
 def _grant(approval_id="approval_test", *, domain="crypto", status=None,
            scope=TRADING_SWITCH_PERMISSION_SCOPE, expires_at="2026-07-31T09:30:00Z",
-           fingerprint="fp_bound"):
-    """A grant record shaped like the fields the door reads."""
+           fingerprint="fp_bound", stop_ref="stop_unset"):
+    """A grant record shaped like the fields the door reads.
+
+    ``stop_ref`` starts as a placeholder no real control state hashes to; a test that means to
+    spend the grant points it at the stop actually in effect with :func:`_arm`. That way a test
+    that forgets to fails loudly (``STOP_CHANGED``) instead of passing because the door happened
+    not to check.
+    """
+    snapshot = {
+        "permission_scope": scope,
+        "target_ref": f"trading_switch:{domain}",
+    }
+    if stop_ref is not None:
+        snapshot["normalized_parameters"] = {"stop_ref": stop_ref}
     return {
         "approval_id": approval_id,
         "status": status or approval_mod.STATUS_APPROVED,
         "permission_decision_id": "permdec_test",
         "validity": {"expires_at": expires_at},
         "action_fingerprint": fingerprint,
-        "approved_action_snapshot": {
-            "permission_scope": scope,
-            "target_ref": f"trading_switch:{domain}",
-        },
+        "approved_action_snapshot": snapshot,
     }
+
+
+def _arm(approvals, store, approval_id="approval_test"):
+    """Point a grant at the stop currently in effect — what minting the ask would have done."""
+    snapshot = approvals.records[approval_id]["approved_action_snapshot"]
+    snapshot["normalized_parameters"] = {"stop_ref": switch_bridge.stop_ref(store.load())}
+    return approvals
 
 
 @pytest.fixture
@@ -234,6 +250,7 @@ def test_an_approved_grant_re_arms_the_runtime(tmp_path, approved):
     store = ControlStore(tmp_path)
     _apply({"command": "disable", "reason": "stopped"}, store)
     assert store.load().mode == KILLED
+    _arm(approved, store)
 
     out = _apply({"command": "enable", "reason": "assistant: Thomas approved",
                   "approval_id": "approval_test"}, store, approvals=approved)
@@ -248,11 +265,13 @@ def test_spending_marks_the_grant_consumed(tmp_path, approved):
     """One-time use: the spend appends a CONSUMED record, so a replayed frame finds it spent."""
     store = ControlStore(tmp_path)
     _apply({"command": "disable", "reason": "stopped"}, store)
+    _arm(approved, store)
     _apply({"command": "enable", "reason": "go", "approval_id": "approval_test"},
            store, approvals=approved)
     assert approved.records["approval_test"]["status"] == approval_mod.STATUS_CONSUMED
 
     _apply({"command": "disable", "reason": "stopped again"}, store)
+    _arm(approved, store)
     with pytest.raises(ControlBlocked) as exc:
         _apply({"command": "enable", "reason": "replay", "approval_id": "approval_test"},
                store, approvals=approved)
@@ -327,6 +346,7 @@ def test_the_domain_comes_from_the_snapshot_not_the_request(tmp_path, approved):
     naming something else is answered from what he approved, never from what it claims."""
     store = ControlStore(tmp_path)
     _apply({"command": "disable", "reason": "stopped"}, store)
+    _arm(approved, store)
     out = _apply({"command": "enable", "reason": "go", "domain": "crypto",
                   "approval_id": "approval_test"}, store, approvals=approved)
     assert out["domain"] == "crypto"
@@ -334,6 +354,7 @@ def test_the_domain_comes_from_the_snapshot_not_the_request(tmp_path, approved):
     # And a snapshot for another domain is refused even when the frame says `crypto`.
     _apply({"command": "disable", "reason": "stopped"}, store)
     approved.records["approval_test"] = _grant(domain="forex")
+    _arm(approved, store)
     with pytest.raises(ControlBlocked) as exc:
         _apply({"command": "enable", "reason": "go", "domain": "crypto",
                 "approval_id": "approval_test"}, store, approvals=approved)
@@ -353,9 +374,109 @@ def test_the_spend_records_the_approval_on_the_control_event(tmp_path, approved)
     that authorized it."""
     store, ledger = ControlStore(tmp_path), FakeLedger()
     _apply({"command": "disable", "reason": "stopped"}, store, ledger=ledger)
+    _arm(approved, store)
     _apply({"command": "enable", "reason": "Thomas approved", "approval_id": "approval_test"},
            store, approvals=approved, ledger=ledger)
     assert any("approval_test" in str(entry.get("reason", "")) for entry in ledger.control)
+
+
+# === the stop a grant is bound to ====================================================
+# `resume` clears whatever stop is in effect, so a grant that records only the verb describes
+# the effect only until something else touches the switch. These pin that it records the stop.
+
+def test_a_grant_cannot_clear_a_stop_it_was_not_approved_for(tmp_path, approved):
+    """The failure this binding exists for: an approval minted against one stop, spent against
+    a later, unrelated one. Same mode throughout — so nothing weaker than the stop's identity
+    could tell these two apart."""
+    store = ControlStore(tmp_path)
+    _apply({"command": "disable", "reason": "assistant: Thomas asked me to pause trading"}, store)
+    _arm(approved, store)                       # the grant Thomas would have signed
+
+    # Someone else stops the runtime again, for their own reason, while the grant sits approved.
+    _apply({"command": "disable", "reason": "operator: venue returning 5xx, halting"},
+           store, now=LATER)
+    assert store.load().mode == KILLED           # still KILLED: only the stop's identity moved
+
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "enable", "reason": "assistant: Thomas approved",
+                "approval_id": "approval_test"}, store, approvals=approved, now=LATER)
+    assert exc.value.reason_code == "STOP_CHANGED"
+    assert "venue returning 5xx" in str(exc.value)   # says which stop it refused to clear
+    assert store.load().mode == KILLED
+    assert approved.records["approval_test"]["status"] == approval_mod.STATUS_APPROVED
+
+
+def test_a_grant_that_names_no_stop_is_refused(tmp_path, approved):
+    """A record minted before this field existed cannot say what it would clear. Refused rather
+    than spent on the assumption that the stop in effect is the one Thomas saw."""
+    store = ControlStore(tmp_path)
+    _apply({"command": "disable", "reason": "stopped"}, store)
+    approved.records["approval_test"] = _grant(stop_ref=None)
+
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "enable", "reason": "go", "approval_id": "approval_test"},
+               store, approvals=approved)
+    assert exc.value.reason_code == "STOP_NOT_NAMED"
+    assert store.load().mode == KILLED
+
+
+def test_the_stop_ref_separates_two_stops_of_the_same_mode(tmp_path):
+    """Mode alone cannot: kill, resume, kill again reads KILLED at both ends, and that is
+    exactly the sequence where the first grant must not still be spendable."""
+    store = ControlStore(tmp_path)
+    _apply({"command": "disable", "reason": "first"}, store)
+    first = switch_bridge.stop_ref(store.load())
+
+    _apply({"command": "disable", "reason": "second"}, store, now=LATER)
+    second = switch_bridge.stop_ref(store.load())
+
+    assert store.load().mode == KILLED
+    assert first != second
+    # And it is stable: re-reading the same state yields the same id.
+    assert switch_bridge.stop_ref(store.load()) == second
+
+
+def test_a_derived_kill_is_not_the_same_stop_as_a_written_one(tmp_path):
+    """A KILLED state the runtime failed closed into is a different fact from one an operator
+    wrote, and a grant for one must not be spendable against the other."""
+    written = control.ControlState(
+        mode=KILLED, updated_by="operator", updated_at=NOW, reason="halting",
+    )
+    derived = control.ControlState(
+        mode=KILLED, updated_by="operator", updated_at=NOW, reason="halting", fail_closed=True,
+    )
+    assert switch_bridge.stop_ref(written) != switch_bridge.stop_ref(derived)
+
+
+def test_the_ask_names_the_stop_it_would_clear(tmp_path, monkeypatch):
+    """What Thomas signs has to say what it releases — so the ask carries the stop into the
+    decision (risk text + fingerprint), not just the verb."""
+    store = ControlStore(tmp_path)
+    _apply({"command": "disable", "reason": "assistant: halting for the night"}, store)
+    approvals = FakeApprovalStore(tmp_path)
+    seen: dict = {}
+    monkeypatch.setattr(switch_bridge, "build_task", lambda *a, **k: {"task": "t"})
+    monkeypatch.setattr(switch_bridge, "bind_task_to_core", lambda *a, **k: (None, {"bound": True}))
+
+    def _capture(bound, domain, **kwargs):
+        seen.update(kwargs)
+        return {"permission_decision_id": "permdec_x"}
+
+    monkeypatch.setattr(switch_bridge, "build_trading_switch_permission_decision", _capture)
+    monkeypatch.setattr(
+        switch_bridge.approval_mod, "build_approval_request",
+        lambda dec, **k: {"approval_id": "approval_x",
+                          "validity": {"expires_at": "2026-07-31T09:30:00Z"}},
+    )
+
+    out = _apply({"command": "enable", "reason": "assistant: Thomas asked"}, store,
+                 approvals=approvals)
+
+    assert seen["stop_ref"] == switch_bridge.stop_ref(store.load())
+    assert "halting for the night" in seen["stop_summary"]
+    assert out["stop_ref"] == seen["stop_ref"]
+    assert out["mode"] == KILLED
+    assert store.load().mode == KILLED           # asking still moves nothing
 
 
 # === the policy grant ================================================================
