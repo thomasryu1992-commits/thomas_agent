@@ -1516,6 +1516,25 @@ roughly double the seeded supply per family, and that is the same kind of mint-t
 the depth refusal above — judged over generations, not days (the `#420` error). What is recorded
 here is only the number the decision needs and did not have.
 
+**And it should not be taken, because #523 solved it better — measured on the first full day,
+2026-08-05.** `_fusion_improvement` refuses a child that does not beat the **maximum over its
+parents** on `expectancy` *and* `champion_score`, so the budget is untouched and only the
+children that earned their slot are stored. The first fire under it went 59 fused → **6**, and
+the two new reasons account for the whole drop:
+
+| fired | fused | rejections |
+|---|---|---|
+| 2026-08-03 | 60 | `duplicate_rule_hash` 31, `too_many_conditions` 3, `no_trades` 8 |
+| 2026-08-04 | 59 | `duplicate_rule_hash` 65, `no_trades` 18, `too_many_conditions` 4, `holdout_unjudgeable` 3 |
+| **2026-08-05** | **6** | **`no_expectancy_gain` 46, `champion_score_regression` 11**, `duplicate_rule_hash` 22, `holdout_unjudgeable` 7, `no_trades` 6 |
+
+**~79% of fusion attempts (57 of 72) fail to improve on a parent** — the paired test in this
+section, arriving as a production yield rather than a study. The effective crossover share of a
+mint is now **13%** (6 of 46) against the 50% the constant still nominally allocates, so the
+budget number above is now a ceiling that no longer binds. Lowering the constant would cut good
+fusions with bad ones; this cuts only the ones that lost to a parent, which is what the
+measurement actually said to do.
+
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
 judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
