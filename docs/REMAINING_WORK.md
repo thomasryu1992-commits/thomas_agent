@@ -2184,6 +2184,106 @@ depth there.
 
 ---
 
+## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
+
+Nothing here is built. It is a design with its costs named, recorded because the alternative is
+that the same reasoning gets re-derived from scratch, and because **the choice it turns on is
+explicitly not the runtime's to make** (`proposer.py`: "Adding a family to `factory.TEMPLATES`
+stays a human code change in Thomas's PR").
+
+### I0. Why this matters now, and the number that says so
+
+The promotion door yields zero — 0 of 1,140 candidates confirm out of sample (F1, F2) — and the
+generator is the only lever left. Measured 2026-08-05 over the 461 `(family, timeframe, symbol)`
+contexts the store can centre: only **43 are centred by a row with a positive holdout**, 227 by
+one the tail judgeably refuted (#532 closed the second half of that). The library is what the
+search searches, and the library only grows through this door.
+
+### I1. The bottleneck is not typing, it is that the decision has no evidence behind it
+
+Every other decision in this system is made on accumulated out-of-sample evidence. Promotion
+reads holdouts; fusion reads parent evidence; retirement reads thousands of trades. **Family
+installation is the only one made from a rationale sentence and one backtest on one snapshot** —
+which is all `evaluate_proposal` can produce, because a proposal is a single spec rather than a
+family with a parameter space.
+
+`MAX_UNREVIEWED_BACKLOG = 12` exists because of this ("proposals accumulate faster than anyone
+reviews", 2026-07-24). The cap is a symptom: the queue does not drain because draining one entry
+means authoring a `StrategyTemplate` — an `entry_builder` callable, a parameter space, tests —
+on the strength of a paragraph.
+
+**An option that does not work, recorded so it is not re-proposed:** "let an accepted proposal
+be minted as a candidate and accrue evidence." A candidate's evidence is computed once at mint
+and never accumulates. Family-level evidence only exists because a family is minted repeatedly
+across contexts and generations, and that requires the rotation. A proposal that is not in the
+rotation can never earn the evidence its own install decision needs.
+
+### I2. Design — trial rotation slots
+
+**Piece 1: a declarative family.** Every `entry_builder` in `TEMPLATES` is "fixed conditions with
+param-substituted thresholds", which is expressible as data:
+
+```python
+@dataclass(frozen=True)
+class ConditionPattern:
+    feature: str
+    comparison: str
+    param: str | None = None            # threshold comes from this param
+    value: float | str | None = None    # or it is a literal
+    value_from: str | None = None       # or another feature
+```
+
+`entry_builder` becomes pattern rendering. **Data does not become code**: what the data chooses
+is a feature name, a comparison and which param feeds the threshold — three closed sets
+`known_features(venue)` and `_NUMERIC_COMPARISONS` already judge. Builders doing arithmetic on a
+param (`_xs_reversion_long_entry`'s `0.5 - p[...]`, `_session_trend_long_entry`'s label lookup)
+are **not** expressible and stay code; an LLM proposal is always the simple shape, so this does
+not bind.
+
+**Piece 2: admission reuses the approval machinery, and adds no Gate.** A trial family file
+carries the declaration and its content hash; the runtime loads it only when an approval record
+for that hash exists in `THOMAS_CORE/approvals/` and is unrevoked. Absent, mismatched or revoked
+→ not in the rotation. Thomas still decides; the decision becomes *approve this hash* instead of
+*author this family*.
+
+**Piece 3: quarantine from the live path — the load-bearing part.**
+
+- A slot cap (4 is the suggested start), so trials can never crowd out the proven library.
+- Minted rows carry `derivation_type: "trial_family"`, registered in
+  `pool.DERIVATION_TYPES` — a **closed set** (`seeded_template`, `crossover`, `mutation`) that
+  `validate_candidate_lineage` refuses at the append door, with its parent-count rule in
+  `_PARENT_COUNT_RULES` (a trial family is fresh generation, so `(0, 0)` like a seeded row).
+  This is a feature, not an obstacle: the quarantine tag is schema-enforced at the store's own
+  door rather than being a convention a writer can forget.
+- **`scripts/promote_strategy_candidates.py` must refuse them by default.** Verified 2026-08-05:
+  it names `provenance` only in a report line (`:516`) and filters on neither it nor
+  `derivation_type`, so without this clause an LLM-authored rule reaches the live pool through
+  the ordinary door. This is the one piece that is not optional.
+- A trial graduates into `TEMPLATES` — real code, Thomas's PR — only after producing confirmable
+  holdout evidence. The builder gets written for a family that has already earned it.
+
+### I3. What it costs, stated rather than discovered later
+
+- **A declarative family is a SECOND authority for "what a family is"**, against the standing
+  "one concept = one authority" guardrail. The mitigation is that `TEMPLATES` remains the
+  authority for *proven* families and trials are a capped staging area with no live path — but
+  that is a judgement about the guardrail, which is why this section asks rather than proposes.
+- It widens what the model influences: still never code, but now what gets **mined**, not only
+  what gets suggested.
+- **It will almost certainly confirm nothing.** 0 of 1,140 confirm out of sample and a random
+  entry loses 0.13R here. What this buys is that failure becomes cheap and legible, not edge.
+  Any version of this pitched as "more families will find an edge" is misreading F1.
+
+### I4. The smaller alternative, if I2 is too much
+
+The proposer renders an accepted proposal into `StrategyTemplate` code plus a test and opens a
+PR. No new authority, no declarative form, buildable today; Thomas reviews a diff instead of
+authoring one. **Weaker on the actual problem** — the decision is still made on one backtest, and
+review is still per-proposal, so the queue still does not drain. It removes the typing, which
+I1 argues is not what is blocking.
+
+---
+
 ## Per-machine setup that does NOT travel via git
 
 A fresh machine has the code but not the local runtime state (gitignored, per CLAUDE.md). To actually
