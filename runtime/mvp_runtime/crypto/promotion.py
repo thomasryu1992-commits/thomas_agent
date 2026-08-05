@@ -50,6 +50,7 @@ def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], k
 def _resolve_candidates(
     selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
     allow_unrecorded_evidence_depth: bool = False,
+    allow_quarantined_derivation: bool = False,
 ) -> list[dict[str, Any]]:
     """Selector resolution via the store's single authority, as approval refusals."""
     try:
@@ -74,6 +75,16 @@ def _resolve_candidates(
             pool_store.assert_promotable_evidence_depth(resolved)
         except ToolError as exc:
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # And the one axis that is not about the evidence at all: HOW the row was made. Asked at
+    # the ask for the same reason as the two above — the execution door refuses it, so an ask
+    # that cannot execute only spends Thomas's answer — and asked LAST because it is the one
+    # that refuses nothing on today's store, so an operator reading a refusal should meet the
+    # actionable ones first.
+    if not allow_quarantined_derivation:
+        try:
+            pool_store.assert_promotable_derivation(resolved)
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     return resolved
 
 
@@ -88,6 +99,7 @@ def request_promotion(
     allow_stale_cost_basis: bool = False,
     allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False,
+    allow_quarantined_derivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
@@ -106,6 +118,7 @@ def request_promotion(
         selectors, store_root,
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
+        allow_quarantined_derivation=allow_quarantined_derivation,
     )
     # Same rule again, one door earlier. Incumbents matter only when the batch ADDS to
     # the pool: a replace promotion installs exactly this batch, so yesterday's pool
