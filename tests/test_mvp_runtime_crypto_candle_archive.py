@@ -570,6 +570,56 @@ def test_a_pass_is_bounded_so_it_cannot_hold_the_tick(tmp_path):
     assert summary["skipped"] == 0        # bounded on purpose is not the same as cut short
 
 
+# --- a bounded pass spends its budget on what is perishing -------------------------------
+#
+# Measured 2026-08-04: the archive held ~4,753 bars of 15m (≈49 days against a 52-day ceiling)
+# and 134 of 1d (the symbols' whole listed history). Symbol-major order gave a quarter of the
+# symbols all four timeframes and the rest nothing — spending the budget on 1d books that
+# cannot lose anything while unarchived 15m books shed ~12 bars an hour, permanently.
+
+def test_a_fresh_archive_takes_every_symbols_fastest_timeframe_first(tmp_path):
+    order = archive.plan_pass(["S0", "S1", "S2"], archive.ARCHIVE_TIMEFRAMES,
+                              venue=VENUE, root=tmp_path)
+    assert [tf for _, tf in order[:3]] == ["15m"] * 3       # every symbol's 15m...
+    assert order[3][1] == "1h"                              # ...before anyone's 1h
+    assert [tf for _, tf in order] == sorted(
+        [tf for _, tf in order], key=archive.ARCHIVE_TIMEFRAMES.index
+    )
+
+
+def test_a_first_fill_outranks_a_refresh_even_of_a_faster_timeframe(tmp_path):
+    """The priority is loss, not size. An archived 15m book sheds nothing while it waits — its
+    next refresh sizes from the newest bar it holds. An unarchived 1d book is not losing either,
+    but it is the only one of the two that has never been captured at all."""
+    archive.append_candles(
+        [{"open_time": "2026-01-01T00:00:00Z", "close_time": "2026-01-01T00:14:59Z",
+          "open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5, "volume": 9.0}],
+        venue=VENUE, symbol="HELD", timeframe="15m", root=tmp_path,
+    )
+    order = archive.plan_pass(["HELD"], ("15m", "1d"), venue=VENUE, root=tmp_path)
+    assert order == [("HELD", "1d"), ("HELD", "15m")]
+
+
+def test_the_rotating_symbol_order_survives_the_ranking(tmp_path):
+    # Stable sort: ranking decides the groups, the caller's rotation decides order inside them.
+    rotated = ["S2", "S0", "S1"]
+    order = archive.plan_pass(rotated, ("15m",), venue=VENUE, root=tmp_path)
+    assert [symbol for symbol, _ in order] == rotated
+
+
+def test_a_bounded_pass_on_a_fresh_store_covers_every_symbols_15m(tmp_path):
+    """End to end: the budget is smaller than the universe, and 15m still comes out whole."""
+    symbols = [f"xyz:S{i}" for i in range(10)]
+    venue = _FakeVenue(symbols=symbols)
+    summary = archive.run_candle_archive(
+        venue, venue=VENUE, now_ms=NOW_MS, root=tmp_path, books_per_pass=12, sleep=_no_sleep,
+    )
+    assert summary["books"] == 12
+    fifteens = {symbol for symbol, timeframe in venue.reads if timeframe == "15m"}
+    assert fifteens == set(symbols)          # all ten, from a budget of twelve
+    assert summary["deferred"] == 10 * len(archive.ARCHIVE_TIMEFRAMES) - 12
+
+
 def test_successive_passes_do_not_starve_the_same_tail(tmp_path):
     """The defect itself. A bounded pass that always started at the venue's first symbol
     reached symbols 0-1 every time and the rest never — so the fix is that the START moves."""
