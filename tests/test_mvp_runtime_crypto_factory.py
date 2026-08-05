@@ -393,6 +393,87 @@ def test_generated_specs_carry_generation_lineage():
     assert all(s["generation_id"] == "GEN-042" for s in batch["specs"])
 
 
+# --- a family that cannot mint costs its own slot, not the fire -----------------
+
+def _refuse_family(monkeypatch, family):
+    """Make `validate_strategy` refuse one family and pass everything else through.
+
+    A family cannot be stuck by any input `generate_batch` accepts — `templates_for_timeframe`
+    has already gated its features and `_apply_reward_risk_floor` its exit ratio — so the state
+    is reached through the validator, which is the one thing that can refuse a legal draw."""
+    real = factory.validate_strategy
+
+    def refusing(spec):
+        if spec.strategy_family == family:
+            return {"strategy_id": spec.strategy_id,
+                    "strategy_rule_hash": spec.strategy_rule_hash,
+                    "approved_for_backtest": False,
+                    "block_reasons": ["BLOCK_TEST_REFUSAL"]}
+        return real(spec)
+
+    monkeypatch.setattr(factory, "validate_strategy", refusing)
+
+
+def _first_family(*, symbol="BTCUSDT", timeframe="1h", rotation_index=0, count=4):
+    """The family ``generate_batch`` reaches first for this context — the one to jam."""
+    templates = templates_for_timeframe(timeframe, symbol=symbol)
+    offset = factory._rotation_offset(
+        "x", 0, count, len(templates), rotation_index=rotation_index,
+        phase=factory.context_rotation_phase(symbol, timeframe, count=count,
+                                             total=len(templates)),
+    )
+    return templates[offset].family
+
+
+def test_a_stuck_family_no_longer_takes_the_whole_fire_with_it(monkeypatch):
+    """The template is picked by the ACCEPT index, which a refusal does not move, so the loop
+    re-drew the same family until the shared budget was gone and the three slots behind it were
+    never tried. One family that cannot mint cost every candidate of the fire, not one."""
+    stuck = _first_family()
+    _refuse_family(monkeypatch, stuck)
+
+    batch = generate_batch("GEN-900", seed=5, count=4, symbol="BTCUSDT", timeframe="1h",
+                           rotation_index=0)
+
+    families = [s["strategy_family"] for s in batch["specs"]]
+    assert stuck not in families
+    assert batch["accepted_count"] == 4, f"the fire delivered {families}"
+    assert batch["batch_complete"]
+    # It spent its own share and no more — `_MAX_ATTEMPTS_PER_SPEC`, not the whole budget.
+    assert sum(1 for r in batch["rejected"] if r.get("strategy_family") == stuck) == (
+        factory._MAX_ATTEMPTS_PER_SPEC
+    )
+
+
+def test_every_family_stuck_still_terminates(monkeypatch):
+    """The global budget is still the backstop: nothing here can loop forever."""
+    monkeypatch.setattr(factory, "validate_strategy", lambda spec: {
+        "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
+        "approved_for_backtest": False, "block_reasons": ["BLOCK_TEST_REFUSAL"],
+    })
+    batch = generate_batch("GEN-901", seed=5, count=4, symbol="BTCUSDT", timeframe="1h",
+                           rotation_index=0)
+    assert batch["accepted_count"] == 0
+    assert not batch["batch_complete"]
+    assert len(batch["rejected"]) == 4 * factory._MAX_ATTEMPTS_PER_SPEC
+
+
+def test_the_cursor_is_the_accept_index_when_nothing_is_stuck():
+    """The guard must be invisible on the path every fire in the store has taken — 185 of 185
+    minted exactly `count`, so a cursor that advanced on anything else would move them all."""
+    templates = templates_for_timeframe("1h", symbol="BTCUSDT")
+    phase = factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=len(templates))
+    for rotation_index in range(12):
+        batch = generate_batch(f"GEN-{rotation_index:03d}", seed=rotation_index, count=4,
+                               symbol="BTCUSDT", timeframe="1h", rotation_index=rotation_index)
+        assert batch["batch_complete"]
+        offset = factory._rotation_offset("x", 0, 4, len(templates),
+                                          rotation_index=rotation_index, phase=phase)
+        assert [s["strategy_family"] for s in batch["specs"]] == [
+            templates[(offset + j) % len(templates)].family for j in range(4)
+        ]
+
+
 # --- validator ----------------------------------------------------------------
 
 def test_unknown_feature_blocks():

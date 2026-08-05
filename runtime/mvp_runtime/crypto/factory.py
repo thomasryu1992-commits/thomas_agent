@@ -129,6 +129,22 @@ HOLDOUT_PERIODS = 5
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
+
+# What its name says, and it did not until 2026-08-05: the retry budget is `count x` this, and
+# `generate_batch` re-drew the SAME template on every refusal because the template is picked by
+# the ACCEPT index, which a refusal does not move. So the number bounded the fire and not the
+# spec, and a family that could not produce an acceptable draw spent all 48 attempts alone while
+# the three slots behind it were never tried — the fire minted nothing rather than three.
+#
+# **Never observed, and the guard is not a claim that it was.** Every one of the 185 fires in the
+# store minted exactly `count`, and the loop is byte-identical on that path (the cursor advances
+# only on acceptance, so it equals `len(accepted)`). What makes it worth closing anyway is the
+# failure MODE rather than its rate: the cost is the whole fire, the cause is invisible in
+# `generated=N` unless N is compared with what was asked, and the one time this mechanism did
+# bite — an adverse elite centre refusing a third of its own draws on the reward:risk floor — it
+# was found by measuring the store, not by anything reporting it. See
+# `test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals`, which records that the
+# batch "does not fail ... which is why this went unnoticed".
 _MAX_ATTEMPTS_PER_SPEC = 12
 
 # Validator bounds (source S3, verbatim). Outside = rejected, never clamped.
@@ -2062,10 +2078,27 @@ def generate_batch(
     rejected: list[dict[str, Any]] = []
     seen_hashes: set[str] = set(known_rule_hashes)
 
+    # The rotation cursor for THIS fire, and it is deliberately not `len(accepted)`. A family
+    # that cannot produce an acceptable spec has to be steppable past: the accept index does not
+    # move on a refusal, so the loop re-drew the SAME template until the whole budget was gone
+    # and the slots behind it were never tried at all. One stuck family therefore cost the fire
+    # every candidate, not one. See `_MAX_ATTEMPTS_PER_SPEC`.
+    cursor = 0
+    misses = 0
+
+    def _refused(entry: dict[str, Any]) -> None:
+        """Record a refusal, and step the cursor once a family has spent its own share."""
+        nonlocal cursor, misses
+        rejected.append(entry)
+        misses += 1
+        if misses >= _MAX_ATTEMPTS_PER_SPEC:
+            cursor += 1
+            misses = 0
+
     attempts = 0
     while len(accepted) < count and attempts < count * _MAX_ATTEMPTS_PER_SPEC:
         attempts += 1
-        template = templates[(offset + len(accepted)) % len(templates)]
+        template = templates[(offset + cursor) % len(templates)]
         # Half the draws around what this family has already learned, half around where it
         # started, so the search cannot collapse onto one point however good that point looks.
         # Derived, not drawn — the split is reproducible from the generation id and consumes
@@ -2083,19 +2116,23 @@ def generate_batch(
         try:
             spec = StrategySpec.from_dict(spec_dict)
         except SpecParseError as exc:
-            rejected.append({"strategy_family": template.family, "reason": f"parse: {exc}"})
+            _refused({"strategy_family": template.family, "reason": f"parse: {exc}"})
             continue
         verdict = validate_strategy(spec)
         if not verdict["approved_for_backtest"]:
-            rejected.append({"strategy_family": template.family, "block_reasons": verdict["block_reasons"]})
+            _refused({"strategy_family": template.family, "block_reasons": verdict["block_reasons"]})
             continue
         if spec.strategy_rule_hash in seen_hashes:
-            rejected.append({"strategy_family": template.family, "reason": "duplicate_rule_hash"})
+            _refused({"strategy_family": template.family, "reason": "duplicate_rule_hash"})
             continue
         seen_hashes.add(spec.strategy_rule_hash)
         accepted.append(spec)
         accepted_params[spec.strategy_id] = dict(params)
         validations.append(verdict)
+        # Only on acceptance, which is what keeps this identical to `len(accepted)` for every
+        # fire that never exhausts a family — the 185 of 185 in the store today.
+        cursor += 1
+        misses = 0
 
     return {
         "generation_id": generation_id,
@@ -3555,6 +3592,10 @@ def run_factory(
         "seed": seed,
         "requested_count": batch["requested_count"],
         "accepted_count": batch["accepted_count"],
+        # Forwarded because the generator's own answer to "did this fire deliver what was asked"
+        # stopped here and nothing downstream could reconstruct it: `accepted_count` alone reads
+        # as a quantity rather than as a shortfall. The scheduler's status line compares the two.
+        "batch_complete": batch["batch_complete"],
         # Mint-time refusals and score-time ones together: a caller reading "why did this fire
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
