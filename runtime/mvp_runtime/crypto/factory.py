@@ -347,20 +347,25 @@ class StrategyTemplate:
 # stop spending half of every mint on a band that is negative at 15m, marginal at 1h and worse
 # at 4h than the alternative, for free.
 #
-# The BASE moves with the floor, and that is not cosmetic. `mutate_params` draws
-# `base +/- (hi - lo) * 0.35` and clamps, so raising `lo` to 1.2 while leaving the base at 1.2
-# would pin **49.8%** of draws to exactly 1.2 — one value, one rule hash, a collapse in the
-# parameter's diversity rather than a shift in it. At 1.45 that is 5.4%, ~77% of draws land in
-# the band measured above, and the tail still reaches 1.73 so the region this store has never
-# sampled (1.6-2.0, n=2) stays explorable.
+# The BASE still moves with the floor, but no longer to escape a clamp. Historically it did:
+# `mutate_params` clamped, so raising `lo` to 1.2 while leaving the base at 1.2 pinned **49.8%**
+# of draws to exactly 1.2 — one value, one rule hash, a collapse in the parameter's diversity
+# rather than a shift in it — and 1.45 was chosen to bring that to 5.4%. What survives that
+# reasoning is the aim: at 1.45 roughly 77% of draws land in the band measured above, and the
+# tail still reaches 1.73 so the region this store has never sampled (1.6-2.0, n=2) stays
+# explorable. Since 2026-08-05 `mutate_params` FOLDS at the bound instead, so a base near one
+# spreads its overshoot back into the space rather than stacking it on the edge.
 #
-# `target_atr` carries the same trap less severely and it was never measured until 2026-08-04:
-# the base 3.0 clears the 1.6 floor by 1.4 against a span of +/-2.24, so **18.9%** of draws pin
-# at exactly 1.6. Under the floor tolerated for the stop (10%) that is a fail, and it is why
-# "the low-target region" is mostly a spike ON the bound rather than a region — of the accepted
-# draws below target 2.0, roughly four in five are the pinned value. `_apply_reward_risk_floor`
-# takes it to 14.4% as a side effect, which is an improvement and not a fix; moving this base up
-# would be the fix, and it is a change to where the trend search aims, so it is not made here.
+# **That change is why this base and `target_atr`'s are left where they are.** The pinning was
+# measured per-parameter on 2026-08-04 and read as `target_atr`'s problem — base 3.0 clears the
+# 1.6 floor by 1.4 against a span of +/-2.24, so 18.9% of draws pinned, 14.4% after
+# `_apply_reward_risk_floor` — with the conclusion that "moving this base up would be the fix".
+# Measured from the centres the factory actually uses, it was not: `generate_batch` draws half
+# of every batch around `elite_base_params`, which never reads `_EXIT_BASE`, so moving the base
+# fixes the template half and leaves the elite half pinning 15.0%, while shifting the median
+# drawn target 3.12 -> 3.86. Folding takes both halves to 0.0% and moves the median target by
+# 0.10. See `_fold_into_bounds` for the full table and for the ratchet that makes the elite half
+# the half that matters.
 _EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.2, 2.0),
     "target_atr": ParamSpec(1.6, 8.0),
@@ -405,9 +410,13 @@ _EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 # (RR below 1 carried by a high hit rate) cannot be expressed here at all; widening
 # MIN_REWARD_RISK is a separate, explicit decision.
 #
-# Bases sit mid-range for the reason recorded above the trend base: a base ON a bound pins ~50%
-# of draws to that bound. At 1.7/2.7/10 no draw clamps at all (spans are +/-0.21, +/-0.49, +/-4.2),
-# so the whole interval stays reachable and the worst-case drawn R:R is 2.21/1.91 = 1.16.
+# Bases sit mid-range for the reason recorded above the trend base: a base ON a bound used to
+# pin ~50% of draws to that bound. At 1.7/2.7/10 no draw reaches a bound at all (spans are
+# +/-0.21, +/-0.49, +/-4.2), so the whole interval stays reachable and the worst-case drawn R:R
+# is 2.21/1.91 = 1.16. `mutate_params` folds at the bound since 2026-08-05 and a space built
+# this way never reaches the fold — the same relationship this space already has with
+# `_apply_reward_risk_floor`, and worth keeping for the same reason: a property that holds by
+# construction is stronger than one restored by a repair.
 _FADE_EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.4, 2.0),
     "target_atr": ParamSpec(2.0, 3.4),
@@ -1636,11 +1645,59 @@ def mutate_params(
             continue
         base = base_params[name]
         span = (spec.hi - spec.lo) * scale
-        val = base + rng.uniform(-span, span)
-        val = max(spec.lo, min(spec.hi, val))
+        val = _fold_into_bounds(base + rng.uniform(-span, span), spec.lo, spec.hi)
         out[name] = int(round(val)) if spec.integer else round(val, 4)
     _apply_reward_risk_floor(out, base_params, param_space, rng, scale=scale)
     return out
+
+
+def _fold_into_bounds(value: float, lo: float, hi: float) -> float:
+    """Reflect ``value`` back inside ``[lo, hi]`` instead of clamping it to the bound.
+
+    **The clamp this replaced did not bound the distribution, it collapsed part of it onto one
+    number.** A draw is ``base +/- (hi - lo) * scale``, so any centre nearer a bound than its own
+    span sends everything that overshoots to exactly that bound — one value, one rule hash, a
+    parameter that has stopped varying rather than shifted. Measured 2026-08-05 across the
+    library: **16 (parameter, space, base) combinations do it from their own template base**,
+    covering 114 of 170 template parameter slots — ``target_atr`` 18.8%, ``flow_ma_min`` and
+    ``rel_min`` 18.3%, ``xs_dispersion_min`` 14.3%, ``htf_sep_min`` 11.9%, ``oi_change_min``
+    9.2%, ``flow_z_min`` 8.0%, ``stop_atr`` 5.4%, and nine more at 2.4%.
+
+    **And it ratcheted.** ``generate_batch`` centres half of every batch on
+    :func:`elite_base_params`, the most ROBUST prior row — so a pinned row becomes a centre ON
+    the bound, and a centre on the bound sends *half* of its own children back to it. Measured
+    over the 48 real elite centres this store currently supplies for the trend space: 7 (14.6%)
+    sit exactly on ``target_atr``'s 1.6 floor, two of them re-pin >50% of their draws, sixteen
+    more re-pin 20-50%, and the mean floor-pin over all of them is 15.0%.
+
+    That ratchet is why the fix is here rather than in a base. Moving ``_EXIT_BASE`` up — what
+    the note over ``_EXIT_PARAMS`` proposed before this was measured — only ever reached the
+    template half: it takes the template-base pin 14.5% -> 0.0% and leaves the elite half at
+    15.0%, while moving the median drawn target 3.12 -> 3.86 and the median R:R 2.14 -> 2.66.
+    Half the effect, bought with a re-aiming of the trend geometry toward the band this store
+    measures as its *worst* (see :func:`_apply_reward_risk_floor` for that table).
+
+    Folding fixes both halves and re-aims nothing. Measured over the same centres: floor pin
+    14.5% -> 0.0% from the template base and 15.3% -> 0.0% from the real elite centres, with the
+    median target moving 3.12 -> 3.03 and 3.22 -> 3.25 and the median R:R 2.14 -> 2.08 and
+    2.13 -> 2.18 — all inside the 0.05R-equivalent nothing in this store resolves.
+
+    **Truncating was the alternative and it re-aims.** Drawing uniformly on the window
+    intersected with the space (what :func:`_apply_reward_risk_floor` does, correctly, for a
+    constraint that is a hard floor) moves the mean from a centre of 3.0 to 3.42, and from a
+    centre sitting at 1.6 to 2.72. A mutation is a claim about a NEIGHBOURHOOD; truncation
+    answers a different question near a bound, and the whole point here is to change the shape
+    of the draw without changing where it aims.
+
+    A fold rather than a single reflection, so a span wider than the interval cannot land
+    outside it — the library has no such space today (the widest is ``max_holding_bars``, span
+    12.6 against a width of 36) but a future one costs nothing to be right about. Consumes no
+    ``rng`` call of its own, so the seeded-batch reproduction rule is untouched."""
+    width = hi - lo
+    if width <= 0:
+        return lo
+    offset = (value - lo) % (2 * width)
+    return lo + (offset if offset <= width else 2 * width - offset)
 
 
 # The one pair of generated parameters that is not free of the other, and the reason the coupling
@@ -3200,8 +3257,22 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # **Depth alone is not enough, and measuring it is what settles the shape.** Filtering to a
 # judgeable holdout while still ranking by `champion_score` makes the selected pool *worse* out
 # of sample — median holdout of the chosen parents moves -0.098R -> **-0.164R** — because within
-# the judgeable subset the score is mildly anti-selective. Adding the non-negative bit and
-# leaving the ranking alone moves it to **+0.091R** with every selected parent non-negative.
+# the judgeable subset the score is mildly anti-selective.
+#
+# **The evidence for adding the non-negative bit is the children already bred, and the obvious
+# reading is circular.** That this predicate selects a pool whose median holdout is +0.091R, 100%
+# of it non-negative, computes both figures over the very quantity the predicate filters on — it
+# is arithmetic, not a finding, and it cannot show that the rows it keeps will BREED better. The
+# test that can uses different rows on both sides: selection reads the PARENT's holdout, while the
+# outcome measured is the CHILD's. Over the 447 already-bred children (#525 review), paired within
+# (symbol, timeframe) because the groups do not share a tier — the qualifying side is 4h-heavy,
+# the rest 1h-heavy, and R scale differs by tier — children of parents that pass this predicate
+# beat children of parents that fail it by **+0.1151R median-based and +0.1674R trade-weighted,
+# 5 of 6 comparable cells each way**. What bounds that: 6 cells at 2-8 rows per group; 38 of 330
+# resolved parents are `mvp_rescore` rows, so "holdout as stored today" is not exactly the holdout
+# the fusion saw at breeding time; and the smallest cell (BNBUSDT 15m) disagrees in sign between
+# the two statistics. Against ~10 independent market periods it clears the resolution floor, but
+# not by much.
 #
 # **A one-bit filter at zero, deliberately, rather than ranking by holdout magnitude.** The unit
 # of independence here is the market period, not the trade, and this store carries roughly ten of
@@ -3217,6 +3288,12 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
 # rather than a new failure mode. Re-measure before tightening further: with the child-side bar
 # (`FUSION_IMPROVEMENT_METRICS`) also reducing crossover supply, the parent pool now refills from
 # the seeded rotation more slowly than it did.
+#
+# **Still owed: the split-half test**, which selects on the first half of the holdout periods and
+# measures the last three — disjoint slices of the same tail, so no row is scored on the bars that
+# selected it. It could not run when this landed: `period_r` / `period_trades` arrived with #518
+# hours after the last factory fire, so no stored row carried a per-period breakdown to split. It
+# becomes measurable once the store holds rows minted on that code.
 def holdout_permits_parenting(record: Mapping[str, Any]) -> bool:
     """May this row breed, on its out-of-sample evidence alone?
 

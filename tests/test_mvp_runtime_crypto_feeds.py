@@ -2,10 +2,11 @@
 
 Under test: funding rides the existing binance_futures grant and pages backward like
 the source collector; Coinalyze is its own provider (own key, own grant — env alone
-fails closed, the key is read by name); a fetch that FAILS leaves the snapshot key
-present-and-empty (indeterminate features, never constants) while a feed that is NOT
-CONFIGURED keeps the legacy constants; and the factory can now mint funding_fade
-specs."""
+fails closed, the key is read by name); a fetch that FAILS and a feed that is NOT
+CONFIGURED both leave every column indeterminate, never a constant (the pre-C9 0-fill
+for funding and `liquidation_spike_ratio` went 2026-08-05 — see
+`test_an_unconfigured_feed_is_indeterminate_like_a_failed_one`); and the factory can
+now mint funding_fade specs."""
 
 from __future__ import annotations
 

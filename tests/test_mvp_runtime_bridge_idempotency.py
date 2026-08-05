@@ -318,7 +318,7 @@ def asks(tmp_path, monkeypatch):
     store = _FakeApprovalStore(tmp_path)
     minted: list[str] = []
 
-    def _fake_open_ask(domain, reason, *, approval_store, now, repo_root):
+    def _fake_open_ask(domain, reason, *, approval_store, control_store, now, repo_root):
         approval_id = f"approval_{len(minted)}"
         minted.append(approval_id)
         approval_store.append([{"approval_id": approval_id, "status": approval_mod.STATUS_PENDING}])
@@ -391,7 +391,13 @@ def test_the_stop_path_takes_no_idempotency_lock(tmp_path, asks, monkeypatch):
 
 # --- the domain-scoped grant and the global effect --------------------------------
 
-def _grant(domain="crypto"):
+def _grant(domain="crypto", *, stop_ref="stop_unset"):
+    """A grant shaped like the fields the door reads.
+
+    ``stop_ref`` defaults to a placeholder no real control state hashes to, so a test that
+    means to spend must point it at the stop actually in effect (`_arm`). A test that forgets
+    fails loudly rather than passing because the door happened not to check.
+    """
     return {
         "approval_id": "approval_test",
         "status": approval_mod.STATUS_APPROVED,
@@ -401,8 +407,16 @@ def _grant(domain="crypto"):
         "approved_action_snapshot": {
             "permission_scope": TRADING_SWITCH_PERMISSION_SCOPE,
             "target_ref": f"trading_switch:{domain}",
+            "normalized_parameters": {"stop_ref": stop_ref},
         },
     }
+
+
+def _arm(store, control_store, approval_id="approval_test"):
+    """Point a grant at the stop currently in effect — what minting the ask would have done."""
+    snapshot = store.records[approval_id]["approved_action_snapshot"]
+    snapshot["normalized_parameters"] = {"stop_ref": switch_bridge.stop_ref(control_store.load())}
+    return store
 
 
 @pytest.fixture
@@ -446,6 +460,7 @@ def test_one_domain_spends_normally(tmp_path, approved):
     """The guard is inert while the set has one member — it is not a new refusal for today."""
     control_store = ControlStore(tmp_path)
     _halt(control_store)
+    _arm(approved, control_store)
     out = switch_bridge.apply_switch(
         {"command": "enable", "reason": "assistant: resume", "approval_id": "approval_test"},
         control_store=control_store, ledger=LedgerStore(tmp_path), approval_store=approved,
