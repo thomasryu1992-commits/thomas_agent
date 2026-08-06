@@ -40,3 +40,8 @@ junit.xml
 
 # Claude Code worktrees: local, per-session working copies of this repo (never source).
 .claude/worktrees/
+
+# Claude Code per-session scratch space. It sat neither tracked nor ignored, which is the
+# one combination that goes wrong quietly: empty, it looks settled in `git status`, and the
+# first session to drop a file there hands it to the next `git add -A` in a shared tree.
+.claude/scratch/
