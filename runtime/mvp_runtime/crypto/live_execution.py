@@ -360,6 +360,23 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
     vocabulary — teaching every caller two spellings is how one of them ends up checking the
     wrong field and reading a refused stop as a resting one.
 
+    **The fill facts are here too, and that half was missing.** A CONDITIONAL algo order that
+    triggered reports what actually executed under ``actualPrice``/``actualQty`` — the child
+    order's average price and filled quantity — where the order endpoint says
+    ``avgPrice``/``executedQty``. Those two were not translated, so ``fill_facts`` read an algo
+    fill as all-``None`` and `live_leg` could not price an exit the venue had already made.
+
+    Measured 2026-08-05T17:38Z on ETHUSDT: the stop triggered, the venue answered
+    ``algoStatus: FINISHED, actualPrice: 1904.96, actualQty: 0.022``, and settlement refused for
+    42 consecutive cycles because the numbers it needed were sitting in fields nothing read.
+    The position stayed OPEN in the local book against a venue that no longer had it, which
+    held every ETHUSDT entry behind a reconciliation DRIFT.
+
+    ``cumQuote`` is deliberately NOT synthesised from the two. ``realized_pnl_usdt`` already
+    falls back to ``qty * price`` when the quote is absent, and a computed value written into a
+    field the venue names would be indistinguishable from one the venue sent — which is exactly
+    the confusion the "never lossy" rule below exists to prevent.
+
     **Additive, never lossy.** The venue's own keys are kept alongside the aliases, because the
     raw response is what lands in the ledger and an incident is reconstructed from it — this
     session reconstructed the 2026-08-02 request byte-for-byte only because nothing had been
@@ -369,7 +386,8 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
         return None
     out = dict(venue_order)
     for source, alias in (("algoId", "orderId"), ("algoStatus", "status"),
-                          ("triggerPrice", "stopPrice")):
+                          ("triggerPrice", "stopPrice"),
+                          ("actualPrice", "avgPrice"), ("actualQty", "executedQty")):
         if source in out and alias not in out:
             out[alias] = out[source]
     return out
