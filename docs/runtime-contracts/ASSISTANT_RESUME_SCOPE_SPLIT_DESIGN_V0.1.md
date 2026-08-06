@@ -30,7 +30,8 @@ not read as agreeing with them.
    path that can place real orders."* The record says exactly what it does.
 
 2. **"A `crypto`-scoped grant produces a global effect, and that mismatch is unhandled."**
-   The mismatch is real and is already **refused rather than documented**: PR #535 added a
+   The mismatch is real and is already **refused rather than documented**: PR #535 (merged
+   2026-08-05) added a
    `DOMAIN_EFFECT_MISMATCH` block in `switch_bridge._spend` that fires the moment
    `_ALLOWED_DOMAINS` grows past one member, with a test that widens the set to pin it. While
    there is exactly one domain, the grant and the effect agree.
@@ -75,8 +76,28 @@ of `execution_allowed` is non-financial and would be untouched:
 |---|---|---|
 | `crypto/live_route.py:335` into `live_order.py:514` | `execution_allowed` as `runtime_active` | reads the **arm** |
 | `crypto/paper.py:1465` | `execution_allowed` | **open question — see D3** |
-| `crypto/live_readiness.py:260` | `execution_allowed` (report only) | adds one board row |
-| `cli.py:155`, `operator.py:517/1432`, `frontdesk.py:459`, `workspace.py:242`, `memory_cli.py:165`, `programization_cli.py:181`, `registry_console.py:316`, `trial.py:393`, `consumption.py:155`, `operator_feedback.py:182`, `scheduler.py:1108` | `execution_allowed` | **unchanged** |
+| `crypto/live_readiness.py:261` | `execution_allowed` (report only) | adds one board row |
+| **`dispatch_bridge.py:177`** | `execution_allowed` | **unchanged** — and see below |
+| `cli.py:155`, `consumption.py:155`, `frontdesk.py:459`, `memory_cli.py:165`, `memory_console.py:188`, `operator.py:517`, `operator.py:1432`, `operator_feedback.py:182`, `programization_cli.py:181`, `registry_console.py:316`, `scheduler.py:1178`, `trial.py:393`, `workspace.py:242` | `execution_allowed` | **unchanged** |
+
+Fourteen non-financial gate sites, two trading ones, one report row. (`control.py:314` also
+reads the flag and is not in the count: it is `recovery_lines` *describing* the state to an
+operator, not gating on it.)
+
+`dispatch_bridge.py:177` is called out of the list because it is the clearest single argument
+for this proposal. It is the door the assistant does bounded P3 work through — the analysis,
+research, translation and content kinds — and it is shut by the same global flag as the order
+path. So today, an assistant that halted the runtime cannot even hand work back to itself
+without a RED live-trading signature. Under the split it comes back with `scope=runtime`, and
+the order path does not.
+
+**The first version of that table was short by two, and the reason is worth recording.** It was
+built from a `grep` piped through `head -30`, and the truncation was not noticed — so an
+enumeration that reads as complete was in fact "the first thirty matching lines". It missed
+`dispatch_bridge.py` and `memory_console.py`, and `scheduler.py`'s gate has since moved from
+1108 to 1178. The headline claim survived unchanged (both missing sites are non-financial, and
+only two sites gate trading), which is exactly why it is worth saying: the conclusion being
+right is not evidence the method was. Re-counted against `main` `f2f8222` with no `head`.
 
 **2. Closing a position is already never gated on the kill switch.**
 `live_route._run_gated_live_leg` settles and protects open positions *before* it reads control
@@ -181,8 +202,8 @@ the six call sites each need a decision.
 | `runtime/mvp_runtime/console_cli.py` | `status` prints the arm |
 | tests | the split holds; a `scope=runtime` grant cannot be spent as a trading re-arm (fingerprint); an old state file loads per D1; DISARMED blocks an entry and does **not** block a settle |
 
-**Sequencing:** this collides with PR #535 in `switch_bridge._spend` and in `_ALLOWED_KEYS`.
-#535 merges first; this rebases onto it.
+**Sequencing:** resolved. #535 merged on 2026-08-05 and the implementation branch rebased onto
+it cleanly — `control.py` is not a file #535 touched.
 
 ---
 
