@@ -2279,7 +2279,7 @@ feature or backtest path" by design — so running it means adding fetch volume 
 cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
 of a method.
 
-## G. Codebase review backlog — measured 2026-08-02, three items open
+## G. Codebase review backlog — measured 2026-08-02; G1 sliced, **G2 done**, G3 open
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -2401,20 +2401,43 @@ reopen it.
 constants, mostly indicator windows), and the `INHERITED` breakers themselves — indexing them
 records that nobody has decided them, which is not the same as deciding them.
 
-### G2. The dead capability lane — 3,311 LOC, zero importers
+### G2. The dead capability lane — **removed 2026-08-06**, and its premise was better than it read
 
-```
-grep -rn 'read_only_entry\|protected_governance_state' --include=*.py runtime/mvp_runtime/
-```
+`runtime/read_only_entry/` (1,877 LOC) + `runtime/protected_governance_state/` (1,434), the four
+`scripts/validate_i0_5_2/3/4/5*` that imported them, and the entries naming them in
+`deferred/DEFERRED_ARCHITECTURE.yaml` and `scripts/gate_matrix.py`. **The deferred design stays**
+— its contracts, schemas, registries and examples are untouched, and the `family_constraints`
+that record every capability as `false` are still there. What went is an *implementation* sitting
+under a deferral, which is the anomaly: a deferred design is supposed to be a design.
 
-`runtime/read_only_entry/` (1,877) + `runtime/protected_governance_state/` (1,434) are not
-imported by the live runtime at all — the single hit is a doc comment in `audit.py`.
-`docs/ARCHITECTURE_REVIEW_RECORD.md` (finding C) already identified this as *"the only genuinely
-safe, self-contained C slice"* and listed what must move in lockstep: `deferred/DEFERRED_ARCHITECTURE.yaml`
-(`implementation_candidates`), `scripts/validate_i0_5_2/3/4/5*`, `scripts/build_i0_5_2/3/5*`, and
-the CI patterns in `scripts/gate_matrix.py`. It triggers the full CI matrix.
+**The "zero importers" grep was scoped to the live runtime and understated the surface**, which
+is worth recording because it nearly stopped this. Four validators imported both packages, and
+the deferral manifest lists them under `detailed_validators` — so the first read was "the gates
+genuinely read this", which is the exact wording §G uses below to park the sibling item.
 
-Safe, mechanical, and **not urgent** — the material is governed and indexed, not loose. Do it when
+**Checked one step further, nothing executes them.** The release gate names all four in a
+**comment block**; the deferred CI scope runs `scripts/validate_deferred_architecture.py`, which
+runs `tests.test_deferred_architecture`, which does not touch the lane; pytest never imports it.
+The `RELEASE_GATE_EVIDENCE.yaml` rows showing them run carry a `C:\Users\thomas\...` path — a
+hand-run from another machine, not a gate. So the record said validated and nothing validated.
+
+**The lockstep list was right about the mechanism and wrong about one item.**
+`scripts/build_i0_5_2/3/5*` do not exist — only `build_i0_5_1_*`, which stays, as does
+`validate_i0_5_1_runtime_promotion_readiness.py`; neither imports the lane. And the reason the
+manifest had to move in the same commit is concrete: `lib/deferred_validation._all_references`
+yields `implementation_candidates` and `detailed_validators` and `_path_exists` checks each, so
+deleting the code alone would have failed the deferred gate on the very PR that touched it.
+
+Verified after: deferred architecture gate **PASS**, `pytest` 4,349 passed / 210 skipped, release
+gate `--full --check-only` **PASS**, and no manifest reference points at a path that no longer
+exists.
+
+**What this does not settle** is the sibling item in the not-recommended list below (36 of 75
+schemas and 44 of 94 contracts describing disabled capability). That one rests on "the gates
+genuinely read it" — which was true there and, as measured here, was **not** true of this lane.
+The distinction to carry: a gate reading a *record about* code is not a gate reading the code.
+
+Was, before this: safe, mechanical, and **not urgent** — the material is governed and indexed, not loose. Do it when
 something else already requires a full-matrix run.
 
 ### G3. Diagnostics have outgrown their index — 1,188 codes, 34 error classes
