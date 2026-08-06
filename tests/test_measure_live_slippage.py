@@ -51,3 +51,13 @@ def test_an_unreadable_side_measures_nothing_rather_than_guessing(side):
 @pytest.mark.parametrize("intended,realized", [(0.0, 100.0), (100.0, 0.0), (-1.0, 100.0)])
 def test_an_unusable_price_measures_nothing(intended, realized):
     assert _adverse_bps(intended, realized, "BUY", "stop_loss") is None
+
+
+def test_an_entry_is_adverse_in_the_mirror_of_an_exit():
+    """The entry BUYS to open a long, so paying MORE than the plan assumed is the cost.
+
+    Same function as the exit legs, and that is the point: the adverse direction is a property
+    of the order's side, not of whether it opens or closes.
+    """
+    assert _adverse_bps(100.0, 100.5, "BUY", "entry") == pytest.approx(50.0)
+    assert _adverse_bps(100.0, 99.5, "SELL", "entry") == pytest.approx(50.0)

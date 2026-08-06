@@ -937,10 +937,44 @@ def submit_and_reconcile(
         # The ACTUAL fill, straight from the venue — what LP5 must compute realized PnL from,
         # never the modelled entry/exit the plan carried (the venue reports these as strings).
         "fill": fill_facts(venue_order),
+        # And the price the decision was taken at, which until now was **not written anywhere
+        # durable** — so realized entry slippage could not be computed at all.
+        #
+        # This is the one leg where the pair is missing. A protective stop is submitted at a
+        # price the runtime chose, so `bracket[].stop_price` against the fill is already a
+        # measurement (`scripts/measure_live_slippage.py` reads 23.47 bps on the first one). A
+        # MARKET entry records only `fill.avg_price`, and the venue answers `price: "0.00"` for
+        # a market order — so the leg the cost model charges on **every** trade was the one with
+        # nothing to check `DEFAULT_SLIPPAGE_BPS = 3.0` against. §F8 measures why that matters:
+        # the store's median candidate stops paying at **4.3 bps**.
+        #
+        # `intent["entry_price"]` is the plan's own entry, the same number `paper.settle_trade_
+        # plan` settles at, so a live fill and a paper fill become comparable on the axis that
+        # separates them. Present-and-None when the plan carried none, never 0.0 — "not
+        # recorded" and "intended free" are different facts, and this record is durable.
+        #
+        # Recording only. Nothing reads it to decide anything, no order changes shape, and this
+        # is the same seam #426 used to add `error_detail` when a cause could not be diagnosed
+        # from what was kept.
+        "intended_price": _intended_price(intent),
         "submit_error": submit_error,
         "submit_response": submit_response,
         "created_at": now,
     }
+
+
+def _intended_price(intent: Mapping[str, Any]) -> float | None:
+    """The plan's own entry price, or None. Never a substitute figure.
+
+    A plan that carried no entry price makes its fill unmeasurable, and that is the honest
+    record — filling in the venue's own fill would make every such row read as zero slippage,
+    which is the flattering direction and exactly the shape `cost.outcome_net_r` refuses in its
+    own domain. A non-positive value is treated as absent for the same reason.
+    """
+    value = intent.get("entry_price")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
 
 
 def fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:

@@ -721,3 +721,49 @@ def test_the_dry_run_adapter_reports_its_own_resting_orders():
     assert adapter.open_orders("NOTHINGUSDT") == []
     adapter.cancel_order("BTCUSDT", lx.build_order_request(_intent())["newClientOrderId"])
     assert adapter.open_orders() == []
+
+
+# --- the price the decision was taken at, recorded so slippage can be measured ---------------
+
+def test_the_entry_record_carries_the_price_the_plan_meant_to_pay():
+    """Without it, entry slippage is not computable from anything durable.
+
+    A MARKET entry records only `fill.avg_price` and the venue answers `price: "0.00"`, so the
+    leg the cost model charges on EVERY trade had nothing to check `DEFAULT_SLIPPAGE_BPS`
+    against. §F8 measures why that matters: the median candidate stops paying at 4.3 bps.
+    """
+    intent = _intent()
+    intent["entry_price"] = 64_000.0
+    res = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+                                  guard_verdict=APPROVED, now=NOW)
+    assert res["intended_price"] == 64_000.0
+
+
+def test_a_plan_with_no_entry_price_records_none_rather_than_the_fill():
+    """Substituting the fill would make every such row read as zero slippage — the flattering
+    direction, and the same shape `cost.outcome_net_r` refuses in its own domain."""
+    res = lx.submit_and_reconcile(_intent(), adapter=lx.DryRunOrderAdapter(),
+                                  guard_verdict=APPROVED, now=NOW)
+    assert "intended_price" in res and res["intended_price"] is None
+
+
+@pytest.mark.parametrize("value", [0, 0.0, -1.0, True, False, "64000", None])
+def test_an_unusable_intended_price_reads_as_not_recorded(value):
+    """`True` is the one worth naming: it is an int in Python and would record as 1.0."""
+    intent = _intent()
+    intent["entry_price"] = value
+    res = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+                                  guard_verdict=APPROVED, now=NOW)
+    assert res["intended_price"] is None
+
+
+def test_recording_it_changes_nothing_else_about_the_order():
+    """Recording only: the request sent and the reconcile verdict must be untouched."""
+    intent = _intent()
+    without = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+                                      guard_verdict=APPROVED, now=NOW)
+    intent["entry_price"] = 64_000.0
+    with_price = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+                                         guard_verdict=APPROVED, now=NOW)
+    for key in ("reconcile_status", "mismatches", "symbol", "order_type", "reduce_only"):
+        assert without[key] == with_price[key]
