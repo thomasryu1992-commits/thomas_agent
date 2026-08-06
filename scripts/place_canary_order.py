@@ -395,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
             # and this records what the venue said after it.
             quantity=args.quantity,
             fill=result.get("fill"),
+            # The price read at step 3 to check the declared notional, kept instead of
+            # discarded: against `fill.avg_price` it is this order's realized slippage, and a
+            # canary is the only entry this runtime can place without routing a strategy signal.
+            intended_price=reference_price,
+            side=(result.get("submit_response") or {}).get("side"),
             now=now,
         )
         registry_error = None

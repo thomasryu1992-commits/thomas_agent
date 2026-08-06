@@ -38,6 +38,7 @@ from runtime.mvp_runtime.crypto.cost import DEFAULT_SLIPPAGE_BPS  # noqa: E402
 
 STATE = ROOT / ".runtime_governance_state"
 OUTCOMES = STATE / "crypto" / "live_outcomes.jsonl"
+CANARIES = STATE / "crypto" / "live_canary_orders.jsonl"
 LEDGER = STATE / "runtime_ledger" / "records.jsonl"
 
 
@@ -137,6 +138,20 @@ def measure() -> dict[str, Any]:
         measured.append({"symbol": entry.get("symbol"), "close_reason": "entry",
                          "intended": float(intended), "realized": float(realized),
                          "adverse_bps": round(bps, 2), "closed_at_utc": entry.get("created_at")})
+    canaries_without_intent = 0
+    for canary in _rows(CANARIES):
+        intended, realized = canary.get("intended_price"), canary.get("fill_avg_price")
+        if not isinstance(intended, (int, float)) or not isinstance(realized, (int, float)):
+            canaries_without_intent += 1
+            continue
+        bps = _adverse_bps(float(intended), float(realized), str(canary.get("side") or ""), "canary")
+        if bps is None:
+            canaries_without_intent += 1
+            continue
+        measured.append({"symbol": canary.get("symbol"), "close_reason": "canary",
+                         "intended": float(intended), "realized": float(realized),
+                         "adverse_bps": round(bps, 2),
+                         "closed_at_utc": canary.get("recorded_at_utc")})
     for outcome in _rows(OUTCOMES):
         if outcome.get("outcome_closed") is not True:
             continue
@@ -168,6 +183,7 @@ def measure() -> dict[str, Any]:
         })
     return {"measured": measured, "unmeasurable": unmeasurable,
             "entries_without_intent": entries_without_intent,
+            "canaries_without_intent": canaries_without_intent,
             "modelled_bps": DEFAULT_SLIPPAGE_BPS}
 
 
@@ -195,8 +211,17 @@ def render(result: dict[str, Any]) -> str:
     if entries:
         out.append(f"entry fills: n={len(entries)}  median "
                    f"{statistics.median(r['adverse_bps'] for r in entries):.2f} bps")
+    canaries = [r for r in rows if r["close_reason"] == "canary"]
+    if canaries:
+        out.append(f"canary fills: n={len(canaries)}  median "
+                   f"{statistics.median(r['adverse_bps'] for r in canaries):.2f} bps")
     out.append(f"entries with no recorded intent: {result['entries_without_intent']}"
-               " (opened before `intended_price` was recorded, 2026-08-06)")
+               "   canaries with none: " + str(result["canaries_without_intent"])
+               + "   (both predate `intended_price`, 2026-08-06)")
+    out.append("")
+    out.append("A canary is an entry-only MARKET order placed to validate the path, so it is the")
+    out.append("one entry this runtime can make without routing a strategy signal — the")
+    out.append("instrument for this constant while live entries are held down.")
     return "\n".join(out)
 
 

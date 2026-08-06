@@ -767,3 +767,33 @@ def test_recording_it_changes_nothing_else_about_the_order():
                                          guard_verdict=APPROVED, now=NOW)
     for key in ("reconcile_status", "mismatches", "symbol", "order_type", "reduce_only"):
         assert without[key] == with_price[key]
+
+
+# --- the canary as a slippage instrument ------------------------------------------------------
+
+def test_a_canary_records_what_it_meant_to_pay_beside_what_it_paid():
+    """A canary is entry-only MARKET, so it is the one entry that can be placed without routing
+    a strategy signal — the instrument for `DEFAULT_SLIPPAGE_BPS` while live entries are held."""
+    record = build_canary_order_record(
+        reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
+        notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0, "cum_quote": 64.01},
+        intended_price=64_000.0, side="buy", now=NOW,
+    )
+    assert record["intended_price"] == 64_000.0
+    assert record["side"] == "BUY"            # normalised, so the sign convention can read it
+
+
+def test_a_canary_with_no_reference_price_records_none_rather_than_the_fill():
+    record = build_canary_order_record(
+        reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
+        notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0}, now=NOW,
+    )
+    assert record["intended_price"] is None and record["side"] is None
+
+
+def test_the_new_fields_do_not_change_what_clean_means():
+    """`clean` gates autonomous live entry. A recording change must not move it."""
+    common = dict(reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
+                  notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0}, now=NOW)
+    assert build_canary_order_record(**common)["clean"] is True
+    assert build_canary_order_record(**common, intended_price=64_000.0, side="BUY")["clean"] is True
