@@ -2422,7 +2422,10 @@ def funding_charges_per_bar(
     # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
     # one per bar would price a scalper like a swing trader.
     minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
-    per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    # From the MODEL, not the module constant: Hyperliquid settles 24 times a day against
+    # Binance's 3, and a per-bar charge computed from a fixed 3 is wrong by 8x on the venue the
+    # archive is already collecting. The default is still 3, so nothing here moves today.
+    per_bar = (minutes / 1440.0) * cost.funding_intervals_per_day
     modelled = cost.funding_bps_per_interval / 10000.0 * per_bar
 
     if not events:

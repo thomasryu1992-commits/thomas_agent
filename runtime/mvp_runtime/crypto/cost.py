@@ -71,6 +71,7 @@ from typing import Any, Mapping
 # respelled here: `live_pnl` defines what each basis means, and two spellings of one label is how
 # the two drift. Constants only — no I/O at import, the same reason `paper.py` takes
 # `R_BASIS_INTENT` from there.
+from ..errors import ToolError
 from . import market_data
 from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED
 
@@ -207,6 +208,14 @@ class CostModel:
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
     maker_fee_bps: float = DEFAULT_MAKER_FEE_BPS
     funding_bps_per_interval: float = DEFAULT_FUNDING_BPS_PER_INTERVAL
+    # Settlements per day, carried on the MODEL rather than read from the module constant.
+    #
+    # It was a constant because there was one venue. Hyperliquid settles **24 times a day**
+    # against Binance's 3, so a carry term computed from a module-level 3 is wrong by 8x the
+    # moment a second venue's data reaches this arithmetic — and wrong quietly, since every
+    # other term in the formula stays plausible. Defaulted to the constant, so every existing
+    # caller is byte-identical and the only way to get a different number is to say so.
+    funding_intervals_per_day: int = FUNDING_INTERVALS_PER_DAY
 
     def fill_price(self, mid: float, direction: str, action: str) -> float:
         """Adverse-slippage fill: a taker buys above and sells below the mid.
@@ -373,7 +382,7 @@ def worst_case_carry_r(
     if bars <= 0:
         return None
     model = cost or CostModel()
-    minutes_per_interval = 1440.0 / FUNDING_INTERVALS_PER_DAY
+    minutes_per_interval = 1440.0 / model.funding_intervals_per_day
     intervals = (bars * bar_minutes) / minutes_per_interval
     rate_sum = model.funding_bps_per_interval / 10000.0 * intervals
     carry = funding_cost_r(direction, entry_price, risk, rate_sum)
@@ -498,3 +507,129 @@ def outcome_net_r(
         cost=cost, close_reason=record.get("close_reason"),
         funding_rate_sum=funding_rate_sum,
     ).net_r
+
+
+# --- venue-scoped cost: S2(a), and what it refuses to guess -----------------------------------
+#
+# Every constant above is **Binance USD-M's**, measured or published there. That was correct
+# while there was one venue and it stops being correct the moment a second one's data reaches
+# this arithmetic — `EQUITY_PERP_LANE_V0.1.md` §8b (S2) states the obligation plainly: *"이걸 안
+# 하면 하위의 모든 순 R 수치가 틀린다"*.
+#
+# **The point of this registry is what it will NOT return.** A venue whose rates nobody has
+# measured must not silently inherit Binance's — that is the failure S2 exists to prevent, and
+# it is invisible: a net R computed at the wrong taker rate looks exactly like one computed at
+# the right one. So a declaration carries what is known AND what is missing, and
+# :func:`cost_model_for` refuses rather than filling a gap with the neighbour's number. Same
+# posture as `round_trip_cost_r` returning `inf` on unpriceable input: unknown must never read
+# as free, and here it must never read as *Binance*.
+COST_MODEL_UNMEASURED = "COST_MODEL_UNMEASURED"
+COST_MODEL_VENUE_UNKNOWN = "COST_MODEL_VENUE_UNKNOWN"
+
+
+@dataclass(frozen=True)
+class VenueCostDeclaration:
+    """One venue's cost structure, including the fields nobody has measured yet.
+
+    ``None`` on a rate field is "not measured", never "zero" — the distinction `worst_case_carry_r`
+    already makes for an unpriceable hold, for the same reason.
+
+    ``funding_multiplier`` and ``deployer_fee_scale`` are **recorded and deliberately not wired
+    into the arithmetic.** They are measured facts about the venue (see the Hyperliquid entry) and
+    keeping them here stops the measurement being lost, but applying them needs an answer this
+    repo does not have: whether the venue's own ``fundingRate`` series already has the multiplier
+    inside it. Charging it on top of a series that already carries it would double it, and that
+    error is the same shape as the one this whole registry exists to prevent. Measure, then wire.
+    """
+
+    venue: str
+    taker_fee_bps: float | None
+    slippage_bps: float | None
+    maker_fee_bps: float | None
+    funding_bps_per_interval: float | None
+    funding_intervals_per_day: int | None
+    funding_multiplier: float | None = None
+    deployer_fee_scale: float | None = None
+    note: str = ""
+
+    _REQUIRED = ("taker_fee_bps", "slippage_bps", "maker_fee_bps",
+                 "funding_bps_per_interval", "funding_intervals_per_day")
+
+    def missing(self) -> tuple[str, ...]:
+        """The rate fields this venue cannot yet supply. Empty means a model can be built."""
+        return tuple(name for name in self._REQUIRED if getattr(self, name) is None)
+
+
+VENUE_COST_DECLARATIONS: dict[str, VenueCostDeclaration] = {
+    # Unchanged: the constants above, restated as a declaration so one venue is not a special
+    # case of the registry that holds it.
+    market_data.BINANCE_FUTURES: VenueCostDeclaration(
+        venue=market_data.BINANCE_FUTURES,
+        taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
+        slippage_bps=DEFAULT_SLIPPAGE_BPS,
+        maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+        funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+        funding_intervals_per_day=FUNDING_INTERVALS_PER_DAY,
+        funding_multiplier=1.0,
+        note="taker measured on this account 2026-07-26; maker is the published rate.",
+    ),
+    # Measured against the venue 2026-08-04 (`EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`), public
+    # read-only endpoints. Two fields are real numbers and three are holes, and the holes are
+    # the reason this entry exists at all rather than being left out:
+    #
+    # - **24 settlements a day**, against Binance's 3. Eight times as often.
+    # - **`assetToFundingMultiplier` 0.5** on every cohort symbol — a term the parent design did
+    #   not have. Settling 8x more often while each settlement is halved is not either change
+    #   alone, and a model that moved one without the other would be wrong in a direction that
+    #   looks reasonable.
+    # - **`deployerFeeScale` 1.0**, measured; its exact semantic (a multiplier on the base, or a
+    #   share of an allowed cut) is **not** settled, so it is recorded and not applied.
+    # - **Base taker/maker: unmeasured.** They are volume-tiered and `userFees` answers only for
+    #   a real address, so this needs an account on that venue — Thomas's step, named as such in
+    #   the S1 measurements. Copying the public table would be an estimate wearing a
+    #   measurement's label.
+    # - **Slippage: unmeasured.** Binance's 3.0 bps is itself an unmeasured carry-over from the
+    #   source system, and an on-chain book is not the same market microstructure. Inheriting it
+    #   here would be inheriting a guess about the wrong venue.
+    market_data.HYPERLIQUID: VenueCostDeclaration(
+        venue=market_data.HYPERLIQUID,
+        taker_fee_bps=None,
+        slippage_bps=None,
+        maker_fee_bps=None,
+        funding_bps_per_interval=None,
+        funding_intervals_per_day=24,
+        funding_multiplier=0.5,
+        deployer_fee_scale=1.0,
+        note=("funding cadence and multipliers measured 2026-08-04; base taker/maker need an "
+              "account (`userFees`) and slippage needs an L2-book measurement."),
+    ),
+}
+
+
+def cost_model_for(venue: str) -> CostModel:
+    """The cost model for ``venue``, or a typed refusal naming what is missing.
+
+    Never falls back to :class:`CostModel`'s defaults for an unknown or incompletely measured
+    venue. The default model is *Binance's*, and handing it to another venue would produce a net
+    R that is wrong in a way nothing downstream can detect — which is exactly what S2(a) is for.
+    """
+    declaration = VENUE_COST_DECLARATIONS.get(str(venue))
+    if declaration is None:
+        raise ToolError(
+            COST_MODEL_VENUE_UNKNOWN,
+            f"no cost declaration for venue {venue!r}; costs cannot be priced (fail-closed)",
+        )
+    missing = declaration.missing()
+    if missing:
+        raise ToolError(
+            COST_MODEL_UNMEASURED,
+            f"venue {venue!r} has unmeasured cost fields {list(missing)}; "
+            f"{declaration.note}",
+        )
+    return CostModel(
+        taker_fee_bps=float(declaration.taker_fee_bps),
+        slippage_bps=float(declaration.slippage_bps),
+        maker_fee_bps=float(declaration.maker_fee_bps),
+        funding_bps_per_interval=float(declaration.funding_bps_per_interval),
+        funding_intervals_per_day=int(declaration.funding_intervals_per_day),
+    )
