@@ -105,6 +105,29 @@ def test_the_first_fire_always_announces(ledger, tmp_path):
     assert result["changed"] is True
 
 
+def test_the_first_fire_on_a_healthy_runtime_is_not_a_clearing(ledger, tmp_path):
+    """Shipped wrong and caught in production: the watch's first fire ever, 2026-08-06 09:15Z,
+    told an operator "live route incident CLEARED" about an incident he had never been told of.
+    A watch whose opening message describes an event that did not happen is one an operator
+    learns to discount, which is the only asset this module has."""
+    ledger += [_record("2026-08-06T02:00:00Z", "ETHUSDT", "4h", "HELD")]
+    text = route_watch.run_route_watch(tmp_path, now="2026-08-06T04:00:00Z", persist=False)["text"]
+    assert "CLEARED" not in text
+    assert "watch is running" in text
+    assert "not a change" in text
+
+
+def test_a_real_clearing_still_says_cleared(ledger, tmp_path):
+    """The other half of the same fix: the first-fire wording must not swallow a genuine
+    recovery, which is the message an operator is actually waiting for."""
+    ledger += [_record("2026-08-06T01:00:00Z", "ETHUSDT", "4h", "INCIDENT")]
+    route_watch.run_route_watch(tmp_path, now="2026-08-06T02:00:00Z")
+    ledger += [_record("2026-08-06T02:00:00Z", "ETHUSDT", "4h", "SETTLED")]
+    text = route_watch.run_route_watch(tmp_path, now="2026-08-06T03:00:00Z")["text"]
+    assert "CLEARED" in text
+    assert "watch is running" not in text
+
+
 def test_a_standing_incident_announces_once(ledger, tmp_path):
     """The failure mode this watch must not become: a timer. A standing incident lengthens by
     one every cycle and that is not news."""

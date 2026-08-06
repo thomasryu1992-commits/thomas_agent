@@ -169,11 +169,20 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     was_set = set((previous or {}).get("in_incident") or [])
     entered = sorted(now_set - was_set)
     cleared = sorted(was_set - now_set)
+    # The first fire on a healthy runtime is not a clearing, and saying so was this render's
+    # first bug in production: 2026-08-06 09:15Z, the watch's first fire ever, announced
+    # "live route incident CLEARED" to an operator who had never been told of an incident. A
+    # watch whose opening message describes an event that did not happen is one an operator
+    # learns to discount, which is the whole asset this module has.
+    first_fire = previous is None
 
     lines: list[str] = []
     if now_set:
         lines.append("[CRYPTO] LIVE ROUTE INCIDENT")
         lines.append("real money is in a state the runtime cannot account for.")
+    elif first_fire:
+        lines.append("[CRYPTO] live route watch is running")
+        lines.append("no context is in incident. This is the watch announcing itself, not a change.")
     else:
         lines.append("[CRYPTO] live route incident CLEARED")
     lines.append("")
@@ -203,6 +212,8 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
         lines.append("Entries are already refused for the contexts above; closes stay allowed.")
         lines.append("Check the book against the venue:")
         lines.append("  python -m runtime.mvp_runtime.crypto.live_readiness")
+    elif first_fire:
+        lines.append("Nothing is required. You will hear from this watch only when that changes.")
     else:
         lines.append("Entries are no longer held by an incident.")
     return "\n".join(lines)
