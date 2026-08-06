@@ -330,9 +330,18 @@ def holdout_expectancy(holdout: Mapping[str, Any]) -> float:
 # 0.01-0.05R. `stdev_r / sqrt(closed_count)` therefore overstates precision by roughly
 # sqrt(trades / periods): about 2.4x for the single block that passed on this store.
 #
-# Four, because that is the smallest sample a two-sided 95% t can be drawn over and still be
-# able to fail; `factory.HOLDOUT_PERIODS` writes five so one empty slice is survivable.
-MIN_HOLDOUT_PERIODS = 4
+# **Measured directly 2026-08-06, and the sqrt estimate was low.** Variance inflation over the
+# holdout region — the observed variance of a slice mean against what pooled within-slice
+# variance predicts for independent draws — is **10-15x**, so the i.i.d. standard error is
+# understated by a factor of ~3.4, not 2.4. Trades inside a slice are strongly dependent;
+# adjacent slices are not (see `factory.HOLDOUT_PERIODS` for the autocorrelation table). Those
+# two facts are the whole justification for this gate, and they were measured in that order.
+#
+# Eight of `factory.HOLDOUT_PERIODS`' ten, keeping the proportional headroom four-of-five had:
+# a slice that closes nothing is survivable, three are not. The price is measured rather than
+# assumed — over the 627 specs clearing MIN_HOLDOUT_TRADES, **96% occupy at least eight** of
+# ten slices, so the floor costs 4% of the population that could be judged at all.
+MIN_HOLDOUT_PERIODS = 8
 
 # Two-sided 95% Student-t critical values by degrees of freedom. A table rather than a
 # computed quantile because the runtime carries no statistics dependency and this needs six
