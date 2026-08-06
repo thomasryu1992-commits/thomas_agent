@@ -947,11 +947,17 @@ def test_the_budget_does_not_change_what_a_kill_does(tmp_path, monkeypatch):
     assert all(s.next_run_at > T1 for s in store.list())   # claimed and dropped, as before
 
 
-def test_the_risk_set_is_the_two_kinds_that_touch_the_money_path():
+def test_the_risk_set_is_the_kinds_that_touch_the_money_path():
     """A kind joining this set changes what may be deferred, so the set is asserted rather
     than described. `candle_archive` is deliberately NOT here — it is the longest fire in the
-    system and the one the budget most needs to be able to defer."""
-    assert scheduler.RISK_KINDS == {scheduler.KIND_CRYPTO, scheduler.KIND_BREAKER_WATCH}
+    system and the one the budget most needs to be able to defer.
+
+    `crypto_route_watch` joined 2026-08-06. It reports a book the runtime cannot reconcile, and
+    a report deferred behind an archive pass is a report about a state that has already lasted
+    longer — which is the exact failure it was built after."""
+    assert scheduler.RISK_KINDS == {
+        scheduler.KIND_CRYPTO, scheduler.KIND_BREAKER_WATCH, scheduler.KIND_ROUTE_WATCH,
+    }
     assert scheduler.KIND_CANDLE_ARCHIVE not in scheduler.RISK_KINDS
     assert scheduler.KIND_FACTORY not in scheduler.RISK_KINDS
     assert scheduler.RISK_KINDS <= scheduler.KINDS
