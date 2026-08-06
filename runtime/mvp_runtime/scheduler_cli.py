@@ -372,6 +372,31 @@ def main(
                 total_deferred += summary["deferred"]
                 for r in summary["results"]:
                     sys.stderr.write(f"  {r['action']} {r['schedule_id']} -> {r['status']}\n")
+                # The maintenance budget, said out loud on the pass that spent it.
+                #
+                # The summary at the bottom of this function already counts `deferred`, and its
+                # comment argues that a budget which drops work off the end of a line "reads as
+                # nothing was due". True - and in the deployment that matters the line never
+                # prints at all: the service runs `--max-ticks 0`, so the `while` never exits
+                # and the writer below is unreachable until SIGTERM, which does not raise
+                # KeyboardInterrupt either. `total_deferred` accumulated for the life of the
+                # container and then died with it.
+                #
+                # That left the one mechanism bounding risk-kind latency with no observable
+                # record of ever having acted - measured 2026-08-06 while trying to answer "how
+                # often has the budget bitten?" and finding it unanswerable from any durable
+                # state (REMAINING_WORK.md section E). This is the cheap half of the answer: not
+                # a new store, not an event (a deferral deliberately claims no occurrence), just
+                # the count on the pass it happened, where `docker logs` can find it.
+                #
+                # Quiet by construction - `deferred` is 0 on a pass that did not bind, and a
+                # burst inside one pass is one line, not one per schedule.
+                if summary["deferred"]:
+                    sys.stderr.write(
+                        f"SCHEDULER: maintenance budget bound this pass - deferred "
+                        f"{summary['deferred']} (running total {total_deferred} "
+                        f"over {tick + 1} tick(s))\n"
+                    )
                 tick += 1
                 _beat()
                 if args.interval_seconds > 0 and (args.max_ticks == 0 or tick < args.max_ticks):

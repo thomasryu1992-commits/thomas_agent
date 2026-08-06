@@ -221,3 +221,53 @@ def test_tick_skips_while_killed(tmp_path, capsys):
               store=store, ledger=ledger, control_store=control_store, working_memory=wm, now=DUE)
     assert rc == 0
     assert "skipped 1" in capsys.readouterr().out
+
+
+def _budget_bound_tick(tmp_path, monkeypatch, *, budget):
+    """One tick with a due non-risk schedule and the maintenance budget set by the caller.
+
+    A negative budget binds on the first candidate (elapsed 0 > -1), which is the only way to
+    drive this branch without a fire that genuinely runs for a minute — `run_due` reads the real
+    `time.monotonic`, not the clock the CLI injects for its own sleep arithmetic.
+    """
+    from runtime.mvp_runtime import scheduler as scheduler_mod
+
+    monkeypatch.setattr(scheduler_mod, "MAINTENANCE_PASS_BUDGET_SECONDS", budget)
+    store, ledger = _stores(tmp_path)
+    control_store = ControlStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+    rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
+              store=store, ledger=ledger, control_store=control_store, working_memory=wm,
+              now=DUE)
+    assert rc == 0
+
+
+def test_a_bound_maintenance_budget_says_so_on_the_pass_it_bound(tmp_path, capsys, monkeypatch):
+    """The gap this closes: the service runs `--max-ticks 0`, so the end-of-loop summary that
+    carries `deferred` is unreachable — the `while` never exits and SIGTERM raises no
+    KeyboardInterrupt. The count accumulated for the life of the container and died with it,
+    which left the one mechanism bounding risk-kind latency with no observable record of ever
+    having acted (REMAINING_WORK.md section E)."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=-1.0)
+    err = capsys.readouterr().err
+    assert "maintenance budget bound this pass" in err
+    assert "deferred 1" in err
+    assert "running total 1" in err
+
+
+def test_a_pass_that_did_not_bind_says_nothing(tmp_path, capsys, monkeypatch):
+    """Quiet by construction. A line every pass is a line an operator learns to skip, which is
+    the failure the breaker and route watches were both written to avoid."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=3600.0)
+    err = capsys.readouterr().err
+    assert "maintenance budget" not in err
+
+
+def test_the_end_of_loop_summary_keeps_the_shape_ci_greps_for(tmp_path, capsys, monkeypatch):
+    """`.github/workflows/docker-image.yml` greps the literal "fired 0, skipped 0, failed 0".
+    The new line is additive and on stderr; this pins that the summary itself did not move."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=-1.0)
+    out = capsys.readouterr().out
+    assert "fired 0, skipped 0, failed 0, deferred 1 over 1 tick(s)" in out
