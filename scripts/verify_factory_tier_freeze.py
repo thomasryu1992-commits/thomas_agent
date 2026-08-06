@@ -22,6 +22,14 @@ tier frozen last week could never prove anything on any later day. Its ``next_ru
 still names the occurrence the freeze cancelled, which is exactly the occurrence to
 grade — and it dates the check automatically, so no ``--day`` guessing.
 
+**And the clock passing that occurrence is still not enough.** It says the moment arrived,
+not that the scheduler processed it, so a stopped tick loop yields exactly the zero a
+working freeze does — the same confusion again, one level further down. A frozen tier
+therefore also needs a *witness*: an enabled schedule that ran at or after the cancelled
+occurrence (:func:`witness_since`). Measured on the 2026-08-06 freeze, the witness is the
+4h block minting at 08:09:38Z against 1h's cancelled 08:09:10Z; without it the first
+version of this script would have graded a halted runtime PASS on every frozen tier.
+
 Enabled tiers carry no verdict. There is nothing to verify about a tier that is supposed
 to be minting; they are printed so the freeze is read against the whole rotation rather
 than a single line of it.
@@ -104,9 +112,29 @@ def cancelled_occurrence(schedules: list[Any]) -> str | None:
     return max(stamps) if stamps else None
 
 
-def grade_tier(schedules: list[Any], records: list[Mapping[str, Any]], *, tier: str, now: str
-               ) -> tuple[str, str, int]:
-    """``(verdict, why, minted)`` for one tier."""
+def witness_since(schedules: list[Any], moment: str) -> str | None:
+    """The latest ``last_run_at`` among ENABLED schedules that is at or after ``moment``.
+
+    Proof that the tick loop was alive past a frozen tier's cancelled occurrence, which a
+    clock reading cannot supply. Only enabled schedules can testify: a disabled one stops
+    stamping the moment it is disabled, so a store where *everything* is frozen has no
+    witness at all — correctly, because then nothing distinguishes a held freeze from a
+    dead scheduler."""
+    stamps = [s.last_run_at for s in schedules
+              if s.enabled and isinstance(s.last_run_at, str) and s.last_run_at >= moment]
+    return max(stamps) if stamps else None
+
+
+def grade_tier(schedules: list[Any], records: list[Mapping[str, Any]], *, tier: str, now: str,
+               witnesses: list[Any] | None = None) -> tuple[str, str, int]:
+    """``(verdict, why, minted)`` for one tier.
+
+    ``witnesses`` is every ``crypto_factory`` schedule in the store, this tier's included —
+    a frozen tier's PASS needs one of the ENABLED ones to have run past its cancelled
+    occurrence. Omitting it grades on the clock alone, which is the weaker test this
+    function's own docstring warns about; the default exists so a caller holding one tier
+    can still ask, and it is announced in the verdict rather than hidden.
+    """
     enabled = [s for s in schedules if s.enabled]
     if enabled:
         today = now[:10]
@@ -120,9 +148,25 @@ def grade_tier(schedules: list[Any], records: list[Mapping[str, Any]], *, tier: 
 
     day = occurrence[:10]
     minted = mints_on(records, tier=tier, day=day)
+    # FAIL first: a tier that minted is refuted whether or not the scheduler can be
+    # witnessed. Evidence of firing does not need corroboration that firing was possible.
     if minted:
         return FAIL, f"frozen, yet minted {minted} on {day} (occurrence {occurrence})", minted
-    return PASS, f"frozen, and minted 0 on {day} — its occurrence {occurrence} passed", 0
+
+    # **A zero is only evidence if something else was running.** The clock passing
+    # `occurrence` says the moment arrived, not that the scheduler processed it — and a
+    # stopped tick loop produces the same zero as a working freeze. That is the identical
+    # confusion this script exists to prevent, one level down: without this check a halted
+    # runtime grades every frozen tier PASS.
+    if witnesses is None:
+        return PASS, (f"frozen, and minted 0 on {day} — occurrence {occurrence} passed "
+                      f"(clock only; no witness was offered)"), 0
+    witness = witness_since(witnesses, occurrence)
+    if witness is None:
+        return UNPROVEN, (f"frozen and minted 0, but no enabled schedule has run since "
+                          f"{occurrence} — a stopped scheduler looks the same"), 0
+    return PASS, (f"frozen, and minted 0 on {day} while an enabled schedule ran at "
+                  f"{witness}"), 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -149,9 +193,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"factory tier freeze — now {now}\n")
     print(f"  {'tier':>5} {'enabled':>9} {'minted':>7}  verdict")
+    witnesses = [s for tier_schedules in grouped.values() for s in tier_schedules]
     graded = {}
     for tier in sorted(grouped, key=lambda t: (len(t), t)):
-        verdict, why, minted = grade_tier(grouped[tier], records, tier=tier, now=now)
+        verdict, why, minted = grade_tier(grouped[tier], records, tier=tier, now=now,
+                                          witnesses=witnesses)
         graded[tier] = verdict
         enabled = sum(1 for s in grouped[tier] if s.enabled)
         print(f"  {tier:>5} {f'{enabled}/{len(grouped[tier])}':>9} {minted:>7}  {verdict} — {why}")
