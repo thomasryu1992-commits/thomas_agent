@@ -329,15 +329,22 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > placed real orders without a person present. **The stop refusal that opened this section is
 > resolved** — the paragraph below said the next attempt would answer it, and it did.
 >
-> Observed on the host 2026-08-04T05:00Z, from local records only:
+> Observed on the host from local records only — first at 2026-08-04T05:00Z, **re-read
+> 2026-08-06T02:15Z**:
 >
 > | | |
 > |---|---|
 > | position | ETHUSDT **SHORT** 0.022 @ 1859.14, notional 40.90 USDT |
-> | opened | 2026-08-04T00:13:57Z — **held ~4.75h**, `holding_candles: 2` of a 4h spec |
+> | opened | 2026-08-04T00:13:57Z — still open at the re-read, **held 50.0h**, `holding_candles: 11` of 26 |
 > | `live_opened.bracket[0]` | SL @ 1900.5 — **`placed: true`, `status: NEW`** |
 > | `live_opened.bracket[1]` | TP @ 1776.71 — **`placed: true`, `status: NEW`** |
-> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z |
+> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z (unchanged across both reads) |
+>
+> **The re-read is what makes this a capability rather than an incident.** At the first
+> observation the position had held 4.75h and two candles, which is consistent with a bracket
+> that happened to place once. Eleven candles and two days later, on the same `position_id`,
+> it is not: the leg holds, and the thing that used to close every entry within seconds is gone
+> rather than quiet.
 >
 > The breaker was cleared 2026-08-03T15:51:37Z with the written reason *"#460 confirm-race fix
 > deployed; cause addressed"*, and nothing has tripped it since. `placed: true` on the stop leg is
@@ -350,6 +357,12 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > outcome reaching the ledger — has never run end to end. Nor has the naked-close accounting from
 > #470–#472, which merged *after* the last naked close, so it has never fired on a real one. The
 > first live close is the next thing that answers something, and it is the one to watch for.
+>
+> **And the hold is what sharpens that, not what softens it.** 50 hours in, the position is 11 of
+> 26 bars from its own time exit, so the exit path is now the *near* untested thing rather than a
+> distant one — whichever of stop, target or `max_holding_bars` gets there first will be the first
+> live close this runtime has ever recorded. Watch for `live_outcomes.jsonl` appearing at all: the
+> file not existing after the position closes is a finding, not an absence of news.
 >
 > **One position is not a fixed system.** The cause was addressed and one bracket rests; that is
 > evidence, not a warranty. Two consecutive naked entries still shut the door
