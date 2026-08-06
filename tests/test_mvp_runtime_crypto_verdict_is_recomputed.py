@@ -110,8 +110,9 @@ def test_a_block_that_clears_the_current_rule_is_confirmed_whatever_the_label_sa
     """It recomputes in both directions, or it is a demotion rather than a rule."""
     understated = _with_block("cand_good", {"closed_count": 400, "total_R": 90.0,
                                             "expectancy": 0.225, "stdev_r": 1.4,
-                                            "period_r": [12.0, 15.0, 21.0, 18.0, 24.0],
-                                            "period_trades": [80, 80, 80, 80, 80]},
+                                            "period_r": [6.0, 7.5, 10.5, 9.0, 12.0,
+                                                         8.0, 9.5, 7.0, 11.0, 9.5],
+                                            "period_trades": [40] * 10},
                               stored_holdout="CONTRADICTED")
     assert candidate_quality(understated)["holdout_status"] == "CONFIRMED"
     assert candidate_quality(understated)["verdict"] == ROBUST

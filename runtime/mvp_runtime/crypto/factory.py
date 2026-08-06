@@ -108,24 +108,47 @@ _FUNDING_SOURCE_STRENGTH = {
 }
 
 # How many equal-bar slices the tail is subtotalled into, so a confirmation can be judged on
-# market periods instead of on trades. Five, and the number is bounded on both sides:
+# market periods instead of on trades.
 #
-# - **Below**, by the test being possible at all. A one-sided t at 95% needs a spread, so four
-#   periods is the floor `robustness.MIN_HOLDOUT_PERIODS` enforces; five leaves one period of
-#   headroom for a slice that closes nothing.
-# - **Above**, by what the window can supply. The tail is `HOLDOUT_FRACTION` of the replay
-#   span — 150 days at every routed timeframe today — so five slices are 30 days each, and the
-#   block-to-block measurement that motivated this used 50-day blocks. Cutting finer does not
-#   buy independence; it buys correlated slices that LOOK like more evidence, which is the
-#   error this whole change exists to stop making.
+# **This was 5, and the argument for 5 was wrong — measured 2026-08-06.** That comment said
+# cutting finer "does not buy independence; it buys correlated slices that LOOK like more
+# evidence", and cited the +0.459 figure. But +0.459 is correlation BETWEEN CONTEXTS at the
+# same moment, not between adjacent moments; the autocorrelation along the time axis, which is
+# the quantity that argument needs, had never been measured. Measured now over 263,815 replayed
+# trades on the 1000-day window, lag-1 autocorrelation of the block-mean gross series against
+# the `-1/(K-1)` small-sample bias a white-noise series would show:
 #
-# The honest consequence, stated here rather than discovered later: at today's 500-day window
-# this is not enough periods to confirm anything. Simulated over the store 2026-08-04, a
-# period-based interval returns **0 CONFIRMED of 421** judgeable blocks, against 1 under the
-# trade-based test — and that one is PROVISIONAL, so `promotable_backlog` was already 0 and
-# does not move. The door does not get stricter in effect; it gets honest about having been
-# shut. What reopens it is a deeper window, not a smaller number here.
-HOLDOUT_PERIODS = 5
+#   slices   days/slice   observed   iid bias   excess
+#      5        200        -0.179     -0.250    +0.071
+#     10        100        -0.192     -0.111    -0.081
+#     15         67        -0.389     -0.071    -0.318
+#     30         33        -0.127     -0.034    -0.093
+#     60         17        -0.054     -0.017    -0.037
+#
+# **Nowhere positive.** Adjacent slices are independent or mildly mean-reverting, so finer
+# slices carry real information and there is no independence argument against cutting them.
+# What IS strongly dependent is the trades *inside* a slice: variance inflation over the
+# holdout region measures **10-15x**, i.e. treating trades as independent understates the
+# standard error by a factor of ~3.4. Both facts point the same way — the market PERIOD is the
+# unit, and there is no reason to hold the count down.
+#
+# Ten, because that is what the window now supplies and what the candidates can occupy:
+#
+# - **Power.** `t(9)/sqrt(10)` against `t(4)/sqrt(5)` detects an effect **1.74x smaller**. The
+#   window doubled to 1000 days in the meantime, which lengthened the tail from 150 to 300 days
+#   and bought the period gate nothing at all while this stayed at 5 — the test's resolution is
+#   set by the slice COUNT, not by the depth behind it.
+# - **Occupancy.** Measured over the 627 specs that clear `robustness.MIN_HOLDOUT_TRADES`
+#   (the only ones judgeable at all): at ten slices the median occupies **10 of 10**, and
+#   **96% occupy at least 8** — the floor `robustness.MIN_HOLDOUT_PERIODS` enforces. Cutting to
+#   twelve buys nothing (97%) and the 15-20 slice band is where the negative autocorrelation
+#   above is sharpest, which makes the test conservative in a way that is harder to reason
+#   about than it is worth.
+#
+# Thirty days a slice at today's window — the same slice WIDTH the old five gave at the old
+# 500-day window, so nothing about a slice's internal composition changes; there are simply
+# twice as many of them.
+HOLDOUT_PERIODS = 10
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -2422,7 +2445,10 @@ def funding_charges_per_bar(
     # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
     # one per bar would price a scalper like a swing trader.
     minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
-    per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    # From the MODEL, not the module constant: Hyperliquid settles 24 times a day against
+    # Binance's 3, and a per-bar charge computed from a fixed 3 is wrong by 8x on the venue the
+    # archive is already collecting. The default is still 3, so nothing here moves today.
+    per_bar = (minutes / 1440.0) * cost.funding_intervals_per_day
     modelled = cost.funding_bps_per_interval / 10000.0 * per_bar
 
     if not events:
