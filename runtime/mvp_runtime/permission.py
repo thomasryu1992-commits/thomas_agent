@@ -863,6 +863,8 @@ def build_trading_switch_permission_decision(
     bound_task: Mapping[str, Any],
     domain: str,
     *,
+    stop_ref: str,
+    stop_summary: str,
     role_permission_ceiling: str = TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
     now: str,
     approval_id: str | None = None,
@@ -878,29 +880,63 @@ def build_trading_switch_permission_decision(
     change invalidates the fingerprint). That binding is what lets the switch door perform the
     action described by the *snapshot* rather than by the request that presents it.
 
+    **It is also bound to the stop it clears.** ``stop_ref`` identifies the control state the
+    ask was minted against; it is in ``normalized_parameters`` and in ``content_sha256``, so it
+    is inside the fingerprint like the domain. Without it the record described the *verb* and
+    not the *effect*: `resume` clears whatever stop is in effect when it runs, so a grant minted
+    against the assistant's own kill could clear an operator's later, unrelated one — an
+    approval for one intent releasing a stop placed for another. The switch door re-derives it
+    at spend time and refuses a mismatch (``switch_bridge.stop_ref``); this function's part is
+    to make the value non-forgeable once Thomas has signed it.
+
+    ``stop_summary`` is the human half of the same fact, and it goes in ``risk_reason`` because
+    that is the field the control channel renders (``approval.format_request`` -> 주요 위험).
+    Thomas approves from that text, so what the resume will release has to be *in* it.
+
     Building this record re-arms nothing. The decision is APPROVAL_REQUIRED; only Thomas's
     verified APPROVED grant, spent once, reaches ``control.CMD_RESUME``.
     """
     if not (isinstance(domain, str) and domain.strip()):
         raise PlannerBlocked("INVALID_DOMAIN", "a trading-switch ask must name its domain")
     domain = domain.strip().lower()
+    # Both are required keyword arguments with no default, deliberately. A default would let a
+    # caller mint a trading-switch ask that names no stop, which is exactly the record this
+    # change exists to stop existing — and it would do so silently, at the one call site whose
+    # output Thomas signs.
+    if not (isinstance(stop_ref, str) and stop_ref.strip()):
+        raise PlannerBlocked(
+            "INVALID_STOP_REF", "a trading-switch ask must name the stop it would clear"
+        )
+    if not (isinstance(stop_summary, str) and stop_summary.strip()):
+        raise PlannerBlocked(
+            "INVALID_STOP_SUMMARY", "a trading-switch ask must describe the stop it would clear"
+        )
+    stop_ref = stop_ref.strip()
+    stop_summary = stop_summary.strip()
 
+    content = {"domain": domain, "switch_action": "enable", "stop_ref": stop_ref}
     action = _ActionSpec(
         action_type="runtime.trading.enable",
         target_suffix="trading_switch",
         tool_id=None,
         data_scope=("runtime.control_state", "task.evidence"),
-        normalized_parameters={"domain": domain, "switch_action": "enable"},
+        normalized_parameters=dict(content),
         risk_reason=(
-            "Re-arming the trading switch restores an autonomous path that can place real orders."
+            "Re-arming the trading switch restores an autonomous path that can place real "
+            f"orders. It clears {stop_summary}, and the runtime has ONE stop: this resumes "
+            "every scheduled kind that stop was holding, not only this domain's."
         ),
         authority_reason="Prime may prepare a trading-switch re-arm for Thomas review.",
         decision_reason=(
             "Restarting trading requires exact Thomas approval on the verified control channel."
         ),
-        constraint="Approval is single-use and authorizes this domain's switch only.",
+        constraint=(
+            "Approval is single-use and authorizes this domain's switch only. It is spendable "
+            "against the stop it names and no other: a different stop in effect at spend time "
+            "refuses it."
+        ),
         target_ref=f"trading_switch:{domain}",
-        content_sha256=integrity.sha256_record({"domain": domain, "switch_action": "enable"}),
+        content_sha256=integrity.sha256_record(content),
         risk_level="RED",
     )
     return build_permission_decision(
