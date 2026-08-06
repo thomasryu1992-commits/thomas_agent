@@ -4,12 +4,16 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-04** — **the live leg holds a position again.** The stop refusal that has
-headed section C since 2026-08-02 is resolved (#460, the confirm race); observed 05:00Z, an
-ETHUSDT SHORT opened 00:13:57Z with both bracket legs `placed: true, status: NEW`. Section C is
-rewritten around what that leaves: **no live trade has ever closed** — `live_outcomes.jsonl` does
-not exist — so the exit path and the #470–#472 naked-close accounting are both undemonstrated,
-and the first live close is the next thing that answers anything.
+Last updated: **2026-08-06** — **the live round trip is complete.** The stop refusal that headed
+section C since 2026-08-02 was resolved on 08-04 (#460, the confirm race), and on 08-06T04:44Z
+the first two live trades **closed and recorded**: `live_outcomes.jsonl` exists, two rows, both
+stops, **−1.1078R** (ETHUSDT, held 52.5h) and **−1.0000R** (DOGEUSDT). The exit path is
+demonstrated end to end. What it leaves is narrower and is in section C: ETHUSDT's stop filled
+**23.5 bps past its trigger** against a cost model that assumes 3.0, and neither a target nor a
+time exit has ever run.
+
+Earlier on 2026-08-04 — the live leg held a position again, observed 05:00Z with both bracket legs
+`placed: true, status: NEW`.
 
 Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
@@ -49,9 +53,10 @@ is at the top of section C and nothing else in this file outranks it:** the runt
 first two autonomous live orders on 2026-08-02 and the protective stop was refused both times, so
 it could not hold a position. **That is resolved as of 2026-08-04** — the cause was the confirm
 race (#460), and the runtime is holding an ETHUSDT SHORT opened 00:13:57Z with both bracket legs
-`placed: true, status: NEW`. What is open moved with it: **no live trade has ever closed**
-(`live_outcomes.jsonl` does not exist), so the exit path and the naked-close accounting from
-#470–#472 are both undemonstrated. The one build item — **nothing counted repeated bracket
+`placed: true, status: NEW`. **The round trip completed on 2026-08-06**: two closes, both stops,
+both recorded (−1.1078R and −1.0000R). What is open moved again with that — realized stop
+slippage of 23.5 bps against a modelled 3.0, and no target or time exit has yet run. The one
+build item — **nothing counted repeated bracket
 failures** — is closed by #439: the loop stops itself after two, instead of running on the daily
 order budget's midnight refill.
 Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
@@ -351,18 +356,29 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > the exact field that read `false` in the incident below, so this is the measurement that
 > paragraph asked for rather than an inference from silence.
 >
-> **What this does NOT yet show, and the distinction is the whole remaining risk.** No live trade
-> has ever *closed*: `live_outcomes.jsonl` **does not exist** on this machine. The entry and the
-> bracket are demonstrated; the **exit** path — a stop or a target actually filling, and the
-> outcome reaching the ledger — has never run end to end. Nor has the naked-close accounting from
-> #470–#472, which merged *after* the last naked close, so it has never fired on a real one. The
-> first live close is the next thing that answers something, and it is the one to watch for.
+> **The exit path ran, 2026-08-06T04:44:13Z — and it recorded.** This paragraph asked whether a
+> close would reach the ledger at all, and `live_outcomes.jsonl` now exists with two rows. Both
+> stops, both `r_basis: filled`, both losses:
 >
-> **And the hold is what sharpens that, not what softens it.** 50 hours in, the position is 11 of
-> 26 bars from its own time exit, so the exit path is now the *near* untested thing rather than a
-> distant one — whichever of stop, target or `max_holding_bars` gets there first will be the first
-> live close this runtime has ever recorded. Watch for `live_outcomes.jsonl` appearing at all: the
-> file not existing after the position closes is a finding, not an absence of news.
+> | symbol | held | entry → exit | result | realized |
+> |---|---|---|---|---|
+> | ETHUSDT SHORT | 2026-08-04T00:13:57Z → 04:44:13Z (**52.5h**) | 1859.14 → 1904.96 | **−1.1078R** | −1.008 USDT |
+> | DOGEUSDT | 2026-08-05T04:14:06Z → 04:44:13Z | 0.06975 → 0.07054 | **−1.0000R** | −0.849 USDT |
+>
+> **The −1.1078 is the number worth reading.** ETHUSDT's stop rested at 1900.5 and filled at
+> 1904.96 — 4.46 adverse on a 41.36 risk unit, so **0.108R of slippage past the stop, 23.5 bps**
+> against the cost model's `DEFAULT_SLIPPAGE_BPS = 3.0`. DOGEUSDT's filled exactly at its stop.
+> Two fills are not a distribution and a stop-market on a fast move is the leg most prone to it,
+> but that constant is INHERITED and unmeasured, and §G1 records these as the first two
+> observations against it.
+>
+> **Both `closed_at_utc` are the same second**, which is the settlement pass stamping them
+> together rather than two simultaneous fills — read that field as when the runtime recorded the
+> close, not when the venue filled it.
+>
+> **What is still untested:** the naked-close accounting from #470–#472 merged *after* the last
+> naked close and still has never fired on a real one, and no live trade has yet closed at a
+> **target** or on `max_holding_bars` — both stops is one exit path of three.
 >
 > **One position is not a fixed system.** The cause was addressed and one bracket rests; that is
 > evidence, not a warranty. Two consecutive naked entries still shut the door
@@ -2330,6 +2346,56 @@ module must be indexed with its provenance or named in `MECHANICS` with a reason
 threshold on the money path cannot be added without recording where the number came from. It
 caught four on its first run. Twelve modules are swept and the rest of the package deliberately
 is not; the boundary is a list in the test rather than an implication.
+
+#### The four INHERITED breakers, measured 2026-08-06 — **measurement only, no value changed**
+
+The index recorded that nobody here had decided them. This is what this runtime's own record says
+about them. **Nothing is proposed and nothing moved**; changing a breaker needs Thomas.
+
+Population: the **90 own closed paper outcomes** (2026-07-24 → 2026-08-05), imported
+crypto_AI_System history excluded — `paper.split_by_provenance`. Metered exactly as `guards` does
+(`cost.outcome_net_r`, falling back to stored `result_R`), and shown against the **stored** figure
+the guard read before the 2026-07-30 cost work for contrast:
+
+| | STORED (what it read then) | NET (what it reads now) |
+|---|---|---|
+| mean R/trade | **+0.0210** | **−0.5014** |
+| cumulative R | +1.89 | −45.13 |
+| days at or past `DAILY_MAX_LOSS_R` −2.0 | 2 of 10 | 4 of 10 |
+| worst day | −6.20R | −17.21R |
+| weeks at or past `WEEKLY_MAX_LOSS_R` −5.0 | **0 of 3** | **2 of 3** |
+| worst week | −4.93R | −24.13R |
+| losing runs reaching `MAX_CONSECUTIVE_LOSSES` 3 | 10 of 17 | 11 of 15 |
+| longest losing run | 10 | 10 |
+| max drawdown | −10.31R | −45.39R |
+| against the 10R limit `MAX_DRAWDOWN_PCT` maps to | **103%** | **454%** |
+
+**The thresholds were never wrong for the series they were written against — the series moved
+underneath them.** On the gross figure the guard metered until 2026-07-30, the weekly breaker
+never tripped once and drawdown grazed its limit at 103%. On the net figure it meters today, two
+of three weeks blow through weekly and drawdown is **4.5× the limit**. Settlement charging plus
+read-time conversion changed what an R means to these breakers by about **0.5R per trade**, and
+the four numbers were not revisited. That is §G1's defect exactly: a premise that died somewhere
+else.
+
+**The conversion is not in question.** The measured mean of −0.5014R reproduces the −0.506R
+`cost.py` recorded independently against 86 of the same rows.
+
+**One threshold binds on both readings and deserves its own look.**
+`MAX_CONSECUTIVE_LOSSES = 3` is reached by 10–11 of 15–17 losing runs whichever figure is read,
+with a longest run of 10. A breaker that trips on two thirds of all losing streaks is either
+doing most of the halting or being routinely overridden; which of those is happening is not
+answered here.
+
+**And the first live fills touch a fifth INHERITED constant.** `DEFAULT_SLIPPAGE_BPS = 3.0` is
+indexed as *"carried from the source system unmeasured"* with *"enough live fills to measure
+realized slippage"* as what reopens it. The first two live stops (2026-08-06, §C) are the start of
+that sample: ETHUSDT's stop rested at 1900.5 and filled at **1904.96** — 4.46 adverse, **23.5 bps**,
+0.108R on a 41.36 risk unit — while DOGEUSDT's filled exactly at its stop for a clean −1.00R.
+**n = 2, one of them at ~8× the modelled rate.** A stop-market on a fast move is the leg most
+prone to slippage, so this is the worst case rather than an average, and two fills are not a
+distribution — but the direction is the unsafe one and the constant said this is what would
+reopen it.
 
 **What is still open here:** the unswept modules (`features.py` alone holds 37 numeric
 constants, mostly indicator windows), and the `INHERITED` breakers themselves — indexing them
