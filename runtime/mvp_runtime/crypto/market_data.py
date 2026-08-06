@@ -326,6 +326,30 @@ FUNDING_MAX_PAGES = 8
 # than imported because `cost` imports THIS module and the reverse would be a cycle.
 DEFAULT_FUNDING_RECORDS = 3200
 
+# What a page actually YIELDS, against the `FUNDING_PAGE_LIMIT` we ask for. Named because the
+# reach below is arithmetic over it, and the comment above records what happens when the two are
+# confused: reading 1,000 turned "4 pages" into 3.6 years when it was 1.8.
+FUNDING_ROWS_PER_PAGE = 500
+
+# Settlements a day — restated here for the reason `DEFAULT_FUNDING_RECORDS` states.
+FUNDING_SETTLEMENTS_PER_DAY = 3
+
+
+def funding_history_days() -> float:
+    """Calendar days of funding history a fetch can actually reach.
+
+    **Both constants bind and the smaller one wins**, which is why this is a function rather
+    than a number anyone can quote. ``DEFAULT_FUNDING_RECORDS`` is what the fetch asks for;
+    ``FUNDING_MAX_PAGES`` x :data:`FUNDING_ROWS_PER_PAGE` is what the pager can serve. Raising
+    one without the other moves nothing — the comment above says exactly that in prose, and this
+    is that sentence made checkable so :func:`factory._funding_feed_reaches` can refuse a family
+    whose replay window has outrun its feed, instead of the mistake surfacing as a mint
+    distribution nobody can explain weeks later.
+    """
+    reachable = min(DEFAULT_FUNDING_RECORDS, FUNDING_MAX_PAGES * FUNDING_ROWS_PER_PAGE)
+    return reachable / float(FUNDING_SETTLEMENTS_PER_DAY)
+
+
 # Closed vocabulary, identical on both collectors and on Binance's interval strings.
 TIMEFRAMES: dict[str, int] = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 
