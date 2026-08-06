@@ -678,10 +678,50 @@ def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]
     return [event for run_id, event in started.items() if run_id not in terminal]
 
 
+class _PassCandleCache:
+    """The candle reads one ``run_due`` pass may share, built on first use.
+
+    ``crypto.market_data.PeerCandleCache`` was written for a fan-out *inside one call* — the
+    trading pool cycle, which visits five contexts and constructs one cache for them. The
+    factory has the same overlap in a shape that object could not reach: its contexts are five
+    separate SCHEDULES, one per symbol, so nothing in the crypto stack sees more than one of
+    them and each fire re-read the cohort from the venue. Measured 2026-08-06 on the five
+    enabled 4h schedules: 39 replay-depth candle reads to answer 11 distinct series.
+
+    A pass rather than a tick, and a holder rather than the cache itself, for three reasons:
+
+    - ``run_due`` must not construct a market-data collector. Selection is gated, and almost
+      every pass has no factory schedule due — it would pay for one and never use it. So this
+      stays empty until a fire that needs one hands its collector over.
+    - The first collector wins, which is sound only because every fire in a pass selects with
+      the *same* ``(now, repo_root)`` and gets an equivalent object. That is also why the
+      lifetime cannot be widened past the pass: across passes ``now`` moves, and a cache
+      outliving it would serve a bar stamped with one instant to a record claiming another.
+    - Scoped to the factory on purpose. Risk kinds run FIRST in a pass, so a wider cache would
+      let the trading cycle decide what the factory reads — the money path does not lend its
+      reads for a saved fetch, and it would save nothing anyway, since it reads 240 bars where
+      the factory reads thousands and no key would ever collide.
+    """
+
+    __slots__ = ("_cache",)
+
+    def __init__(self) -> None:
+        self._cache: Any | None = None
+
+    def peer_candles(self, collector: Any) -> Any:
+        """The pass's :class:`PeerCandleCache`, created against ``collector`` if this is
+        the first caller. Later callers get that one and their own collector is unused by
+        it — see the class docstring for why the two are interchangeable."""
+        if self._cache is None:
+            from .crypto.market_data import PeerCandleCache
+            self._cache = PeerCandleCache(collector)
+        return self._cache
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
-    registry: Any = None,
+    registry: Any = None, pass_candles: _PassCandleCache | None = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
 
@@ -689,7 +729,12 @@ def _execute(
     an unattended scheduled run is visible to ``/tasks`` and ``/history`` like an operator's
     own request. Only that kind is recorded — the maintenance and crypto kinds are not
     task-shaped and have their own scheduler events — and the recording is best-effort, so
-    bookkeeping can never fail a fire."""
+    bookkeeping can never fail a fire.
+
+    ``pass_candles`` is the caller's :class:`_PassCandleCache`, so the factory fires that share
+    a pass read each distinct candle series once between them. Optional: a direct caller (a
+    test, an operator harness) gets a fire that caches within itself and nothing wider, which
+    is what it did before this existed."""
     if schedule.kind == KIND_PRUNE:
         if working_memory is None:
             return "skipped_no_memory_store"
@@ -920,7 +965,6 @@ def _execute(
         )
         from .crypto.factory import run_factory
         from .crypto.market_data import (
-            collect_market_data,
             factory_candle_target,
             select_liquidation_feed,
             select_market_data_collector,
@@ -930,11 +974,24 @@ def _execute(
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "1d"
         collector = select_market_data_collector(now=now, root=repo_root)
+        # Every candle read below — the frame AND the three context legs — goes through one
+        # cache, and the cache belongs to the PASS rather than to this fire.
+        #
+        # The five factory schedules for one timeframe fall due together, and each of them
+        # reads the whole cohort at the REPLAY depth (6,000 bars a member at 4h). Measured
+        # 2026-08-06 on the enabled 4h schedules: **39 reads to answer 11 distinct series**, on
+        # the IP the live cycle trades on, which F4 records producing an HTTP 429. Each cohort
+        # member was read five times over — once as a frame by its own fire and once as a peer
+        # by each of the other four — and the proxy nine, the reference leg on top. No object
+        # inside a fire can see any of that, which is why a per-fire cache recovers 4 of the 28
+        # and the pass recovers all of them (`_PassCandleCache`, and the test measuring both).
+        #
+        # Nothing about what is mined changes: same symbol, same depth, same bars. A fire with
+        # no pass behind it (a direct `_execute`) gets its own cache and the within-fire share.
+        candle_cache = (pass_candles or _PassCandleCache()).peer_candles(collector)
+        target = factory_candle_target(timeframe)
         try:
-            snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now,
-                limit=factory_candle_target(timeframe),
-            )
+            snapshot = candle_cache.frame(symbol, timeframe, limit=target, now=now)
         except ToolBlocked as exc:
             if exc.reason_code == "TOOL_ERROR":
                 return "skipped_market_data_degraded"
@@ -949,22 +1006,24 @@ def _execute(
         # window must cover the replay span, so the depth is the higher timeframe's
         # own factory target, not the live default.
         higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
-        attach_htf(snapshot, collector=collector, now=now,
+        attach_htf(snapshot, collector=collector, now=now, cache=candle_cache,
                    limit=factory_candle_target(higher) if higher else None)
         # The same rule once more for the cross-asset leg: a rel_strength_* family mined over
         # a frame with no reference series would score as a no-trade spec, so the reference
         # window has to cover the replay span rather than the live default. Same timeframe as
         # the frame being mined, so the same depth.
-        attach_reference(snapshot, collector=collector, now=now,
-                         limit=factory_candle_target(timeframe))
+        attach_reference(snapshot, collector=collector, now=now, cache=candle_cache,
+                         limit=target)
         # And once more for the cross-sectional leg, at the same depth and for the same
         # reason. This is the most expensive of the four: the cohort is five peers at the
         # replay span, so it pages roughly five times what the frame itself did. Paid on the
         # factory's own schedule rather than the 15-minute one, and the alternative is
         # scoring xs_* families over a frame where every rank is None — which does not
         # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
-        attach_cross_section(snapshot, collector=collector, now=now,
-                             limit=factory_candle_target(timeframe))
+        # The largest single share of the saving: five peers per fire, 25 asks across the pass,
+        # and the union is the cohort — so 6 answers, 5 of which the frames already read.
+        attach_cross_section(snapshot, collector=collector, now=now, cache=candle_cache,
+                             limit=target)
         # Positioning: a LOCAL read of what this runtime has accumulated — no request, no grant.
         # Attached unconditionally because the columns are honest at any coverage (absent = None);
         # the eligibility measured below is what decides whether a family may be MINTED against
@@ -1241,6 +1300,12 @@ def run_due(
     ``replace_all``-ing it back, which silently reverted an operator's concurrent
     disable/remove and kept the schedule firing with no trace.
 
+    **The pass is also a caching unit**, and it has to be: the factory's five same-timeframe
+    schedules fall due together and each one read the whole cohort at the replay depth, so the
+    overlap lives *between* fires where nothing inside a fire could see it. One
+    ``_PassCandleCache`` is offered to each; only the factory takes it today. Bounded by the
+    pass because a pass has one ``now`` — see that class for why nothing wider is safe.
+
     **Order and budget.** Due schedules run risk kinds first (``RISK_KINDS``), then the rest in
     store order; and once a pass has spent ``MAINTENANCE_PASS_BUDGET_SECONDS`` it stops *starting*
     non-risk fires. A deferred occurrence is **not** claimed, so it stays due and the next pass
@@ -1266,6 +1331,11 @@ def run_due(
     due = [s for s in schedules if s.enabled and s.next_run_at <= now]
     due.sort(key=lambda s: 0 if s.kind in RISK_KINDS else 1)
     pass_started = time.monotonic()
+    # Candle reads the fires in THIS pass share — empty and inert unless a kind that wants one
+    # is actually due, and dropped with the pass. See `_PassCandleCache`; the factory is the
+    # only kind that takes it, and the redundancy it removes is BETWEEN its schedules, which is
+    # why it cannot live any narrower.
+    pass_candles = _PassCandleCache()
 
     for schedule in due:
         if not control_store.load().execution_allowed:
@@ -1323,7 +1393,8 @@ def run_due(
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization, registry=registry,
-                              provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
+                              provider=provider, search_tool=search_tool, repo_root=repo_root,
+                              executor=executor, pass_candles=pass_candles)
             action = "fired"
             fired += 1
         except MvpRuntimeError as exc:

@@ -751,6 +751,28 @@ def test_a_deeper_candle_window_serves_a_shallower_request():
     assert shallow.candles == deep.candles[-120:], "the shallower answer is the deeper one's tail"
 
 
+def test_the_htf_leg_reads_through_the_peer_cache_too():
+    """The HTF leg is the one context leg that reads THIS symbol, so a fan-out over a single
+    timeframe gives it nothing to share and it looks like a leg that does not need a cache.
+
+    It is not, and the case is a `run_due` pass rather than a fan-out: the 4h factory schedules
+    read every symbol at 1d for their HTF, which is exactly the frame the 1d schedules mine.
+    Whether those two groups share a due time is a per-machine schedule fact, so the leg takes
+    the cache unconditionally rather than depending on one."""
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+    inner = _CountingCollector()
+    cache = PeerCandleCache(inner)
+    frame = cache.frame("ETHUSDT", "1d", limit=300, now=NOW)          # the 1d fire's own frame
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "4h", "candles": []}  # the 4h fire, one step down
+    assert cycle.attach_htf(snapshot, collector=inner, now=NOW, limit=300, cache=cache) is None
+
+    assert cache.calls == 1, "the HTF read was already answered by the 1d frame"
+    assert _counts(inner, "collect") == 1
+    assert snapshot["htf_candles"] == frame["candles"]
+    assert snapshot["htf_timeframe"] == "1d"
+
+
 def test_a_shallower_window_never_serves_a_deeper_request():
     """Serving 120 bars to a 240-bar request would silently shorten an indicator's warm-up."""
     inner = _CountingCollector()

@@ -328,6 +328,56 @@ def test_the_cache_remembers_a_refusal_per_symbol_not_per_leg():
     )
 
 
+def test_a_frame_and_a_peer_read_of_one_series_are_one_read_either_way():
+    """The third door into the same series: a caller MINING a symbol, not ranking against it.
+
+    The factory reads five frames and ranks each against a cohort containing the other four, so
+    the frame reader and the cohort reader want the same six series — and until `frame` existed
+    only one of them came through here. Order-independence is the property under test: whichever
+    asks first must pay, and it must not matter which, because a fire's position in a pass is
+    not something the venue should be able to tell."""
+    class _CountingCollector(MockMarketDataCollector):
+        def __init__(self):
+            self.collects = 0
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.collects += 1
+            return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    for frame_first in (True, False):
+        collector = _CountingCollector()
+        cache = PeerCandleCache(collector)
+        snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": [_candle(0, 100.0)]}
+        legs = [
+            lambda: cache.frame("SOLUSDT", "1h", limit=50, now=NOW),
+            lambda: attach_cross_section(snapshot, collector=collector, now=NOW, limit=50,
+                                         cache=cache),
+        ]
+        for leg in (legs if frame_first else list(reversed(legs))):
+            leg()
+        assert cache.calls == len(CROSS_SECTION_UNIVERSE) - 1, frame_first
+        assert collector.collects == cache.calls, frame_first
+        # SOLUSDT is a peer of ETHUSDT, so the frame read is one of the cohort's five either way.
+        assert "SOLUSDT" in snapshot["peer_candles"]
+
+
+def test_a_frame_is_copied_so_one_fire_cannot_write_into_another_s():
+    """A snapshot is the one thing here its reader MUTATES — `attach_feeds` and all three
+    context legs write keys onto it. Handing two fires the same dict would put one symbol's
+    derivative series and peer cohort on another symbol's frame, silently and with every
+    column still populated."""
+    cache = PeerCandleCache(MockMarketDataCollector())
+    first = cache.frame("ETHUSDT", "1h", limit=20, now=NOW)
+    first["funding"] = ["mine"]
+    first["candles"].append(_candle(99, 1.0))
+
+    second = cache.frame("ETHUSDT", "1h", limit=20, now=NOW)
+    assert cache.calls == 1, "still one read — the copy is not a second fetch"
+    assert "funding" not in second
+    assert len(second["candles"]) == 20
+    assert second["candles"][0] is first["candles"][0], "the bars themselves are shared"
+
+
 # --- the mintable vocabulary and the families ---------------------------------
 
 def test_only_the_normalized_columns_are_mintable():

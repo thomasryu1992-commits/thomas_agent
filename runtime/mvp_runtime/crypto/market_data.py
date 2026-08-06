@@ -1776,7 +1776,9 @@ class PeerCandleCache:
     In both cases the redundant reads are redundant for the same reason: within one fire,
     "what were ETH's hourly candles" cannot legitimately differ depending on which symbol is
     asking. So one cache serves both legs rather than one per leg — the object is a cache of
-    *candle reads*, and which leg wanted them is not a property of the answer.
+    *candle reads*, and which leg wanted them is not a property of the answer. :meth:`frame`
+    extends that last sentence to the reader who wants a series for ITSELF rather than as
+    context, which is the third door and, for the factory, the largest.
 
     Same contract as the feed cache, for the same reasons: constructed per fan-out and
     thrown away, so it can never serve a stale bar to a later fire; **failures cached too**,
@@ -1784,24 +1786,34 @@ class PeerCandleCache:
     re-asking once per remaining context is how a rate cap gets reached; and the refusal is
     re-raised unchanged, so every context still records its own reason code.
 
+    **"One fan-out" has a second instance, and it is the larger one.** The scheduler's factory
+    fires are not a fan-out inside one call — they are separate schedules, one per symbol, that
+    fall due together and run in one ``scheduler.run_due`` pass. Their overlap is the same
+    overlap for the same reason (five contexts each reading the cohort at the replay depth), so
+    the unit here is *one pass* rather than one call, and ``scheduler._PassCandleCache`` holds it.
+    A pass shares a single ``now``, so every record it writes already claims the same instant;
+    serving one read to all of them makes the records true rather than approximately true.
+
     ``symbol`` defaults to the reference symbol, so the reference leg reads exactly as it did
     before the cross-sectional one existed.
     """
 
     def __init__(self, collector: Any):
         self._collector = collector
-        self._results: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self._snapshots: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._errors: dict[tuple[str, str, str], BaseException] = {}
         self.calls = 0
 
-    def candles(
-        self, timeframe: str, *, limit: int, now: str, symbol: str = REFERENCE_SYMBOL
-    ) -> list[dict[str, Any]]:
+    def _collect(self, symbol: str, timeframe: str, *, limit: int, now: str) -> dict[str, Any]:
+        """The one fetch point. Both public readers land here, which is what makes the
+        cache order-independent: whichever of them asks for a series first pays for it, and
+        it cannot matter which, because they are asking the same question."""
         key = (str(symbol), str(timeframe), str(limit))
         if key in self._errors:
             raise self._errors[key]
-        if key in self._results:
-            return self._results[key]
+        cached = self._snapshots.get(key)
+        if cached is not None:
+            return cached
         self.calls += 1
         try:
             snapshot, _record = collect_market_data(
@@ -1810,9 +1822,40 @@ class PeerCandleCache:
         except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
             self._errors[key] = exc
             raise
-        rows = list(snapshot.get("candles") or [])
-        self._results[key] = rows
-        return rows
+        self._snapshots[key] = snapshot
+        return snapshot
+
+    def candles(
+        self, timeframe: str, *, limit: int, now: str, symbol: str = REFERENCE_SYMBOL
+    ) -> list[dict[str, Any]]:
+        """The candle series for one symbol/timeframe/depth — what the context legs read."""
+        return list(self._collect(symbol, timeframe, limit=limit, now=now).get("candles") or [])
+
+    def frame(self, symbol: str, timeframe: str, *, limit: int, now: str) -> dict[str, Any]:
+        """The whole snapshot for one series, for a caller mining it rather than ranking against it.
+
+        The context legs are not the only readers of a symbol's candles, and until this existed
+        the *other* reader was the one paying twice. The factory is the case: five schedules mine
+        five symbols at one timeframe, and the frame each one collects to mine **is a member of
+        the cohort the other four rank against** — so with the context legs cached and the frames
+        reading around them, six 4h series still cost ten reads. Both readers through one door is
+        the rest of the fix; ``calls`` then counts the venue reads a pass actually made.
+
+        Returns a **shallow copy with its own candle list**, because a snapshot is the one thing
+        here that its reader mutates: ``cycle.attach_feeds`` and the three ``attach_*`` context
+        legs all write keys onto it. Copying the wrapper keeps one fire's derivative series out
+        of another's frame; the candle dicts stay shared, which is the sharing every
+        :meth:`candles` hit already does and which nothing in the crypto stack mutates.
+
+        Discards the tool-use record ``collect_market_data`` returns, which is why this is not
+        simply what every frame reader should use: the factory branch already dropped it, and a
+        caller that audits the record must keep reading the series itself rather than have a
+        cache decide whether a read happened.
+        """
+        snapshot = self._collect(symbol, timeframe, limit=limit, now=now)
+        copy = dict(snapshot)
+        copy["candles"] = list(snapshot.get("candles") or [])
+        return copy
 
 
 class NoLiquidationFeed:

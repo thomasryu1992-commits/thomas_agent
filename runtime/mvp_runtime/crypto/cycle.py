@@ -261,6 +261,7 @@ def attach_htf(
     collector: MarketDataCollector,
     now: str,
     limit: int | None = None,
+    cache: Any | None = None,
 ) -> str | None:
     """Fetch the higher-timeframe candles onto ``snapshot`` (mutating it). Degrade-only.
 
@@ -271,7 +272,16 @@ def attach_htf(
     the fetch degraded, else None.
 
     Deliberately never raises: the HTF leg is a *filter*, and a filter that cannot be
-    read must not take down the cycle that would have traded without it."""
+    read must not take down the cycle that would have traded without it.
+
+    ``cache`` is a :class:`~.market_data.PeerCandleCache`, accepted for the same reason as the
+    two legs below and with a different payoff. This leg reads THIS symbol one step up, so a
+    fan-out over one timeframe has nothing to share and the cache is inert there — it is not
+    inert across a *pass*, where a 4h fire's ``symbol`` at 1d is the same key a 1d fire collects
+    as its own frame. Passed rather than left off because a leg that silently opted out of the
+    shared cache is the kind of asymmetry the next reader has to re-derive, and because the two
+    schedule groups sharing a due time is a per-machine fact no code here can rely on either
+    way."""
     symbol = str(snapshot.get("symbol") or "")
     higher = HIGHER_TIMEFRAME.get(str(snapshot.get("timeframe") or ""))
     if higher is None:
@@ -280,10 +290,15 @@ def attach_htf(
     # to spare; the alignment only ever reads the last closed one per lower bar.
     want = limit if limit is not None else 240
     try:
-        htf_snapshot, _ = collect_market_data(symbol, higher, collector=collector, now=now, limit=want)
+        if cache is not None:
+            candles = cache.candles(higher, limit=want, now=now, symbol=symbol)
+        else:
+            htf_snapshot, _ = collect_market_data(
+                symbol, higher, collector=collector, now=now, limit=want
+            )
+            candles = htf_snapshot.get("candles") or []
     except (ToolError, ToolBlocked):
         return HTF_DEGRADED
-    candles = htf_snapshot.get("candles") or []
     if not candles:
         return HTF_DEGRADED
     snapshot["htf_candles"] = candles
