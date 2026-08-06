@@ -105,7 +105,12 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
                         condition = ast.unparse(walker.test)
                     except Exception:  # pragma: no cover - unparse is total in practice
                         condition = None
-            sites.append(Site(code, str(path.relative_to(ROOT)), node.lineno, name,
+            # `as_posix()`, not `str()`: the committed index is generated on one platform and
+            # checked on both, and `str()` emits `runtime\mvp_runtime\...` on Windows — so every
+            # row differs and the freshness test fails for a reason that has nothing to do with
+            # the code having changed. Found by CI 2026-08-06, which is also the reason the
+            # module path is normalised here rather than at each of the places that read it.
+            sites.append(Site(code, path.relative_to(ROOT).as_posix(), node.lineno, name,
                               enclosing_function, condition))
     return sites, skipped
 
