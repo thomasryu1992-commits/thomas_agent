@@ -2177,6 +2177,36 @@ regardless; backoff and spacing on the factory's fetches; and the replay window 
 each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
 2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
+**Status 2026-08-06 — most of that list is done, and the remaining half should wait.**
+
+| item | state |
+|---|---|
+| `FUNDING_MAX_PAGES` 4 → 7 | **done** (8) |
+| `funding_fade_*` gate | **done** — the families and the timing comment are in `factory.py` |
+| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `pool.evidence_depth_rank` |
+| `FACTORY_DEPTH_DAYS` 500 → 2,000 | **half** (1,000) |
+| `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 | **half** (1,020) |
+
+**The doubling landed 2026-08-05 and covers 5% of the store.** Measured over all 1,680
+candidates carrying a readable window: **1,477 at 500 days, 86 at 1,000, 117 at 2,000**. By mint
+date, 1h and 4h moved to 1,000 on 08-05; 08-04 was a mixed day mid-deploy.
+
+**1d has been at 2,000 all along, and not through this constant.** `MIN_FACTORY_BARS = 2000`
+floors it at 2,000 bars, which at a daily bar is 2,000 days — above the calendar target. So the
+remaining half of this item would move **1h and 4h only**, and the 2,000-day figure it is aiming
+at already exists on one rung as a side effect of a different constant.
+
+**Doubling again now would be the `#420` error this file names three times.** The 1,000-day
+window is two days old, 88% of the store still carries 500, and no lineage has completed a
+rotation at the new depth. The condition to proceed is a full rotation at 1,000 with the 4h trade
+counts read after it — not a calendar date.
+
+**One trap, recorded because this measurement fell into it first.** `bars_replayed` is the
+**70% training slice**, not the window: `HOLDOUT_FRACTION = 0.30` is withheld before scoring. A
+4h row showing 4,200 bars is a 1,000-day window (700 train + 300 holdout), not a 700-day one.
+Read as the window it understates every depth by 30%, which briefly turned a correctly-landed
+change into a phantom defect ("4h is replaying half its target") on the first pass here.
+
 ### F5. The clamp collected the draws it was meant to bound — fixed 2026-08-05, owed a generation
 
 `mutate_params` drew `base ± (hi − lo) × 0.35` and **clamped**, so any centre nearer a bound than
