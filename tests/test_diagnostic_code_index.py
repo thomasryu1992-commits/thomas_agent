@@ -103,6 +103,19 @@ def test_the_declared_set_does_not_outlive_its_codes():
     )
 
 
+def test_module_paths_are_platform_independent():
+    """The index is generated on one platform and checked on both.
+
+    `str(path.relative_to(ROOT))` emits `runtime\\mvp_runtime\\...` on Windows, so every row in a
+    Linux-generated index differed and the freshness test above failed for a reason that had
+    nothing to do with the code changing. CI caught it after the merge; this pins the fix, since
+    the failure is invisible to anyone developing on one platform.
+    """
+    sites, _ = collect_sites()
+    offenders = sorted({site.module for site in sites if "\\" in site.module})
+    assert not offenders, f"module paths must be POSIX-style: {offenders[:5]}"
+
+
 def test_every_indexed_site_names_a_real_file_and_line():
     """The index is a lookup an operator follows. A row pointing nowhere is worse than no row."""
     sites, _ = collect_sites()
