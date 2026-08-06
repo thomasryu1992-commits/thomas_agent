@@ -3733,7 +3733,11 @@ def run_factory(
     that many pairs drawn from the best-scoring **already durable** lineages in
     ``existing_candidates``. Parents are deliberately never taken from the batch
     being minted: the store requires a parent to be durable before the child citing
-    it is appended, and a same-run parent has no independent evidence anyway."""
+    it is appended, and a same-run parent has no independent evidence anyway.
+
+    Whatever fusion does NOT mint of that allocation is drawn again as seeded specs from this
+    fire's own rotation slice, so a dry parent pool costs the fire nothing — see the comment
+    over the shortfall draw for the measurement and for why it takes nothing from fusion."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -3772,6 +3776,13 @@ def run_factory(
         symbol=symbol,
         timeframe=timeframe,
     )
+    # Counted from the store this function was already given — the rotation steps on
+    # THIS context's fire count, not on the global generation number. Hoisted out of the call
+    # below because the shortfall draw after fusion has to pass the SAME cursor: see there for
+    # why it re-draws this fire's slice rather than stepping to the next one.
+    rotation_index = context_rotation_index(
+        existing_candidates, symbol=symbol, timeframe=timeframe,
+    )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
@@ -3780,11 +3791,7 @@ def run_factory(
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         venue=venue,
-        # Counted from the store this function was already given — the rotation steps on
-        # THIS context's fire count, not on the global generation number.
-        rotation_index=context_rotation_index(
-            existing_candidates, symbol=symbol, timeframe=timeframe,
-        ),
+        rotation_index=rotation_index,
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
@@ -3794,42 +3801,51 @@ def run_factory(
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
-    for spec_dict in batch["specs"]:
-        spec = StrategySpec.from_dict(spec_dict)
-        # Before scoring, because scoring it is the waste: a spec naming a feature these rows
-        # never supply cannot enter here, and evidence saying otherwise would be evidence for a
-        # trade this runtime cannot reproduce. See `unsuppliable_features`.
-        starved = unsuppliable_features(spec, frame.rows)
-        if starved:
-            starved_specs.append({"strategy_family": spec.strategy_family,
-                                  "reason": UNSUPPLIABLE_FEATURE, "features": starved})
-            continue
-        evidence = backtest_spec(spec, snapshot, frame=frame)
-        record = {
-            "strategy_id": spec.strategy_id,
-            "strategy_rule_hash": spec.strategy_rule_hash,
-            "generation_id": generation_id,
-            "status": "BACKTESTED",
-            "champion_score": evidence["champion_score"],
-            "strategy_spec": spec.to_dict(),
-            "backtest_evidence": evidence,
-            "evidence_input_sha256": candles_sha,
-            "provenance": "mvp_factory",
-            "derivation_type": "seeded_template",
-            # What this candidate was drawn from, recorded because nothing did and the search
-            # therefore could not learn: `elite_base_params` reads exactly this. Stored on the
-            # record rather than re-derived from the spec — the mapping from a param name to the
-            # condition it lands in lives in the family's own entry builder, so reversing it
-            # would be a second implementation of every template, silently wrong the first time
-            # one changed.
-            "mint_params": batch["params"].get(spec.strategy_id, {}),
-            "parent_candidate_ids": [],
-            "created_at_utc": now,
-        }
-        # Stored id == derived id: strategy_id restarts every generation, so the
-        # lineage-derived candidate_id is the only key promotions may use.
-        record["candidate_id"] = derive_candidate_id(record)
-        candidates.append(record)
+
+    def _score_draw(specs: Sequence[Mapping[str, Any]], params: Mapping[str, Any]) -> None:
+        """Backtest one seeded draw, appending survivors to ``candidates``.
+
+        Two draws reach this — the batch below and the shortfall draw after fusion — and they
+        produce the same KIND of row from the same rotation slice, so they share the scoring
+        path rather than each carrying a copy of it."""
+        for spec_dict in specs:
+            spec = StrategySpec.from_dict(dict(spec_dict))
+            # Before scoring, because scoring it is the waste: a spec naming a feature these
+            # rows never supply cannot enter here, and evidence saying otherwise would be
+            # evidence for a trade this runtime cannot reproduce. See `unsuppliable_features`.
+            starved = unsuppliable_features(spec, frame.rows)
+            if starved:
+                starved_specs.append({"strategy_family": spec.strategy_family,
+                                      "reason": UNSUPPLIABLE_FEATURE, "features": starved})
+                continue
+            evidence = backtest_spec(spec, snapshot, frame=frame)
+            record = {
+                "strategy_id": spec.strategy_id,
+                "strategy_rule_hash": spec.strategy_rule_hash,
+                "generation_id": generation_id,
+                "status": "BACKTESTED",
+                "champion_score": evidence["champion_score"],
+                "strategy_spec": spec.to_dict(),
+                "backtest_evidence": evidence,
+                "evidence_input_sha256": candles_sha,
+                "provenance": "mvp_factory",
+                "derivation_type": "seeded_template",
+                # What this candidate was drawn from, recorded because nothing did and the
+                # search therefore could not learn: `elite_base_params` reads exactly this.
+                # Stored on the record rather than re-derived from the spec — the mapping from
+                # a param name to the condition it lands in lives in the family's own entry
+                # builder, so reversing it would be a second implementation of every template,
+                # silently wrong the first time one changed.
+                "mint_params": params.get(spec.strategy_id, {}),
+                "parent_candidate_ids": [],
+                "created_at_utc": now,
+            }
+            # Stored id == derived id: strategy_id restarts every generation, so the
+            # lineage-derived candidate_id is the only key promotions may use.
+            record["candidate_id"] = derive_candidate_id(record)
+            candidates.append(record)
+
+    _score_draw(batch["specs"], batch["params"])
 
     fused: list[dict[str, Any]] = []
     fusion_rejected: list[dict[str, Any]] = []
@@ -3850,23 +3866,107 @@ def run_factory(
             now=now,
         )
 
+    # --- the half of the budget fusion declined ----------------------------------------
+    #
+    # ``fusion_pairs`` is an allocation, and until 2026-08-06 a fusion that could not fill it
+    # handed the slots back to nobody. That was invisible while fusion always delivered, and
+    # became the dominant term the moment it stopped. Measured on this machine's scheduler
+    # ledger, children minted per context: **4.00 a fire** (07-31 → 08-04), **0.40** (08-05,
+    # the first fire under `FUSION_IMPROVEMENT_METRICS`), **0.00** (08-06, which recorded
+    # `generated=4/4 fused=0` on all five contexts — 20 rows where the budget allowed 40).
+    #
+    # Two different things bind on those two days and neither is a defect to loosen. On 08-05
+    # the CHILD bar bound: 92 attempts, 6 stored, `no_expectancy_gain` 46 and
+    # `champion_score_regression` 11 — working exactly as designed. On 08-06 the PARENT POOL
+    # bound: 10 attempts in total, because `holdout_permits_parenting` leaves 218 of the
+    # store's 1,681 rows able to parent at all and only 24 of those are 1d, which was that
+    # fire's whole rotation slot. Both leave the seeded half carrying the search alone.
+    #
+    # **This takes nothing from fusion.** The batch and `_fuse_batch` above are unchanged and
+    # run first, so fusion gets first refusal on every one of its pairs and only the ones it
+    # declined are re-spent. That is the distinction from `FACTORY_FUSION_PAIRS = 4 → 2`,
+    # which `docs/REMAINING_WORK.md` F1 carries the numbers for and deliberately does not
+    # take: that one cuts good fusions with bad, and this one cannot cut any.
+    #
+    # **The same rotation slice drawn denser, not the next one.** `_rotation_offset` is
+    # `(step + phase) * count`, so `count` is what fixes WHICH families a fire mints — asking
+    # for the shortfall directly would land on the slice belonging to some other fire and
+    # leave this one's families half-explored. So `count` and `rotation_index` are passed
+    # unchanged and only the first `topup_requested` of the draw are kept; the cursor is
+    # untouched, and the next fire steps exactly one slice as it always did. What the extra
+    # draws buy is a denser sample of the space this fire was already in — half around each
+    # family's elite centre, half around its base — which is `elite_base_params`' own argument
+    # applied to a budget that was being discarded.
+    #
+    # Spending the shortfall on the NEXT slice instead would buy breadth rather than depth, and
+    # `context_rotation_phase` names breadth-per-fire as the scarce thing — but that is a change
+    # to the rotation, which decides what the factory explores, and it belongs in a diff that
+    # argues for it. This one recovers a discarded budget and touches nothing else.
+    #
+    # A distinct seed, because the same one reproduces the batch: the next eight hex digits of
+    # the window hash the first eight already seeded, so it stays derived from the recorded
+    # input and no wall-clock enters. The batch's own hashes join `known_rule_hashes` anyway,
+    # so a collision is refused rather than stored twice.
+    #
+    # Rows carry `derivation_type: seeded_template` whichever draw they came from, because
+    # that is what they are — same function, same slice, same space, a different draw of the
+    # rng. What is worth telling apart is FIRES, and `seeded_topup_count` records that.
+    #
+    # **Judge it over generations, not days** (the `#420` error, and this is a mint-time
+    # change — where that error was made). What it has to move is the count of rows a fire
+    # produces that can be judged at all: `robustness.MIN_HOLDOUT_TRADES` was cleared by 84 of
+    # a fire's rows on 07-31 and by 5 of 20 on 08-06.
+    topup_requested = max(0, fusion_pairs - len(fused))
+    topup_accepted = 0
+    topup_rejected: list[dict[str, Any]] = []
+    if topup_requested:
+        topup = generate_batch(
+            generation_id, seed=int(candles_sha.split(":", 1)[1][8:16], 16), count=count,
+            start_index=count + len(fused) + 1,
+            symbol=symbol,
+            timeframe=timeframe,
+            elite_params=centres,
+            known_rule_hashes=frozenset({
+                *known_hashes,
+                *(c["strategy_rule_hash"] for c in candidates),
+                *(c["strategy_rule_hash"] for c in fused),
+            }),
+            positioning_eligible=positioning_eligible,
+            venue=venue,
+            rotation_index=rotation_index,
+        )
+        kept = topup["specs"][:topup_requested]
+        topup_accepted = len(kept)
+        topup_rejected = topup["rejected"]
+        _score_draw(kept, topup["params"])
+
     return {
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
         "seed": seed,
-        "requested_count": batch["requested_count"],
-        "accepted_count": batch["accepted_count"],
+        # Both counts describe the FIRE rather than the first draw, which is what they already
+        # claimed to mean and what the scheduler's `generated=N/M` reads: a fire that asked for
+        # eight and minted eight is complete, and one that asked for four is a fire fusion
+        # filled. `seeded_topup_count` below is what decomposes them.
+        "requested_count": batch["requested_count"] + topup_requested,
+        "accepted_count": batch["accepted_count"] + topup_accepted,
         # Forwarded because the generator's own answer to "did this fire deliver what was asked"
         # stopped here and nothing downstream could reconstruct it: `accepted_count` alone reads
         # as a quantity rather than as a shortfall. The scheduler's status line compares the two.
-        "batch_complete": batch["batch_complete"],
+        "batch_complete": batch["batch_complete"] and topup_accepted == topup_requested,
         # Mint-time refusals and score-time ones together: a caller reading "why did this fire
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
-        "rejected": [*batch["rejected"], *starved_specs],
+        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
+        # How much of the fusion allocation the shortfall draw re-spent, at MINT time — the
+        # same basis as `accepted_count`, so the two decompose without a second convention.
+        # Zero on a fire fusion filled, which is the only reading that says "nothing was
+        # discarded"; `fused_count + seeded_topup_count == fusion_pairs` whenever the draw
+        # itself was complete.
+        "seeded_topup_count": topup_accepted,
         "fusion_rejected": fusion_rejected,
         "evidence_input_sha256": candles_sha,
         "created_at": now,

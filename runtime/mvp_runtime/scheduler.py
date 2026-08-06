@@ -992,8 +992,14 @@ def _execute(
         # number read as a quantity. A stuck family is the one way to reach it (see
         # `factory._MAX_ATTEMPTS_PER_SPEC`) and it has never happened; the point is that it would
         # be legible if it did.
+        # `topup=` because `requested_count` is no longer the constant `DEFAULT_BATCH_SIZE`:
+        # it grows by whatever fusion left unspent, so `generated=8/8 fused=0` and
+        # `generated=4/4 fused=4` are both complete fires and the denominator alone cannot say
+        # which. Without it a shortfall draw that itself fell short would read as the stuck
+        # family `_MAX_ATTEMPTS_PER_SPEC` exists to expose.
         return (f"generated={result['accepted_count']}/{result['requested_count']} "
-                f"fused={result.get('fused_count', 0)} gen={result['generation_id']}")
+                f"fused={result.get('fused_count', 0)} "
+                f"topup={result.get('seeded_topup_count', 0)} gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
