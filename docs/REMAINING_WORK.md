@@ -2516,6 +2516,48 @@ measured against intended price over enough live fills to be a distribution, whi
 thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
 it.
 
+#### The instrument for that exists as of 2026-08-06 — and it is still empty
+
+`scripts/measure_live_slippage.py` (#576), read-only, reports realized against modelled on every
+leg where both prices exist. Building it found that **only one of the three legs had them**:
+
+| leg | intended price | state |
+|---|---|---|
+| protective stop | the trigger the runtime chose (`bracket[].stop_price`) | measurable since the first close — **23.47 bps** on ETHUSDT, 0.00 on DOGEUSDT |
+| strategy entry | **not recorded anywhere durable** | fixed by #585 |
+| canary | **not recorded anywhere durable** | fixed by #589 |
+
+**The entry leg was the gap that mattered**, because it is the one the cost model charges on
+*every* trade. A MARKET entry recorded only `fill.avg_price` and the venue answers
+`price: "0.00"` for a market order, so half of what the model charges had nothing to check it
+against. The value existed one layer up all along —
+`build_live_order_intent` carries `entry_price` from the plan, the same number
+`paper.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
+on `submit_and_reconcile`, the one function holding both the intent and the fill.
+
+**The canary is the instrument that works while live entries are held.** It is an entry-only
+MARKET order placed to validate the path, so it is the only entry this runtime can make **without
+routing a strategy signal from a pool where 0 of 1,140 candidates confirm out of sample**. #589
+records the `reference_price` `place_canary_order` already read to check its declared notional —
+used and discarded until now — beside the fill, plus the `side` without which the figure has a
+magnitude and no direction.
+
+**All three are recording-only.** No order changes shape, no gate reads the new fields, and a
+test pins that the canary's `clean` — which gates autonomous live entry — is unmoved.
+
+**It reads empty, and that is the honest state:**
+
+```
+stop fills: n=2  median 11.73 bps  worst 23.47  against 3.0 modelled (7.8x)
+entries with no recorded intent: 2   canaries with none: 4   (both predate `intended_price`)
+```
+
+The six existing fills predate the fields and are **counted rather than assumed to have filled at
+their intent**. Nothing accumulates on its own: with live entries held there are no new entries,
+and there are no open positions left to close. **The only path that fills this is canaries placed
+deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
+then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
+
 ### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
 
 F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
