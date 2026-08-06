@@ -28,6 +28,21 @@ out of the approved action snapshot, not out of the frame presenting the approva
 therefore cannot get an approval for one domain and spend it on another — and more generally,
 no field the requester controls decides which check runs or what the check runs against.
 
+**A grant names the stop it clears.** ``control.CMD_RESUME`` takes no argument saying *which*
+stop to lift — there is one control state and it clears whatever is in it. So an approval that
+recorded only the verb described the effect only for as long as nothing else touched the switch,
+and a grant minted against the assistant's own kill stayed spendable against an operator's
+later, unrelated one: an approval for one intent releasing a stop placed for another, in the
+direction of starting something nobody approved. The ask now carries a ``stop_ref`` inside the
+fingerprint (:func:`stop_ref`) and the spend re-derives it from live state under the same lock
+that applies the resume. A stop that changed after Thomas signed refuses the spend rather than
+being cleared by it.
+
+This is a narrower claim than it may look, and the docstring says so rather than letting a
+reader infer more: it binds the grant to *a* stop, it does not make the effect domain-scoped.
+Resume still releases every scheduled kind the stop was holding — which is why the ask's risk
+text says that too.
+
 **Absorbing the halt door.** ``disable`` carries what ``halt_bridge`` carried (``kill`` and
 ``pause``), for the same reason and with the same attribution. Two doors for one switch would
 mean two places to reason about the asymmetry, and the halt door's own docstring already
@@ -47,6 +62,11 @@ Failure directions, each chosen once:
   is the ordinary path, not an error: it is how the ask is made.
 - An approval that is unknown / not APPROVED / expired / already spent / fingerprint-drifted /
   scoped elsewhere / pointed at another domain -> its own reason code, nothing applied.
+- An approval that names no stop -> ``STOP_NOT_NAMED``. Only reachable for a grant minted
+  before ``stop_ref`` existed; such a record cannot say what it would clear, so it is refused
+  rather than spent on an assumption.
+- An approval whose named stop is no longer the one in effect -> ``STOP_CHANGED``, nothing
+  applied. Re-asking is one round trip; clearing an unapproved stop is not recoverable by one.
 """
 
 from __future__ import annotations
@@ -55,7 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from . import approval as approval_mod
-from . import control, socket_door, timeutil
+from . import bridge_idempotency, control, socket_door, timeutil
 from .approval_store import ApprovalStore
 from .binding import bind_task_to_core
 from .control import ControlStore
@@ -67,6 +87,8 @@ from .permission import (
     build_trading_switch_permission_decision,
 )
 from .store import LedgerStore
+
+from runtime.read_only_kernel import integrity
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
@@ -88,10 +110,24 @@ _ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISAB
 
 # Every key this door will act on. An unexpected key is refused rather than ignored: a frame
 # carrying something this module does not understand must not be treated as a frame that means
-# what the understood subset says.
+# what the understood subset says. `request_id` is optional and carries no authority — see
+# `_ENABLE_DOOR` for which verb actually uses it and why the other two do not.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"command", "domain", "reason", "mode", "approval_id"}
+    {"command", "domain", "reason", "mode", "approval_id", bridge_idempotency.REQUEST_ID_KEY}
 )
+
+# `enable` is the only verb here with a duplicate worth preventing, and it has two of them. The
+# ask shape mints an APPROVAL_REQUIRED record, so a retried frame puts a SECOND pending approval
+# in front of Thomas for one intent — the failure mode where he answers one and the other sits
+# there spendable. The spend shape is already single-use through the approval itself, but a
+# retry gets `ALREADY_CONSUMED`, which reads like a refusal for something that in fact worked.
+#
+# `status` and `disable` are deliberately NOT wired to this. `status` has no effect. `disable`
+# is idempotent by construction (KILLED applied to a KILLED runtime is the same runtime) and is
+# the emergency stop: putting a file lock on the path a halt takes buys nothing and adds a way
+# for a stop to block. An emergency control you must first acquire a lock for is a worse trade
+# than the duplicate it would prevent.
+_ENABLE_DOOR = "switch.enable"
 
 # Stopping has two shapes and the caller picks; both are already in the policy's
 # `emergency_controls_allowed`. Built from control's own constants so a rename there cannot
@@ -112,10 +148,85 @@ _SWITCH_TARGET_PREFIX = "trading_switch:"
 SOCKET_REL = ".runtime_governance_state/bridge/switch.sock"
 SOCKET_ENV = "MVP_SWITCH_BRIDGE_SOCKET"
 
+# Deliberately not 1. This door carries the stop AND the start, and the start is the slow one
+# (approval store, Core binding, fingerprint). A ceiling of one would let an in-flight `enable`
+# refuse the `disable` behind it — the same failure that made this door its own service in the
+# first place, reproduced inside it. See `socket_door.DEFAULT_MAX_CONCURRENT_REQUESTS`.
+MAX_CONCURRENT_REQUESTS = 4
+
 
 def socket_path(root: Path | None = None) -> Path:
     """The socket path, overridable per-deployment via ``MVP_SWITCH_BRIDGE_SOCKET``."""
     return socket_door.resolve_socket_path(SOCKET_ENV, SOCKET_REL, root)
+
+
+def stop_ref(state: control.ControlState) -> str:
+    """A stable id for the stop an ``enable`` would clear.
+
+    ``resume`` does not take an argument saying *which* stop to lift — it clears whatever is in
+    effect when it runs. So an approval that names only the verb describes the effect only for
+    as long as nothing else touches the switch, and between minting an ask and Thomas answering
+    it there is a TTL's worth of room for something to. This id closes that: it goes into the
+    approved action's fingerprint, and the door re-derives it from live state before applying.
+
+    Derived from the WHOLE state rather than the mode, because mode alone cannot tell two stops
+    apart — kill, resume, kill again reads as KILLED throughout, which is precisely the sequence
+    where an old grant must not still be spendable.
+
+    ``fail_closed`` is in the seed on purpose: a KILLED state *derived* from an unreadable file
+    is not the same fact as one an operator wrote, and an approval minted against one should not
+    be spendable against the other.
+
+    The cost, stated rather than discovered: ``/stop <task_id>`` rewrites ``updated_at`` without
+    changing ``mode``, so an unrelated stop request between ask and spend also invalidates the
+    grant. That costs a re-ask. It is the direction to be wrong in — the other one clears a stop
+    nobody approved — and this door's whole asymmetry is that starting is the expensive verb.
+    """
+    return integrity.short_id(
+        "stop",
+        {
+            "mode": state.mode,
+            "updated_at": state.updated_at,
+            "updated_by": state.updated_by,
+            "reason": state.reason,
+            "fail_closed": bool(state.fail_closed),
+        },
+    )
+
+
+def stop_summary(state: control.ControlState) -> str:
+    """The same fact as :func:`stop_ref`, for the human who signs the approval.
+
+    Lands in the decision's ``risk_reason``, which the control channel renders — so the ask
+    Thomas answers says what it would release instead of only that it would release something.
+    """
+    if state.mode == control.ACTIVE:
+        return (
+            "no stop — the runtime is already ACTIVE, so this grant would resume nothing "
+            "(it stays spendable only while that remains true)"
+        )
+    derived = " (derived by failing closed, not written by an operator)" if state.fail_closed else ""
+    placed_at = state.updated_at or "an unrecorded time"
+    return (
+        f"the {state.mode} placed by {state.updated_by} at {placed_at}{derived}, "
+        f"whose stated reason is: {state.reason}"
+    )
+
+
+def _echo_request_id(request: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
+    """Say the id back on the two verbs that do not dedup on it.
+
+    This door's rule is that a key it does not act on is refused rather than ignored, because a
+    caller that sent it believed it would be used. ``request_id`` is now a key the door *does*
+    understand, and `status` and `disable` deliberately do nothing with it (see `_ENABLE_DOOR`)
+    — which lands in exactly the gap that rule exists to close. Echoing it is the honest
+    middle: the caller can see the field arrived, and can see from `replayed` being absent that
+    this was a fresh application rather than a repeat.
+    """
+    request_id = request.get(bridge_idempotency.REQUEST_ID_KEY)
+    if request_id is not None:
+        reply[bridge_idempotency.REQUEST_ID_KEY] = request_id
+    return reply
 
 
 def _require_reason(request: dict[str, Any]) -> str:
@@ -148,6 +259,7 @@ def _open_ask(
     reason: str,
     *,
     approval_store: ApprovalStore,
+    control_store: ControlStore,
     now: str,
     repo_root: Path | None,
 ) -> dict[str, Any]:
@@ -155,7 +267,13 @@ def _open_ask(
 
     Anchored to a real bound Task like every other ask (``approval_cli request``), so the
     approval hangs off a Core Binding rather than floating free.
+
+    The ask is minted against the stop currently in effect, and says which one — see
+    :func:`stop_ref` for why naming it is what makes the grant describe an effect rather than a
+    verb. Reading control state here is a read; it changes nothing, and an ask is still not an
+    action.
     """
+    state = control_store.load()
     task = build_task(
         f"자동매매 스위치 재개 검토: {domain}",
         now=now, channel="agent", requester_type="agent", requester_id=ASSISTANT_ACTOR,
@@ -163,7 +281,8 @@ def _open_ask(
     )
     _, bound = bind_task_to_core(task, now=now)
     decision = build_trading_switch_permission_decision(
-        bound, domain, now=now, repo_root=repo_root
+        bound, domain, stop_ref=stop_ref(state), stop_summary=stop_summary(state),
+        now=now, repo_root=repo_root,
     )
     request = approval_mod.build_approval_request(decision, now=now)
     approval_store.append_permission_decision(decision)
@@ -180,6 +299,12 @@ def _open_ask(
         "approve_with": f"/approve {request['approval_id']}",
         "domain": domain,
         "requested_reason": reason,
+        # Echoed so the caller can see what it asked to clear without re-reading control state,
+        # and so a retried ask that returns a DIFFERENT stop_ref is visible as such rather than
+        # looking like the same pending approval.
+        "stop_ref": stop_ref(state),
+        "clears": stop_summary(state),
+        "mode": state.mode,
     }
 
 
@@ -255,6 +380,33 @@ def _spend(
             f"the approved domain {domain!r} is not one this door switches",
         )
 
+    # **The effect below is global; the grant above is not.** `control.CMD_RESUME` clears the
+    # one kill switch this runtime has — `ControlState` has no `domain` field and every
+    # consumer (crypto's `live_route`, `paper`, `cycle`, the scheduler) reads that same state.
+    # The approval, meanwhile, is minted per domain: `target_ref` is `trading_switch:<domain>`,
+    # the domain is inside the action fingerprint, and `permission.py` opens the constraint
+    # "Approval is single-use and authorizes this domain's switch only." (That sentence now
+    # continues — the grant is also bound to the stop it names, checked below inside the lock.
+    # Two independent narrowings of the same grant; this one is about WHICH DOMAIN, that one
+    # about WHICH STOP, and neither implies the other.)
+    #
+    # Today those agree, for one reason only: there is exactly one domain. The module comment
+    # above `_ALLOWED_DOMAINS` says `prediction` joins the set "and that is the whole change" —
+    # and on this line, it is not. Adding a second domain would make a `crypto` grant re-arm
+    # `prediction` too, which is the constraint text saying one thing while the effect does
+    # another, in the direction that starts something nobody approved.
+    #
+    # So the mismatch is refused rather than documented. This cannot fire while the set has one
+    # member; it fires the moment someone widens it without giving control state a domain, which
+    # is exactly when it should. A test pins that by widening the set.
+    if len(_ALLOWED_DOMAINS) > 1:
+        raise ControlBlocked(
+            "DOMAIN_EFFECT_MISMATCH",
+            f"this door switches {sorted(_ALLOWED_DOMAINS)} but the runtime has one global "
+            f"kill switch, so re-arming {domain!r} would re-arm the others on a grant that "
+            f"names only {domain!r}. Give control state a domain before widening this door",
+        )
+
     # Single-use under a cross-process lock, the rule R10 established: the stored status is
     # re-read and the CONSUMED record appended inside one exclusion, so two concurrent spends
     # cannot both pass (the loser gets ALREADY_CONSUMED). The effect is applied inside the same
@@ -266,6 +418,37 @@ def _spend(
             raise ControlBlocked(
                 "ALREADY_CONSUMED", "approval has already been consumed (one-time use)"
             )
+
+        # **The grant is spendable against the stop it names, and no other.** `CMD_RESUME` takes
+        # no argument saying which stop to lift; it clears whatever is in effect. So the check
+        # that the effect is the approved one has to happen here, against live state, inside the
+        # same exclusion that applies it — read outside the lock it would be a check of a stop
+        # that could change before the apply.
+        #
+        # The comparison is snapshot-versus-live. `approved` comes from the fingerprinted
+        # snapshot, so it is what Thomas signed rather than anything the frame carries; `current`
+        # is derived from the control file by the same function that minted it. Neither side is
+        # caller-supplied, which is the property that keeps this from being a check a record can
+        # choose the outcome of.
+        approved_stop = (snapshot.get("normalized_parameters") or {}).get("stop_ref")
+        if not isinstance(approved_stop, str) or not approved_stop:
+            # A grant minted before this field existed cannot say what it would clear, and the
+            # honest answer to "what did Thomas approve here" is that the record does not carry
+            # it. Refuse rather than infer: re-asking costs one round trip.
+            raise ControlBlocked(
+                "STOP_NOT_NAMED",
+                "this grant names no stop, so what it would clear cannot be verified against "
+                "the runtime's current state; ask again to mint one that does",
+            )
+        current = control_store.load()
+        if stop_ref(current) != approved_stop:
+            raise ControlBlocked(
+                "STOP_CHANGED",
+                f"this grant was approved to clear {approved_stop}, but the stop now in effect "
+                f"is {stop_summary(current)}. Re-arming would release a stop Thomas has not "
+                f"seen; spending is refused and nothing has been changed",
+            )
+
         outcome = control.apply_command(
             control_store, control.CMD_RESUME, actor=ASSISTANT_ACTOR, now=now,
             reason=f"{reason} [approval {approval_id}]", ledger=ledger,
@@ -334,10 +517,10 @@ def apply_switch(
         outcome = control.apply_command(
             control_store, control.CMD_STATUS, actor=ASSISTANT_ACTOR, now=now,
         )
-        return {
+        return _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "action": outcome["action"], "domain": _require_domain(request),
-        }
+        })
 
     reason = _require_reason(request)
 
@@ -360,28 +543,79 @@ def apply_switch(
             control_store, _DISABLE_MODES[mode], actor=ASSISTANT_ACTOR, now=now,
             reason=reason, ledger=ledger,
         )
-        return {
+        return _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "changed": outcome["changed"], "action": outcome["action"],
             "actor": ASSISTANT_ACTOR, "domain": domain,
-        }
+        })
 
     # CMD_ENABLE. Two shapes: without an approval id it opens the ask; with one it spends it.
+    # Both are validated before anything is claimed, so a frame that was going to be refused
+    # never spends its request_id.
     approval_id = request.get("approval_id")
-    if approval_id is None:
-        return _open_ask(
-            _require_domain(request), reason,
-            approval_store=approval_store, now=now, repo_root=repo_root,
-        )
-    if not isinstance(approval_id, str) or not approval_id.strip():
+    if approval_id is not None and (not isinstance(approval_id, str) or not approval_id.strip()):
         raise ControlBlocked(
             "MALFORMED_REQUEST", "'approval_id' must be a non-empty string when given"
         )
-    return _spend(
-        approval_id.strip(), reason,
-        approval_store=approval_store, control_store=control_store, ledger=ledger,
-        now=now, repo_root=repo_root,
-    )
+
+    request_id = bridge_idempotency.request_id_of(request)
+    fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
+    if request_id is not None:
+        prior = bridge_idempotency.claim(
+            ledger, door=_ENABLE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+        )
+        if prior is not None:
+            return bridge_idempotency.replay_reply(prior)
+
+    try:
+        if approval_id is None:
+            reply = _open_ask(
+                _require_domain(request), reason,
+                approval_store=approval_store, control_store=control_store,
+                now=now, repo_root=repo_root,
+            )
+            # The ask IS the effect here, and its identity is what a retry needs back: the id
+            # to approve, when it lapses, and how. Without these the replay would be correct
+            # and useless — "you already asked" with no way to answer.
+            #
+            # `stop_ref` rides along for a reason that only exists once this door dedups: a
+            # replay answers from the RECORD, without re-reading control state, so a repeat
+            # arriving after the stop changed gets back the approval minted against the old
+            # one. That approval is now unspendable (`_spend` refuses it `STOP_CHANGED`), and
+            # without this field the caller has an `ok: true` reply and no way to see why. It
+            # is reported, never re-checked here — the check that matters is at the spend.
+            outcome = {
+                key: reply.get(key)
+                for key in ("approval_id", "expires_at", "approve_with", "domain", "stop_ref")
+            }
+        else:
+            reply = _spend(
+                approval_id.strip(), reason,
+                approval_store=approval_store, control_store=control_store, ledger=ledger,
+                now=now, repo_root=repo_root,
+            )
+            outcome = {key: reply.get(key) for key in ("action", "mode", "domain", "approval_id")}
+    except BaseException:
+        # Nothing was applied, so the id names nothing. Note what this does NOT undo: a spend
+        # that raised after `control.apply_command` cannot reach here — that call and the
+        # CONSUMED record share one lock inside `_spend`, and an exception between them is the
+        # window that lock exists to make impossible.
+        if request_id is not None:
+            bridge_idempotency.release(
+                ledger, door=_ENABLE_DOOR, request_id=request_id,
+                request_fingerprint=fingerprint, now=now,
+            )
+        raise
+
+    if request_id is not None:
+        bridge_idempotency.complete(
+            ledger, door=_ENABLE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, outcome=outcome, now=now,
+        )
+    # On the fresh application too, so every reply from this door carries the id it was given
+    # and `replayed` is the only thing that distinguishes the first from the second.
+    return _echo_request_id(request, reply)
 
 
 def open_door(
@@ -393,10 +627,10 @@ def open_door(
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and serve switch actions from it.
 
-    The framing, the deadline, the size cap and the error envelope come from ``socket_door`` —
-    shared with the read and dispatch doors so a malformed frame cannot be answered three
-    different ways. What is specific to *this* door is the apply function, and therefore the
-    verb set and the approval requirement.
+    The framing, the deadline, the size cap, the peer check, the concurrency ceiling and the
+    error envelope come from ``socket_door`` — shared with the read and dispatch doors so a
+    malformed frame cannot be answered three different ways. What is specific to *this* door is
+    the apply function, and therefore the verb set and the approval requirement.
     """
     return socket_door.SocketDoor(
         path,
@@ -404,4 +638,5 @@ def open_door(
             request, control_store=control_store, ledger=ledger,
             approval_store=approval_store,
         ),
+        max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
     )

@@ -302,3 +302,76 @@ def test_loosened_families_still_validate_and_stay_within_the_free_parameter_bud
     spec = _spec_of(template, conditions)
     assert factory.validate_strategy(spec)["approved_for_backtest"] is True
     assert count_free_parameters(spec) <= 6
+
+
+# --- the funding leg's own gate ------------------------------------------------
+#
+# Same shape as the OI gate above, against a series with TWO constants behind it. Lives in this
+# file because the property under test is the one this file already documents — a feed shorter
+# than the replay window is populated on the newest part of it, so `unsuppliable_features`
+# cannot see it and the family is retired FRAGILE for a window that had no data in it.
+
+def test_the_funding_gate_reads_the_depth_the_fetch_can_actually_reach():
+    """Both constants bind and the SMALLER one wins — the thing a quoted number gets wrong.
+
+    `DEFAULT_FUNDING_RECORDS` is what the fetch asks for and `FUNDING_MAX_PAGES` x
+    `FUNDING_ROWS_PER_PAGE` is what the pager can serve. `market_data`'s own comment already
+    says both have to move when the window does; this is that sentence made checkable."""
+    reach = market_data.funding_history_days()
+    assert reach == min(
+        market_data.DEFAULT_FUNDING_RECORDS,
+        market_data.FUNDING_MAX_PAGES * market_data.FUNDING_ROWS_PER_PAGE,
+    ) / market_data.FUNDING_SETTLEMENTS_PER_DAY
+    # The cycle asks for the same number the gate judges against — the OI gap in miniature.
+    assert cycle._FUNDING_RECORDS is market_data.DEFAULT_FUNDING_RECORDS
+    assert factory._funding_feed_reaches("nonsense") is False
+
+
+def test_the_funding_gate_binds_at_1d_and_only_at_1d():
+    """The live defect this closes, pinned as the asymmetry that hid it.
+
+    1h and 4h replay `FACTORY_DEPTH_DAYS` and the funding fetch covers that. 1d replays
+    `MIN_FACTORY_BARS` BARS — 2,000 days — which the fetch covers 53% of. Same defect, same
+    timeframe, as the one `_oi_feed_reaches` was written for; that fix named only the OI series.
+    Closed before it cost a candidate: none exist at 1d because the rotation cursor had not
+    reached that block since 1d came back on 2026-08-04."""
+    assert market_data.funding_history_days() >= market_data.FACTORY_DEPTH_DAYS
+    for timeframe in ("1h", "4h"):
+        assert factory._funding_feed_reaches(timeframe) is True
+        assert factory.FUNDING_FAMILIES <= {
+            t.family for t in factory.templates_for_timeframe(timeframe)
+        }, timeframe
+    assert factory._funding_feed_reaches("1d") is False
+    families_1d = {t.family for t in factory.templates_for_timeframe("1d")}
+    assert not (factory.FUNDING_FAMILIES & families_1d)
+    assert families_1d, "the non-funding rotation must survive at 1d"
+
+
+def test_the_funding_gate_closes_when_the_window_outruns_either_constant(monkeypatch):
+    """The failure it exists for, reached from BOTH directions independently.
+
+    A window change that lifts the replay past the feed, and a feed change that drops the
+    pager under a window that did not move. Either one alone must close the gate — the OI
+    version could only be reached one way, and this series has two."""
+    # 1. the window moves and the feed does not
+    monkeypatch.setattr(market_data, "FACTORY_DEPTH_DAYS", 4_000)
+    assert factory._funding_feed_reaches("4h") is False
+    assert not (factory.FUNDING_FAMILIES & {t.family for t in factory.templates_for_timeframe("4h")})
+    # ...and the rest of the rotation is untouched, so this narrows rather than empties.
+    assert {t.family for t in factory.templates_for_timeframe("4h")}
+    monkeypatch.undo()
+
+    # 2. the pager shrinks under a window that did not move — the record count is then NOT
+    #    what binds, which is the half a single-constant check would miss.
+    monkeypatch.setattr(market_data, "FUNDING_MAX_PAGES", 1)
+    assert market_data.funding_history_days() < market_data.FACTORY_DEPTH_DAYS
+    assert factory._funding_feed_reaches("4h") is False
+
+
+def test_the_funding_gate_reopens_when_the_feed_catches_up(monkeypatch):
+    monkeypatch.setattr(market_data, "FACTORY_DEPTH_DAYS", 4_000)
+    assert factory._funding_feed_reaches("1h") is False
+    monkeypatch.setattr(market_data, "DEFAULT_FUNDING_RECORDS", 20_000)
+    monkeypatch.setattr(market_data, "FUNDING_MAX_PAGES", 40)
+    assert factory._funding_feed_reaches("1h") is True
+    assert factory.FUNDING_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}

@@ -148,6 +148,49 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL})
 
+# The kinds whose lateness costs money rather than freshness.
+#
+# **Why the distinction has to live in the loop rather than in schedule order.** `run_due` is one
+# sequential pass in one process: a fire holds it until it returns, and the next tick cannot begin
+# until the pass ends. So the kinds sharing a *due time* are not the only ones that can be
+# delayed — a long pass delays whatever falls due *during* it, which lands in a later tick and is
+# therefore invisible to any same-tick reading. That is why this went unseen: measured on this
+# machine's ledger (2026-08-05), no `crypto_pipeline` fire has ever shared a pass with another
+# kind, and it was still late.
+#
+# The measurement, recorded so a future reader can re-run it rather than trust it: fifteen
+# `crypto_factory` schedules share a due time every morning at ~08:09Z and occupied a single pass
+# for 600-664s — 74% of a pipeline period. On the three mornings where the pipeline's own
+# occurrence fell inside that window it fired **116s, 240s and 349s late**: gaps of
+# 1016/1140/1249s against a 900s cadence.
+#
+# `crypto_pipeline` carries position settlement, the protective-order re-assert, the holding-time
+# exit and reconciliation. `crypto_breaker_watch` carries the C4 transition edge. Neither is
+# exempt from the kill switch and neither becomes exempt here — this orders and budgets fires
+# that are already permitted; it permits nothing.
+#
+# **What lateness does NOT cost, stated so this is not read as bigger than it is.** An open
+# position is protected by exchange-resting orders whether this process runs or not: the stop is a
+# `closePosition STOP_MARKET` and the target a `reduceOnly LIMIT` (`crypto/live_leg.py`). A late
+# pass costs the holding-time exit, reconciliation, and the entry decision — real and bounded, and
+# not the same thing as an unprotected position.
+RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH})
+
+# How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
+#
+# Not a timeout, and that difference is the whole design: a fire already running is never
+# interrupted. Cutting a factory or an archive mid-write would trade a latency problem for a torn
+# record, and this loop's at-most-once contract rests on a claimed occurrence either completing or
+# being recorded as failed — not on being halved. So the guarantee is bounded rather than
+# absolute: **at most one maintenance fire can stand between a due risk kind and its execution**,
+# where before it was every maintenance fire that shared the pass.
+#
+# 60s is two tick intervals. Factory median is 24s, so the morning burst of fifteen now spreads
+# over ~6 passes with the loop free between them instead of one 11-minute block. Cheap kinds
+# (`ledger_rotate` at 0.2s, `crypto_report` at 2.2s) still batch normally — the budget only bites
+# where the cost is, which is why it is a time budget and not a per-pass count.
+MAINTENANCE_PASS_BUDGET_SECONDS = 60.0
+
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
 
@@ -1190,7 +1233,16 @@ def run_due(
     store's per-schedule, locked operations (``claim_due`` / ``record_result``) against the
     file's CURRENT content — the old pattern kept mutating the stale snapshot and
     ``replace_all``-ing it back, which silently reverted an operator's concurrent
-    disable/remove and kept the schedule firing with no trace."""
+    disable/remove and kept the schedule firing with no trace.
+
+    **Order and budget.** Due schedules run risk kinds first (``RISK_KINDS``), then the rest in
+    store order; and once a pass has spent ``MAINTENANCE_PASS_BUDGET_SECONDS`` it stops *starting*
+    non-risk fires. A deferred occurrence is **not** claimed, so it stays due and the next pass
+    runs it — deferral slips a cadence by one tick, it never drops an occurrence (unlike the
+    kill-switch skip, which claims and drops by design). It is returned as ``deferred`` in the
+    summary so a bounded pass is visible rather than silent. A fire already running is never
+    interrupted, so the guarantee is that at most ONE maintenance fire can precede a due risk
+    kind — see ``RISK_KINDS`` for the measurement that motivated it."""
     schedules = store.list()
     if control_store is None:
         control_store = ControlStore(repo_root if repo_root is not None else _repo_root())
@@ -1198,12 +1250,18 @@ def run_due(
     fired = 0
     skipped = 0
     failed = 0
+    deferred = 0
     results: list[dict[str, Any]] = []
 
-    for schedule in schedules:
-        if not (schedule.enabled and schedule.next_run_at <= now):
-            continue
+    # Risk kinds first, then everything else in store order. Within a pass this changes nothing
+    # about WHICH fires happen — the same set is due — only the order, so a risk kind sharing a
+    # due time no longer waits behind maintenance. `sorted` is stable, so the store's own order
+    # survives inside each group and a schedule cannot change its position by being re-saved.
+    due = [s for s in schedules if s.enabled and s.next_run_at <= now]
+    due.sort(key=lambda s: 0 if s.kind in RISK_KINDS else 1)
+    pass_started = time.monotonic()
 
+    for schedule in due:
         if not control_store.load().execution_allowed:
             # kill_blocks: scheduler_execution — skip, drop the occurrence, advance cadence.
             if store.claim_due(schedule.schedule_id, now=now) is None:
@@ -1213,6 +1271,23 @@ def run_due(
             if ledger is not None:
                 ledger.append_scheduler_event(_scheduler_event("skipped", schedule, now=now, status=status))
             results.append({"schedule_id": schedule.schedule_id, "action": "skipped", "status": status})
+            continue
+
+        # Budget: stop STARTING non-risk fires once this pass has spent its allowance.
+        #
+        # The occurrence is deliberately NOT claimed, and that is what separates this from the
+        # kill-switch branch directly above, which claims and *drops*. Leaving it unclaimed leaves
+        # it due, so the next pass — 30s later — runs it. Nothing is lost and no cadence is
+        # skipped; the fire slips by a tick. Claiming here would silently discard maintenance
+        # occurrences, which is the failure mode a budget must not introduce.
+        #
+        # After the kill-switch check on purpose: a halted runtime must still drop its due
+        # occurrences exactly as before, so the budget cannot change what a kill does.
+        if (schedule.kind not in RISK_KINDS
+                and time.monotonic() - pass_started > MAINTENANCE_PASS_BUDGET_SECONDS):
+            deferred += 1
+            results.append({"schedule_id": schedule.schedule_id, "action": "deferred",
+                            "status": "deferred_pass_budget"})
             continue
 
         # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
@@ -1264,4 +1339,5 @@ def run_due(
             _notify_status_change(notifier, claimed, previous_status=previous_status,
                                   status=status, failed=(action == "failed"), now=now)
 
-    return {"fired": fired, "skipped": skipped, "failed": failed, "results": results}
+    return {"fired": fired, "skipped": skipped, "failed": failed, "deferred": deferred,
+            "results": results}

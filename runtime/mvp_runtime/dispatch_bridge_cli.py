@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import dispatch_bridge
+from . import dispatch_bridge, socket_door
 from .cli_common import EXIT_OK, force_utf8_io, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -81,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.stderr.write(
         f"DISPATCH_BRIDGE: listening on {path} "
-        f"(kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, actor={dispatch_bridge.ASSISTANT_ACTOR})\n"
+        f"(kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, "
+        f"actor={dispatch_bridge.ASSISTANT_ACTOR}, "
+        f"{socket_door.describe_admission(server)})\n"
     )
     sys.stderr.flush()
     try:

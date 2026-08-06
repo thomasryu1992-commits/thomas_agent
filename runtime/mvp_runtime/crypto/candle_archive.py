@@ -516,6 +516,69 @@ def refresh_book(
             "returned": len(candles), "written": written, "degraded": False}
 
 
+def plan_pass(
+    symbols: Sequence[str], timeframes: Sequence[str], *, venue: str, now_ms: int,
+    root: Path | None = None,
+) -> list[tuple[str, str]]:
+    """The (symbol, timeframe) work list for one pass: first fills first, then a rotating sweep.
+
+    A pass is bounded, so its ORDER decides what gets refreshed and what waits — and, if the
+    order never changes, what waits *forever*.
+
+    **A book with no file yet is the only kind that is losing history right now.** The venue
+    serves a rolling window, so an unarchived 15m book sheds roughly twelve of its oldest bars
+    every hour, permanently. An already-archived book that goes a few passes without a refresh
+    sheds nothing: its next refresh sizes itself from the newest bar it holds and refills the
+    gap, which is `run_candle_archive`'s "a gap shorter than the ceiling self-heals". So every
+    first fill outranks every refresh — the loss is real on one side and zero on the other, and
+    within the first fills the fast timeframes go first because only their clock is running.
+
+    **The refreshes then ROTATE, and that half is a bug fix.** This function shipped ordering
+    refreshes by timeframe too, which put 4h at work-list index 176 and 1d at 264 — permanently
+    past a 100-book budget, whatever the symbol rotation did, because that rotation moves
+    symbols inside a timeframe and never crosses the boundary between them. Measured on the
+    live store 2026-08-05, straight from the deployed code:
+
+        within budget    : {'15m': 88, '1h': 12}
+        never attempted  : {'1h': 76, '4h': 88, '1d': 88}
+
+    176 books would never have been refreshed again. That is the same defect a fixed order plus
+    a finite budget produced on the symbol axis one PR earlier, rebuilt on the timeframe axis —
+    and worse for being silent: the pass reports `degraded=0` and a `deferred` count that reads
+    like "next time".
+
+    Refreshes rotate as one list rather than being ranked, because **no refresh is near its
+    ceiling.** 15m is the tightest and a refresh every fourth pass still accrues sixteen bars
+    against fifty-two days. Ranking them would be optimising a quantity with no deadline while
+    reintroducing the starvation this exists to prevent. The urgency ordering that does matter
+    is kept exactly where the deadline is real: the first fills.
+
+    The offset advances one book per minute, so with a window of ``books_per_pass`` the
+    consecutive windows of any cadence up to that many minutes OVERLAP rather than leaving
+    gaps, and a full sweep takes ``ceil(len / cadence_minutes)`` passes — four hours or so at
+    the registered hourly cadence. Minutes rather than a per-pass counter for the reason the
+    symbol rotation uses them: a counter would need state, and an hour-derived index is
+    identical for every pass of any sub-hourly schedule.
+
+    Existence is a `stat`, deliberately not `newest_open_time` — that parses and hashes a whole
+    book, and 352 of them at the top of every pass would cost more than the pass.
+    """
+    urgency = {timeframe: index for index, timeframe in enumerate(timeframes)}
+    first_fills: list[tuple[str, str]] = []
+    refreshes: list[tuple[str, str]] = []
+    for timeframe in timeframes:
+        for symbol in symbols:
+            target = archive_path(venue, symbol, _require_timeframe(timeframe), root)
+            (refreshes if target.exists() else first_fills).append((symbol, timeframe))
+    # Already timeframe-major, so this only restates the intent; stable, so the caller's
+    # rotated symbol order survives inside each timeframe.
+    first_fills.sort(key=lambda book: urgency[book[1]])
+    if refreshes:
+        offset = (now_ms // 60_000) % len(refreshes)
+        refreshes = refreshes[offset:] + refreshes[:offset]
+    return first_fills + refreshes
+
+
 def run_candle_archive(
     collector: Any,
     *,
@@ -549,6 +612,14 @@ def run_candle_archive(
     ``deferred`` is "outside this pass's budget", which is the normal design and not a fault.
     Folding them together is what let an 80% loss read like a completed day.
 
+    **The pass is ordered by what is perishing, not by symbol** — `plan_pass` decides, and
+    carries the reasoning. Briefly: every first fill before every refresh, fast timeframes first
+    inside the first fills, and then the refreshes as one ROTATING sweep so that no book can sit
+    permanently past the budget. A bounded pass that walked symbol-major gave a quarter of the
+    symbols all four of their timeframes and the rest nothing; ranking the refreshes too then
+    put 4h and 1d past the budget forever. Both are the same failure — a fixed order and a
+    finite budget — and `plan_pass` records the measurement for each.
+
     **Iteration starts at a rotating offset.** Every pass used to walk the venue's order from
     the top, so a pass that ended early always ended in the same place: the first real pass
     archived the first twenty symbols alphabetically and none of the other sixty-eight, and an
@@ -578,34 +649,31 @@ def run_candle_archive(
         offset = (now_ms // 60_000) % len(order)
         order = order[offset:] + order[:offset]
 
-    planned = min(len(order) * len(timeframes), max(1, books_per_pass))
+    work = plan_pass(order, timeframes, venue=venue, now_ms=now_ms, root=root)
+
+    planned = min(len(work), max(1, books_per_pass))
     written = 0
     degraded: list[str] = []
     books = 0
     rate_limited = False
-    for symbol in order:
-        if rate_limited or books >= planned:
+    for symbol, timeframe in work[:planned]:
+        if books:  # pace between reads, never before the first
+            wait(request_interval_seconds)
+        books += 1
+        result = refresh_book(
+            collector, venue=venue, symbol=symbol, timeframe=timeframe,
+            now_ms=now_ms, timeout_seconds=timeout_seconds, root=root,
+        )
+        written += int(result.get("written") or 0)
+        if result.get("degraded"):
+            degraded.append(f"{symbol}/{timeframe}:{result.get('reason_code')}")
+        if result.get("reason_code") == TOOL_RATE_LIMITED:
+            rate_limited = True
             break
-        for timeframe in timeframes:
-            if books >= planned:
-                break
-            if books:  # pace between reads, never before the first
-                wait(request_interval_seconds)
-            books += 1
-            result = refresh_book(
-                collector, venue=venue, symbol=symbol, timeframe=timeframe,
-                now_ms=now_ms, timeout_seconds=timeout_seconds, root=root,
-            )
-            written += int(result.get("written") or 0)
-            if result.get("degraded"):
-                degraded.append(f"{symbol}/{timeframe}:{result.get('reason_code')}")
-            if result.get("reason_code") == TOOL_RATE_LIMITED:
-                rate_limited = True
-                break
     return {"venue": venue, "symbols": len(symbols), "books": books, "written": written,
             "degraded": len(degraded),
             "skipped": planned - books,                                  # budgeted, never asked
-            "deferred": len(order) * len(timeframes) - planned,          # next pass's slice
+            "deferred": len(work) - planned,                             # next pass's slice
             "rate_limited": rate_limited, "blocked": False,
             # Bounded: a venue-wide outage would otherwise put 352 entries in a status line.
             "degraded_sample": degraded[:5]}

@@ -108,24 +108,47 @@ _FUNDING_SOURCE_STRENGTH = {
 }
 
 # How many equal-bar slices the tail is subtotalled into, so a confirmation can be judged on
-# market periods instead of on trades. Five, and the number is bounded on both sides:
+# market periods instead of on trades.
 #
-# - **Below**, by the test being possible at all. A one-sided t at 95% needs a spread, so four
-#   periods is the floor `robustness.MIN_HOLDOUT_PERIODS` enforces; five leaves one period of
-#   headroom for a slice that closes nothing.
-# - **Above**, by what the window can supply. The tail is `HOLDOUT_FRACTION` of the replay
-#   span — 150 days at every routed timeframe today — so five slices are 30 days each, and the
-#   block-to-block measurement that motivated this used 50-day blocks. Cutting finer does not
-#   buy independence; it buys correlated slices that LOOK like more evidence, which is the
-#   error this whole change exists to stop making.
+# **This was 5, and the argument for 5 was wrong — measured 2026-08-06.** That comment said
+# cutting finer "does not buy independence; it buys correlated slices that LOOK like more
+# evidence", and cited the +0.459 figure. But +0.459 is correlation BETWEEN CONTEXTS at the
+# same moment, not between adjacent moments; the autocorrelation along the time axis, which is
+# the quantity that argument needs, had never been measured. Measured now over 263,815 replayed
+# trades on the 1000-day window, lag-1 autocorrelation of the block-mean gross series against
+# the `-1/(K-1)` small-sample bias a white-noise series would show:
 #
-# The honest consequence, stated here rather than discovered later: at today's 500-day window
-# this is not enough periods to confirm anything. Simulated over the store 2026-08-04, a
-# period-based interval returns **0 CONFIRMED of 421** judgeable blocks, against 1 under the
-# trade-based test — and that one is PROVISIONAL, so `promotable_backlog` was already 0 and
-# does not move. The door does not get stricter in effect; it gets honest about having been
-# shut. What reopens it is a deeper window, not a smaller number here.
-HOLDOUT_PERIODS = 5
+#   slices   days/slice   observed   iid bias   excess
+#      5        200        -0.179     -0.250    +0.071
+#     10        100        -0.192     -0.111    -0.081
+#     15         67        -0.389     -0.071    -0.318
+#     30         33        -0.127     -0.034    -0.093
+#     60         17        -0.054     -0.017    -0.037
+#
+# **Nowhere positive.** Adjacent slices are independent or mildly mean-reverting, so finer
+# slices carry real information and there is no independence argument against cutting them.
+# What IS strongly dependent is the trades *inside* a slice: variance inflation over the
+# holdout region measures **10-15x**, i.e. treating trades as independent understates the
+# standard error by a factor of ~3.4. Both facts point the same way — the market PERIOD is the
+# unit, and there is no reason to hold the count down.
+#
+# Ten, because that is what the window now supplies and what the candidates can occupy:
+#
+# - **Power.** `t(9)/sqrt(10)` against `t(4)/sqrt(5)` detects an effect **1.74x smaller**. The
+#   window doubled to 1000 days in the meantime, which lengthened the tail from 150 to 300 days
+#   and bought the period gate nothing at all while this stayed at 5 — the test's resolution is
+#   set by the slice COUNT, not by the depth behind it.
+# - **Occupancy.** Measured over the 627 specs that clear `robustness.MIN_HOLDOUT_TRADES`
+#   (the only ones judgeable at all): at ten slices the median occupies **10 of 10**, and
+#   **96% occupy at least 8** — the floor `robustness.MIN_HOLDOUT_PERIODS` enforces. Cutting to
+#   twelve buys nothing (97%) and the 15-20 slice band is where the negative autocorrelation
+#   above is sharpest, which makes the test conservative in a way that is harder to reason
+#   about than it is worth.
+#
+# Thirty days a slice at today's window — the same slice WIDTH the old five gave at the old
+# 500-day window, so nothing about a slice's internal composition changes; there are simply
+# twice as many of them.
+HOLDOUT_PERIODS = 10
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -347,20 +370,25 @@ class StrategyTemplate:
 # stop spending half of every mint on a band that is negative at 15m, marginal at 1h and worse
 # at 4h than the alternative, for free.
 #
-# The BASE moves with the floor, and that is not cosmetic. `mutate_params` draws
-# `base +/- (hi - lo) * 0.35` and clamps, so raising `lo` to 1.2 while leaving the base at 1.2
-# would pin **49.8%** of draws to exactly 1.2 — one value, one rule hash, a collapse in the
-# parameter's diversity rather than a shift in it. At 1.45 that is 5.4%, ~77% of draws land in
-# the band measured above, and the tail still reaches 1.73 so the region this store has never
-# sampled (1.6-2.0, n=2) stays explorable.
+# The BASE still moves with the floor, but no longer to escape a clamp. Historically it did:
+# `mutate_params` clamped, so raising `lo` to 1.2 while leaving the base at 1.2 pinned **49.8%**
+# of draws to exactly 1.2 — one value, one rule hash, a collapse in the parameter's diversity
+# rather than a shift in it — and 1.45 was chosen to bring that to 5.4%. What survives that
+# reasoning is the aim: at 1.45 roughly 77% of draws land in the band measured above, and the
+# tail still reaches 1.73 so the region this store has never sampled (1.6-2.0, n=2) stays
+# explorable. Since 2026-08-05 `mutate_params` FOLDS at the bound instead, so a base near one
+# spreads its overshoot back into the space rather than stacking it on the edge.
 #
-# `target_atr` carries the same trap less severely and it was never measured until 2026-08-04:
-# the base 3.0 clears the 1.6 floor by 1.4 against a span of +/-2.24, so **18.9%** of draws pin
-# at exactly 1.6. Under the floor tolerated for the stop (10%) that is a fail, and it is why
-# "the low-target region" is mostly a spike ON the bound rather than a region — of the accepted
-# draws below target 2.0, roughly four in five are the pinned value. `_apply_reward_risk_floor`
-# takes it to 14.4% as a side effect, which is an improvement and not a fix; moving this base up
-# would be the fix, and it is a change to where the trend search aims, so it is not made here.
+# **That change is why this base and `target_atr`'s are left where they are.** The pinning was
+# measured per-parameter on 2026-08-04 and read as `target_atr`'s problem — base 3.0 clears the
+# 1.6 floor by 1.4 against a span of +/-2.24, so 18.9% of draws pinned, 14.4% after
+# `_apply_reward_risk_floor` — with the conclusion that "moving this base up would be the fix".
+# Measured from the centres the factory actually uses, it was not: `generate_batch` draws half
+# of every batch around `elite_base_params`, which never reads `_EXIT_BASE`, so moving the base
+# fixes the template half and leaves the elite half pinning 15.0%, while shifting the median
+# drawn target 3.12 -> 3.86. Folding takes both halves to 0.0% and moves the median target by
+# 0.10. See `_fold_into_bounds` for the full table and for the ratchet that makes the elite half
+# the half that matters.
 _EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.2, 2.0),
     "target_atr": ParamSpec(1.6, 8.0),
@@ -405,9 +433,13 @@ _EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 # (RR below 1 carried by a high hit rate) cannot be expressed here at all; widening
 # MIN_REWARD_RISK is a separate, explicit decision.
 #
-# Bases sit mid-range for the reason recorded above the trend base: a base ON a bound pins ~50%
-# of draws to that bound. At 1.7/2.7/10 no draw clamps at all (spans are +/-0.21, +/-0.49, +/-4.2),
-# so the whole interval stays reachable and the worst-case drawn R:R is 2.21/1.91 = 1.16.
+# Bases sit mid-range for the reason recorded above the trend base: a base ON a bound used to
+# pin ~50% of draws to that bound. At 1.7/2.7/10 no draw reaches a bound at all (spans are
+# +/-0.21, +/-0.49, +/-4.2), so the whole interval stays reachable and the worst-case drawn R:R
+# is 2.21/1.91 = 1.16. `mutate_params` folds at the bound since 2026-08-05 and a space built
+# this way never reaches the fold — the same relationship this space already has with
+# `_apply_reward_risk_floor`, and worth keeping for the same reason: a property that holds by
+# construction is stronger than one restored by a repair.
 _FADE_EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.4, 2.0),
     "target_atr": ParamSpec(2.0, 3.4),
@@ -1233,6 +1265,16 @@ RETIRED_FAMILIES = frozenset({
 OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
                          "oi_unwind_long", "oi_unwind_short"})
 
+# Families whose entry rules read the funding columns — same gate as `OI_FAMILIES`, against a
+# different series, and **it binds today at 1d**. The funding fetch reaches ~1,067 days
+# (`market_data.funding_history_days`); 1h and 4h replay 1,000 and are covered, 1d replays
+# `MIN_FACTORY_BARS` = 2,000 BARS = 2,000 days and is covered **53%**. Identical defect to the
+# one `_oi_feed_reaches` was written for, on the identical timeframe, missed because that fix
+# named only the OI series. Caught before it cost anything: the store holds 44 `funding_fade_*`
+# candidates and **none at 1d** — 1d rejoined the rotation on 2026-08-04 and the cursor has not
+# reached this block yet, which it would have within ~9 fires.
+FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
+
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
 #
@@ -1351,6 +1393,41 @@ def _oi_feed_reaches(timeframe: str) -> bool:
     return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
 
 
+def _replay_days(timeframe: str) -> float | None:
+    """Calendar days the factory replays at ``timeframe``, or ``None`` for an unknown one."""
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return None
+    return market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+
+
+def _funding_feed_reaches(timeframe: str) -> bool:
+    """Does the funding series' depth span what the factory replays at ``timeframe``?
+
+    :func:`_oi_feed_reaches` for a different series, and written because that one's docstring
+    describes a failure the funding leg was one constant away from repeating. The OI gap went
+    unseen for six days because the window moved (`MIN_FACTORY_BARS`) while the feed depth did
+    not; funding is bound by **two** constants rather than one — the records asked for and what
+    the pager can serve — so it has two ways to be left behind rather than one.
+
+    **It binds now, at 1d.** `market_data.funding_history_days()` is ~1,067 days; 1h and 4h
+    replay 1,000 and pass, while 1d replays `MIN_FACTORY_BARS` = 2,000 bars = 2,000 days and
+    fails at 53% coverage. No 1d `funding_fade_*` candidate exists yet — the rotation cursor has
+    not reached that block since 1d came back on 2026-08-04 — so this closes the defect one
+    fire ahead of it rather than after, which is the difference from the OI case.
+
+    What it prevents is specific and is **not** caught by `unsuppliable_features`: that refuses a
+    column that is None on EVERY row, while a feed short of the window is populated on the newest
+    part of it. The consequence is the one `_oi_feed_reaches` documents — every trade lands in
+    the newest walk-forward slice, `temporal_consistency` is 0 by construction, and the family is
+    retired FRAGILE for a window that had no data in it.
+    """
+    replay_days = _replay_days(timeframe)
+    if replay_days is None:
+        return False
+    return replay_days <= market_data.funding_history_days()
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1415,6 +1492,7 @@ def templates_for_timeframe(
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
     has_oi_history = _oi_feed_reaches(timeframe)
+    has_funding_history = _funding_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1432,6 +1510,8 @@ def templates_for_timeframe(
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
             return False
         if template.family in OI_FAMILIES and not has_oi_history:
+            return False
+        if template.family in FUNDING_FAMILIES and not has_funding_history:
             return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.
@@ -1636,11 +1716,59 @@ def mutate_params(
             continue
         base = base_params[name]
         span = (spec.hi - spec.lo) * scale
-        val = base + rng.uniform(-span, span)
-        val = max(spec.lo, min(spec.hi, val))
+        val = _fold_into_bounds(base + rng.uniform(-span, span), spec.lo, spec.hi)
         out[name] = int(round(val)) if spec.integer else round(val, 4)
     _apply_reward_risk_floor(out, base_params, param_space, rng, scale=scale)
     return out
+
+
+def _fold_into_bounds(value: float, lo: float, hi: float) -> float:
+    """Reflect ``value`` back inside ``[lo, hi]`` instead of clamping it to the bound.
+
+    **The clamp this replaced did not bound the distribution, it collapsed part of it onto one
+    number.** A draw is ``base +/- (hi - lo) * scale``, so any centre nearer a bound than its own
+    span sends everything that overshoots to exactly that bound — one value, one rule hash, a
+    parameter that has stopped varying rather than shifted. Measured 2026-08-05 across the
+    library: **16 (parameter, space, base) combinations do it from their own template base**,
+    covering 114 of 170 template parameter slots — ``target_atr`` 18.8%, ``flow_ma_min`` and
+    ``rel_min`` 18.3%, ``xs_dispersion_min`` 14.3%, ``htf_sep_min`` 11.9%, ``oi_change_min``
+    9.2%, ``flow_z_min`` 8.0%, ``stop_atr`` 5.4%, and nine more at 2.4%.
+
+    **And it ratcheted.** ``generate_batch`` centres half of every batch on
+    :func:`elite_base_params`, the most ROBUST prior row — so a pinned row becomes a centre ON
+    the bound, and a centre on the bound sends *half* of its own children back to it. Measured
+    over the 48 real elite centres this store currently supplies for the trend space: 7 (14.6%)
+    sit exactly on ``target_atr``'s 1.6 floor, two of them re-pin >50% of their draws, sixteen
+    more re-pin 20-50%, and the mean floor-pin over all of them is 15.0%.
+
+    That ratchet is why the fix is here rather than in a base. Moving ``_EXIT_BASE`` up — what
+    the note over ``_EXIT_PARAMS`` proposed before this was measured — only ever reached the
+    template half: it takes the template-base pin 14.5% -> 0.0% and leaves the elite half at
+    15.0%, while moving the median drawn target 3.12 -> 3.86 and the median R:R 2.14 -> 2.66.
+    Half the effect, bought with a re-aiming of the trend geometry toward the band this store
+    measures as its *worst* (see :func:`_apply_reward_risk_floor` for that table).
+
+    Folding fixes both halves and re-aims nothing. Measured over the same centres: floor pin
+    14.5% -> 0.0% from the template base and 15.3% -> 0.0% from the real elite centres, with the
+    median target moving 3.12 -> 3.03 and 3.22 -> 3.25 and the median R:R 2.14 -> 2.08 and
+    2.13 -> 2.18 — all inside the 0.05R-equivalent nothing in this store resolves.
+
+    **Truncating was the alternative and it re-aims.** Drawing uniformly on the window
+    intersected with the space (what :func:`_apply_reward_risk_floor` does, correctly, for a
+    constraint that is a hard floor) moves the mean from a centre of 3.0 to 3.42, and from a
+    centre sitting at 1.6 to 2.72. A mutation is a claim about a NEIGHBOURHOOD; truncation
+    answers a different question near a bound, and the whole point here is to change the shape
+    of the draw without changing where it aims.
+
+    A fold rather than a single reflection, so a span wider than the interval cannot land
+    outside it — the library has no such space today (the widest is ``max_holding_bars``, span
+    12.6 against a width of 36) but a future one costs nothing to be right about. Consumes no
+    ``rng`` call of its own, so the seeded-batch reproduction rule is untouched."""
+    width = hi - lo
+    if width <= 0:
+        return lo
+    offset = (value - lo) % (2 * width)
+    return lo + (offset if offset <= width else 2 * width - offset)
 
 
 # The one pair of generated parameters that is not free of the other, and the reason the coupling
