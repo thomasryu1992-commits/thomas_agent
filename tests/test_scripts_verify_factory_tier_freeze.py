@@ -36,24 +36,33 @@ def _candidate(timeframe: str, created_at_utc: str) -> dict:
 FROZEN_1H = [_Schedule(enabled=False, next_run_at="2026-08-06T08:09:10Z",
                        last_run_at="2026-08-05T08:09:26Z")] * 5
 
+# The 4h block shares 1h's due time and stayed enabled — the witness the 2026-08-06
+# freeze actually had: it minted at 08:09:38Z against 1h's cancelled 08:09:10Z.
+LIVE_4H = [_Schedule(enabled=True, next_run_at="2026-08-07T08:09:10Z",
+                     last_run_at="2026-08-06T08:09:38Z")] * 5
+WITNESSED = [*FROZEN_1H, *LIVE_4H]
+
 
 def test_a_frozen_tier_is_unproven_until_its_cancelled_occurrence_passes():
     """05:00Z, freeze applied, fire due 08:09Z. Nothing minted — and nothing proved."""
-    verdict, why, minted = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T05:00:00Z")
+    verdict, why, minted = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T05:00:00Z",
+                                      witnesses=WITNESSED)
     assert verdict == UNPROVEN, why
     assert minted == 0
     assert "has not passed" in why
 
 
 def test_the_same_tier_passes_once_the_occurrence_is_behind_it():
-    verdict, why, _ = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T08:30:00Z")
+    verdict, why, _ = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T08:30:00Z",
+                                 witnesses=WITNESSED)
     assert verdict == PASS, why
-    assert "2026-08-06" in why
+    assert "2026-08-06T08:09:38Z" in why
 
 
 def test_a_frozen_tier_that_minted_anyway_fails():
     records = [_candidate("1h", "2026-08-06T08:09:30Z")]
-    verdict, why, minted = grade_tier(FROZEN_1H, records, tier="1h", now="2026-08-06T08:30:00Z")
+    verdict, why, minted = grade_tier(FROZEN_1H, records, tier="1h", now="2026-08-06T08:30:00Z",
+                                      witnesses=WITNESSED)
     assert verdict == FAIL, why
     assert minted == 1
 
@@ -61,9 +70,40 @@ def test_a_frozen_tier_that_minted_anyway_fails():
 def test_mints_from_another_tier_do_not_fail_this_one():
     """The 4h block shares the 1h block's due time, so its mints land in the same minute."""
     records = [_candidate("4h", "2026-08-06T08:09:30Z")]
-    verdict, _, minted = grade_tier(FROZEN_1H, records, tier="1h", now="2026-08-06T08:30:00Z")
+    verdict, _, minted = grade_tier(FROZEN_1H, records, tier="1h", now="2026-08-06T08:30:00Z",
+                                    witnesses=WITNESSED)
     assert verdict == PASS
     assert minted == 0
+
+
+def test_a_stopped_scheduler_does_not_get_to_look_like_a_held_freeze():
+    """The whole point. Clock past 08:09Z, zero mints — but nothing enabled has run since,
+    so the zero is explained equally well by a dead tick loop."""
+    stalled = [*FROZEN_1H,
+               *[_Schedule(enabled=True, next_run_at="2026-08-06T08:09:10Z",
+                           last_run_at="2026-08-05T08:09:26Z")] * 5]
+    verdict, why, _ = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T08:30:00Z",
+                                 witnesses=stalled)
+    assert verdict == UNPROVEN, why
+    assert "stopped scheduler" in why
+
+
+def test_a_disabled_sibling_cannot_be_the_witness():
+    """A disabled schedule stops stamping, so its `last_run_at` proves nothing about now.
+    A store where every tier is frozen therefore has no witness — and must not read PASS."""
+    all_frozen = [*FROZEN_1H,
+                  *[_Schedule(enabled=False, next_run_at="2026-08-06T08:09:10Z",
+                              last_run_at="2026-08-06T09:00:00Z")] * 5]
+    verdict, why, _ = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T10:00:00Z",
+                                 witnesses=all_frozen)
+    assert verdict == UNPROVEN, why
+
+
+def test_grading_without_a_witness_argument_says_so_in_the_verdict():
+    """The weaker clock-only test stays reachable, but never silently."""
+    verdict, why, _ = grade_tier(FROZEN_1H, [], tier="1h", now="2026-08-06T08:30:00Z")
+    assert verdict == PASS
+    assert "no witness was offered" in why
 
 
 def test_a_long_frozen_tier_is_graded_on_its_own_stale_occurrence_not_today():
