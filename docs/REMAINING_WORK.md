@@ -2165,6 +2165,23 @@ The prediction it would test is specific: if the confirmations were slice-correl
 they should thin out at 60-day slices, and if they are not they should survive with a wider
 interval and fewer of them.
 
+**One axis that re-run had is gone: 1h stopped minting on 2026-08-06.** The five `<SYM> 1h`
+factory schedules were disabled and the slot re-registered as a mint-anchored null control
+(`schedules.jsonl`, per-machine, so there is no repo trace — the same class of change as the
+2026-08-04 15m→1d swap). Its own registration states the reason, and it is this section's
+conclusion arriving from the other direction: *"the per-candidate holdout cannot resolve the
+effect being hunted (needs +0.481R at z=3.53 vs observed p90 +0.209R) while this pooled
+instrument has the sample."*
+
+What that costs here is specific and small: **every 1h figure above stays reproducible**, since
+they are replay measurements and `templates_for_timeframe("1h")` and `factory_candle_target("1h")`
+are untouched — the 1h walk-forward, the calendar-identity table, and the `htf_pullback` control
+can all be re-run on demand. What stops is **new 1h candidates**, so the cross-timeframe
+comparison this section leans on has one live rung (4h) and one frozen one until the mint resumes.
+Read the 1h rows as an archive of 2026-08-05 rather than as a series. And note the null control
+measures nothing before ~2026-08-23 (`MIN_POST_MINT_DAYS = 30` against a 2026-07-23 oldest spec),
+which its registration flags as accumulation rather than a fault.
+
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
 contexts, and `build_feature_rows` is 6.0 s at 48,000 bars. What the arithmetic misses is the
