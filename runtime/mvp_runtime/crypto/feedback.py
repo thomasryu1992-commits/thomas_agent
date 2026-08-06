@@ -189,7 +189,7 @@ def count_independent_trade_events(records: Iterable[Mapping[str, Any]]) -> int:
     return events
 
 
-def _funding_intervals(outcome: Mapping[str, Any]) -> float:
+def _funding_intervals(outcome: Mapping[str, Any], *, intervals_per_day: int = FUNDING_INTERVALS_PER_DAY) -> float:
     """How many 8h settlements this position was open across, from its bars and timeframe.
 
     Paper does not record wall-clock duration, but it records `holding_candles` and the
@@ -200,7 +200,7 @@ def _funding_intervals(outcome: Mapping[str, Any]) -> float:
     minutes = TIMEFRAMES.get(str(outcome.get("timeframe") or ""))
     if bars <= 0 or not minutes:
         return 0.0
-    return (bars * minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    return (bars * minutes / 1440.0) * intervals_per_day
 
 
 def net_result_r(
@@ -222,7 +222,8 @@ def net_result_r(
     has no funding series attached, and refetching one per row at report time would put a
     network read behind a board that must render offline."""
     cost = cost or CostModel()
-    carry = _funding_intervals(outcome) * cost.funding_bps_per_interval / 10000.0
+    carry = (_funding_intervals(outcome, intervals_per_day=cost.funding_intervals_per_day)
+             * cost.funding_bps_per_interval / 10000.0)
 
     # **A row that is ALREADY net is costed here, not reported as uncostable.**
     #
