@@ -183,10 +183,23 @@ which is the actual gap. It does not need to take anything away from the console
 arming door instead of two — but it is a *change* to the operator path and should be chosen
 deliberately, not inherited from a mis-worded row.
 
-Mechanically this is one default: `control.apply_command(..., resume_arms: bool = True)`. True is
+Mechanically (a) is one default: `control.apply_command(..., resume_arms: bool = True)`. True is
 what all six pre-existing call sites get without being touched, so the console and the RED path
-keep arming; only the new `enable scope=runtime` passes False. Under (b), the default flips and
-the six call sites each need a decision.
+keep arming; only the new `enable scope=runtime` passes False.
+
+**(b) is not the same size, and an earlier draft of this paragraph implied it was.** It said the
+default flips "and the six call sites each need a decision" — wrong on the count and wrong on the
+work. Only **two** of the six can carry a `resume` at all: `console_cli.py:66` (the host console)
+and `operator.py:352` (the Telegram operator channel). The other four cannot reach the verb —
+`operator.py:1260` is gated on `PEEKABLE_HALT_VERBS = {kill, pause}`, `read_bridge.py:125` is
+read-only, and `switch_bridge`'s remaining two are `status` and `disable` — and
+`switch_bridge.py:527` passes the flag explicitly, so the default does not reach it either.
+
+The real cost of (b) is elsewhere: flipping the default leaves the RED approval as the **only**
+way to re-arm, so an operator with host access has no way to restore trading at 03:00. (b)
+therefore needs a new console verb (`console_cli arm`) designed and built alongside it, and that
+is most of the work. Worth having straight before choosing, because the mis-worded version made
+(b) look like a one-line alternative to (a) rather than a small feature.
 
 ---
 
