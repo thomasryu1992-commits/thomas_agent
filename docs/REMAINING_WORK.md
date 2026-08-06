@@ -2543,6 +2543,17 @@ with a longest run of 10. A breaker that trips on two thirds of all losing strea
 doing most of the halting or being routinely overridden; which of those is happening is not
 answered here.
 
+**Values derived from this measurement are proposed in
+`docs/proposals/RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md` (DRAFT, awaiting Thomas).** It changes no
+value. The argument in one line: the ladder's *shape* — two stops in a day, five in a week, ten
+before the account is judged — is already principled, and what broke is the *unit*, because a
+stopped-out trade costs **1.3576R net** (median of 59) where the design assumed 1.0R. Restated at
+that unit the three capital thresholds read −2.72 / −6.79 / −13.58%, each inside its existing
+relaxation bound. `MAX_CONSECUTIVE_LOSSES` derives differently — from evidence rather than
+equity — and lands on **k = 10**, which is exactly the existing relaxation *ceiling*, so adopting
+it leaves nothing for a registered config to relax. That is one of the four decisions the
+proposal names rather than settles.
+
 **And the first live fills touch a fifth INHERITED constant.** `DEFAULT_SLIPPAGE_BPS = 3.0` is
 indexed as *"carried from the source system unmeasured"* with *"enough live fills to measure
 realized slippage"* as what reopens it. The first two live stops (2026-08-06, §C) are the start of
