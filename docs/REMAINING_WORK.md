@@ -2357,6 +2357,54 @@ is a precondition for learning anything, not a route to a verdict: of the 463 ro
 today, **462 are CONTRADICTED and 0 CONFIRMED**. Nothing here should be read as expecting that to
 move.
 
+### F8. The whole store's edge lives inside 1.3 bps of an unmeasured constant — measured 2026-08-06
+
+F3 ships a family that trades high-volatility bars and records the risk it could not size: *"the
+new family's backtest carries a favourable bias of unknown size"*, because `DEFAULT_SLIPPAGE_BPS
+= 3.0` is assumed. §G1 then indexed that constant as **INHERITED** — carried from the source
+system, never measured here — with *"enough live fills to measure realized slippage"* as what
+would reopen it. **The first live fills arrived the same day**, and the bias has a size now.
+
+**The arithmetic is exact, not a model.** Slippage cost in R is `bps / risk_bps`, linear in the
+rate, and `cost_summary.total_slippage_cost_r` is recorded per candidate — so re-pricing a
+candidate at rate *r* is `net − slippage_per_trade × (r/3 − 1)`. No re-scoring, no re-replay.
+
+**The median candidate at the current cost basis stops paying at 4.3 bps.** The model charges
+3.0. Over the 973 current-basis candidates:
+
+| | median net @3.0 | @10 bps | @23.5 bps | breakeven |
+|---|---|---|---|---|
+| current cost basis | **+0.0164** | −0.0692 | −0.2172 | **4.3 bps** |
+| `oi_squeeze` | +0.3966 | +0.2008 | −0.1252 | 17.7 |
+| `volatility_expansion` | +0.1380 | +0.0633 | −0.0923 | 14.6 |
+| `trend_pullback` | +0.0584 | −0.1617 | −0.3104 | 10.0 |
+| `breakout` | +0.0886 | −0.0869 | −0.2660 | 9.1 |
+| `htf_trend_strength` (F3's) | −0.1116 | −0.1753 | −0.2982 | already ≤ 0 |
+
+By timeframe the exposure runs the way the denominator does — 15m swings **−0.6575R** between
+3.0 and 23.5, 1d only **−0.0500R** — because 1R is `stop_atr × ATR` and the fast end divides a
+fixed bps by the smallest risk unit.
+
+**And the exposure is largest exactly where the only confirmations came from.** F2 records
+`oi_*` as the two families that confirm out of sample; they are also the ones carrying the widest
+margin *and* the biggest absolute swing (−0.4830R at 23.5). A result that survives its holdout
+and dies on a slippage re-price is not a result.
+
+**23.5 bps is one observation, and it is the worst leg.** ETHUSDT's first live stop rested at
+1900.5 and filled at 1904.96 (§C); DOGEUSDT's filled exactly at its stop. A stop-market on a fast
+move is the most adverse fill this runtime places, and the model charges slippage on **both**
+legs, so applying 23.5 to both is the pessimistic end. **The measured thing here is the
+sensitivity, not the rate** — the column to read is that the store's median edge sits 1.3 bps
+above its own assumption, whatever the true rate turns out to be.
+
+**What this changes.** F3's unsized risk is sized: at any realized rate above ~4.3 bps the
+store's median candidate is not profitable, and the families that confirm forward are the ones
+with the most to lose. It does not say the rate is 23.5 — it says the assumption is load-bearing
+and two fills is the entire evidence behind it. **What would settle it** is entry-leg slippage
+measured against intended price over enough live fills to be a distribution, which is the same
+thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
+it.
+
 ## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
