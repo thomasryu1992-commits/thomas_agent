@@ -636,3 +636,77 @@ def test_a_median_4h_lineage_is_judgeable_and_a_slow_one_is_not():
     result = _backlog([too_slow])
     assert result["count"] == 0
     assert [d["candidate_id"] for d in result["deferred_unjudgeable"]] == ["cand_slow_4h"]
+
+
+# --- the fusion parent pool on the board --------------------------------------
+#
+# `_candidate` writes `robustness.holdout_status` — a verdict STRING — and no
+# `backtest_evidence.holdout` block. `holdout_permits_parenting` reads the block, so these
+# fixtures add one: a row may breed only on out-of-sample evidence that actually exists.
+
+def _breedable(cid, *, expectancy, family, closed=40):
+    row = _candidate(cid, family=family)
+    row["backtest_evidence"]["holdout"] = {
+        "closed_count": closed,
+        "expectancy": expectancy,
+        "total_R": round(expectancy * closed, 8),
+        "stdev_r": 1.0,
+    }
+    return row
+
+
+def test_the_board_reports_how_many_lineages_may_still_parent(tmp_path):
+    """Half of every factory fire goes down the fusion path, and that half is bounded by
+    `rank_fusion_parents` — which four filters now narrow, three added within one day.
+    Measured 2026-08-05: the 08:09Z fire produced 6 fusion children against 40 the day
+    before, six of ten contexts producing none, and the only trace was `fused=0` inside a
+    schedule's `last_status` string. Nothing reached a board."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        _breedable(f"cand_{n}", expectancy=0.2, family=f"family_{n}") for n in range(5)
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["fusion_parents"] == {"eligible": 5, "candidates_read": 5}
+    line = next(ln for ln in render_status_text(status).splitlines() if "fusion 부모" in ln)
+    assert "fusion 부모 5개 리니지" in line and "후보 5건 중" in line
+
+
+def test_a_negative_holdout_may_not_breed_and_the_board_says_the_path_stopped(tmp_path):
+    """Zero is the case the line exists for. A bare `0` is what the eye slides over, and the
+    fusion half of every fire would then be drawing from nothing — the silent death that
+    `fused=0` inside a status string already fails to report.
+
+    These rows are judgeable (40 closed trades, well over `MIN_HOLDOUT_TRADES`) and simply
+    lost money out of sample, which is the case that empties the pool on the real store:
+    `holdout_permits_parenting` requires a non-negative return."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        _breedable(f"cand_{n}", expectancy=-0.2, family=f"family_{n}") for n in range(4)
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    status = build_status(tmp_path, now=NOW)
+    assert status["fusion_parents"] == {"eligible": 0, "candidates_read": 4}
+    line = next(ln for ln in render_status_text(status).splitlines() if "fusion 부모" in ln)
+    assert "fusion 경로 정지" in line
+
+
+def test_a_shallow_holdout_may_not_breed_either(tmp_path):
+    """The other half of the predicate, and the one that matters on this store: 1,031 of the
+    1,661 rows read INSUFFICIENT. A tail too thin to judge is not evidence of a breedable
+    lineage, so it fails closed exactly as a missing block does."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        _breedable(f"cand_{n}", expectancy=0.9, family=f"family_{n}", closed=3) for n in range(4)
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+    assert build_status(tmp_path, now=NOW)["fusion_parents"]["eligible"] == 0
+
+
+def test_an_empty_store_gets_no_parent_line_at_all(tmp_path):
+    """Same rule as the backlog line above: nothing to say beats a zero with no denominator."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_cursor(tmp_path, updated_at=NOW)
+    assert "fusion 부모" not in render_status_text(build_status(tmp_path, now=NOW))
