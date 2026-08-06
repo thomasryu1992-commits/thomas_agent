@@ -55,7 +55,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import socket_door
+from . import bridge_idempotency, socket_door, timeutil
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .pipeline import run_task
@@ -85,7 +85,15 @@ _DEFAULT_KIND = "analysis"
 
 # The whole request surface. Anything else is refused rather than ignored — in particular
 # `write_path`/`writer`, the only inputs that would lift a run to a P3 workspace write.
-_ALLOWED_KEYS: frozenset[str] = frozenset({"request", "kind", "reason"})
+# `request_id` is optional and carries no authority: it names the request so a retry after a
+# client-side timeout is the same request rather than a second one (`bridge_idempotency`).
+_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"request", "kind", "reason", bridge_idempotency.REQUEST_ID_KEY}
+)
+
+# This door's name in the request ledger. Ids are scoped per door, so the same id at the switch
+# door and this one are two different requests — which they are.
+_DOOR = "dispatch"
 
 # Bound on the recorded reason: long enough to attribute, short enough that a reason cannot
 # bloat the source record. The assistant keeps the full text; this is the audit stub.
@@ -152,6 +160,17 @@ def apply_dispatch(
         raise ControlBlocked("REASON_REQUIRED", "a dispatch must state its reason; it is recorded")
     reason = reason.strip()
 
+    request_id = bridge_idempotency.request_id_of(request)
+    if request_id is not None and ledger is None:
+        # Fail closed rather than running unprotected: a caller that sent an id asked for
+        # at-most-once, and honouring the request while dropping the guarantee gives it the
+        # duplicate it was trying to avoid, silently.
+        raise ControlBlocked(
+            "IDEMPOTENCY_UNAVAILABLE",
+            f"{bridge_idempotency.REQUEST_ID_KEY!r} needs the ledger this door was opened "
+            f"without; refusing rather than dispatching without at-most-once",
+        )
+
     # Kill-switch binding: this is an execution door and `run_task` does not read control
     # state. A PAUSED/KILLED runtime refuses new work here exactly as on every other door.
     state = control_store.load()
@@ -161,52 +180,98 @@ def apply_dispatch(
             f"runtime is {state.mode}; new dispatches are blocked until an authenticated resume",
         )
 
+    # Last, so a frame that was going to be refused anyway never burns its id — and first
+    # relative to the effect, so the claim and the run cannot be separated by a check.
+    stamp = now or timeutil.utc_now_iso()
+    fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
+    if request_id is not None:
+        prior = bridge_idempotency.claim(
+            ledger, door=_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=stamp,
+        )
+        if prior is not None:
+            return bridge_idempotency.replay_reply(prior)
+
     resolved = providers or {}
     # No `write_path`/`writer` is passed — the door has no key that lifts a run above P3, and
     # the run is attributed to the assistant, never to Thomas.
-    result = run_task(
-        text.strip(),
-        request_kind=kind,
-        provider=resolved.get("provider"),
-        validator_provider=resolved.get("validator_provider"),
-        search_tool=resolved.get("search_tool"),
-        working_memory=working_memory,
-        programization=programization,
-        store=ledger,
-        repo_root=repo_root,
-        now=now,
-        requester_id=ASSISTANT_ACTOR,
-        requester_type="agent",
-        channel="agent",
-        source_ref=_source_ref(reason),
-        authenticated=True,
-    )
+    try:
+        result = run_task(
+            text.strip(),
+            request_kind=kind,
+            provider=resolved.get("provider"),
+            validator_provider=resolved.get("validator_provider"),
+            search_tool=resolved.get("search_tool"),
+            working_memory=working_memory,
+            programization=programization,
+            store=ledger,
+            repo_root=repo_root,
+            now=now,
+            requester_id=ASSISTANT_ACTOR,
+            requester_type="agent",
+            channel="agent",
+            source_ref=_source_ref(reason),
+            authenticated=True,
+        )
+    except BaseException:
+        # The run did not reach an outcome, so the id names nothing. Holding it would make the
+        # caller wait out the claim TTL to retry something that never happened.
+        if request_id is not None:
+            bridge_idempotency.release(
+                ledger, door=_DOOR, request_id=request_id,
+                request_fingerprint=fingerprint, now=stamp,
+            )
+        raise
 
     if result.get("status") == "COMPLETED":
-        return {
+        reply = {
             "ok": True,
             "kind": kind,
             "task_id": result.get("task_id"),
             "final_response": result.get("final_response", ""),
             "actor": ASSISTANT_ACTOR,
         }
-    # A pipeline BLOCK is a real answer, not a bridge error: surface its reason_code so the
-    # assistant reports "the runtime refused this" rather than "the door broke".
-    block = result.get("block") or {}
-    return {
-        "ok": False,
-        "kind": kind,
-        "task_id": result.get("task_id"),
-        "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
-        "reason": block.get("message", "the runtime blocked this dispatch"),
-        "actor": ASSISTANT_ACTOR,
-    }
+    else:
+        # A pipeline BLOCK is a real answer, not a bridge error: surface its reason_code so the
+        # assistant reports "the runtime refused this" rather than "the door broke".
+        block = result.get("block") or {}
+        reply = {
+            "ok": False,
+            "kind": kind,
+            "task_id": result.get("task_id"),
+            "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
+            "reason": block.get("message", "the runtime blocked this dispatch"),
+            "actor": ASSISTANT_ACTOR,
+        }
+
+    # A BLOCK completes the id as surely as a COMPLETED does: both ran the pipeline, both left
+    # a task in the ledger, and re-running one on a retry is the duplicate work this prevents.
+    # The recorded outcome is the task's identity, never its text — the report is already in the
+    # ledger and the read door's `result <task_id>` is how it is fetched.
+    if request_id is not None:
+        bridge_idempotency.complete(
+            ledger, door=_DOOR, request_id=request_id, request_fingerprint=fingerprint,
+            outcome={"kind": kind, "task_id": result.get("task_id"), "ok": reply["ok"]},
+            now=stamp,
+        )
+        # Named on the fresh reply as well as the replayed one, so `replayed` is the only thing
+        # that separates them and a caller never has to infer which it got.
+        reply[bridge_idempotency.REQUEST_ID_KEY] = request_id
+    return reply
 
 
 def _source_ref(reason: str) -> str:
     """The reason, recorded on the task's source. Bounded so a long reason cannot bloat the
     record."""
     return f"{ASSISTANT_ACTOR}:dispatch: {reason}"[:_MAX_REASON_ON_SOURCE]
+
+
+# The narrowest ceiling of the three doors, and the only one where the ceiling is about cost
+# rather than only about liveness. This is the door that RUNS the pipeline: a slot is held for
+# the length of a full analysis, not the length of a store read, and each one can invoke a model
+# on a quota shared with the operator's own assistant (see the OPENROUTER note in
+# `docker-compose.yml`). Two concurrent runs is a bound on both the thread count and the spend.
+MAX_CONCURRENT_REQUESTS = 2
 
 
 def open_door(
@@ -222,8 +287,9 @@ def open_door(
 
     ``resolve_providers`` is called once per request so a grant that changes between requests
     is re-read; a gate failure becomes a typed refusal rather than a dropped connection.
-    Framing, deadline, size cap and error envelope come from ``socket_door``, shared with the
-    other doors so a malformed frame cannot be answered two different ways.
+    Framing, deadline, size cap, peer check, concurrency ceiling and error envelope come from
+    ``socket_door``, shared with the other doors so a malformed frame cannot be answered two
+    different ways.
     """
 
     def _apply(request: Any) -> dict[str, Any]:

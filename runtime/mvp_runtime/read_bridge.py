@@ -149,6 +149,13 @@ def apply_read(
     }
 
 
+# The widest ceiling of the three doors, because these are the cheapest requests: a read
+# renders from stores already on disk and returns. It is a ceiling all the same — an assistant
+# polling the board in a loop is the likeliest source of connection pressure precisely because
+# nothing about a read discourages it.
+MAX_CONCURRENT_REQUESTS = 8
+
+
 def open_door(
     path: Path,
     *,
@@ -159,8 +166,9 @@ def open_door(
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and serve reads from it.
 
-    Framing, deadline, size cap and error envelope come from ``socket_door``, shared with
-    the halt door so a malformed frame cannot be answered two different ways.
+    Framing, deadline, size cap, peer check, concurrency ceiling and error envelope come from
+    ``socket_door``, shared with the other doors so a malformed frame cannot be answered two
+    different ways. What this door supplies is its verb table and its ceiling.
     """
     return socket_door.SocketDoor(
         path,
@@ -168,4 +176,5 @@ def open_door(
             request, control_store=control_store, ledger=ledger,
             registry=registry, working_memory=working_memory,
         ),
+        max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
     )

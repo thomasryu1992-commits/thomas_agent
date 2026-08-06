@@ -31,14 +31,18 @@ Two claims from F1's first pass are corrected in place rather than deleted — b
 population comparisons the paired test overturned, and the way they were wrong is the useful
 part.
 
-And a new **section H**, added because the equity-perp lane was **not in this file at all**
-while three PRs of it merged — a reader starting here, which is what this file tells them to
-do, could not have learned it exists. It is code-complete as far as it goes and **runs
-nothing**: no `hyperliquid` grant exists on this machine and the selector fails closed at
-selection. **`S0`'s two `〔확인 필요〕` markers were answered the same day** — the strength stays
-provisional by decision, which draws the line at live orders and leaves read-only S1 untouched,
-and the question-reduction holds. So the grant is the only step left that is not minutes of
-work. What waiting costs is measured there, because the venue's window rolls.
+And **section H**, added because the equity-perp lane was **not in this file at all** while
+three PRs of it merged — a reader starting here, which is what this file tells them to do,
+could not have learned it exists. **It now runs**: enabled 2026-08-04, archiving 100 books an
+hour, 354 books held. `S0`'s two `〔확인 필요〕` markers were answered the same day — the strength
+stays provisional by decision, which draws the line at live orders and leaves read-only S1
+untouched, and the question-reduction holds.
+
+> **This paragraph said "**runs nothing**: no `hyperliquid` grant exists on this machine and
+> the selector fails closed at selection", and both halves were wrong by then.** The grant had
+> already been removed by #496 — there is no `hyperliquid` grant to be missing — and the lane
+> was two operator steps from running, not blocked. Corrected 2026-08-05. What the day of
+> actually running it cost is in H0, and it is the part no amount of reading the code produced.
 
 Earlier: **2026-08-03** (`main` = `44c9b36`), handing off to another machine. **The headline
 is at the top of section C and nothing else in this file outranks it:** the runtime placed its
@@ -2092,6 +2096,108 @@ regardless; backoff and spacing on the factory's fetches; and the replay window 
 each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
 2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
+### F5. The clamp collected the draws it was meant to bound — fixed 2026-08-05, owed a generation
+
+`mutate_params` drew `base ± (hi − lo) × 0.35` and **clamped**, so any centre nearer a bound than
+its own span sent every overshoot to exactly that bound: one value, one rule hash, a parameter
+that had stopped varying rather than shifted. Measured across the library, **16 (parameter,
+space, base) combinations do it from their own template base, covering 114 of 170 template
+parameter slots** — `target_atr` 18.8%, `flow_ma_min` / `rel_min` 18.3%, `xs_dispersion_min`
+14.3%, `htf_sep_min` 11.9%, `oi_change_min` 9.2%, `flow_z_min` 8.0%, `stop_atr` 5.4%, nine more
+at 2.4%.
+
+**The half that matters is the half nobody measured.** `generate_batch` centres half of every
+batch on `elite_base_params`, so a pinned row becomes a centre ON the bound and re-pins half its
+own children. Of the 48 real elite centres this store supplies for the trend space, **7 (14.6%)
+sit exactly on `target_atr`'s 1.6 floor**, two re-pin >50%, sixteen more 20–50%, mean 15.0%.
+
+That is what makes the previously recorded fix wrong rather than merely partial. `_EXIT_BASE`'s
+note proposed raising the target base; measured from both centres it fixes the template half
+(14.5% → 0.0%), leaves the elite half at 15.0%, and moves the median drawn target 3.12 → 3.86 —
+half the effect, paid for by re-aiming the trend geometry toward the band F1's own table calls
+its worst. `_fold_into_bounds` reflects instead: **both halves to 0.0%**, median target
+3.12 → 3.03 and 3.22 → 3.25, median R:R 2.14 → 2.08 and 2.13 → 2.18 — inside the 0.05R nothing
+in this store resolves.
+
+**What is owed.** A mint-time change is judged over generations, not days (the `#420` error), and
+this one is placed against a store whose 1,507 non-fade rows carry the old draw. The check is the
+next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
+fall from ~12% toward zero, and the elite centres those rows become should stop reproducing it.
+Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
+random entry loses 0.13R here. What this buys is that the search covers the space it is given.
+
+### F6. The regime label folds volatility over trend, and one live family still pays for it — audited 2026-08-05
+
+F3 found the fold in `htf_trend_*` and #497 replaced that pair. **The same audit was never run
+over the rest of the library.** It has been now. `classify_market_regime` tests volatility
+before it tests trend, so every label it emits carries two variables and one hard-coded
+threshold (`ADX_TREND_THRESHOLD = 20.0`, inside the label, where no search can reach it):
+
+```
+RANGE == (0.20 < atr_percentile < 0.80) AND adx < 20      # not "no trend"
+```
+
+Four template pairs gate on a categorical today. Three are already resolved:
+
+| family | gate | verdict |
+|---|---|---|
+| `htf_pullback_long/short` | `htf_market_regime == TREND_UP/DOWN` | open under F3 — measured, and F3's own follow-up says the rule is not the defect |
+| `oi_squeeze_long/short` | `market_regime != TREND_UP/DOWN` | **already fixed by this precedent** — `== "RANGE"` fired the full condition on 0.43% of ETHUSDT 1h bars against 4.88% for `!=`; the builder records it |
+| `session_trend_long/short` | `session == <label>` | not a fold. Three named buckets with no order, deliberately categorical; `CATEGORICAL_FEATURES["session"]` argues it |
+| `mean_reversion` / `_short` | `market_regime == "RANGE"` | **the one still paying** |
+
+**And it is judgeability that it costs, not edge.** Measured on the store (latest-wins,
+1,620 rows), against the fade families that share `_FADE_EXIT_PARAMS` and carry no regime gate
+(`funding_fade_*`, `premium_fade_*`, `taker_absorption_*`, `oi_unwind_*`) as the control:
+
+| timeframe | `mean_reversion_*` median closed | ungated fade median closed |
+|---|---|---|
+| 4h | **3.5** (n=20) | 32.0 (n=35) |
+| 1d | **2.5** (n=2) | 24.5 (n=4) |
+| 1h | 13.0 (n=18) | 78.0 (n=37) |
+| 15m | 68.0 (n=20) | 301.0 (n=18) |
+
+`MIN_HOLDOUT_TRADES` is 25. **At 4h and 1d this family cannot reach a verdict at all**, which
+is F1's mechanism in a seeded template — the same finding F3 reported for `htf_pullback_*`, from
+a different cause. RANGE is 4.3% of the control's traded bars; `HIGH_VOLATILITY`, which the
+label excludes, is **37.9%**.
+
+**The two excluded bands do not measure alike, and neither result is strong.** Paired within
+(family, timeframe) on the control, R/trade:
+
+- RANGE − `HIGH_VOLATILITY` = **−0.0085R**, 5 of 11 cells — a coin flip under the 0.05R floor
+  nothing in this store resolves. So the band carrying 37.9% of the sample costs nothing to admit.
+- RANGE − `LOW_VOLATILITY` = **+0.6454R**, 4 of 5 cells — large, but on 53 trades in total, and
+  `LOW_VOLATILITY` is the worst band in the table (−0.4018R/trade). Excluding it is defensible.
+
+**Limits, stated because they bound the proposal.** These are IN-SAMPLE per-regime breakdowns
+(`backtest_evidence.regime_breakdown`), and the control's entries are z-score and flow rules
+rather than `mean_reversion`'s RSI — so "how a fade performs in HIGH_VOLATILITY" is measured on
+different entries than the one that would move.
+
+**The proposal, and it is not shipped.** Replace the label with the trend test it folds, at
+**identical `free_parameters`** — `count_free_parameters` charges one literal either way
+(verified: `literals = sum(1 for c in conditions if c.value is not None)`), and both `adx` and
+`atr_percentile` are already in `NUMERIC_FEATURES`:
+
+```python
+# mean_reversion_long, today          # proposed
+{"feature": "rsi", "<=": p},          {"feature": "rsi", "<=": p},
+{"market_regime": "== RANGE"},        {"feature": "adx", "<=": p["adx_max"]},
+```
+
+This gives the search the 20.0 the label hard-codes and drops the volatility fold. On the
+`volatility_squeeze_*` / #497 precedent it would REPLACE rather than add, since a family is
++1 hypothesis charged to `selection_adjusted_z` for every other family in the store.
+
+**What is missing is the measurement that would justify it**, and it is the same one #497 ran:
+paired draws, exits from their own rng so the entry rule is the only difference between arms,
+`backtest_spec_pooled` across the cohort at 4h and 1h. **It needs venue frames this host does
+not hold** — `candle_archive` carries hyperliquid equity perps only and has "no consumer in the
+feature or backtest path" by design — so running it means adding fetch volume to the IP the live
+cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
+of a method.
+
 ## G. Codebase review backlog — measured 2026-08-02, three items open
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
@@ -2182,7 +2288,48 @@ would be cheap and is the thing missing, not fewer codes.
 the doc, not a proposal to restructure the code.
 
 ---
-## H. Equity-perp lane (Hyperliquid HIP-3) — code merged, S0 answered, **waiting on two env-level steps**
+## H. Equity-perp lane (Hyperliquid HIP-3) — **S1 is running as of 2026-08-04**; next is S2
+
+> **Header rewritten 2026-08-05.** It read *"waiting on two env-level steps"* and both were
+> taken on 2026-08-04: `MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service, and
+> `schedule_62466c9b92a1206c2f82` (`candle_archive`, 3600s). The archive has run every hour
+> since. What that first day cost is recorded below, because **every defect it found was
+> invisible until the thing actually ran** — the code, its tests and this file all described a
+> working archive while the first real pass was losing 80% of its work and reporting COMPLETED.
+>
+> Measured 2026-08-05T16:00Z: **354 books, 89 symbols, 788,553 candles**, 100 books per hourly
+> pass, `degraded=0` for 25 consecutive passes. Depth per book: 15m ≈4,750 bars (~49 days
+> against the 52-day ceiling), 1h ≈3,100 (~125 against 208), 4h ≈840, 1d ≈140. 354 rather than
+> 356 because `xyz:UNITREE` listed today and has no completed 4h or 1d bar yet — not a gap.
+
+### H0. What running it found, and what each fix cost (2026-08-04 → 08-05)
+
+Three defects, all shipped, all live now. They are listed because the shape repeats: **a
+bounded loop with a fixed order silently starves whatever sits past the boundary, and reports
+`degraded=0` while doing it.**
+
+| | Defect | Fix |
+|---|---|---|
+| #524 | The first real pass fired 352 reads as fast as it could; ~70 answered and 282 came back `TOOL_RATE_LIMITED`. It reported COMPLETED, because `ARCHIVE_ALL_BOOKS_DEGRADED` needs *all* books degraded. 80% loss reached nobody. | Pace 1.1s; latch on `TOOL_RATE_LIMITED` and stop (a 429 is the step before a 418 ban); bound a pass to 100 books so it cannot hold the tick the live leg's `_settle_or_protect` runs on; rotate the start offset; raise `ARCHIVE_RATE_LIMITED`. |
+| #526 | A bounded pass walking symbol-major gave 25 symbols all four timeframes and 63 symbols nothing — spending budget on 1d books that cannot lose a bar while unarchived 15m books shed ~12 an hour. | Order by perishability: every first fill before every refresh, fast timeframes first inside the first fills. |
+| #544 | #526 ranked the **whole** list, so once every book had a file, 4h sat at work-list index 176 and 1d at 264 — permanently past a 100-book budget. Measured on deployed code: `within budget {'15m': 88, '1h': 12}`, `never attempted {'1h': 76, '4h': 88, '1d': 88}`. 176 books would never have been refreshed again. | Refreshes rotate as one list; first fills keep absolute priority. Deliberately *not* ranked — no refresh is near its ceiling, so ranking them optimises a quantity with no deadline while reintroducing starvation. |
+
+**#544 is #524's defect rebuilt one PR later on a different axis**, by the same author, in the
+PR that was supposed to improve the ordering. The lesson worth carrying is not "rotate things"
+but **that `degraded=0` is not evidence of coverage** — both bugs were invisible in the pass
+summary and only showed up when the work list was enumerated directly against the live store.
+
+Verified after deploy by running the ordering inside the built image rather than by reading it:
+24 hourly passes reach `['15m', '1h', '4h', '1d']`, where the pre-#544 code reaches
+`['15m', '1h']`.
+
+**One operational note that is not in any commit.** The schedule was disabled by hand for
+~1h on 2026-08-05 (repeated hourly bursts of ~280 rate-limited reads escalate toward a 418 IP
+ban) and re-enabled after the #524 deploy. The disable left **no trace anywhere** — that gap is
+what #522 closed, and the re-enable at 16:10:36Z is the first `enabled` event the scheduler
+ledger has ever carried.
+
+### H1. Original record (kept — the reasoning below is still the authority for *why*)
 
 **This section exists because the lane was not in this file at all**, while three PRs of it
 merged. A reader arriving on a fresh machine and starting here — which is what this file tells
@@ -2197,8 +2344,9 @@ own selector axis `MVP_CANDLE_ARCHIVE` and the `candle_archive` scheduler kind (
 correction that kind is **not** exempt from the kill switch (#492). The measurements behind it
 are in `EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`.
 
-**Nothing runs.** No schedule is registered, and the gate is closed **once** — re-measured by
-running it rather than by reading the code, after #496:
+**~~Nothing runs.~~ Superseded 2026-08-04 — see H0.** The schedule is registered and the gate is
+open. The measurement below still describes the gate correctly and is kept for that; only the
+"no schedule is registered" half is dead:
 
 ```
 MVP_CANDLE_ARCHIVE=''            -> NoCandleArchiveCollector, collect(): ARCHIVE_NOT_ENABLED
@@ -2264,10 +2412,17 @@ order cannot register a budget at all**, and widening that enum is a schema bump
 argued for. Collection is ungated by governance and the money path is gated by a schema — which
 is the right way round, and worth stating because this section previously implied the reverse.
 
-**In order, what is still needed to archive a single candle:** ~~S0 ratified~~ (done 2026-08-04)
-→ ~~the `hyperliquid` grant~~ (no longer exists, #496) → `MVP_CANDLE_ARCHIVE=hyperliquid` in the
-scheduler service → a registered `candle_archive` schedule. **Both remaining steps are the
-operator's and both are minutes.**
+**In order, what was needed to archive a single candle — all of it now done:** ~~S0 ratified~~
+(2026-08-04) → ~~the `hyperliquid` grant~~ (no longer exists, #496) →
+~~`MVP_CANDLE_ARCHIVE=hyperliquid` in the scheduler service~~ → ~~a registered `candle_archive`
+schedule~~ (both 2026-08-04, `schedule_62466c9b92a1206c2f82`). The estimate that the last two
+were "minutes" was right about the keystrokes and wrong about the work: the two steps took
+minutes and the three defects they exposed took a day (H0).
+
+**What is left in this lane is S2, not S1.** S1 — the venue seam and the read-only collector —
+is running. S2 is the reproducibility gate (`EQUITY_PERP_LANE_V0.1.md` §8b), and nothing in it
+is built. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
+rather than by anything in this lane; that mechanism is unchanged and described below.
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
@@ -2282,6 +2437,106 @@ moved off 15m onto {1h, 4h, 1d}. What survives is narrower and does not depend o
 being right: **1h is both inside the rotation and permanently unservable at factory depth
 (208-day ceiling against 500), and its window rolls every day.** Archiving is the only path to
 depth there.
+
+---
+
+## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
+
+Nothing here is built. It is a design with its costs named, recorded because the alternative is
+that the same reasoning gets re-derived from scratch, and because **the choice it turns on is
+explicitly not the runtime's to make** (`proposer.py`: "Adding a family to `factory.TEMPLATES`
+stays a human code change in Thomas's PR").
+
+### I0. Why this matters now, and the number that says so
+
+The promotion door yields zero — 0 of 1,140 candidates confirm out of sample (F1, F2) — and the
+generator is the only lever left. Measured 2026-08-05 over the 461 `(family, timeframe, symbol)`
+contexts the store can centre: only **43 are centred by a row with a positive holdout**, 227 by
+one the tail judgeably refuted (#532 closed the second half of that). The library is what the
+search searches, and the library only grows through this door.
+
+### I1. The bottleneck is not typing, it is that the decision has no evidence behind it
+
+Every other decision in this system is made on accumulated out-of-sample evidence. Promotion
+reads holdouts; fusion reads parent evidence; retirement reads thousands of trades. **Family
+installation is the only one made from a rationale sentence and one backtest on one snapshot** —
+which is all `evaluate_proposal` can produce, because a proposal is a single spec rather than a
+family with a parameter space.
+
+`MAX_UNREVIEWED_BACKLOG = 12` exists because of this ("proposals accumulate faster than anyone
+reviews", 2026-07-24). The cap is a symptom: the queue does not drain because draining one entry
+means authoring a `StrategyTemplate` — an `entry_builder` callable, a parameter space, tests —
+on the strength of a paragraph.
+
+**An option that does not work, recorded so it is not re-proposed:** "let an accepted proposal
+be minted as a candidate and accrue evidence." A candidate's evidence is computed once at mint
+and never accumulates. Family-level evidence only exists because a family is minted repeatedly
+across contexts and generations, and that requires the rotation. A proposal that is not in the
+rotation can never earn the evidence its own install decision needs.
+
+### I2. Design — trial rotation slots
+
+**Piece 1: a declarative family.** Every `entry_builder` in `TEMPLATES` is "fixed conditions with
+param-substituted thresholds", which is expressible as data:
+
+```python
+@dataclass(frozen=True)
+class ConditionPattern:
+    feature: str
+    comparison: str
+    param: str | None = None            # threshold comes from this param
+    value: float | str | None = None    # or it is a literal
+    value_from: str | None = None       # or another feature
+```
+
+`entry_builder` becomes pattern rendering. **Data does not become code**: what the data chooses
+is a feature name, a comparison and which param feeds the threshold — three closed sets
+`known_features(venue)` and `_NUMERIC_COMPARISONS` already judge. Builders doing arithmetic on a
+param (`_xs_reversion_long_entry`'s `0.5 - p[...]`, `_session_trend_long_entry`'s label lookup)
+are **not** expressible and stay code; an LLM proposal is always the simple shape, so this does
+not bind.
+
+**Piece 2: admission reuses the approval machinery, and adds no Gate.** A trial family file
+carries the declaration and its content hash; the runtime loads it only when an approval record
+for that hash exists in `THOMAS_CORE/approvals/` and is unrevoked. Absent, mismatched or revoked
+→ not in the rotation. Thomas still decides; the decision becomes *approve this hash* instead of
+*author this family*.
+
+**Piece 3: quarantine from the live path — the load-bearing part.**
+
+- A slot cap (4 is the suggested start), so trials can never crowd out the proven library.
+- Minted rows carry `derivation_type: "trial_family"`, registered in
+  `pool.DERIVATION_TYPES` — a **closed set** (`seeded_template`, `crossover`, `mutation`) that
+  `validate_candidate_lineage` refuses at the append door, with its parent-count rule in
+  `_PARENT_COUNT_RULES` (a trial family is fresh generation, so `(0, 0)` like a seeded row).
+  This is a feature, not an obstacle: the quarantine tag is schema-enforced at the store's own
+  door rather than being a convention a writer can forget.
+- **`scripts/promote_strategy_candidates.py` must refuse them by default.** Verified 2026-08-05:
+  it names `provenance` only in a report line (`:516`) and filters on neither it nor
+  `derivation_type`, so without this clause an LLM-authored rule reaches the live pool through
+  the ordinary door. This is the one piece that is not optional.
+- A trial graduates into `TEMPLATES` — real code, Thomas's PR — only after producing confirmable
+  holdout evidence. The builder gets written for a family that has already earned it.
+
+### I3. What it costs, stated rather than discovered later
+
+- **A declarative family is a SECOND authority for "what a family is"**, against the standing
+  "one concept = one authority" guardrail. The mitigation is that `TEMPLATES` remains the
+  authority for *proven* families and trials are a capped staging area with no live path — but
+  that is a judgement about the guardrail, which is why this section asks rather than proposes.
+- It widens what the model influences: still never code, but now what gets **mined**, not only
+  what gets suggested.
+- **It will almost certainly confirm nothing.** 0 of 1,140 confirm out of sample and a random
+  entry loses 0.13R here. What this buys is that failure becomes cheap and legible, not edge.
+  Any version of this pitched as "more families will find an edge" is misreading F1.
+
+### I4. The smaller alternative, if I2 is too much
+
+The proposer renders an accepted proposal into `StrategyTemplate` code plus a test and opens a
+PR. No new authority, no declarative form, buildable today; Thomas reviews a diff instead of
+authoring one. **Weaker on the actual problem** — the decision is still made on one backtest, and
+review is still per-proposal, so the queue still does not drain. It removes the typing, which
+I1 argues is not what is blocking.
 
 ---
 
