@@ -133,3 +133,15 @@ class TaskRegistryBlocked(MvpRuntimeError):
     Fail-closed in the direction of *not* reporting coordination state: an entry whose
     status cannot be trusted is refused rather than shown, because a registry that
     misreports what is running is worse than one that admits it cannot say."""
+
+
+class KnowledgeBlocked(MvpRuntimeError):
+    """A knowledge-base ingest or retrieval was refused (K1).
+
+    Raised when a document cannot be turned into trustworthy text (no extraction backend,
+    every backend failed, an encrypted or image-only PDF, output that does not survive the
+    text gate), when a record fails its closed schema, or when the store is unreadable.
+
+    Fail-closed in the direction of *storing nothing*: a knowledge base answers later
+    questions, so a document admitted as garbage is not one bad call, it is a wrong answer
+    with a citation attached, arriving weeks later with nothing pointing back here."""
