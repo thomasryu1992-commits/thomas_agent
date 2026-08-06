@@ -2516,7 +2516,7 @@ measured against intended price over enough live fills to be a distribution, whi
 thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
 it.
 
-### F8. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
 
 F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
 is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
@@ -2597,6 +2597,82 @@ unknown effort:
 4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
    mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
    exercise, not an afterthought.
+
+### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
+
+F7 closes 1d's structural half and hands 4h over as *"a signal-rate problem"* on a utilisation of
+22%. **That reading was measured on the wrong population and the direction of the finding is the
+other way round.** Normalised by each row's own `holdout.bars`, over 1,187 rows carrying a
+readable tail, the entry rate **rises** with the timeframe:
+
+| tf | n | entry rate p25 / median / p75 | median hold | share of bars in a position |
+|---|---|---|---|---|
+| 15m | 304 | 0.10% / **0.85%** / 2.85% | 24 | 20% |
+| 1h | 374 | 0.50% / **1.25%** / 3.22% | 23 | 27% |
+| 4h | 412 | 1.00% / **2.11%** / 3.67% | 23 | 50% |
+| 1d | 97 | 2.17% / **3.00%** / 4.00% | 24 | 72% |
+
+4h fires more often *per bar* than 1h or 15m. It closes few trades because 1,800 holdout bars is
+few bars, which is F9's argument and not a property of the entry rules.
+
+**What the 22% actually measured is the family mix of two rotation slices.** The 4h rows minted
+since 2026-08-05 run at **0.94%** against the 4h store's **2.67%**, and the spread the rotation is
+sampling from is enormous — at 4h, entry rate by family spans **0.00% to 8.44%**, about 100×:
+
+| high | | low | |
+|---|---|---|---|
+| `macd_momentum` | 8.44% | `oi_unwind_short` | 0.50% |
+| `breakout` | 5.00% | `mean_reversion_short` | 0.22% |
+| `trend_pullback` | 4.11% | `mean_reversion` | 0.11% |
+| `breakdown_short` | 4.00% | `taker_flow_long` | **0.00%** |
+
+Those recent slices drew almost entirely from the low block — `taker_flow_long`/`_short` 5 rows
+each, `oi_unwind_short` 5, `htf_pullback_*` 7 — while `trend_pullback` (4.11%) got **2**. So which
+fires produce judgeable rows is decided by where the rotation cursor lands, and today's 08:09 fire
+reading 48% judgeable against the 08-05 cohort's 27% is the same mechanism, not a trend.
+
+**It is not the condition count and it is not a missing feed.** Within 4h seeded rows the count
+does not order the rate (2 conditions 1.00%, 3 conditions 3.78%, 4 conditions 0.86%), while the
+family spread survives *inside* each count — at 2 conditions 0.00% (`taker_flow_long`) to 5.44%
+(`xs_momentum_long`), at 3 conditions 1.22% to 8.44%. And the quiet families' columns exist:
+`taker_flow_ma`, `open_interest_change_pct` and `rsi` are all supplied, so this is a rare signal
+rather than the `unsuppliable_features` defect wearing its clothes.
+
+#### The confound this section owed, and it resolves three ways
+
+A family's measured rate is taken over candidates whose thresholds were themselves mined, and half
+of every batch centres on a prior elite (`elite_base_params`) — so a low median could be the
+family's premise or a ratcheted threshold. The store separates them without a replay: **at 4h the
+floor needs 25/1800 = 1.39%, so ask whether ANY draw a family has ever produced reached it.**
+
+| verdict | families | what it means |
+|---|---|---|
+| **premise** | 5 | best draw ever produced still under 1.39% |
+| **threshold** | 9 | some draws clear it, most do not |
+| ok | 14 | majority clear it |
+
+The premise five, with their best stored draw: `taker_flow_long` 0.78%, `taker_flow_short` 0.89%,
+`mean_reversion` 0.56%, `mean_reversion_short` 0.33%, `htf_pullback_long` 1.33%. F6 reached this
+for `mean_reversion` alone (*"at 4h and 1d this family cannot reach a verdict at all"*) and F3 for
+the htf pair; the measurement says it is a library-wide property that nothing counts.
+
+**So the obvious action is the wrong one for two thirds of the population.** A family × timeframe
+mint gate — the analogue of `_judgeable_hold_space` — is justified for the five whose search space
+contains nothing judgeable at 4h. Applied to the nine threshold-bound families it would delete a
+premise that *is* reachable, which is the failure mode F7 named when it refused the calendar-span
+rewrite: acting on the cause you assumed rather than the one you separated.
+
+**Limits, because they bound this.** Five to thirteen rows per family. "Best draw ever" over n
+draws underestimates a family's reachable maximum, so a *premise* verdict says only that the
+search has spent those draws and produced nothing near the floor — not that nothing exists.
+`htf_pullback_long` reads premise while `htf_pullback_short` reads threshold, which is either a
+real directional asymmetry or small-n noise and this cannot tell them apart. And `mint_params` is
+present on only **79 of 259** 4h seeded rows, so the direct elite-half/base-half split is not yet
+measurable — it becomes so as rows minted under `mint_params` accumulate, and it is the sharper
+version of this test.
+
+**What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
+threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
 ## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
