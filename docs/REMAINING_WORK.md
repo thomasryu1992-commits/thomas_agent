@@ -1334,6 +1334,27 @@ same answer.
       or model-supplied time string reaching a record. Then the 110 declarations should become a
       defence instead of documentation, and the measurement above is the thing to re-run first.
 
+- [ ] **Answering a question the runtime asked costs a model call — observed 2026-08-06, left
+      alone.** `notify_operator` pushes to the ONE registered private chat, and that chat is also
+      the intake channel. So there is no way for Thomas to *reply* to a notification: a plain
+      message from him is a task request, gets planned, runs, and comes back as an analysis of
+      his own answer. The registry shows it — `"hi"`, 2026-07-29, `DELIVERED`.
+
+      Found while sending the D1/D3/D4 decision request for
+      [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
+      It is not a wording problem and no phrasing in the outbound message fixes it — the two
+      roles share one transport.
+
+      **Deliberately not fixed, and the cost of being wrong is small in both directions.** The
+      damage is one model call plus a confusing reply; the answer itself lands in the task
+      registry either way, so nothing is *lost*. A fix means teaching intake to tell an answer
+      from a request, which is a new classification on the operator path — §16's "building for
+      future possibilities" while the runtime asks Thomas something roughly monthly.
+
+      **What reopens this:** the runtime starting to ask often enough that the replies are a
+      recurring cost, or a question whose answer must not be planned as a task (anything where
+      running an analysis over the answer would itself have an effect). Neither is true today.
+
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
 
