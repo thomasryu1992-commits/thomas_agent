@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge_document.v0.1.schema.json",
+  "title": "Knowledge Base Document v0.1",
+  "description": "One ingested document in the local knowledge base: its text, where it came from, when it was taken in, and how its text was recovered. Distinct from working_memory (agent-proposed candidates about how to work) and operational_knowledge (validated operating truth with a review window) — this record makes no truth claim at all. It says only: this text was supplied, from this source, at this time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_id",
+    "title",
+    "source",
+    "source_type",
+    "ingested_at_utc",
+    "ingested_by",
+    "data_sensitivity",
+    "text",
+    "chars",
+    "content_sha256",
+    "tags"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "knowledge_document.v0.1"
+    },
+    "document_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^kdoc_[0-9a-f]{20}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "source": {
+      "description": "Where the document came from, as the caller states it: a filename, a URL, an analyst's name, a report id. Free text on purpose — a closed vocabulary here would be guessed at rather than obeyed.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "source_type": {
+      "enum": [
+        "pdf",
+        "text",
+        "markdown"
+      ]
+    },
+    "document_date": {
+      "description": "The date the document is ABOUT, when the caller knows it — distinct from ingested_at_utc, which is when this runtime received it. A daily analysis filed three days late is dated by its subject, not its filing.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "ingested_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ingested_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "data_sensitivity": {
+      "enum": [
+        "PUBLIC",
+        "INTERNAL",
+        "PRIVATE",
+        "SENSITIVE",
+        "RESTRICTED"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "chars": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "content_sha256": {
+      "description": "Hash of the normalized text. Two ingests of the same content collide here, which is how a re-ingest is recognized as a duplicate rather than stored twice and then returned twice in one answer.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "page_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "extraction": {
+      "description": "How the text was recovered. Null for text supplied directly. Present for a PDF, and kept because the answer to 'why does this document read badly' is almost always in which backend won.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "attempted"
+      ],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempted": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "maxItems": 32
+    },
+    "superseded_by": {
+      "description": "Set when a later ingest replaces this document. The row stays — the store is append-only and the history of what was believed when is part of what it holds.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

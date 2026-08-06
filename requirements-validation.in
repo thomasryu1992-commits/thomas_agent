@@ -1,3 +1,8 @@
 PyYAML>=6.0,<7
 jsonschema>=4.26,<5
 referencing>=0.37,<1
+# Here as well as in requirements-runtime.txt so CI's test job can actually exercise the K1
+# PDF backend chain. Without it the chain is empty in CI, every PDF test skips, and the suite
+# stays green over a feature nobody ran — the exact shape scripts/check_test_skips.py exists
+# to catch.
+pypdf>=6.14,<7

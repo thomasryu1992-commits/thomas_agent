@@ -101,6 +101,13 @@ PROBE_TIMEOUT_SECONDS = 1.0
 
 # A console request is a handful of bytes. Anything larger is not one, and reading it would
 # only give a malformed frame a bigger buffer to arrive in.
+#
+# **This is the default, not the rule.** It was a module constant until the knowledge door
+# arrived, whose whole purpose is to carry a document — a frame two orders of magnitude past
+# this, by design rather than by malformation. A door states its own ceiling; the three doors
+# that carry console verbs state nothing and get this one, unchanged. The distinction the
+# ceiling is drawing is "bigger than this door's requests ever are", and that differs per
+# door, so it belongs on the door.
 MAX_FRAME_BYTES = 8192
 
 # How many requests a door serves at once. Past this, a connection is answered BRIDGE_BUSY and
@@ -193,7 +200,9 @@ class _Handler(socketserver.BaseRequestHandler):
     """One JSON object in, one JSON object out, connection closed."""
 
     def handle(self) -> None:
-        self.request.settimeout(REQUEST_TIMEOUT_SECONDS)
+        self.request.settimeout(
+            getattr(self.server, "request_timeout_seconds", REQUEST_TIMEOUT_SECONDS)
+        )
 
         try:
             raw = self._read_frame()
@@ -229,6 +238,7 @@ class _Handler(socketserver.BaseRequestHandler):
             return
 
     def _read_frame(self) -> bytes:
+        ceiling = getattr(self.server, "max_frame_bytes", MAX_FRAME_BYTES)
         chunks: list[bytes] = []
         size = 0
         while True:
@@ -237,7 +247,7 @@ class _Handler(socketserver.BaseRequestHandler):
                 break
             chunks.append(chunk)
             size += len(chunk)
-            if size > MAX_FRAME_BYTES:
+            if size > ceiling:
                 raise OSError("frame too large")
             if b"\n" in chunk:
                 break
@@ -257,6 +267,8 @@ class SocketDoor(_UNIX_STREAM_SERVER or object):  # type: ignore[misc]
         apply: ApplyFn,
         *,
         max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+        max_frame_bytes: int = MAX_FRAME_BYTES,
+        request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         if not UNIX_SOCKETS_AVAILABLE:
             raise ControlBlocked(
@@ -269,9 +281,20 @@ class SocketDoor(_UNIX_STREAM_SERVER or object):  # type: ignore[misc]
                 f"a door must serve at least one request at a time; got "
                 f"{max_concurrent_requests}",
             )
+        if max_frame_bytes < 1 or request_timeout_seconds <= 0:
+            raise ControlBlocked(
+                "BRIDGE_LIMITS_INVALID",
+                f"a door needs a positive frame ceiling and read deadline; got "
+                f"{max_frame_bytes} bytes / {request_timeout_seconds}s",
+            )
         self.apply = apply
         self.door_label = path.stem
         self.max_concurrent_requests = max_concurrent_requests
+        # Read by `_Handler`, which sees the door only through `self.server`. Per-door rather
+        # than module-wide so a door carrying documents cannot widen the ceiling for a door
+        # carrying console verbs.
+        self.max_frame_bytes = max_frame_bytes
+        self.request_timeout_seconds = request_timeout_seconds
         self.allowed_client_uids = resolve_client_uids()
         client_gid = resolve_client_gid()
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -133,6 +133,7 @@ Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · co
                      read_bridge.py (read-only door; console renders, never a mutating verb)
                      dispatch_bridge.py (dispatch door; bounded P3 analysis kinds, never the money path)
                      switch_bridge.py (trading switch; disable free, enable only on a single-use Thomas grant)
+                     knowledge_bridge.py (knowledge door; append + two reads, no delete verb exists)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
 Governance surface   permission.py · authority.py · safety_gate.py · budgets.py
 Work                 worker.py · providers.py · tools.py
@@ -141,6 +142,7 @@ Memory               memory.py · working_memory.py · retention.py
 Governed asks        approval.py · approval_store.py · consumption.py · trial.py
 Programization       programization.py · program_request.py · registration.py
 Domain packages      crypto/ (C-series, incl. the gated live-order path)
+                     knowledge/ (K-series; PDF extraction, BM25 retrieval, document store)
 ```
 
 Domain packages are applications of the same chokepoints, not parallel runtimes: they build the same
