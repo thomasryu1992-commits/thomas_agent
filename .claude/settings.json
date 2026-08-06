@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "ask": [
+      "Bash(docker compose:*)",
+      "Bash(git checkout:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -6,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block-main-commits.sh\"",
+            "command": "p=$(cat); r=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$r/.claude/hooks/block-main-commits.sh\"; if [ -r \"$h\" ]; then printf '%s' \"$p\" | bash \"$h\"; else case \"$p\" in *git*commit*) printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"The no-direct-main-commits guard (.claude/hooks/block-main-commits.sh) could not be found, so this commit cannot be judged. Restore it, or drop the hook from .claude/settings.json if it was removed deliberately.\"}}';; esac; fi",
             "shell": "bash",
             "timeout": 10
           }
