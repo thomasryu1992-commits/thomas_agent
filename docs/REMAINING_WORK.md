@@ -3096,6 +3096,14 @@ depth there.
 
 ## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
 
+> **Status 2026-08-06: the one prerequisite this section named is closed (#545), so what remains
+> is the judgement alone.** The quarantine that I2 called *"the one piece that is not optional"* —
+> the promotion door refusing an unrecognised `derivation_type` — exists and is fail-closed by
+> omission rather than by clause. Nothing else here is built and nothing should be: I3 states
+> that a declarative family is a second authority for *what a family is*, against the standing
+> one-concept-one-authority guardrail, **which is why this section asks rather than proposes.**
+> Building I2 without that answer would be taking the decision by writing it.
+
 Nothing here is built. It is a design with its costs named, recorded because the alternative is
 that the same reasoning gets re-derived from scratch, and because **the choice it turns on is
 explicitly not the runtime's to make** (`proposer.py`: "Adding a family to `factory.TEMPLATES`
@@ -3165,10 +3173,15 @@ for that hash exists in `THOMAS_CORE/approvals/` and is unrevoked. Absent, misma
   `_PARENT_COUNT_RULES` (a trial family is fresh generation, so `(0, 0)` like a seeded row).
   This is a feature, not an obstacle: the quarantine tag is schema-enforced at the store's own
   door rather than being a convention a writer can forget.
-- **`scripts/promote_strategy_candidates.py` must refuse them by default.** Verified 2026-08-05:
-  it names `provenance` only in a report line (`:516`) and filters on neither it nor
-  `derivation_type`, so without this clause an LLM-authored rule reaches the live pool through
-  the ordinary door. This is the one piece that is not optional.
+- ~~**`scripts/promote_strategy_candidates.py` must refuse them by default.**~~ **Closed by #545
+  on 2026-08-05**, the day after this was written, and it is worth reading before deciding the
+  rest. `pool.PROMOTABLE_DERIVATION_TYPES` is an **allowlist** and `assert_promotable_derivation`
+  refuses at the ask; `promotable_backlog` carries a matching `derivation` axis in its refusal
+  partition, so the board cannot advertise what the door would refuse. Both refuse **nothing
+  today** — the allowlist equals the set the store admits — which is exactly the point: a fourth
+  derivation type is quarantined by *omission* rather than by remembering to add a clause.
+  **So the piece this section called "not optional" is done, and a `trial_family` tag would land
+  outside the live path by default.** What is left in §I is only the guardrail judgement in I3.
 - A trial graduates into `TEMPLATES` — real code, Thomas's PR — only after producing confirmable
   holdout evidence. The builder gets written for a family that has already earned it.
 
