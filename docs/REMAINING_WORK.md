@@ -1355,6 +1355,55 @@ same answer.
       recurring cost, or a question whose answer must not be planned as a task (anything where
       running an analysis over the answer would itself have an effect). Neither is true today.
 
+- [ ] **Splitting the scheduler into risk / research / maintenance processes — measured
+      2026-08-06, not taken.** An external architecture review (§4.3) asked for three loops on
+      the premise that *"a long data job can delay position protection, and in the live stage a
+      scheduler delay becomes position risk."* Measured against `main`, the premise does not
+      hold here, for two separate reasons.
+
+      **Most of the separation already exists inside the one loop.** `run_due` sorts
+      `RISK_KINDS` first, `MAINTENANCE_PASS_BUDGET_SECONDS = 60` stops *starting* non-risk fires
+      once a pass has spent its allowance, and every fire is wrapped so an exception is recorded
+      as `failed:<code>` and the loop keeps turning. A research job that throws does not take
+      the risk loop with it.
+
+      **And protection is not on this loop at all.** `live_route._run_gated_live_leg` settles
+      and protects open positions *before* it reads control state, and the protective bracket
+      rests **at the venue**. A late cycle therefore delays bookkeeping and new entries — not
+      protection. The review's safety argument is about a coupling this architecture does not
+      have.
+
+      Measured 2026-07-22 → 2026-08-06:
+
+      | | |
+      |---|---|
+      | crypto fan-out interval (target 900s), n=727 | median **+4s**, p99 **+44s** |
+      | over 2 minutes late | **3 / 727 (0.4%)**, worst +438s |
+      | scheduler events | 12,554 |
+      | abandoned runs (process died mid-fire) | **0** |
+      | fire failures, all kinds, all time | **1** (`RemoteDisconnected`) |
+
+      **One number is deliberately absent and its absence is the finding.** How often the
+      maintenance budget actually bit cannot be answered: a deferral does not claim its
+      occurrence, so no event is written, and the count lives only in `run_due`'s return value.
+      The mechanism that bounds risk-kind latency leaves no durable trace of having acted, so
+      "the budget works" above is *inferred from the latency distribution*, not observed. If
+      this box is ever reopened, recording the deferral is the first cheap step — it converts
+      the main claim here from an inference into a measurement.
+
+      **The one exposure the in-process design cannot close**, stated so the deferral is not
+      read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
+      running is deliberately never interrupted (cutting a factory or archive mid-write trades a
+      latency problem for a torn record). So a single hung fire blocks everything behind it in
+      that pass, without limit. Fifteen days say it has not happened — the worst observed is
+      +438s — but no in-process change can make it impossible.
+
+      **What reopens this:** one fire that hangs rather than merely running long; one abandoned
+      run (the process dying mid-fire, which OOM would cause and `except Exception` cannot
+      catch); or the p99 above moving from seconds into minutes. Any of the three makes the
+      separation a fix rather than an investment, and the measurement above is the thing to
+      re-run first.
+
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
 
