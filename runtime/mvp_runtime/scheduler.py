@@ -138,9 +138,15 @@ KIND_BREAKER_WATCH = "crypto_breaker_watch"
 # an exception is not a kill switch — so it is argued there or not at all. A test pins that this
 # kind stops with everything else, so the exemption cannot arrive by comment.
 KIND_CANDLE_ARCHIVE = "candle_archive"
+# Does a selected strategy's entry beat a coin flip through the same exits? Scheduled rather
+# than run once because the only bars that are honestly out of sample for a spec are the ones
+# after it was minted, and on the day this lands the newest cohort is one day old. Every fire
+# re-reads the store and every spec's evaluable window is a day longer. See
+# `crypto/null_control.py` for the measurement that made a one-shot version untrustworthy.
+KIND_NULL_CONTROL = "crypto_null_control"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
-                   KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE})
+                   KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -710,6 +716,87 @@ def _execute(
         if summary.get("event_error"):
             detail += f" unrecorded={summary['event_error']}"
         return detail
+    if schedule.kind == KIND_NULL_CONTROL:
+        # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
+        # spec on the bars minted AFTER it against seeded null entries, and appends one record.
+        # Touches no pool, no candidates, no orders.
+        from .crypto import null_control
+        from .crypto.cycle import attach_feeds
+        from .crypto.market_data import (
+            collect_market_data,
+            factory_candle_target,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
+        from .crypto.strategy import SpecParseError, StrategySpec
+        from .crypto import factory as crypto_factory
+        from .crypto import pool as crypto_pool
+
+        parts = schedule.request.split()
+        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
+        timeframe = parts[1] if len(parts) >= 2 else "4h"
+        collector = select_market_data_collector(now=now, root=repo_root)
+        try:
+            snapshot, _ = collect_market_data(
+                symbol, timeframe, collector=collector, now=now,
+                limit=factory_candle_target(timeframe),
+            )
+        except ToolBlocked as exc:
+            if exc.reason_code == "TOOL_ERROR":
+                return "skipped_market_data_degraded"
+            raise
+        attach_feeds(snapshot, collector=collector,
+                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
+                     now=now, root=repo_root, accumulate=False)
+        frame = crypto_factory.build_replay_frame(snapshot)
+        # The seed is the window's own content hash, so a recorded fire replays identically —
+        # the factory's rule, for the same reason.
+        seed = int(integrity.sha256_record(
+            {"candles": snapshot.get("candles") or []}).split(":", 1)[1][:8], 16)
+
+        measurements: list[dict[str, Any]] = []
+        for record in crypto_pool.read_candidates(repo_root):
+            spec_dict = record.get("strategy_spec")
+            if not isinstance(spec_dict, Mapping):
+                continue
+            if str(spec_dict.get("timeframe")) != timeframe:
+                continue
+            if symbol not in (spec_dict.get("symbol_scope") or []):
+                continue
+            # Selected strategies only. The store keeps every mint and roughly three quarters of
+            # them were negative in their own scored window, so an unfiltered sample answers a
+            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
+            # is the error the first run of this measurement made.
+            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
+                continue
+            try:
+                spec = StrategySpec.from_dict(dict(spec_dict))
+            except SpecParseError:
+                continue
+            outcome = null_control.measure_spec(
+                spec, snapshot, frame,
+                created_at_utc=str(record.get("created_at_utc") or ""), seed=seed,
+                timeframe=timeframe,
+            )
+            if outcome is None:
+                continue
+            measurements.append({
+                "candidate_id": record.get("candidate_id"),
+                "strategy_family": spec.strategy_family,
+                **outcome,
+            })
+
+        result = null_control.build_record(
+            [{"symbol": symbol, "timeframe": timeframe, "measurements": measurements}],
+            now=now, symbol=symbol, timeframe=timeframe,
+        )
+        if ledger is not None:
+            ledger.append_records(
+                f"NULLCTL-{integrity.short_id('null_control', {'at': now, 's': symbol, 't': timeframe})}",
+                {null_control.LEDGER_KIND: result},
+            )
+        return null_control.status_line(result)
+
     if schedule.kind == KIND_BREAKER_WATCH:
         # Read the C4 breaker the way the cycle reads it and speak only when the verdict
         # changed. Same delivery posture as KIND_REPORT below — channel selected at fire time,
