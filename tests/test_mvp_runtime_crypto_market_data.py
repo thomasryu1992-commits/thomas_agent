@@ -910,6 +910,53 @@ def test_the_latch_covers_every_feed_not_just_the_one_that_tripped_it():
     assert inner.attempts == 1
 
 
+def test_the_latch_covers_a_forwarded_call_it_does_not_memoize():
+    """Memoized and latched are two different questions, and `_MEMOIZED` only answers the first.
+
+    `derivative_price_klines` is keyed by (symbol, timeframe, kind), so every combination is a
+    genuinely different series and memoizing it would be wrong. It still opens a socket to the
+    same address, so it can earn a 429 and must stop after one — and `attach_feeds` fetches
+    three of these per fire at the replay depth, which is more requests than the candles."""
+    class _Derivatives(_RateLimitedCollector):
+        def derivative_price_klines(self, symbol, timeframe, *, kind, limit, timeout_seconds):
+            self._raise()
+
+    inner = _Derivatives()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError) as excinfo:
+        cache.derivative_price_klines("BTCUSDT", "4h", kind="mark", limit=6000, timeout_seconds=10)
+    assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    # Both directions: the refusal it reported now stops the candles, and it stops itself.
+    for call in (lambda: cache.collect("ETHUSDT", "4h", limit=6000, timeout_seconds=10),
+                 lambda: cache.derivative_price_klines(
+                     "ETHUSDT", "4h", kind="index", limit=6000, timeout_seconds=10)):
+        with pytest.raises(ToolError):
+            call()
+    assert inner.attempts == 1, f"kept knocking after a 429 ({inner.attempts} attempts)"
+    assert cache.rate_limited is not None
+
+
+def test_a_forwarded_call_is_latched_but_still_not_memoized():
+    """The other half of the distinction: latching must not quietly turn into caching. Three
+    kinds of derivative series are three different answers, and one standing in for another
+    would put the mark price in the index column."""
+    class _Derivatives(MockMarketDataCollector):
+        def __init__(self):
+            self.kinds = []
+
+        def derivative_price_klines(self, symbol, timeframe, *, kind, limit, timeout_seconds):
+            self.kinds.append(kind)
+            return super().derivative_price_klines(
+                symbol, timeframe, kind=kind, limit=limit, timeout_seconds=timeout_seconds)
+
+    inner = _Derivatives()
+    cache = PerRunFeedCache(inner)
+    for kind in ("mark", "index", "premium", "mark"):
+        cache.derivative_price_klines("BTCUSDT", "1h", kind=kind, limit=20, timeout_seconds=10)
+    assert inner.kinds == ["mark", "index", "premium", "mark"], "a series was served from a memo"
+    assert cache.hits == 0
+
+
 def test_an_ordinary_failure_does_not_latch_the_whole_fire():
     """Only a rate limit means "stop asking". A symbol that times out must not silence the rest —
     that would turn one bad symbol into a blind fan-out."""

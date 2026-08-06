@@ -143,3 +143,58 @@ def test_the_scheduler_admits_the_kind():
     from runtime.mvp_runtime import scheduler
 
     assert scheduler.KIND_NULL_CONTROL in scheduler.KINDS
+
+
+# --- the fire, and what the venue can do to it ---------------------------------
+# Fifteen of these schedules share a due time, each collecting one frame at the FACTORY replay
+# depth plus three derivative series around it. Fifteen distinct series, so there is no cache
+# saving here — but it is the same address the factory and the live cycle read, and until the
+# pass owned the collector nothing stopped these after the venue's first refusal either.
+
+def _null_control_pass(tmp_path, monkeypatch, collector_factory):
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.crypto import market_data
+    from runtime.mvp_runtime.scheduler import (
+        KIND_NULL_CONTROL, ScheduleStore, build_schedule, run_due,
+    )
+
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    monkeypatch.setattr(market_data, "select_market_data_collector",
+                        lambda **kwargs: collector_factory())
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+        store.add(build_schedule(kind=KIND_NULL_CONTROL, request=f"{symbol} 1d",
+                                 interval_seconds=86400, created_by="op",
+                                 now="2026-07-22T10:00:00Z"))
+    return run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                   ledger=None, repo_root=tmp_path)
+
+
+def test_a_scheduled_fire_measures_over_the_replay_window(tmp_path, monkeypatch):
+    """The wiring, with an empty candidate store — every fire runs and measures nothing, which
+    `status_line` must render as a measured zero rather than as a failure."""
+    from runtime.mvp_runtime.crypto import market_data
+
+    summary = _null_control_pass(tmp_path, monkeypatch, market_data.MockMarketDataCollector)
+    assert summary["fired"] == 3 and summary["failed"] == 0
+    assert not any(r["status"].startswith("skipped") for r in summary["results"])
+
+
+def test_a_rate_limited_pass_stops_these_fires_too(tmp_path, monkeypatch):
+    """Same posture as the factory: a 429 is the step before a ban, so the remaining fires do
+    not knock. They report it rather than failing — the occurrence is spent, the cadence holds,
+    and tomorrow's fire measures the same window."""
+    from runtime.mvp_runtime.crypto import market_data
+    from runtime.mvp_runtime.errors import ToolError
+
+    attempts = []
+
+    class _Refusing(market_data.MockMarketDataCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            attempts.append(symbol)
+            raise ToolError(market_data.TOOL_RATE_LIMITED, "venue asked for 17s")
+
+    summary = _null_control_pass(tmp_path, monkeypatch, _Refusing)
+    assert [r["status"] for r in summary["results"]] == ["skipped_rate_limited"] * 3
+    assert len(attempts) == 1, f"kept knocking after a 429 ({len(attempts)} attempts)"

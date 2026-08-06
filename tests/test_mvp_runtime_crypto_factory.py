@@ -33,7 +33,7 @@ from runtime.mvp_runtime.crypto.factory import (
     ParamSpec,
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
-from runtime.mvp_runtime.errors import ToolBlocked
+from runtime.mvp_runtime.errors import ToolBlocked, ToolError
 from runtime.mvp_runtime.scheduler import (
     FACTORY_FUSION_PAIRS,
     KIND_FACTORY,
@@ -1288,6 +1288,70 @@ def test_the_saving_is_the_pass_and_not_the_fire(tmp_path, monkeypatch):
     # 35 of a possible 11: a per-fire cache recovers 4 of the 28 redundant reads and leaves 24.
     assert len(reads) == 35, "per fire: frame + htf + five peers, the proxy among them"
     assert len(set(reads)) == 11, "the same eleven answers, asked for three times over"
+
+
+# --- and what it does when the venue says stop --------------------------------
+# A 429 at this venue is the step BEFORE a 418 IP ban, and what causes the escalation is
+# continuing to knock. `PerRunFeedCache` latches on the first one — and the factory branch had
+# no such wrapper at all, so a refused pass kept knocking through every remaining read on the
+# address the live cycle trades on. The latch belongs to the pass for the same reason the cache
+# does: a per-fire one is re-armed four more times.
+
+def _refusing_collectors(monkeypatch, reads, *, after, reason="TOOL_RATE_LIMITED"):
+    """Collectors that answer ``after`` candle reads, then refuse every one after that."""
+    class _Refusing(market_data.MockMarketDataCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            reads.append((symbol, timeframe, limit))
+            if len(reads) > after:
+                raise ToolError(reason, "venue asked for 17s")
+            return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(market_data, "select_market_data_collector",
+                        lambda **kwargs: _Refusing())
+
+
+def _run_refused_pass(tmp_path, monkeypatch, *, after, reason="TOOL_RATE_LIMITED"):
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    reads: list[tuple[str, str, int]] = []
+    _refusing_collectors(monkeypatch, reads, after=after, reason=reason)
+    _stub_factory(monkeypatch)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    _factory_pass_schedules(store, "4h")
+    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                      ledger=None, repo_root=tmp_path)
+    return summary, reads
+
+
+def test_one_rate_limited_read_stops_the_rest_of_the_pass(tmp_path, monkeypatch):
+    """The whole pass, not the fire that earned it. Being rate limited is a property of the
+    address, and the next four fires would be knocking on the same one."""
+    summary, reads = _run_refused_pass(tmp_path, monkeypatch, after=3)
+
+    assert len(reads) == 4, f"kept knocking after a 429 ({len(reads)} attempts)"
+    assert [r["status"] for r in summary["results"]] == ["skipped_rate_limited"] * 5
+    assert summary["failed"] == 0, "a throttled pass is a recorded skip, not a failed fire"
+    assert not pool.read_candidates(tmp_path), (
+        "a frame the venue truncated must not be mined: FRAGILE earned by a throttle is "
+        "indistinguishable in the store from FRAGILE earned by the strategy"
+    )
+
+
+def test_an_ordinary_failure_stops_one_series_and_not_the_pass(tmp_path, monkeypatch):
+    """The other direction, and the one a latch gets wrong if it is too eager. A timeout says
+    "try again later"; only a 429 says "stop". One unreachable series must leave the other four
+    fires mining — that is the `attach_cross_section` posture (a thinned cohort is still a
+    cohort) applied one level up."""
+    summary, reads = _run_refused_pass(tmp_path, monkeypatch, after=3, reason="TOOL_TRANSPORT")
+
+    statuses = [r["status"] for r in summary["results"]]
+    assert all(s.startswith("generated=") or s == "skipped_market_data_degraded"
+               for s in statuses), statuses
+    assert "skipped_rate_limited" not in statuses
+    assert any(s.startswith("generated=") for s in statuses), "the pass went blind on a timeout"
+    # Each failed series is remembered and not re-asked — the failure cache — but the reads that
+    # would have succeeded still happened, which is what separates this from the 429 case.
+    assert len(reads) > 4
 
 
 # --- the promotion door -------------------------------------------------------

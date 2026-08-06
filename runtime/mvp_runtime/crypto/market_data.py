@@ -2176,6 +2176,9 @@ class PerRunFeedCache:
     and `exchange_info` is deliberately absent from `MockMarketDataCollector` so a mock run
     refuses to size rather than sizing on invented lot steps. Declaring those methods here would
     answer yes on a collector that cannot, which is the one thing this wrapper must not do.
+
+    **Memoized and latched are two different sets, and only one of them is `_MEMOIZED`.**
+    Everything callable is latched; only the symbol-keyed reads are memoized. See `__getattr__`.
     """
 
     # Keyed by symbol alone at the venue, so identical across every timeframe of one fan-out.
@@ -2259,9 +2262,21 @@ class PerRunFeedCache:
         # getattr on the inner object first: an attribute it does not have must stay absent here,
         # so `hasattr` keeps answering about the real capability.
         attr = getattr(self._inner, name)
-        if name not in self._MEMOIZED or not callable(attr):
+        if not callable(attr):
             return attr
+        if name in self._MEMOIZED:
+            return self._memoizing(name, attr)
+        # Latched but NOT memoized, which is a real distinction and not a leftover.
+        # `_MEMOIZED` answers "is this reply reusable across a fan-out" — `derivative_price_klines`
+        # is keyed by (symbol, timeframe, kind) and every combination is a genuinely different
+        # series, so it must not be. Being latched is a different question with a different
+        # answer: **every** callable here opens a socket to the same address, so any of them can
+        # earn a 429 and all of them must stop after one. Forwarding these raw made the wrapper's
+        # own posture untrue of three of the four series a fire reads — `attach_feeds` fetches
+        # mark, index and premium at replay depth, which pages four times each at 6,000 bars.
+        return self._latching(attr)
 
+    def _memoizing(self, name: str, attr: Any) -> Any:
         def memoized(*args: Any, **kwargs: Any) -> Any:
             key = (name, args, tuple(sorted(kwargs.items())))
             if key in self._memo:
@@ -2283,3 +2298,16 @@ class PerRunFeedCache:
             return value
 
         return memoized
+
+    def _latching(self, attr: Any) -> Any:
+        def latched(*args: Any, **kwargs: Any) -> Any:
+            self._latch()
+            self.__dict__["requests"] += 1
+            try:
+                return attr(*args, **kwargs)
+            except MvpRuntimeError as exc:
+                if isinstance(exc, ToolError):
+                    self._note_rate_limit(exc)
+                raise
+
+        return latched
