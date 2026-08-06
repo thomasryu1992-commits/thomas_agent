@@ -86,6 +86,8 @@ def build_canary_order_record(
     notional_usdt: float | None = None,
     quantity: float | None = None,
     fill: Mapping[str, Any] | None = None,
+    intended_price: float | None = None,
+    side: str | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One placed-and-reconciled canary order, self-hashed.
@@ -108,6 +110,21 @@ def build_canary_order_record(
     ``notional_declared_vs_filled_usdt`` is stated rather than judged. Making a disagreement
     a ``mismatch`` would change what ``clean`` means and therefore what the promotion gate
     counts — a separate decision, deliberately not taken here.
+
+    **``intended_price`` and ``side`` make a canary a slippage measurement.** A canary is an
+    entry-only MARKET order placed to validate the path, which makes it the one instrument that
+    can measure `cost.DEFAULT_SLIPPAGE_BPS` without routing a strategy signal — and §F8 measures
+    why that matters: the store's median candidate stops paying at 4.3 bps against an assumed
+    3.0 that has never been measured here. The price is the same ``reference_price`` step 3 of
+    `place_canary_order` already reads to check the declared notional, so nothing new is fetched
+    and nothing is inferred: it is what the runtime believed the price was, immediately before it
+    sent the order.
+
+    ``side`` rides along because the record could not otherwise be *signed* — adverse means
+    paying more on a BUY and receiving less on a SELL, and without it a reader can compute a
+    magnitude and not a direction. Both are recorded and neither is judged here;
+    `scripts/measure_live_slippage.py` owns the sign convention and its tests, and a second
+    spelling of that arithmetic is what this package warns about everywhere else.
     """
     problems = list(mismatches or [])
     facts = dict(fill or {})
@@ -124,6 +141,11 @@ def build_canary_order_record(
         # What the venue said, beside what the operator declared.
         "quantity": quantity,
         "fill_avg_price": _money(facts.get("avg_price")),
+        # What the runtime believed the price was when it decided, beside what it actually paid.
+        # None rather than the fill when unknown: substituting it would make every such row read
+        # as zero slippage, which is the flattering direction.
+        "intended_price": _money(intended_price),
+        "side": str(side).upper() if side else None,
         "fill_executed_qty": _money(facts.get("executed_qty")),
         "filled_notional_usdt": filled_notional,
         # None when either side is unknown — never 0.0, which would read as "they agreed".

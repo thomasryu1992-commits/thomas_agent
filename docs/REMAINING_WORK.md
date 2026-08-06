@@ -1334,6 +1334,27 @@ same answer.
       or model-supplied time string reaching a record. Then the 110 declarations should become a
       defence instead of documentation, and the measurement above is the thing to re-run first.
 
+- [ ] **Answering a question the runtime asked costs a model call — observed 2026-08-06, left
+      alone.** `notify_operator` pushes to the ONE registered private chat, and that chat is also
+      the intake channel. So there is no way for Thomas to *reply* to a notification: a plain
+      message from him is a task request, gets planned, runs, and comes back as an analysis of
+      his own answer. The registry shows it — `"hi"`, 2026-07-29, `DELIVERED`.
+
+      Found while sending the D1/D3/D4 decision request for
+      [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
+      It is not a wording problem and no phrasing in the outbound message fixes it — the two
+      roles share one transport.
+
+      **Deliberately not fixed, and the cost of being wrong is small in both directions.** The
+      damage is one model call plus a confusing reply; the answer itself lands in the task
+      registry either way, so nothing is *lost*. A fix means teaching intake to tell an answer
+      from a request, which is a new classification on the operator path — §16's "building for
+      future possibilities" while the runtime asks Thomas something roughly monthly.
+
+      **What reopens this:** the runtime starting to ask often enough that the replies are a
+      recurring cost, or a question whose answer must not be planned as a task (anything where
+      running an analysis over the answer would itself have an effect). Neither is true today.
+
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
 
@@ -2051,6 +2072,49 @@ FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivale
 would walk into exactly that failure — one code change an extension requires either way, since
 it is a defect independent of the window.
 
+#### F4a. The remedy landed, and 1d has no more room to buy — first measured 2026-08-06
+
+`FACTORY_DEPTH_DAYS` is now **1000** (was 500 when F4 was written) and a floor was added beneath
+it, `MIN_FACTORY_BARS = 2_000`, which binds **1d only** — the calendar span alone gave 1d too few
+bars for the scorer. So F4's remedy is half-taken, and this is the first look at what it bought.
+
+Measured over the 86 candidates minted on or after 2026-08-05 (the first two generations under
+the new window):
+
+| tf | `bars_replayed` med | trades med | `mean_reversion*` trades |
+|---|---:|---:|---|
+| 1h | 16,800 | 194.5 | 13, 38 |
+| 4h | 4,200 | 41.5 | 4, 17 |
+| 1d | 1,400 | 36.0 | **0, 0, 2, 3, 4, 5** |
+
+The medians confirm the change is live (`bars_replayed` is 0.7× the target, the in-sample side of
+F3's split; 1d's 1,400 is the 2,000-bar floor, not the 1,000-day span). **The median candidate is
+now well fed at every tier.**
+
+**What the floor did not fix is the sparse-signal family.** `MIN_HOLDOUT_TRADES` is 25 and the
+holdout is the smaller side of the split; a 1d `mean_reversion` candidate closing 0–5 trades
+in-sample is an order of magnitude short and cannot become judgeable at all. Every one of the six
+minted since the change is in that state. Note what this is *not*: the same family closes 13 and
+38 trades at 1h, so it is not a broken family — it is a family whose signal rate needs bars the
+top of the ladder does not have.
+
+**And 1d cannot buy them.** `MIN_FACTORY_BARS`'s own comment records why the floor is 2,000 and
+not higher: the shortest history among the routed USD-M perpetuals is ~2.1k daily bars
+(SOLUSDT), so a higher floor would collect short and score a window it never received. F4's
+lever — a longer window — is therefore **already exhausted at 1d**, while it still has 4–5× of
+room at 4h and 1h. Any fix for sparse families at 1d has to come from somewhere other than depth.
+
+**Read this as one measurement, not a finding.** Six 1d candidates and two 4h ones is a thin
+basis, and it is one family class. What would make it solid: the same table after a full rotation
+(~10 days), and the same cut for the other low-signal families rather than `mean_reversion` alone.
+Recorded now because the numbers cost a session to gather and the next reader would otherwise
+re-derive them from the same two generations.
+
+*(Recorded after a wrong turn worth naming: this started as "drop `mean_reversion` from 1d",
+which the cross-timeframe control killed — the family is thin at 1h and 4h in the same
+proportion, so excluding it at 1d would have hidden a ladder-wide property behind a
+one-tier rule. The control was the whole of the work.)*
+
 **There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
 to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
 
@@ -2143,6 +2207,23 @@ section predates #529 and should be repeated at 1,000 days before `oi_*` is call
 The prediction it would test is specific: if the confirmations were slice-correlation artifacts
 they should thin out at 60-day slices, and if they are not they should survive with a wider
 interval and fewer of them.
+
+**One axis that re-run had is gone: 1h stopped minting on 2026-08-06.** The five `<SYM> 1h`
+factory schedules were disabled and the slot re-registered as a mint-anchored null control
+(`schedules.jsonl`, per-machine, so there is no repo trace — the same class of change as the
+2026-08-04 15m→1d swap). Its own registration states the reason, and it is this section's
+conclusion arriving from the other direction: *"the per-candidate holdout cannot resolve the
+effect being hunted (needs +0.481R at z=3.53 vs observed p90 +0.209R) while this pooled
+instrument has the sample."*
+
+What that costs here is specific and small: **every 1h figure above stays reproducible**, since
+they are replay measurements and `templates_for_timeframe("1h")` and `factory_candle_target("1h")`
+are untouched — the 1h walk-forward, the calendar-identity table, and the `htf_pullback` control
+can all be re-run on demand. What stops is **new 1h candidates**, so the cross-timeframe
+comparison this section leans on has one live rung (4h) and one frozen one until the mint resumes.
+Read the 1h rows as an archive of 2026-08-05 rather than as a series. And note the null control
+measures nothing before ~2026-08-23 (`MIN_POST_MINT_DAYS = 30` against a 2026-07-23 oldest spec),
+which its registration flags as accumulation rather than a fault.
 
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
@@ -2435,6 +2516,164 @@ measured against intended price over enough live fills to be a distribution, whi
 thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
 it.
 
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+
+F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
+is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
+both: `backtest_spec_pooled` replays one spec across several symbols' frames and pools the tail,
+the cost legs and the outcomes. This section is the audit of **why it is not wired**, because the
+reasons a reader would assume turn out not to be the reasons.
+
+**It is finished, not a sketch.** The function handles the cost-model precondition (a frame built
+under a different `CostModel` is refused rather than used), takes the weakest funding source
+across its legs rather than the best, and carries **eight** tests of its own — depth per symbol
+rather than summed, the shallowest leg winning, the cost-model refusal, the single-frame identity
+with `backtest_spec`. Its only caller is
+`backtest_spec` — the single-symbol form, which delegates with a one-element list. Its own
+docstring records the deferral: *"this does not decide what the factory mints — `run_factory` is
+untouched, and moving the rotation onto pooled specs is a separate decision that wants
+generations of evidence."*
+
+**What F2 measured, restated with the part that constrains it:**
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+
+It also lifts F7's ceiling directly, since the ceiling is per frame: 5 symbols take 1d's 23 to
+~115 without touching the hold at all.
+
+**The fetch objection is backwards — the data is already bought and thrown away.**
+`cycle.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
+`factory_candle_target(timeframe)` depth so the `xs_*` families can be ranked, and the factory
+branch of `scheduler.py` calls it **without a `PeerCandleCache`** — the only one ever constructed
+is at `cycle.py:1135`, in the trading fan-out. So a factory fire pages **5 peers × replay depth ×
+5 contexts = 25 peer reads**, computes ranks from them, and discards the series. Pooling needs
+**5 reads for the whole fire**. The leg's own docstring already names this: *"without one this
+leg would be the largest source of redundant vendor reads in the runtime."* F4's HTTP 429 is a
+real constraint and it does not apply here; if anything, pooling reduces the fire's fetch.
+
+**The live end already supports it, and that is where the actual cost is — larger than it first
+looks.** `routable_context_map` and `routable_directional_capacity` both iterate
+`spec.symbol_scope` and both document it — *"a multi-symbol strategy occupies each of its
+symbols"*. No code change is owed there. But `MAX_ROUTABLE_PER_CONTEXT` is 1 and the cohort is
+the whole mined symbol set, so **a pooled spec occupies every context of its timeframe**: one
+pooled 4h strategy *is* the 4h tier, where five single-symbol strategies fit today. Fully pooled,
+the pool goes from up to five strategies per timeframe to **one**, each carrying five times the
+evidence and one direction for the whole tier — which `routable_directional_capacity` then reads
+as a maximally skewed book.
+
+That also makes it a migration rather than a switch: the pool holds **5 occupied contexts right
+now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h spec needs four of
+them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
+decision, and it is the thing to decide rather than to derive.
+
+**One statistical consequence that will read as a discount and is not.** `search_context_key` is
+`(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
+shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
+near **1.96** rather than the 3.4–3.9 the mined contexts now carry. This is correct — the pooled
+hypothesis space genuinely is separate, and minting 120 pooled specs raises that context's bar by
+exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a single-symbol row
+will see two different thresholds and the difference has to be written where they meet it, not
+only here.
+
+**What it does not buy, and this is the whole caveat.** Pooling makes rows judgeable; F2's own
+table says what the judgement was — CONFIRMED 0 → 0, CONTRADICTED 9 → 12. #566 sharpens it: after
+the selection correction the promotion gate can only confirm effects of **+0.48R or larger**
+against a real target near +0.05R, and of the 463 rows judgeable today **462 are CONTRADICTED**.
+So the honest claim for this lever is *"finds out faster"*, never *"earns more"*.
+
+**What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
+unknown effort:
+
+1. `run_factory` takes several snapshots instead of one; the `frames=` path into
+   `backtest_spec_pooled` already exists and `run_factory` already builds one frame per fire.
+2. The factory schedules move from one per `(symbol, timeframe)` to one per `timeframe` —
+   `.runtime_governance_state/schedules.jsonl`, per-machine state, not code.
+3. `build_spec_dict` puts the mined cohort in `symbol_scope` instead of `[symbol]`.
+4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
+   mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
+   exercise, not an afterthought.
+
+### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
+
+F7 closes 1d's structural half and hands 4h over as *"a signal-rate problem"* on a utilisation of
+22%. **That reading was measured on the wrong population and the direction of the finding is the
+other way round.** Normalised by each row's own `holdout.bars`, over 1,187 rows carrying a
+readable tail, the entry rate **rises** with the timeframe:
+
+| tf | n | entry rate p25 / median / p75 | median hold | share of bars in a position |
+|---|---|---|---|---|
+| 15m | 304 | 0.10% / **0.85%** / 2.85% | 24 | 20% |
+| 1h | 374 | 0.50% / **1.25%** / 3.22% | 23 | 27% |
+| 4h | 412 | 1.00% / **2.11%** / 3.67% | 23 | 50% |
+| 1d | 97 | 2.17% / **3.00%** / 4.00% | 24 | 72% |
+
+4h fires more often *per bar* than 1h or 15m. It closes few trades because 1,800 holdout bars is
+few bars, which is F9's argument and not a property of the entry rules.
+
+**What the 22% actually measured is the family mix of two rotation slices.** The 4h rows minted
+since 2026-08-05 run at **0.94%** against the 4h store's **2.67%**, and the spread the rotation is
+sampling from is enormous — at 4h, entry rate by family spans **0.00% to 8.44%**, about 100×:
+
+| high | | low | |
+|---|---|---|---|
+| `macd_momentum` | 8.44% | `oi_unwind_short` | 0.50% |
+| `breakout` | 5.00% | `mean_reversion_short` | 0.22% |
+| `trend_pullback` | 4.11% | `mean_reversion` | 0.11% |
+| `breakdown_short` | 4.00% | `taker_flow_long` | **0.00%** |
+
+Those recent slices drew almost entirely from the low block — `taker_flow_long`/`_short` 5 rows
+each, `oi_unwind_short` 5, `htf_pullback_*` 7 — while `trend_pullback` (4.11%) got **2**. So which
+fires produce judgeable rows is decided by where the rotation cursor lands, and today's 08:09 fire
+reading 48% judgeable against the 08-05 cohort's 27% is the same mechanism, not a trend.
+
+**It is not the condition count and it is not a missing feed.** Within 4h seeded rows the count
+does not order the rate (2 conditions 1.00%, 3 conditions 3.78%, 4 conditions 0.86%), while the
+family spread survives *inside* each count — at 2 conditions 0.00% (`taker_flow_long`) to 5.44%
+(`xs_momentum_long`), at 3 conditions 1.22% to 8.44%. And the quiet families' columns exist:
+`taker_flow_ma`, `open_interest_change_pct` and `rsi` are all supplied, so this is a rare signal
+rather than the `unsuppliable_features` defect wearing its clothes.
+
+#### The confound this section owed, and it resolves three ways
+
+A family's measured rate is taken over candidates whose thresholds were themselves mined, and half
+of every batch centres on a prior elite (`elite_base_params`) — so a low median could be the
+family's premise or a ratcheted threshold. The store separates them without a replay: **at 4h the
+floor needs 25/1800 = 1.39%, so ask whether ANY draw a family has ever produced reached it.**
+
+| verdict | families | what it means |
+|---|---|---|
+| **premise** | 5 | best draw ever produced still under 1.39% |
+| **threshold** | 9 | some draws clear it, most do not |
+| ok | 14 | majority clear it |
+
+The premise five, with their best stored draw: `taker_flow_long` 0.78%, `taker_flow_short` 0.89%,
+`mean_reversion` 0.56%, `mean_reversion_short` 0.33%, `htf_pullback_long` 1.33%. F6 reached this
+for `mean_reversion` alone (*"at 4h and 1d this family cannot reach a verdict at all"*) and F3 for
+the htf pair; the measurement says it is a library-wide property that nothing counts.
+
+**So the obvious action is the wrong one for two thirds of the population.** A family × timeframe
+mint gate — the analogue of `_judgeable_hold_space` — is justified for the five whose search space
+contains nothing judgeable at 4h. Applied to the nine threshold-bound families it would delete a
+premise that *is* reachable, which is the failure mode F7 named when it refused the calendar-span
+rewrite: acting on the cause you assumed rather than the one you separated.
+
+**Limits, because they bound this.** Five to thirteen rows per family. "Best draw ever" over n
+draws underestimates a family's reachable maximum, so a *premise* verdict says only that the
+search has spent those draws and produced nothing near the floor — not that nothing exists.
+`htf_pullback_long` reads premise while `htf_pullback_short` reads threshold, which is either a
+real directional asymmetry or small-n noise and this cannot tell them apart. And `mint_params` is
+present on only **79 of 259** 4h seeded rows, so the direct elite-half/base-half split is not yet
+measurable — it becomes so as rows minted under `mint_params` accumulate, and it is the sharper
+version of this test.
+
+**What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
+threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
+
 ## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
@@ -2542,6 +2781,17 @@ else.
 with a longest run of 10. A breaker that trips on two thirds of all losing streaks is either
 doing most of the halting or being routinely overridden; which of those is happening is not
 answered here.
+
+**Values derived from this measurement are proposed in
+`docs/proposals/RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md` (DRAFT, awaiting Thomas).** It changes no
+value. The argument in one line: the ladder's *shape* — two stops in a day, five in a week, ten
+before the account is judged — is already principled, and what broke is the *unit*, because a
+stopped-out trade costs **1.3576R net** (median of 59) where the design assumed 1.0R. Restated at
+that unit the three capital thresholds read −2.72 / −6.79 / −13.58%, each inside its existing
+relaxation bound. `MAX_CONSECUTIVE_LOSSES` derives differently — from evidence rather than
+equity — and lands on **k = 10**, which is exactly the existing relaxation *ceiling*, so adopting
+it leaves nothing for a registered config to relax. That is one of the four decisions the
+proposal names rather than settles.
 
 **And the first live fills touch a fifth INHERITED constant.** `DEFAULT_SLIPPAGE_BPS = 3.0` is
 indexed as *"carried from the source system unmeasured"* with *"enough live fills to measure

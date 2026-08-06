@@ -17,6 +17,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# poppler-utils supplies `pdftotext`, the preferred backend of the K1 knowledge base's PDF
+# chain (runtime/mvp_runtime/knowledge/pdf_text.py). ~15 MB, no daemon, no network, invoked
+# as a fixed argv on stdin/stdout. The chain falls back to pure-Python pypdf where this is
+# absent, so a host without it degrades rather than fails — but poppler is markedly better on
+# the CJK CID fonts this deployment's documents actually use, which is why it is installed
+# rather than left to the fallback.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install runtime deps first so the dependency layer caches across source changes.
 COPY requirements-runtime.txt ./
 RUN pip install --no-cache-dir -r requirements-runtime.txt

@@ -117,6 +117,13 @@ KIND_ROTATE = "ledger_rotate"
 # daily buries the day it flipped among the days it did not. It speaks only on a change, so a
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
+# The live route's incident watch. Distinct from KIND_BREAKER_WATCH for the reason that one is
+# distinct from KIND_REPORT: they answer different questions, and folding them together would
+# make an operator read the headline twice to learn which fact moved. The breaker watch reports
+# whether the live ENTRY GATE is open; this reports whether the runtime can still ACCOUNT for
+# the money it already committed, and 2026-08-06 showed those are not the same state — the
+# breaker read PASS for ten hours while ETHUSDT sat in an unaccountable book.
+KIND_ROUTE_WATCH = "crypto_route_watch"
 # Keeps candles the equity venue will stop serving. Its own kind rather than a leg of
 # `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence, and a per-book
 # failure has to cost that book alone — losing one symbol must not cost the other eighty-seven.
@@ -146,7 +153,8 @@ KIND_CANDLE_ARCHIVE = "candle_archive"
 KIND_NULL_CONTROL = "crypto_null_control"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
-                   KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL})
+                   KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
+                   KIND_NULL_CONTROL})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -174,7 +182,10 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # `closePosition STOP_MARKET` and the target a `reduceOnly LIMIT` (`crypto/live_leg.py`). A late
 # pass costs the holding-time exit, reconciliation, and the entry decision — real and bounded, and
 # not the same thing as an unprotected position.
-RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH})
+# `KIND_ROUTE_WATCH` belongs here for the same reason the breaker watch does, and arguably
+# more: it is the only thing that reports a book the runtime cannot reconcile, and a report
+# delayed behind an archive pass is a report about a state that has already lasted longer.
+RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_ROUTE_WATCH})
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
 #
@@ -884,6 +895,34 @@ def _execute(
                 {null_control.LEDGER_KIND: result},
             )
         return null_control.status_line(result)
+
+    if schedule.kind == KIND_ROUTE_WATCH:
+        # Same delivery posture as the breaker watch below, including the part that matters
+        # most: an undelivered announcement does NOT persist its marker, so the next fire
+        # retries rather than going quiet about an incident nobody was told about. For this
+        # watch that property is the whole point — the failure it exists to end was ten hours
+        # of a runtime knowing something and saying nothing.
+        from . import operator as operator_mod
+        from .crypto import route_watch
+
+        try:
+            result = route_watch.run_route_watch(repo_root, now=now, persist=False)
+        except MvpRuntimeError as exc:
+            # An unreadable cycle ledger is exactly the state this watch must not swallow: it
+            # cannot tell "no incident" from "cannot see", and reporting the second as the
+            # first is the silence this module exists to prevent.
+            return f"route_watch_unavailable:{exc.reason_code}"
+        if not result["changed"]:
+            return route_watch.status_line(result)
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"route_incident_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"route_incident_not_sent:{type(exc).__name__}"
+        route_watch.write_mark(result["state"], root=repo_root)
+        return f"route_watch_announced:{len(result['state'].get('in_incident') or [])}"
 
     if schedule.kind == KIND_BREAKER_WATCH:
         # Read the C4 breaker the way the cycle reads it and speak only when the verdict

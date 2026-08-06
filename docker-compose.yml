@@ -329,6 +329,57 @@ services:
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
 
+  # The knowledge door (K1). The assistant's fourth lane, and the first that ACCUMULATES:
+  # switch-bridge stops and starts, read-bridge looks, dispatch-bridge starts bounded work
+  # that ends — this one takes a document in and keeps it, then answers questions from what it
+  # has kept. `runtime/mvp_runtime/knowledge_bridge.py` carries three verbs and no more:
+  # add_document (append), query and stats (reads). No delete, no edit, and no verb that names
+  # a path on the runtime's filesystem — a document arrives as content in the frame or it does
+  # not arrive.
+  #
+  # Its own service for this door's specific failure: an ingest runs `pdftotext` as a
+  # subprocess and re-indexes the corpus, so it is by far the most expensive request the
+  # deployment serves, and a wedged ingest must not be able to wedge the stop path.
+  #
+  # Authority split, enforced in that module and asserted by a test: add_document is a write
+  # and refuses while PAUSED/KILLED; query and stats are reads and keep answering, per
+  # `kill_allows: [read_only_status, audit_read]` — an incident is when the record is most
+  # worth reading.
+  #
+  # No Core mounts: this door binds no Task and runs no pipeline. No provider keys, no search
+  # keys, no money variables — retrieval here is BM25 over a local index, so there is no
+  # network capability for a key to enable and nothing for one to spend.
+  knowledge-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-knowledge-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/knowledge.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.knowledge_bridge_cli
+    group_add:
+      - "${MVP_BRIDGE_CLIENT_GID:-10000}"
+    environment:
+      # See read-bridge for why the door states the client gid rather than inheriting it.
+      MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
+      # See read-bridge for the uid gate this leaves unset by default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
+
   # The trading-switch door. Same shape as the others and deliberately its own service, for
   # the reason the halt door had: the scheduler is what a stop is meant to stop, so a door
   # living inside it stops answering exactly when it is needed.

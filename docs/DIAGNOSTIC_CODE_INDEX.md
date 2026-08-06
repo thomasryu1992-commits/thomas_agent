@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **384** distinct codes across **638** raise sites
-- **25** exception classes carry them
+- **412** distinct codes across **676** raise sites
+- **28** exception classes carry them
 - **59** codes are raised from more than one module (see below)
-- **192** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **196** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 
 ## Codes raised from more than one module
 
@@ -21,7 +21,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_MISSING` | `promotion.py`, `retirement.py`, `registration.py` |
 | `APPROVAL_NOT_APPROVED` | `promotion.py`, `retirement.py`, `registration.py` |
 | `APPROVAL_WRONG_ACTION` | `promotion.py`, `retirement.py`, `registration.py` |
-| `ARGUMENT_NOT_ACCEPTED` | `dispatch_bridge.py`, `read_bridge.py`, `switch_bridge.py` |
+| `ARGUMENT_NOT_ACCEPTED` | `dispatch_bridge.py`, `knowledge_bridge.py`, `read_bridge.py`, `switch_bridge.py` |
 | `AUTHORITY_RECORD_INVALID` | `policy.py`, `preflight.py` |
 | `CANDIDATE_EXPIRED` | `consumption.py`, `memory_console.py` |
 | `CANDIDATE_GONE` | `consumption.py`, `memory_console.py` |
@@ -40,7 +40,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `lifecycle.py`, `pool.py`, `retirement.py` |
 | `LIFECYCLE_UNKNOWN_STRATEGY` | `pool.py`, `retirement.py` |
 | `MALFORMED_DIRECTION` | `live_order.py`, `live_position.py` |
-| `MALFORMED_REQUEST` | `bridge_idempotency.py`, `dispatch_bridge.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
+| `MALFORMED_REQUEST` | `bridge_idempotency.py`, `dispatch_bridge.py`, `knowledge_bridge.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
 | `MALFORMED_RESULT` | `account.py`, `market_data.py`, `tools.py` |
 | `MISSING_OPERATOR` | `memory.py`, `program_request.py`, `programization.py` |
 | `MISSING_REASON` | `memory.py`, `memory_console.py`, `program_request.py`, `programization.py` |
@@ -73,7 +73,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_REQUEST_KIND` | `planner.py`, `task_registry.py` |
 | `USAGE` | `memory_console.py`, `registry_console.py` |
 | `VALIDATION_RESULT_INVALID` | `validation.py`, `validator.py` |
-| `VERB_NOT_PERMITTED` | `read_bridge.py`, `switch_bridge.py` |
+| `VERB_NOT_PERMITTED` | `knowledge_bridge.py`, `read_bridge.py`, `switch_bridge.py` |
 
 ## Every code
 
@@ -137,15 +137,16 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 223 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 231 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
-| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1251 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
+| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1290 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
 | `ARCHIVE_NAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 134 | `archive_path` | `not all((part and _SAFE_NAME.fullmatch(part) for part in parts))` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 961 | `collect` | `—` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 967 | `live_symbols` | `—` |
-| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1263 | `_execute` | `summary.get('rate_limited')` |
+| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1302 | `_execute` | `summary.get('rate_limited')` |
 | `ARCHIVE_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 291 | `append_candles` | `not str(symbol).strip()` |
 | `ARCHIVE_TIMEFRAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 143 | `_require_timeframe` | `timeframe not in TIMEFRAMES` |
-| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1244 | `_execute` | `summary['blocked']` |
+| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1283 | `_execute` | `summary['blocked']` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 136 | `apply_dispatch` | `unexpected` |
+| `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 128 | `apply_knowledge` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 114 | `apply_read` | `argument is not None and command not in _TAKES_ARGUMENT` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 577 | `apply_switch` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 649 | `apply_switch` | `approval_id is not None and 'scope' in request` |
@@ -157,14 +158,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/policy.py` | 23 | `adapt_policy` | `authority.get('effective_permission_level') is None` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | 369 | `run_preflight` | `—` |
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | 55 | `bind_task_to_core` | `—` |
-| `BRIDGE_ALREADY_RUNNING` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 288 | `__init__` | `door_is_live(path)` |
-| `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 408 | `resolve_client_gid` | `—` |
-| `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 413 | `resolve_client_gid` | `gid < 0` |
-| `BRIDGE_CLIENT_GID_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 543 | `grant_client_access` | `—` |
-| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 439 | `resolve_client_uids` | `—` |
-| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 445 | `resolve_client_uids` | `uid < 0` |
-| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 450 | `resolve_client_uids` | `not uids` |
-| `BRIDGE_CONCURRENCY_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 267 | `__init__` | `max_concurrent_requests < 1` |
+| `BRIDGE_ALREADY_RUNNING` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 311 | `__init__` | `door_is_live(path)` |
+| `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 431 | `resolve_client_gid` | `—` |
+| `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 436 | `resolve_client_gid` | `gid < 0` |
+| `BRIDGE_CLIENT_GID_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 566 | `grant_client_access` | `—` |
+| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 462 | `resolve_client_uids` | `—` |
+| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 468 | `resolve_client_uids` | `uid < 0` |
+| `BRIDGE_CLIENT_UID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 473 | `resolve_client_uids` | `not uids` |
+| `BRIDGE_CONCURRENCY_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 279 | `__init__` | `max_concurrent_requests < 1` |
+| `BRIDGE_LIMITS_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 285 | `__init__` | `max_frame_bytes < 1 or request_timeout_seconds <= 0` |
 | `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1247 | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1233 | `read_candidates` | `—` |
 | `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1240 | `read_candidates` | `—` |
@@ -286,7 +288,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_ENCODING` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 87 | `_require_text` | `—` |
 | `INVALID_ENCODING` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 125 | `_clean_str_list` | `—` |
 | `INVALID_INITIAL_STATUS` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 246 | `build_entry` | `status not in (QUEUED, RUNNING)` |
-| `INVALID_INTERVAL` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 350 | `build_schedule` | `not (isinstance(interval_seconds, int) and interval_seconds >= MIN_INTERVAL_SECONDS)` |
+| `INVALID_INTERVAL` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 361 | `build_schedule` | `not (isinstance(interval_seconds, int) and interval_seconds >= MIN_INTERVAL_SECONDS)` |
 | `INVALID_LEVEL` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 500 | `build_permission_decision` | `rank_of(required_permission_level) is None or rank_of(role_permission_ceiling) is None` |
 | `INVALID_LIST` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 108 | `_clean_str_list` | `value is not None and isinstance(value, (str, bytes))` |
 | `INVALID_LIST` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 116 | `_clean_str_list` | `—` |
@@ -338,6 +340,21 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `KILL_STATE_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 181 | `apply_memory_command` | `control_store is None` |
 | `KILL_STATE_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 309 | `apply_registry_command` | `control_store is None` |
 | `KIND_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 153 | `apply_dispatch` | `kind not in _ALLOWED_KINDS` |
+| `KNOWLEDGE_CONTENT_AMBIGUOUS` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 87 | `add_document` | `(text is None) == (pdf_base64 is None)` |
+| `KNOWLEDGE_DOCUMENT_DATE_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 307 | `_optional_timestamp` | `not isinstance(value, str) or not value.strip()` |
+| `KNOWLEDGE_DOCUMENT_DATE_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 316 | `_optional_timestamp` | `—` |
+| `KNOWLEDGE_LIMIT_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 196 | `_resolve_limit` | `not isinstance(limit, int) or isinstance(limit, bool) or limit < 1` |
+| `KNOWLEDGE_LIMIT_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 198 | `_resolve_limit` | `limit > MAX_LIMIT` |
+| `KNOWLEDGE_QUESTION_REQUIRED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 147 | `query` | `not isinstance(question, str) or not question.strip()` |
+| `KNOWLEDGE_QUESTION_TOO_LONG` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 150 | `query` | `len(question) > MAX_QUESTION_CHARS` |
+| `KNOWLEDGE_RECORD_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 266 | `validate_document` | `—` |
+| `KNOWLEDGE_SENSITIVITY_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 224 | `build_document` | `data_sensitivity not in SENSITIVITIES` |
+| `KNOWLEDGE_SOURCE_TYPE_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 219 | `build_document` | `source_type not in SOURCE_TYPES` |
+| `KNOWLEDGE_TAGS_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 282 | `_clean_tags` | `not isinstance(tags, (list, tuple))` |
+| `KNOWLEDGE_TAGS_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 286 | `_clean_tags` | `not isinstance(tag, str) or not tag.strip()` |
+| `KNOWLEDGE_TAGS_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 291 | `_clean_tags` | `len(cleaned) > MAX_TAGS` |
+| `KNOWLEDGE_TEXT_REQUIRED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 208 | `build_document` | `not isinstance(text, str) or not text.strip()` |
+| `KNOWLEDGE_TEXT_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 213 | `build_document` | `len(text) > MAX_TEXT_CHARS` |
 | `LEDGER_INVALID_KEEP` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 141 | `rotate_file` | `not (isinstance(keep_rows, int) and keep_rows > 0)` |
 | `LEDGER_PROTECTED_FROM_ROTATION` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 131 | `rotate_file` | `filename in PROTECTED_FILES` |
 | `LEDGER_ROTATION_FAILED` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 185 | `rotate_file` | `—` |
@@ -370,10 +387,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | 110 | `fingerprint` | `—` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 132 | `apply_dispatch` | `not isinstance(request, dict)` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 151 | `apply_dispatch` | `isinstance(raw_kind, str) and raw_kind.strip()` |
+| `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 113 | `apply_knowledge` | `not isinstance(request, dict)` |
+| `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 117 | `apply_knowledge` | `not isinstance(command, str) or not command.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 97 | `apply_read` | `not isinstance(request, dict)` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 101 | `apply_read` | `not isinstance(command, str) or not command.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 112 | `apply_read` | `argument is not None and (not isinstance(argument, str))` |
-| `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 148 | `decode_request` | `—` |
+| `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 155 | `decode_request` | `—` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 279 | `_require_domain` | `not isinstance(raw, str) or not raw.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 297 | `_require_scope` | `not isinstance(raw, str) or not raw.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 573 | `apply_switch` | `not isinstance(request, dict)` |
@@ -422,7 +441,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MEMORY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 175 | `apply_memory_command` | `ledger is None` |
 | `MISSING_BRACKET_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 279 | `build_bracket_intent` | `not (isinstance(quantity, (int, float)) and quantity > 0)` |
 | `MISSING_CORE_RULES` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 190 | `build_task` | `not rule_ids` |
-| `MISSING_CREATOR` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 355 | `build_schedule` | `not (isinstance(created_by, str) and created_by.strip())` |
+| `MISSING_CREATOR` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 366 | `build_schedule` | `not (isinstance(created_by, str) and created_by.strip())` |
 | `MISSING_ENTRY_PRICE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 188 | `build_live_position` | `entry_price <= 0` |
 | `MISSING_OPERATOR` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 418 | `build_core_candidate` | `not (isinstance(proposed_by, str) and proposed_by.strip())` |
 | `MISSING_OPERATOR` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 496 | `decide_core_candidate` | `not (isinstance(decided_by, str) and decided_by.strip())` |
@@ -438,7 +457,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_REASON` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 169 | `apply_memory_command` | `not reason` |
 | `MISSING_REASON` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 141 | `create_program_request` | `not (isinstance(reason, str) and reason.strip())` |
 | `MISSING_REASON` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 386 | `_require_operator` | `not (isinstance(reason, str) and reason.strip())` |
-| `MISSING_REQUEST` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 353 | `build_schedule` | `kind == KIND_TASK and (not request)` |
+| `MISSING_REQUEST` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 364 | `build_schedule` | `kind == KIND_TASK and (not request)` |
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 244 | `build_entry` | `not (isinstance(requester_id, str) and requester_id.strip())` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 225 | `build_live_order_intent` | `not symbol` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 182 | `build_live_position` | `not symbol` |
@@ -510,8 +529,24 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PATTERN_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 506 | `create_program_candidate` | `latest is None` |
 | `PATTERN_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 160 | `main` | `not args.target` |
 | `PATTERN_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 188 | `main` | `not args.target` |
-| `PEER_CREDENTIALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 327 | `authorize_peer` | `creds is None` |
-| `PEER_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 335 | `authorize_peer` | `creds[1] not in self.allowed_client_uids` |
+| `PDF_BACKEND_UNKNOWN` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 258 | `_run_backend` | `—` |
+| `PDF_BASE64_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 215 | `_decode_pdf` | `—` |
+| `PDF_BASE64_REQUIRED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | 209 | `_decode_pdf` | `not isinstance(payload, str) or not payload.strip()` |
+| `PDF_CORRUPT` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 299 | `_extract_with_pdftotext` | `completed.returncode == 1` |
+| `PDF_ENCRYPTED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 305 | `_extract_with_pdftotext` | `completed.returncode == 3` |
+| `PDF_ENCRYPTED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 341 | `_extract_with_pypdf` | `getattr(reader, 'is_encrypted', False)` |
+| `PDF_EXTRACTION_FAILED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 162 | `extract_pdf_text` | `—` |
+| `PDF_EXTRACTION_TIMEOUT` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 290 | `_extract_with_pdftotext` | `—` |
+| `PDF_INPUT_EMPTY` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 237 | `_check_pdf_bytes` | `not data` |
+| `PDF_INPUT_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 235 | `_check_pdf_bytes` | `not isinstance(data, (bytes, bytearray))` |
+| `PDF_NOT_A_PDF` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 247 | `_check_pdf_bytes` | `PDF_MAGIC not in bytes(data[:1024])` |
+| `PDF_NO_BACKEND` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 121 | `extract_pdf_text` | `not backends` |
+| `PDF_NO_TEXT_LAYER` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 156 | `extract_pdf_text` | `failures and all(('PDF_NO_TEXT_LAYER' in failure for failure in failures))` |
+| `PDF_TEXT_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 353 | `_extract_with_pypdf` | `total > MAX_TEXT_CHARS` |
+| `PDF_TEXT_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 363 | `_check_text_size` | `len(text) > MAX_TEXT_CHARS` |
+| `PDF_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 239 | `_check_pdf_bytes` | `len(data) > MAX_PDF_BYTES` |
+| `PEER_CREDENTIALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 350 | `authorize_peer` | `creds is None` |
+| `PEER_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 358 | `authorize_peer` | `creds[1] not in self.allowed_client_uids` |
 | `PERMISSION_DECISION_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 551 | `apply_command` | `permission_decision is None` |
 | `PERMISSION_DECISION_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 179 | `consume_approval` | `permission_decision is None` |
 | `PERMISSION_DECISION_MISSING` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 417 | `_spend` | `decision is None` |
@@ -589,9 +624,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `Role Registry snapshot entry is missing definition_path` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 308 | `resolve_role_registry_snapshot` | `not definition_path` |
 | `Role Registry snapshot must contain exactly one Task-bound Role entry` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 270 | `resolve_role_registry_snapshot` | `not isinstance(raw_entries, list) or len(raw_entries) != 1` |
 | `Role Registry snapshot must use schema_version role_registry.v0.3` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 264 | `resolve_role_registry_snapshot` | `source.get('schema_version') != 'role_registry.v0.3'` |
-| `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 630 | `mutation_event` | `action not in MUTATION_ACTIONS` |
-| `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 281 | `from_record` | `—` |
-| `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 286 | `from_record` | `not (isinstance(next_run_at, str) and _TIMESTAMP_PATTERN.match(next_run_at))` |
+| `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 641 | `mutation_event` | `action not in MUTATION_ACTIONS` |
+| `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 292 | `from_record` | `—` |
+| `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 297 | `from_record` | `not (isinstance(next_run_at, str) and _TIMESTAMP_PATTERN.match(next_run_at))` |
 | `SCHEMA_INVALID` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 332 | `build_task` | `—` |
 | `SCHEMA_UNAVAILABLE` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 328 | `build_task` | `not schema_path.is_file()` |
 | `SCOPE_NOT_CONSUMABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 198 | `consume_approval` | `snapshot.get('permission_scope') != MEMORY_PROMOTION_PERMISSION_SCOPE` |
@@ -645,7 +680,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TRIAL_REQUEST_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 440 | `run_trial` | `not (isinstance(trial_request, str) and trial_request.strip())` |
 | `TTL_EXCEEDS_POLICY` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 163 | `build_approval_request` | `requested > policy_max` |
 | `UNEXPECTED_TRIAL_AUTHORIZATION` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 119 | `build_role_assignment` | `not trial and trial_authorization_ref is not None` |
-| `UNIX_SOCKETS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 262 | `__init__` | `not UNIX_SOCKETS_AVAILABLE` |
+| `UNIX_SOCKETS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 274 | `__init__` | `not UNIX_SOCKETS_AVAILABLE` |
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 547 | `apply_command` | `approval is None` |
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 163 | `consume_approval` | `approval_rec is None` |
 | `UNKNOWN_APPROVAL` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 399 | `_spend` | `record is None` |
@@ -661,8 +696,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_DOMAIN_SUBCOMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 188 | `apply_domain_command` | `handler is None` |
 | `UNKNOWN_FLAG` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 217 | `build_activation_record` | `bad` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 253 | `build_entry` | `unknown` |
-| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 348 | `build_schedule` | `kind not in KINDS` |
-| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1281 | `_execute` | `schedule.kind != KIND_TASK` |
+| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 359 | `build_schedule` | `kind not in KINDS` |
+| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1320 | `_execute` | `schedule.kind != KIND_TASK` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 242 | `build_entry` | `origin not in ORIGINS` |
 | `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 924 | `validate_candidate_lineage` | `unknown` |
 | `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 586 | `select_gated_chain` | `unknown` |
@@ -681,6 +716,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `USAGE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 365 | `_require_entry` | `not argument` |
 | `VALIDATION_RESULT_INVALID` | `ValidationError` | `runtime/mvp_runtime/validation.py` | 319 | `validate_agent_output` | `—` |
 | `VALIDATION_RESULT_INVALID` | `ValidationError` | `runtime/mvp_runtime/validator.py` | 355 | `run_validation_worker` | `—` |
+| `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 121 | `apply_knowledge` | `command not in _COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 105 | `apply_read` | `command not in _READS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 588 | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
@@ -694,7 +730,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `entry_rules.conditions must be a non-empty list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 182 | `from_dict` | `not isinstance(raw_conditions, list) or not raw_conditions` |
 | `exit_rules must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 227 | `from_dict` | `not isinstance(raw, dict)` |
 | `filesystem read count increment must be a non-negative integer` | `ValueError` | `runtime/read_only_kernel/types.py` | 13 | `add` | `not isinstance(count, int) or count < 0` |
-| `frame too large` | `OSError` | `runtime/mvp_runtime/socket_door.py` | 241 | `_read_frame` | `size > MAX_FRAME_BYTES` |
+| `frame too large` | `OSError` | `runtime/mvp_runtime/socket_door.py` | 251 | `_read_frame` | `size > ceiling` |
 | `generation_id must be a string or null` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 370 | `from_dict` | `generation_id is not None and (not isinstance(generation_id, str))` |
 | `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3335 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
 | `input bundle must be located inside repo root` | `ReadBoundaryError` | `runtime/read_only_kernel/loader.py` | 26 | `load_runtime_inputs` | `—` |
@@ -703,6 +739,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3321 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
 | `now must be an RFC3339 timestamp` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 32 | `__init__` | `—` |
 | `now must include an RFC3339 timezone` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 34 | `__init__` | `parsed_now.tzinfo is None` |
+| `pdftotext is not on PATH` | `FileNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 274 | `_extract_with_pdftotext` | `binary is None` |
+| `pypdf is not installed` | `ModuleNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 334 | `_extract_with_pypdf` | `pypdf is None` |
 | `record reference must be a non-empty relative path` | `ReadBoundaryError` | `runtime/read_only_kernel/io.py` | 17 | `resolve_read_only_path` | `not isinstance(relative_ref, str) or not relative_ref.strip()` |
 | `replay frame was built under a different cost model than this backtest charges; the carry series would price trades at rates they never faced` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 2975 | `backtest_spec_pooled` | `frame.cost != cost` |
 | `risk_constraints must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 300 | `from_dict` | `not isinstance(raw, dict)` |
