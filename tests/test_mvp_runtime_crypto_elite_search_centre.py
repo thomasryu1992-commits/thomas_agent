@@ -226,12 +226,31 @@ def _centre_log(monkeypatch, templates):
 
     Object identity is the discriminator and it is exact: the base branch passes
     ``template.base_params`` itself, the elite branch builds a fresh dict, so nothing has to be
-    inferred from a drawn value. Templates are keyed by ``param_space``, which is a distinct dict
-    literal per family and which ``dataclasses.replace`` carries through the retiming unchanged.
+    inferred from a drawn value.
+
+    **The templates are captured from `templates_for_timeframe` itself rather than from the
+    caller's own copy.** That used to be one and the same: the retiming was
+    ``replace(t, timeframe=...)``, which carries the inner dicts through by reference, so every
+    call handed back the same ``param_space`` object and a map built once matched forever. It
+    stopped being true when `judgeable_holding_bars` began narrowing the hold space at 1d — a
+    narrowed family gets a fresh ``param_space`` and ``base_params`` per call, so the id from
+    the caller's copy was absent from the map and this raised `KeyError` on the 1d case alone.
+    Keying off the objects the batch is actually holding restores the exactness rather than
+    trading it for a content comparison, and it no longer depends on that sharing at all.
     """
     from runtime.mvp_runtime.crypto import factory
 
-    by_space = {id(t.param_space): t for t in templates}
+    by_space: dict[int, object] = {}
+    real_templates = factory.templates_for_timeframe
+
+    def capturing(*args, **kwargs):
+        retimed = real_templates(*args, **kwargs)
+        by_space.update({id(t.param_space): t for t in retimed})
+        return retimed
+
+    monkeypatch.setattr(factory, "templates_for_timeframe", capturing)
+    by_space.update({id(t.param_space): t for t in templates})
+
     real = factory.mutate_params
     log: list[tuple[str, str]] = []
 
