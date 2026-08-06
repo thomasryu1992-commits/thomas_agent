@@ -2177,6 +2177,36 @@ regardless; backoff and spacing on the factory's fetches; and the replay window 
 each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
 2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
 
+**Status 2026-08-06 — most of that list is done, and the remaining half should wait.**
+
+| item | state |
+|---|---|
+| `FUNDING_MAX_PAGES` 4 → 7 | **done** (8) |
+| `funding_fade_*` gate | **done** — the families and the timing comment are in `factory.py` |
+| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `pool.evidence_depth_rank` |
+| `FACTORY_DEPTH_DAYS` 500 → 2,000 | **half** (1,000) |
+| `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 | **half** (1,020) |
+
+**The doubling landed 2026-08-05 and covers 5% of the store.** Measured over all 1,680
+candidates carrying a readable window: **1,477 at 500 days, 86 at 1,000, 117 at 2,000**. By mint
+date, 1h and 4h moved to 1,000 on 08-05; 08-04 was a mixed day mid-deploy.
+
+**1d has been at 2,000 all along, and not through this constant.** `MIN_FACTORY_BARS = 2000`
+floors it at 2,000 bars, which at a daily bar is 2,000 days — above the calendar target. So the
+remaining half of this item would move **1h and 4h only**, and the 2,000-day figure it is aiming
+at already exists on one rung as a side effect of a different constant.
+
+**Doubling again now would be the `#420` error this file names three times.** The 1,000-day
+window is two days old, 88% of the store still carries 500, and no lineage has completed a
+rotation at the new depth. The condition to proceed is a full rotation at 1,000 with the 4h trade
+counts read after it — not a calendar date.
+
+**One trap, recorded because this measurement fell into it first.** `bars_replayed` is the
+**70% training slice**, not the window: `HOLDOUT_FRACTION = 0.30` is withheld before scoring. A
+4h row showing 4,200 bars is a 1,000-day window (700 train + 300 holdout), not a 700-day one.
+Read as the window it understates every depth by 30%, which briefly turned a correctly-landed
+change into a phantom defect ("4h is replaying half its target") on the first pass here.
+
 ### F5. The clamp collected the draws it was meant to bound — fixed 2026-08-05, owed a generation
 
 `mutate_params` drew `base ± (hi − lo) × 0.35` and **clamped**, so any centre nearer a bound than
@@ -2356,6 +2386,54 @@ confirm effects of **+0.48R or larger** after the selection correction, against 
 is a precondition for learning anything, not a route to a verdict: of the 463 rows judgeable
 today, **462 are CONTRADICTED and 0 CONFIRMED**. Nothing here should be read as expecting that to
 move.
+
+### F8. The whole store's edge lives inside 1.3 bps of an unmeasured constant — measured 2026-08-06
+
+F3 ships a family that trades high-volatility bars and records the risk it could not size: *"the
+new family's backtest carries a favourable bias of unknown size"*, because `DEFAULT_SLIPPAGE_BPS
+= 3.0` is assumed. §G1 then indexed that constant as **INHERITED** — carried from the source
+system, never measured here — with *"enough live fills to measure realized slippage"* as what
+would reopen it. **The first live fills arrived the same day**, and the bias has a size now.
+
+**The arithmetic is exact, not a model.** Slippage cost in R is `bps / risk_bps`, linear in the
+rate, and `cost_summary.total_slippage_cost_r` is recorded per candidate — so re-pricing a
+candidate at rate *r* is `net − slippage_per_trade × (r/3 − 1)`. No re-scoring, no re-replay.
+
+**The median candidate at the current cost basis stops paying at 4.3 bps.** The model charges
+3.0. Over the 973 current-basis candidates:
+
+| | median net @3.0 | @10 bps | @23.5 bps | breakeven |
+|---|---|---|---|---|
+| current cost basis | **+0.0164** | −0.0692 | −0.2172 | **4.3 bps** |
+| `oi_squeeze` | +0.3966 | +0.2008 | −0.1252 | 17.7 |
+| `volatility_expansion` | +0.1380 | +0.0633 | −0.0923 | 14.6 |
+| `trend_pullback` | +0.0584 | −0.1617 | −0.3104 | 10.0 |
+| `breakout` | +0.0886 | −0.0869 | −0.2660 | 9.1 |
+| `htf_trend_strength` (F3's) | −0.1116 | −0.1753 | −0.2982 | already ≤ 0 |
+
+By timeframe the exposure runs the way the denominator does — 15m swings **−0.6575R** between
+3.0 and 23.5, 1d only **−0.0500R** — because 1R is `stop_atr × ATR` and the fast end divides a
+fixed bps by the smallest risk unit.
+
+**And the exposure is largest exactly where the only confirmations came from.** F2 records
+`oi_*` as the two families that confirm out of sample; they are also the ones carrying the widest
+margin *and* the biggest absolute swing (−0.4830R at 23.5). A result that survives its holdout
+and dies on a slippage re-price is not a result.
+
+**23.5 bps is one observation, and it is the worst leg.** ETHUSDT's first live stop rested at
+1900.5 and filled at 1904.96 (§C); DOGEUSDT's filled exactly at its stop. A stop-market on a fast
+move is the most adverse fill this runtime places, and the model charges slippage on **both**
+legs, so applying 23.5 to both is the pessimistic end. **The measured thing here is the
+sensitivity, not the rate** — the column to read is that the store's median edge sits 1.3 bps
+above its own assumption, whatever the true rate turns out to be.
+
+**What this changes.** F3's unsized risk is sized: at any realized rate above ~4.3 bps the
+store's median candidate is not profitable, and the families that confirm forward are the ones
+with the most to lose. It does not say the rate is 23.5 — it says the assumption is load-bearing
+and two fills is the entire evidence behind it. **What would settle it** is entry-leg slippage
+measured against intended price over enough live fills to be a distribution, which is the same
+thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
+it.
 
 ## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
