@@ -1,10 +1,13 @@
 # Assistant Resume Scope Split v0.1 — design proposal
 
-**Status:** PROPOSED — reviewed but unbuilt. **Nothing is implemented.** No policy, permission,
-schema, module or test file is changed by the PR carrying this document.
-**Owner:** Thomas — this needs a decision before any code moves.
-**Authority:** None. The committed policy and `control.py` remain the authority until a change
-actually merges. A design is not an implementation.
+**Status:** IMPLEMENTED — the split is in `control.py`, `permission.py`, `switch_bridge.py`,
+`crypto/live_route.py` and `crypto/live_readiness.py`, on the **recommended** answers to D1, D3
+and D4. **Those three are still Thomas's to confirm**; each is one small branch point and the
+alternatives are priced under "Decisions" below. No policy or schema file changed.
+**Owner:** Thomas.
+**Authority:** None. `control.py` and the committed policy are the authority for what the runtime
+does; this record explains why it is shaped that way. A design is not an implementation, and now
+that both exist, the code is the one that governs.
 **Raised:** 2026-08-05, from an external architecture review of the Hermes-Thomas boundary (§4.2
 of that review).
 
@@ -215,8 +218,13 @@ is most of the work. Worth having straight before choosing, because the mis-word
 | `runtime/mvp_runtime/console_cli.py` | `status` prints the arm |
 | tests | the split holds; a `scope=runtime` grant cannot be spent as a trading re-arm (fingerprint); an old state file loads per D1; DISARMED blocks an entry and does **not** block a settle |
 
-**Sequencing:** resolved. #535 merged on 2026-08-05 and the implementation branch rebased onto
-it cleanly — `control.py` is not a file #535 touched.
+**Sequencing:** resolved. #535 merged 2026-08-05; the implementation rebased onto it cleanly
+(`control.py` is not a file #535 touched) and landed in its own PR after this record.
+
+**Two things the build changed about this record, both worth keeping.** D4's row asked the wrong
+question and is corrected above. And the paragraph pricing D4(b) undercounted the work — see the
+same section. Neither moved a recommendation; both moved what a reader would have believed while
+choosing.
 
 ---
 
