@@ -2072,6 +2072,49 @@ FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivale
 would walk into exactly that failure — one code change an extension requires either way, since
 it is a defect independent of the window.
 
+#### F4a. The remedy landed, and 1d has no more room to buy — first measured 2026-08-06
+
+`FACTORY_DEPTH_DAYS` is now **1000** (was 500 when F4 was written) and a floor was added beneath
+it, `MIN_FACTORY_BARS = 2_000`, which binds **1d only** — the calendar span alone gave 1d too few
+bars for the scorer. So F4's remedy is half-taken, and this is the first look at what it bought.
+
+Measured over the 86 candidates minted on or after 2026-08-05 (the first two generations under
+the new window):
+
+| tf | `bars_replayed` med | trades med | `mean_reversion*` trades |
+|---|---:|---:|---|
+| 1h | 16,800 | 194.5 | 13, 38 |
+| 4h | 4,200 | 41.5 | 4, 17 |
+| 1d | 1,400 | 36.0 | **0, 0, 2, 3, 4, 5** |
+
+The medians confirm the change is live (`bars_replayed` is 0.7× the target, the in-sample side of
+F3's split; 1d's 1,400 is the 2,000-bar floor, not the 1,000-day span). **The median candidate is
+now well fed at every tier.**
+
+**What the floor did not fix is the sparse-signal family.** `MIN_HOLDOUT_TRADES` is 25 and the
+holdout is the smaller side of the split; a 1d `mean_reversion` candidate closing 0–5 trades
+in-sample is an order of magnitude short and cannot become judgeable at all. Every one of the six
+minted since the change is in that state. Note what this is *not*: the same family closes 13 and
+38 trades at 1h, so it is not a broken family — it is a family whose signal rate needs bars the
+top of the ladder does not have.
+
+**And 1d cannot buy them.** `MIN_FACTORY_BARS`'s own comment records why the floor is 2,000 and
+not higher: the shortest history among the routed USD-M perpetuals is ~2.1k daily bars
+(SOLUSDT), so a higher floor would collect short and score a window it never received. F4's
+lever — a longer window — is therefore **already exhausted at 1d**, while it still has 4–5× of
+room at 4h and 1h. Any fix for sparse families at 1d has to come from somewhere other than depth.
+
+**Read this as one measurement, not a finding.** Six 1d candidates and two 4h ones is a thin
+basis, and it is one family class. What would make it solid: the same table after a full rotation
+(~10 days), and the same cut for the other low-signal families rather than `mean_reversion` alone.
+Recorded now because the numbers cost a session to gather and the next reader would otherwise
+re-derive them from the same two generations.
+
+*(Recorded after a wrong turn worth naming: this started as "drop `mean_reversion` from 1d",
+which the cross-timeframe control killed — the family is thin at 1h and 4h in the same
+proportion, so excluding it at 1d would have hidden a ladder-wide property behind a
+one-tier rule. The control was the whole of the work.)*
+
 **There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
 to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
 
