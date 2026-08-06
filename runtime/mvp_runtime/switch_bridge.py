@@ -83,7 +83,10 @@ from .errors import ControlBlocked
 from .filelock import locked
 from .intake import build_task
 from .permission import (
+    NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_PERMISSION_SCOPE,
+    TRADING_SWITCH_TARGET_PREFIX,
+    build_nonfinancial_resume_permission_decision,
     build_trading_switch_permission_decision,
 )
 from .store import LedgerStore
@@ -113,8 +116,30 @@ _ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISAB
 # what the understood subset says. `request_id` is optional and carries no authority — see
 # `_ENABLE_DOOR` for which verb actually uses it and why the other two do not.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"command", "domain", "reason", "mode", "approval_id", bridge_idempotency.REQUEST_ID_KEY}
+    {"command", "domain", "reason", "mode", "approval_id", "scope",
+     bridge_idempotency.REQUEST_ID_KEY}
 )
+
+# What an `enable` is asking to start. Two answers, and the difference is the money path.
+#
+# `trading` is what this door has always done and stays the default: an unqualified `enable`
+# means what it meant before this key existed, so no existing caller changes behaviour by
+# staying silent. It mints the RED ask and, when spent, re-arms live entries.
+#
+# `runtime` is the new one. It resumes everything the stop was holding EXCEPT live entries —
+# the operator loop, the intake CLI, memory, the scheduler's non-crypto kinds, and this
+# assistant's own dispatch door — on an ORANGE grant that provably cannot reach the order path.
+# It exists because the assistant could always stop the runtime for free and could only start it
+# again by asking Thomas to sign a live-trading re-arm, so the RED approval was being spent on
+# doors it was not minted for.
+#
+# The default is deliberately the EXPENSIVE one. A caller that forgets the key gets the ask that
+# asks for more, which Thomas can refuse; the reverse default would let a typo quietly downgrade
+# what was requested, and silence is not a request for less authority.
+SCOPE_TRADING = "trading"
+SCOPE_RUNTIME = "runtime"
+_ALLOWED_SCOPES: frozenset[str] = frozenset({SCOPE_TRADING, SCOPE_RUNTIME})
+_DEFAULT_SCOPE = SCOPE_TRADING
 
 # `enable` is the only verb here with a duplicate worth preventing, and it has two of them. The
 # ask shape mints an APPROVAL_REQUIRED record, so a retried frame puts a SECOND pending approval
@@ -141,9 +166,17 @@ _DEFAULT_DISABLE_MODE = "kill"
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"crypto"})
 _DEFAULT_DOMAIN = "crypto"
 
-# The prefix the approved action snapshot must carry. The domain is read from here, never from
-# the request that presents the approval id.
-_SWITCH_TARGET_PREFIX = "trading_switch:"
+# The prefixes an approved action snapshot may carry, and what each one authorizes. The domain
+# is read from here, never from the request that presents the approval id — and now so is the
+# ARM decision. Imported from `permission` rather than spelled again: the module that mints the
+# target_ref owns the string, or the discriminator drifts on one side and stops discriminating.
+#
+# `resume_arms` is the whole difference in effect. It reaches `control.apply_command`, and a
+# False there leaves the trading arm where the stop put it while the runtime goes ACTIVE.
+_TARGET_PREFIX_ARMS: dict[str, bool] = {
+    TRADING_SWITCH_TARGET_PREFIX: True,
+    NONFINANCIAL_RESUME_TARGET_PREFIX: False,
+}
 
 SOCKET_REL = ".runtime_governance_state/bridge/switch.sock"
 SOCKET_ENV = "MVP_SWITCH_BRIDGE_SOCKET"
@@ -254,16 +287,35 @@ def _require_domain(request: dict[str, Any]) -> str:
     return domain
 
 
+def _require_scope(request: dict[str, Any]) -> str:
+    """What this ``enable`` is asking to start. Absent means ``trading`` — see ``_ALLOWED_SCOPES``
+    for why the default is the expensive one."""
+    raw = request.get("scope")
+    if raw is None:
+        return _DEFAULT_SCOPE
+    if not isinstance(raw, str) or not raw.strip():
+        raise ControlBlocked("MALFORMED_REQUEST", "'scope' must be a non-empty string when given")
+    scope = raw.strip().lower()
+    if scope not in _ALLOWED_SCOPES:
+        raise ControlBlocked(
+            "SCOPE_NOT_PERMITTED",
+            f"{scope!r} is not a scope this door starts; it carries "
+            f"{sorted(_ALLOWED_SCOPES)} only",
+        )
+    return scope
+
+
 def _open_ask(
     domain: str,
     reason: str,
     *,
+    scope: str,
     approval_store: ApprovalStore,
     control_store: ControlStore,
     now: str,
     repo_root: Path | None,
 ) -> dict[str, Any]:
-    """Create the APPROVAL_REQUIRED ask for re-arming ``domain`` and return it to the caller.
+    """Create the APPROVAL_REQUIRED ask for starting ``domain`` at ``scope``, and return it.
 
     Anchored to a real bound Task like every other ask (``approval_cli request``), so the
     approval hangs off a Core Binding rather than floating free.
@@ -272,15 +324,29 @@ def _open_ask(
     :func:`stop_ref` for why naming it is what makes the grant describe an effect rather than a
     verb. Reading control state here is a read; it changes nothing, and an ask is still not an
     action.
+
+    ``scope`` picks which record gets built, and that choice is not revisited later: the spend
+    reads the minted ``target_ref``, so what Thomas signed decides the effect. A caller cannot
+    ask for the cheap grant and spend it as the expensive one.
     """
     state = control_store.load()
+    trading = scope == SCOPE_TRADING
     task = build_task(
-        f"자동매매 스위치 재개 검토: {domain}",
+        (f"자동매매 스위치 재개 검토: {domain}" if trading
+         else f"런타임 재개 검토 (거래 재무장 없음): {domain}"),
         now=now, channel="agent", requester_type="agent", requester_id=ASSISTANT_ACTOR,
         authenticated=True,
     )
     _, bound = bind_task_to_core(task, now=now)
-    decision = build_trading_switch_permission_decision(
+    # Resolved here rather than through a module-level {scope: function} table, which would bind
+    # both names at import and make them unpatchable — the switch-door tests substitute these
+    # builders, and a table silently ignored the substitution. Late binding through the module
+    # namespace is also what every other seam in this file does.
+    build = (
+        build_trading_switch_permission_decision if trading
+        else build_nonfinancial_resume_permission_decision
+    )
+    decision = build(
         bound, domain, stop_ref=stop_ref(state), stop_summary=stop_summary(state),
         now=now, repo_root=repo_root,
     )
@@ -291,9 +357,12 @@ def _open_ask(
         "ok": False,
         "reason_code": "APPROVAL_REQUIRED",
         "reason": (
-            f"re-arming {domain} needs Thomas's approval on the control channel; "
-            f"nothing has been changed"
+            (f"re-arming {domain} needs Thomas's approval on the control channel; "
+             f"nothing has been changed") if trading else
+            (f"resuming {domain}'s runtime needs Thomas's approval on the control channel; "
+             f"nothing has been changed. This ask does NOT re-arm live entries")
         ),
+        "scope": scope,
         "approval_id": request["approval_id"],
         "expires_at": request["validity"]["expires_at"],
         "approve_with": f"/approve {request['approval_id']}",
@@ -366,14 +435,20 @@ def _spend(
             f"scope {snapshot.get('permission_scope')} is not a trading-switch grant",
         )
 
-    # The domain comes from what Thomas approved, not from what the caller sent. A grant for
-    # one domain cannot be presented against another, and the frame gets no say in which.
+    # The domain AND the arm both come from what Thomas approved, not from what the caller sent.
+    # A grant for one domain cannot be presented against another, a runtime-resume grant cannot
+    # be spent as a trading re-arm, and the frame gets no say in either — it does not carry
+    # `scope` on this path at all, and if it did it would be ignored in favour of this.
     target_ref = str(snapshot.get("target_ref", ""))
-    if not target_ref.startswith(_SWITCH_TARGET_PREFIX):
+    prefix = next((p for p in _TARGET_PREFIX_ARMS if target_ref.startswith(p)), None)
+    if prefix is None:
         raise ControlBlocked(
-            "TARGET_NOT_SWITCH", f"approval target {target_ref!r} is not a trading switch"
+            "TARGET_NOT_SWITCH",
+            f"approval target {target_ref!r} is neither a trading switch nor a runtime resume",
         )
-    domain = target_ref[len(_SWITCH_TARGET_PREFIX):]
+    resume_arms = _TARGET_PREFIX_ARMS[prefix]
+    scope = SCOPE_TRADING if resume_arms else SCOPE_RUNTIME
+    domain = target_ref[len(prefix):]
     if domain not in _ALLOWED_DOMAINS:
         raise ControlBlocked(
             "DOMAIN_NOT_PERMITTED",
@@ -452,10 +527,11 @@ def _spend(
         outcome = control.apply_command(
             control_store, control.CMD_RESUME, actor=ASSISTANT_ACTOR, now=now,
             reason=f"{reason} [approval {approval_id}]", ledger=ledger,
+            resume_arms=resume_arms,
         )
         consumed = approval_mod.build_consumed_record(
             fresh, decision, consumed_at=now,
-            consumption_ref=f"control:{domain}:{outcome['action']}",
+            consumption_ref=f"control:{domain}:{scope}:{outcome['action']}",
             repo_root=repo_root,
         )
         approval_store.append([consumed])
@@ -469,6 +545,13 @@ def _spend(
         "actor": ASSISTANT_ACTOR,
         "domain": domain,
         "approval_id": approval_id,
+        # Reported from the grant that was actually spent, not from anything the frame said, so
+        # a caller can see which of the two it got. `trading_armed` is read back off the state
+        # the apply just wrote rather than assumed from `resume_arms`: under the preserve rule
+        # a `scope=runtime` spend against an already-armed runtime leaves it armed, and a reply
+        # that claimed otherwise would be the one place this change could lie.
+        "scope": scope,
+        "trading_armed": control_store.load().trading_armed,
     }
 
 
@@ -557,6 +640,17 @@ def apply_switch(
         raise ControlBlocked(
             "MALFORMED_REQUEST", "'approval_id' must be a non-empty string when given"
         )
+    # `scope` chooses which ask to MINT; the spend reads what Thomas signed. Sending both is a
+    # caller believing it is choosing at a point where the choice is already made, and the
+    # dangerous reading is the plausible one: `scope=runtime` beside a trading grant looks like
+    # a downgrade and would in fact re-arm. Refused rather than ignored — this door's rule
+    # everywhere else — so the belief fails loudly instead of being contradicted silently.
+    if approval_id is not None and "scope" in request:
+        raise ControlBlocked(
+            "ARGUMENT_NOT_ACCEPTED",
+            "'scope' selects which approval to ask for and cannot accompany 'approval_id'; "
+            "what an approval authorizes is fixed when it is minted, and spending reads that",
+        )
 
     request_id = bridge_idempotency.request_id_of(request)
     fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
@@ -571,7 +665,7 @@ def apply_switch(
     try:
         if approval_id is None:
             reply = _open_ask(
-                _require_domain(request), reason,
+                _require_domain(request), reason, scope=_require_scope(request),
                 approval_store=approval_store, control_store=control_store,
                 now=now, repo_root=repo_root,
             )
@@ -587,7 +681,8 @@ def apply_switch(
             # is reported, never re-checked here — the check that matters is at the spend.
             outcome = {
                 key: reply.get(key)
-                for key in ("approval_id", "expires_at", "approve_with", "domain", "stop_ref")
+                for key in ("approval_id", "expires_at", "approve_with", "domain", "stop_ref",
+                            "scope")
             }
         else:
             reply = _spend(
@@ -595,7 +690,10 @@ def apply_switch(
                 approval_store=approval_store, control_store=control_store, ledger=ledger,
                 now=now, repo_root=repo_root,
             )
-            outcome = {key: reply.get(key) for key in ("action", "mode", "domain", "approval_id")}
+            outcome = {
+                key: reply.get(key)
+                for key in ("action", "mode", "domain", "approval_id", "scope", "trading_armed")
+            }
     except BaseException:
         # Nothing was applied, so the id names nothing. Note what this does NOT undo: a spend
         # that raised after `control.apply_command` cannot reach here — that call and the

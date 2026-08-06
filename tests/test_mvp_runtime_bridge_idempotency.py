@@ -318,14 +318,14 @@ def asks(tmp_path, monkeypatch):
     store = _FakeApprovalStore(tmp_path)
     minted: list[str] = []
 
-    def _fake_open_ask(domain, reason, *, approval_store, control_store, now, repo_root):
+    def _fake_open_ask(domain, reason, *, scope, approval_store, control_store, now, repo_root):
         approval_id = f"approval_{len(minted)}"
         minted.append(approval_id)
         approval_store.append([{"approval_id": approval_id, "status": approval_mod.STATUS_PENDING}])
         return {
             "ok": False, "reason_code": "APPROVAL_REQUIRED", "reason": "needs Thomas",
             "approval_id": approval_id, "expires_at": "2026-08-05T09:30:00Z",
-            "approve_with": f"/approve {approval_id}", "domain": domain,
+            "approve_with": f"/approve {approval_id}", "domain": domain, "scope": scope,
         }
 
     monkeypatch.setattr(switch_bridge, "_open_ask", _fake_open_ask)
