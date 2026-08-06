@@ -120,6 +120,20 @@ VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 # unknown status) means the position is not protected the way the decision assumed.
 BRACKET_RESTING_STATUSES = frozenset({"NEW"})
 
+# Terminal states that mean "this leg executed". Two spellings for one fact, because a bracket
+# leg is a CONDITIONAL algo order and the Algo endpoint has its own vocabulary: the order
+# endpoint says ``FILLED``, the Algo endpoint says ``FINISHED``.
+#
+# This check was written 2026-07-28 against the order endpoint and was not revisited when
+# brackets moved to `/fapi/v1/algoOrder` on 2026-08-03, so from that day a venue-closed position
+# could never be settled: the stop triggered, the venue said FINISHED, and `== "FILLED"` was
+# false forever. It cost 42 cycles on ETHUSDT before anything looked.
+#
+# The `executed_qty > 0` conjunction at the use site is what keeps this honest — FINISHED is
+# also what a cancelled algo order reports, and that one carries no `actualQty`. Terminal is
+# not the same fact as executed, and only the pair means the leg filled.
+FILLED_STATUSES = frozenset({"FILLED", "FINISHED"})
+
 # The leg's status when the venue ACCEPTED the submit and then could not find the order.
 #
 # Measured 2026-08-03T04:28:58Z, on the first live bracket after the Algo migration: the POST to
@@ -1139,7 +1153,7 @@ def read_bracket_legs(
         leg["resting"] = status in BRACKET_RESTING_STATUSES
         facts = fill_facts(venue_order)
         leg["fill"] = facts
-        leg["filled"] = status == "FILLED" and (_f(facts.get("executed_qty")) or 0.0) > 0
+        leg["filled"] = status in FILLED_STATUSES and (_f(facts.get("executed_qty")) or 0.0) > 0
         legs.append(leg)
 
     if unknown:
