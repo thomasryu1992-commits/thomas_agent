@@ -1249,6 +1249,20 @@ absence is compliance.
       stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
       agent cannot hold the three. See `BUILD_HISTORY.md`.
 
+- [ ] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
+      awaiting a Thomas decision.** `control.ControlState` has one global dimension, so the switch
+      door's `enable` has exactly one effect: `CMD_RESUME`, which restores the analysis path and
+      the live order path together. The assistant's only key to a halted runtime is therefore the
+      **RED** `runtime.trading.enable` approval — correctly labelled, and used for doors it was
+      not minted for. The design, the evidence it rests on (only two consumers of
+      `execution_allowed` gate trading; exits are already ungated by construction) and the five
+      decisions it needs are in
+      [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
+      **Nothing is implemented, and nothing should be until D1–D5 are answered** — it adds a
+      dimension to the one kill switch this runtime has, on a machine that trades live.
+      Not the same thing as PR #535's `DOMAIN_EFFECT_MISMATCH` tripwire, which covers the
+      *domain* axis of that same state and is already handled.
+
 Also raised and closed 2026-07-27: `docs/ACTIVE_ARCHITECTURE.md` — the document `CLAUDE.md` names
 as the owner of current-implementation truth — still described the pre-R2 repository (baseline
 I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety State block listing
@@ -2290,6 +2304,36 @@ incident: constants that encode an **operator decision or a cost premise** (prom
 lifecycle windows, fee/slippage assumptions, stop and sizing multiples) — perhaps 30-50 values.
 Give those one owner with the premise recorded beside each, and leave pure mechanics
 (buffer sizes, retry counts, format widths) where they are.
+
+**First slice done 2026-08-06 — `crypto/tunables.py`, 55 constants, and no value moved.**
+The count was **656** by then, not 602: the population grew by 54 in four days, which is the
+argument for the test rather than the index.
+
+The index **imports** each constant from its owner instead of copying it, so it cannot be wrong
+about a number, and carries the one thing the comment beside it does not say — **provenance**:
+where the value came from and what would reopen it. Values stay put because §G1 says a 602-value
+sweep is unreviewable, and for a second reason: in this package the argument lives in a dense
+comment beside the constant, and moving the number would separate every value from its own
+reasoning.
+
+**What reading it the first time found.** Provenance splits **26 `INHERITED`** / 9 `DERIVED` /
+9 `OPERATOR` / 6 `MEASURED` / 5 `VENUE` — and **the four numbers that stop the money are all
+INHERITED**. `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`, `MAX_CONSECUTIVE_LOSSES` and
+`MAX_DRAWDOWN_PCT` are the predecessor system's `config/settings.py` values, carried across and
+never examined against this runtime's own record — while the cost model, the ladder and the
+promotion door have each been re-measured more than once. That is not a bug and no number is
+obviously wrong; it is that the halt thresholds are the least-examined values in the package,
+and nothing said so before. A test pins the finding so it cannot stop being true silently.
+
+**The teeth are a coverage test, not the index.** A decision-shaped constant appearing in a swept
+module must be indexed with its provenance or named in `MECHANICS` with a reason — so a new
+threshold on the money path cannot be added without recording where the number came from. It
+caught four on its first run. Twelve modules are swept and the rest of the package deliberately
+is not; the boundary is a list in the test rather than an implication.
+
+**What is still open here:** the unswept modules (`features.py` alone holds 37 numeric
+constants, mostly indicator windows), and the `INHERITED` breakers themselves — indexing them
+records that nobody has decided them, which is not the same as deciding them.
 
 ### G2. The dead capability lane — 3,311 LOC, zero importers
 

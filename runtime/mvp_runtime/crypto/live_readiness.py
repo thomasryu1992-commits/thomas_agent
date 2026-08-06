@@ -259,9 +259,20 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     try:
         state = ControlStore(root).load()
         runtime_active, runtime_detail = state.execution_allowed, f"runtime is {state.mode}"
+        trading_armed = state.trading_armed
+        armed_detail = (
+            "armed" if trading_armed else
+            "DISARMED - the runtime resumed without re-arming live entries; open positions "
+            "still close and paper is unaffected"
+        )
     except MvpRuntimeError as exc:
         runtime_active, runtime_detail = False, f"control state unreadable ({exc.reason_code})"
+        trading_armed, armed_detail = False, f"control state unreadable ({exc.reason_code})"
     checks.append(_check("runtime_active", runtime_active, runtime_detail))
+    # 5b. The arm, as its own row. Folding it into `runtime_active` would make one FAIL mean two
+    # different situations with different fixes — a kill needs a resume, a disarm needs a
+    # re-arm — and this board exists so an operator does not have to guess which.
+    checks.append(_check("trading_armed", trading_armed, armed_detail))
 
     # Whether an account feed is configured at all. Computed here rather than at row 8 because
     # row 6's loss breaker needs the same answer first: it is what decides whether this board
