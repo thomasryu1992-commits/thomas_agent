@@ -1242,6 +1242,16 @@ RETIRED_FAMILIES = frozenset({
 OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
                          "oi_unwind_long", "oi_unwind_short"})
 
+# Families whose entry rules read the funding columns — same gate as `OI_FAMILIES`, against a
+# different series, and **it binds today at 1d**. The funding fetch reaches ~1,067 days
+# (`market_data.funding_history_days`); 1h and 4h replay 1,000 and are covered, 1d replays
+# `MIN_FACTORY_BARS` = 2,000 BARS = 2,000 days and is covered **53%**. Identical defect to the
+# one `_oi_feed_reaches` was written for, on the identical timeframe, missed because that fix
+# named only the OI series. Caught before it cost anything: the store holds 44 `funding_fade_*`
+# candidates and **none at 1d** — 1d rejoined the rotation on 2026-08-04 and the cursor has not
+# reached this block yet, which it would have within ~9 fires.
+FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
+
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
 #
@@ -1360,6 +1370,41 @@ def _oi_feed_reaches(timeframe: str) -> bool:
     return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
 
 
+def _replay_days(timeframe: str) -> float | None:
+    """Calendar days the factory replays at ``timeframe``, or ``None`` for an unknown one."""
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return None
+    return market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+
+
+def _funding_feed_reaches(timeframe: str) -> bool:
+    """Does the funding series' depth span what the factory replays at ``timeframe``?
+
+    :func:`_oi_feed_reaches` for a different series, and written because that one's docstring
+    describes a failure the funding leg was one constant away from repeating. The OI gap went
+    unseen for six days because the window moved (`MIN_FACTORY_BARS`) while the feed depth did
+    not; funding is bound by **two** constants rather than one — the records asked for and what
+    the pager can serve — so it has two ways to be left behind rather than one.
+
+    **It binds now, at 1d.** `market_data.funding_history_days()` is ~1,067 days; 1h and 4h
+    replay 1,000 and pass, while 1d replays `MIN_FACTORY_BARS` = 2,000 bars = 2,000 days and
+    fails at 53% coverage. No 1d `funding_fade_*` candidate exists yet — the rotation cursor has
+    not reached that block since 1d came back on 2026-08-04 — so this closes the defect one
+    fire ahead of it rather than after, which is the difference from the OI case.
+
+    What it prevents is specific and is **not** caught by `unsuppliable_features`: that refuses a
+    column that is None on EVERY row, while a feed short of the window is populated on the newest
+    part of it. The consequence is the one `_oi_feed_reaches` documents — every trade lands in
+    the newest walk-forward slice, `temporal_consistency` is 0 by construction, and the family is
+    retired FRAGILE for a window that had no data in it.
+    """
+    replay_days = _replay_days(timeframe)
+    if replay_days is None:
+        return False
+    return replay_days <= market_data.funding_history_days()
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1424,6 +1469,7 @@ def templates_for_timeframe(
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
     has_oi_history = _oi_feed_reaches(timeframe)
+    has_funding_history = _funding_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1441,6 +1487,8 @@ def templates_for_timeframe(
         if template.family in POSITIONING_FAMILIES and not positioning_eligible:
             return False
         if template.family in OI_FAMILIES and not has_oi_history:
+            return False
+        if template.family in FUNDING_FAMILIES and not has_funding_history:
             return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.

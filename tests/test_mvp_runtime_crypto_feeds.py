@@ -243,14 +243,27 @@ def test_cycle_survives_degraded_funding(tmp_path):
 # --- factory can mint funding specs -------------------------------------------
 
 def test_funding_fade_templates_generate_and_validate():
-    """One batch is a rotating WINDOW onto the family library, not the whole of it, so
-    cover a full pass (5 batches x 4 = the 20 families) rather than assuming a single
-    generation happens to land on funding_fade."""
+    """One batch is a rotating WINDOW onto the family library, not the whole of it, so cover a
+    full pass rather than assuming a single generation lands on funding_fade.
+
+    **Mined at 4h now, not 1d, and the move is the finding rather than a fixture tweak.** This
+    asked for 1d, which was right while every timeframe replayed the same 500-day span. It is
+    not now: `MIN_FACTORY_BARS` floors 1d at 2,000 BARS — 2,000 days — while the funding fetch
+    reaches ~1,067 (`market_data.funding_history_days`), so `factory._funding_feed_reaches`
+    refuses the family there. Keeping the old assertion would be asserting that a family may be
+    mined over a window its feed covers half of."""
     specs = []
-    for n in range(5):
-        specs.extend(generate_batch(f"GEN-{n:03d}", seed=5, timeframe="1d")["specs"])
+    for n in range(6):
+        specs.extend(generate_batch(f"GEN-{n:03d}", seed=5, timeframe="4h")["specs"])
     families = {s["strategy_family"] for s in specs}
     assert {"funding_fade_long", "funding_fade_short"} <= families
+    # And the gate is what moved it: 1d cannot mint them however many passes are taken.
+    assert not any(
+        f.startswith("funding_fade")
+        for n in range(6)
+        for f in (s["strategy_family"] for s in generate_batch(
+            f"GEN-{n:03d}", seed=5, timeframe="1d")["specs"])
+    )
     for spec_dict in specs:
         if spec_dict["strategy_family"].startswith("funding_fade"):
             verdict = validate_strategy(StrategySpec.from_dict(spec_dict))
