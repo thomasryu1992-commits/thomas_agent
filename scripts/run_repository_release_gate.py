@@ -19,10 +19,6 @@ from lib.release_gate_evidence import repository_source_fingerprint, write_gate_
 # scripts/validate_operations_evidence_executor_intake.py
 # scripts/validate_control_supervision_threshold_sandbox.py
 # scripts/validate_i0_5_1_runtime_promotion_readiness.py
-# scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
-# scripts/validate_i0_5_3_runtime_entry_authorization.py
-# scripts/validate_i0_5_4_protected_governance_state.py
-# scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATION_PYTHON = os.environ.get("THOMAS_VALIDATION_PYTHON", sys.executable)

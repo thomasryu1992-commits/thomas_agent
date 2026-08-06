@@ -74,9 +74,6 @@ families:
     - 05_REGISTRIES/I0_5_3_RUNTIME_ENTRY_AUTHORIZATION_COMPONENTS_REVIEW_ONLY.yaml
     - 05_REGISTRIES/I0_5_4_PROTECTED_GOVERNANCE_STATE_COMPONENTS_REVIEW_ONLY.yaml
     - 05_REGISTRIES/I0_5_5_SINGLE_READ_ONLY_ENTRY_INTEGRATION_COMPONENTS_REVIEW_ONLY.yaml
-    implementation_candidates:
-    - runtime/read_only_entry/
-    - runtime/protected_governance_state/
     contracts:
     - contract_ref: docs/runtime-contracts/RUNTIME_COMPONENT_ATTESTATION_CONTRACT_V0.1.md
       schema_ref: schemas/runtime_component_attestation.v0.1.schema.json
@@ -113,10 +110,6 @@ families:
       required_field_parity: false
     detailed_validators:
     - - scripts/validate_i0_5_1_runtime_promotion_readiness.py
-    - - scripts/validate_i0_5_2_runtime_authoritative_read_only_entry.py
-    - - scripts/validate_i0_5_3_runtime_entry_authorization.py
-    - - scripts/validate_i0_5_4_protected_governance_state.py
-    - - scripts/validate_i0_5_5_disabled_single_read_only_entry_integration.py
     threat_notes:
     - approval_replay
     - entry_replay
