@@ -103,7 +103,7 @@ def test_the_score_never_sees_the_holdout_bars():
 # total of spread s*sqrt(n/P), and dividing that by sqrt(P) returns e*sqrt(n)/s — the same t.
 # So these fixtures differ from the trade test only by the t-vs-z correction, which is the
 # honest baseline: any further divergence in production is real period correlation.
-_PERIOD_SHAPE = (-1.26, -0.63, 0.0, 0.63, 1.26)
+_PERIOD_SHAPE = (-1.4863, -1.156, -0.8257, -0.4954, -0.1651, 0.1651, 0.4954, 0.8257, 1.156, 1.4863)
 
 
 def _tail(closed=MIN_HOLDOUT_TRADES, expectancy=0.0, stdev=1.0, periods=True):
@@ -175,7 +175,8 @@ def test_one_lucky_period_cannot_buy_a_confirmation():
     +0.459, so the same weeks are good or bad for everything at once. This block clears the
     trade-level bar comfortably and its entire edge sits in one slice of the tail."""
     lucky = {"closed_count": 100, "expectancy": 0.30, "total_R": 30.0, "stdev_r": 1.4,
-             "period_r": [29.6, 0.2, -0.1, 0.2, 0.1], "period_trades": [20, 20, 20, 20, 20]}
+             "period_r": [29.3, 0.1, -0.1, 0.1, 0.1, -0.1, 0.2, 0.1, 0.2, 0.1],
+             "period_trades": [10] * 10}
     trade_t = 0.30 / (1.4 / math.sqrt(100))
     assert trade_t > CONFIDENCE_Z, "fixture must clear the OLD gate, or it proves nothing"
     assert holdout_status(lucky) == HOLDOUT_INSUFFICIENT
@@ -203,8 +204,9 @@ def test_a_period_that_traded_nothing_is_not_a_break_even_observation():
     would shrink the spread with data nobody measured, which is the same free-precision the
     zero-width interval rule already refuses."""
     sparse = {"closed_count": 60, "expectancy": 0.35, "total_R": 21.0, "stdev_r": 1.0,
-              "period_r": [7.0, 6.0, 0.0, 4.0, 4.0], "period_trades": [20, 20, 0, 10, 10]}
-    # Four traded slices remain, which is exactly the floor — dropping to three refuses.
+              "period_r": [3.5, 3.0, 0.0, 2.0, 2.0, 2.5, 3.0, 0.0, 2.5, 2.5],
+              "period_trades": [8, 8, 0, 5, 5, 6, 8, 0, 5, 5]}
+    # Eight traded slices remain, which is exactly the floor — dropping to seven refuses.
     assert holdout_status(sparse) == HOLDOUT_CONFIRMED
     thinner = {**sparse, "period_trades": [20, 20, 0, 10, 0]}
     assert holdout_status(thinner) == HOLDOUT_INSUFFICIENT
