@@ -2279,6 +2279,84 @@ feature or backtest path" by design — so running it means adding fetch volume 
 cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
 of a method.
 
+### F7. The hold is drawn in bars and the retiming only swaps the label — measured 2026-08-06, 86 rows
+
+F1 ends on the count of rows a fire produces that can be judged at all, and that count fell as
+the rotation moved: `MIN_HOLDOUT_TRADES` was cleared by 84 of a fire's rows on 07-31 and by 5 of
+20 on 08-06. The cause is not the tier and not the entry rules. **`templates_for_timeframe`
+returns `replace(t, timeframe=timeframe)`** — it swaps the label and leaves the generation space
+alone — so `_EXIT_PARAMS`' `max_holding_bars` of 12–48 draws 12–48 **hours** at 1h and 12–48
+**days** at 1d. Measured over the 86 rows minted on the current window, the holds that produced:
+
+| timeframe | hold, bars (min/med/max) | the same hold in days |
+|---|---|---|
+| 1h | 9 / 24 / 34 | 0.4 / **1.0** / 1.4 |
+| 4h | 6 / 16 / 36 | 1.0 / **2.8** / 6.0 |
+| 1d | 6 / 26 / 37 | 6.0 / **26.0** / 37.0 |
+
+**A hold occupies its bars, so the exit geometry sets a ceiling the entry rule cannot lift** —
+`holdout_bars / max_holding_bars` is the most trades a tail can close:
+
+| tf | holdout bars | median hold | **ceiling** | actual | ceiling used | **ceiling < floor** |
+|---|---|---|---|---|---|---|
+| 1d | 600 | 26 | **23** | 16 | 77% | **55%** |
+| 4h | 1,800 | 16 | 109 | 17 | 22% | 0% |
+| 1h | 7,200 | 24 | 307 | 91.5 | 39% | 0% |
+
+**The two slow tiers fail for opposite reasons and only one of them is this.** At 1d the median
+ceiling sits *below* `MIN_HOLDOUT_TRADES` itself, 55% of rows cannot reach the floor whatever
+they signal, and the 77% utilisation says the entry rule is already firing near that ceiling —
+nothing about entry conditions moves it. At 4h the ceiling is 109 against a floor of 25 and only
+22% of it is used: that is a **signal-rate** problem, it is not addressed here, and the lever
+already measured against it is F2's `backtest_spec_pooled` (4h holdout tail 32 → 169, judgeable
+9/12 → 12/12), still unused by the factory.
+
+**Deepening the window is not available at 1d.** `MIN_FACTORY_BARS` already floors it at 2,000
+bars and that constant's own note records why it cannot rise — the shortest routed history is
+~2.1k daily bars (SOLUSDT), so a higher floor would score a window the venue never served. F1's
+*"re-measure `factory_candle_target` first"* is spent at this tier.
+
+**What landed — the narrow version** (`judgeable_holding_bars`, `_judgeable_hold_space`). The
+hold space is capped at `holdout_bars // MIN_HOLDOUT_TRADES`, which binds **1d only** on today's
+ladder (600 // 25 = 24 against a space topping at 48; 4h yields 72 and 1h 288, both above their
+spaces). It removes the band whose ceiling is below the floor and nothing else: the claim is
+*"this spec's own geometry makes its holdout unjudgeable"*, which is `_fuse_batch`'s "scored
+candidate that can never trade" one notch weaker, and the same shape as
+`MAX_FUSION_ENTRY_CONDITIONS` — a second bound beside the validator's `MAX_HOLDING_BARS_RANGE`,
+which answers whether the hold is *legal* rather than whether the result can be *judged*.
+It bounds the DRAW rather than the centre, so a pre-bound 1d elite at 37 bars is folded back
+inside rather than escaping through `elite_base_params`. Fusion needs no matching change: a
+child's hold is its parents' midpoint, and a parent long enough to breach the cap cannot parent
+at all — `holdout_permits_parenting` wants the judgeable holdout its own geometry denies it.
+
+**The wide version is deliberately not taken.** Re-expressing the hold as a calendar span — the
+`factory_candle_target` precedent, and the real fix for the *cause* — would move 4h and 1h too,
+on a design intent nothing in this repo ever recorded. Which timeframe the 12–48 was chosen
+against is not written down anywhere, and guessing it changes every tier.
+
+**What this does not claim.** The bound removes rows that *cannot* reach the floor; it does not
+make rows reach it. Whether a 1d spec closes 25 trades still depends on its signal rate, and at
+the cap the ceiling is exactly 25 — a spec would have to trade back-to-back to hit it. Expect
+the 1d judgeable share to rise off 22% and not to reach 1h's 83%. **Judged over generations, not
+days** (the `#420` error; this is a mint-time change).
+
+**One number to record so nobody chases it here.** The entry cost door refuses **26.2%** of 1h
+triggers and **0%** at 4h and 1d — real, and not part of this.
+
+**Read this beside #566, which landed the same day and moves what it applies to.** That record
+froze the **1h** tier (5 `crypto_factory` schedules disabled, 15 → 10), on a null control showing
+its entry contributes nothing — real −0.1059R against random −0.1093R over 135 contexts. So the
+factory now mines **4h and 1d only**: the two tiers this section measures as broken, and the one
+tier whose judgeable share was healthy (83%) is no longer minted. That raises the value of the
+bound above and it does not change the finding.
+
+It also bounds what the bound is worth. #566 measures the promotion gate as a tool that can only
+confirm effects of **+0.48R or larger** after the selection correction, against a real target of
+~+0.05R and a holdout median of 34 trades where confirming +0.05R would need ~9,208. Judgeability
+is a precondition for learning anything, not a route to a verdict: of the 463 rows judgeable
+today, **462 are CONTRADICTED and 0 CONFIRMED**. Nothing here should be read as expecting that to
+move.
+
 ## G. Codebase review backlog — measured 2026-08-02; G1 sliced, **G2 done**, G3 open
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded

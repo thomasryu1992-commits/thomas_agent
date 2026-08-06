@@ -1428,6 +1428,88 @@ def _funding_feed_reaches(timeframe: str) -> bool:
     return replay_days <= market_data.funding_history_days()
 
 
+# The longest hold whose own holdout can still produce a judgeable sample, in bars.
+#
+# **The generation spaces are written in BARS and the retiming only swaps the label.**
+# `templates_for_timeframe` returns `replace(t, timeframe=timeframe)`, so `_EXIT_PARAMS`'
+# `max_holding_bars` of 12-48 draws 12-48 HOURS at 1h and 12-48 DAYS at 1d — the same number
+# standing for a calendar span 24x apart, which nobody chose. Measured 2026-08-06 over the 86
+# rows minted on the current window, holds came out at 1h 0.4-1.4 days (median 1.0), 4h 1.0-6.0
+# (2.8) and 1d 6-37 (**26**).
+#
+# What that costs is the tier's whole judgeability. A hold occupies its bars, so the most trades
+# a holdout can close is `holdout_bars / max_holding_bars` — an exit-geometry ceiling the entry
+# rule cannot lift:
+#
+#   | tf | holdout bars | median hold | ceiling | actual | ceiling used | ceiling < floor |
+#   |----|--------------|-------------|---------|--------|--------------|-----------------|
+#   | 1d |          600 |          26 |  **23** |     16 |          77% |         **55%** |
+#   | 4h |        1,800 |          16 |     109 |     17 |          22% |              0% |
+#   | 1h |        7,200 |          24 |     307 |   91.5 |          39% |              0% |
+#
+# At 1d the median ceiling is **below `MIN_HOLDOUT_TRADES` itself**, 55% of rows cannot reach the
+# floor whatever they signal, and the 77% utilisation says the entry rule is already firing near
+# that ceiling. 4h fails for the opposite reason — ceiling 109 against a floor of 25, and only
+# 22% of it used — which is a signal-rate problem and NOT what this bound addresses.
+#
+# **Deepening the window is not available at 1d.** `MIN_FACTORY_BARS` already floors it at 2,000
+# bars, and that constant's own note records why it cannot rise: the shortest routed history is
+# ~2.1k daily bars (SOLUSDT), so a higher floor would score a window the venue never served.
+# `REMAINING_WORK.md` F1's "re-measure `factory_candle_target` first" is spent here.
+#
+# **This is the narrow version, and the wide one is deliberately not taken.** Re-expressing the
+# hold as a calendar span — the `factory_candle_target` precedent, which is the real fix for the
+# cause — would move 4h and 1h as well, on an intent nothing in this repo recorded. This bound
+# claims only what the table measures: a spec whose exit geometry makes its own holdout
+# unjudgeable is the `_fuse_batch` "scored candidate that can never trade" defect one notch
+# weaker, and refusing it at mint costs nothing that was ever judgeable. Same shape as
+# `MAX_FUSION_ENTRY_CONDITIONS`, which removes only its own measured-zero band and leaves the
+# validator's `MAX_HOLDING_BARS_RANGE` alone — that one answers "is this hold legal", this one
+# answers "can the result be judged".
+#
+# It binds **1d only** on today's ladder (600 // 25 = 24 against a space topping at 48); 4h
+# yields 72 and 1h 288, both above their spaces. Fusion needs no matching change: a child's hold
+# is its parents' midpoint, so two capped parents cannot exceed the cap, and a pre-cap parent
+# long enough to breach it cannot parent at all — `holdout_permits_parenting` requires the
+# judgeable holdout its own geometry denies it.
+def judgeable_holding_bars(timeframe: str) -> int:
+    """The longest ``max_holding_bars`` whose holdout can still close ``MIN_HOLDOUT_TRADES``.
+
+    Reads the window through the same two functions the replay does
+    (:func:`market_data.factory_candle_target`, :func:`holdout_split_index`) rather than
+    restating the split, so a change to either reaches this bound without being copied."""
+    total = market_data.factory_candle_target(str(timeframe))
+    holdout_bars = total - holdout_split_index(total)
+    return max(1, holdout_bars // MIN_HOLDOUT_TRADES)
+
+
+def _judgeable_hold_space(
+    template: StrategyTemplate, cap: int,
+) -> StrategyTemplate | None:
+    """``template`` with its hold narrowed to ``cap``, or None if it cannot fit inside it.
+
+    None means the family's SHORTEST legal hold already exceeds what this timeframe can judge,
+    so every draw would be unjudgeable by construction — the same answer, for the same reason,
+    that the feed gates above give a family whose columns this timeframe cannot supply. It does
+    not fire on today's ladder (the shortest space starts at 4 against a 1d cap of 24) and is
+    here so that a future window or floor cannot turn the bound into a space with ``lo > hi``."""
+    spec = template.param_space.get("max_holding_bars")
+    if spec is None or spec.hi <= cap:
+        return template
+    if spec.lo > cap:
+        return None
+    return replace(
+        template,
+        param_space={**template.param_space,
+                     "max_holding_bars": replace(spec, hi=float(cap))},
+        # The centre has to live inside its own space: `mutate_params` folds a centre outside
+        # the bounds back in, so leaving it out would not produce an illegal draw — it would
+        # aim the family somewhere nobody chose. Only this parameter moves.
+        base_params={**template.base_params,
+                     "max_holding_bars": min(template.base_params["max_holding_bars"], cap)},
+    )
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1519,7 +1601,16 @@ def templates_for_timeframe(
             return False
         return True
 
-    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES if _minted(t))
+    # Applied on the way out rather than as another `_minted` clause, because it is not an
+    # eligibility question: every family above may be minted here, and this narrows the SPACE
+    # one of their parameters is drawn from. The None case is the exception and it drops the
+    # family for the reason `_judgeable_hold_space` states.
+    cap = judgeable_holding_bars(timeframe)
+    retimed = (
+        _judgeable_hold_space(replace(t, timeframe=timeframe), cap)
+        for t in TEMPLATES if _minted(t)
+    )
+    return tuple(t for t in retimed if t is not None)
 
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
