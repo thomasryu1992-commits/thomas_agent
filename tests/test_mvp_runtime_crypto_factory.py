@@ -1116,7 +1116,13 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path, monkeyp
     assert summary["fired"] == 1
     assert summary["results"][0]["status"].startswith("generated=")
     candidates = pool.read_candidates(tmp_path)
-    assert len(candidates) == 4  # mock collector data is fine for MINING (not trading)
+    # `DEFAULT_BATCH_SIZE` seeded plus the whole of `FACTORY_FUSION_PAIRS` drawn again as
+    # seeded, because the FIRST fire has no durable parents and so mints nothing fused. Four
+    # here — the number this asserted before the shortfall draw existed — is now the reading
+    # that would mean the fusion half of the budget had been discarded.
+    # (mock collector data is fine for MINING, not for trading)
+    assert len(candidates) == 8
+    assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4")
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert any(r["kind"] == "crypto_factory" for r in rows)
@@ -1727,6 +1733,83 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
     assert result["fusion_rejected"] == [
         {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
     ]
+
+
+# --- the allocation fusion declined -------------------------------------------
+
+def _declined_fusion_runs(tmp_path, *, count=2, pairs=2):
+    """The same fire with the fusion allocation off and on, over parents whose only pair is
+    refused — so the difference between the two results is the shortfall draw and nothing
+    else. Returns ``(control, result)``."""
+    parents = _two_durable_parents(tmp_path)  # their child does not clear the improvement bar
+    kwargs = dict(active_pool={"active_strategies": []}, existing_candidates=parents, now=NOW,
+                  count=count)
+    return (run_factory(_trending_snapshot(), fusion_pairs=0, **kwargs),
+            run_factory(_trending_snapshot(), fusion_pairs=pairs, **kwargs))
+
+
+def test_the_allocation_fusion_declined_is_drawn_again_as_seeded(tmp_path):
+    """A dry fusion used to hand its slots back to nobody, and that went from invisible to
+    dominant the moment the two parent-child rules landed: measured on the live scheduler
+    ledger, children minted per context went **4.00 a fire** (07-31 -> 08-04) to **0.40**
+    (08-05, first fire under `FUSION_IMPROVEMENT_METRICS`) to **0.00** (08-06) — 20 rows
+    minted where the budget allowed 40."""
+    control, result = _declined_fusion_runs(tmp_path)
+    assert result["fused_count"] == 0, "the fixture must exercise the DECLINED path"
+    assert result["seeded_topup_count"] == 2
+    assert result["accepted_count"] == control["accepted_count"] + 2
+    assert result["batch_complete"]
+    assert len(result["candidates"]) > len(control["candidates"])
+    # A draw's KIND does not change with which half of the budget paid for it.
+    assert all(c["derivation_type"] == "seeded_template" for c in result["candidates"])
+    # The batch's own hashes reach the shortfall draw's duplicate guard, so a second draw
+    # landing on the same rules is refused rather than stored twice — a different seed alone
+    # would make that unlikely rather than impossible.
+    hashes = [c["strategy_rule_hash"] for c in result["candidates"]]
+    assert len(set(hashes)) == len(hashes)
+    assert pool.append_candidates(result["candidates"], root=tmp_path) == len(result["candidates"])
+
+
+def test_a_filled_fusion_allocation_leaves_no_shortfall_to_draw(tmp_path):
+    """The draw only ever re-spends what fusion declined, which is what makes it unable to
+    cut a good fusion — the distinction from lowering `FACTORY_FUSION_PAIRS`."""
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    assert result["fused_count"] == 1
+    assert result["seeded_topup_count"] == 0
+    assert result["accepted_count"] == 1
+
+
+def test_a_fire_that_never_allocated_fusion_draws_no_shortfall():
+    """`fusion_pairs=0` is still exactly the old behaviour, front to back."""
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["seeded_topup_count"] == 0
+    assert result["accepted_count"] == result["requested_count"] == 4
+
+
+def test_the_shortfall_draw_stays_on_this_fires_own_rotation_slice(tmp_path):
+    """`_rotation_offset` is `(step + phase) * count`, so `count` is what fixes WHICH families
+    a fire mints. Asking for the shortfall directly would land the draw on the slice belonging
+    to some other fire and leave this one's families half-explored — so the draw passes `count`
+    and `rotation_index` unchanged and keeps only the shortfall of what comes back."""
+    control, result = _declined_fusion_runs(tmp_path)
+    this_slice = {c["strategy_spec"]["strategy_family"] for c in control["candidates"]}
+    assert result["fused_count"] == 0 and len(result["candidates"]) > len(control["candidates"])
+    assert this_slice, "the control fire must actually mint something to compare against"
+    assert {c["strategy_spec"]["strategy_family"] for c in result["candidates"]} <= this_slice
+
+
+def test_the_shortfall_draw_is_reproducible_from_the_recorded_window(tmp_path):
+    """Its seed is the next eight hex digits of the same window hash the batch seeded from,
+    so the second draw is as replayable as the first and no clock enters."""
+    parents = _two_durable_parents(tmp_path)
+    kwargs = dict(active_pool={"active_strategies": []}, existing_candidates=parents,
+                  now=NOW, count=2, fusion_pairs=2)
+    a = run_factory(_trending_snapshot(), **kwargs)
+    assert a["seeded_topup_count"] == 2, "the shortfall path has to actually be exercised"
+    assert a == run_factory(_trending_snapshot(), **kwargs)
 
 
 # --- the improvement bar: a child is stored only when it beats its parents -----

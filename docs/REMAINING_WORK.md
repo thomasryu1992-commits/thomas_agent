@@ -1566,6 +1566,44 @@ budget number above is now a ceiling that no longer binds. Lowering the constant
 fusions with bad ones; this cuts only the ones that lost to a parent, which is what the
 measurement actually said to do.
 
+**"The budget is untouched" was the half of it that was wrong, and one more fire showed it —
+2026-08-06.** Untouched by the *rule*, yes; unspent in fact. The allocation had no other
+claimant, so every pair fusion refused was a mint the fire simply did not make:
+
+| fired | contexts | seeded | fused | fused/context |
+|---|---|---|---|---|
+| 2026-07-31 → 08-03 | 15 | 60 | 60 | 4.00 |
+| 2026-08-05 | 15 | 60 | 6 | 0.40 |
+| **2026-08-06** | 5 | 20 | **0** | **0.00** |
+
+The 08-06 fire recorded `generated=4/4 fused=0` on all five contexts — 20 rows where the budget
+allowed 40 — and the binding constraint had already moved. On 08-05 it was the child bar (92
+attempts, 6 stored, `no_expectancy_gain` 46 / `champion_score_regression` 11). On 08-06 it was
+the **parent pool**: 10 attempts in total, because `holdout_permits_parenting` leaves 218 of the
+store's 1,681 rows able to parent and only **24** of those are 1d, which was that fire's whole
+rotation slot. Neither is a defect to loosen — both are the rules doing what they were merged to
+do — and both leave the seeded half carrying the search alone.
+
+**Closed by the shortfall draw** (`run_factory`, `seeded_topup_count`): whatever fusion does not
+mint of its allocation is drawn again as seeded specs from **this fire's own rotation slice**,
+so the cursor is untouched and the next fire steps one slice as it always did. It takes nothing
+from fusion — the batch and `_fuse_batch` run first and unchanged, so fusion gets first refusal
+on every pair — which is the distinction from `FACTORY_FUSION_PAIRS = 4 → 2` above: that one
+cuts good fusions with bad, this one cannot cut any. **Judge it over generations, not days**
+(the `#420` error, and this is a mint-time change). What it has to move is the count of rows a
+fire produces that can be judged at all — `MIN_HOLDOUT_TRADES` was cleared by 84 of a fire's
+rows on 07-31 and by 5 of 20 on 08-06.
+
+**What it does not address, stated so the two are not confused.** This recovers the *volume* a
+fire mints; it does nothing about the *share* of a mint that can be judged, which fell over the
+same days for an unrelated reason. `MIN_HOLDOUT_TRADES` is one absolute constant and the
+rotation moved off the tiers that can reach it — seeded median holdout trades by timeframe on
+today's store: **15m 91–356, 1h 44–121, 4h 12–18.5, 1d 10–17.5**, against a floor of 25. The
+08-06 fire's 1d cohort medians **14.5**. The rotation is `schedules.jsonl`, which is
+per-machine, so that change has no trace in this repo and no section here owns it yet;
+`backtest_spec_pooled` (F2: 4h holdout tail 32 → 169, judgeable 9/12 → 12/12) is the lever
+already measured against it and still unused by the factory.
+
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
 judgeable, 0 of 25 across the whole store — and it is a **second** bound rather than a change
