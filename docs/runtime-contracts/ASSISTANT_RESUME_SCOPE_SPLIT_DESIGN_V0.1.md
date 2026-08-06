@@ -1,7 +1,7 @@
 # Assistant Resume Scope Split v0.1 — design proposal
 
-**Status:** Proposal. **Nothing is implemented.** No policy, permission, schema, module or test
-file is changed by the PR carrying this document.
+**Status:** PROPOSED — reviewed but unbuilt. **Nothing is implemented.** No policy, permission,
+schema, module or test file is changed by the PR carrying this document.
 **Owner:** Thomas — this needs a decision before any code moves.
 **Authority:** None. The committed policy and `control.py` remain the authority until a change
 actually merges. A design is not an implementation.
