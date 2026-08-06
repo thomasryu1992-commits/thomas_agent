@@ -215,6 +215,34 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         oi_1h = None
         warnings.append(f"hourly OI store unreadable ({exc.reason_code})")
 
+    # **How much of the search still has parents.** Half of every factory fire goes down the
+    # fusion path, and that half is bounded by `rank_fusion_parents` — which four filters now
+    # narrow, three of them added within one day. Measured 2026-08-05 over the 1,661-row store:
+    # 1,661 scoreable, 1,432 after retired families, **176 after `holdout_permits_parenting`**,
+    # 123 after rule-hash dedup. The dominant filter reads the holdout, so the pool shrinks
+    # exactly when the promotion door finds nothing — the narrower the edge search comes up,
+    # the narrower the search gets.
+    #
+    # It reached no surface at all. The 2026-08-05 08:09Z fire produced 6 fusion children
+    # against 40 the day before, six of ten contexts producing none, and the only trace was
+    # `fused=0` inside a schedule's `last_status` string. At zero the fusion path dies in
+    # silence — which is the shape of failure a board exists to break.
+    #
+    # `rank_fusion_parents` is asked directly rather than re-deriving its filters here, so the
+    # number on the board cannot drift from the number the factory draws from. `top_n` is the
+    # store size because the question is how many lineages QUALIFY, not which six rank highest.
+    try:
+        from .factory import rank_fusion_parents
+
+        _candidates = pool.read_candidates(root)
+        fusion_parents = {
+            "eligible": len(rank_fusion_parents(_candidates, top_n=len(_candidates) or 1)),
+            "candidates_read": len(_candidates),
+        }
+    except MvpRuntimeError as exc:
+        fusion_parents = None
+        warnings.append(f"fusion parent pool unreadable ({exc.reason_code})")
+
     # The positioning store's ONLY consumer is this number: it feeds no feature, so progress
     # toward eligibility is the entire visible output of the accumulation. Reported without a
     # warning for the reason the OI line above carries — a shortfall that will be true every
@@ -318,6 +346,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
         "positioning": positioning,
+        "fusion_parents": fusion_parents,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
             "last_inbound_source": inbound["source"] if inbound else None,
@@ -712,6 +741,13 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"       1h OI {oi_1h.get('min_covered_days')}/{oi_1h.get('required_days')}일 "
             f"({state}, 최소 커버 심볼 기준)"
         )
+    parents = status.get("fusion_parents") or {}
+    if parents.get("candidates_read"):
+        n = parents.get("eligible") or 0
+        # Zero is the case this line exists for, so it says so rather than printing a 0 the
+        # eye slides over — the fusion half of every fire is then drawing from nothing.
+        note = "fusion 경로 정지" if n == 0 else f"후보 {parents['candidates_read']}건 중"
+        lines.append(f"       fusion 부모 {n}개 리니지 ({note})")
     positioning = status.get("positioning") or {}
     if positioning.get("cells"):
         state = "적격" if positioning.get("eligible") else "축적 중"
