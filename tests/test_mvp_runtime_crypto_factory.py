@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from runtime.mvp_runtime import control, timeutil
+from runtime.mvp_runtime import control, scheduler, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.crypto import factory, market_data, pool, robustness
 from runtime.mvp_runtime.crypto.factory import (
@@ -33,7 +33,7 @@ from runtime.mvp_runtime.crypto.factory import (
     ParamSpec,
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
-from runtime.mvp_runtime.errors import ToolBlocked
+from runtime.mvp_runtime.errors import ToolBlocked, ToolError
 from runtime.mvp_runtime.scheduler import (
     FACTORY_FUSION_PAIRS,
     KIND_FACTORY,
@@ -1162,6 +1162,196 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     for child in fused:
         assert child["provenance"] == "mvp_factory_fusion"
         assert len(child["parent_candidate_ids"]) == 2
+
+
+# --- what a pass of factory fires costs the venue ------------------------------
+# The context legs read OTHER symbols' series at the REPLAY depth (6,000 bars at 4h), and the
+# five same-timeframe schedules fall due together — so the overlap is BETWEEN fires, where
+# nothing inside a fire can see it. Measured 2026-08-06 before `_PassCandleCache`: 39 reads for
+# 11 distinct series, on the IP the live cycle trades on, which §F4 records producing an
+# HTTP 429. These two pin the size of the win and where it comes from.
+
+_PASS_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT")
+
+
+def _counting_collectors(monkeypatch, reads):
+    """Hand each fire its OWN collector, all reporting to one list of ``(symbol, tf, limit)``.
+
+    A fresh instance per call because that is what production does — `select_market_data_collector`
+    runs per fire — and the pass cache keeps only the FIRST. Sharing one object here would hide
+    a cache that had quietly stopped being shared.
+
+    The derivative-price legs are excluded, and have to be: the MOCK synthesizes mark / index /
+    premium from its own `collect` so the grid cannot drift, while the real collector fetches
+    them from three separate endpoints. Counting those would measure the mock."""
+    class _Counting(market_data.MockMarketDataCollector):
+        def __init__(self):
+            self._derivative = False
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            if not self._derivative:
+                reads.append((symbol, timeframe, limit))
+            return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+        def derivative_price_klines(self, symbol, timeframe, *, kind, limit, timeout_seconds):
+            self._derivative = True
+            try:
+                return super().derivative_price_klines(
+                    symbol, timeframe, kind=kind, limit=limit, timeout_seconds=timeout_seconds)
+            finally:
+                self._derivative = False
+
+    monkeypatch.setattr(market_data, "select_market_data_collector",
+                        lambda **kwargs: _Counting())
+
+
+def _stub_factory(monkeypatch):
+    """Mining is not the subject — the FETCH pattern is, and a real 5x replay is minutes.
+
+    Patched on `factory`, not on `scheduler`: the branch imports the name inside itself, so a
+    scheduler-module attribute is not what it calls."""
+    monkeypatch.setattr(factory, "run_factory", lambda snapshot, **kwargs: {
+        "generation_id": "GEN-000", "candidates": [], "accepted_count": 0,
+        "requested_count": 0, "fused_count": 0, "seeded_topup_count": 0,
+    })
+
+
+def _factory_pass_schedules(store, timeframe):
+    for symbol in _PASS_SYMBOLS:
+        store.add(build_schedule(kind=KIND_FACTORY, request=f"{symbol} {timeframe}",
+                                 interval_seconds=86400, created_by="op",
+                                 now="2026-07-22T10:00:00Z"))
+
+
+def _distinct_series_one_pass_needs(timeframe):
+    """Every (symbol, tf, depth) the five fires genuinely need, counted once.
+
+    Derived from the constants rather than written as a number, so widening the cohort or
+    moving the ladder re-derives the expectation instead of failing on an unrelated change."""
+    target = market_data.factory_candle_target(timeframe)
+    higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
+    series = {(s, timeframe, target) for s in _PASS_SYMBOLS}            # the frames
+    series |= {(p, timeframe, target) for p in market_data.CROSS_SECTION_UNIVERSE}  # the cohort
+    series.add((market_data.REFERENCE_SYMBOL, timeframe, target))      # the proxy — a member
+    if higher:
+        series |= {(s, higher, market_data.factory_candle_target(higher)) for s in _PASS_SYMBOLS}
+    return series
+
+
+def test_one_pass_of_factory_fires_reads_each_series_once(tmp_path, monkeypatch):
+    """The whole point: 39 reads become 11, and no series is fetched twice in a pass.
+
+    Depth is what makes this worth a test rather than a tidy-up — every one of the 28 removed
+    reads was a full replay window (6,000 bars at 4h), paid on the address the live cycle
+    trades on."""
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    reads: list[tuple[str, str, int]] = []
+    _counting_collectors(monkeypatch, reads)
+    _stub_factory(monkeypatch)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    _factory_pass_schedules(store, "4h")
+
+    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                      ledger=None, repo_root=tmp_path)
+
+    assert summary["fired"] == len(_PASS_SYMBOLS), "every schedule still fires"
+    assert len(reads) == len(set(reads)), f"a series was read twice: {reads}"
+    assert set(reads) == _distinct_series_one_pass_needs("4h")
+    # What it was: each fire read its own frame, its HTF, the proxy and five cohort peers,
+    # with nothing shared between them — less the one reference read the proxy's own fire skips.
+    per_fire = 1 + 1 + 1 + (len(market_data.CROSS_SECTION_UNIVERSE) - 1)   # frame, htf, ref, peers
+    before = len(_PASS_SYMBOLS) * per_fire - 1
+    assert before == 39 and len(reads) == 11
+
+
+def test_the_saving_is_the_pass_and_not_the_fire(tmp_path, monkeypatch):
+    """A cache built INSIDE one fire cannot reach this — the redundancy is between fires.
+
+    Worth pinning because a per-fire cache is the obvious shape and it buys almost nothing:
+    the only overlap within a fire is that the proxy is also a cohort member, four reads out
+    of thirty-nine. Run here through the direct `_execute` path, which is exactly a fire with
+    no pass behind it."""
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    reads: list[tuple[str, str, int]] = []
+    _counting_collectors(monkeypatch, reads)
+    _stub_factory(monkeypatch)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    _factory_pass_schedules(store, "4h")
+
+    for schedule in store.list():
+        scheduler._execute(schedule, now="2026-07-23T11:00:00Z", ledger=None,
+                           working_memory=None, programization=None, provider=None,
+                           search_tool=None, repo_root=tmp_path, executor=None)
+
+    # 35 of a possible 11: a per-fire cache recovers 4 of the 28 redundant reads and leaves 24.
+    assert len(reads) == 35, "per fire: frame + htf + five peers, the proxy among them"
+    assert len(set(reads)) == 11, "the same eleven answers, asked for three times over"
+
+
+# --- and what it does when the venue says stop --------------------------------
+# A 429 at this venue is the step BEFORE a 418 IP ban, and what causes the escalation is
+# continuing to knock. `PerRunFeedCache` latches on the first one — and the factory branch had
+# no such wrapper at all, so a refused pass kept knocking through every remaining read on the
+# address the live cycle trades on. The latch belongs to the pass for the same reason the cache
+# does: a per-fire one is re-armed four more times.
+
+def _refusing_collectors(monkeypatch, reads, *, after, reason="TOOL_RATE_LIMITED"):
+    """Collectors that answer ``after`` candle reads, then refuse every one after that."""
+    class _Refusing(market_data.MockMarketDataCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            reads.append((symbol, timeframe, limit))
+            if len(reads) > after:
+                raise ToolError(reason, "venue asked for 17s")
+            return super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(market_data, "select_market_data_collector",
+                        lambda **kwargs: _Refusing())
+
+
+def _run_refused_pass(tmp_path, monkeypatch, *, after, reason="TOOL_RATE_LIMITED"):
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    reads: list[tuple[str, str, int]] = []
+    _refusing_collectors(monkeypatch, reads, after=after, reason=reason)
+    _stub_factory(monkeypatch)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    _factory_pass_schedules(store, "4h")
+    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                      ledger=None, repo_root=tmp_path)
+    return summary, reads
+
+
+def test_one_rate_limited_read_stops_the_rest_of_the_pass(tmp_path, monkeypatch):
+    """The whole pass, not the fire that earned it. Being rate limited is a property of the
+    address, and the next four fires would be knocking on the same one."""
+    summary, reads = _run_refused_pass(tmp_path, monkeypatch, after=3)
+
+    assert len(reads) == 4, f"kept knocking after a 429 ({len(reads)} attempts)"
+    assert [r["status"] for r in summary["results"]] == ["skipped_rate_limited"] * 5
+    assert summary["failed"] == 0, "a throttled pass is a recorded skip, not a failed fire"
+    assert not pool.read_candidates(tmp_path), (
+        "a frame the venue truncated must not be mined: FRAGILE earned by a throttle is "
+        "indistinguishable in the store from FRAGILE earned by the strategy"
+    )
+
+
+def test_an_ordinary_failure_stops_one_series_and_not_the_pass(tmp_path, monkeypatch):
+    """The other direction, and the one a latch gets wrong if it is too eager. A timeout says
+    "try again later"; only a 429 says "stop". One unreachable series must leave the other four
+    fires mining — that is the `attach_cross_section` posture (a thinned cohort is still a
+    cohort) applied one level up."""
+    summary, reads = _run_refused_pass(tmp_path, monkeypatch, after=3, reason="TOOL_TRANSPORT")
+
+    statuses = [r["status"] for r in summary["results"]]
+    assert all(s.startswith("generated=") or s == "skipped_market_data_degraded"
+               for s in statuses), statuses
+    assert "skipped_rate_limited" not in statuses
+    assert any(s.startswith("generated=") for s in statuses), "the pass went blind on a timeout"
+    # Each failed series is remembered and not re-asked — the failure cache — but the reads that
+    # would have succeeded still happened, which is what separates this from the 429 case.
+    assert len(reads) > 4
 
 
 # --- the promotion door -------------------------------------------------------

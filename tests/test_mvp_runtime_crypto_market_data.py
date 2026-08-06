@@ -751,6 +751,28 @@ def test_a_deeper_candle_window_serves_a_shallower_request():
     assert shallow.candles == deep.candles[-120:], "the shallower answer is the deeper one's tail"
 
 
+def test_the_htf_leg_reads_through_the_peer_cache_too():
+    """The HTF leg is the one context leg that reads THIS symbol, so a fan-out over a single
+    timeframe gives it nothing to share and it looks like a leg that does not need a cache.
+
+    It is not, and the case is a `run_due` pass rather than a fan-out: the 4h factory schedules
+    read every symbol at 1d for their HTF, which is exactly the frame the 1d schedules mine.
+    Whether those two groups share a due time is a per-machine schedule fact, so the leg takes
+    the cache unconditionally rather than depending on one."""
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+    inner = _CountingCollector()
+    cache = PeerCandleCache(inner)
+    frame = cache.frame("ETHUSDT", "1d", limit=300, now=NOW)          # the 1d fire's own frame
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "4h", "candles": []}  # the 4h fire, one step down
+    assert cycle.attach_htf(snapshot, collector=inner, now=NOW, limit=300, cache=cache) is None
+
+    assert cache.calls == 1, "the HTF read was already answered by the 1d frame"
+    assert _counts(inner, "collect") == 1
+    assert snapshot["htf_candles"] == frame["candles"]
+    assert snapshot["htf_timeframe"] == "1d"
+
+
 def test_a_shallower_window_never_serves_a_deeper_request():
     """Serving 120 bars to a 240-bar request would silently shorten an indicator's warm-up."""
     inner = _CountingCollector()
@@ -888,6 +910,53 @@ def test_the_latch_covers_every_feed_not_just_the_one_that_tripped_it():
     assert inner.attempts == 1
 
 
+def test_the_latch_covers_a_forwarded_call_it_does_not_memoize():
+    """Memoized and latched are two different questions, and `_MEMOIZED` only answers the first.
+
+    `derivative_price_klines` is keyed by (symbol, timeframe, kind), so every combination is a
+    genuinely different series and memoizing it would be wrong. It still opens a socket to the
+    same address, so it can earn a 429 and must stop after one — and `attach_feeds` fetches
+    three of these per fire at the replay depth, which is more requests than the candles."""
+    class _Derivatives(_RateLimitedCollector):
+        def derivative_price_klines(self, symbol, timeframe, *, kind, limit, timeout_seconds):
+            self._raise()
+
+    inner = _Derivatives()
+    cache = PerRunFeedCache(inner)
+    with pytest.raises(ToolError) as excinfo:
+        cache.derivative_price_klines("BTCUSDT", "4h", kind="mark", limit=6000, timeout_seconds=10)
+    assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    # Both directions: the refusal it reported now stops the candles, and it stops itself.
+    for call in (lambda: cache.collect("ETHUSDT", "4h", limit=6000, timeout_seconds=10),
+                 lambda: cache.derivative_price_klines(
+                     "ETHUSDT", "4h", kind="index", limit=6000, timeout_seconds=10)):
+        with pytest.raises(ToolError):
+            call()
+    assert inner.attempts == 1, f"kept knocking after a 429 ({inner.attempts} attempts)"
+    assert cache.rate_limited is not None
+
+
+def test_a_forwarded_call_is_latched_but_still_not_memoized():
+    """The other half of the distinction: latching must not quietly turn into caching. Three
+    kinds of derivative series are three different answers, and one standing in for another
+    would put the mark price in the index column."""
+    class _Derivatives(MockMarketDataCollector):
+        def __init__(self):
+            self.kinds = []
+
+        def derivative_price_klines(self, symbol, timeframe, *, kind, limit, timeout_seconds):
+            self.kinds.append(kind)
+            return super().derivative_price_klines(
+                symbol, timeframe, kind=kind, limit=limit, timeout_seconds=timeout_seconds)
+
+    inner = _Derivatives()
+    cache = PerRunFeedCache(inner)
+    for kind in ("mark", "index", "premium", "mark"):
+        cache.derivative_price_klines("BTCUSDT", "1h", kind=kind, limit=20, timeout_seconds=10)
+    assert inner.kinds == ["mark", "index", "premium", "mark"], "a series was served from a memo"
+    assert cache.hits == 0
+
+
 def test_an_ordinary_failure_does_not_latch_the_whole_fire():
     """Only a rate limit means "stop asking". A symbol that times out must not silence the rest —
     that would turn one bad symbol into a blind fan-out."""
@@ -903,6 +972,55 @@ def test_an_ordinary_failure_does_not_latch_the_whole_fire():
             cache.collect(symbol, "1d", limit=120, timeout_seconds=10)
     assert inner.attempts == 2
     assert cache.rate_limited is None
+
+
+def test_a_shared_latch_crosses_fires_and_the_memo_does_not():
+    """The whole reason the latch is its own object. Two questions had one answer before:
+
+    *how long may a memoized answer be served* — one fire, argued at length on the wrapper — and
+    *how long is a 429 true* — until the venue stops saying so, which is a fact about an IP and
+    does not expire because the scheduler moved to the next schedule. Fusing them made the
+    second wrong exactly where it matters, and widening the wrapper instead would have made the
+    first wrong: `exchange_info` memoized across a pass sizes a late fire's order on lot steps
+    read minutes earlier."""
+    latch = market_data.RateLimitLatch()
+    inner = _CountingCollector()
+    first, second = (PerRunFeedCache(inner, latch=latch) for _ in range(2))
+
+    first.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+    second.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+    assert _counts(inner, "collect") == 2, "a later fire served a bar the earlier one fetched"
+
+    # The refusal, by contrast, is one fact about one address and crosses both.
+    latch.note(market_data.classify_transport_error(_http_error(429), "market-data"))
+    for cache in (first, second):
+        with pytest.raises(ToolError) as excinfo:
+            cache.collect("ETHUSDT", "1d", limit=120, timeout_seconds=10)
+        assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert _counts(inner, "collect") == 2, "kept knocking after a 429"
+
+
+def test_the_latch_reads_a_refusal_through_collect_market_datas_re_typing():
+    """`collect_market_data` catches the collector's ToolError and re-raises
+    `ToolBlocked("TOOL_ERROR", …) from exc`, so everything above it sees a rate limit and a
+    flaky venue under one reason code. `PeerCandleCache` sits there — a latch reading only the
+    outermost exception would never fire for the leg that makes the most requests."""
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+    inner = _RateLimitedCollector()
+    latch = market_data.RateLimitLatch()
+    cache = PeerCandleCache(inner, latch=latch)
+
+    with pytest.raises((ToolError, ToolBlocked)):
+        cache.candles("1d", limit=120, now=NOW, symbol="BTCUSDT")
+    assert latch.rate_limited is not None, "the 429 was invisible one flattening away"
+    assert latch.rate_limited.reason_code == market_data.TOOL_RATE_LIMITED, (
+        "the latch kept the wrapper, so re-raising it would report the wrong reason"
+    )
+    # A DIFFERENT series — its own key, so the per-series failure cache cannot answer for it.
+    with pytest.raises((ToolError, ToolBlocked)):
+        cache.candles("1d", limit=120, now=NOW, symbol="ETHUSDT")
+    assert inner.attempts == 1, f"re-asked a throttled venue per series ({inner.attempts})"
 
 
 def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():

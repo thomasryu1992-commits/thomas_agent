@@ -187,6 +187,28 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # delayed behind an archive pass is a report about a state that has already lasted longer.
 RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_ROUTE_WATCH})
 
+# The kinds that read the public market-data venue, and therefore share one rate-limit budget.
+#
+# The venue counts requests per IP, not per fire, so its "you are asking too often" is a fact
+# about the whole pass — see `market_data.RateLimitLatch`, which holds it. This set decides who
+# is handed that latch, and membership is a claim about EGRESS rather than about topic: every
+# kind here reaches `select_market_data_collector`, and a kind that stops doing so should leave.
+#
+# `KIND_CRYPTO` is in it, and that direction is the one worth stating. Risk kinds sort FIRST in a
+# pass, so the money path can only ever be the fire that EARNS a refusal, never the one silenced
+# by someone else's — the trading cycle runs before any factory fire exists to trip it. What
+# sharing buys is the case that does happen: the live cycle is refused, and eleven replay-depth
+# reads would otherwise follow it onto the same address within the same pass. If `RISK_KINDS`
+# ordering is ever changed, revisit this line rather than assuming it still holds.
+#
+# `candle_archive` is deliberately ABSENT despite reading candles hardest of all. It reads a
+# DIFFERENT venue (`HYPERLIQUID`, through its own env-gated collector) whose limits a different
+# company counts, and it already latches internally on the same reason code. Putting it here
+# would let a Hyperliquid refusal stop Binance reads — not caution, a self-inflicted outage.
+VENUE_READING_KINDS: frozenset[str] = frozenset({
+    KIND_CRYPTO, KIND_FACTORY, KIND_NULL_CONTROL, KIND_PROPOSER,
+})
+
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
 #
 # Not a timeout, and that difference is the whole design: a fire already running is never
@@ -689,10 +711,103 @@ def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]
     return [event for run_id, event in started.items() if run_id not in terminal]
 
 
+@dataclass(frozen=True)
+class VenueLatches:
+    """One rate-limit latch per VENDOR, shared by every :data:`VENUE_READING_KINDS` fire of a pass.
+
+    Two vendors, two latches, because two companies count two request budgets: the public
+    market-data venue (candles, funding, exchangeInfo) and the liquidation/open-interest feed. A
+    single shared latch would make one vendor's 429 silence the other, turning a partial throttle
+    into a total one.
+
+    The pass is the right lifetime for the reason the fire is the wrong one: those kinds fall due
+    together — five factory schedules on one timeframe routinely land in one pass — and the venue
+    counts against an IP, so the fire boundary it escalates across is invisible to it. **What is
+    NOT shared is any memoized data.** Each fire still builds its own
+    :class:`~.crypto.market_data.PerRunFeedCache` around these, so no fire reads a bar or a lot
+    step another fire fetched; only the refusal outlives the fire that earned it.
+    """
+
+    market_data: Any
+    liquidations: Any
+
+
+class _PassMarketData:
+    """What one ``run_due`` pass shares: the vendors' refusals, and its mining kinds' candle reads.
+
+    Two different problems that happen to have the same boundary, and neither could be solved
+    below the scheduler. `PeerCandleCache` and `PerRunFeedCache` were both written for a fan-out
+    *inside one call* — the trading pool cycle, which visits five contexts and constructs one of
+    each. The factory's contexts are five separate SCHEDULES, so nothing in the crypto stack sees
+    more than one of them.
+
+    **The cache.** Each factory fire re-read the whole cohort at the replay depth. Measured
+    2026-08-06 on the five enabled 4h schedules: 39 candle reads to answer 11 distinct series.
+    Held here, and given the **raw** collector rather than a fire's wrapper — a pass-scoped cache
+    holding a fire-scoped memo would keep that memo alive for the pass by the back door, which is
+    the thing :class:`VenueLatches` exists to avoid doing on purpose.
+
+    **The latches.** Shared, per vendor, for the reason spelled out on
+    :class:`~.crypto.market_data.RateLimitLatch`: a 429 is true about an address, not about a
+    fire. Lazy — a pass with no venue-reading kind due, which is almost all of them, must not
+    import the crypto stack to hold two empty objects it will drop.
+    """
+
+    __slots__ = ("_latches", "_candles")
+
+    def __init__(self) -> None:
+        self._latches: VenueLatches | None = None
+        self._candles: Any | None = None
+
+    @property
+    def latches(self) -> VenueLatches:
+        if self._latches is None:
+            from .crypto.market_data import RateLimitLatch
+            self._latches = VenueLatches(market_data=RateLimitLatch(),
+                                         liquidations=RateLimitLatch())
+        return self._latches
+
+    def candles(self, collector: Any) -> Any:
+        """The pass's :class:`PeerCandleCache`, built on first use against the RAW collector.
+
+        First caller's collector wins, which is sound here in a way it would not be for a
+        wrapper: a raw collector carries no memo and no latch, so what is retained is a way of
+        asking rather than anything already asked. Every fire in a pass selects with the same
+        ``(now, repo_root)`` anyway."""
+        if self._candles is None:
+            from .crypto.market_data import PeerCandleCache
+            self._candles = PeerCandleCache(collector, latch=self.latches.market_data)
+        return self._candles
+
+    @property
+    def rate_limited(self) -> Any | None:
+        """Either vendor's refusal, once one has given it.
+
+        Both, not just the candle venue — for the mining kinds these feed one verdict. §F2
+        records `oi_*` as the only families that confirm out of sample, and `_oi_feed_reaches`
+        already documents what mining them over a window the feed could not cover does: every
+        trade lands in the newest slice, `temporal_consistency` is 0 by construction, and the
+        family retires FRAGILE for a window that had no data in it. A Coinalyze throttle
+        produces exactly that window."""
+        if self._latches is None:
+            return None
+        return (self._latches.market_data.rate_limited
+                or self._latches.liquidations.rate_limited)
+
+
+def _pass_market(existing: _PassMarketData | None) -> _PassMarketData:
+    """This fire's pass state, or a private one when ``_execute`` was called without any.
+
+    The fallback is not a degraded mode so much as the previous behaviour — a cache and a latch
+    covering exactly one fire — and it keeps every direct caller (tests, and any future
+    single-shot driver) working without knowing this exists."""
+    return existing if existing is not None else _PassMarketData()
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
-    registry: Any = None,
+    registry: Any = None, pass_market: _PassMarketData | None = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
 
@@ -700,7 +815,12 @@ def _execute(
     an unattended scheduled run is visible to ``/tasks`` and ``/history`` like an operator's
     own request. Only that kind is recorded — the maintenance and crypto kinds are not
     task-shaped and have their own scheduler events — and the recording is best-effort, so
-    bookkeeping can never fail a fire."""
+    bookkeeping can never fail a fire.
+
+    ``pass_market`` is the caller's :class:`_PassMarketData`, so the mining kinds that share a
+    pass read each distinct candle series once between them and stop together on a venue
+    refusal. Optional: a direct caller (a test, an operator harness) gets a fire scoped to
+    itself, which is what every fire did before this existed."""
     if schedule.kind == KIND_PRUNE:
         if working_memory is None:
             return "skipped_no_memory_store"
@@ -734,7 +854,7 @@ def _execute(
         from .crypto import null_control
         from .crypto.cycle import attach_feeds
         from .crypto.market_data import (
-            collect_market_data,
+            PerRunFeedCache,
             factory_candle_target,
             select_liquidation_feed,
             select_market_data_collector,
@@ -746,19 +866,36 @@ def _execute(
         parts = schedule.request.split()
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "4h"
-        collector = select_market_data_collector(now=now, root=repo_root)
+        # The same pass scope the factory takes, and for the second of its two reasons rather
+        # than the first: this kind reads ONE frame per fire and its fifteen schedules are
+        # fifteen distinct series, so there is nothing here for the cache to dedup unless a
+        # factory group shares the pass. What it does share is the address — fifteen fires at
+        # replay depth, each paging the frame plus three derivative series — and until now
+        # nothing stopped them after the venue's first refusal either.
+        pass_market = _pass_market(pass_market)
+        if pass_market.rate_limited is not None:
+            return "skipped_rate_limited"
+        latches = pass_market.latches
+        raw_collector = select_market_data_collector(now=now, root=repo_root)
+        collector = PerRunFeedCache(raw_collector, latch=latches.market_data)
+        liquidation_feed = PerRunFeedCache(
+            select_liquidation_feed(now=now, root=repo_root), latch=latches.liquidations)
         try:
-            snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now,
-                limit=factory_candle_target(timeframe),
-            )
+            snapshot = pass_market.candles(raw_collector).frame(
+                symbol, timeframe, limit=factory_candle_target(timeframe), now=now)
         except ToolBlocked as exc:
             if exc.reason_code == "TOOL_ERROR":
-                return "skipped_market_data_degraded"
+                return ("skipped_rate_limited" if pass_market.rate_limited is not None
+                        else "skipped_market_data_degraded")
             raise
-        attach_feeds(snapshot, collector=collector,
-                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
+        attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
                      now=now, root=repo_root, accumulate=False)
+        # The factory's post-attach rule, and this measurement needs it for its own reason: the
+        # whole point is comparing a spec's entries against seeded null entries **through the
+        # same exits on the same frame**. A frame assembled half before a refusal and half after
+        # is not that frame, and the comparison would be recorded as though it were.
+        if pass_market.rate_limited is not None:
+            return "skipped_rate_limited"
         frame = crypto_factory.build_replay_frame(snapshot)
         # The seed is the window's own content hash, so a recorded fire replays identically —
         # the factory's rule, for the same reason.
@@ -910,9 +1047,18 @@ def _execute(
         # Wrapped for the length of THIS fire only. A fan-out asks the venue the same
         # symbol-scoped questions once per timeframe; the memo makes one cadence cost one
         # request without making any cycle read older data. Dropped when the fire ends.
-        collector = PerRunFeedCache(select_market_data_collector(now=now, root=repo_root))
+        #
+        # The rate-limit latch inside each wrapper is the one thing NOT dropped: it comes from
+        # the pass, so a refusal this fire earns is still in force for the mining fires behind
+        # it. Only that direction occurs — risk kinds sort first, so no factory fire has run yet
+        # to refuse anything on this cycle's behalf (`VENUE_READING_KINDS`). Per vendor, so a
+        # Coinalyze throttle never stops candle reads.
+        latches = _pass_market(pass_market).latches
+        collector = PerRunFeedCache(select_market_data_collector(now=now, root=repo_root),
+                                    latch=latches.market_data)
         store = select_paper_store(now=now, root=repo_root)
-        liquidation_feed = PerRunFeedCache(select_liquidation_feed(now=now, root=repo_root))
+        liquidation_feed = PerRunFeedCache(select_liquidation_feed(now=now, root=repo_root),
+                                           latch=latches.liquidations)
         # Freshness marks — local per-machine bookkeeping (no gate of its own): a new
         # entry is evaluated at most once per closed candle per context, so one 15-min
         # fan-out schedule covers 15m/1h/4h/1d without re-entering coarse timeframes
@@ -959,7 +1105,7 @@ def _execute(
         )
         from .crypto.factory import run_factory
         from .crypto.market_data import (
-            collect_market_data,
+            PerRunFeedCache,
             factory_candle_target,
             select_liquidation_feed,
             select_market_data_collector,
@@ -968,42 +1114,77 @@ def _execute(
         parts = schedule.request.split()
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "1d"
-        collector = select_market_data_collector(now=now, root=repo_root)
+        # Two things come from the PASS here and one does not, and the split is the point.
+        #
+        # From the pass: the candle cache (the five schedules for one timeframe fall due together
+        # and each read the whole cohort at REPLAY depth — 39 reads for 11 distinct series,
+        # measured 2026-08-06) and the two rate-limit latches (a 429 is true about an address,
+        # and this branch makes more venue calls than any other: a frame at replay depth, the
+        # feeds, the HTF leg, the reference leg, and a five-peer cohort at that same depth).
+        #
+        # From this fire: the memo. `PerRunFeedCache` is built here and dropped here, so nothing
+        # it holds outlives the fire — see its "It lives for one fire" bullet, which stays true.
+        #
+        # Nothing about what is mined changes: same symbol, same depth, same bars. A fire with
+        # no pass behind it (a direct `_execute`) is scoped to itself, as every fire used to be.
+        pass_market = _pass_market(pass_market)
+        if pass_market.rate_limited is not None:
+            # An earlier fire in this pass was refused. Every read below would be refused too;
+            # returning here says so in the status instead of spending the fire to rediscover
+            # it, and keeps the reason legible where `collect_market_data` flattens a rate limit
+            # and a flaky venue into the same TOOL_ERROR.
+            return "skipped_rate_limited"
+        latches = pass_market.latches
+        raw_collector = select_market_data_collector(now=now, root=repo_root)
+        collector = PerRunFeedCache(raw_collector, latch=latches.market_data)
+        liquidation_feed = PerRunFeedCache(
+            select_liquidation_feed(now=now, root=repo_root), latch=latches.liquidations)
+        candle_cache = pass_market.candles(raw_collector)
+        target = factory_candle_target(timeframe)
         try:
-            snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now,
-                limit=factory_candle_target(timeframe),
-            )
+            snapshot = candle_cache.frame(symbol, timeframe, limit=target, now=now)
         except ToolBlocked as exc:
             if exc.reason_code == "TOOL_ERROR":
-                return "skipped_market_data_degraded"
+                return ("skipped_rate_limited" if pass_market.rate_limited is not None
+                        else "skipped_market_data_degraded")
             raise
         # C9: the factory backtests on the same feed-enriched frame the router
         # evaluates — one feature source for backtest and live (the source rule).
-        attach_feeds(snapshot, collector=collector,
-                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now,
-                     root=repo_root)
+        attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
+                     now=now, root=repo_root)
         # The same rule for the HTF leg: mining htf_* families over a frame with no
         # higher timeframe would score every one of them as a no-trade spec. The
         # window must cover the replay span, so the depth is the higher timeframe's
         # own factory target, not the live default.
         higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
-        attach_htf(snapshot, collector=collector, now=now,
+        attach_htf(snapshot, collector=collector, now=now, cache=candle_cache,
                    limit=factory_candle_target(higher) if higher else None)
         # The same rule once more for the cross-asset leg: a rel_strength_* family mined over
         # a frame with no reference series would score as a no-trade spec, so the reference
         # window has to cover the replay span rather than the live default. Same timeframe as
         # the frame being mined, so the same depth.
-        attach_reference(snapshot, collector=collector, now=now,
-                         limit=factory_candle_target(timeframe))
+        attach_reference(snapshot, collector=collector, now=now, cache=candle_cache,
+                         limit=target)
         # And once more for the cross-sectional leg, at the same depth and for the same
         # reason. This is the most expensive of the four: the cohort is five peers at the
         # replay span, so it pages roughly five times what the frame itself did. Paid on the
         # factory's own schedule rather than the 15-minute one, and the alternative is
         # scoring xs_* families over a frame where every rank is None — which does not
         # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
-        attach_cross_section(snapshot, collector=collector, now=now,
-                             limit=factory_candle_target(timeframe))
+        # The largest single share of the saving: five peers per fire, 25 asks across the pass,
+        # and the union is the cohort — so 6 answers, 5 of which the frames already read.
+        attach_cross_section(snapshot, collector=collector, now=now, cache=candle_cache,
+                             limit=target)
+        if pass_market.rate_limited is not None:
+            # The venue refused somewhere in the four legs above, so this frame is thinner than
+            # the one the router will evaluate — and the legs are degrade-only, so it says so
+            # nowhere except in a column of Nones. Mining it anyway is the failure the
+            # cross-sectional comment names two paragraphs up: it does not produce a cheap
+            # verdict, it produces a WRONG one, and a FRAGILE retirement earned by a throttle is
+            # indistinguishable in the store from one earned by the strategy. So the fire is
+            # skipped rather than recorded, which also leaves its occurrence's cadence intact —
+            # tomorrow's fire mines the same window with the same rules.
+            return "skipped_rate_limited"
         # Positioning: a LOCAL read of what this runtime has accumulated — no request, no grant.
         # Attached unconditionally because the columns are honest at any coverage (absent = None);
         # the eligibility measured below is what decides whether a family may be MINTED against
@@ -1051,7 +1232,11 @@ def _execute(
         # fire rather than proposing over no candles. ALLOW-tier: the record installs nothing.
         from .crypto import factory as crypto_factory
         from .crypto import proposer as crypto_proposer
-        from .crypto.market_data import collect_market_data, select_market_data_collector
+        from .crypto.market_data import (
+            PerRunFeedCache,
+            collect_market_data,
+            select_market_data_collector,
+        )
         from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
@@ -1071,7 +1256,15 @@ def _execute(
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "1h"
         focus = parts[2] if len(parts) >= 3 else None
-        collector = select_market_data_collector(now=now, root=repo_root)
+        # One read, so the latch can never stop a SECOND request of this fire — it is wrapped
+        # for the other direction. This fire is one of the pass's `VENUE_READING_KINDS`, so it
+        # must both honour a refusal an earlier fire earned (rather than spending a model call
+        # on a frame it could not fetch) and record its own for the fires behind it.
+        pass_market = _pass_market(pass_market)
+        if pass_market.rate_limited is not None:
+            return "skipped_rate_limited"
+        collector = PerRunFeedCache(select_market_data_collector(now=now, root=repo_root),
+                                    latch=pass_market.latches.market_data)
         try:
             snapshot, _ = collect_market_data(symbol, timeframe, collector=collector, now=now)
         except ToolBlocked as exc:
@@ -1280,6 +1473,14 @@ def run_due(
     ``replace_all``-ing it back, which silently reverted an operator's concurrent
     disable/remove and kept the schedule firing with no trace.
 
+    **The pass is also the market-data unit**, and it has to be: the factory's five
+    same-timeframe schedules fall due together and each one read the whole cohort at the replay
+    depth, so both the overlap *and* the venue's opinion of how often we are asking live
+    *between* fires, where nothing inside a fire can see either. One ``_PassMarketData``
+    carries both to every ``VENUE_READING_KINDS`` fire. **Only the refusal and the candle reads
+    are shared** — each fire still builds its own ``PerRunFeedCache``, so no fire reads a bar or
+    a lot step another fire fetched. Bounded by the pass because a pass has one ``now``.
+
     **Order and budget.** Due schedules run risk kinds first (``RISK_KINDS``), then the rest in
     store order; and once a pass has spent ``MAINTENANCE_PASS_BUDGET_SECONDS`` it stops *starting*
     non-risk fires. A deferred occurrence is **not** claimed, so it stays due and the next pass
@@ -1305,6 +1506,11 @@ def run_due(
     due = [s for s in schedules if s.enabled and s.next_run_at <= now]
     due.sort(key=lambda s: 0 if s.kind in RISK_KINDS else 1)
     pass_started = time.monotonic()
+    # The venue reads the fires in THIS pass share, and the one refusal they must not re-earn
+    # between them — empty and inert unless a kind that wants it is actually due, and dropped
+    # with the pass. See `_PassMarketData`: both the redundancy and the rate limit are properties
+    # of the pass rather than of any fire in it, which is why neither can live any narrower.
+    pass_market = _PassMarketData()
 
     for schedule in due:
         if not control_store.load().execution_allowed:
@@ -1362,7 +1568,8 @@ def run_due(
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization, registry=registry,
-                              provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
+                              provider=provider, search_tool=search_tool, repo_root=repo_root,
+                              executor=executor, pass_market=pass_market)
             action = "fired"
             fired += 1
         except MvpRuntimeError as exc:

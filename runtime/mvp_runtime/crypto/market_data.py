@@ -1776,7 +1776,9 @@ class PeerCandleCache:
     In both cases the redundant reads are redundant for the same reason: within one fire,
     "what were ETH's hourly candles" cannot legitimately differ depending on which symbol is
     asking. So one cache serves both legs rather than one per leg — the object is a cache of
-    *candle reads*, and which leg wanted them is not a property of the answer.
+    *candle reads*, and which leg wanted them is not a property of the answer. :meth:`frame`
+    extends that last sentence to the reader who wants a series for ITSELF rather than as
+    context, which is the third door and, for the factory, the largest.
 
     Same contract as the feed cache, for the same reasons: constructed per fan-out and
     thrown away, so it can never serve a stale bar to a later fire; **failures cached too**,
@@ -1784,35 +1786,86 @@ class PeerCandleCache:
     re-asking once per remaining context is how a rate cap gets reached; and the refusal is
     re-raised unchanged, so every context still records its own reason code.
 
+    **"One fan-out" has a second instance, and it is the larger one.** The scheduler's factory
+    fires are not a fan-out inside one call — they are separate schedules, one per symbol, that
+    fall due together and run in one ``scheduler.run_due`` pass. Their overlap is the same
+    overlap for the same reason (five contexts each reading the cohort at the replay depth), so
+    the unit here is *one pass* rather than one call, and ``scheduler._PassCandleCache`` holds it.
+    A pass shares a single ``now``, so every record it writes already claims the same instant;
+    serving one read to all of them makes the records true rather than approximately true.
+
     ``symbol`` defaults to the reference symbol, so the reference leg reads exactly as it did
     before the cross-sectional one existed.
     """
 
-    def __init__(self, collector: Any):
+    def __init__(self, collector: Any, *, latch: RateLimitLatch | None = None):
         self._collector = collector
-        self._results: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self._snapshots: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._errors: dict[tuple[str, str, str], BaseException] = {}
+        self._latch = latch if latch is not None else RateLimitLatch()
         self.calls = 0
 
-    def candles(
-        self, timeframe: str, *, limit: int, now: str, symbol: str = REFERENCE_SYMBOL
-    ) -> list[dict[str, Any]]:
+    def _collect(self, symbol: str, timeframe: str, *, limit: int, now: str) -> dict[str, Any]:
+        """The one fetch point. Both public readers land here, which is what makes the
+        cache order-independent: whichever of them asks for a series first pays for it, and
+        it cannot matter which, because they are asking the same question.
+
+        Two failure memories, and they are not the same memory. ``_errors`` is per SERIES —
+        this symbol at this depth just refused, do not re-ask for *it* — and the latch is per
+        VENDOR: we are being throttled, do not ask for *anything*. A cache holding only the
+        first re-asks a rate-limited venue once per distinct series, which is the shape of
+        knocking that earns the ban. Shared with the caller's other wrappers when one is
+        passed, because the address does not care which object is holding it."""
         key = (str(symbol), str(timeframe), str(limit))
         if key in self._errors:
             raise self._errors[key]
-        if key in self._results:
-            return self._results[key]
+        cached = self._snapshots.get(key)
+        if cached is not None:
+            return cached
+        self._latch.check()
         self.calls += 1
         try:
             snapshot, _record = collect_market_data(
                 symbol, timeframe, collector=self._collector, now=now, limit=limit
             )
         except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._latch.note(exc)
             self._errors[key] = exc
             raise
-        rows = list(snapshot.get("candles") or [])
-        self._results[key] = rows
-        return rows
+        self._snapshots[key] = snapshot
+        return snapshot
+
+    def candles(
+        self, timeframe: str, *, limit: int, now: str, symbol: str = REFERENCE_SYMBOL
+    ) -> list[dict[str, Any]]:
+        """The candle series for one symbol/timeframe/depth — what the context legs read."""
+        return list(self._collect(symbol, timeframe, limit=limit, now=now).get("candles") or [])
+
+    def frame(self, symbol: str, timeframe: str, *, limit: int, now: str) -> dict[str, Any]:
+        """The whole snapshot for one series, for a caller mining it rather than ranking against it.
+
+        The context legs are not the only readers of a symbol's candles, and until this existed
+        the *other* reader was the one paying twice. The factory is the case: five schedules mine
+        five symbols at one timeframe, and the frame each one collects to mine **is a member of
+        the cohort the other four rank against** — so with the context legs cached and the frames
+        reading around them, six 4h series still cost ten reads. Both readers through one door is
+        the rest of the fix; ``calls`` then counts the venue reads a pass actually made.
+
+        Returns a **shallow copy with its own candle list**, because a snapshot is the one thing
+        here that its reader mutates: ``cycle.attach_feeds`` and the three ``attach_*`` context
+        legs all write keys onto it. Copying the wrapper keeps one fire's derivative series out
+        of another's frame; the candle dicts stay shared, which is the sharing every
+        :meth:`candles` hit already does and which nothing in the crypto stack mutates.
+
+        Discards the tool-use record ``collect_market_data`` returns, which is why this is not
+        simply what every frame reader should use: the factory branch already dropped it, and a
+        caller that audits the record must keep reading the series itself rather than have a
+        cache decide whether a read happened.
+        """
+        snapshot = self._collect(symbol, timeframe, limit=limit, now=now)
+        copy = dict(snapshot)
+        copy["candles"] = list(snapshot.get("candles") or [])
+        return copy
 
 
 class NoLiquidationFeed:
@@ -2099,6 +2152,71 @@ def read_reference_price(
 
 # --- one fan-out, one request per distinct question -------------------------------------------
 
+class RateLimitLatch:
+    """The venue's "you are asking too often", held for as long as it stays TRUE.
+
+    This was a field and two methods on :class:`PerRunFeedCache`, and being *inside* that object
+    gave it that object's lifetime — one fire. Two different questions had been answered with
+    one number:
+
+    * **how long may a memoized answer be served?** One fire, and that wrapper argues it at
+      length. A later fire must re-read, or a cadence reads bars from the cadence before it.
+    * **how long is a 429 true?** Until the venue stops saying so. That is a fact about an IP
+      address, and it does not become false because a scheduler moved on to the next schedule —
+      the venue is counting requests, not fires.
+
+    Fusing them made the second answer wrong in exactly the case that matters. The factory
+    schedules fall due together and run in one ``scheduler.run_due`` pass, each reading a frame
+    plus four context legs at replay depth; a per-fire latch stops the tail of the fire that was
+    refused and lets the next four start knocking again. That is the escalation the latch exists
+    to prevent, arriving one fire later.
+
+    So it is passed IN and shared for the length of a pass, while every memo stays per-fire.
+    Nothing about freshness changes: this object holds one exception and no data.
+
+    **One latch per VENDOR, never one per pass.** The runtime reads two vendors through two
+    wrappers — the market-data collector and the liquidation feed — and their limits are counted
+    by two companies. Sharing one between them would let a Coinalyze refusal stop Binance reads,
+    which is not caution but a self-inflicted outage.
+    """
+
+    __slots__ = ("rate_limited",)
+
+    def __init__(self) -> None:
+        self.rate_limited: ToolError | None = None
+
+    def check(self) -> None:
+        """Re-raise the stored refusal, before anything opens a socket."""
+        latched = self.rate_limited
+        if latched is not None:
+            raise latched
+
+    def note(self, exc: BaseException) -> None:
+        """Latch the FIRST refusal and keep it. A later one would say the same thing about a
+        request the caller should not have made.
+
+        **Reads through one re-typing**, because not every caller is close enough to the socket
+        to see the original. :func:`collect_market_data` catches the collector's ``ToolError``
+        and raises ``ToolBlocked("TOOL_ERROR", …) from exc`` — so a rate limit reaches anything
+        above it flattened into the same reason code a flaky venue produces, and a latch reading
+        only the outermost exception would never fire for :class:`PeerCandleCache`. The chained
+        cause is not a guess: that ``from exc`` is the documented shape of that function.
+
+        What is latched is the exception that CARRIES the reason code, not the wrapper around
+        it, so :meth:`check` always re-raises a ``TOOL_RATE_LIMITED`` — which is what callers
+        below ``collect_market_data`` saw before this class existed, and it re-wraps for the
+        ones above exactly as a live refusal would."""
+        if self.rate_limited is not None:
+            return
+        seen: set[int] = set()
+        while exc is not None and id(exc) not in seen:
+            seen.add(id(exc))
+            if getattr(exc, "reason_code", None) == TOOL_RATE_LIMITED:
+                self.rate_limited = exc  # type: ignore[assignment]
+                return
+            exc = exc.__cause__
+
+
 class PerRunFeedCache:
     """Memoizes the per-SYMBOL reads a pool fan-out repeats, for the length of ONE fire.
 
@@ -2120,7 +2238,12 @@ class PerRunFeedCache:
 
     * **It lives for one fire.** The scheduler constructs it beside the collector and drops it
       when the fire ends, so the data a cycle reads is never older than that cycle. Nothing here
-      makes a 15-minute cadence stale — it makes one cadence cost one request.
+      makes a 15-minute cadence stale — it makes one cadence cost one request. That statement is
+      about the MEMO and only the memo; the rate-limit latch used to live here too and needed a
+      longer life than one fire, which is what :class:`RateLimitLatch` is and why it is now
+      passed in rather than owned. ``exchange_info`` is why the distinction was worth drawing
+      rather than just widening this bullet: lot steps memoized across a whole pass would size a
+      late fire's order on rules read minutes earlier, and no rate-limit fix is worth that.
     * **A failure is memoized too, and re-raised.** Funding that fails for BTCUSDT at 15m fails
       at 1h; retrying is three more timeouts on a scheduler that runs everything sequentially.
       Each context still records its own reason code, because the raise reaches each of them.
@@ -2133,6 +2256,9 @@ class PerRunFeedCache:
     and `exchange_info` is deliberately absent from `MockMarketDataCollector` so a mock run
     refuses to size rather than sizing on invented lot steps. Declaring those methods here would
     answer yes on a collector that cannot, which is the one thing this wrapper must not do.
+
+    **Memoized and latched are two different sets, and only one of them is `_MEMOIZED`.**
+    Everything callable is latched; only the symbol-keyed reads are memoized. See `__getattr__`.
     """
 
     # Keyed by symbol alone at the venue, so identical across every timeframe of one fan-out.
@@ -2140,13 +2266,26 @@ class PerRunFeedCache:
         "funding_history", "liquidation_history", "open_interest_history", "exchange_info",
     })
 
-    def __init__(self, inner: Any):
+    def __init__(self, inner: Any, *, latch: RateLimitLatch | None = None):
         # Set through __dict__ so __getattr__ can never recurse looking for it.
         self.__dict__["_inner"] = inner
         self.__dict__["_memo"] = {}
         self.__dict__["requests"] = 0   # what was actually asked of the venue
         self.__dict__["hits"] = 0       # what a repeat context did not have to ask again
-        self.__dict__["rate_limited"] = None  # the venue's refusal, once it has given one
+        # The venue's refusal, once it has given one. Supplied by a caller that wants it to
+        # outlive this wrapper (the scheduler shares one per vendor per pass); owned privately
+        # otherwise, which is exactly the behaviour this had when the state lived here.
+        self.__dict__["_rate_limit_latch"] = latch if latch is not None else RateLimitLatch()
+
+    @property
+    def rate_limited(self) -> ToolError | None:
+        """The venue's refusal, once it has given one — read straight off the latch.
+
+        A property rather than an instance attribute because ``__getattr__`` below forwards
+        anything not found to the wrapped collector: as a plain name it would resolve to the
+        *collector's* attribute the moment it left ``__dict__``, and collectors do not have one,
+        so every reader would get ``AttributeError`` instead of ``None``."""
+        return self.__dict__["_rate_limit_latch"].rate_limited
 
     def _latch(self) -> None:
         """Refuse before opening a socket, once the venue has said we are asking too often.
@@ -2163,9 +2302,7 @@ class PerRunFeedCache:
         open live position. What it does stop is opening new ones, which is the correct posture
         for a runtime that cannot currently see the market.
         """
-        latched = self.__dict__["rate_limited"]
-        if latched is not None:
-            raise latched
+        self.__dict__["_rate_limit_latch"].check()
 
     def collect(self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int) -> MarketSnapshot:
         """Candles, served from a DEEPER cached window when one exists for this ``(symbol,
@@ -2201,24 +2338,30 @@ class PerRunFeedCache:
                 symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds
             )
         except ToolError as exc:
-            self._note_rate_limit(exc)
+            self.__dict__["_rate_limit_latch"].note(exc)
             raise
         self._memo[key] = (limit, snapshot)
         return snapshot
-
-    def _note_rate_limit(self, exc: ToolError) -> None:
-        """Latch the FIRST refusal and keep it. A later one would say the same thing about a
-        request this wrapper should not have made."""
-        if getattr(exc, "reason_code", None) == TOOL_RATE_LIMITED and self.rate_limited is None:
-            self.__dict__["rate_limited"] = exc
 
     def __getattr__(self, name: str) -> Any:
         # getattr on the inner object first: an attribute it does not have must stay absent here,
         # so `hasattr` keeps answering about the real capability.
         attr = getattr(self._inner, name)
-        if name not in self._MEMOIZED or not callable(attr):
+        if not callable(attr):
             return attr
+        if name in self._MEMOIZED:
+            return self._memoizing(name, attr)
+        # Latched but NOT memoized, which is a real distinction and not a leftover.
+        # `_MEMOIZED` answers "is this reply reusable across a fan-out" — `derivative_price_klines`
+        # is keyed by (symbol, timeframe, kind) and every combination is a genuinely different
+        # series, so it must not be. Being latched is a different question with a different
+        # answer: **every** callable here opens a socket to the same address, so any of them can
+        # earn a 429 and all of them must stop after one. Forwarding these raw made the wrapper's
+        # own posture untrue of three of the four series a fire reads — `attach_feeds` fetches
+        # mark, index and premium at replay depth, which pages four times each at 6,000 bars.
+        return self._latching(attr)
 
+    def _memoizing(self, name: str, attr: Any) -> Any:
         def memoized(*args: Any, **kwargs: Any) -> Any:
             key = (name, args, tuple(sorted(kwargs.items())))
             if key in self._memo:
@@ -2233,10 +2376,23 @@ class PerRunFeedCache:
                 value = attr(*args, **kwargs)
             except MvpRuntimeError as exc:
                 if isinstance(exc, ToolError):
-                    self._note_rate_limit(exc)
+                    self.__dict__["_rate_limit_latch"].note(exc)
                 self._memo[key] = ("raised", exc)
                 raise
             self._memo[key] = ("returned", value)
             return value
 
         return memoized
+
+    def _latching(self, attr: Any) -> Any:
+        def latched(*args: Any, **kwargs: Any) -> Any:
+            self._latch()
+            self.__dict__["requests"] += 1
+            try:
+                return attr(*args, **kwargs)
+            except MvpRuntimeError as exc:
+                if isinstance(exc, ToolError):
+                    self.__dict__["_rate_limit_latch"].note(exc)
+                raise
+
+        return latched
