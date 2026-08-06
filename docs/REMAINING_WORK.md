@@ -2253,6 +2253,36 @@ lifecycle windows, fee/slippage assumptions, stop and sizing multiples) — perh
 Give those one owner with the premise recorded beside each, and leave pure mechanics
 (buffer sizes, retry counts, format widths) where they are.
 
+**First slice done 2026-08-06 — `crypto/tunables.py`, 55 constants, and no value moved.**
+The count was **656** by then, not 602: the population grew by 54 in four days, which is the
+argument for the test rather than the index.
+
+The index **imports** each constant from its owner instead of copying it, so it cannot be wrong
+about a number, and carries the one thing the comment beside it does not say — **provenance**:
+where the value came from and what would reopen it. Values stay put because §G1 says a 602-value
+sweep is unreviewable, and for a second reason: in this package the argument lives in a dense
+comment beside the constant, and moving the number would separate every value from its own
+reasoning.
+
+**What reading it the first time found.** Provenance splits **26 `INHERITED`** / 9 `DERIVED` /
+9 `OPERATOR` / 6 `MEASURED` / 5 `VENUE` — and **the four numbers that stop the money are all
+INHERITED**. `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`, `MAX_CONSECUTIVE_LOSSES` and
+`MAX_DRAWDOWN_PCT` are the predecessor system's `config/settings.py` values, carried across and
+never examined against this runtime's own record — while the cost model, the ladder and the
+promotion door have each been re-measured more than once. That is not a bug and no number is
+obviously wrong; it is that the halt thresholds are the least-examined values in the package,
+and nothing said so before. A test pins the finding so it cannot stop being true silently.
+
+**The teeth are a coverage test, not the index.** A decision-shaped constant appearing in a swept
+module must be indexed with its provenance or named in `MECHANICS` with a reason — so a new
+threshold on the money path cannot be added without recording where the number came from. It
+caught four on its first run. Twelve modules are swept and the rest of the package deliberately
+is not; the boundary is a list in the test rather than an implication.
+
+**What is still open here:** the unswept modules (`features.py` alone holds 37 numeric
+constants, mostly indicator windows), and the `INHERITED` breakers themselves — indexing them
+records that nobody has decided them, which is not the same as deciding them.
+
 ### G2. The dead capability lane — 3,311 LOC, zero importers
 
 ```
