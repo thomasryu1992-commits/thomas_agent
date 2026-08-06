@@ -2405,6 +2405,62 @@ def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
     assert {f for f in scoped if f.startswith("funding_")}
 
 
+# --- the hold a timeframe's own holdout can judge -----------------------------
+
+def test_the_hold_bound_reads_the_window_through_the_replays_own_split():
+    """Derived from the two functions the replay uses, never a restated constant — so moving
+    the window or the split moves this with it."""
+    for tf in ("15m", "1h", "4h", "1d"):
+        total = market_data.factory_candle_target(tf)
+        holdout = total - factory.holdout_split_index(total)
+        assert factory.judgeable_holding_bars(tf) == holdout // robustness.MIN_HOLDOUT_TRADES
+
+
+def test_the_hold_space_is_narrowed_only_where_its_own_holdout_could_not_judge_it():
+    """1d holds 600 holdout bars, so a 48-bar hold caps the tail at 12 trades against a floor
+    of 25 — 55% of the 1d rows in the store on 2026-08-06 were unjudgeable by that geometry
+    alone. Every faster tier clears its own space and must not move: 4h yields 72 and 1h 288."""
+    for tf in ("15m", "1h", "4h"):
+        spaces = {(s.lo, s.hi) for t in factory.templates_for_timeframe(tf)
+                  if (s := t.param_space.get("max_holding_bars"))}
+        assert spaces == {(12, 48), (4, 16)}, f"{tf} must keep its space"
+
+    cap = factory.judgeable_holding_bars("1d")
+    assert cap == 24
+    for template in factory.templates_for_timeframe("1d"):
+        spec = template.param_space["max_holding_bars"]
+        assert spec.hi <= cap
+        # The centre has to live inside the space it centres, or the family aims outside it.
+        assert spec.lo <= template.base_params["max_holding_bars"] <= spec.hi
+        # The whole point: no draw can put the ceiling under the floor it is judged against.
+        holdout = 2_000 - factory.holdout_split_index(2_000)
+        assert holdout / spec.hi >= robustness.MIN_HOLDOUT_TRADES
+
+
+def test_the_hold_bound_cannot_be_escaped_by_an_elite_centre_outside_it():
+    """A 1d row minted before the bound carries a 37-bar hold, and `elite_base_params` will
+    hand it back as a centre. `mutate_params` folds a centre outside its space back inside, so
+    the bound holds on the DRAW rather than on the centre — which is what makes it a bound at
+    all rather than a suggestion."""
+    template = next(t for t in factory.templates_for_timeframe("1d")
+                    if t.param_space["max_holding_bars"].hi == 24)
+    stale = {**template.base_params, "max_holding_bars": 37.0}
+    rng = random.Random(4)
+    drawn = [factory.mutate_params(stale, template.param_space, rng)["max_holding_bars"]
+             for _ in range(200)]
+    assert max(drawn) <= 24 and min(drawn) >= 12
+
+
+def test_a_family_whose_shortest_hold_cannot_be_judged_is_not_minted():
+    """The fail-closed branch. It does not fire on today's ladder — the shortest space starts
+    at 4 against a 1d cap of 24 — and exists so that a deeper floor or a shallower window
+    cannot turn the bound into a space with `lo > hi` that draws silently."""
+    template = factory.templates_for_timeframe("1d")[0]
+    assert factory._judgeable_hold_space(template, 1) is None
+    # A cap at or above the space's own top leaves the template untouched, object and all.
+    assert factory._judgeable_hold_space(template, 10_000) is template
+
+
 def test_a_templates_feature_set_does_not_move_with_its_params():
     """The assumption `template_features` rests on, pinned rather than trusted.
 
