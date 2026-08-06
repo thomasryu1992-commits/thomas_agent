@@ -87,8 +87,6 @@ CI_SCOPE_PATH_PATTERNS = {
     "deferred": (
         "deferred/**",
         "generated/deferred/**",
-        "runtime/read_only_entry/**",
-        "runtime/protected_governance_state/**",
         "05_REGISTRIES/*REVIEW_ONLY.yaml",
         "docs/runtime-contracts/*RUNTIME_ENTRY*",
         "docs/runtime-contracts/*RUNTIME_AUTHORITATIVE*",

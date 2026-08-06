@@ -991,9 +991,11 @@ def verify_audit_chain(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     tamper-evidence a claim rather than a property. This is the check.
 
     These independent things must hold for every event, because each catches a different
-    tampering (reason codes follow the vocabulary already used by
-    ``runtime/protected_governance_state/recovery.py``, plus ``AUDIT_DECLARATION_MISMATCH``
-    for the constant-by-construction fields the fingerprint payload does not cover):
+    tampering (the reason-code vocabulary was taken from the deferred
+    ``runtime/protected_governance_state/recovery.py``, removed 2026-08-06 with the rest of that
+    lane — the names stay because they are this module's own now, plus
+    ``AUDIT_DECLARATION_MISMATCH`` for the constant-by-construction fields the fingerprint
+    payload does not cover):
 
     1. ``AUDIT_EVENT_HASH_MISMATCH`` — ``sha256(event_fingerprint_payload) == event_sha256``.
        Catches an edited payload.
