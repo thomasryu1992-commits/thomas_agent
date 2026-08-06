@@ -2435,6 +2435,88 @@ measured against intended price over enough live fills to be a distribution, whi
 thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
 it.
 
+### F8. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+
+F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
+is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
+both: `backtest_spec_pooled` replays one spec across several symbols' frames and pools the tail,
+the cost legs and the outcomes. This section is the audit of **why it is not wired**, because the
+reasons a reader would assume turn out not to be the reasons.
+
+**It is finished, not a sketch.** The function handles the cost-model precondition (a frame built
+under a different `CostModel` is refused rather than used), takes the weakest funding source
+across its legs rather than the best, and carries **eight** tests of its own — depth per symbol
+rather than summed, the shallowest leg winning, the cost-model refusal, the single-frame identity
+with `backtest_spec`. Its only caller is
+`backtest_spec` — the single-symbol form, which delegates with a one-element list. Its own
+docstring records the deferral: *"this does not decide what the factory mints — `run_factory` is
+untouched, and moving the rotation onto pooled specs is a separate decision that wants
+generations of evidence."*
+
+**What F2 measured, restated with the part that constrains it:**
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+
+It also lifts F7's ceiling directly, since the ceiling is per frame: 5 symbols take 1d's 23 to
+~115 without touching the hold at all.
+
+**The fetch objection is backwards — the data is already bought and thrown away.**
+`cycle.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
+`factory_candle_target(timeframe)` depth so the `xs_*` families can be ranked, and the factory
+branch of `scheduler.py` calls it **without a `PeerCandleCache`** — the only one ever constructed
+is at `cycle.py:1135`, in the trading fan-out. So a factory fire pages **5 peers × replay depth ×
+5 contexts = 25 peer reads**, computes ranks from them, and discards the series. Pooling needs
+**5 reads for the whole fire**. The leg's own docstring already names this: *"without one this
+leg would be the largest source of redundant vendor reads in the runtime."* F4's HTTP 429 is a
+real constraint and it does not apply here; if anything, pooling reduces the fire's fetch.
+
+**The live end already supports it, and that is where the actual cost is — larger than it first
+looks.** `routable_context_map` and `routable_directional_capacity` both iterate
+`spec.symbol_scope` and both document it — *"a multi-symbol strategy occupies each of its
+symbols"*. No code change is owed there. But `MAX_ROUTABLE_PER_CONTEXT` is 1 and the cohort is
+the whole mined symbol set, so **a pooled spec occupies every context of its timeframe**: one
+pooled 4h strategy *is* the 4h tier, where five single-symbol strategies fit today. Fully pooled,
+the pool goes from up to five strategies per timeframe to **one**, each carrying five times the
+evidence and one direction for the whole tier — which `routable_directional_capacity` then reads
+as a maximally skewed book.
+
+That also makes it a migration rather than a switch: the pool holds **5 occupied contexts right
+now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h spec needs four of
+them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
+decision, and it is the thing to decide rather than to derive.
+
+**One statistical consequence that will read as a discount and is not.** `search_context_key` is
+`(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
+shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
+near **1.96** rather than the 3.4–3.9 the mined contexts now carry. This is correct — the pooled
+hypothesis space genuinely is separate, and minting 120 pooled specs raises that context's bar by
+exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a single-symbol row
+will see two different thresholds and the difference has to be written where they meet it, not
+only here.
+
+**What it does not buy, and this is the whole caveat.** Pooling makes rows judgeable; F2's own
+table says what the judgement was — CONFIRMED 0 → 0, CONTRADICTED 9 → 12. #566 sharpens it: after
+the selection correction the promotion gate can only confirm effects of **+0.48R or larger**
+against a real target near +0.05R, and of the 463 rows judgeable today **462 are CONTRADICTED**.
+So the honest claim for this lever is *"finds out faster"*, never *"earns more"*.
+
+**What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
+unknown effort:
+
+1. `run_factory` takes several snapshots instead of one; the `frames=` path into
+   `backtest_spec_pooled` already exists and `run_factory` already builds one frame per fire.
+2. The factory schedules move from one per `(symbol, timeframe)` to one per `timeframe` —
+   `.runtime_governance_state/schedules.jsonl`, per-machine state, not code.
+3. `build_spec_dict` puts the mined cohort in `symbol_scope` instead of `[symbol]`.
+4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
+   mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
+   exercise, not an afterthought.
+
 ## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
