@@ -332,7 +332,15 @@ def _run_gated_live_leg(
     # `.default(root)` rather than `ControlStore(root)`: the constructor takes a Path, so the
     # bare form crashes on the `root=None` every ordinary run passes.
     control = control_store if control_store is not None else ControlStore.default(root)
-    runtime_active = control.load().execution_allowed
+    # `trading_allowed`, not `execution_allowed`: BOTH must hold for an entry. The runtime can
+    # now be ACTIVE with live entries held down — that is what an assistant `enable scope=runtime`
+    # leaves behind, and it is the one state where the two answers differ. Reading the weaker
+    # flag here would make the arm decorative on the exact path it exists to gate.
+    #
+    # This gates ENTRIES only, and deliberately: `_settle_or_protect` ran above, before any of
+    # this, so a disarmed runtime still closes what it holds. See step 2's comment for why that
+    # ordering is not an accident.
+    runtime_active = control.load().trading_allowed
 
     snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
     if snapshot is None:

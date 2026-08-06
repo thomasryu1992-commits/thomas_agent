@@ -91,6 +91,16 @@ class ControlState:
     # written state. `recovery` used to detect that by substring-matching the reason prose,
     # so an operator kill with `--reason "fail-closed test"` printed the wrong guidance.
     fail_closed: bool = False
+    # Whether the LIVE order path may OPEN a position. A second dimension rather than a fourth
+    # mode, because it is orthogonal to the three: a runtime can be ACTIVE with trading held
+    # down, and that state has no spelling in `mode`. Only two consumers read it (`live_route`
+    # via `trading_allowed`, and the readiness board, which reports it); every other consumer
+    # keeps reading `execution_allowed` and is unaffected.
+    #
+    # It does NOT gate closing. `live_route._run_gated_live_leg` settles and protects before it
+    # reads control state at all, deliberately — "a halt that traps an open position is worse
+    # than what the halt prevents" — so a disarmed runtime still exits its positions.
+    trading_armed: bool = True
 
     @classmethod
     def active_default(cls, *, now: str | None = None) -> "ControlState":
@@ -100,6 +110,14 @@ class ControlState:
     def execution_allowed(self) -> bool:
         """Only ACTIVE lets the runtime start a task; PAUSED and KILLED both refuse."""
         return self.mode == ACTIVE
+
+    @property
+    def trading_allowed(self) -> bool:
+        """A live ENTRY needs both: the runtime running, and trading armed.
+
+        The conjunction lives here rather than at the call site so the two facts cannot be
+        read separately and combined differently by a second caller later."""
+        return self.execution_allowed and self.trading_armed
 
     def refusal_reason_code(self) -> str:
         """The ONE reason-code vocabulary for a kill-switch refusal, mode-aware.
@@ -120,6 +138,7 @@ class ControlState:
             "updated_at": self.updated_at,
             "reason": self.reason,
             "stop_requested_task_ids": list(self.stop_requested_task_ids),
+            "trading_armed": self.trading_armed,
         }
 
 
@@ -141,6 +160,9 @@ def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
         f"updated_at: {state.updated_at or 'n/a'}",
         f"reason: {state.reason}",
     ]
+    # Named "live entries" and not "trading": paper is deliberately NOT gated on this, so an
+    # operator reading `disarmed` must not conclude the research loop stopped too.
+    lines.append(f"live entries: {'armed' if state.trading_armed else 'DISARMED'}")
     if state.stop_requested_task_ids:
         lines.append("stop_requested_task_ids: " + ", ".join(state.stop_requested_task_ids))
     if ledger is not None:
@@ -400,6 +422,7 @@ class ControlStore:
                     "stop (resume, as the authenticated operator, to clear it)"
                 ),
                 fail_closed=True,
+                trading_armed=False,
             )
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
@@ -409,12 +432,21 @@ class ControlStore:
             return self._corrupt_killed("control state file is malformed or has an unknown mode")
         raw_ids = data.get("stop_requested_task_ids", [])
         ids = tuple(str(x) for x in raw_ids) if isinstance(raw_ids, list) else ()
+        # ABSENT means armed; MALFORMED means disarmed. The same split this class already makes
+        # one level up, for the same reason: a state file written before this field existed is
+        # not a machine that was disarmed, it is a machine that predates the question — reading
+        # it as a stop order would halt entries on every deployment that upgrades. A value that
+        # is *present and unreadable* is genuine uncertainty about a safety state, and that
+        # fails closed, exactly like an unknown `mode` does.
+        raw_armed = data.get("trading_armed", True)
+        armed = raw_armed if isinstance(raw_armed, bool) else False
         return ControlState(
             mode=str(data["mode"]),
             updated_by=str(data.get("updated_by", "unknown")),
             updated_at=str(data.get("updated_at", "")),
             reason=str(data.get("reason", "")),
             stop_requested_task_ids=ids,
+            trading_armed=armed,
         )
 
     def _mode_from_ledger(self) -> str | None:
@@ -449,6 +481,7 @@ class ControlStore:
             updated_at="",
             reason=f"fail-closed: {detail}; manual recovery required (resume to clear)",
             fail_closed=True,
+            trading_armed=False,
         )
 
     def save(self, state: ControlState) -> None:
@@ -512,6 +545,7 @@ def apply_command(
     reason: str = "",
     arg: str | None = None,
     ledger: Any | None = None,
+    resume_arms: bool = True,
 ) -> dict[str, Any]:
     """Apply a console command and return ``{reply, mode, changed, action}``.
 
@@ -527,7 +561,13 @@ def apply_command(
     the verb — the only way to give one over Telegram, which has no ``--reason`` option) and is
     recorded on the state and the ledger event unless an explicit ``reason`` overrides it. For
     ``audit`` it is the event count. Whatever this function does with an argument it says so in
-    the reply: a count it had to clamp, a reason it recorded, or a reason it could not."""
+    the reply: a count it had to clamp, a reason it recorded, or a reason it could not.
+
+    ``resume_arms`` applies to ``resume`` alone and defaults to True, which is what every caller
+    that existed before it did: the local console and the assistant's approved trading re-arm
+    both restore live entries, unchanged. Passing False resumes the runtime and leaves the arm
+    where it was — the one path that can start the analysis side without starting the money
+    side. It cannot be used to *disarm*: False preserves, it does not clear."""
     if command not in COMMANDS:
         raise ControlBlocked("UNKNOWN_COMMAND", f"unknown control command: {command!r}")
     stamp = now or timeutil.utc_now_iso()
@@ -572,6 +612,10 @@ def apply_command(
             mode=current.mode, updated_by=actor, updated_at=stamp,
             reason=stated_stop or f"stop requested for task {task_id}",
             stop_requested_task_ids=pending,
+            # Carried, not defaulted. This branch keeps `mode` deliberately; letting the arm
+            # fall back to the dataclass default would make an auditable no-op stop request
+            # silently re-arm a disarmed runtime.
+            trading_armed=current.trading_armed,
         )
         store.save(new_state)
         if ledger is not None:
@@ -614,11 +658,15 @@ def apply_command(
                 "mode": KILLED, "changed": False, "action": CMD_PAUSE,
             }
         new_state = ControlState(mode=PAUSED, updated_by=actor, updated_at=stamp,
-                                 reason=stated or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids)
+                                 reason=stated or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids,
+                                 trading_armed=False)
         verb_reply = "Paused. New task requests are refused until /resume." + reason_note
     elif command == CMD_KILL:
+        # Stopping disarms in both dimensions and needs no approval to do it. The asymmetry is
+        # the existing one: a stop must be cheap, and a start must not be.
         new_state = ControlState(mode=KILLED, updated_by=actor, updated_at=stamp,
-                                 reason=stated or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids)
+                                 reason=stated or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids,
+                                 trading_armed=False)
         verb_reply = ("KILLED. All new/pending execution is blocked; only status and audit reads "
                       "remain. /resume to clear." + reason_note)
     else:  # CMD_RESUME
@@ -626,10 +674,15 @@ def apply_command(
         # tasks, not part of the pause/kill they happened to be recorded during. Dropping
         # them silently (the old default-empty tuple) discarded that intent with no event
         # saying so.
+        armed = True if resume_arms else current.trading_armed
         new_state = ControlState(mode=ACTIVE, updated_by=actor, updated_at=stamp,
                                  reason=stated or "resumed by operator",
-                                 stop_requested_task_ids=current.stop_requested_task_ids)
+                                 stop_requested_task_ids=current.stop_requested_task_ids,
+                                 trading_armed=armed)
         verb_reply = ("Resumed. The runtime is ACTIVE and will accept task requests again."
+                      + ("" if armed else
+                         "\nLive entries stay DISARMED - this resume did not re-arm trading. "
+                         "Open positions still close; paper is unaffected.")
                       + reason_note)
 
     store.save(new_state)
