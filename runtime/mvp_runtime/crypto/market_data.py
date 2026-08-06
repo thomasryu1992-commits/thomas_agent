@@ -1798,28 +1798,38 @@ class PeerCandleCache:
     before the cross-sectional one existed.
     """
 
-    def __init__(self, collector: Any):
+    def __init__(self, collector: Any, *, latch: RateLimitLatch | None = None):
         self._collector = collector
         self._snapshots: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._errors: dict[tuple[str, str, str], BaseException] = {}
+        self._latch = latch if latch is not None else RateLimitLatch()
         self.calls = 0
 
     def _collect(self, symbol: str, timeframe: str, *, limit: int, now: str) -> dict[str, Any]:
         """The one fetch point. Both public readers land here, which is what makes the
         cache order-independent: whichever of them asks for a series first pays for it, and
-        it cannot matter which, because they are asking the same question."""
+        it cannot matter which, because they are asking the same question.
+
+        Two failure memories, and they are not the same memory. ``_errors`` is per SERIES —
+        this symbol at this depth just refused, do not re-ask for *it* — and the latch is per
+        VENDOR: we are being throttled, do not ask for *anything*. A cache holding only the
+        first re-asks a rate-limited venue once per distinct series, which is the shape of
+        knocking that earns the ban. Shared with the caller's other wrappers when one is
+        passed, because the address does not care which object is holding it."""
         key = (str(symbol), str(timeframe), str(limit))
         if key in self._errors:
             raise self._errors[key]
         cached = self._snapshots.get(key)
         if cached is not None:
             return cached
+        self._latch.check()
         self.calls += 1
         try:
             snapshot, _record = collect_market_data(
                 symbol, timeframe, collector=self._collector, now=now, limit=limit
             )
         except BaseException as exc:  # noqa: BLE001 — re-raised unchanged below
+            self._latch.note(exc)
             self._errors[key] = exc
             raise
         self._snapshots[key] = snapshot
@@ -2142,6 +2152,71 @@ def read_reference_price(
 
 # --- one fan-out, one request per distinct question -------------------------------------------
 
+class RateLimitLatch:
+    """The venue's "you are asking too often", held for as long as it stays TRUE.
+
+    This was a field and two methods on :class:`PerRunFeedCache`, and being *inside* that object
+    gave it that object's lifetime — one fire. Two different questions had been answered with
+    one number:
+
+    * **how long may a memoized answer be served?** One fire, and that wrapper argues it at
+      length. A later fire must re-read, or a cadence reads bars from the cadence before it.
+    * **how long is a 429 true?** Until the venue stops saying so. That is a fact about an IP
+      address, and it does not become false because a scheduler moved on to the next schedule —
+      the venue is counting requests, not fires.
+
+    Fusing them made the second answer wrong in exactly the case that matters. The factory
+    schedules fall due together and run in one ``scheduler.run_due`` pass, each reading a frame
+    plus four context legs at replay depth; a per-fire latch stops the tail of the fire that was
+    refused and lets the next four start knocking again. That is the escalation the latch exists
+    to prevent, arriving one fire later.
+
+    So it is passed IN and shared for the length of a pass, while every memo stays per-fire.
+    Nothing about freshness changes: this object holds one exception and no data.
+
+    **One latch per VENDOR, never one per pass.** The runtime reads two vendors through two
+    wrappers — the market-data collector and the liquidation feed — and their limits are counted
+    by two companies. Sharing one between them would let a Coinalyze refusal stop Binance reads,
+    which is not caution but a self-inflicted outage.
+    """
+
+    __slots__ = ("rate_limited",)
+
+    def __init__(self) -> None:
+        self.rate_limited: ToolError | None = None
+
+    def check(self) -> None:
+        """Re-raise the stored refusal, before anything opens a socket."""
+        latched = self.rate_limited
+        if latched is not None:
+            raise latched
+
+    def note(self, exc: BaseException) -> None:
+        """Latch the FIRST refusal and keep it. A later one would say the same thing about a
+        request the caller should not have made.
+
+        **Reads through one re-typing**, because not every caller is close enough to the socket
+        to see the original. :func:`collect_market_data` catches the collector's ``ToolError``
+        and raises ``ToolBlocked("TOOL_ERROR", …) from exc`` — so a rate limit reaches anything
+        above it flattened into the same reason code a flaky venue produces, and a latch reading
+        only the outermost exception would never fire for :class:`PeerCandleCache`. The chained
+        cause is not a guess: that ``from exc`` is the documented shape of that function.
+
+        What is latched is the exception that CARRIES the reason code, not the wrapper around
+        it, so :meth:`check` always re-raises a ``TOOL_RATE_LIMITED`` — which is what callers
+        below ``collect_market_data`` saw before this class existed, and it re-wraps for the
+        ones above exactly as a live refusal would."""
+        if self.rate_limited is not None:
+            return
+        seen: set[int] = set()
+        while exc is not None and id(exc) not in seen:
+            seen.add(id(exc))
+            if getattr(exc, "reason_code", None) == TOOL_RATE_LIMITED:
+                self.rate_limited = exc  # type: ignore[assignment]
+                return
+            exc = exc.__cause__
+
+
 class PerRunFeedCache:
     """Memoizes the per-SYMBOL reads a pool fan-out repeats, for the length of ONE fire.
 
@@ -2163,7 +2238,12 @@ class PerRunFeedCache:
 
     * **It lives for one fire.** The scheduler constructs it beside the collector and drops it
       when the fire ends, so the data a cycle reads is never older than that cycle. Nothing here
-      makes a 15-minute cadence stale — it makes one cadence cost one request.
+      makes a 15-minute cadence stale — it makes one cadence cost one request. That statement is
+      about the MEMO and only the memo; the rate-limit latch used to live here too and needed a
+      longer life than one fire, which is what :class:`RateLimitLatch` is and why it is now
+      passed in rather than owned. ``exchange_info`` is why the distinction was worth drawing
+      rather than just widening this bullet: lot steps memoized across a whole pass would size a
+      late fire's order on rules read minutes earlier, and no rate-limit fix is worth that.
     * **A failure is memoized too, and re-raised.** Funding that fails for BTCUSDT at 15m fails
       at 1h; retrying is three more timeouts on a scheduler that runs everything sequentially.
       Each context still records its own reason code, because the raise reaches each of them.
@@ -2186,13 +2266,26 @@ class PerRunFeedCache:
         "funding_history", "liquidation_history", "open_interest_history", "exchange_info",
     })
 
-    def __init__(self, inner: Any):
+    def __init__(self, inner: Any, *, latch: RateLimitLatch | None = None):
         # Set through __dict__ so __getattr__ can never recurse looking for it.
         self.__dict__["_inner"] = inner
         self.__dict__["_memo"] = {}
         self.__dict__["requests"] = 0   # what was actually asked of the venue
         self.__dict__["hits"] = 0       # what a repeat context did not have to ask again
-        self.__dict__["rate_limited"] = None  # the venue's refusal, once it has given one
+        # The venue's refusal, once it has given one. Supplied by a caller that wants it to
+        # outlive this wrapper (the scheduler shares one per vendor per pass); owned privately
+        # otherwise, which is exactly the behaviour this had when the state lived here.
+        self.__dict__["_rate_limit_latch"] = latch if latch is not None else RateLimitLatch()
+
+    @property
+    def rate_limited(self) -> ToolError | None:
+        """The venue's refusal, once it has given one — read straight off the latch.
+
+        A property rather than an instance attribute because ``__getattr__`` below forwards
+        anything not found to the wrapped collector: as a plain name it would resolve to the
+        *collector's* attribute the moment it left ``__dict__``, and collectors do not have one,
+        so every reader would get ``AttributeError`` instead of ``None``."""
+        return self.__dict__["_rate_limit_latch"].rate_limited
 
     def _latch(self) -> None:
         """Refuse before opening a socket, once the venue has said we are asking too often.
@@ -2209,9 +2302,7 @@ class PerRunFeedCache:
         open live position. What it does stop is opening new ones, which is the correct posture
         for a runtime that cannot currently see the market.
         """
-        latched = self.__dict__["rate_limited"]
-        if latched is not None:
-            raise latched
+        self.__dict__["_rate_limit_latch"].check()
 
     def collect(self, symbol: str, timeframe: str, *, limit: int, timeout_seconds: int) -> MarketSnapshot:
         """Candles, served from a DEEPER cached window when one exists for this ``(symbol,
@@ -2247,16 +2338,10 @@ class PerRunFeedCache:
                 symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds
             )
         except ToolError as exc:
-            self._note_rate_limit(exc)
+            self.__dict__["_rate_limit_latch"].note(exc)
             raise
         self._memo[key] = (limit, snapshot)
         return snapshot
-
-    def _note_rate_limit(self, exc: ToolError) -> None:
-        """Latch the FIRST refusal and keep it. A later one would say the same thing about a
-        request this wrapper should not have made."""
-        if getattr(exc, "reason_code", None) == TOOL_RATE_LIMITED and self.rate_limited is None:
-            self.__dict__["rate_limited"] = exc
 
     def __getattr__(self, name: str) -> Any:
         # getattr on the inner object first: an attribute it does not have must stay absent here,
@@ -2291,7 +2376,7 @@ class PerRunFeedCache:
                 value = attr(*args, **kwargs)
             except MvpRuntimeError as exc:
                 if isinstance(exc, ToolError):
-                    self._note_rate_limit(exc)
+                    self.__dict__["_rate_limit_latch"].note(exc)
                 self._memo[key] = ("raised", exc)
                 raise
             self._memo[key] = ("returned", value)
@@ -2307,7 +2392,7 @@ class PerRunFeedCache:
                 return attr(*args, **kwargs)
             except MvpRuntimeError as exc:
                 if isinstance(exc, ToolError):
-                    self._note_rate_limit(exc)
+                    self.__dict__["_rate_limit_latch"].note(exc)
                 raise
 
         return latched

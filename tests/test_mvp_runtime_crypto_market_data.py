@@ -974,6 +974,55 @@ def test_an_ordinary_failure_does_not_latch_the_whole_fire():
     assert cache.rate_limited is None
 
 
+def test_a_shared_latch_crosses_fires_and_the_memo_does_not():
+    """The whole reason the latch is its own object. Two questions had one answer before:
+
+    *how long may a memoized answer be served* — one fire, argued at length on the wrapper — and
+    *how long is a 429 true* — until the venue stops saying so, which is a fact about an IP and
+    does not expire because the scheduler moved to the next schedule. Fusing them made the
+    second wrong exactly where it matters, and widening the wrapper instead would have made the
+    first wrong: `exchange_info` memoized across a pass sizes a late fire's order on lot steps
+    read minutes earlier."""
+    latch = market_data.RateLimitLatch()
+    inner = _CountingCollector()
+    first, second = (PerRunFeedCache(inner, latch=latch) for _ in range(2))
+
+    first.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+    second.collect("BTCUSDT", "1d", limit=120, timeout_seconds=10)
+    assert _counts(inner, "collect") == 2, "a later fire served a bar the earlier one fetched"
+
+    # The refusal, by contrast, is one fact about one address and crosses both.
+    latch.note(market_data.classify_transport_error(_http_error(429), "market-data"))
+    for cache in (first, second):
+        with pytest.raises(ToolError) as excinfo:
+            cache.collect("ETHUSDT", "1d", limit=120, timeout_seconds=10)
+        assert excinfo.value.reason_code == market_data.TOOL_RATE_LIMITED
+    assert _counts(inner, "collect") == 2, "kept knocking after a 429"
+
+
+def test_the_latch_reads_a_refusal_through_collect_market_datas_re_typing():
+    """`collect_market_data` catches the collector's ToolError and re-raises
+    `ToolBlocked("TOOL_ERROR", …) from exc`, so everything above it sees a rate limit and a
+    flaky venue under one reason code. `PeerCandleCache` sits there — a latch reading only the
+    outermost exception would never fire for the leg that makes the most requests."""
+    from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+    inner = _RateLimitedCollector()
+    latch = market_data.RateLimitLatch()
+    cache = PeerCandleCache(inner, latch=latch)
+
+    with pytest.raises((ToolError, ToolBlocked)):
+        cache.candles("1d", limit=120, now=NOW, symbol="BTCUSDT")
+    assert latch.rate_limited is not None, "the 429 was invisible one flattening away"
+    assert latch.rate_limited.reason_code == market_data.TOOL_RATE_LIMITED, (
+        "the latch kept the wrapper, so re-raising it would report the wrong reason"
+    )
+    # A DIFFERENT series — its own key, so the per-series failure cache cannot answer for it.
+    with pytest.raises((ToolError, ToolBlocked)):
+        cache.candles("1d", limit=120, now=NOW, symbol="ETHUSDT")
+    assert inner.attempts == 1, f"re-asked a throttled venue per series ({inner.attempts})"
+
+
 def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():
     """The scope that matters most. A rate-limited fire must still settle, protect and CLOSE an
     open live position — those run on separate objects and separate endpoints, and neither is
