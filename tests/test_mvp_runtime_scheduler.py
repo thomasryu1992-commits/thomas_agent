@@ -1061,3 +1061,30 @@ def test_a_schedule_behind_a_burst_is_deferred_once_per_pass_it_waits(tmp_path, 
     # pass 1 deferred two, pass 2 deferred one, pass 3 had nothing left to defer.
     assert len(rows) == 3
     assert all(s.last_run_at == T1 for s in store.list())   # and every occurrence ran
+
+
+def test_a_deferral_records_the_pass_spend_and_the_budget_it_was_measured_against(tmp_path, monkeypatch):
+    """The count says the budget bound; it does not say whether 60 is the wrong number.
+
+    A pass that bound at 61s and one that bound at 600s are the same row without this, and they
+    argue opposite things — boundary versus one fire longer than any budget worth setting. The
+    budget is recorded rather than left to be read off the constant, so raising it later does not
+    silently re-scale rows written under the old value."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    over = scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1
+    _record_order(monkeypatch, [], clock=clock, cost=over)
+
+    run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+            control_store=ControlStore(tmp_path))
+
+    row = [e for e in _events(ledger) if e["action"] == scheduler.ACTION_DEFERRED][0]
+    assert row["pass_elapsed_ms"] == int(over * 1000)        # what the one fire before it spent
+    assert row["pass_budget_ms"] == int(scheduler.MAINTENANCE_PASS_BUDGET_SECONDS * 1000)
+    # The pair is what makes a row self-describing: the excess is readable from the row alone,
+    # without knowing which value of the constant was live when it was written.
+    assert row["pass_elapsed_ms"] > row["pass_budget_ms"]
