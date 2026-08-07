@@ -961,3 +961,103 @@ def test_the_risk_set_is_the_kinds_that_touch_the_money_path():
     assert scheduler.KIND_CANDLE_ARCHIVE not in scheduler.RISK_KINDS
     assert scheduler.KIND_FACTORY not in scheduler.RISK_KINDS
     assert scheduler.RISK_KINDS <= scheduler.KINDS
+
+
+# === a deferral is on the ledger ===================================================
+# It reached `results` and the run summary and nothing else, and neither outlives the
+# container: the service log is capped at 10m x 3 and a recreation discards it. So the one
+# mechanism bounding risk-kind latency could only be observed for the current container's
+# lifetime — measured 2026-08-06 when "how often does the budget bind?" turned out to be
+# answerable only from `docker logs`.
+
+def test_a_deferral_is_recorded_on_the_ledger(tmp_path, monkeypatch):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    _record_order(monkeypatch, [], clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    summary = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    assert summary["deferred"] == 1
+    rows = [e for e in _events(ledger) if e["action"] == scheduler.ACTION_DEFERRED]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "deferred_pass_budget"
+    assert rows[0]["kind"] == scheduler.KIND_FACTORY
+    assert rows[0]["created_at"] == T1
+
+
+def test_a_deferral_carries_no_run_id_and_is_not_an_abandoned_run(tmp_path, monkeypatch):
+    """`find_abandoned_runs` pairs `started` against terminals BY `schedule_run_id` and ignores
+    events without one. A deferral claims nothing and starts nothing, so carrying a run id would
+    make it an unpaired row in the scan built to notice exactly that shape."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    _record_order(monkeypatch, [], clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+            control_store=ControlStore(tmp_path))
+
+    events = _events(ledger)
+    deferrals = [e for e in events if e["action"] == scheduler.ACTION_DEFERRED]
+    assert deferrals and all("schedule_run_id" not in e for e in deferrals)
+    assert scheduler.ACTION_DEFERRED not in scheduler.TERMINAL_ACTIONS
+    # The fire that DID run is paired, so the scan is quiet — the deferral adds no orphan.
+    assert scheduler.find_abandoned_runs(events) == []
+
+
+def test_recording_a_deferral_does_not_claim_the_occurrence(tmp_path, monkeypatch):
+    """The ledger row must not turn a deferral into a consumed occurrence — that is the failure
+    the budget exists to avoid, and writing a record is exactly where it could creep in."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+            control_store=ControlStore(tmp_path))
+    deferred_row = [s for s in store.list() if s.last_run_at is None][0]
+    assert deferred_row.next_run_at <= T1              # still due: nothing was claimed
+
+    clock.t = 0.0
+    second = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                     control_store=ControlStore(tmp_path))
+    assert second["fired"] == 1 and len(order) == 2    # it ran on the next pass
+
+
+def test_a_schedule_behind_a_burst_is_deferred_once_per_pass_it_waits(tmp_path, monkeypatch):
+    """Unlike `skipped`, which claims and drops and so appears once per occurrence, a deferral
+    leaves the schedule due. N rows mean N passes it waited, not N occurrences it lost — stated
+    here because a count read the other way overstates what the budget cost."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    for _ in range(3):
+        _kind_schedule(store, scheduler.KIND_FACTORY)
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    _record_order(monkeypatch, [], clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    for _ in range(3):                                  # three passes, one fire each
+        clock.t = 0.0
+        run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                control_store=ControlStore(tmp_path))
+
+    rows = [e for e in _events(ledger) if e["action"] == scheduler.ACTION_DEFERRED]
+    # pass 1 deferred two, pass 2 deferred one, pass 3 had nothing left to defer.
+    assert len(rows) == 3
+    assert all(s.last_run_at == T1 for s in store.list())   # and every occurrence ran

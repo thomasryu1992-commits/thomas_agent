@@ -65,6 +65,12 @@ ACTION_STARTED = "started"
 ACTION_ABANDONED = "abandoned"
 TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
 
+# A due schedule the maintenance budget declined to START this pass (`MAINTENANCE_PASS_BUDGET_
+# SECONDS`). Deliberately NOT in `TERMINAL_ACTIONS`: nothing was claimed, so there is no run for
+# it to terminate — it is the record of an occurrence that has not happened yet, which is why it
+# also carries no `schedule_run_id`. A test pins both.
+ACTION_DEFERRED = "deferred"
+
 # Mutations of the schedule SET, as opposed to the run lifecycle above. ``created`` was the
 # only one recorded until 2026-08-04, so a schedule turned off left no trace anywhere: the
 # store keeps no history (a disable rewrites `enabled` in place), the ledger held nothing,
@@ -608,8 +614,10 @@ def _scheduler_event(
     action: str, schedule: Schedule, *, now: str, status: str,
     run_id: str | None = None, **extra: Any,
 ) -> dict[str, Any]:
-    # actions: started | fired | failed | abandoned | skipped | gap_detected (run lifecycle),
-    # created | enabled | disabled | removed (`MUTATION_ACTIONS`, the schedule set changing).
+    # actions: started | fired | failed | abandoned | skipped | deferred | gap_detected (run
+    # lifecycle), created | enabled | disabled | removed (`MUTATION_ACTIONS`, the schedule set
+    # changing). `deferred` is the one that records a NON-event — a due occurrence the budget
+    # did not start and did not consume — so it carries no run id (see `ACTION_DEFERRED`).
     # run_id/extra are omitted when absent so non-run events keep their original shape.
     fields = dict(extra)
     if run_id is not None:
@@ -1285,7 +1293,9 @@ def run_due(
     non-risk fires. A deferred occurrence is **not** claimed, so it stays due and the next pass
     runs it — deferral slips a cadence by one tick, it never drops an occurrence (unlike the
     kill-switch skip, which claims and drops by design). It is returned as ``deferred`` in the
-    summary so a bounded pass is visible rather than silent. A fire already running is never
+    summary **and written to the ledger as an ``ACTION_DEFERRED`` event**, so a bounded pass
+    survives the container it happened in — the summary and the CLI's per-result line do not.
+    A fire already running is never
     interrupted, so the guarantee is that at most ONE maintenance fire can precede a due risk
     kind — see ``RISK_KINDS`` for the measurement that motivated it."""
     schedules = store.list()
@@ -1328,11 +1338,36 @@ def run_due(
         #
         # After the kill-switch check on purpose: a halted runtime must still drop its due
         # occurrences exactly as before, so the budget cannot change what a kill does.
+        # **And it is recorded on the ledger, like every other outcome of a due schedule.**
+        # It was not, and the omission was mine: a deferral reached `results` (so the CLI's
+        # per-result line prints it) and the run summary (so the tick line counts it), and
+        # neither of those outlives the container. `docker-compose.yml` caps the service log at
+        # 10m x 3 and a recreation discards it outright, which on this host happens several
+        # times a day. Measured 2026-08-06: answering "how often does the budget bind?" — the
+        # question that decides whether 60s is the right number — could only be done from
+        # `docker logs`, and only for the current container's lifetime.
+        #
+        # No `run_id`, exactly like the kill-switch skip above, and that is load-bearing rather
+        # than incidental: `find_abandoned_runs` pairs `started` against terminal events **by
+        # `schedule_run_id`** and ignores every event without one. A deferral claims nothing and
+        # starts nothing, so it must not carry a run id — with one it would be an unpaired
+        # `started`-less row in a scan built to notice exactly that shape.
+        #
+        # Per schedule rather than per pass, which is the `skipped` precedent, and it composes:
+        # grouping these by `created_at` gives passes-that-bound, which is the number to tune on.
+        # The property that differs from `skipped` and is worth knowing before reading a count:
+        # `skipped` claims and drops, so it appears once per occurrence, while a deferral leaves
+        # the schedule due — so a schedule behind a long burst is deferred again on each pass
+        # until it runs, and N rows mean N passes it waited, not N occurrences it lost.
         if (schedule.kind not in RISK_KINDS
                 and time.monotonic() - pass_started > MAINTENANCE_PASS_BUDGET_SECONDS):
             deferred += 1
-            results.append({"schedule_id": schedule.schedule_id, "action": "deferred",
-                            "status": "deferred_pass_budget"})
+            status = "deferred_pass_budget"
+            if ledger is not None:
+                ledger.append_scheduler_event(
+                    _scheduler_event(ACTION_DEFERRED, schedule, now=now, status=status))
+            results.append({"schedule_id": schedule.schedule_id, "action": ACTION_DEFERRED,
+                            "status": status})
             continue
 
         # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
