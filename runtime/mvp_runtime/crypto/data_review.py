@@ -44,13 +44,46 @@ DATA_REVIEW_TIMEOUT_SECONDS = TRIAGE_TIMEOUT_SECONDS
 MAX_SUGGESTIONS_PER_RUN = 5
 
 # The sources the runtime collects today — stated deterministically so the model is
-# told, not asked, what exists. Kept in one place; a new gated feed joins this list
-# in the same PR that wires it.
+# told, not asked, what exists. Kept in one place; a new source joins this list in the
+# same PR that wires it.
+#
+# **The rule used to say "a new gated feed", and that wording is what let this list go
+# stale for two weeks.** Four sources shipped after 2026-07-25 and none of them read as a
+# new gated feed: daily open interest rides the liquidation feed's existing grant and
+# object, and `oi_store` / `positioning_store` / `candle_archive` are local accumulators.
+# So the list said the runtime collects four series while it collects eight, and the model
+# is asked what to collect NEXT — an inventory that under-reports is the one input that
+# turns this review into a re-proposal of work already done. `evaluate_suggestion` reads
+# the same list for its `already_collected` check, so a stale entry silently disarms the
+# only deterministic filter the review has. The rule is now about SOURCES, not grants.
+#
+# Entries that feed no feature yet say so. They are still collected — the question the
+# model is answering is what to collect, so omitting them would invite re-collection — but
+# "collected" and "usable by a template today" are different facts and the accumulators
+# exist precisely because the second is years of retention away from the first.
 CURRENT_SOURCES = (
-    {"source": "binance_futures_klines", "content": "OHLCV candles, 15m/1h/4h/1d, 5 symbols"},
+    {"source": "binance_futures_klines",
+     "content": "OHLCV candles + the taker aggressor split (taker_buy_base -> taker_*), "
+                "15m/1h/4h/1d, over the CROSS_SECTION_UNIVERSE cohort"},
     {"source": "binance_futures_funding", "content": "funding-rate history (funding_rate, funding_zscore)"},
     {"source": "coinalyze_liquidations", "content": "liquidation history (spike ratio + long/short/total)"},
-    {"source": "binance_futures_mark_index", "content": "mark/index price and basis (mark_index_basis_bps)"},
+    {"source": "binance_futures_mark_index",
+     "content": "mark / index / premium-index price series (mark_index_basis_bps, premium_*)"},
+    {"source": "coinalyze_open_interest",
+     "content": "daily open-interest history (open_interest, _change_pct, _zscore) — "
+                "what every oi_* family reads"},
+    {"source": "coinalyze_open_interest_1h",
+     "content": "hourly open interest accumulated into oi_store, because the vendor keeps "
+                "~84 days and the factory replays 500. Feeds no feature yet: this is depth "
+                "for the series above, not a second signal"},
+    {"source": "binance_futures_positioning",
+     "content": "the three /futures/data/ long-short ratio series (top_position, top_account, "
+                "global_account) accumulated into positioning_store, because the vendor keeps "
+                "30 days. Feeds no feature yet — accumulate now, decide later"},
+    {"source": "dex_candle_archive",
+     "content": "15m/1h/4h/1d candles for every perp the xyz DEX lists, accumulated into "
+                "candle_archive because that venue serves a rolling 5,000-candle window and "
+                "nothing behind it. Feeds no feature yet"},
 )
 
 _REQUIRED_FIELDS = ("name", "data_kind", "rationale", "expected_use")
@@ -159,7 +192,17 @@ def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGES
 class MockDataReviewProvider:
     """Deterministic reviewer: no network, no real model (the ``MockProposerProvider``
     precedent). Returns one well-formed suggestion and one missing a required field,
-    so the mock path exercises acceptance AND shape rejection, never only degradation."""
+    so the mock path exercises acceptance AND shape rejection, never only degradation.
+
+    The usable one must name something genuinely NOT in :data:`CURRENT_SOURCES`, or it
+    exercises ``already_collected`` instead of acceptance — which is a different test's
+    job. It used to suggest open-interest history and assert in its own rationale that OI
+    "is not" collected; that became false when the daily series shipped, and nothing
+    caught it because ``already_collected`` matches the source NAME and the two spellings
+    differ. So the fixture went on stating a fact about the inventory that the inventory
+    contradicted. Resting liquidity is the replacement because no collected series
+    describes it: every one is a trade or a position, none is an order that is still
+    waiting."""
 
     model_id = "mock.data_gap_reviewer"
     model_version = "0.1.0"
@@ -173,11 +216,13 @@ class MockDataReviewProvider:
         "summary": "one usable suggestion, one malformed",
         "suggestions": [
             {
-                "name": "open_interest_history",
-                "data_kind": "positioning",
-                "rationale": "Funding and liquidations are collected but open interest — the "
-                             "third leg of the positioning picture — is not.",
-                "expected_use": "oi_squeeze family: enter when OI builds while price ranges.",
+                "name": "orderbook_depth_imbalance",
+                "data_kind": "market_microstructure",
+                "rationale": "Every collected series is a trade that happened or a position "
+                             "outstanding; none is resting liquidity, so nothing separates a "
+                             "move into a thin book from the same move into a deep one.",
+                "expected_use": "liquidity_vacuum family: take breakouts only when the book "
+                                "ahead of price is thin.",
             },
             {
                 "name": "malformed_suggestion",

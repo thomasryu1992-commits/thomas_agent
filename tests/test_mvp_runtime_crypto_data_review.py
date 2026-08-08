@@ -124,6 +124,72 @@ def test_a_declared_venue_still_calls_the_provider():
     assert "degraded" not in record and record["invocation"] is not None
 
 
+# --- the inventory stays true -------------------------------------------------
+
+# Every series `attach_feeds` reports a status for, as of 2026-08-08. A SNAPSHOT and a
+# decision point, the `SHARED_ACROSS_MODULES` precedent in `test_diagnostic_code_index`:
+# the list is not a second source of truth, it is the thing that makes the ninth series a
+# choice somebody makes rather than one that lands unnoticed.
+COLLECTED_SERIES = frozenset({
+    "funding", "mark_prices", "index_prices", "premium_index",
+    "positioning", "liquidations", "open_interest", "open_interest_1h",
+})
+
+
+def test_a_new_collected_series_forces_the_inventory_to_be_revisited(tmp_path):
+    """What actually failed here was not the list — it was that nothing pointed at it.
+
+    Four sources shipped after 2026-07-25 and `CURRENT_SOURCES` moved for none of them, so
+    the review was told the runtime collects four series while it collects eight, and
+    `evaluate_suggestion` was checking `already_collected` against the short list. Both of
+    those are silent: an under-reported inventory produces a plausible review that
+    re-proposes collected data, and no test in the repo read the two together.
+    """
+    from runtime.mvp_runtime.crypto import cycle
+    from runtime.mvp_runtime.crypto.data_review import CURRENT_SOURCES
+
+    class _Feed:
+        feed_id = "fake"
+
+        def liquidation_history(self, symbol, *, days, timeout_seconds):
+            return []
+
+        def open_interest_history(self, symbol, *, days, timeout_seconds, **kwargs):
+            return []
+
+    # A collector with no capabilities: every leg reports `absent`, which is a status all
+    # the same. This test is about which series EXIST, not about whether they answered.
+    _, status = cycle.attach_feeds(
+        {"symbol": "BTCUSDT", "timeframe": "1d", "candles": []},
+        collector=object(), liquidation_feed=_Feed(), now=NOW, root=tmp_path,
+    )
+    assert set(status) == COLLECTED_SERIES, (
+        "attach_feeds gained or lost a series — update CURRENT_SOURCES in data_review.py "
+        "in the same change, then this pin"
+    )
+    # The store-backed accumulators have no feed_status key at all (`candle_archive` is its
+    # own schedule kind), so the pin above cannot see them and they are named directly.
+    sources = {s["source"] for s in CURRENT_SOURCES}
+    assert {"coinalyze_open_interest", "coinalyze_open_interest_1h",
+            "binance_futures_positioning", "dex_candle_archive"} <= sources
+
+
+def test_an_accumulating_source_says_it_feeds_nothing_yet():
+    """Collected and usable-by-a-template are different facts, and the reviewer needs both.
+
+    Listing `positioning` bare would read as "covered", suppressing the suggestion that
+    matters most about it — that nothing reads it. Omitting it would invite a proposal to
+    collect what is already accumulating. Only the qualified entry is honest."""
+    from runtime.mvp_runtime.crypto.data_review import CURRENT_SOURCES
+
+    by_source = {s["source"]: s["content"] for s in CURRENT_SOURCES}
+    for source in ("coinalyze_open_interest_1h", "binance_futures_positioning",
+                   "dex_candle_archive"):
+        assert "Feeds no feature yet" in by_source[source], source
+    # And the inverse: a series a family actually reads must not carry the disclaimer.
+    assert "Feeds no feature yet" not in by_source["coinalyze_open_interest"]
+
+
 # --- suggestion judgment ------------------------------------------------------
 
 def test_mock_provider_exercises_accept_and_reject():
@@ -131,7 +197,7 @@ def test_mock_provider_exercises_accept_and_reject():
                               provider=MockDataReviewProvider(), now=NOW)
     assert record["suggested_count"] == 2 and record["accepted_count"] == 1
     accepted = [s for s in record["suggestions"] if s["accepted"]]
-    assert accepted[0]["name"] == "open_interest_history"
+    assert accepted[0]["name"] == "orderbook_depth_imbalance"
     rejected = [s for s in record["suggestions"] if not s["accepted"]]
     assert "missing_rationale" in rejected[0]["problems"]
     assert record["collection_effect"] == "NONE"
@@ -184,7 +250,7 @@ def test_report_names_accepted_and_rejected():
     record = review_data_gaps(build_data_inventory([], []),
                               provider=MockDataReviewProvider(), now=NOW)
     sheet = format_review_report(record)
-    assert "open_interest_history" in sheet and "malformed_suggestion" in sheet
+    assert "orderbook_depth_imbalance" in sheet and "malformed_suggestion" in sheet
     assert "수집 효력 없음" in sheet
 
 
