@@ -3141,7 +3141,7 @@ version of this test.
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
-## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
+## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done, G4 measured**
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -3346,6 +3346,213 @@ registering there is a governance surface a reading aid does not need.
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
 close, which is a different item from the exact-collision check landed here.
+
+### G4. Which live code hand-rolls a helper it could import — measured 2026-08-08, `main` = `8e0dcb6`
+
+*Reuse first — one concept = one authority = one source of truth* is enforced hard for contracts,
+schemas and registries, and **had never been measured for the package's own helpers.** This is that
+measurement: an AST walk over all 230 production modules (`runtime/` + `scripts/`, tests excluded)
+counting sites that do locally what an existing shared module already owns, reported beside how many
+files import that module — so a zero-adoption authority is visible rather than inferred.
+
+| authority | bypass sites | crypto | runtime core | scripts | kernel | importers |
+|---|---:|---:|---:|---:|---:|---:|
+| `paths.repo_root` | 59 | 0 | **0** | 59 | 0 | 44 |
+| `jsonl.*` | 44 | **35** | 4 | 5 | 0 | 9 |
+| `integrity.sha256_*` | 35 | 4 | 1 | 30 | 0 | 64 |
+| `timeutil.*` | 23 | 1 | **0** | 20 | 2 | 57 |
+| `cli_common.EXIT_*` | 20 | 0 | **0** | 20 | 0 | 23 |
+| `errors.MvpRuntimeError` | 18 | 2 | 1 | 11 | 4 | 110 |
+| `schema_cache` | 16 | 0 | 0 | 16 | 0 | 15 |
+| `filelock.locked` | **0** | 0 | 0 | 0 | 0 | 24 |
+
+**The result is where the zeros are.** `runtime/mvp_runtime/*.py` — the core — kept the bargain each
+authority's docstring records ("this lived twice; it lives here now"): zero repo-root hand-rolls,
+zero timestamp hand-rolls, zero lock hand-rolls, four JSONL sites. **The two that did not are
+`crypto/` and `scripts/`, and they want opposite fixes**, which is the reason this section splits
+them rather than filing one "reduce duplication" item.
+
+#### G4a. `crypto/` never adopted `jsonl` — 35 sites, 15 modules, **0 importers** — **reads done 2026-08-08**
+
+> **Closed for the read half.** All five readers fold, one PR each in the order this section set:
+> `counterfactual` (#623), `pool` (#626), then `paper` / `live_pnl` / `live_promotion` together
+> once the decisions below were settled and the remaining three were the identical transformation.
+> `grep -rn 'for i, line in enumerate(lines):' runtime/mvp_runtime/crypto/` now returns **0**.
+> The write half stays hand-rolled on purpose — see the fsync paragraph below; a test in
+> `test_mvp_runtime_crypto_paper.py` now fails if any of the three loses its `os.fsync`, so the
+> "tidy-up" this section warns about cannot land quietly.
+>
+> **What the fold turned up, and it outlives this item.** Delegating a read moves the reason code
+> into a *parameter*, which `DIAGNOSTIC_CODE_INDEX.md` could not see — so #623 taught the
+> extractor to read `read_code=` / `write_code=` / `exc_type=`, and that surfaced **~30 codes
+> that had never been indexed**, `LEDGER_UNREADABLE` and `LEDGER_WRITE_FAILED` — the audit
+> ledger's own failures — among them.
+>
+> ~~**What is still not indexed, and this is the residue worth picking up.**~~ **Done 2026-08-08.**
+> A code passed as a *module-level constant* rather than a string literal was skipped:
+> `LIVE_HISTORY_TAMPERED`, `LIVE_HISTORY_UNREADABLE` and `CANARY_HISTORY_UNREADABLE` were absent
+> from the index and had been absent before this work too, counted among the sites the index
+> reported as "built at runtime". They are not built at runtime — `NAME = "LITERAL"` at module
+> scope has exactly one value, readable without executing anything, and those three are the live
+> P&L ledger's and the canary registry's own tamper codes.
+>
+> The extractor now resolves them: **456 codes across 787 sites, and the not-indexable count falls
+> 192 → 113.** Verified by running the old and new extractors over the same tree — **+81 rows, −0**,
+> and every added row traces to a module constant whose name is written at the call.
+>
+> **The 113 that remain are genuinely built at runtime** and stay uncounted rather than guessed:
+> 79 f-strings, 13 attribute references, 10 locals inside the delegating primitives (already
+> indexed at their call sites), 8 call results, 2 starred. Two resolutions are refused on purpose —
+> a name reassigned at module scope with a different value, and a name also bound inside some
+> function — because either could make the index name the wrong code with full confidence, which
+> is worse than the gap it replaces. Both refusals are pinned by
+> `test_resolution_refuses_a_name_it_cannot_be_certain_of`.
+
+```
+grep -rn 'json.loads(line)\|json.loads(row)\|json.loads(raw)' runtime/mvp_runtime/crypto/ | wc -l   # 21 reads
+grep -rn 'from \.\. import.*jsonl\|from \.\.jsonl import' runtime/mvp_runtime/crypto/ | wc -l        # 0
+```
+
+`crypto/` reuses the rest of the package — `timeutil` in 24 files, `filelock` 13, `paths` 9,
+`coerce` 8, `errors` 16 — and imports `jsonl` from **none of its 45 modules**. The 35 sites are 21
+per-line reads and 14 per-line writes. `live_promotion.py:362` states it outright: *"answering it
+meant opening the jsonl by hand."*
+
+**Only the 21 reads are duplication. The 14 writes are not, and folding them would be a
+regression** — this is the first thing to know about this item, and it is not visible from the
+count:
+
+```
+grep -rn 'os.fsync' runtime/mvp_runtime/crypto/ | wc -l   # 5 — paper, counterfactual,
+grep -n 'fsync' runtime/mvp_runtime/jsonl.py              # 0   live_pnl, live_promotion, live_position
+```
+
+Five crypto stores `flush()` + `os.fsync()` every appended outcome; `jsonl.append_lines` does not,
+and the audit ledger that uses it has never needed to. The crypto writes are therefore
+`append_lines` **plus a durability guarantee it does not offer**, and the code says why —
+`paper.py:1353`: *"A trade outcome is the one record the risk guard and feedback learn from;
+leaving it in an OS buffer means a power loss can drop a trade that the position file already says
+is closed."* `live_pnl.py:565` is blunter: *"…breaker forget a real loss across a crash. Force it
+down."*
+
+**Nothing would catch this.** fsync has no observable behavior except across a power loss or a
+container kill, so a swap to `append_lines` passes every test, reviews as a tidy-up, and silently
+downgrades the durability of the five stores the breakers read. The write side is either left
+alone or handled by adding an opt-in `fsync=` to `append_lines` — a separate decision from the
+reads, taken separately.
+
+Five modules — `paper`, `live_pnl`, `pool`, `counterfactual`, `live_promotion` — carry the same
+reader byte-for-byte apart from two arguments:
+
+```python
+except OSError as exc:
+    raise ToolError("<CODE>", f"<label> unreadable: {exc.strerror}") from exc
+for i, line in enumerate(lines):
+    if not line.strip():
+        continue
+    try:
+        record = json.loads(line)
+```
+
+That is `iter_objects(path, read_code=..., label=...)` with its arguments spelled out by hand, on
+top of a `read_text().splitlines()` that holds two full copies of the store in memory — the exact
+shape `iter_objects` was written to retire, and the one the crypto board was OOM-killed on.
+`state_dir()` is duplicated verbatim in `paper.py:991` and `live_pnl.py:91` on top of it.
+
+**Two things the reads carry that `jsonl` does not, and neither is cosmetic.** They raise
+`ToolError` where `jsonl` raises `PersistenceError` (both descend from `MvpRuntimeError`, so an
+`exc_type=` parameter is the small move); and every message names the offending **line index**,
+which `jsonl` cannot produce — `iter_objects` yields objects, not positions. The line number is not
+decoration here: it is how an operator finds the bad row in a 100k-line store, and the same index
+is reused by the tamper and duplicate checks that follow the parse. **Folding the reads means
+`iter_objects` grows an enumerate, or the callers keep their own counter and only the parse moves.**
+That is the decision this item exists to make, and it should be made once, on the first module.
+
+**One module per PR, and take `counterfactual` first** — it is purely observational by construction
+(its own docstring: *"nothing here feeds a gate decision"*), so the error-type and line-index
+decisions are settled entirely off the money path before `pool`, then `paper` and `live_pnl`, are
+touched.
+
+What this is **not**: the list below rejects `live_*` decomposition and splitting the 300-line
+functions, both on money-path risk. This re-opens neither. It replaces a read body with a call —
+it moves no boundary and re-cuts no module.
+
+#### G4b. `scripts/` has no repo-root or timestamp authority of its own — 79 sites
+
+```
+grep -rn 'Path(__file__).resolve().parents\[' scripts/ | wc -l                              # 59
+grep -rn 'datetime.now(timezone.utc)' scripts/ | wc -l                                      # 17, of which
+grep -rnF 'datetime.now(timezone.utc).replace(microsecond=0).isoformat()' scripts/ | wc -l  # 10 four-call chains
+```
+
+59 scripts open with their own `ROOT = Path(__file__).resolve().parents[1]`. Ten more carry
+`datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")` — output
+byte-identical to `timeutil.utc_now_iso()`, via a four-call chain whose failure mode is silent: drop
+`.replace(microsecond=0)` and the value gains microseconds the runtime's lexicographic expiry
+compares are not correct for. That is the footgun `timeutil` exists to have removed once.
+
+**But importing `runtime/` is the wrong fix here.** `runtime/mvp_runtime/_scripts_bridge.py` already
+puts `scripts/` on `sys.path` so the runtime can reach `scripts/lib`. Having the 66 scripts that do
+not already import `runtime` start doing so makes that dependency **bidirectional** — and most of
+them are `validate_*` gates whose job is to validate the runtime. A gate importing what it gates is
+a worse property than a duplicated two-line helper.
+
+**So this one is a `scripts/lib` helper, not an import of `runtime/`** — the opposite conclusion
+from G4a, reached from the same table.
+
+#### G4c. The exit-code slot means three different things — recorded, not yet fixed
+
+| owner | code 2 | code 3 |
+|---|---|---|
+| `runtime/mvp_runtime/cli_common.py` (the authority) | `EXIT_BLOCKED` | `EXIT_USAGE` |
+| 7 scripts (`promote_strategy_candidates`, `retire_strategies`, `import_crypto_history`, …) | `EXIT_USAGE` | `EXIT_BLOCKED` |
+| `scripts/clear_bracket_breaker.py` | `EXIT_REFUSED` | — |
+
+**Inverted, not merely divergent.** `clear_bracket_breaker.py` is the sharpest case: it imports
+`force_utf8_io` *from* `cli_common`, then defines its own code-2 constant under a third name.
+
+**Nothing consumes this across the boundary today, and that is checked rather than assumed.** The two
+CI assertions that hard-code an exit value (`.github/workflows/docker-image.yml:86,97`, `-eq 2`) both
+run a **runtime CLI**, where 2 is `EXIT_BLOCKED` — correct. `scripts/lib/gate_runner.py` only tests
+`!= 0`. So this is a hazard with no current victim: the day a script is wired into a check that reads
+2 as "blocked", it reports a usage error as a fail-closed block and both sides are individually
+right. Left as a record because changing seven scripts' exit codes is an operator-facing behavior
+change, and it is not urgent while nothing reads them.
+
+#### Measured and deliberately **excluded** from the actionable list
+
+- **`schema_cache`, 16 sites — not a bypass.** The `validate_*` gates build
+  `Draft202012Validator(schema, format_checker=FormatChecker())`; `schema_cache` builds it *with a
+  `Registry`* that resolves `$ref` across the schema directory. Different operation — and its
+  process-lifetime cache buys nothing in a script that validates once and exits. Two validators exist
+  on purpose; what is missing is a line saying so, not a merge.
+- **`integrity`, 35 sites — three file-hash conventions, and folding them would be wrong.**
+  `integrity.sha256_file` normalizes `\r\n`→`\n` and prefixes `sha256:`;
+  `registry_resolution.raw_file_sha256` is raw and bare; the scripts' `hashlib.sha256(read_bytes())`
+  is raw and prefixed. Moving any site to another convention **changes stored digests**. This is a
+  naming gap — the raw case has an owner nobody imports — and gets documented, not swept. The repo
+  has already paid once for a cross-platform I/O assumption (#572, path separator).
+- **`errors`, 18 classes — 16 are out of scope by rule or convention.** Four are in
+  `read_only_kernel/` (never modify); eleven are one-per-module in `scripts/lib`, a separate package
+  that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
+  `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
+  both plain `ValueError` — so *"every failure path raises a typed error with a stable
+  `reason_code`"* is not true of them, and neither appears in `DIAGNOSTIC_CODE_INDEX.md`.
+
+#### Two notes on the instrument, because both would have closed a question wrongly
+
+**The first run reported `paths`: 0** — a clean bill of health for the single most-duplicated snippet
+in `scripts/`. The AST chain-walker dropped its accumulated attributes when a chain bottomed out in a
+call, so `Path(__file__).resolve().parents` read as `Path().resolve` and matched nothing. A
+measurement that silently returns zero is worse than no measurement: it closes the question. **Every
+zero above was cross-checked by grep before being believed.**
+
+**And `filelock`'s zero is true but narrower than it reads.** All five `fcntl.flock`/`msvcrt.locking`
+sites are inside `filelock.py` itself, so nobody hand-rolls that lock. What the detector cannot see
+is that `scripts/lib/safe_io.exclusive_lock` is a **second lock authority with a different
+mechanism** — `O_EXCL` + polling + stale-lock expiry, against `filelock`'s advisory `flock`. Two
+locking implementations, neither hand-rolled, and no document saying which is for what. That is a
+`scripts/lib`-vs-`runtime` boundary question of the same shape as G4b, not a duplication to remove.
 
 ### Considered and deliberately NOT recommended
 
