@@ -2916,3 +2916,94 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     )
 
 
+
+
+# --- id numbering: reserved, not survived --------------------------------------
+
+def test_a_fused_child_starts_after_every_id_the_seeded_draw_RESERVED(monkeypatch):
+    """`generate_batch` numbers S001..S00count as it mints; `_score_draw` then drops the specs
+    whose features the frame never supplies. So survivors < ids issued the moment anything
+    starves, and a fusion cursor counted off survivors points back into the seeded block.
+
+    The first fused child is then minted under a name a stored seeded row already holds — two
+    different strategies sharing one `(generation_id, strategy_id)`. Promotions key on the
+    lineage-derived `candidate_id`, so nothing mis-promotes; `resolve_candidates` refuses the
+    pair as ambiguous and any display surface shows one name over two rules.
+
+    Asserted on the cursor rather than on a minted collision, because reaching one needs a
+    rotation slice that both starves a spec AND has durable fusable parents — a condition the
+    live store has not hit, which is exactly why this went unnoticed rather than why it is fine.
+    """
+    from runtime.mvp_runtime.crypto import factory
+
+    real_unsuppliable = factory.unsuppliable_features
+    starved_one: list[str] = []
+
+    def starve_the_first(spec, rows):
+        if not starved_one:
+            starved_one.append(spec.strategy_id)
+            return ["a_column_this_frame_never_supplies"]
+        return real_unsuppliable(spec, rows)
+
+    captured: dict[str, int] = {}
+    real_fuse = factory._fuse_batch
+
+    def spy(*args, **kwargs):
+        captured["start_index"] = kwargs["start_index"]
+        return real_fuse(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "unsuppliable_features", starve_the_first)
+    monkeypatch.setattr(factory, "_fuse_batch", spy)
+    factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+
+    assert starved_one, "the fixture must actually starve a spec"
+    assert captured["start_index"] == factory.DEFAULT_BATCH_SIZE + 1, (
+        "the fusion cursor counted survivors, so it points at an id the seeded draw already "
+        "issued"
+    )
+
+
+def test_the_shortfall_draw_starts_after_fusion_on_the_same_convention(monkeypatch):
+    """The inverse pin, and the reason `count` is the right cursor rather than
+    `len(batch["specs"])`: both draws reserve blocks, so a draw that accepted fewer than it
+    asked for leaves a GAP in the numbering instead of risking an overlap."""
+    from runtime.mvp_runtime.crypto import factory
+
+    captured: list[int] = []
+    real_generate = factory.generate_batch
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get("start_index", 1))
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "generate_batch", spy)
+    result = factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                                 existing_candidates=[], now=NOW, fusion_pairs=2)
+    # Seeded block first at 1; the shortfall draw, if it ran, after the seeded block AND
+    # whatever fusion minted.
+    assert captured[0] == 1
+    if len(captured) > 1:
+        assert captured[1] == factory.DEFAULT_BATCH_SIZE + result["fused_count"] + 1
+
+
+def test_fusion_reads_the_symbol_run_factory_resolved(monkeypatch):
+    """One fact, one default. `run_factory` falls back to BTCUSDT; the fusion call used to
+    re-read the snapshot with a `""` fallback, so a snapshot without a symbol would mint
+    BTCUSDT specs while `fusion_parent_buckets` filtered on `""` and dropped every parent —
+    no bucket, no children, no reason recorded. Unreachable through the scheduler, which
+    always sets it."""
+    from runtime.mvp_runtime.crypto import factory
+
+    seen: dict[str, str] = {}
+    real_buckets = factory.fusion_parent_buckets
+
+    def spy(records, *, symbol, timeframe):
+        seen["symbol"] = symbol
+        return real_buckets(records, symbol=symbol, timeframe=timeframe)
+
+    monkeypatch.setattr(factory, "fusion_parent_buckets", spy)
+    snapshot = {k: v for k, v in _trending_snapshot().items() if k != "symbol"}
+    factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+    assert seen["symbol"] == "BTCUSDT", "the two fallbacks for one fact disagree again"
