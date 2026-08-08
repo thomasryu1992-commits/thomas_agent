@@ -2829,6 +2829,51 @@ This is the first time anything in this record has cleared a corrected bar.
    and whose random-entry control loses 0.13R. An effect that large is more often an instrument
    than an edge — and item 1 names the instrument.
 
+#### It does not reproduce — measured 2026-08-08, and this closes the question
+
+**The rotation cannot answer this and never will, which is worth stating before the measurement
+that can.** "Wait for generations and see if `oi_unwind_short` holds" is the obvious plan and it
+is void: `run_factory` mints single-symbol, so no store generation is ever the pooled hypothesis,
+and at 4h this family's stored rows close a **median 9** trades against a floor of 25. Nine of
+nine are unjudgeable. Rows do not pool across generations — each is its own hypothesis with its
+own tail — so accumulating more never makes one judgeable. Waiting buys nothing here.
+
+**What the store CAN judge says no.** Across the 18 stored `oi_unwind_short` rows:
+
+| timeframe | rows | judgeable | median judgeable HO exp | positive |
+|---|---|---|---|---|
+| 15m | 3 | 2 | −0.2832 | **0/2** |
+| 1h | 6 | 2 | −0.2184 | **0/2** |
+| 4h | 9 | **0** | — | — |
+
+Everywhere it can be judged it is judgeably negative, and that **agrees with the pooled 1h
+result** (1/8, t = 2.44, below the bar). The two methods only diverge at 4h, where one has
+evidence and the other structurally cannot.
+
+**So the question goes to F3's instrument**, which is the one available: truncate the series by
+0.7 each step so window *k+1*'s tail ends exactly where window *k*'s begins. Same five confirming
+draws, same cohort, adjacent and non-overlapping:
+
+| holdout window (4h) | draw 0 | draw 1 | draw 3 | draw 4 | draw 6 |
+|---|---|---|---|---|---|
+| `[4200,6000)` — the batch's own | **+0.62** (t 5.16) | +0.49 (3.70) | **+0.54** (4.50) | **+0.70** (4.28) | **+0.43** (4.15) |
+| `[2940,4200)` | **+0.53** (4.51) | +0.20 (1.49) | +0.42 (3.48) | +0.62 (3.55) | +0.31 (3.04) |
+| `[2058,2940)` | −0.03 | −0.06 | −0.06 | +0.00 | −0.02 |
+| `[1440,2058)` | −0.31 | −0.25 | −0.23 | −0.25 | −0.25 |
+
+**All five draws decay monotonically and cross zero in the same window.** The effect lives in the
+newest ~3,000 bars (~500 days) and reverses before them. That is not one strong window — it is
+two — but it is a *time gradient*, which is the same finding in a worse form: a rule whose sign
+depends on when you look is not a rule the promotion door should take. OI coverage is not the
+explanation; the feed starts 2023-10-23 and spans every window here.
+
+**So F9's conclusion stands, and now on evidence rather than on a citation.** Pooling *finds out
+faster* — it turned a family the rotation could never judge at 4h into one judged in an afternoon,
+and the judgement is that its confirmation is a property of the recent period. What is **not**
+established, and what nothing here supports, is that pooled minting earns more. The remaining
+honest use for the `oi_unwind_short` result is as a worked example of why the pooled door needs
+the window test wired beside it, not as a candidate.
+
 **One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
 `liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
 liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
