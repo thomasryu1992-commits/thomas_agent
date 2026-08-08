@@ -2714,17 +2714,41 @@ This is the first time anything in this record has cleared a corrected bar.
 
 **Three reasons to hold that at arm's length, in order of how much they could cost.**
 
-1. **The OI series' coverage of the 1,000-day replay is UNVERIFIED.** F2's correction note
-   measured `open_interest_zscore` at 3000/3000 — over a 3,000-bar replay, when
-   `FACTORY_DEPTH_DAYS` was 500. It is 1,000 now and the same claim over 6,000 bars has not been
-   re-checked. If the series is short, the `oi_*` holdout sits in a recent window, and F3 already
-   recorded the cost of reading one: the same rule at 1h produced +0.4052 at t = 3.91 in a window
-   surrounded by −0.33, −0.27 and −0.33. **Measure this before anything else.**
+1. **The open-interest column is a DAILY series held constant across the day — measured
+   2026-08-08, and it is the one that matters.** The window was never the problem: coverage is
+   100% over all 6,000 4h rows and all 24,000 1h rows, on every cohort symbol, train and holdout
+   alike. What the coverage check found instead is the *resolution*. The feed returns **1,020
+   records stamped at midnight** (`2023-10-23T00:00:00Z`, `2023-10-24T00:00:00Z`, …), and
+   `build_feature_rows` carries each across the bars of its day:
+
+   | | values | distinct | run length |
+   |---|---|---|---|
+   | 4h `open_interest_zscore` | 6,000 | **1,000** (16.7%) | **6** (998 of 1,000 runs) |
+   | 1h `open_interest_zscore` | 24,000 | **1,000** (4.2%) | **24** (998 of 1,000 runs) |
+
+   The run length is exactly bars-per-day at each timeframe. **Three consequences, and they
+   compound:**
+
+   - The `oi_*` families mine a threshold on **~1,000 independent observations**, not 6,000 or
+     24,000. The other families in the same batch mine per-bar columns.
+   - The entry is a **STATE, not an event** — once the daily value crosses, the condition is true
+     for all six (or twenty-four) bars of that day. That is precisely the defect `macd_momentum` /
+     `_short` were RETIRED for on 2026-08-04: *"a state family re-fires on every bar of a move
+     rather than on the bar the relationship changed"*.
+   - So the trades inside a day are near-duplicates of one draw, and `expectancy_t` is
+     `expectancy / (stdev_r / sqrt(n))` with **n counting them as independent**. The four draws
+     that clear z = 3.740 carry n = 33–141. Their effective n is smaller by an unmeasured factor
+     and `t` shrinks with its square root. **The clearance is not established; it rests on a
+     denominator that assumes independence the column cannot have.**
+
+   What would settle it: the number of distinct DAYS those trades fall on, which needs the
+   backtest re-run with trade stamps retained. Until then no `oi_*` confirmation should be quoted
+   as clearing a corrected bar.
 2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
    leaned on is one draw here, not a second result.
 3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
    and whose random-entry control loses 0.13R. An effect that large is more often an instrument
-   than an edge.
+   than an edge — and item 1 names the instrument.
 
 **One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
 `liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
