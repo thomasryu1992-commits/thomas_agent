@@ -2899,6 +2899,50 @@ unknown effort:
 4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
    mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
    exercise, not an afterthought.
+5. **A window test wired beside the door**, and this one is not optional — see below.
+
+#### Why item 5 exists, and why `period_r` is not it
+
+The pooled door's first real output was five `oi_unwind_short` draws clearing a selection-adjusted
+bar at 4h, and the window test above showed all five reversing sign two windows back. **A pooled
+door without that test promotes exactly that row.** The value of pooling is that it makes rows
+judgeable fast; wiring it without the instrument that judges *stability* turns a find-out-faster
+lever into a promote-recent-regimes-faster one.
+
+**The obvious reuse fails, measured 2026-08-08.** `period_r` / `period_trades` already split the
+holdout into `HOLDOUT_PERIODS` slices, which reads like the same instrument. It is not: it
+partitions the **tail**, and the reversal is 2,000+ bars before the tail begins. On the five
+confirming draws every slice is positive —
+
+| draw | per-trade R across the 10 holdout slices (oldest → newest) |
+|---|---|
+| 0 | +1.29 −0.05 +0.18 +1.05 +0.85 +0.52 +0.16 +0.94 +0.70 +1.33 |
+| 6 | +0.80 +0.34 +0.01 +1.35 +0.87 +0.29 +0.03 +1.04 +0.07 +0.75 |
+
+— so `period_r` hands a clean bill of health to a spec whose sign flips outside its window. The
+two answer different questions: *"was the tail uniform"* and *"does the tail's answer hold before
+it"*.
+
+**What the test is**, concretely, since the shape is already proven: truncate the series by
+`1 - HOLDOUT_FRACTION` each step so window *k+1*'s tail ends exactly where window *k*'s begins
+(F3's construction), and score the same spec on three earlier windows. Reach is ~4× the tail.
+
+**Where it belongs.** Computed at mint beside the holdout and stored on the candidate's evidence,
+the way `period_r` is — never inside `backtest_spec_pooled`, whose docstring is explicit that it
+decides nothing. The promotion door then reads a recorded fact instead of re-deriving one, the
+same separation `holdout` already has.
+
+**What it costs, and it is smaller than it looks.** The truncated frames are spec-INDEPENDENT, so
+a batch pays three extra `build_replay_frame` calls in total, not three per spec — the property
+that made the 272-spec batch affordable. Replay is ~1.5× the single-window cost (0.7 + 0.49 + 0.34
+of the series). **No extra venue reads at all**: every window is a prefix of candles already
+fetched.
+
+**What to do with the answer is a decision, not a derivation.** A sign flip across adjacent
+windows could refuse at the door, rank below a stable row, or only be recorded and surfaced.
+Recorded-and-surfaced is the cheapest honest start and matches how a shallow window is already
+handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
+rest.
 
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 
