@@ -12,8 +12,17 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
+from runtime.mvp_runtime.crypto import market_data
+from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.crypto.cost import (
+    COST_MODEL_UNMEASURED,
+    COST_MODEL_VENUE_UNKNOWN,
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
+    VENUE_COST_DECLARATIONS,
+    cost_model_for,
+    worst_case_carry_r,
     FUNDING_SOURCE_FALLBACK,
     FUNDING_SOURCE_PARTIAL,
     FUNDING_SOURCE_VENUE,
@@ -494,3 +503,51 @@ def test_charging_the_carry_is_still_deterministic():
     spec = StrategySpec.from_dict(_spec_dict())
     snapshot = _funded_snapshot()
     assert backtest_spec(spec, snapshot) == backtest_spec(spec, snapshot)
+
+
+# --- venue-scoped cost: S2(a), and the refusals that are the point of it ----------------------
+
+def test_binance_is_exactly_what_it_was_before_the_registry_existed():
+    """The registry must not move the venue every existing number was measured on."""
+    assert cost_model_for(market_data.BINANCE_FUTURES) == CostModel()
+
+
+def test_an_unmeasured_venue_refuses_instead_of_inheriting_binances_rates():
+    """The failure this exists to prevent is invisible: a net R computed at the wrong taker
+    rate looks exactly like one computed at the right one.
+
+    Hyperliquid's base taker/maker are volume-tiered and `userFees` answers only for a real
+    address, so they need an account on that venue. Until then the model does not exist.
+    """
+    with pytest.raises(ToolError) as exc:
+        cost_model_for(market_data.HYPERLIQUID)
+    assert exc.value.reason_code == COST_MODEL_UNMEASURED
+    # It names WHICH fields, so filling them is a lookup rather than a re-investigation.
+    assert "taker_fee_bps" in str(exc.value)
+
+
+def test_an_undeclared_venue_refuses_too():
+    with pytest.raises(ToolError) as exc:
+        cost_model_for("some_new_dex")
+    assert exc.value.reason_code == COST_MODEL_VENUE_UNKNOWN
+
+
+def test_what_was_measured_is_kept_even_though_no_model_can_be_built_from_it():
+    """The point of a declaration over a bare absence: 24 settlements a day and the 0.5
+    multiplier were measured against the venue, and losing them would mean measuring again."""
+    declared = VENUE_COST_DECLARATIONS[market_data.HYPERLIQUID]
+    assert declared.funding_intervals_per_day == 24        # against Binance's 3
+    assert declared.funding_multiplier == 0.5
+    assert declared.deployer_fee_scale == 1.0
+
+
+def test_the_settlement_cadence_now_rides_on_the_model():
+    """It was a module constant because there was one venue. A carry computed from a fixed 3
+    on a venue that settles 24 times a day is wrong by 8x, and quietly."""
+    entry, risk = 100.0, 1.0
+    slow = worst_case_carry_r("LONG", entry, risk, timeframe="1h", max_holding_bars=24,
+                              cost=CostModel())
+    fast = worst_case_carry_r("LONG", entry, risk, timeframe="1h", max_holding_bars=24,
+                              cost=CostModel(funding_intervals_per_day=24))
+    assert slow is not None and fast is not None
+    assert fast == pytest.approx(slow * 8.0)

@@ -13,6 +13,17 @@
 # directory). The authority is .githooks/pre-commit — enable it once per clone with
 # `git config core.hooksPath .githooks`; git then enforces the rule in every worktree,
 # including commits this hook deliberately declines to judge.
+#
+# **This file is only reached if settings.json can find it, and for a while a miss was a
+# silent pass.** The invocation used to be `bash "${CLAUDE_PROJECT_DIR:-.}/…"`, and that `.`
+# is a guess, not a location: with the var unset and the agent's cwd one directory down,
+# bash exits 127, which PreToolUse treats as a non-blocking error — the Bash call proceeds.
+# Measured 2026-08-06 from `runtime/`: exit 127, command allowed. The wrapper in
+# .claude/settings.json now resolves the repo root through `git rev-parse --show-toplevel`
+# when the var is absent, and if the file is still unreadable it emits the deny JSON itself
+# for any payload containing `git`…`commit`. That fallback glob is deliberately coarser than
+# the regex below — it runs only when the real guard is gone, where over-denying is the
+# cheap error. Nothing else about the contract moved: exit 0 is allow, stdout JSON is deny.
 set -uo pipefail
 
 payload=$(cat)

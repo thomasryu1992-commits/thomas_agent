@@ -4,12 +4,16 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-04** — **the live leg holds a position again.** The stop refusal that has
-headed section C since 2026-08-02 is resolved (#460, the confirm race); observed 05:00Z, an
-ETHUSDT SHORT opened 00:13:57Z with both bracket legs `placed: true, status: NEW`. Section C is
-rewritten around what that leaves: **no live trade has ever closed** — `live_outcomes.jsonl` does
-not exist — so the exit path and the #470–#472 naked-close accounting are both undemonstrated,
-and the first live close is the next thing that answers anything.
+Last updated: **2026-08-06** — **the live round trip is complete.** The stop refusal that headed
+section C since 2026-08-02 was resolved on 08-04 (#460, the confirm race), and on 08-06T04:44Z
+the first two live trades **closed and recorded**: `live_outcomes.jsonl` exists, two rows, both
+stops, **−1.1078R** (ETHUSDT, held 52.5h) and **−1.0000R** (DOGEUSDT). The exit path is
+demonstrated end to end. What it leaves is narrower and is in section C: ETHUSDT's stop filled
+**23.5 bps past its trigger** against a cost model that assumes 3.0, and neither a target nor a
+time exit has ever run.
+
+Earlier on 2026-08-04 — the live leg held a position again, observed 05:00Z with both bracket legs
+`placed: true, status: NEW`.
 
 Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
@@ -49,9 +53,10 @@ is at the top of section C and nothing else in this file outranks it:** the runt
 first two autonomous live orders on 2026-08-02 and the protective stop was refused both times, so
 it could not hold a position. **That is resolved as of 2026-08-04** — the cause was the confirm
 race (#460), and the runtime is holding an ETHUSDT SHORT opened 00:13:57Z with both bracket legs
-`placed: true, status: NEW`. What is open moved with it: **no live trade has ever closed**
-(`live_outcomes.jsonl` does not exist), so the exit path and the naked-close accounting from
-#470–#472 are both undemonstrated. The one build item — **nothing counted repeated bracket
+`placed: true, status: NEW`. **The round trip completed on 2026-08-06**: two closes, both stops,
+both recorded (−1.1078R and −1.0000R). What is open moved again with that — realized stop
+slippage of 23.5 bps against a modelled 3.0, and no target or time exit has yet run. The one
+build item — **nothing counted repeated bracket
 failures** — is closed by #439: the loop stops itself after two, instead of running on the daily
 order budget's midnight refill.
 Rollback tags `rollback-pre-<PR#>` are on the Docker host and do not travel.
@@ -329,27 +334,51 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 > placed real orders without a person present. **The stop refusal that opened this section is
 > resolved** — the paragraph below said the next attempt would answer it, and it did.
 >
-> Observed on the host 2026-08-04T05:00Z, from local records only:
+> Observed on the host from local records only — first at 2026-08-04T05:00Z, **re-read
+> 2026-08-06T02:15Z**:
 >
 > | | |
 > |---|---|
 > | position | ETHUSDT **SHORT** 0.022 @ 1859.14, notional 40.90 USDT |
-> | opened | 2026-08-04T00:13:57Z — **held ~4.75h**, `holding_candles: 2` of a 4h spec |
+> | opened | 2026-08-04T00:13:57Z — still open at the re-read, **held 50.0h**, `holding_candles: 11` of 26 |
 > | `live_opened.bracket[0]` | SL @ 1900.5 — **`placed: true`, `status: NEW`** |
 > | `live_opened.bracket[1]` | TP @ 1776.71 — **`placed: true`, `status: NEW`** |
-> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z |
+> | `live_bracket_failures.json` | `consecutive: 0`, last failure 2026-08-03T04:28:58Z (unchanged across both reads) |
+>
+> **The re-read is what makes this a capability rather than an incident.** At the first
+> observation the position had held 4.75h and two candles, which is consistent with a bracket
+> that happened to place once. Eleven candles and two days later, on the same `position_id`,
+> it is not: the leg holds, and the thing that used to close every entry within seconds is gone
+> rather than quiet.
 >
 > The breaker was cleared 2026-08-03T15:51:37Z with the written reason *"#460 confirm-race fix
 > deployed; cause addressed"*, and nothing has tripped it since. `placed: true` on the stop leg is
 > the exact field that read `false` in the incident below, so this is the measurement that
 > paragraph asked for rather than an inference from silence.
 >
-> **What this does NOT yet show, and the distinction is the whole remaining risk.** No live trade
-> has ever *closed*: `live_outcomes.jsonl` **does not exist** on this machine. The entry and the
-> bracket are demonstrated; the **exit** path — a stop or a target actually filling, and the
-> outcome reaching the ledger — has never run end to end. Nor has the naked-close accounting from
-> #470–#472, which merged *after* the last naked close, so it has never fired on a real one. The
-> first live close is the next thing that answers something, and it is the one to watch for.
+> **The exit path ran, 2026-08-06T04:44:13Z — and it recorded.** This paragraph asked whether a
+> close would reach the ledger at all, and `live_outcomes.jsonl` now exists with two rows. Both
+> stops, both `r_basis: filled`, both losses:
+>
+> | symbol | held | entry → exit | result | realized |
+> |---|---|---|---|---|
+> | ETHUSDT SHORT | 2026-08-04T00:13:57Z → 04:44:13Z (**52.5h**) | 1859.14 → 1904.96 | **−1.1078R** | −1.008 USDT |
+> | DOGEUSDT | 2026-08-05T04:14:06Z → 04:44:13Z | 0.06975 → 0.07054 | **−1.0000R** | −0.849 USDT |
+>
+> **The −1.1078 is the number worth reading.** ETHUSDT's stop rested at 1900.5 and filled at
+> 1904.96 — 4.46 adverse on a 41.36 risk unit, so **0.108R of slippage past the stop, 23.5 bps**
+> against the cost model's `DEFAULT_SLIPPAGE_BPS = 3.0`. DOGEUSDT's filled exactly at its stop.
+> Two fills are not a distribution and a stop-market on a fast move is the leg most prone to it,
+> but that constant is INHERITED and unmeasured, and §G1 records these as the first two
+> observations against it.
+>
+> **Both `closed_at_utc` are the same second**, which is the settlement pass stamping them
+> together rather than two simultaneous fills — read that field as when the runtime recorded the
+> close, not when the venue filled it.
+>
+> **What is still untested:** the naked-close accounting from #470–#472 merged *after* the last
+> naked close and still has never fired on a real one, and no live trade has yet closed at a
+> **target** or on `max_holding_bars` — both stops is one exit path of three.
 >
 > **One position is not a fixed system.** The cause was addressed and one bracket rests; that is
 > evidence, not a warranty. Two consecutive naked entries still shut the door
@@ -1236,6 +1265,20 @@ absence is compliance.
       stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
       agent cannot hold the three. See `BUILD_HISTORY.md`.
 
+- [ ] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
+      awaiting a Thomas decision.** `control.ControlState` has one global dimension, so the switch
+      door's `enable` has exactly one effect: `CMD_RESUME`, which restores the analysis path and
+      the live order path together. The assistant's only key to a halted runtime is therefore the
+      **RED** `runtime.trading.enable` approval — correctly labelled, and used for doors it was
+      not minted for. The design, the evidence it rests on (only two consumers of
+      `execution_allowed` gate trading; exits are already ungated by construction) and the five
+      decisions it needs are in
+      [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
+      **Nothing is implemented, and nothing should be until D1–D5 are answered** — it adds a
+      dimension to the one kill switch this runtime has, on a machine that trades live.
+      Not the same thing as PR #535's `DOMAIN_EFFECT_MISMATCH` tripwire, which covers the
+      *domain* axis of that same state and is already handled.
+
 Also raised and closed 2026-07-27: `docs/ACTIVE_ARCHITECTURE.md` — the document `CLAUDE.md` names
 as the owner of current-implementation truth — still described the pre-R2 repository (baseline
 I0.5.5, `runtime/mvp_runtime/` absent from its Source-of-Truth table, a Safety State block listing
@@ -1290,6 +1333,76 @@ same answer.
       this:** a timestamp writer that does not go through `timeutil`, or an externally-supplied
       or model-supplied time string reaching a record. Then the 110 declarations should become a
       defence instead of documentation, and the measurement above is the thing to re-run first.
+
+- [ ] **Answering a question the runtime asked costs a model call — observed 2026-08-06, left
+      alone.** `notify_operator` pushes to the ONE registered private chat, and that chat is also
+      the intake channel. So there is no way for Thomas to *reply* to a notification: a plain
+      message from him is a task request, gets planned, runs, and comes back as an analysis of
+      his own answer. The registry shows it — `"hi"`, 2026-07-29, `DELIVERED`.
+
+      Found while sending the D1/D3/D4 decision request for
+      [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
+      It is not a wording problem and no phrasing in the outbound message fixes it — the two
+      roles share one transport.
+
+      **Deliberately not fixed, and the cost of being wrong is small in both directions.** The
+      damage is one model call plus a confusing reply; the answer itself lands in the task
+      registry either way, so nothing is *lost*. A fix means teaching intake to tell an answer
+      from a request, which is a new classification on the operator path — §16's "building for
+      future possibilities" while the runtime asks Thomas something roughly monthly.
+
+      **What reopens this:** the runtime starting to ask often enough that the replies are a
+      recurring cost, or a question whose answer must not be planned as a task (anything where
+      running an analysis over the answer would itself have an effect). Neither is true today.
+
+- [ ] **Splitting the scheduler into risk / research / maintenance processes — measured
+      2026-08-06, not taken.** An external architecture review (§4.3) asked for three loops on
+      the premise that *"a long data job can delay position protection, and in the live stage a
+      scheduler delay becomes position risk."* Measured against `main`, the premise does not
+      hold here, for two separate reasons.
+
+      **Most of the separation already exists inside the one loop.** `run_due` sorts
+      `RISK_KINDS` first, `MAINTENANCE_PASS_BUDGET_SECONDS = 60` stops *starting* non-risk fires
+      once a pass has spent its allowance, and every fire is wrapped so an exception is recorded
+      as `failed:<code>` and the loop keeps turning. A research job that throws does not take
+      the risk loop with it.
+
+      **And protection is not on this loop at all.** `live_route._run_gated_live_leg` settles
+      and protects open positions *before* it reads control state, and the protective bracket
+      rests **at the venue**. A late cycle therefore delays bookkeeping and new entries — not
+      protection. The review's safety argument is about a coupling this architecture does not
+      have.
+
+      Measured 2026-07-22 → 2026-08-06:
+
+      | | |
+      |---|---|
+      | crypto fan-out interval (target 900s), n=727 | median **+4s**, p99 **+44s** |
+      | over 2 minutes late | **3 / 727 (0.4%)**, worst +438s |
+      | scheduler events | 12,554 |
+      | abandoned runs (process died mid-fire) | **0** |
+      | fire failures, all kinds, all time | **1** (`RemoteDisconnected`) |
+
+      **One number is deliberately absent and its absence is the finding.** How often the
+      maintenance budget actually bit cannot be answered: a deferral does not claim its
+      occurrence, so no event is written, and the count lives only in `run_due`'s return value.
+      The mechanism that bounds risk-kind latency leaves no durable trace of having acted, so
+      "the budget works" above is *inferred from the latency distribution*, not observed. If
+      this box is ever reopened, recording the deferral is the first cheap step — it converts
+      the main claim here from an inference into a measurement.
+
+      **The one exposure the in-process design cannot close**, stated so the deferral is not
+      read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
+      running is deliberately never interrupted (cutting a factory or archive mid-write trades a
+      latency problem for a torn record). So a single hung fire blocks everything behind it in
+      that pass, without limit. Fifteen days say it has not happened — the worst observed is
+      +438s — but no in-process change can make it impossible.
+
+      **What reopens this:** one fire that hangs rather than merely running long; one abandoned
+      run (the process dying mid-fire, which OOM would cause and `except Exception` cannot
+      catch); or the p99 above moving from seconds into minutes. Any of the three makes the
+      separation a fix rather than an investment, and the measurement above is the thing to
+      re-run first.
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
@@ -1538,6 +1651,44 @@ mint is now **13%** (6 of 46) against the 50% the constant still nominally alloc
 budget number above is now a ceiling that no longer binds. Lowering the constant would cut good
 fusions with bad ones; this cuts only the ones that lost to a parent, which is what the
 measurement actually said to do.
+
+**"The budget is untouched" was the half of it that was wrong, and one more fire showed it —
+2026-08-06.** Untouched by the *rule*, yes; unspent in fact. The allocation had no other
+claimant, so every pair fusion refused was a mint the fire simply did not make:
+
+| fired | contexts | seeded | fused | fused/context |
+|---|---|---|---|---|
+| 2026-07-31 → 08-03 | 15 | 60 | 60 | 4.00 |
+| 2026-08-05 | 15 | 60 | 6 | 0.40 |
+| **2026-08-06** | 5 | 20 | **0** | **0.00** |
+
+The 08-06 fire recorded `generated=4/4 fused=0` on all five contexts — 20 rows where the budget
+allowed 40 — and the binding constraint had already moved. On 08-05 it was the child bar (92
+attempts, 6 stored, `no_expectancy_gain` 46 / `champion_score_regression` 11). On 08-06 it was
+the **parent pool**: 10 attempts in total, because `holdout_permits_parenting` leaves 218 of the
+store's 1,681 rows able to parent and only **24** of those are 1d, which was that fire's whole
+rotation slot. Neither is a defect to loosen — both are the rules doing what they were merged to
+do — and both leave the seeded half carrying the search alone.
+
+**Closed by the shortfall draw** (`run_factory`, `seeded_topup_count`): whatever fusion does not
+mint of its allocation is drawn again as seeded specs from **this fire's own rotation slice**,
+so the cursor is untouched and the next fire steps one slice as it always did. It takes nothing
+from fusion — the batch and `_fuse_batch` run first and unchanged, so fusion gets first refusal
+on every pair — which is the distinction from `FACTORY_FUSION_PAIRS = 4 → 2` above: that one
+cuts good fusions with bad, this one cannot cut any. **Judge it over generations, not days**
+(the `#420` error, and this is a mint-time change). What it has to move is the count of rows a
+fire produces that can be judged at all — `MIN_HOLDOUT_TRADES` was cleared by 84 of a fire's
+rows on 07-31 and by 5 of 20 on 08-06.
+
+**What it does not address, stated so the two are not confused.** This recovers the *volume* a
+fire mints; it does nothing about the *share* of a mint that can be judged, which fell over the
+same days for an unrelated reason. `MIN_HOLDOUT_TRADES` is one absolute constant and the
+rotation moved off the tiers that can reach it — seeded median holdout trades by timeframe on
+today's store: **15m 91–356, 1h 44–121, 4h 12–18.5, 1d 10–17.5**, against a floor of 25. The
+08-06 fire's 1d cohort medians **14.5**. The rotation is `schedules.jsonl`, which is
+per-machine, so that change has no trace in this repo and no section here owns it yet;
+`backtest_spec_pooled` (F2: 4h holdout tail 32 → 169, judgeable 9/12 → 12/12) is the lever
+already measured against it and still unused by the factory.
 
 **The narrower version is done** (`MAX_FUSION_ENTRY_CONDITIONS = 7`, `fuse_specs`). It removes
 only the band measured at zero yield — 0 of 22 current-basis mints at 8 conditions are
@@ -1970,6 +2121,49 @@ FRAGILE for a window that had no data in it). **`funding_fade_*` has no equivale
 would walk into exactly that failure — one code change an extension requires either way, since
 it is a defect independent of the window.
 
+#### F4a. The remedy landed, and 1d has no more room to buy — first measured 2026-08-06
+
+`FACTORY_DEPTH_DAYS` is now **1000** (was 500 when F4 was written) and a floor was added beneath
+it, `MIN_FACTORY_BARS = 2_000`, which binds **1d only** — the calendar span alone gave 1d too few
+bars for the scorer. So F4's remedy is half-taken, and this is the first look at what it bought.
+
+Measured over the 86 candidates minted on or after 2026-08-05 (the first two generations under
+the new window):
+
+| tf | `bars_replayed` med | trades med | `mean_reversion*` trades |
+|---|---:|---:|---|
+| 1h | 16,800 | 194.5 | 13, 38 |
+| 4h | 4,200 | 41.5 | 4, 17 |
+| 1d | 1,400 | 36.0 | **0, 0, 2, 3, 4, 5** |
+
+The medians confirm the change is live (`bars_replayed` is 0.7× the target, the in-sample side of
+F3's split; 1d's 1,400 is the 2,000-bar floor, not the 1,000-day span). **The median candidate is
+now well fed at every tier.**
+
+**What the floor did not fix is the sparse-signal family.** `MIN_HOLDOUT_TRADES` is 25 and the
+holdout is the smaller side of the split; a 1d `mean_reversion` candidate closing 0–5 trades
+in-sample is an order of magnitude short and cannot become judgeable at all. Every one of the six
+minted since the change is in that state. Note what this is *not*: the same family closes 13 and
+38 trades at 1h, so it is not a broken family — it is a family whose signal rate needs bars the
+top of the ladder does not have.
+
+**And 1d cannot buy them.** `MIN_FACTORY_BARS`'s own comment records why the floor is 2,000 and
+not higher: the shortest history among the routed USD-M perpetuals is ~2.1k daily bars
+(SOLUSDT), so a higher floor would collect short and score a window it never received. F4's
+lever — a longer window — is therefore **already exhausted at 1d**, while it still has 4–5× of
+room at 4h and 1h. Any fix for sparse families at 1d has to come from somewhere other than depth.
+
+**Read this as one measurement, not a finding.** Six 1d candidates and two 4h ones is a thin
+basis, and it is one family class. What would make it solid: the same table after a full rotation
+(~10 days), and the same cut for the other low-signal families rather than `mean_reversion` alone.
+Recorded now because the numbers cost a session to gather and the next reader would otherwise
+re-derive them from the same two generations.
+
+*(Recorded after a wrong turn worth naming: this started as "drop `mean_reversion` from 1d",
+which the cross-timeframe control killed — the family is thin at 1h and 4h in the same
+proportion, so excluding it at 1d would have hidden a ladder-wide property behind a
+one-tier rule. The control was the whole of the work.)*
+
 **There is no such trade, and the paragraph above nearly bought one.** Both numbers that appear
 to force it are **ours, not the vendors'**. Measured 2026-08-04 against the live feeds:
 
@@ -2063,6 +2257,23 @@ The prediction it would test is specific: if the confirmations were slice-correl
 they should thin out at 60-day slices, and if they are not they should survive with a wider
 interval and fewer of them.
 
+**One axis that re-run had is gone: 1h stopped minting on 2026-08-06.** The five `<SYM> 1h`
+factory schedules were disabled and the slot re-registered as a mint-anchored null control
+(`schedules.jsonl`, per-machine, so there is no repo trace — the same class of change as the
+2026-08-04 15m→1d swap). Its own registration states the reason, and it is this section's
+conclusion arriving from the other direction: *"the per-candidate holdout cannot resolve the
+effect being hunted (needs +0.481R at z=3.53 vs observed p90 +0.209R) while this pooled
+instrument has the sample."*
+
+What that costs here is specific and small: **every 1h figure above stays reproducible**, since
+they are replay measurements and `templates_for_timeframe("1h")` and `factory_candle_target("1h")`
+are untouched — the 1h walk-forward, the calendar-identity table, and the `htf_pullback` control
+can all be re-run on demand. What stops is **new 1h candidates**, so the cross-timeframe
+comparison this section leans on has one live rung (4h) and one frozen one until the mint resumes.
+Read the 1h rows as an archive of 2026-08-05 rather than as a series. And note the null control
+measures nothing before ~2026-08-23 (`MIN_POST_MINT_DAYS = 30` against a 2026-07-23 oldest spec),
+which its registration flags as accumulation rather than a fault.
+
 Compute is not the obstacle, but **egress may be**: ~7 fetches per context (own + reference + 5
 cohort peers) at 2.0 s each is ~14 s per context and ~2.5 minutes added to a daily fire over 10
 contexts, and `build_feature_rows` is 6.0 s at 48,000 bars. What the arithmetic misses is the
@@ -2095,6 +2306,36 @@ leave the rotation, which is now the expensive outcome rather than the bookkeepi
 regardless; backoff and spacing on the factory's fetches; and the replay window recorded with
 each candidate's evidence so `promotable_backlog` refuses to rank across bases. The ceiling is
 2,150 days (SOLUSDT's listing), so 2,000 leaves head-room on every axis measured here.
+
+**Status 2026-08-06 — most of that list is done, and the remaining half should wait.**
+
+| item | state |
+|---|---|
+| `FUNDING_MAX_PAGES` 4 → 7 | **done** (8) |
+| `funding_fade_*` gate | **done** — the families and the timing comment are in `factory.py` |
+| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `pool.evidence_depth_rank` |
+| `FACTORY_DEPTH_DAYS` 500 → 2,000 | **half** (1,000) |
+| `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 | **half** (1,020) |
+
+**The doubling landed 2026-08-05 and covers 5% of the store.** Measured over all 1,680
+candidates carrying a readable window: **1,477 at 500 days, 86 at 1,000, 117 at 2,000**. By mint
+date, 1h and 4h moved to 1,000 on 08-05; 08-04 was a mixed day mid-deploy.
+
+**1d has been at 2,000 all along, and not through this constant.** `MIN_FACTORY_BARS = 2000`
+floors it at 2,000 bars, which at a daily bar is 2,000 days — above the calendar target. So the
+remaining half of this item would move **1h and 4h only**, and the 2,000-day figure it is aiming
+at already exists on one rung as a side effect of a different constant.
+
+**Doubling again now would be the `#420` error this file names three times.** The 1,000-day
+window is two days old, 88% of the store still carries 500, and no lineage has completed a
+rotation at the new depth. The condition to proceed is a full rotation at 1,000 with the 4h trade
+counts read after it — not a calendar date.
+
+**One trap, recorded because this measurement fell into it first.** `bars_replayed` is the
+**70% training slice**, not the window: `HOLDOUT_FRACTION = 0.30` is withheld before scoring. A
+4h row showing 4,200 bars is a 1,000-day window (700 train + 300 holdout), not a 700-day one.
+Read as the window it understates every depth by 30%, which briefly turned a correctly-landed
+change into a phantom defect ("4h is replaying half its target") on the first pass here.
 
 ### F5. The clamp collected the draws it was meant to bound — fixed 2026-08-05, owed a generation
 
@@ -2226,7 +2467,442 @@ measurements agree on: the family is unjudgeable at 4h and 1d for a reason that 
 which makes it evidence for the pooled-mint experiment F2 defers rather than for another template
 edit. Re-open this only against a rule that does not cost the 1h leg, or once minting is pooled.
 
-## G. Codebase review backlog — measured 2026-08-02, three items open
+### F7. The hold is drawn in bars and the retiming only swaps the label — measured 2026-08-06, 86 rows
+
+F1 ends on the count of rows a fire produces that can be judged at all, and that count fell as
+the rotation moved: `MIN_HOLDOUT_TRADES` was cleared by 84 of a fire's rows on 07-31 and by 5 of
+20 on 08-06. The cause is not the tier and not the entry rules. **`templates_for_timeframe`
+returns `replace(t, timeframe=timeframe)`** — it swaps the label and leaves the generation space
+alone — so `_EXIT_PARAMS`' `max_holding_bars` of 12–48 draws 12–48 **hours** at 1h and 12–48
+**days** at 1d. Measured over the 86 rows minted on the current window, the holds that produced:
+
+| timeframe | hold, bars (min/med/max) | the same hold in days |
+|---|---|---|
+| 1h | 9 / 24 / 34 | 0.4 / **1.0** / 1.4 |
+| 4h | 6 / 16 / 36 | 1.0 / **2.8** / 6.0 |
+| 1d | 6 / 26 / 37 | 6.0 / **26.0** / 37.0 |
+
+**A hold occupies its bars, so the exit geometry sets a ceiling the entry rule cannot lift** —
+`holdout_bars / max_holding_bars` is the most trades a tail can close:
+
+| tf | holdout bars | median hold | **ceiling** | actual | ceiling used | **ceiling < floor** |
+|---|---|---|---|---|---|---|
+| 1d | 600 | 26 | **23** | 16 | 77% | **55%** |
+| 4h | 1,800 | 16 | 109 | 17 | 22% | 0% |
+| 1h | 7,200 | 24 | 307 | 91.5 | 39% | 0% |
+
+**The two slow tiers fail for opposite reasons and only one of them is this.** At 1d the median
+ceiling sits *below* `MIN_HOLDOUT_TRADES` itself, 55% of rows cannot reach the floor whatever
+they signal, and the 77% utilisation says the entry rule is already firing near that ceiling —
+nothing about entry conditions moves it. At 4h the ceiling is 109 against a floor of 25 and only
+22% of it is used: that is a **signal-rate** problem, it is not addressed here, and the lever
+already measured against it is F2's `backtest_spec_pooled` (4h holdout tail 32 → 169, judgeable
+9/12 → 12/12), still unused by the factory.
+
+**Deepening the window is not available at 1d.** `MIN_FACTORY_BARS` already floors it at 2,000
+bars and that constant's own note records why it cannot rise — the shortest routed history is
+~2.1k daily bars (SOLUSDT), so a higher floor would score a window the venue never served. F1's
+*"re-measure `factory_candle_target` first"* is spent at this tier.
+
+**What landed — the narrow version** (`judgeable_holding_bars`, `_judgeable_hold_space`). The
+hold space is capped at `holdout_bars // MIN_HOLDOUT_TRADES`, which binds **1d only** on today's
+ladder (600 // 25 = 24 against a space topping at 48; 4h yields 72 and 1h 288, both above their
+spaces). It removes the band whose ceiling is below the floor and nothing else: the claim is
+*"this spec's own geometry makes its holdout unjudgeable"*, which is `_fuse_batch`'s "scored
+candidate that can never trade" one notch weaker, and the same shape as
+`MAX_FUSION_ENTRY_CONDITIONS` — a second bound beside the validator's `MAX_HOLDING_BARS_RANGE`,
+which answers whether the hold is *legal* rather than whether the result can be *judged*.
+It bounds the DRAW rather than the centre, so a pre-bound 1d elite at 37 bars is folded back
+inside rather than escaping through `elite_base_params`. Fusion needs no matching change: a
+child's hold is its parents' midpoint, and a parent long enough to breach the cap cannot parent
+at all — `holdout_permits_parenting` wants the judgeable holdout its own geometry denies it.
+
+**The wide version is deliberately not taken.** Re-expressing the hold as a calendar span — the
+`factory_candle_target` precedent, and the real fix for the *cause* — would move 4h and 1h too,
+on a design intent nothing in this repo ever recorded. Which timeframe the 12–48 was chosen
+against is not written down anywhere, and guessing it changes every tier.
+
+**What this does not claim.** The bound removes rows that *cannot* reach the floor; it does not
+make rows reach it. Whether a 1d spec closes 25 trades still depends on its signal rate, and at
+the cap the ceiling is exactly 25 — a spec would have to trade back-to-back to hit it. Expect
+the 1d judgeable share to rise off 22% and not to reach 1h's 83%. **Judged over generations, not
+days** (the `#420` error; this is a mint-time change).
+
+**One number to record so nobody chases it here.** The entry cost door refuses **26.2%** of 1h
+triggers and **0%** at 4h and 1d — real, and not part of this.
+
+**Read this beside #566, which landed the same day and moves what it applies to.** That record
+froze the **1h** tier (5 `crypto_factory` schedules disabled, 15 → 10), on a null control showing
+its entry contributes nothing — real −0.1059R against random −0.1093R over 135 contexts. So the
+factory now mines **4h and 1d only**: the two tiers this section measures as broken, and the one
+tier whose judgeable share was healthy (83%) is no longer minted. That raises the value of the
+bound above and it does not change the finding.
+
+It also bounds what the bound is worth. #566 measures the promotion gate as a tool that can only
+confirm effects of **+0.48R or larger** after the selection correction, against a real target of
+~+0.05R and a holdout median of 34 trades where confirming +0.05R would need ~9,208. Judgeability
+is a precondition for learning anything, not a route to a verdict: of the 463 rows judgeable
+today, **462 are CONTRADICTED and 0 CONFIRMED**. Nothing here should be read as expecting that to
+move.
+
+### F8. The whole store's edge lives inside 1.3 bps of an unmeasured constant — measured 2026-08-06
+
+F3 ships a family that trades high-volatility bars and records the risk it could not size: *"the
+new family's backtest carries a favourable bias of unknown size"*, because `DEFAULT_SLIPPAGE_BPS
+= 3.0` is assumed. §G1 then indexed that constant as **INHERITED** — carried from the source
+system, never measured here — with *"enough live fills to measure realized slippage"* as what
+would reopen it. **The first live fills arrived the same day**, and the bias has a size now.
+
+**The arithmetic is exact, not a model.** Slippage cost in R is `bps / risk_bps`, linear in the
+rate, and `cost_summary.total_slippage_cost_r` is recorded per candidate — so re-pricing a
+candidate at rate *r* is `net − slippage_per_trade × (r/3 − 1)`. No re-scoring, no re-replay.
+
+**The median candidate at the current cost basis stops paying at 4.3 bps.** The model charges
+3.0. Over the 973 current-basis candidates:
+
+| | median net @3.0 | @10 bps | @23.5 bps | breakeven |
+|---|---|---|---|---|
+| current cost basis | **+0.0164** | −0.0692 | −0.2172 | **4.3 bps** |
+| `oi_squeeze` | +0.3966 | +0.2008 | −0.1252 | 17.7 |
+| `volatility_expansion` | +0.1380 | +0.0633 | −0.0923 | 14.6 |
+| `trend_pullback` | +0.0584 | −0.1617 | −0.3104 | 10.0 |
+| `breakout` | +0.0886 | −0.0869 | −0.2660 | 9.1 |
+| `htf_trend_strength` (F3's) | −0.1116 | −0.1753 | −0.2982 | already ≤ 0 |
+
+By timeframe the exposure runs the way the denominator does — 15m swings **−0.6575R** between
+3.0 and 23.5, 1d only **−0.0500R** — because 1R is `stop_atr × ATR` and the fast end divides a
+fixed bps by the smallest risk unit.
+
+**And the exposure is largest exactly where the only confirmations came from.** F2 records
+`oi_*` as the two families that confirm out of sample; they are also the ones carrying the widest
+margin *and* the biggest absolute swing (−0.4830R at 23.5). A result that survives its holdout
+and dies on a slippage re-price is not a result.
+
+**23.5 bps is one observation, and it is the worst leg.** ETHUSDT's first live stop rested at
+1900.5 and filled at 1904.96 (§C); DOGEUSDT's filled exactly at its stop. A stop-market on a fast
+move is the most adverse fill this runtime places, and the model charges slippage on **both**
+legs, so applying 23.5 to both is the pessimistic end. **The measured thing here is the
+sensitivity, not the rate** — the column to read is that the store's median edge sits 1.3 bps
+above its own assumption, whatever the true rate turns out to be.
+
+**What this changes.** F3's unsized risk is sized: at any realized rate above ~4.3 bps the
+store's median candidate is not profitable, and the families that confirm forward are the ones
+with the most to lose. It does not say the rate is 23.5 — it says the assumption is load-bearing
+and two fills is the entire evidence behind it. **What would settle it** is entry-leg slippage
+measured against intended price over enough live fills to be a distribution, which is the same
+thing `DEFAULT_SLIPPAGE_BPS`'s own entry in `crypto/tunables.py` already names as what reopens
+it.
+
+#### The instrument for that exists as of 2026-08-06 — and it is still empty
+
+`scripts/measure_live_slippage.py` (#576), read-only, reports realized against modelled on every
+leg where both prices exist. Building it found that **only one of the three legs had them**:
+
+| leg | intended price | state |
+|---|---|---|
+| protective stop | the trigger the runtime chose (`bracket[].stop_price`) | measurable since the first close — **23.47 bps** on ETHUSDT, 0.00 on DOGEUSDT |
+| strategy entry | **not recorded anywhere durable** | fixed by #585 |
+| canary | **not recorded anywhere durable** | fixed by #589 |
+
+**The entry leg was the gap that mattered**, because it is the one the cost model charges on
+*every* trade. A MARKET entry recorded only `fill.avg_price` and the venue answers
+`price: "0.00"` for a market order, so half of what the model charges had nothing to check it
+against. The value existed one layer up all along —
+`build_live_order_intent` carries `entry_price` from the plan, the same number
+`paper.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
+on `submit_and_reconcile`, the one function holding both the intent and the fill.
+
+**The canary is the instrument that works while live entries are held.** It is an entry-only
+MARKET order placed to validate the path, so it is the only entry this runtime can make **without
+routing a strategy signal from a pool where 0 of 1,140 candidates confirm out of sample**. #589
+records the `reference_price` `place_canary_order` already read to check its declared notional —
+used and discarded until now — beside the fill, plus the `side` without which the figure has a
+magnitude and no direction.
+
+**All three are recording-only.** No order changes shape, no gate reads the new fields, and a
+test pins that the canary's `clean` — which gates autonomous live entry — is unmoved.
+
+**It reads empty, and that is the honest state:**
+
+```
+stop fills: n=2  median 11.73 bps  worst 23.47  against 3.0 modelled (7.8x)
+entries with no recorded intent: 2   canaries with none: 4   (both predate `intended_price`)
+```
+
+The six existing fills predate the fields and are **counted rather than assumed to have filled at
+their intent**. Nothing accumulates on its own: with live entries held there are no new entries,
+and there are no open positions left to close. **The only path that fills this is canaries placed
+deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
+then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
+
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+
+F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
+is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
+both: `backtest_spec_pooled` replays one spec across several symbols' frames and pools the tail,
+the cost legs and the outcomes. This section is the audit of **why it is not wired**, because the
+reasons a reader would assume turn out not to be the reasons.
+
+**It is finished, not a sketch.** The function handles the cost-model precondition (a frame built
+under a different `CostModel` is refused rather than used), takes the weakest funding source
+across its legs rather than the best, and carries **eight** tests of its own — depth per symbol
+rather than summed, the shallowest leg winning, the cost-model refusal, the single-frame identity
+with `backtest_spec`. Its only caller is
+`backtest_spec` — the single-symbol form, which delegates with a one-element list. Its own
+docstring records the deferral: *"this does not decide what the factory mints — `run_factory` is
+untouched, and moving the rotation onto pooled specs is a separate decision that wants
+generations of evidence."*
+
+**What F2 measured, restated with the part that constrains it:**
+
+| | 4h single → pooled | 1h single → pooled |
+|---|---|---|
+| median holdout trades | 32 → **169** | 49.5 → **268.5** |
+| holdout tail ≥ `MIN_HOLDOUT_TRADES` | 9/12 → **12/12** | 12/12 → 12/12 |
+| CONFIRMED | 0 → **0** | 0 → **0** |
+| CONTRADICTED | 9 → **12** | 12 → 12 |
+
+It also lifts F7's ceiling directly, since the ceiling is per frame: 5 symbols take 1d's 23 to
+~115 without touching the hold at all.
+
+**The fetch objection is backwards — the data is already bought and thrown away.**
+`cycle.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
+`factory_candle_target(timeframe)` depth so the `xs_*` families can be ranked, and the factory
+branch of `scheduler.py` calls it **without a `PeerCandleCache`** — the only one ever constructed
+is at `cycle.py:1135`, in the trading fan-out. So a factory fire pages **5 peers × replay depth ×
+5 contexts = 25 peer reads**, computes ranks from them, and discards the series. Pooling needs
+**5 reads for the whole fire**. The leg's own docstring already names this: *"without one this
+leg would be the largest source of redundant vendor reads in the runtime."* F4's HTTP 429 is a
+real constraint and it does not apply here; if anything, pooling reduces the fire's fetch.
+
+**The live end already supports it, and that is where the actual cost is — larger than it first
+looks.** `routable_context_map` and `routable_directional_capacity` both iterate
+`spec.symbol_scope` and both document it — *"a multi-symbol strategy occupies each of its
+symbols"*. No code change is owed there. But `MAX_ROUTABLE_PER_CONTEXT` is 1 and the cohort is
+the whole mined symbol set, so **a pooled spec occupies every context of its timeframe**: one
+pooled 4h strategy *is* the 4h tier, where five single-symbol strategies fit today. Fully pooled,
+the pool goes from up to five strategies per timeframe to **one**, each carrying five times the
+evidence and one direction for the whole tier — which `routable_directional_capacity` then reads
+as a maximally skewed book.
+
+That also makes it a migration rather than a switch: the pool holds **5 occupied contexts right
+now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h spec needs four of
+them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
+decision, and it is the thing to decide rather than to derive.
+
+**One statistical consequence that will read as a discount and is not.** `search_context_key` is
+`(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
+shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
+near **1.96** rather than the 3.4–3.9 the mined contexts now carry. This is correct — the pooled
+hypothesis space genuinely is separate, and minting 120 pooled specs raises that context's bar by
+exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a single-symbol row
+will see two different thresholds and the difference has to be written where they meet it, not
+only here.
+
+**What it does not buy — and this paragraph cited the wrong experiment until 2026-08-07.** The
+table above is F2's **re-score**: existing single-symbol specs re-scoped to five symbols and
+replayed. Its CONFIRMED 0 → 0 is a fact about specs fitted on one symbol and then asked to
+transfer. F2 ran a second experiment for exactly this question — a pooled **mint** batch — and it
+did not read 0. Quoting only the re-score left a reader of this section concluding that pooled
+minting has never confirmed anything, which the record two subsections up contradicts.
+
+#566 still sharpens what a confirmation is worth: after the selection correction the promotion
+gate can only confirm effects of **+0.48R or larger** against a real target near +0.05R, and of
+the 463 rows judgeable today **462 are CONTRADICTED**.
+
+#### The pooled mint distribution, which F2 never published — re-run 2026-08-07
+
+F2 reported 11 CONFIRMED of 272 at 4h and 4 of 272 at 1h and said they "concentrate in the `oi_*`
+families" without giving the per-family split. That split is the whole question: 9 confirmations
+sprinkled over 34 families is noise, and 5 in one family is not. Re-run at 8 draws per family,
+pooled over the 5-symbol cohort, **all five legs attached** and post-`_fold_into_bounds` draws:
+
+| status over 272 pooled specs | 4h | 1h |
+|---|---|---|
+| CONTRADICTED | 222 | 260 |
+| INSUFFICIENT | 41 | 11 |
+| **CONFIRMED** | **9** | **1** |
+
+| family | 4h | 1h |
+|---|---|---|
+| `oi_unwind_short` | **5/8** | 1/8 |
+| `htf_pullback_short` | 3/8 | 0/8 |
+| `premium_fade_short` | 1/8 | 0/8 |
+
+**It concentrates, and that is not a chance pattern.** Under a null of 9 confirmations spread
+uniformly over 34 families, one family taking ≥5 has probability **8.5 × 10⁻⁵** — about 1 in
+11,700. The earlier reading of F2's summary (that ~1 family confirming at both timeframes is what
+chance predicts) was the right calculation on the wrong input; with the split in hand the
+concentration is real.
+
+**And four draws clear the selection-adjusted bar, which F2 said nothing did.** At 272 attempts
+the bar is z = 3.740. Four `oi_unwind_short` draws are above it — t = 5.16, 4.50, 4.28, 4.18 at
+holdout expectancies +0.44 to +0.70R over 33–141 trades. F2's best was 3.34 against the same bar.
+This is the first time anything in this record has cleared a corrected bar.
+
+**Three reasons to hold that at arm's length, in order of how much they could cost.**
+
+1. **The open-interest column is a DAILY series held constant across the day — measured
+   2026-08-08, and it is the one that matters.** The window was never the problem: coverage is
+   100% over all 6,000 4h rows and all 24,000 1h rows, on every cohort symbol, train and holdout
+   alike. What the coverage check found instead is the *resolution*. The feed returns **1,020
+   records stamped at midnight** (`2023-10-23T00:00:00Z`, `2023-10-24T00:00:00Z`, …), and
+   `build_feature_rows` carries each across the bars of its day:
+
+   | | values | distinct | run length |
+   |---|---|---|---|
+   | 4h `open_interest_zscore` | 6,000 | **1,000** (16.7%) | **6** (998 of 1,000 runs) |
+   | 1h `open_interest_zscore` | 24,000 | **1,000** (4.2%) | **24** (998 of 1,000 runs) |
+
+   The run length is exactly bars-per-day at each timeframe. **Three consequences, and they
+   compound:**
+
+   - The `oi_*` families mine a threshold on **~1,000 independent observations**, not 6,000 or
+     24,000. The other families in the same batch mine per-bar columns.
+   - The entry is a **STATE, not an event** — once the daily value crosses, the condition is true
+     for all six (or twenty-four) bars of that day. That is precisely the defect `macd_momentum` /
+     `_short` were RETIRED for on 2026-08-04: *"a state family re-fires on every bar of a move
+     rather than on the bar the relationship changed"*.
+   - The third consequence is the one everybody will reach for — that the trades inside a day are
+     near-duplicates, so `expectancy_t` divides by an inflated `sqrt(n)` and the clearance is an
+     artifact. **Measured 2026-08-08: it is false.** Recorded because it is the natural inference
+     and it does not survive contact.
+
+   **The trades are not clustered inside days.** Distinct `(symbol, UTC day)` pairs behind each
+   confirming draw, from trade stamps kept out of the same `_replay` the holdout uses and
+   cross-checked against `holdout.closed_count`:
+
+   | draw | n | symbol-days | market days | t | t·√(sym-days/n) | t·√(days/n) |
+   |---|---|---|---|---|---|---|
+   | 0 | 61 | 60 | 45 | +5.16 | **5.12** | **4.43** |
+   | 1 | 49 | 47 | 35 | +3.70 | 3.62 | 3.13 |
+   | 3 | 56 | 55 | 38 | +4.50 | **4.46** | 3.71 |
+   | 4 | 33 | 33 | 26 | +4.28 | **4.28** | **3.80** |
+   | 6 | 142 | 140 | 85 | +4.15 | **4.12** | 3.21 |
+
+   n ≈ symbol-days almost exactly — 61 trades on 60 symbol-days, 33 on 33. **The mechanism the
+   inference missed is that a position occupies the day it opens.** A fade holds 4–16 bars, so a
+   state condition that stays true cannot re-fire inside the day it is already trading in. The
+   `macd_momentum` analogy does not transfer, and the daily column does not inflate `n`.
+
+   **So that correction leaves the clearance standing, and the stricter one splits it.** Against
+   z = 3.740, 4 of 5 confirmed draws clear on the symbol-day unit. On the **market-day** unit —
+   cross-symbol trades on one day share a market period, which is the unit this record's own
+   effective-sample argument uses — only **2 of 5** clear (4.43 and 3.80), one is marginal at
+   3.71, and two fall to 3.21 and 3.13.
+
+   Where it stands: **not an artifact of the denominator, and not a clean clearance either.**
+   `htf_pullback_short` is unaffected on any unit — it clusters more (117 trades on 107
+   symbol-days, 65 market days) and its best t was 2.93, never near the bar.
+2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
+   leaned on is one draw here, not a second result.
+3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
+   and whose random-entry control loses 0.13R. An effect that large is more often an instrument
+   than an edge — and item 1 names the instrument.
+
+**One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
+`liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
+liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
+silently blanks all four `oi_*` families. The first run of this batch did exactly that and would
+have reported "0 confirmations at 1h, 4 at 4h, none in `oi_*`". `unsuppliable_features`, called
+per spec, named the four families instead of letting them fall into INSUFFICIENT. **That is the
+same failure F2's first pass published as a finding**, caught this time only because the guard was
+called; `backtest_spec_pooled` on its own walks around it.
+
+**And F2's closing cost is already spent at the timeframes that matter.** F2 warns that
+lengthening the replay window removes the `oi_*` families, citing `DERIVATIVE_HISTORY_DAYS = 520`.
+It is **1020** now, against `FACTORY_DEPTH_DAYS` 1000 — the two moved together on 2026-08-04 — so
+the gate binds at 1d only. `_oi_feed_reaches`'s own docstring still says 520 and is stale.
+
+**What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
+unknown effort:
+
+1. `run_factory` takes several snapshots instead of one; the `frames=` path into
+   `backtest_spec_pooled` already exists and `run_factory` already builds one frame per fire.
+2. The factory schedules move from one per `(symbol, timeframe)` to one per `timeframe` —
+   `.runtime_governance_state/schedules.jsonl`, per-machine state, not code.
+3. `build_spec_dict` puts the mined cohort in `symbol_scope` instead of `[symbol]`.
+4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
+   mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
+   exercise, not an afterthought.
+
+### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
+
+F7 closes 1d's structural half and hands 4h over as *"a signal-rate problem"* on a utilisation of
+22%. **That reading was measured on the wrong population and the direction of the finding is the
+other way round.** Normalised by each row's own `holdout.bars`, over 1,187 rows carrying a
+readable tail, the entry rate **rises** with the timeframe:
+
+| tf | n | entry rate p25 / median / p75 | median hold | share of bars in a position |
+|---|---|---|---|---|
+| 15m | 304 | 0.10% / **0.85%** / 2.85% | 24 | 20% |
+| 1h | 374 | 0.50% / **1.25%** / 3.22% | 23 | 27% |
+| 4h | 412 | 1.00% / **2.11%** / 3.67% | 23 | 50% |
+| 1d | 97 | 2.17% / **3.00%** / 4.00% | 24 | 72% |
+
+4h fires more often *per bar* than 1h or 15m. It closes few trades because 1,800 holdout bars is
+few bars, which is F9's argument and not a property of the entry rules.
+
+**What the 22% actually measured is the family mix of two rotation slices.** The 4h rows minted
+since 2026-08-05 run at **0.94%** against the 4h store's **2.67%**, and the spread the rotation is
+sampling from is enormous — at 4h, entry rate by family spans **0.00% to 8.44%**, about 100×:
+
+| high | | low | |
+|---|---|---|---|
+| `macd_momentum` | 8.44% | `oi_unwind_short` | 0.50% |
+| `breakout` | 5.00% | `mean_reversion_short` | 0.22% |
+| `trend_pullback` | 4.11% | `mean_reversion` | 0.11% |
+| `breakdown_short` | 4.00% | `taker_flow_long` | **0.00%** |
+
+Those recent slices drew almost entirely from the low block — `taker_flow_long`/`_short` 5 rows
+each, `oi_unwind_short` 5, `htf_pullback_*` 7 — while `trend_pullback` (4.11%) got **2**. So which
+fires produce judgeable rows is decided by where the rotation cursor lands, and today's 08:09 fire
+reading 48% judgeable against the 08-05 cohort's 27% is the same mechanism, not a trend.
+
+**It is not the condition count and it is not a missing feed.** Within 4h seeded rows the count
+does not order the rate (2 conditions 1.00%, 3 conditions 3.78%, 4 conditions 0.86%), while the
+family spread survives *inside* each count — at 2 conditions 0.00% (`taker_flow_long`) to 5.44%
+(`xs_momentum_long`), at 3 conditions 1.22% to 8.44%. And the quiet families' columns exist:
+`taker_flow_ma`, `open_interest_change_pct` and `rsi` are all supplied, so this is a rare signal
+rather than the `unsuppliable_features` defect wearing its clothes.
+
+#### The confound this section owed, and it resolves three ways
+
+A family's measured rate is taken over candidates whose thresholds were themselves mined, and half
+of every batch centres on a prior elite (`elite_base_params`) — so a low median could be the
+family's premise or a ratcheted threshold. The store separates them without a replay: **at 4h the
+floor needs 25/1800 = 1.39%, so ask whether ANY draw a family has ever produced reached it.**
+
+| verdict | families | what it means |
+|---|---|---|
+| **premise** | 5 | best draw ever produced still under 1.39% |
+| **threshold** | 9 | some draws clear it, most do not |
+| ok | 14 | majority clear it |
+
+The premise five, with their best stored draw: `taker_flow_long` 0.78%, `taker_flow_short` 0.89%,
+`mean_reversion` 0.56%, `mean_reversion_short` 0.33%, `htf_pullback_long` 1.33%. F6 reached this
+for `mean_reversion` alone (*"at 4h and 1d this family cannot reach a verdict at all"*) and F3 for
+the htf pair; the measurement says it is a library-wide property that nothing counts.
+
+**So the obvious action is the wrong one for two thirds of the population.** A family × timeframe
+mint gate — the analogue of `_judgeable_hold_space` — is justified for the five whose search space
+contains nothing judgeable at 4h. Applied to the nine threshold-bound families it would delete a
+premise that *is* reachable, which is the failure mode F7 named when it refused the calendar-span
+rewrite: acting on the cause you assumed rather than the one you separated.
+
+**Limits, because they bound this.** Five to thirteen rows per family. "Best draw ever" over n
+draws underestimates a family's reachable maximum, so a *premise* verdict says only that the
+search has spent those draws and produced nothing near the floor — not that nothing exists.
+`htf_pullback_long` reads premise while `htf_pullback_short` reads threshold, which is either a
+real directional asymmetry or small-n noise and this cannot tell them apart. And `mint_params` is
+present on only **79 of 259** 4h seeded rows, so the direct elite-half/base-half split is not yet
+measurable — it becomes so as rows minted under `mint_params` accumulate, and it is the sharper
+version of this test.
+
+**What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
+threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
+
+## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -2268,33 +2944,169 @@ lifecycle windows, fee/slippage assumptions, stop and sizing multiples) — perh
 Give those one owner with the premise recorded beside each, and leave pure mechanics
 (buffer sizes, retry counts, format widths) where they are.
 
-### G2. The dead capability lane — 3,311 LOC, zero importers
+**First slice done 2026-08-06 — `crypto/tunables.py`, 55 constants, and no value moved.**
+The count was **656** by then, not 602: the population grew by 54 in four days, which is the
+argument for the test rather than the index.
 
-```
-grep -rn 'read_only_entry\|protected_governance_state' --include=*.py runtime/mvp_runtime/
-```
+The index **imports** each constant from its owner instead of copying it, so it cannot be wrong
+about a number, and carries the one thing the comment beside it does not say — **provenance**:
+where the value came from and what would reopen it. Values stay put because §G1 says a 602-value
+sweep is unreviewable, and for a second reason: in this package the argument lives in a dense
+comment beside the constant, and moving the number would separate every value from its own
+reasoning.
 
-`runtime/read_only_entry/` (1,877) + `runtime/protected_governance_state/` (1,434) are not
-imported by the live runtime at all — the single hit is a doc comment in `audit.py`.
-`docs/ARCHITECTURE_REVIEW_RECORD.md` (finding C) already identified this as *"the only genuinely
-safe, self-contained C slice"* and listed what must move in lockstep: `deferred/DEFERRED_ARCHITECTURE.yaml`
-(`implementation_candidates`), `scripts/validate_i0_5_2/3/4/5*`, `scripts/build_i0_5_2/3/5*`, and
-the CI patterns in `scripts/gate_matrix.py`. It triggers the full CI matrix.
+**What reading it the first time found.** Provenance splits **26 `INHERITED`** / 9 `DERIVED` /
+9 `OPERATOR` / 6 `MEASURED` / 5 `VENUE` — and **the four numbers that stop the money are all
+INHERITED**. `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`, `MAX_CONSECUTIVE_LOSSES` and
+`MAX_DRAWDOWN_PCT` are the predecessor system's `config/settings.py` values, carried across and
+never examined against this runtime's own record — while the cost model, the ladder and the
+promotion door have each been re-measured more than once. That is not a bug and no number is
+obviously wrong; it is that the halt thresholds are the least-examined values in the package,
+and nothing said so before. A test pins the finding so it cannot stop being true silently.
 
-Safe, mechanical, and **not urgent** — the material is governed and indexed, not loose. Do it when
+**The teeth are a coverage test, not the index.** A decision-shaped constant appearing in a swept
+module must be indexed with its provenance or named in `MECHANICS` with a reason — so a new
+threshold on the money path cannot be added without recording where the number came from. It
+caught four on its first run. Twelve modules are swept and the rest of the package deliberately
+is not; the boundary is a list in the test rather than an implication.
+
+#### The four INHERITED breakers, measured 2026-08-06 — **measurement only, no value changed**
+
+The index recorded that nobody here had decided them. This is what this runtime's own record says
+about them. **Nothing is proposed and nothing moved**; changing a breaker needs Thomas.
+
+Population: the **90 own closed paper outcomes** (2026-07-24 → 2026-08-05), imported
+crypto_AI_System history excluded — `paper.split_by_provenance`. Metered exactly as `guards` does
+(`cost.outcome_net_r`, falling back to stored `result_R`), and shown against the **stored** figure
+the guard read before the 2026-07-30 cost work for contrast:
+
+| | STORED (what it read then) | NET (what it reads now) |
+|---|---|---|
+| mean R/trade | **+0.0210** | **−0.5014** |
+| cumulative R | +1.89 | −45.13 |
+| days at or past `DAILY_MAX_LOSS_R` −2.0 | 2 of 10 | 4 of 10 |
+| worst day | −6.20R | −17.21R |
+| weeks at or past `WEEKLY_MAX_LOSS_R` −5.0 | **0 of 3** | **2 of 3** |
+| worst week | −4.93R | −24.13R |
+| losing runs reaching `MAX_CONSECUTIVE_LOSSES` 3 | 10 of 17 | 11 of 15 |
+| longest losing run | 10 | 10 |
+| max drawdown | −10.31R | −45.39R |
+| against the 10R limit `MAX_DRAWDOWN_PCT` maps to | **103%** | **454%** |
+
+**The thresholds were never wrong for the series they were written against — the series moved
+underneath them.** On the gross figure the guard metered until 2026-07-30, the weekly breaker
+never tripped once and drawdown grazed its limit at 103%. On the net figure it meters today, two
+of three weeks blow through weekly and drawdown is **4.5× the limit**. Settlement charging plus
+read-time conversion changed what an R means to these breakers by about **0.5R per trade**, and
+the four numbers were not revisited. That is §G1's defect exactly: a premise that died somewhere
+else.
+
+**The conversion is not in question.** The measured mean of −0.5014R reproduces the −0.506R
+`cost.py` recorded independently against 86 of the same rows.
+
+**One threshold binds on both readings and deserves its own look.**
+`MAX_CONSECUTIVE_LOSSES = 3` is reached by 10–11 of 15–17 losing runs whichever figure is read,
+with a longest run of 10. A breaker that trips on two thirds of all losing streaks is either
+doing most of the halting or being routinely overridden; which of those is happening is not
+answered here.
+
+**Values derived from this measurement are proposed in
+`docs/proposals/RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md` (DRAFT, awaiting Thomas).** It changes no
+value. The argument in one line: the ladder's *shape* — two stops in a day, five in a week, ten
+before the account is judged — is already principled, and what broke is the *unit*, because a
+stopped-out trade costs **1.3576R net** (median of 59) where the design assumed 1.0R. Restated at
+that unit the three capital thresholds read −2.72 / −6.79 / −13.58%, each inside its existing
+relaxation bound. `MAX_CONSECUTIVE_LOSSES` derives differently — from evidence rather than
+equity — and lands on **k = 10**, which is exactly the existing relaxation *ceiling*, so adopting
+it leaves nothing for a registered config to relax. That is one of the four decisions the
+proposal names rather than settles.
+
+**And the first live fills touch a fifth INHERITED constant.** `DEFAULT_SLIPPAGE_BPS = 3.0` is
+indexed as *"carried from the source system unmeasured"* with *"enough live fills to measure
+realized slippage"* as what reopens it. The first two live stops (2026-08-06, §C) are the start of
+that sample: ETHUSDT's stop rested at 1900.5 and filled at **1904.96** — 4.46 adverse, **23.5 bps**,
+0.108R on a 41.36 risk unit — while DOGEUSDT's filled exactly at its stop for a clean −1.00R.
+**n = 2, one of them at ~8× the modelled rate.** A stop-market on a fast move is the leg most
+prone to slippage, so this is the worst case rather than an average, and two fills are not a
+distribution — but the direction is the unsafe one and the constant said this is what would
+reopen it.
+
+**What is still open here:** the unswept modules (`features.py` alone holds 37 numeric
+constants, mostly indicator windows), and the `INHERITED` breakers themselves — indexing them
+records that nobody has decided them, which is not the same as deciding them.
+
+### G2. The dead capability lane — **removed 2026-08-06**, and its premise was better than it read
+
+`runtime/read_only_entry/` (1,877 LOC) + `runtime/protected_governance_state/` (1,434), the four
+`scripts/validate_i0_5_2/3/4/5*` that imported them, and the entries naming them in
+`deferred/DEFERRED_ARCHITECTURE.yaml` and `scripts/gate_matrix.py`. **The deferred design stays**
+— its contracts, schemas, registries and examples are untouched, and the `family_constraints`
+that record every capability as `false` are still there. What went is an *implementation* sitting
+under a deferral, which is the anomaly: a deferred design is supposed to be a design.
+
+**The "zero importers" grep was scoped to the live runtime and understated the surface**, which
+is worth recording because it nearly stopped this. Four validators imported both packages, and
+the deferral manifest lists them under `detailed_validators` — so the first read was "the gates
+genuinely read this", which is the exact wording §G uses below to park the sibling item.
+
+**Checked one step further, nothing executes them.** The release gate names all four in a
+**comment block**; the deferred CI scope runs `scripts/validate_deferred_architecture.py`, which
+runs `tests.test_deferred_architecture`, which does not touch the lane; pytest never imports it.
+The `RELEASE_GATE_EVIDENCE.yaml` rows showing them run carry a `C:\Users\thomas\...` path — a
+hand-run from another machine, not a gate. So the record said validated and nothing validated.
+
+**The lockstep list was right about the mechanism and wrong about one item.**
+`scripts/build_i0_5_2/3/5*` do not exist — only `build_i0_5_1_*`, which stays, as does
+`validate_i0_5_1_runtime_promotion_readiness.py`; neither imports the lane. And the reason the
+manifest had to move in the same commit is concrete: `lib/deferred_validation._all_references`
+yields `implementation_candidates` and `detailed_validators` and `_path_exists` checks each, so
+deleting the code alone would have failed the deferred gate on the very PR that touched it.
+
+Verified after: deferred architecture gate **PASS**, `pytest` 4,349 passed / 210 skipped, release
+gate `--full --check-only` **PASS**, and no manifest reference points at a path that no longer
+exists.
+
+**What this does not settle** is the sibling item in the not-recommended list below (36 of 75
+schemas and 44 of 94 contracts describing disabled capability). That one rests on "the gates
+genuinely read it" — which was true there and, as measured here, was **not** true of this lane.
+The distinction to carry: a gate reading a *record about* code is not a gate reading the code.
+
+Was, before this: safe, mechanical, and **not urgent** — the material is governed and indexed, not loose. Do it when
 something else already requires a full-matrix run.
 
-### G3. Diagnostics have outgrown their index — 1,188 codes, 34 error classes
+### G3. Diagnostics have outgrown their index — **indexed 2026-08-06**
 
-```
-grep -rhoE '"[A-Z][A-Z0-9_]{6,}"' --include=*.py runtime/ | sort -u | wc -l
-```
+`docs/DIAGNOSTIC_CODE_INDEX.md`, generated by `scripts/build_diagnostic_code_index.py`, kept true
+by `tests/test_diagnostic_code_index.py`. Exactly what this item asked for — *"a generated index
+(code → module → the condition that raises it)… the thing missing, not fewer codes."*
 
-`audit.py` alone defines 84 distinct codes. A large `reason_code` vocabulary is correct for a
-fail-closed system — the problem is that **there is no index**, and reading a code back to its
-cause is the operator's main diagnostic path. Nothing checks for duplicate or near-duplicate
-codes across modules either. A generated index (code -> module -> the condition that raises it)
-would be cheap and is the thing missing, not fewer codes.
+**The count was the first thing the index corrected.** This item's own
+`grep -rhoE '"[A-Z][A-Z0-9_]{6,}"'` counts every upper-case string literal — record types, status
+values, provenance labels — and reported 1,188. Walking the AST for calls to classes ending
+`Error`/`Blocked`/`Refused` and taking the literal first argument or `reason_code=` gives the
+codes that are actually *raised*: **384 distinct codes across 638 sites, 25 exception classes**
+(34 before §G2 removed nine with the deferred lane). A further **192 sites build their code at
+runtime** and are counted rather than guessed at — an index that invented a code would be worse
+than one that admits a gap.
+
+**The `condition` column is the "why", and it cannot rot.** It is the guarding `if`, unparsed
+from the source, so it says what the code is actually behind rather than what someone wrote about
+it once. That is the whole reason the index is generated rather than authored.
+
+**The duplicate check this item asked for exists and has teeth.** **59 codes are raised from more
+than one module.** That is not automatically a defect — `APPROVAL_EXPIRED` means one thing in all
+seven modules that raise it — but the opposite case is indistinguishable from the outside: one
+code, two meanings, and an operator reading it back reaches the wrong module while both raises
+are individually correct. The 59 are declared as a **snapshot, explicitly not an audit**: nobody
+has checked all of them, and the list exists so the *sixtieth* is a decision. A separate test
+drops entries that stop being shared, so the declaration cannot outlive its codes.
+
+Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
+registering there is a governance surface a reading aid does not need.
+
+**What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
+`ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
+close, which is a different item from the exact-collision check landed here.
 
 ### Considered and deliberately NOT recommended
 
@@ -2470,6 +3282,14 @@ depth there.
 
 ## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
 
+> **Status 2026-08-06: the one prerequisite this section named is closed (#545), so what remains
+> is the judgement alone.** The quarantine that I2 called *"the one piece that is not optional"* —
+> the promotion door refusing an unrecognised `derivation_type` — exists and is fail-closed by
+> omission rather than by clause. Nothing else here is built and nothing should be: I3 states
+> that a declarative family is a second authority for *what a family is*, against the standing
+> one-concept-one-authority guardrail, **which is why this section asks rather than proposes.**
+> Building I2 without that answer would be taking the decision by writing it.
+
 Nothing here is built. It is a design with its costs named, recorded because the alternative is
 that the same reasoning gets re-derived from scratch, and because **the choice it turns on is
 explicitly not the runtime's to make** (`proposer.py`: "Adding a family to `factory.TEMPLATES`
@@ -2539,10 +3359,15 @@ for that hash exists in `THOMAS_CORE/approvals/` and is unrevoked. Absent, misma
   `_PARENT_COUNT_RULES` (a trial family is fresh generation, so `(0, 0)` like a seeded row).
   This is a feature, not an obstacle: the quarantine tag is schema-enforced at the store's own
   door rather than being a convention a writer can forget.
-- **`scripts/promote_strategy_candidates.py` must refuse them by default.** Verified 2026-08-05:
-  it names `provenance` only in a report line (`:516`) and filters on neither it nor
-  `derivation_type`, so without this clause an LLM-authored rule reaches the live pool through
-  the ordinary door. This is the one piece that is not optional.
+- ~~**`scripts/promote_strategy_candidates.py` must refuse them by default.**~~ **Closed by #545
+  on 2026-08-05**, the day after this was written, and it is worth reading before deciding the
+  rest. `pool.PROMOTABLE_DERIVATION_TYPES` is an **allowlist** and `assert_promotable_derivation`
+  refuses at the ask; `promotable_backlog` carries a matching `derivation` axis in its refusal
+  partition, so the board cannot advertise what the door would refuse. Both refuse **nothing
+  today** — the allowlist equals the set the store admits — which is exactly the point: a fourth
+  derivation type is quarantined by *omission* rather than by remembering to add a clause.
+  **So the piece this section called "not optional" is done, and a `trial_family` tag would land
+  outside the live path by default.** What is left in §I is only the guardrail judgement in I3.
 - A trial graduates into `TEMPLATES` — real code, Thomas's PR — only after producing confirmable
   holdout evidence. The builder gets written for a family that has already earned it.
 

@@ -108,24 +108,47 @@ _FUNDING_SOURCE_STRENGTH = {
 }
 
 # How many equal-bar slices the tail is subtotalled into, so a confirmation can be judged on
-# market periods instead of on trades. Five, and the number is bounded on both sides:
+# market periods instead of on trades.
 #
-# - **Below**, by the test being possible at all. A one-sided t at 95% needs a spread, so four
-#   periods is the floor `robustness.MIN_HOLDOUT_PERIODS` enforces; five leaves one period of
-#   headroom for a slice that closes nothing.
-# - **Above**, by what the window can supply. The tail is `HOLDOUT_FRACTION` of the replay
-#   span — 150 days at every routed timeframe today — so five slices are 30 days each, and the
-#   block-to-block measurement that motivated this used 50-day blocks. Cutting finer does not
-#   buy independence; it buys correlated slices that LOOK like more evidence, which is the
-#   error this whole change exists to stop making.
+# **This was 5, and the argument for 5 was wrong — measured 2026-08-06.** That comment said
+# cutting finer "does not buy independence; it buys correlated slices that LOOK like more
+# evidence", and cited the +0.459 figure. But +0.459 is correlation BETWEEN CONTEXTS at the
+# same moment, not between adjacent moments; the autocorrelation along the time axis, which is
+# the quantity that argument needs, had never been measured. Measured now over 263,815 replayed
+# trades on the 1000-day window, lag-1 autocorrelation of the block-mean gross series against
+# the `-1/(K-1)` small-sample bias a white-noise series would show:
 #
-# The honest consequence, stated here rather than discovered later: at today's 500-day window
-# this is not enough periods to confirm anything. Simulated over the store 2026-08-04, a
-# period-based interval returns **0 CONFIRMED of 421** judgeable blocks, against 1 under the
-# trade-based test — and that one is PROVISIONAL, so `promotable_backlog` was already 0 and
-# does not move. The door does not get stricter in effect; it gets honest about having been
-# shut. What reopens it is a deeper window, not a smaller number here.
-HOLDOUT_PERIODS = 5
+#   slices   days/slice   observed   iid bias   excess
+#      5        200        -0.179     -0.250    +0.071
+#     10        100        -0.192     -0.111    -0.081
+#     15         67        -0.389     -0.071    -0.318
+#     30         33        -0.127     -0.034    -0.093
+#     60         17        -0.054     -0.017    -0.037
+#
+# **Nowhere positive.** Adjacent slices are independent or mildly mean-reverting, so finer
+# slices carry real information and there is no independence argument against cutting them.
+# What IS strongly dependent is the trades *inside* a slice: variance inflation over the
+# holdout region measures **10-15x**, i.e. treating trades as independent understates the
+# standard error by a factor of ~3.4. Both facts point the same way — the market PERIOD is the
+# unit, and there is no reason to hold the count down.
+#
+# Ten, because that is what the window now supplies and what the candidates can occupy:
+#
+# - **Power.** `t(9)/sqrt(10)` against `t(4)/sqrt(5)` detects an effect **1.74x smaller**. The
+#   window doubled to 1000 days in the meantime, which lengthened the tail from 150 to 300 days
+#   and bought the period gate nothing at all while this stayed at 5 — the test's resolution is
+#   set by the slice COUNT, not by the depth behind it.
+# - **Occupancy.** Measured over the 627 specs that clear `robustness.MIN_HOLDOUT_TRADES`
+#   (the only ones judgeable at all): at ten slices the median occupies **10 of 10**, and
+#   **96% occupy at least 8** — the floor `robustness.MIN_HOLDOUT_PERIODS` enforces. Cutting to
+#   twelve buys nothing (97%) and the 15-20 slice band is where the negative autocorrelation
+#   above is sharpest, which makes the test conservative in a way that is harder to reason
+#   about than it is worth.
+#
+# Thirty days a slice at today's window — the same slice WIDTH the old five gave at the old
+# 500-day window, so nothing about a slice's internal composition changes; there are simply
+# twice as many of them.
+HOLDOUT_PERIODS = 10
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -1242,6 +1265,16 @@ RETIRED_FAMILIES = frozenset({
 OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
                          "oi_unwind_long", "oi_unwind_short"})
 
+# Families whose entry rules read the funding columns — same gate as `OI_FAMILIES`, against a
+# different series, and **it binds today at 1d**. The funding fetch reaches ~1,067 days
+# (`market_data.funding_history_days`); 1h and 4h replay 1,000 and are covered, 1d replays
+# `MIN_FACTORY_BARS` = 2,000 BARS = 2,000 days and is covered **53%**. Identical defect to the
+# one `_oi_feed_reaches` was written for, on the identical timeframe, missed because that fix
+# named only the OI series. Caught before it cost anything: the store holds 44 `funding_fade_*`
+# candidates and **none at 1d** — 1d rejoined the rotation on 2026-08-04 and the cursor has not
+# reached this block yet, which it would have within ~9 fires.
+FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
+
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
 #
@@ -1360,6 +1393,123 @@ def _oi_feed_reaches(timeframe: str) -> bool:
     return replay_days <= market_data.DERIVATIVE_HISTORY_DAYS
 
 
+def _replay_days(timeframe: str) -> float | None:
+    """Calendar days the factory replays at ``timeframe``, or ``None`` for an unknown one."""
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if minutes is None:
+        return None
+    return market_data.factory_candle_target(str(timeframe)) * minutes / 1440.0
+
+
+def _funding_feed_reaches(timeframe: str) -> bool:
+    """Does the funding series' depth span what the factory replays at ``timeframe``?
+
+    :func:`_oi_feed_reaches` for a different series, and written because that one's docstring
+    describes a failure the funding leg was one constant away from repeating. The OI gap went
+    unseen for six days because the window moved (`MIN_FACTORY_BARS`) while the feed depth did
+    not; funding is bound by **two** constants rather than one — the records asked for and what
+    the pager can serve — so it has two ways to be left behind rather than one.
+
+    **It binds now, at 1d.** `market_data.funding_history_days()` is ~1,067 days; 1h and 4h
+    replay 1,000 and pass, while 1d replays `MIN_FACTORY_BARS` = 2,000 bars = 2,000 days and
+    fails at 53% coverage. No 1d `funding_fade_*` candidate exists yet — the rotation cursor has
+    not reached that block since 1d came back on 2026-08-04 — so this closes the defect one
+    fire ahead of it rather than after, which is the difference from the OI case.
+
+    What it prevents is specific and is **not** caught by `unsuppliable_features`: that refuses a
+    column that is None on EVERY row, while a feed short of the window is populated on the newest
+    part of it. The consequence is the one `_oi_feed_reaches` documents — every trade lands in
+    the newest walk-forward slice, `temporal_consistency` is 0 by construction, and the family is
+    retired FRAGILE for a window that had no data in it.
+    """
+    replay_days = _replay_days(timeframe)
+    if replay_days is None:
+        return False
+    return replay_days <= market_data.funding_history_days()
+
+
+# The longest hold whose own holdout can still produce a judgeable sample, in bars.
+#
+# **The generation spaces are written in BARS and the retiming only swaps the label.**
+# `templates_for_timeframe` returns `replace(t, timeframe=timeframe)`, so `_EXIT_PARAMS`'
+# `max_holding_bars` of 12-48 draws 12-48 HOURS at 1h and 12-48 DAYS at 1d — the same number
+# standing for a calendar span 24x apart, which nobody chose. Measured 2026-08-06 over the 86
+# rows minted on the current window, holds came out at 1h 0.4-1.4 days (median 1.0), 4h 1.0-6.0
+# (2.8) and 1d 6-37 (**26**).
+#
+# What that costs is the tier's whole judgeability. A hold occupies its bars, so the most trades
+# a holdout can close is `holdout_bars / max_holding_bars` — an exit-geometry ceiling the entry
+# rule cannot lift:
+#
+#   | tf | holdout bars | median hold | ceiling | actual | ceiling used | ceiling < floor |
+#   |----|--------------|-------------|---------|--------|--------------|-----------------|
+#   | 1d |          600 |          26 |  **23** |     16 |          77% |         **55%** |
+#   | 4h |        1,800 |          16 |     109 |     17 |          22% |              0% |
+#   | 1h |        7,200 |          24 |     307 |   91.5 |          39% |              0% |
+#
+# At 1d the median ceiling is **below `MIN_HOLDOUT_TRADES` itself**, 55% of rows cannot reach the
+# floor whatever they signal, and the 77% utilisation says the entry rule is already firing near
+# that ceiling. 4h fails for the opposite reason — ceiling 109 against a floor of 25, and only
+# 22% of it used — which is a signal-rate problem and NOT what this bound addresses.
+#
+# **Deepening the window is not available at 1d.** `MIN_FACTORY_BARS` already floors it at 2,000
+# bars, and that constant's own note records why it cannot rise: the shortest routed history is
+# ~2.1k daily bars (SOLUSDT), so a higher floor would score a window the venue never served.
+# `REMAINING_WORK.md` F1's "re-measure `factory_candle_target` first" is spent here.
+#
+# **This is the narrow version, and the wide one is deliberately not taken.** Re-expressing the
+# hold as a calendar span — the `factory_candle_target` precedent, which is the real fix for the
+# cause — would move 4h and 1h as well, on an intent nothing in this repo recorded. This bound
+# claims only what the table measures: a spec whose exit geometry makes its own holdout
+# unjudgeable is the `_fuse_batch` "scored candidate that can never trade" defect one notch
+# weaker, and refusing it at mint costs nothing that was ever judgeable. Same shape as
+# `MAX_FUSION_ENTRY_CONDITIONS`, which removes only its own measured-zero band and leaves the
+# validator's `MAX_HOLDING_BARS_RANGE` alone — that one answers "is this hold legal", this one
+# answers "can the result be judged".
+#
+# It binds **1d only** on today's ladder (600 // 25 = 24 against a space topping at 48); 4h
+# yields 72 and 1h 288, both above their spaces. Fusion needs no matching change: a child's hold
+# is its parents' midpoint, so two capped parents cannot exceed the cap, and a pre-cap parent
+# long enough to breach it cannot parent at all — `holdout_permits_parenting` requires the
+# judgeable holdout its own geometry denies it.
+def judgeable_holding_bars(timeframe: str) -> int:
+    """The longest ``max_holding_bars`` whose holdout can still close ``MIN_HOLDOUT_TRADES``.
+
+    Reads the window through the same two functions the replay does
+    (:func:`market_data.factory_candle_target`, :func:`holdout_split_index`) rather than
+    restating the split, so a change to either reaches this bound without being copied."""
+    total = market_data.factory_candle_target(str(timeframe))
+    holdout_bars = total - holdout_split_index(total)
+    return max(1, holdout_bars // MIN_HOLDOUT_TRADES)
+
+
+def _judgeable_hold_space(
+    template: StrategyTemplate, cap: int,
+) -> StrategyTemplate | None:
+    """``template`` with its hold narrowed to ``cap``, or None if it cannot fit inside it.
+
+    None means the family's SHORTEST legal hold already exceeds what this timeframe can judge,
+    so every draw would be unjudgeable by construction — the same answer, for the same reason,
+    that the feed gates above give a family whose columns this timeframe cannot supply. It does
+    not fire on today's ladder (the shortest space starts at 4 against a 1d cap of 24) and is
+    here so that a future window or floor cannot turn the bound into a space with ``lo > hi``."""
+    spec = template.param_space.get("max_holding_bars")
+    if spec is None or spec.hi <= cap:
+        return template
+    if spec.lo > cap:
+        return None
+    return replace(
+        template,
+        param_space={**template.param_space,
+                     "max_holding_bars": replace(spec, hi=float(cap))},
+        # The centre has to live inside its own space: `mutate_params` folds a centre outside
+        # the bounds back in, so leaving it out would not produce an illegal draw — it would
+        # aim the family somewhere nobody chose. Only this parameter moves.
+        base_params={**template.base_params,
+                     "max_holding_bars": min(template.base_params["max_holding_bars"], cap)},
+    )
+
+
 def templates_for_timeframe(
     timeframe: str, *, symbol: str | None = None, positioning_eligible: bool = False,
     venue: str = market_data.BINANCE_FUTURES,
@@ -1424,6 +1574,7 @@ def templates_for_timeframe(
     )
     has_cross_section = cohort_size >= features.MIN_CROSS_SECTION_MEMBERS
     has_oi_history = _oi_feed_reaches(timeframe)
+    has_funding_history = _funding_feed_reaches(timeframe)
     # Raises on an undeclared venue rather than resolving to an empty vocabulary, which would
     # silently return no templates at all and read as "this timeframe mints nothing".
     numeric, categorical = known_features(venue)
@@ -1442,13 +1593,24 @@ def templates_for_timeframe(
             return False
         if template.family in OI_FAMILIES and not has_oi_history:
             return False
+        if template.family in FUNDING_FAMILIES and not has_funding_history:
+            return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.
         if not template_features(template) <= mintable:
             return False
         return True
 
-    return tuple(replace(t, timeframe=timeframe) for t in TEMPLATES if _minted(t))
+    # Applied on the way out rather than as another `_minted` clause, because it is not an
+    # eligibility question: every family above may be minted here, and this narrows the SPACE
+    # one of their parameters is drawn from. The None case is the exception and it drops the
+    # family for the reason `_judgeable_hold_space` states.
+    cap = judgeable_holding_bars(timeframe)
+    retimed = (
+        _judgeable_hold_space(replace(t, timeframe=timeframe), cap)
+        for t in TEMPLATES if _minted(t)
+    )
+    return tuple(t for t in retimed if t is not None)
 
 
 # --- S3 validator (source rules, restricted to the ported feature registry) ---
@@ -2374,7 +2536,10 @@ def funding_charges_per_bar(
     # is right: a 15m bar sits through 1/32 of an interval on average, and charging a whole
     # one per bar would price a scalper like a swing trader.
     minutes = market_data.TIMEFRAMES.get(timeframe, 1440)
-    per_bar = (minutes / 1440.0) * FUNDING_INTERVALS_PER_DAY
+    # From the MODEL, not the module constant: Hyperliquid settles 24 times a day against
+    # Binance's 3, and a per-bar charge computed from a fixed 3 is wrong by 8x on the venue the
+    # archive is already collecting. The default is still 3, so nothing here moves today.
+    per_bar = (minutes / 1440.0) * cost.funding_intervals_per_day
     modelled = cost.funding_bps_per_interval / 10000.0 * per_bar
 
     if not events:
@@ -3659,7 +3824,11 @@ def run_factory(
     that many pairs drawn from the best-scoring **already durable** lineages in
     ``existing_candidates``. Parents are deliberately never taken from the batch
     being minted: the store requires a parent to be durable before the child citing
-    it is appended, and a same-run parent has no independent evidence anyway."""
+    it is appended, and a same-run parent has no independent evidence anyway.
+
+    Whatever fusion does NOT mint of that allocation is drawn again as seeded specs from this
+    fire's own rotation slice, so a dry parent pool costs the fire nothing — see the comment
+    over the shortfall draw for the measurement and for why it takes nothing from fusion."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -3698,6 +3867,13 @@ def run_factory(
         symbol=symbol,
         timeframe=timeframe,
     )
+    # Counted from the store this function was already given — the rotation steps on
+    # THIS context's fire count, not on the global generation number. Hoisted out of the call
+    # below because the shortfall draw after fusion has to pass the SAME cursor: see there for
+    # why it re-draws this fire's slice rather than stepping to the next one.
+    rotation_index = context_rotation_index(
+        existing_candidates, symbol=symbol, timeframe=timeframe,
+    )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
@@ -3706,11 +3882,7 @@ def run_factory(
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         venue=venue,
-        # Counted from the store this function was already given — the rotation steps on
-        # THIS context's fire count, not on the global generation number.
-        rotation_index=context_rotation_index(
-            existing_candidates, symbol=symbol, timeframe=timeframe,
-        ),
+        rotation_index=rotation_index,
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
@@ -3720,42 +3892,51 @@ def run_factory(
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
-    for spec_dict in batch["specs"]:
-        spec = StrategySpec.from_dict(spec_dict)
-        # Before scoring, because scoring it is the waste: a spec naming a feature these rows
-        # never supply cannot enter here, and evidence saying otherwise would be evidence for a
-        # trade this runtime cannot reproduce. See `unsuppliable_features`.
-        starved = unsuppliable_features(spec, frame.rows)
-        if starved:
-            starved_specs.append({"strategy_family": spec.strategy_family,
-                                  "reason": UNSUPPLIABLE_FEATURE, "features": starved})
-            continue
-        evidence = backtest_spec(spec, snapshot, frame=frame)
-        record = {
-            "strategy_id": spec.strategy_id,
-            "strategy_rule_hash": spec.strategy_rule_hash,
-            "generation_id": generation_id,
-            "status": "BACKTESTED",
-            "champion_score": evidence["champion_score"],
-            "strategy_spec": spec.to_dict(),
-            "backtest_evidence": evidence,
-            "evidence_input_sha256": candles_sha,
-            "provenance": "mvp_factory",
-            "derivation_type": "seeded_template",
-            # What this candidate was drawn from, recorded because nothing did and the search
-            # therefore could not learn: `elite_base_params` reads exactly this. Stored on the
-            # record rather than re-derived from the spec — the mapping from a param name to the
-            # condition it lands in lives in the family's own entry builder, so reversing it
-            # would be a second implementation of every template, silently wrong the first time
-            # one changed.
-            "mint_params": batch["params"].get(spec.strategy_id, {}),
-            "parent_candidate_ids": [],
-            "created_at_utc": now,
-        }
-        # Stored id == derived id: strategy_id restarts every generation, so the
-        # lineage-derived candidate_id is the only key promotions may use.
-        record["candidate_id"] = derive_candidate_id(record)
-        candidates.append(record)
+
+    def _score_draw(specs: Sequence[Mapping[str, Any]], params: Mapping[str, Any]) -> None:
+        """Backtest one seeded draw, appending survivors to ``candidates``.
+
+        Two draws reach this — the batch below and the shortfall draw after fusion — and they
+        produce the same KIND of row from the same rotation slice, so they share the scoring
+        path rather than each carrying a copy of it."""
+        for spec_dict in specs:
+            spec = StrategySpec.from_dict(dict(spec_dict))
+            # Before scoring, because scoring it is the waste: a spec naming a feature these
+            # rows never supply cannot enter here, and evidence saying otherwise would be
+            # evidence for a trade this runtime cannot reproduce. See `unsuppliable_features`.
+            starved = unsuppliable_features(spec, frame.rows)
+            if starved:
+                starved_specs.append({"strategy_family": spec.strategy_family,
+                                      "reason": UNSUPPLIABLE_FEATURE, "features": starved})
+                continue
+            evidence = backtest_spec(spec, snapshot, frame=frame)
+            record = {
+                "strategy_id": spec.strategy_id,
+                "strategy_rule_hash": spec.strategy_rule_hash,
+                "generation_id": generation_id,
+                "status": "BACKTESTED",
+                "champion_score": evidence["champion_score"],
+                "strategy_spec": spec.to_dict(),
+                "backtest_evidence": evidence,
+                "evidence_input_sha256": candles_sha,
+                "provenance": "mvp_factory",
+                "derivation_type": "seeded_template",
+                # What this candidate was drawn from, recorded because nothing did and the
+                # search therefore could not learn: `elite_base_params` reads exactly this.
+                # Stored on the record rather than re-derived from the spec — the mapping from
+                # a param name to the condition it lands in lives in the family's own entry
+                # builder, so reversing it would be a second implementation of every template,
+                # silently wrong the first time one changed.
+                "mint_params": params.get(spec.strategy_id, {}),
+                "parent_candidate_ids": [],
+                "created_at_utc": now,
+            }
+            # Stored id == derived id: strategy_id restarts every generation, so the
+            # lineage-derived candidate_id is the only key promotions may use.
+            record["candidate_id"] = derive_candidate_id(record)
+            candidates.append(record)
+
+    _score_draw(batch["specs"], batch["params"])
 
     fused: list[dict[str, Any]] = []
     fusion_rejected: list[dict[str, Any]] = []
@@ -3776,23 +3957,107 @@ def run_factory(
             now=now,
         )
 
+    # --- the half of the budget fusion declined ----------------------------------------
+    #
+    # ``fusion_pairs`` is an allocation, and until 2026-08-06 a fusion that could not fill it
+    # handed the slots back to nobody. That was invisible while fusion always delivered, and
+    # became the dominant term the moment it stopped. Measured on this machine's scheduler
+    # ledger, children minted per context: **4.00 a fire** (07-31 → 08-04), **0.40** (08-05,
+    # the first fire under `FUSION_IMPROVEMENT_METRICS`), **0.00** (08-06, which recorded
+    # `generated=4/4 fused=0` on all five contexts — 20 rows where the budget allowed 40).
+    #
+    # Two different things bind on those two days and neither is a defect to loosen. On 08-05
+    # the CHILD bar bound: 92 attempts, 6 stored, `no_expectancy_gain` 46 and
+    # `champion_score_regression` 11 — working exactly as designed. On 08-06 the PARENT POOL
+    # bound: 10 attempts in total, because `holdout_permits_parenting` leaves 218 of the
+    # store's 1,681 rows able to parent at all and only 24 of those are 1d, which was that
+    # fire's whole rotation slot. Both leave the seeded half carrying the search alone.
+    #
+    # **This takes nothing from fusion.** The batch and `_fuse_batch` above are unchanged and
+    # run first, so fusion gets first refusal on every one of its pairs and only the ones it
+    # declined are re-spent. That is the distinction from `FACTORY_FUSION_PAIRS = 4 → 2`,
+    # which `docs/REMAINING_WORK.md` F1 carries the numbers for and deliberately does not
+    # take: that one cuts good fusions with bad, and this one cannot cut any.
+    #
+    # **The same rotation slice drawn denser, not the next one.** `_rotation_offset` is
+    # `(step + phase) * count`, so `count` is what fixes WHICH families a fire mints — asking
+    # for the shortfall directly would land on the slice belonging to some other fire and
+    # leave this one's families half-explored. So `count` and `rotation_index` are passed
+    # unchanged and only the first `topup_requested` of the draw are kept; the cursor is
+    # untouched, and the next fire steps exactly one slice as it always did. What the extra
+    # draws buy is a denser sample of the space this fire was already in — half around each
+    # family's elite centre, half around its base — which is `elite_base_params`' own argument
+    # applied to a budget that was being discarded.
+    #
+    # Spending the shortfall on the NEXT slice instead would buy breadth rather than depth, and
+    # `context_rotation_phase` names breadth-per-fire as the scarce thing — but that is a change
+    # to the rotation, which decides what the factory explores, and it belongs in a diff that
+    # argues for it. This one recovers a discarded budget and touches nothing else.
+    #
+    # A distinct seed, because the same one reproduces the batch: the next eight hex digits of
+    # the window hash the first eight already seeded, so it stays derived from the recorded
+    # input and no wall-clock enters. The batch's own hashes join `known_rule_hashes` anyway,
+    # so a collision is refused rather than stored twice.
+    #
+    # Rows carry `derivation_type: seeded_template` whichever draw they came from, because
+    # that is what they are — same function, same slice, same space, a different draw of the
+    # rng. What is worth telling apart is FIRES, and `seeded_topup_count` records that.
+    #
+    # **Judge it over generations, not days** (the `#420` error, and this is a mint-time
+    # change — where that error was made). What it has to move is the count of rows a fire
+    # produces that can be judged at all: `robustness.MIN_HOLDOUT_TRADES` was cleared by 84 of
+    # a fire's rows on 07-31 and by 5 of 20 on 08-06.
+    topup_requested = max(0, fusion_pairs - len(fused))
+    topup_accepted = 0
+    topup_rejected: list[dict[str, Any]] = []
+    if topup_requested:
+        topup = generate_batch(
+            generation_id, seed=int(candles_sha.split(":", 1)[1][8:16], 16), count=count,
+            start_index=count + len(fused) + 1,
+            symbol=symbol,
+            timeframe=timeframe,
+            elite_params=centres,
+            known_rule_hashes=frozenset({
+                *known_hashes,
+                *(c["strategy_rule_hash"] for c in candidates),
+                *(c["strategy_rule_hash"] for c in fused),
+            }),
+            positioning_eligible=positioning_eligible,
+            venue=venue,
+            rotation_index=rotation_index,
+        )
+        kept = topup["specs"][:topup_requested]
+        topup_accepted = len(kept)
+        topup_rejected = topup["rejected"]
+        _score_draw(kept, topup["params"])
+
     return {
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
         "seed": seed,
-        "requested_count": batch["requested_count"],
-        "accepted_count": batch["accepted_count"],
+        # Both counts describe the FIRE rather than the first draw, which is what they already
+        # claimed to mean and what the scheduler's `generated=N/M` reads: a fire that asked for
+        # eight and minted eight is complete, and one that asked for four is a fire fusion
+        # filled. `seeded_topup_count` below is what decomposes them.
+        "requested_count": batch["requested_count"] + topup_requested,
+        "accepted_count": batch["accepted_count"] + topup_accepted,
         # Forwarded because the generator's own answer to "did this fire deliver what was asked"
         # stopped here and nothing downstream could reconstruct it: `accepted_count` alone reads
         # as a quantity rather than as a shortfall. The scheduler's status line compares the two.
-        "batch_complete": batch["batch_complete"],
+        "batch_complete": batch["batch_complete"] and topup_accepted == topup_requested,
         # Mint-time refusals and score-time ones together: a caller reading "why did this fire
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
-        "rejected": [*batch["rejected"], *starved_specs],
+        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
+        # How much of the fusion allocation the shortfall draw re-spent, at MINT time — the
+        # same basis as `accepted_count`, so the two decompose without a second convention.
+        # Zero on a fire fusion filled, which is the only reading that says "nothing was
+        # discarded"; `fused_count + seeded_topup_count == fusion_pairs` whenever the draw
+        # itself was complete.
+        "seeded_topup_count": topup_accepted,
         "fusion_rejected": fusion_rejected,
         "evidence_input_sha256": candles_sha,
         "created_at": now,

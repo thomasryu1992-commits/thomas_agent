@@ -19,7 +19,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import switch_bridge
+from . import socket_door, switch_bridge
 from .approval_store import ApprovalStore
 from .cli_common import EXIT_OK, force_utf8_io, report_block
 from .control import ControlStore
@@ -64,7 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         f"SWITCH_BRIDGE: listening on {path} "
         f"(verbs={sorted(switch_bridge._ALLOWED_COMMANDS)}, "
         f"domains={sorted(switch_bridge._ALLOWED_DOMAINS)}, "
-        f"actor={switch_bridge.ASSISTANT_ACTOR})\n"
+        f"actor={switch_bridge.ASSISTANT_ACTOR}, "
+        f"{socket_door.describe_admission(server)})\n"
     )
     sys.stderr.flush()
     try:

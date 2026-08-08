@@ -55,6 +55,15 @@ MEMORY_FILE = "memory_events.jsonl"
 SCHEDULER_FILE = "scheduler_events.jsonl"
 PROGRAMIZATION_FILE = "programization_events.jsonl"
 FEEDBACK_FILE = "feedback_events.jsonl"
+# The assistant doors' at-most-once bookkeeping: one row per `request_id` transition, folded
+# latest-wins by `bridge_idempotency`. It lives here rather than in a store of its own because
+# the doors already hold a `LedgerStore` and this file needs exactly what the other eight need —
+# the same root, the same per-file lock, the same append-only discipline — and nothing else.
+# There is no `append_bridge_request` sibling on purpose: the check and the record must sit in
+# ONE critical section (a method that took the lock itself could only offer two, with the door's
+# effect between them), so `bridge_idempotency` takes `file_lock` and drives `jsonl` directly,
+# the way `retention` does.
+BRIDGE_REQUESTS_FILE = "bridge_requests.jsonl"
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -73,6 +82,7 @@ _RECORD_KINDS = (
     "crypto_factory",
     "crypto_strategy_proposal",
     "crypto_data_review",
+    "crypto_null_control",
     "programization_observation", "programization_pattern",
 )
 

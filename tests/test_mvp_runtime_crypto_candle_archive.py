@@ -644,7 +644,8 @@ def test_no_book_sits_permanently_past_the_budget(tmp_path):
     """Stronger than "4h appears sometimes": the union of the windows must cover every book.
 
     The offset advances one book per minute, so consecutive windows of a cadence shorter than
-    the budget overlap instead of leaving gaps."""
+    the budget overlap instead of leaving gaps — while the universe holds still. The test
+    below is the same property when it does not."""
     symbols = [f"S{i}" for i in range(10)]
     timeframes = ("15m", "1h", "4h", "1d")
     for timeframe in timeframes:
@@ -657,6 +658,40 @@ def test_no_book_sits_permanently_past_the_budget(tmp_path):
                                   now_ms=NOW_MS + minute * 60_000, root=tmp_path)
         seen.update(order[:budget])
     assert seen == {(s, tf) for tf in timeframes for s in symbols}
+
+
+def test_coverage_survives_a_universe_that_keeps_growing(tmp_path):
+    """The offset is ``minutes % len(refreshes)``, so every listing moves the modulus and the
+    window jumps rather than advancing. That is the real operating condition — the venue listed
+    three symbols in three hours on 2026-08-05 — and the test above cannot see it, because it
+    holds the universe still.
+
+    **Coverage is conditional, and the condition is a race**: a new symbol inserts its books
+    into the 15m region and pushes every later book forward, while the offset advances one book
+    per minute. Coverage holds while the offset outruns the growth. At the registered hourly
+    cadence that is 60 books per pass against 4 per listing — a 15x margin at the observed rate
+    of roughly one listing an hour, which is what this models. Written as a rate rather than a
+    fixed count so the margin, not just the outcome, is what fails if either side changes.
+    """
+    timeframes = ("15m", "1h", "4h", "1d")
+    symbols = [f"S{i:02d}" for i in range(80)]
+    for timeframe in timeframes:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+    original = {(s, tf) for tf in timeframes for s in symbols}
+
+    budget, seen = 100, set()
+    for hour in range(12):                                   # hourly, like the registered kind
+        new = f"N{hour:02d}"                                 # and one listing per pass
+        symbols.append(new)
+        for timeframe in timeframes:
+            _fill(tmp_path, new, timeframe)
+        order = archive.plan_pass(symbols, timeframes, venue=VENUE,
+                                  now_ms=NOW_MS + hour * 3_600_000, root=tmp_path)
+        seen.update(order[:budget])
+
+    missed = original - seen
+    assert not missed, f"{len(missed)} of the original books were never reached: {sorted(missed)[:5]}"
 
 
 def test_refreshes_rotate_but_first_fills_never_do(tmp_path):

@@ -360,6 +360,23 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
     vocabulary — teaching every caller two spellings is how one of them ends up checking the
     wrong field and reading a refused stop as a resting one.
 
+    **The fill facts are here too, and that half was missing.** A CONDITIONAL algo order that
+    triggered reports what actually executed under ``actualPrice``/``actualQty`` — the child
+    order's average price and filled quantity — where the order endpoint says
+    ``avgPrice``/``executedQty``. Those two were not translated, so ``fill_facts`` read an algo
+    fill as all-``None`` and `live_leg` could not price an exit the venue had already made.
+
+    Measured 2026-08-05T17:38Z on ETHUSDT: the stop triggered, the venue answered
+    ``algoStatus: FINISHED, actualPrice: 1904.96, actualQty: 0.022``, and settlement refused for
+    42 consecutive cycles because the numbers it needed were sitting in fields nothing read.
+    The position stayed OPEN in the local book against a venue that no longer had it, which
+    held every ETHUSDT entry behind a reconciliation DRIFT.
+
+    ``cumQuote`` is deliberately NOT synthesised from the two. ``realized_pnl_usdt`` already
+    falls back to ``qty * price`` when the quote is absent, and a computed value written into a
+    field the venue names would be indistinguishable from one the venue sent — which is exactly
+    the confusion the "never lossy" rule below exists to prevent.
+
     **Additive, never lossy.** The venue's own keys are kept alongside the aliases, because the
     raw response is what lands in the ledger and an incident is reconstructed from it — this
     session reconstructed the 2026-08-02 request byte-for-byte only because nothing had been
@@ -369,7 +386,8 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
         return None
     out = dict(venue_order)
     for source, alias in (("algoId", "orderId"), ("algoStatus", "status"),
-                          ("triggerPrice", "stopPrice")):
+                          ("triggerPrice", "stopPrice"),
+                          ("actualPrice", "avgPrice"), ("actualQty", "executedQty")):
         if source in out and alias not in out:
             out[alias] = out[source]
     return out
@@ -919,10 +937,44 @@ def submit_and_reconcile(
         # The ACTUAL fill, straight from the venue — what LP5 must compute realized PnL from,
         # never the modelled entry/exit the plan carried (the venue reports these as strings).
         "fill": fill_facts(venue_order),
+        # And the price the decision was taken at, which until now was **not written anywhere
+        # durable** — so realized entry slippage could not be computed at all.
+        #
+        # This is the one leg where the pair is missing. A protective stop is submitted at a
+        # price the runtime chose, so `bracket[].stop_price` against the fill is already a
+        # measurement (`scripts/measure_live_slippage.py` reads 23.47 bps on the first one). A
+        # MARKET entry records only `fill.avg_price`, and the venue answers `price: "0.00"` for
+        # a market order — so the leg the cost model charges on **every** trade was the one with
+        # nothing to check `DEFAULT_SLIPPAGE_BPS = 3.0` against. §F8 measures why that matters:
+        # the store's median candidate stops paying at **4.3 bps**.
+        #
+        # `intent["entry_price"]` is the plan's own entry, the same number `paper.settle_trade_
+        # plan` settles at, so a live fill and a paper fill become comparable on the axis that
+        # separates them. Present-and-None when the plan carried none, never 0.0 — "not
+        # recorded" and "intended free" are different facts, and this record is durable.
+        #
+        # Recording only. Nothing reads it to decide anything, no order changes shape, and this
+        # is the same seam #426 used to add `error_detail` when a cause could not be diagnosed
+        # from what was kept.
+        "intended_price": _intended_price(intent),
         "submit_error": submit_error,
         "submit_response": submit_response,
         "created_at": now,
     }
+
+
+def _intended_price(intent: Mapping[str, Any]) -> float | None:
+    """The plan's own entry price, or None. Never a substitute figure.
+
+    A plan that carried no entry price makes its fill unmeasurable, and that is the honest
+    record — filling in the venue's own fill would make every such row read as zero slippage,
+    which is the flattering direction and exactly the shape `cost.outcome_net_r` refuses in its
+    own domain. A non-positive value is treated as absent for the same reason.
+    """
+    value = intent.get("entry_price")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
 
 
 def fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:

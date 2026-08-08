@@ -65,6 +65,12 @@ ACTION_STARTED = "started"
 ACTION_ABANDONED = "abandoned"
 TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
 
+# A due schedule the maintenance budget declined to START this pass (`MAINTENANCE_PASS_BUDGET_
+# SECONDS`). Deliberately NOT in `TERMINAL_ACTIONS`: nothing was claimed, so there is no run for
+# it to terminate — it is the record of an occurrence that has not happened yet, which is why it
+# also carries no `schedule_run_id`. A test pins both.
+ACTION_DEFERRED = "deferred"
+
 # Mutations of the schedule SET, as opposed to the run lifecycle above. ``created`` was the
 # only one recorded until 2026-08-04, so a schedule turned off left no trace anywhere: the
 # store keeps no history (a disable rewrites `enabled` in place), the ledger held nothing,
@@ -117,6 +123,13 @@ KIND_ROTATE = "ledger_rotate"
 # daily buries the day it flipped among the days it did not. It speaks only on a change, so a
 # quiet run is the normal run — see `crypto/breaker_watch.py`.
 KIND_BREAKER_WATCH = "crypto_breaker_watch"
+# The live route's incident watch. Distinct from KIND_BREAKER_WATCH for the reason that one is
+# distinct from KIND_REPORT: they answer different questions, and folding them together would
+# make an operator read the headline twice to learn which fact moved. The breaker watch reports
+# whether the live ENTRY GATE is open; this reports whether the runtime can still ACCOUNT for
+# the money it already committed, and 2026-08-06 showed those are not the same state — the
+# breaker read PASS for ten hours while ETHUSDT sat in an unaccountable book.
+KIND_ROUTE_WATCH = "crypto_route_watch"
 # Keeps candles the equity venue will stop serving. Its own kind rather than a leg of
 # `crypto_pipeline`, because it reads a DIFFERENT venue on a different cadence, and a per-book
 # failure has to cost that book alone — losing one symbol must not cost the other eighty-seven.
@@ -138,9 +151,16 @@ KIND_BREAKER_WATCH = "crypto_breaker_watch"
 # an exception is not a kill switch — so it is argued there or not at all. A test pins that this
 # kind stops with everything else, so the exemption cannot arrive by comment.
 KIND_CANDLE_ARCHIVE = "candle_archive"
+# Does a selected strategy's entry beat a coin flip through the same exits? Scheduled rather
+# than run once because the only bars that are honestly out of sample for a spec are the ones
+# after it was minted, and on the day this lands the newest cohort is one day old. Every fire
+# re-reads the store and every spec's evaluable window is a day longer. See
+# `crypto/null_control.py` for the measurement that made a one-shot version untrustworthy.
+KIND_NULL_CONTROL = "crypto_null_control"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
-                   KIND_BREAKER_WATCH, KIND_CANDLE_ARCHIVE})
+                   KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
+                   KIND_NULL_CONTROL})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -168,7 +188,10 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # `closePosition STOP_MARKET` and the target a `reduceOnly LIMIT` (`crypto/live_leg.py`). A late
 # pass costs the holding-time exit, reconciliation, and the entry decision — real and bounded, and
 # not the same thing as an unprotected position.
-RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH})
+# `KIND_ROUTE_WATCH` belongs here for the same reason the breaker watch does, and arguably
+# more: it is the only thing that reports a book the runtime cannot reconcile, and a report
+# delayed behind an archive pass is a report about a state that has already lasted longer.
+RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_ROUTE_WATCH})
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
 #
@@ -183,6 +206,11 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH})
 # over ~6 passes with the loop free between them instead of one 11-minute block. Cheap kinds
 # (`ledger_rotate` at 0.2s, `crypto_report` at 2.2s) still batch normally — the budget only bites
 # where the cost is, which is why it is a time budget and not a per-pass count.
+#
+# Whether 60 is still right is a ledger question rather than a guess: every deferral writes an
+# `ACTION_DEFERRED` event carrying the pass spend and the budget then in effect, so
+# `read_scheduler_events()` filtered to that action is the evidence — how often it binds, and
+# whether the spend clusters at the boundary or far past it. See the deferral branch in `run_due`.
 MAINTENANCE_PASS_BUDGET_SECONDS = 60.0
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
@@ -591,8 +619,10 @@ def _scheduler_event(
     action: str, schedule: Schedule, *, now: str, status: str,
     run_id: str | None = None, **extra: Any,
 ) -> dict[str, Any]:
-    # actions: started | fired | failed | abandoned | skipped | gap_detected (run lifecycle),
-    # created | enabled | disabled | removed (`MUTATION_ACTIONS`, the schedule set changing).
+    # actions: started | fired | failed | abandoned | skipped | deferred | gap_detected (run
+    # lifecycle), created | enabled | disabled | removed (`MUTATION_ACTIONS`, the schedule set
+    # changing). `deferred` is the one that records a NON-event — a due occurrence the budget
+    # did not start and did not consume — so it carries no run id (see `ACTION_DEFERRED`).
     # run_id/extra are omitted when absent so non-run events keep their original shape.
     fields = dict(extra)
     if run_id is not None:
@@ -710,6 +740,115 @@ def _execute(
         if summary.get("event_error"):
             detail += f" unrecorded={summary['event_error']}"
         return detail
+    if schedule.kind == KIND_NULL_CONTROL:
+        # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
+        # spec on the bars minted AFTER it against seeded null entries, and appends one record.
+        # Touches no pool, no candidates, no orders.
+        from .crypto import null_control
+        from .crypto.cycle import attach_feeds
+        from .crypto.market_data import (
+            collect_market_data,
+            factory_candle_target,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
+        from .crypto.strategy import SpecParseError, StrategySpec
+        from .crypto import factory as crypto_factory
+        from .crypto import pool as crypto_pool
+
+        parts = schedule.request.split()
+        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
+        timeframe = parts[1] if len(parts) >= 2 else "4h"
+        collector = select_market_data_collector(now=now, root=repo_root)
+        try:
+            snapshot, _ = collect_market_data(
+                symbol, timeframe, collector=collector, now=now,
+                limit=factory_candle_target(timeframe),
+            )
+        except ToolBlocked as exc:
+            if exc.reason_code == "TOOL_ERROR":
+                return "skipped_market_data_degraded"
+            raise
+        attach_feeds(snapshot, collector=collector,
+                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
+                     now=now, root=repo_root, accumulate=False)
+        frame = crypto_factory.build_replay_frame(snapshot)
+        # The seed is the window's own content hash, so a recorded fire replays identically —
+        # the factory's rule, for the same reason.
+        seed = int(integrity.sha256_record(
+            {"candles": snapshot.get("candles") or []}).split(":", 1)[1][:8], 16)
+
+        measurements: list[dict[str, Any]] = []
+        for record in crypto_pool.read_candidates(repo_root):
+            spec_dict = record.get("strategy_spec")
+            if not isinstance(spec_dict, Mapping):
+                continue
+            if str(spec_dict.get("timeframe")) != timeframe:
+                continue
+            if symbol not in (spec_dict.get("symbol_scope") or []):
+                continue
+            # Selected strategies only. The store keeps every mint and roughly three quarters of
+            # them were negative in their own scored window, so an unfiltered sample answers a
+            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
+            # is the error the first run of this measurement made.
+            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
+                continue
+            try:
+                spec = StrategySpec.from_dict(dict(spec_dict))
+            except SpecParseError:
+                continue
+            outcome = null_control.measure_spec(
+                spec, snapshot, frame,
+                created_at_utc=str(record.get("created_at_utc") or ""), seed=seed,
+                timeframe=timeframe,
+            )
+            if outcome is None:
+                continue
+            measurements.append({
+                "candidate_id": record.get("candidate_id"),
+                "strategy_family": spec.strategy_family,
+                **outcome,
+            })
+
+        result = null_control.build_record(
+            [{"symbol": symbol, "timeframe": timeframe, "measurements": measurements}],
+            now=now, symbol=symbol, timeframe=timeframe,
+        )
+        if ledger is not None:
+            ledger.append_records(
+                f"NULLCTL-{integrity.short_id('null_control', {'at': now, 's': symbol, 't': timeframe})}",
+                {null_control.LEDGER_KIND: result},
+            )
+        return null_control.status_line(result)
+
+    if schedule.kind == KIND_ROUTE_WATCH:
+        # Same delivery posture as the breaker watch below, including the part that matters
+        # most: an undelivered announcement does NOT persist its marker, so the next fire
+        # retries rather than going quiet about an incident nobody was told about. For this
+        # watch that property is the whole point — the failure it exists to end was ten hours
+        # of a runtime knowing something and saying nothing.
+        from . import operator as operator_mod
+        from .crypto import route_watch
+
+        try:
+            result = route_watch.run_route_watch(repo_root, now=now, persist=False)
+        except MvpRuntimeError as exc:
+            # An unreadable cycle ledger is exactly the state this watch must not swallow: it
+            # cannot tell "no incident" from "cannot see", and reporting the second as the
+            # first is the silence this module exists to prevent.
+            return f"route_watch_unavailable:{exc.reason_code}"
+        if not result["changed"]:
+            return route_watch.status_line(result)
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"route_incident_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"route_incident_not_sent:{type(exc).__name__}"
+        route_watch.write_mark(result["state"], root=repo_root)
+        return f"route_watch_announced:{len(result['state'].get('in_incident') or [])}"
+
     if schedule.kind == KIND_BREAKER_WATCH:
         # Read the C4 breaker the way the cycle reads it and speak only when the verdict
         # changed. Same delivery posture as KIND_REPORT below — channel selected at fire time,
@@ -905,8 +1044,14 @@ def _execute(
         # number read as a quantity. A stuck family is the one way to reach it (see
         # `factory._MAX_ATTEMPTS_PER_SPEC`) and it has never happened; the point is that it would
         # be legible if it did.
+        # `topup=` because `requested_count` is no longer the constant `DEFAULT_BATCH_SIZE`:
+        # it grows by whatever fusion left unspent, so `generated=8/8 fused=0` and
+        # `generated=4/4 fused=4` are both complete fires and the denominator alone cannot say
+        # which. Without it a shortfall draw that itself fell short would read as the stuck
+        # family `_MAX_ATTEMPTS_PER_SPEC` exists to expose.
         return (f"generated={result['accepted_count']}/{result['requested_count']} "
-                f"fused={result.get('fused_count', 0)} gen={result['generation_id']}")
+                f"fused={result.get('fused_count', 0)} "
+                f"topup={result.get('seeded_topup_count', 0)} gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
@@ -1153,7 +1298,9 @@ def run_due(
     non-risk fires. A deferred occurrence is **not** claimed, so it stays due and the next pass
     runs it — deferral slips a cadence by one tick, it never drops an occurrence (unlike the
     kill-switch skip, which claims and drops by design). It is returned as ``deferred`` in the
-    summary so a bounded pass is visible rather than silent. A fire already running is never
+    summary **and written to the ledger as an ``ACTION_DEFERRED`` event**, so a bounded pass
+    survives the container it happened in — the summary and the CLI's per-result line do not.
+    A fire already running is never
     interrupted, so the guarantee is that at most ONE maintenance fire can precede a due risk
     kind — see ``RISK_KINDS`` for the measurement that motivated it."""
     schedules = store.list()
@@ -1196,12 +1343,52 @@ def run_due(
         #
         # After the kill-switch check on purpose: a halted runtime must still drop its due
         # occurrences exactly as before, so the budget cannot change what a kill does.
-        if (schedule.kind not in RISK_KINDS
-                and time.monotonic() - pass_started > MAINTENANCE_PASS_BUDGET_SECONDS):
-            deferred += 1
-            results.append({"schedule_id": schedule.schedule_id, "action": "deferred",
-                            "status": "deferred_pass_budget"})
-            continue
+        # **And it is recorded on the ledger, like every other outcome of a due schedule.**
+        # It was not, and the omission was mine: a deferral reached `results` (so the CLI's
+        # per-result line prints it) and the run summary (so the tick line counts it), and
+        # neither of those outlives the container. `docker-compose.yml` caps the service log at
+        # 10m x 3 and a recreation discards it outright, which on this host happens several
+        # times a day. Measured 2026-08-06: answering "how often does the budget bind?" — the
+        # question that decides whether 60s is the right number — could only be done from
+        # `docker logs`, and only for the current container's lifetime.
+        #
+        # No `run_id`, exactly like the kill-switch skip above, and that is load-bearing rather
+        # than incidental: `find_abandoned_runs` pairs `started` against terminal events **by
+        # `schedule_run_id`** and ignores every event without one. A deferral claims nothing and
+        # starts nothing, so it must not carry a run id — with one it would be an unpaired
+        # `started`-less row in a scan built to notice exactly that shape.
+        #
+        # Per schedule rather than per pass, which is the `skipped` precedent, and it composes:
+        # grouping these by `created_at` gives passes-that-bound, which is the number to tune on.
+        # The property that differs from `skipped` and is worth knowing before reading a count:
+        # `skipped` claims and drops, so it appears once per occurrence, while a deferral leaves
+        # the schedule due — so a schedule behind a long burst is deferred again on each pass
+        # until it runs, and N rows mean N passes it waited, not N occurrences it lost.
+        #
+        # The row carries what the pass had SPENT and the budget it was spending against,
+        # because the count alone does not settle the number it exists to tune. A pass that
+        # bound at 61s and one that bound at 600s produce the same row otherwise, and they
+        # argue opposite things: the first says 60 sits on the boundary and a larger value
+        # would stop binding, the second says one fire is longer than any budget worth setting
+        # and the number is not the lever. `pass_budget_ms` is recorded rather than assumed
+        # from the constant, so raising it later does not silently re-scale the rows written
+        # under the old one — the same reason `mutation_event` carries `previously_enabled`.
+        #
+        # Nested rather than one condition only so `elapsed` can be named: the clock is still
+        # read for the kinds the budget can act on and no others, as the short-circuit did.
+        if schedule.kind not in RISK_KINDS:
+            elapsed = time.monotonic() - pass_started
+            if elapsed > MAINTENANCE_PASS_BUDGET_SECONDS:
+                deferred += 1
+                status = "deferred_pass_budget"
+                if ledger is not None:
+                    ledger.append_scheduler_event(_scheduler_event(
+                        ACTION_DEFERRED, schedule, now=now, status=status,
+                        pass_elapsed_ms=int(elapsed * 1000),
+                        pass_budget_ms=int(MAINTENANCE_PASS_BUDGET_SECONDS * 1000)))
+                results.append({"schedule_id": schedule.schedule_id, "action": ACTION_DEFERRED,
+                                "status": status})
+                continue
 
         # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
         # occurrence, never doubles it). claim_due re-checks the current state under the

@@ -1,0 +1,10 @@
+{
+  "_what": "Per-platform ceiling on the number of skipped tests, enforced by scripts/check_test_skips.py.",
+  "_why": "A skipped test and a passing test are the same character in `pytest -q`. Measured at 3c31bf8: with the ephemeral Core activated, 4383 passed / 2 skipped; without it, 4175 passed / 210 skipped. Both green. The ceiling is what makes the second one loud.",
+  "_how_to_record": "Read the 'Skipped tests on <platform>: N' line from a CI run of the check on that platform and set it here. Not from a developer machine: a local root run skips the two chown-refusal tests that a CI runner does not skip, so a locally measured number is wrong on both platforms.",
+  "_null_means": "No ceiling recorded: the check reports the count and passes. The forbidden-reason check runs regardless and needs no number.",
+  "ceilings": {
+    "linux": null,
+    "win32": null
+  }
+}

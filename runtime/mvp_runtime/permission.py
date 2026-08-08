@@ -167,6 +167,20 @@ LIVE_ORDER_REQUIRED_PERMISSION_LEVEL = "P5"  # EXTERNAL_ACTION — reaches a cou
 TRADING_SWITCH_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
 TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates runtime control state
 
+# The two shapes of resume ask, and the ONE thing that tells them apart at spend time.
+#
+# Both carry the same scope, the same P4 level, the same store and the same single-use
+# lifecycle — so `permission_scope` cannot separate them, and the switch door needs to know
+# which one it is holding before it decides whether to re-arm live entries. The target prefix
+# is that discriminator. It goes into `target_ref`, which is inside the action fingerprint,
+# which is what makes "a runtime-resume grant cannot be spent as a trading re-arm" a property
+# of the record rather than a convention in a caller.
+#
+# Both live here, adjacent, on purpose: the door reads a string this module builds, and two
+# copies of a string in two modules is how a discriminator stops discriminating.
+TRADING_SWITCH_TARGET_PREFIX = "trading_switch:"
+NONFINANCIAL_RESUME_TARGET_PREFIX = "runtime_resume:"
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -935,9 +949,108 @@ def build_trading_switch_permission_decision(
             "against the stop it names and no other: a different stop in effect at spend time "
             "refuses it."
         ),
-        target_ref=f"trading_switch:{domain}",
+        target_ref=f"{TRADING_SWITCH_TARGET_PREFIX}{domain}",
         content_sha256=integrity.sha256_record(content),
         risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
+        required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_nonfinancial_resume_permission_decision(
+    bound_task: Mapping[str, Any],
+    domain: str,
+    *,
+    stop_ref: str,
+    stop_summary: str,
+    role_permission_ceiling: str = TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+    now: str,
+    approval_id: str | None = None,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for resuming the runtime WITHOUT re-arming
+    live entries.
+
+    **Why a second builder rather than a flag on the first.** The two asks differ in what Thomas
+    is being asked to authorize, so they differ in the record he signs: the action type, the risk
+    level, the risk text he reads, and the constraint. Folding them into one function with a
+    boolean would put the whole difference behind a parameter and leave one ``risk_level`` line
+    to get wrong — on the one record whose text is the thing a human approves from.
+
+    **What it exists for.** The assistant can halt the runtime for free; before this the only way
+    it could start one again was the RED trading re-arm above. So getting the operator loop, the
+    intake CLI, memory or its own dispatch door back cost a signature on the money path — an
+    approval used for doors it was not minted for. This is the same ask with the money half
+    removed, and the removal is enforced rather than described: the switch door spends this grant
+    with ``control.apply_command(resume_arms=False)``, and ``crypto/live_route`` reads the arm.
+
+    Binding works exactly as it does above and for the same reasons — the domain and the stop are
+    both in ``normalized_parameters`` and in ``content_sha256``, so both are inside the
+    fingerprint. What differs is ``target_ref``'s prefix, which is what the door reads to decide
+    whether to arm. A grant built here therefore cannot be spent as a trading re-arm, and a
+    trading grant cannot be spent as this; neither direction relies on the caller behaving.
+
+    ORANGE and not RED: this cannot reach ``exchange.order.place``. ORANGE and not YELLOW: it
+    restores autonomous model spend, file writes and memory writes, and §10 says take the highest
+    perspective rather than the most convenient one.
+    """
+    if not (isinstance(domain, str) and domain.strip()):
+        raise PlannerBlocked("INVALID_DOMAIN", "a runtime-resume ask must name its domain")
+    domain = domain.strip().lower()
+    # Required with no default, for the reason the trading builder states: a default would let a
+    # caller mint an ask that names no stop, silently, at the one call site Thomas signs.
+    if not (isinstance(stop_ref, str) and stop_ref.strip()):
+        raise PlannerBlocked(
+            "INVALID_STOP_REF", "a runtime-resume ask must name the stop it would clear"
+        )
+    if not (isinstance(stop_summary, str) and stop_summary.strip()):
+        raise PlannerBlocked(
+            "INVALID_STOP_SUMMARY", "a runtime-resume ask must describe the stop it would clear"
+        )
+    stop_ref = stop_ref.strip()
+    stop_summary = stop_summary.strip()
+
+    content = {
+        "domain": domain, "switch_action": "resume_nonfinancial", "stop_ref": stop_ref,
+    }
+    action = _ActionSpec(
+        action_type="runtime.resume.nonfinancial",
+        target_suffix="runtime_resume",
+        tool_id=None,
+        data_scope=("runtime.control_state", "task.evidence"),
+        normalized_parameters=dict(content),
+        risk_reason=(
+            "Resuming the runtime restores autonomous model, file and memory work, and the "
+            f"assistant's own dispatch door. It clears {stop_summary}, and the runtime has ONE "
+            "stop: this resumes every scheduled kind that stop was holding. It does NOT re-arm "
+            "live entries — the trading arm is left where the halt put it, and open positions "
+            "close either way."
+        ),
+        authority_reason="Prime may prepare a non-financial runtime resume for Thomas review.",
+        decision_reason=(
+            "Resuming the runtime requires exact Thomas approval on the verified control channel."
+        ),
+        constraint=(
+            "Approval is single-use and authorizes this domain's runtime resume only. It does "
+            "NOT re-arm trading: spending it leaves live entries disarmed. It is spendable "
+            "against the stop it names and no other: a different stop in effect at spend time "
+            "refuses it."
+        ),
+        target_ref=f"{NONFINANCIAL_RESUME_TARGET_PREFIX}{domain}",
+        content_sha256=integrity.sha256_record(content),
+        risk_level="ORANGE",
     )
     return build_permission_decision(
         bound_task,
