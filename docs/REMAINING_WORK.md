@@ -2719,6 +2719,58 @@ now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h s
 them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
 decision, and it is the thing to decide rather than to derive.
 
+#### The decision in numbers — read off the live pool 2026-08-08
+
+Stated so the choice is made against arithmetic rather than against an impression. Nothing below
+changes what the code does; it is what the code already does, applied to the pool as it stands.
+
+**The live pool is five strategies, not ninety-four.** `OCCUPYING_STATUSES` is `PAPER_ACTIVE` /
+`PROBATION` / `WARNING`; 89 of the 94 entries are in none of them and occupy nothing.
+
+| id | tf | direction | symbol | family |
+|---|---|---|---|---|
+| S008 | 1h | short | BTCUSDT | `bollinger_breakdown_short+breakdown_short` |
+| S005-GEN-700 | 4h | short | ETHUSDT | `breakdown_short` |
+| S004-GEN-706 | 4h | short | SOLUSDT | `session_trend_short` |
+| S005-GEN-697 | 4h | **long** | BTCUSDT | `breakout+macd_momentum` |
+| S002-GEN-709 | 4h | short | DOGEUSDT | `xs_momentum_short` |
+
+BNBUSDT 4h is unoccupied, so a pooled 4h spec picks up a context nothing fills today.
+
+**The arithmetic that decides it** is `routable_directional_capacity`'s own:
+`reachable = min(contexts, 2·min(long, short) + MAX_DIRECTIONAL_SKEW)`, with the cap at 4.
+
+| configuration | contexts | long / short | reachable | utilisation |
+|---|---|---|---|---|
+| today | 5 | 1 / 4 | **5** | 100% |
+| pooled 4h **short**, 1h unchanged | 6 | 0 / 6 | **4** | **67%** |
+| pooled 4h **long**, 1h unchanged | 6 | 5 / 1 | **6** | 100% |
+
+**So the tier's direction becomes a portfolio-level choice worth a third of the book, and it
+cannot be adjusted afterwards** — `direction` is fixed at promotion and the pooled spec *is* the
+tier. The general form is the part that outlives these five rows: directional control drops from
+one lever per context (up to 15) to one per timeframe (3).
+
+**Three shapes, not two.**
+
+- **A — fully pooled per timeframe.** Buys judgeability: a pooled spec accrues trades ~5× faster
+  and reaches `lifecycle.DEFAULT_WINDOWS[0]` (20 trades) ~5× sooner, which is the direct cause of
+  today's 89 inert entries. Costs the directional arithmetic above, and one auto-demotion empties
+  a whole tier.
+- **B — pooled at 4h and 1d only, 1h left single-symbol.** Treats where the defect is: F2 measured
+  1h single-symbol at 12/12 judgeable already, and it is 4h and 1d whose tails are too thin. Halves
+  the directional exposure and keeps an opposite-direction 1h leg buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Mint pooled to get a judgeable holdout, then
+  promote the winning parameter set as one spec per symbol. **The portfolio shape does not change
+  at all** — same contexts, same directional arithmetic, same demotion granularity. The cost is
+  bookkeeping rather than shape: a row would carry pooled evidence under a single-symbol scope,
+  and `evidence_depth_of` / `symbols_replayed` have to say so, because the unit the door judges
+  and the unit it routes stop being the same. **This option is not in the four wiring items
+  above**, and it is the one that separates the two things pooling has been treated as one thing.
+
+**B is the smaller default and C is the real alternative; A pays the whole directional lever for
+what B buys most of.** That reading is a judgement, not a measurement, and it is recorded as one.
+
 **One statistical consequence that will read as a discount and is not.** `search_context_key` is
 `(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
 shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
@@ -2829,6 +2881,51 @@ This is the first time anything in this record has cleared a corrected bar.
    and whose random-entry control loses 0.13R. An effect that large is more often an instrument
    than an edge — and item 1 names the instrument.
 
+#### It does not reproduce — measured 2026-08-08, and this closes the question
+
+**The rotation cannot answer this and never will, which is worth stating before the measurement
+that can.** "Wait for generations and see if `oi_unwind_short` holds" is the obvious plan and it
+is void: `run_factory` mints single-symbol, so no store generation is ever the pooled hypothesis,
+and at 4h this family's stored rows close a **median 9** trades against a floor of 25. Nine of
+nine are unjudgeable. Rows do not pool across generations — each is its own hypothesis with its
+own tail — so accumulating more never makes one judgeable. Waiting buys nothing here.
+
+**What the store CAN judge says no.** Across the 18 stored `oi_unwind_short` rows:
+
+| timeframe | rows | judgeable | median judgeable HO exp | positive |
+|---|---|---|---|---|
+| 15m | 3 | 2 | −0.2832 | **0/2** |
+| 1h | 6 | 2 | −0.2184 | **0/2** |
+| 4h | 9 | **0** | — | — |
+
+Everywhere it can be judged it is judgeably negative, and that **agrees with the pooled 1h
+result** (1/8, t = 2.44, below the bar). The two methods only diverge at 4h, where one has
+evidence and the other structurally cannot.
+
+**So the question goes to F3's instrument**, which is the one available: truncate the series by
+0.7 each step so window *k+1*'s tail ends exactly where window *k*'s begins. Same five confirming
+draws, same cohort, adjacent and non-overlapping:
+
+| holdout window (4h) | draw 0 | draw 1 | draw 3 | draw 4 | draw 6 |
+|---|---|---|---|---|---|
+| `[4200,6000)` — the batch's own | **+0.62** (t 5.16) | +0.49 (3.70) | **+0.54** (4.50) | **+0.70** (4.28) | **+0.43** (4.15) |
+| `[2940,4200)` | **+0.53** (4.51) | +0.20 (1.49) | +0.42 (3.48) | +0.62 (3.55) | +0.31 (3.04) |
+| `[2058,2940)` | −0.03 | −0.06 | −0.06 | +0.00 | −0.02 |
+| `[1440,2058)` | −0.31 | −0.25 | −0.23 | −0.25 | −0.25 |
+
+**All five draws decay monotonically and cross zero in the same window.** The effect lives in the
+newest ~3,000 bars (~500 days) and reverses before them. That is not one strong window — it is
+two — but it is a *time gradient*, which is the same finding in a worse form: a rule whose sign
+depends on when you look is not a rule the promotion door should take. OI coverage is not the
+explanation; the feed starts 2023-10-23 and spans every window here.
+
+**So F9's conclusion stands, and now on evidence rather than on a citation.** Pooling *finds out
+faster* — it turned a family the rotation could never judge at 4h into one judged in an afternoon,
+and the judgement is that its confirmation is a property of the recent period. What is **not**
+established, and what nothing here supports, is that pooled minting earns more. The remaining
+honest use for the `oi_unwind_short` result is as a worked example of why the pooled door needs
+the window test wired beside it, not as a candidate.
+
 **One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
 `liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
 liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
@@ -2854,6 +2951,50 @@ unknown effort:
 4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
    mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
    exercise, not an afterthought.
+5. **A window test wired beside the door**, and this one is not optional — see below.
+
+#### Why item 5 exists, and why `period_r` is not it
+
+The pooled door's first real output was five `oi_unwind_short` draws clearing a selection-adjusted
+bar at 4h, and the window test above showed all five reversing sign two windows back. **A pooled
+door without that test promotes exactly that row.** The value of pooling is that it makes rows
+judgeable fast; wiring it without the instrument that judges *stability* turns a find-out-faster
+lever into a promote-recent-regimes-faster one.
+
+**The obvious reuse fails, measured 2026-08-08.** `period_r` / `period_trades` already split the
+holdout into `HOLDOUT_PERIODS` slices, which reads like the same instrument. It is not: it
+partitions the **tail**, and the reversal is 2,000+ bars before the tail begins. On the five
+confirming draws every slice is positive —
+
+| draw | per-trade R across the 10 holdout slices (oldest → newest) |
+|---|---|
+| 0 | +1.29 −0.05 +0.18 +1.05 +0.85 +0.52 +0.16 +0.94 +0.70 +1.33 |
+| 6 | +0.80 +0.34 +0.01 +1.35 +0.87 +0.29 +0.03 +1.04 +0.07 +0.75 |
+
+— so `period_r` hands a clean bill of health to a spec whose sign flips outside its window. The
+two answer different questions: *"was the tail uniform"* and *"does the tail's answer hold before
+it"*.
+
+**What the test is**, concretely, since the shape is already proven: truncate the series by
+`1 - HOLDOUT_FRACTION` each step so window *k+1*'s tail ends exactly where window *k*'s begins
+(F3's construction), and score the same spec on three earlier windows. Reach is ~4× the tail.
+
+**Where it belongs.** Computed at mint beside the holdout and stored on the candidate's evidence,
+the way `period_r` is — never inside `backtest_spec_pooled`, whose docstring is explicit that it
+decides nothing. The promotion door then reads a recorded fact instead of re-deriving one, the
+same separation `holdout` already has.
+
+**What it costs, and it is smaller than it looks.** The truncated frames are spec-INDEPENDENT, so
+a batch pays three extra `build_replay_frame` calls in total, not three per spec — the property
+that made the 272-spec batch affordable. Replay is ~1.5× the single-window cost (0.7 + 0.49 + 0.34
+of the series). **No extra venue reads at all**: every window is a prefix of candles already
+fetched.
+
+**What to do with the answer is a decision, not a derivation.** A sign flip across adjacent
+windows could refuse at the door, rank below a stable row, or only be recorded and surfaced.
+Recorded-and-surfaced is the cheapest honest start and matches how a shallow window is already
+handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
+rest.
 
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 
