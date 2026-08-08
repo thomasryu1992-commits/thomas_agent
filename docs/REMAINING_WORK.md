@@ -2360,12 +2360,41 @@ its worst. `_fold_into_bounds` reflects instead: **both halves to 0.0%**, median
 3.12 → 3.03 and 3.22 → 3.25, median R:R 2.14 → 2.08 and 2.13 → 2.18 — inside the 0.05R nothing
 in this store resolves.
 
-**What is owed.** A mint-time change is judged over generations, not days (the `#420` error), and
-this one is placed against a store whose 1,507 non-fade rows carry the old draw. The check is the
-next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
-fall from ~12% toward zero, and the elite centres those rows become should stop reproducing it.
-Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
-random entry loses 0.13R here. What this buys is that the search covers the space it is given.
+**What was owed.** A mint-time change is judged over generations, not days (the `#420` error), and
+this one was placed against a store whose 1,507 non-fade rows carried the old draw. The check was
+the next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
+fall from ~12% toward zero. Nothing about edge was claimed or expected — 0 of 1,140 candidates
+confirm out of sample and a random entry loses 0.13R here. What it buys is that the search covers
+the space it is given.
+
+#### Paid off — measured 2026-08-08, ~25 generations after the deploy
+
+Every stored row's exit triple checked against its own family's space (the fold shipped
+2026-08-05 and the containers restarted onto it at 15:54 UTC):
+
+| generation block | rows | on a bound | share |
+|---|---|---|---|
+| GEN 600–779 | 923 | 136 | **14.7%** |
+| GEN ≥ 780 | 199 | 6 | **3.0%** |
+
+**And the residual six are all explained, none of them a pin.** Four are seeded rows from
+GEN-781/782/783 — generations that fired *before* the containers restarted. One (GEN-804) is
+`max_holding_bars` landing on 12, an integer taking a value it may legitimately take rather than a
+pile-up; the test added with the fold allows integer parameters an 0.08 share for exactly this.
+One (GEN-793) is a **crossover**, and that one is the clamp doing its documented job.
+
+**From GEN-784 onward, zero seeded rows sit on a continuous bound** — 0 of ~190.
+
+**The fusion path was checked and is NOT the same defect, which is worth stating because it
+looks like it.** `_fused_exit_param` still clamps where `mutate_params` now folds — but a fused
+value is the MIDPOINT of two parents, and a midpoint of two in-space parents is in-space by
+convexity (the note on `test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from` says so
+directly). The clamp therefore fires only when a parent was minted under an OLDER space, which is
+the GEN-793 row, and pinning a stale parent to the nearest legal value is the right operation
+there — folding it would place it at an arbitrary interior point instead. **What is stale is the
+docstring**, which still says *"Same clamp and same constants as `mutate_params`, so a fused
+parameter and a mutated one can never land in different places"*; that stopped being true when the
+fold landed, and the sentence is corrected in the same change as this note.
 
 ### F6. The regime label folds volatility over trend, and one live family still pays for it — audited 2026-08-05
 
