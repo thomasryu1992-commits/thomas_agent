@@ -3384,6 +3384,29 @@ grep -rn 'from \.\. import.*jsonl\|from \.\.jsonl import' runtime/mvp_runtime/cr
 per-line reads and 14 per-line writes. `live_promotion.py:362` states it outright: *"answering it
 meant opening the jsonl by hand."*
 
+**Only the 21 reads are duplication. The 14 writes are not, and folding them would be a
+regression** — this is the first thing to know about this item, and it is not visible from the
+count:
+
+```
+grep -rn 'os.fsync' runtime/mvp_runtime/crypto/ | wc -l   # 5 — paper, counterfactual,
+grep -n 'fsync' runtime/mvp_runtime/jsonl.py              # 0   live_pnl, live_promotion, live_position
+```
+
+Five crypto stores `flush()` + `os.fsync()` every appended outcome; `jsonl.append_lines` does not,
+and the audit ledger that uses it has never needed to. The crypto writes are therefore
+`append_lines` **plus a durability guarantee it does not offer**, and the code says why —
+`paper.py:1353`: *"A trade outcome is the one record the risk guard and feedback learn from;
+leaving it in an OS buffer means a power loss can drop a trade that the position file already says
+is closed."* `live_pnl.py:565` is blunter: *"…breaker forget a real loss across a crash. Force it
+down."*
+
+**Nothing would catch this.** fsync has no observable behavior except across a power loss or a
+container kill, so a swap to `append_lines` passes every test, reviews as a tidy-up, and silently
+downgrades the durability of the five stores the breakers read. The write side is either left
+alone or handled by adding an opt-in `fsync=` to `append_lines` — a separate decision from the
+reads, taken separately.
+
 Five modules — `paper`, `live_pnl`, `pool`, `counterfactual`, `live_promotion` — carry the same
 reader byte-for-byte apart from two arguments:
 
@@ -3397,18 +3420,27 @@ for i, line in enumerate(lines):
         record = json.loads(line)
 ```
 
-That is `jsonl.read_objects(path, read_code=..., label=...)` with its arguments spelled out by hand.
+That is `iter_objects(path, read_code=..., label=...)` with its arguments spelled out by hand, on
+top of a `read_text().splitlines()` that holds two full copies of the store in memory — the exact
+shape `iter_objects` was written to retire, and the one the crypto board was OOM-killed on.
 `state_dir()` is duplicated verbatim in `paper.py:991` and `live_pnl.py:91` on top of it.
 
-**The one design question, and it is not cosmetic.** `jsonl` raises `PersistenceError`; these raise
-`ToolError` and report the offending **line index**, which `jsonl` does not. Both descend from
-`MvpRuntimeError`, so an `exc_type=` parameter is the small move — but changing which class comes out
-of the live money path's stores is a behavior change wearing a tidy-up's clothes. **One module per
-PR, and take `counterfactual` and `pool` first** so the error-type decision is settled off the money
-path before `paper` and `live_pnl` are touched.
+**Two things the reads carry that `jsonl` does not, and neither is cosmetic.** They raise
+`ToolError` where `jsonl` raises `PersistenceError` (both descend from `MvpRuntimeError`, so an
+`exc_type=` parameter is the small move); and every message names the offending **line index**,
+which `jsonl` cannot produce — `iter_objects` yields objects, not positions. The line number is not
+decoration here: it is how an operator finds the bad row in a 100k-line store, and the same index
+is reused by the tamper and duplicate checks that follow the parse. **Folding the reads means
+`iter_objects` grows an enumerate, or the callers keep their own counter and only the parse moves.**
+That is the decision this item exists to make, and it should be made once, on the first module.
+
+**One module per PR, and take `counterfactual` first** — it is purely observational by construction
+(its own docstring: *"nothing here feeds a gate decision"*), so the error-type and line-index
+decisions are settled entirely off the money path before `pool`, then `paper` and `live_pnl`, are
+touched.
 
 What this is **not**: the list below rejects `live_*` decomposition and splitting the 300-line
-functions, both on money-path risk. This re-opens neither. It replaces an I/O body with a call —
+functions, both on money-path risk. This re-opens neither. It replaces a read body with a call —
 it moves no boundary and re-cuts no module.
 
 #### G4b. `scripts/` has no repo-root or timestamp authority of its own — 79 sites
