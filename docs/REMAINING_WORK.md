@@ -2445,7 +2445,8 @@ label excludes, is **37.9%**.
 rather than `mean_reversion`'s RSI — so "how a fade performs in HIGH_VOLATILITY" is measured on
 different entries than the one that would move.
 
-**The proposal, and it is not shipped.** Replace the label with the trend test it folds, at
+**The proposal that was tested — and rejected, see below.** Replace the label with the trend
+test it folds, at
 **identical `free_parameters`** — `count_free_parameters` charges one literal either way
 (verified: `literals = sum(1 for c in conditions if c.value is not None)`), and both `adx` and
 `atr_percentile` are already in `NUMERIC_FEATURES`:
@@ -2460,13 +2461,40 @@ This gives the search the 20.0 the label hard-codes and drops the volatility fol
 `volatility_squeeze_*` / #497 precedent it would REPLACE rather than add, since a family is
 +1 hypothesis charged to `selection_adjusted_z` for every other family in the store.
 
-**What is missing is the measurement that would justify it**, and it is the same one #497 ran:
-paired draws, exits from their own rng so the entry rule is the only difference between arms,
-`backtest_spec_pooled` across the cohort at 4h and 1h. **It needs venue frames this host does
-not hold** — `candle_archive` carries hyperliquid equity perps only and has "no consumer in the
-feature or backtest path" by design — so running it means adding fetch volume to the IP the live
-cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
-of a method.
+#### The replay was run 2026-08-05, and it says no
+
+Method as #497's: 12 paired draws × long/short × both arms at 4h and 1h, `backtest_spec_pooled`
+over the 5-symbol cohort, `rsi` and the exit triple each drawn from their own rng keyed by draw
+index so the second entry condition is the only difference between arms. 100 venue reads at
+`ARCHIVE_REQUEST_INTERVAL_SECONDS` pacing, 2m55s wall, no `TOOL_RATE_LIMITED`. Read-only, in a
+one-off container with every `MVP_LIVE_*` blanked; nothing appended to any store.
+
+| | A `== RANGE` judgeable | B `adx <= p` judgeable | A HO exp | B HO exp |
+|---|---|---|---|---|
+| 4h long | **1/12** | **7/12** | +0.1605 *(n=1)* | −0.0295 |
+| 4h short | **1/12** | **8/12** | −0.0521 *(n=1)* | +0.1913 |
+| 1h long | 12/12 | 9/12 | −0.0826 | **−0.2112** |
+| 1h short | 12/12 | 10/12 | +0.0784 | +0.0745 |
+
+**The judgeability claim is confirmed and the change still fails its own bar.** At 4h the current
+rule reaches `MIN_HOLDOUT_TRADES` in 1 draw of 12 — the store-based estimate (median 3.5 closed
+trades) was right, and the family genuinely cannot earn a verdict there. B reaches it in 7 and 8.
+The 4h expectancy columns are **not a comparison**: A's are single observations, which is the
+defect rather than a result.
+
+The pre-registered rule was *ship only if 4h judgeability rises AND 1h holdout expectancy does
+not fall by more than 0.05R*. **1h long falls 0.1286R** — above the floor this store resolves,
+so the rule stops it. 1h judgeability also drops (12/12 → 9/12 and 10/12): `adx <= p` draws
+below 20 are stricter than the label's own `adx < 20`, so B is not uniformly the wider gate.
+
+Nothing clears anything: best `t max` is +1.62 (4h short, arm B) against a selection-adjusted
+bar near 2.87 at this attempt count. No edge was expected and none appeared.
+
+**So `mean_reversion_*` keeps its gate, and this is the same answer F3 reached for the pullback
+half** — helps at 4h, hurts at 1h, do not ship. What the item becomes is the one thing both
+measurements agree on: the family is unjudgeable at 4h and 1d for a reason that is about SAMPLE,
+which makes it evidence for the pooled-mint experiment F2 defers rather than for another template
+edit. Re-open this only against a rule that does not cost the 1h leg, or once minting is pooled.
 
 ### F7. The hold is drawn in bars and the retiming only swaps the label — measured 2026-08-06, 86 rows
 
