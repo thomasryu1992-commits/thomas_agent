@@ -641,6 +641,37 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _htf_reversal_long_entry(p: dict) -> list[dict]:
+    # The higher timeframe's own MOMENTUM, which no minted family has ever read. Every htf_*
+    # family above enters on where the slow leg is pointing — `htf_ma20_distance_ma50` for the
+    # strength pair, `htf_market_regime` for the pullback pair — and both are statements about
+    # TREND. `htf_rsi` and `htf_adx` have been on the row since the HTF leg was wired on
+    # 2026-07-25 and are read by nothing, so "the slow leg is stretched" is a question this
+    # search has never been able to ask.
+    #
+    # The premise: the higher timeframe is washed out while the traded one has already turned.
+    # That ordering is what separates it from `mean_reversion` — a local RSI of 30 says this bar
+    # is stretched, and says nothing about whether the move it is stretched against is a dip in
+    # something larger or the whole of it.
+    #
+    # Mirrored around 50 through ONE edge per leg rather than through four independent bounds,
+    # the `htf_sep_min` convention: a draw that is a weak long signal is an equally weak short
+    # one, and the two legs stay disjoint by construction at every value in the range (the
+    # `xs_rank_edge` argument — at the loosest draw the long needs htf_rsi <= 40 and the short
+    # htf_rsi >= 60).
+    return [
+        {"feature": "htf_rsi", "comparison": "<=", "value": 50.0 - p["htf_rsi_edge"]},
+        {"feature": "rsi", "comparison": ">=", "value": 50.0 + p["rsi_edge"]},
+    ]
+
+
+def _htf_reversal_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_rsi", "comparison": ">=", "value": 50.0 + p["htf_rsi_edge"]},
+        {"feature": "rsi", "comparison": "<=", "value": 50.0 - p["rsi_edge"]},
+    ]
+
+
 def _oi_squeeze_long_entry(p: dict) -> list[dict]:
     # Position building ahead of a move: open interest climbing while the market has not
     # yet confirmed a trend in this direction is crowding, and the release tends to
@@ -895,6 +926,36 @@ def _taker_absorption_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _taker_flow_fade_long_entry(p: dict) -> list[dict]:
+    # The single bar's print, faded — and it is the column `_taker_flow_long_entry`'s own note
+    # argues AGAINST reading, which is the reason this family is worth a slot rather than the
+    # reason it is not. That note is right that "one bar's imbalance is mostly that bar's own
+    # move restated"; the flow families it justifies therefore all read the part that PERSISTED
+    # (`taker_flow_ma`, or the z-score against a rolling norm). Nothing reads the restatement
+    # itself, so `taker_flow_imbalance` is on the row unmined.
+    #
+    # A move restated by its own aggressor flow is exactly what an exhaustion print is: the
+    # signed form means a draw of 0.20 reads "sellers took 60% of the bar's volume" on BTC and
+    # on DOGE alike (see `features`: imbalance is 2 x ratio - 1), and pairing it with a washed
+    # out RSI asks for the bar where heavy one-way aggression has already spent the move.
+    #
+    # Distinct from `taker_absorption_long` in the SIGN, and the two are opposite premises on
+    # one variable rather than variations: absorption buys heavy BUY aggression into a washed
+    # out RSI (someone is taking the supply), this buys heavy SELL aggression into the same RSI
+    # (the supply is finished). Both cannot be right, which is the point of minting them.
+    return [
+        {"feature": "taker_flow_imbalance", "comparison": "<=", "value": -p["flow_edge"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _taker_flow_fade_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "taker_flow_imbalance", "comparison": ">=", "value": p["flow_edge"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
 def _session_label(p: dict) -> str:
     """The session this spec trades, chosen by the seeded mutation rather than by hand.
 
@@ -936,6 +997,37 @@ def _funding_fade_long_entry(p: dict) -> list[dict]:
     return [
         {"feature": "funding_zscore", "comparison": "<=", "value": p["funding_z_max"]},
         {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _funding_momentum_long_entry(p: dict) -> list[dict]:
+    # The OTHER sign of the same variable. Both funding families above fade the crowd, so the
+    # search has spent every funding slot it has on one direction of one hypothesis and has
+    # never asked the opposite one: that carry PERSISTS, and unusual funding beside a trend is
+    # the crowd being early rather than wrong.
+    #
+    # `funding_z_min` deliberately reuses `funding_fade_short`'s range and base rather than a
+    # tuned pair. The whole value of this family is that its threshold is the fade family's, so
+    # a difference in outcome is attributable to the entry SHAPE — the `ma_cross_*` argument,
+    # which kept the filters of the state families it mirrors for exactly this reason. Confirmed
+    # by trend rather than by RSI because the premise is continuation, and an RSI bound would
+    # be quietly asking for a pullback inside it.
+    #
+    # This is the cheapest genuinely new hypothesis available in this vocabulary — one column,
+    # already collected, already gated, whose accumulated evidence to date is all on the other
+    # side. Nothing here predicts it works; the fade side has not either.
+    return [
+        {"feature": "funding_zscore", "comparison": ">=", "value": p["funding_z_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _funding_momentum_short_entry(p: dict) -> list[dict]:
+    # The sign on the VALUE, not on the comparison — `htf_trend_strength_short`'s convention,
+    # so one range describes both legs.
+    return [
+        {"feature": "funding_zscore", "comparison": "<=", "value": -p["funding_z_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
     ]
 
 
@@ -1168,6 +1260,56 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # in RETIRED_FAMILIES below. The param range is bounded by what leaves a sample behind
     # rather than by a preference: a percentile floor above 0.9 selects a tenth of the bars,
     # which is how a family arrives FRAGILE for want of trades rather than for want of edge.
+    # Three pairs added to widen the SEARCH SPACE rather than to back a hypothesis — measured
+    # 2026-08-08 over this file: of the 56 columns in `NUMERIC_FEATURES`, the 38 minted families
+    # between them read 24, and the rotation had never conditioned on the other 32. These read
+    # three of them (`htf_rsi`, `taker_flow_imbalance`) or read a read column at a sign the
+    # library holds no family at (`funding_zscore` above zero). Every one is already collected,
+    # already classified in `_FEATURE_FEED`, and already gated by an existing set — so what is
+    # new here is which questions get asked, not what gets fetched or what may route.
+    #
+    # **The cost is dilution and it is real.** `DEFAULT_BATCH_SIZE` is 4 per fire whatever the
+    # library holds, so 38 -> 44 families is ~16% slower evidence accrual for every existing
+    # family, against an effective sample already measured in market periods rather than trades.
+    # That trade is worth taking only for premises the search cannot otherwise reach, which is
+    # why the squeeze/contraction proposals that arrived beside these were NOT ported: they
+    # re-propose `volatility_squeeze_*`, retired 2026-08-04 on a measurement, and re-listing
+    # that pair is a one-line reversal nobody needs a new family for.
+    StrategyTemplate("htf_reversal_long", "long", "1h",
+                     {"htf_rsi_edge": ParamSpec(10.0, 30.0),
+                      "rsi_edge": ParamSpec(2.0, 20.0), **_FADE_EXIT_PARAMS},
+                     {"htf_rsi_edge": 20.0, "rsi_edge": 8.0, **_FADE_EXIT_BASE},
+                     _htf_reversal_long_entry),
+    StrategyTemplate("htf_reversal_short", "short", "1h",
+                     {"htf_rsi_edge": ParamSpec(10.0, 30.0),
+                      "rsi_edge": ParamSpec(2.0, 20.0), **_FADE_EXIT_PARAMS},
+                     {"htf_rsi_edge": 20.0, "rsi_edge": 8.0, **_FADE_EXIT_BASE},
+                     _htf_reversal_short_entry),
+    # The fade exit space, because the entry is a reversal claim: it says the slow leg is
+    # stretched and the fast one has turned, and that claim is COMPLETE when the stretch
+    # unwinds. The mechanism-class rule the two spaces were split on, not a preference.
+    StrategyTemplate("funding_momentum_long", "long", "1h",
+                     {"funding_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, **_EXIT_BASE}, _funding_momentum_long_entry),
+    StrategyTemplate("funding_momentum_short", "short", "1h",
+                     {"funding_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, **_EXIT_BASE}, _funding_momentum_short_entry),
+    # `flow_edge` is the single-bar imbalance, so its range is wider than `taker_flow_long`'s
+    # 0.02-0.20 on the ROLLING MEAN of the same series — a mean is narrower than its inputs by
+    # construction. The bounds are read off the definition rather than off a measurement: the
+    # signed form puts 0.10 at "one side took 55% of the bar" and 0.40 at 70%, and above 70% the
+    # family selects a tail thin enough to arrive unjudgeable, which is the `vol_pct_min` ceiling
+    # argument. Nothing has measured this distribution; the search moves the bound.
+    StrategyTemplate("taker_flow_fade_long", "long", "1h",
+                     {"flow_edge": ParamSpec(0.10, 0.40),
+                      "rsi_max": ParamSpec(20.0, 40.0), **_FADE_EXIT_PARAMS},
+                     {"flow_edge": 0.20, "rsi_max": 30.0, **_FADE_EXIT_BASE},
+                     _taker_flow_fade_long_entry),
+    StrategyTemplate("taker_flow_fade_short", "short", "1h",
+                     {"flow_edge": ParamSpec(0.10, 0.40),
+                      "rsi_min": ParamSpec(60.0, 80.0), **_FADE_EXIT_PARAMS},
+                     {"flow_edge": 0.20, "rsi_min": 70.0, **_FADE_EXIT_BASE},
+                     _taker_flow_fade_short_entry),
     StrategyTemplate("volatility_expansion_long", "long", "1h",
                      {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
                      {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_long_entry),
@@ -1273,7 +1415,8 @@ OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
 # named only the OI series. Caught before it cost anything: the store holds 44 `funding_fade_*`
 # candidates and **none at 1d** — 1d rejoined the rotation on 2026-08-04 and the cursor has not
 # reached this block yet, which it would have within ~9 fires.
-FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
+FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short",
+                              "funding_momentum_long", "funding_momentum_short"})
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
@@ -1284,7 +1427,8 @@ FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
 # pair out would silently un-gate it the day somebody re-listed it.
 HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
                           "htf_trend_strength_long", "htf_trend_strength_short",
-                          "htf_pullback_long", "htf_pullback_short"})
+                          "htf_pullback_long", "htf_pullback_short",
+                          "htf_reversal_long", "htf_reversal_short"})
 
 # Families whose entry rules read ``session`` — mintable only where a bar is short enough
 # for the label to describe the market during it rather than just its opening instant.
