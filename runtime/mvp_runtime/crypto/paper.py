@@ -40,7 +40,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.read_only_kernel import integrity
 
-from .. import safety_gate, timeutil
+from .. import jsonl, safety_gate, timeutil
 from ..control import ControlStore
 from ..errors import ToolBlocked, ToolError
 from ..filelock import locked
@@ -1172,22 +1172,16 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     signature). Imported records carry the source's own hash over pre-import fields,
     so their tamper evidence is the audited import batch, not a per-record recompute."""
     path = state_dir(root) / OUTCOMES_FILENAME
-    if not path.is_file():
-        return []
     outcomes: list[dict[str, Any]] = []
     seen_outcome_ids: set[str] = set()
     seen_settlement_ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("OUTCOME_HISTORY_UNREADABLE", f"paper outcomes unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("OUTCOME_HISTORY_UNREADABLE", f"paper outcomes line {i + 1} is not valid JSON") from exc
+    # Reads only. The append below keeps its own fsync, which append_lines does not do.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="OUTCOME_HISTORY_UNREADABLE",
+        label="paper outcomes",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         if record.get("provenance") == PAPER_PROVENANCE:
@@ -1195,7 +1189,7 @@ def read_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             body = {k: v for k, v in record.items() if k != "record_sha256"}
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
-                    "OUTCOME_HISTORY_TAMPERED", f"paper outcomes line {i + 1} fails its self-hash"
+                    "OUTCOME_HISTORY_TAMPERED", f"paper outcomes line {lineno} fails its self-hash"
                 )
         outcome_id = record.get("outcome_id")
         if isinstance(outcome_id, str) and outcome_id:
