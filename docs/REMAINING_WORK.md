@@ -3546,7 +3546,7 @@ three callers only work because they run in the direct form *and* insert `ROOT`,
 resolve at once. The two `scripts/lib` modules touched here use a **relative** `from .utctime import`,
 which resolves under either spelling; the rest of `scripts/lib` still does not.
 
-#### G4c. The exit-code slot means three different things — recorded, not yet fixed
+#### G4c. The exit-code slot means three different things — **fixed 2026-08-08**
 
 | owner | code 2 | code 3 |
 |---|---|---|
@@ -3562,8 +3562,38 @@ CI assertions that hard-code an exit value (`.github/workflows/docker-image.yml:
 run a **runtime CLI**, where 2 is `EXIT_BLOCKED` — correct. `scripts/lib/gate_runner.py` only tests
 `!= 0`. So this is a hazard with no current victim: the day a script is wired into a check that reads
 2 as "blocked", it reports a usage error as a fail-closed block and both sides are individually
-right. Left as a record because changing seven scripts' exit codes is an operator-facing behavior
-change, and it is not urgent while nothing reads them.
+right.
+
+##### Fixed 2026-08-08 — and re-measuring first found it was worse than this table said
+
+Eight scripts, not seven. Slot **2** meant `EXIT_BLOCKED` (runtime), `EXIT_USAGE` (six scripts) and
+`EXIT_REFUSED` (one); slot **3** meant `EXIT_USAGE` (runtime), `EXIT_BLOCKED` (six) and
+`EXIT_REJECTED` (one); and `list_resting_orders.py` skipped 2 altogether, putting `EXIT_BLOCKED` on
+3 and a finding on 4.
+
+`cli_common` is the fixed point and the scripts moved, because two things outside them already
+depend on its numbers: `.github/workflows/docker-image.yml:86,97` asserts `-eq 2` for a fail-closed
+runtime CLI, and `tests/test_place_canary_order_audit_report.py` imports `EXIT_BLOCKED` by name. All
+eight already import `runtime.mvp_runtime.*`, so taking `EXIT_*` from `cli_common` costs them no new
+coupling — the §G4b dependency-direction argument is about *gates* importing what they gate, and
+none of these is one.
+
+**Script-specific codes stay, above the shared range.** `EXIT_REJECTED` and `EXIT_UNOWNED` are
+*findings* — the command ran and reports what it saw — which is a different claim from "refused to
+act". `EXIT_REJECTED` moved 3 → 4 so it cannot be read as a refusal; `EXIT_UNOWNED` was already 4.
+
+**`clear_bracket_breaker.py` was not just a naming problem.** Its single `EXIT_REFUSED` covered
+*both* a missing `--cleared-by`/`--reason` **and** a caught `MvpRuntimeError` — and the second
+branch literally prints `BLOCKED:` while the first is an operator typo. Those are now `EXIT_BLOCKED`
+and `EXIT_USAGE`, and the fail-closed branch has a test it never had.
+
+**Five operator messages said the wrong word too.** `print("BLOCKED: --candidate-ids is required")`
+on a branch returning a usage code is the same confusion one layer up; they say `USAGE:` now.
+Checked for consumers first — nothing greps them.
+
+`tests/test_scripts_exit_codes.py` keeps it: no script may redefine a `cli_common` name, and no
+script-specific code may land on a shared number. Structural rather than value assertions, because
+restating the values would just be a second copy of the thing that diverged.
 
 #### Measured and deliberately **excluded** from the actionable list
 
