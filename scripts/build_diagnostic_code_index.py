@@ -67,6 +67,39 @@ def _literal_code(call: ast.Call) -> str | None:
     return None
 
 
+# A shared primitive that raises on its caller's behalf takes the code as a parameter, so the
+# raise itself carries a *variable* and the literal sits at the call site one frame up. Walking
+# only error-class calls therefore loses the code entirely the moment a reader delegates its I/O
+# — measured: folding `counterfactual`'s reader into `jsonl` dropped
+# `COUNTERFACTUAL_HISTORY_UNREADABLE` out of this index while it was still being raised, with the
+# literal plainly visible at the call. These are the parameter names those primitives use.
+DELEGATED_CODE_KEYWORDS = ("read_code", "write_code")
+# What they raise when the caller does not choose (``jsonl``'s documented default).
+DELEGATED_DEFAULT_CLASS = "PersistenceError"
+
+
+def _delegated_code(call: ast.Call) -> tuple[str, str] | None:
+    """``(code, error class)`` for a call that hands a literal code to a primitive that raises.
+
+    The class comes from ``exc_type=`` when the caller names one and from the primitive's default
+    otherwise — so the row says which except-clause actually sees it, not merely that it exists.
+    """
+    code: str | None = None
+    error_class = DELEGATED_DEFAULT_CLASS
+    for keyword in call.keywords:
+        if keyword.arg in DELEGATED_CODE_KEYWORDS and isinstance(keyword.value, ast.Constant):
+            value = keyword.value.value
+            if isinstance(value, str):
+                code = value
+        elif keyword.arg == "exc_type":
+            named = keyword.value
+            if isinstance(named, ast.Name):
+                error_class = named.id
+            elif isinstance(named, ast.Attribute):
+                error_class = named.attr
+    return (code, error_class) if code is not None else None
+
+
 def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], int]:
     """Every raise site carrying a literal code, plus how many were skipped as non-literal."""
     sites: list[Site] = []
@@ -86,12 +119,18 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
             func = node.func
             name = func.id if isinstance(func, ast.Name) else (
                 func.attr if isinstance(func, ast.Attribute) else None)
-            if not name or not _is_error_class(name):
+            if not name:
                 continue
-            code = _literal_code(node)
-            if code is None:
-                skipped += 1
-                continue
+            if _is_error_class(name):
+                code = _literal_code(node)
+                if code is None:
+                    skipped += 1
+                    continue
+            else:
+                delegated = _delegated_code(node)
+                if delegated is None:
+                    continue
+                code, name = delegated
             enclosing_function: str | None = None
             condition: str | None = None
             walker: ast.AST = node

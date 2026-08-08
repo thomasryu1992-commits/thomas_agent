@@ -27,7 +27,7 @@ from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from .. import timeutil
+from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
@@ -296,22 +296,17 @@ def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any
     SOURCE's hash over pre-import fields, so their tamper evidence is the audited
     import batch, not a recompute here."""
     path = state_dir(root) / OUTCOMES_FILENAME
-    if not path.is_file():
-        return []
     rows: list[dict[str, Any]] = []
     seen_settlements: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("COUNTERFACTUAL_HISTORY_UNREADABLE", f"counterfactual outcomes unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("COUNTERFACTUAL_HISTORY_UNREADABLE",
-                            f"counterfactual outcomes line {i + 1} is not valid JSON") from exc
+    # Streams rather than materializing the file twice, and keeps this reader's own error
+    # class: the tool chokepoints above catch ToolError, so raising jsonl's PersistenceError
+    # here would fail past the caller instead of at it.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="COUNTERFACTUAL_HISTORY_UNREADABLE",
+        label="counterfactual outcomes",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         if record.get("provenance") == NATIVE_PROVENANCE:
@@ -320,7 +315,7 @@ def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
                     COUNTERFACTUAL_HISTORY_TAMPERED,
-                    f"counterfactual outcomes line {i + 1} fails its self-hash",
+                    f"counterfactual outcomes line {lineno} fails its self-hash",
                 )
         settlement_id = record.get("counterfactual_settlement_id")
         if isinstance(settlement_id, str) and settlement_id:

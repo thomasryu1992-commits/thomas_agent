@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **412** distinct codes across **676** raise sites
+- **425** distinct codes across **705** raise sites
 - **28** exception classes carry them
-- **59** codes are raised from more than one module (see below)
-- **196** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **61** codes are raised from more than one module (see below)
+- **195** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 
 ## Codes raised from more than one module
 
@@ -36,6 +36,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_ROLE` | `assignment.py`, `permission.py` |
 | `INVALID_TIMESTAMP` | `intake.py`, `permission.py` |
 | `KILL_STATE_UNAVAILABLE` | `memory_console.py`, `registry_console.py` |
+| `LEDGER_UNREADABLE` | `control.py`, `store.py` |
+| `LEDGER_WRITE_FAILED` | `bridge_idempotency.py`, `store.py` |
 | `LIFECYCLE_DECISION_INVALID` | `lifecycle.py`, `pool.py` |
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `lifecycle.py`, `pool.py`, `retirement.py` |
 | `LIFECYCLE_UNKNOWN_STRATEGY` | `pool.py`, `retirement.py` |
@@ -129,11 +131,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_CONSUMED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 764 | `build_approval_consumption_audit` | `approval.get('status') != 'CONSUMED'` |
 | `APPROVAL_NOT_CONSUMED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 819 | `build_trial_consumption_audit` | `approval.get('status') != 'CONSUMED'` |
+| `APPROVAL_READ_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 71 | `read_all` | `—` |
+| `APPROVAL_READ_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 115 | `get_permission_decision` | `—` |
 | `APPROVAL_SCHEMA_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 112 | `_validate` | `—` |
 | `APPROVAL_SEMANTICS_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 117 | `_validate` | `issues` |
 | `APPROVAL_UNVERIFIED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 716 | `build_approval_decision_audit` | `approver.get('verification_status') != 'VERIFIED'` |
 | `APPROVAL_UNVERIFIED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 767 | `build_approval_consumption_audit` | `approver.get('verification_status') != 'VERIFIED'` |
 | `APPROVAL_UNVERIFIED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 822 | `build_trial_consumption_audit` | `approver.get('verification_status') != 'VERIFIED'` |
+| `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 65 | `append` | `—` |
+| `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 107 | `append_permission_decision` | `—` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 223 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 231 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
@@ -216,8 +222,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 495 | `save` | `—` |
 | `CORE_CANDIDATE_ALREADY_DECIDED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 483 | `decide_core_candidate` | `candidate.get('status') != CORE_CANDIDATE_STATUS` |
 | `CORE_NOT_ACTIVATED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | 46 | `bind_task_to_core` | `not pointer.is_file()` |
-| `COUNTERFACTUAL_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 306 | `read_counterfactual_outcomes` | `—` |
-| `COUNTERFACTUAL_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 313 | `read_counterfactual_outcomes` | `—` |
+| `COUNTERFACTUAL_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 304 | `read_counterfactual_outcomes` | `—` |
 | `DECISION_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 173 | `build_approval_request` | `expires <= issued` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 97 | `build_program_definition` | `not isinstance(definition_input, Mapping)` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 100 | `build_program_definition` | `not (isinstance(purpose, str) and purpose.strip())` |
@@ -355,13 +360,26 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `KNOWLEDGE_TAGS_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 291 | `_clean_tags` | `len(cleaned) > MAX_TAGS` |
 | `KNOWLEDGE_TEXT_REQUIRED` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 208 | `build_document` | `not isinstance(text, str) or not text.strip()` |
 | `KNOWLEDGE_TEXT_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | 213 | `build_document` | `len(text) > MAX_TEXT_CHARS` |
+| `KNOWLEDGE_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/knowledge/store.py` | 162 | `_read_unlocked` | `—` |
+| `KNOWLEDGE_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/knowledge/store.py` | 111 | `add` | `—` |
 | `LEDGER_INVALID_KEEP` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 141 | `rotate_file` | `not (isinstance(keep_rows, int) and keep_rows > 0)` |
 | `LEDGER_PROTECTED_FROM_ROTATION` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 131 | `rotate_file` | `filename in PROTECTED_FILES` |
+| `LEDGER_READ_FAILED` | `PersistenceError` | `runtime/mvp_runtime/bridge_idempotency.py` | 275 | `_live_record` | `—` |
 | `LEDGER_ROTATION_FAILED` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 185 | `rotate_file` | `—` |
 | `LEDGER_UNAVAILABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 475 | `run_trial` | `—` |
 | `LEDGER_UNKNOWN_FILE` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 136 | `rotate_file` | `filename not in ROTATABLE_FILES` |
 | `LEDGER_UNKNOWN_RECORD_KIND` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 133 | `append_records` | `unknown` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/control.py` | 466 | `_mode_from_ledger` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 220 | `_tip` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 229 | `_tip` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 237 | `read_blocks` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 267 | `iter_records` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 277 | `read_scheduler_events` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 288 | `read_audit_events` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 312 | `health` | `not entry['present']` |
+| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/bridge_idempotency.py` | 254 | `_append` | `—` |
+| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 125 | `append_audit_events` | `—` |
+| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 179 | `_append_locked` | `—` |
 | `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 349 | `operator_retirement_decision` | `not (isinstance(strategy_id, str) and strategy_id)` |
 | `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1176 | `update_statuses` | `not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str))` |
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 354 | `operator_retirement_decision` | `current in TERMINAL_STATUSES` |
@@ -565,6 +583,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 238 | `append_rows` | `not name` |
 | `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1086 | `_read_position_file` | `—` |
 | `PROGRAMIZATION_RECORD_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 228 | `_validate` | `—` |
+| `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 115 | `read_observations` | `—` |
+| `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 120 | `read_patterns` | `—` |
+| `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 142 | `read_candidates` | `—` |
+| `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 160 | `read_requests` | `—` |
+| `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 133 | `append_observation` | `—` |
+| `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 137 | `append_pattern` | `—` |
+| `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 155 | `append_candidate` | `—` |
+| `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 164 | `append_request` | `—` |
 | `PROMOTED_NOT_RETIRED` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 232 | `apply_memory_command` | `—` |
 | `PROMOTED_UNAUDITED` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 240 | `apply_memory_command` | `—` |
 | `PROMOTION_ACTOR_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 595 | `build_promotion_audit` | `not (isinstance(promoted_by, str) and promoted_by.strip())` |
@@ -595,9 +621,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REGISTRY_RECORD_INVALID` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 220 | `_validate` | `—` |
 | `REGISTRY_UNAVAILABLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 254 | `load_resolved_roles` | `—` |
 | `REGISTRY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 245 | `apply_registry_command` | `registry is None` |
+| `REGISTRY_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/task_registry.py` | 319 | `_read_rows` | `—` |
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 72 | `_registry_snapshot` | `—` |
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 173 | `request_registration` | `—` |
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 265 | `apply_registration` | `—` |
+| `REGISTRY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/task_registry.py` | 327 | `_append` | `—` |
 | `REQUEST_EXISTS` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 153 | `create_program_request` | `any((row.get('candidate_id') == candidate_id for row in store.read_requests()))` |
 | `REQUEST_ID_REUSED` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | 135 | `claim` | `prior.get('request_sha256') != request_fingerprint` |
 | `REQUEST_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 206 | `main` | `not (args.program_id and args.program_version)` |
@@ -625,6 +653,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `Role Registry snapshot must contain exactly one Task-bound Role entry` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 270 | `resolve_role_registry_snapshot` | `not isinstance(raw_entries, list) or len(raw_entries) != 1` |
 | `Role Registry snapshot must use schema_version role_registry.v0.3` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 264 | `resolve_role_registry_snapshot` | `source.get('schema_version') != 'role_registry.v0.3'` |
 | `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 654 | `mutation_event` | `action not in MUTATION_ACTIONS` |
+| `SCHEDULES_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/scheduler.py` | 409 | `list` | `—` |
+| `SCHEDULES_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/scheduler.py` | 417 | `_save` | `—` |
 | `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 303 | `from_record` | `—` |
 | `SCHEDULE_RECORD_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 308 | `from_record` | `not (isinstance(next_run_at, str) and _TIMESTAMP_PATTERN.match(next_run_at))` |
 | `SCHEMA_INVALID` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 332 | `build_task` | `—` |
@@ -719,6 +749,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 121 | `apply_knowledge` | `command not in _COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 105 | `apply_read` | `command not in _READS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 588 | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
+| `WORKING_MEMORY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/working_memory.py` | 99 | `prune_expired` | `removed` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
 | `WRONG_APPROVER` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 249 | `record_decision` | `verification.approved_by != REQUIRED_APPROVER` |

@@ -294,6 +294,25 @@ def test_a_tampered_native_shadow_outcome_is_refused(tmp_path):
     assert exc.value.reason_code == "COUNTERFACTUAL_HISTORY_TAMPERED"
 
 
+def test_a_corrupt_shadow_line_still_raises_this_readers_own_error_class(tmp_path):
+    """The reader now streams through ``jsonl.iter_numbered`` instead of parsing by hand, and the
+    thing that must NOT move is which class comes out: the tool chokepoints above catch ToolError,
+    so adopting jsonl's default PersistenceError would fail past the caller instead of at it. The
+    reason code and the file line number are the operator's two handles; both survive."""
+    from runtime.mvp_runtime.errors import PersistenceError, ToolError
+
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "counterfactual_outcomes.jsonl").write_text(
+        '{"counterfactual_id": "cf1"}\n\n{not json\n', encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert exc.value.reason_code == "COUNTERFACTUAL_HISTORY_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
+
+
 def test_imported_shadow_rows_skip_the_hash_recompute(tmp_path):
     # The live store holds 53 imported counterfactuals hashed by the SOURCE scheme.
     path = paper.state_dir(tmp_path)
