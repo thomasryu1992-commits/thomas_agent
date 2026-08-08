@@ -382,12 +382,20 @@ def main(
                 # KeyboardInterrupt either. `total_deferred` accumulated for the life of the
                 # container and then died with it.
                 #
-                # That left the one mechanism bounding risk-kind latency with no observable
-                # record of ever having acted - measured 2026-08-06 while trying to answer "how
-                # often has the budget bitten?" and finding it unanswerable from any durable
-                # state (REMAINING_WORK.md section E). This is the cheap half of the answer: not
-                # a new store, not an event (a deferral deliberately claims no occurrence), just
-                # the count on the pass it happened, where `docker logs` can find it.
+                # What this is NOT, corrected before it shipped because the first draft of this
+                # comment claimed it and the four lines directly above refute it: the budget was
+                # never silent. `results` carries a `deferred` entry per schedule and the loop
+                # prints each one, so every deferral has always been in this log — 20 of them in
+                # the running container when this was measured (2026-08-06). What was missing was
+                # the aggregate, and the aggregate lived on a line the service cannot reach.
+                #
+                # So this adds a per-pass count and a running total: one greppable line saying
+                # the budget bound, instead of a reader counting per-schedule lines to find out.
+                #
+                # Durability is a separate question and is answered elsewhere - `run_due` writes
+                # an `ACTION_DEFERRED` scheduler event (#596), which is what survives the
+                # container this log dies with. Neither replaces the other: the event is how you
+                # count binds over weeks, this is how you see one while reading the log.
                 #
                 # Quiet by construction - `deferred` is 0 on a pass that did not bind, and a
                 # burst inside one pass is one line, not one per schedule.

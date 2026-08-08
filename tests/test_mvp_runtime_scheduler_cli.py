@@ -247,9 +247,11 @@ def _budget_bound_tick(tmp_path, monkeypatch, *, budget):
 def test_a_bound_maintenance_budget_says_so_on_the_pass_it_bound(tmp_path, capsys, monkeypatch):
     """The gap this closes: the service runs `--max-ticks 0`, so the end-of-loop summary that
     carries `deferred` is unreachable — the `while` never exits and SIGTERM raises no
-    KeyboardInterrupt. The count accumulated for the life of the container and died with it,
-    which left the one mechanism bounding risk-kind latency with no observable record of ever
-    having acted (REMAINING_WORK.md section E)."""
+    KeyboardInterrupt. The count accumulated for the life of the container and died with it.
+
+    Narrowly the AGGREGATE, not the fact: the per-result line already printed every individual
+    deferral, and the durable record is the `ACTION_DEFERRED` scheduler event (#596). What was
+    missing was one line saying the budget bound this pass, without counting the others."""
     _budget_bound_tick(tmp_path, monkeypatch, budget=-1.0)
     err = capsys.readouterr().err
     assert "maintenance budget bound this pass" in err
